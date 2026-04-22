@@ -11,6 +11,7 @@ description: 在当前 `agent-workflows` 仓库里创建或更新一个双端兼
 
 - 新建插件时，优先运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js ...`。
 - 只要任务涉及 `mcpServers`、`apps`、Claude `agents/hooks`、或 marketplace 兼容性，先读 `references/project-plugin-contract.md`。
+- 如果任务涉及 skill 的自动触发、手动触发、或要判断 `allow_implicit_invocation`、`user-invocable`、`disable-model-invocation` 该怎么配，先读 `references/skill-trigger-rules.md`。
 - 如果只是补一个最小 `skill-only` 插件，可以直接用脚手架，再按任务把插件里的 `SKILL.md` 内容补完整。
 - 这个仓库默认把插件脚手架和辅助脚本写成 Node.js。除非有明确理由，不要再把 Python 当成新脚本的默认实现。
 
@@ -26,6 +27,7 @@ description: 在当前 `agent-workflows` 仓库里创建或更新一个双端兼
    - 路径必须以 `./` 开头，并且留在插件根目录内
    - `interface` 只放展示元数据，不把它当运行时 capability
 4. 为共享入口优先设计“手动触发的 skill”，不要把 slash command 当成双端公共协议。
+   如果确实要做自动触发，再按 `references/skill-trigger-rules.md` 分别配置 Codex 和 Claude Code，不要把两边字段混用。
 5. 更新两份 marketplace manifest：
    - `.claude-plugin/marketplace.json`
    - `.agents/plugins/marketplace.json`
@@ -66,6 +68,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js my-plug
 ## 何时读参考资料
 
 - 需要判断共享字段和平台差异时，读 `references/project-plugin-contract.md`
+- 需要决定 skill 是自动触发、显式触发、用户可手动触发，还是只允许模型调用时，读 `references/skill-trigger-rules.md`
 - 需要照着现有约定补文件树、manifest 示例和检查清单时，读 `references/plugin-scaffold-checklist.md`
 
 ## 验证

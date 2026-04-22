@@ -63,6 +63,15 @@ plugins/<name>/
 
 它们用于项目自己的生成和适配逻辑，不改变 Codex 对共享字段的窄类型要求。
 
+## Skill 触发配置
+
+skill 的自动 / 手动触发不是共享 manifest 层的能力，而是各平台各自解释 skill 元数据：
+
+- Codex 看 `agents/openai.yaml` 里的 `policy.allow_implicit_invocation`
+- Claude Code 看 `SKILL.md` frontmatter 里的 `user-invocable` 和 `disable-model-invocation`
+
+需要配触发方式时，不要只改一侧字段。先读 `references/skill-trigger-rules.md` 再落配置。
+
 ## 共享能力面和平台差异
 
 共享插件层最稳的交集只有：
@@ -100,6 +109,8 @@ plugins/<name>/
 ## 创建插件时最容易犯的错
 
 - 把 slash command 当成双端共享入口。当前项目要求共享入口收敛到“手动触发 skill”。
+- 把 Claude 的 `user-invocable` / `disable-model-invocation` 当成 Codex 也会识别的字段。
+- 以为 `allow_implicit_invocation: false` 会让 Codex 完全不能显式调用这个 skill。
 - 直接手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`，忘了回写 source manifest。
 - 给 `skills`、`mcpServers` 写数组或对象，导致 Codex 解析失败。
 - 假设 Claude 普通 skill 的 `hooks/context/agent` 语义也会原样出现在 Claude 插件 skill 或 Codex 插件 skill 上。

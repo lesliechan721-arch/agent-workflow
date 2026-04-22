@@ -11,7 +11,7 @@
     {
       "name": "git-commit",
       "source": "./plugins/git-commit",
-      "description": "通过手动触发 skill 引导 agent 按 Conventional Commits 规范完成 git 提交。",
+      "description": "在用户要求提交当前改动时自动触发 skill，引导 agent 按 Conventional Commits 规范完成 git 提交。",
       "category": "workflow",
       "strict": true,
       "policy": {

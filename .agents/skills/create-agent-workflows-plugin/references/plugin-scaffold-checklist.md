@@ -53,7 +53,9 @@
 - `plugins/<name>/` 下存在三份 manifest
 - `.agents-plugin/plugin.json` 是唯一事实源
 - `skills/<skill-name>/SKILL.md` 已从占位文本替换成真实流程
-- `agents/openai.yaml` 至少保留 `policy.allow_implicit_invocation: false`
+- `agents/openai.yaml` 已明确表达 Codex 触发策略：
+  脚手架默认写 `policy.allow_implicit_invocation: false`，这是保守基线，不是 Codex 平台默认值；需要自动触发时改成 `true`
+- 如果 skill 还要兼容 Claude Code 的手动 / 自动触发语义，已经按 `references/skill-trigger-rules.md` 检查过 `user-invocable` 和 `disable-model-invocation`
 - `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json` 都已注册插件
 - 如果插件要带 `mcpServers`、`apps`、Claude `hooks/agents`，已经回到 `references/project-plugin-contract.md` 复核过能力边界
 
