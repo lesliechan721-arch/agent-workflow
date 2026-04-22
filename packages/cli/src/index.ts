@@ -45,6 +45,9 @@ async function main(): Promise<void> {
     .action(async (plugins: string[], rawOptions: { scope?: string; platform?: string }) => {
       const result = await installCommand(plugins, toCommandOptions(process.cwd(), rawOptions));
       console.log(`Installed ${result.plugins.join(', ')} on ${result.platforms.join(', ')}.`);
+      for (const warning of result.warnings) {
+        console.warn(`Warning: ${warning}`);
+      }
     });
 
   program
@@ -55,6 +58,9 @@ async function main(): Promise<void> {
     .action(async (plugins: string[], rawOptions: { scope?: string; platform?: string }) => {
       const result = await uninstallCommand(plugins, toCommandOptions(process.cwd(), rawOptions));
       console.log(`Uninstalled ${result.plugins.join(', ')} from ${result.platforms.join(', ')}.`);
+      for (const warning of result.warnings) {
+        console.warn(`Warning: ${warning}`);
+      }
     });
 
   program
@@ -73,6 +79,9 @@ async function main(): Promise<void> {
           all: rawOptions.all,
         });
         console.log(`Upgraded ${result.plugins.join(', ')} on ${result.platforms.join(', ')}.`);
+        for (const warning of result.warnings) {
+          console.warn(`Warning: ${warning}`);
+        }
       },
     );
 

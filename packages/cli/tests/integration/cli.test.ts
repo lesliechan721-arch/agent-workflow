@@ -11,6 +11,7 @@ import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 
 const tempDirs: string[] = [];
+const originalPath = process.env.PATH ?? '';
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -60,7 +61,7 @@ async function registerPluginInMarketplaces(
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
         products: ['CODEX'],
       },
     });
@@ -85,6 +86,7 @@ afterEach(async () => {
   delete process.env.AW_CODEX_HOME;
   delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
   delete process.env.AW_FORCE_CODEX_AVAILABLE;
+  process.env.PATH = originalPath;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -146,12 +148,163 @@ describe('CLI integration', () => {
     });
   });
 
+  it('refreshes Claude marketplace materialization on upgrade without rewriting unchanged native install records', async () => {
+    const { repoRoot, claudeHome } = await makeWorkspace();
+    process.env.AW_CLAUDE_HOME = claudeHome;
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+
+    await installCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    const settingsPath = path.join(repoRoot, '.claude', 'settings.json');
+    const knownMarketplacePath = path.join(
+      repoRoot,
+      '.claude',
+      'plugins',
+      'known_marketplaces.json',
+    );
+    const cachePath = path.join(
+      repoRoot,
+      '.claude',
+      'plugins',
+      'marketplaces',
+      'agent-workflows.json',
+    );
+
+    const originalSettings = await fs.readJson(settingsPath);
+    const installedAt = originalSettings.plugins.installed['git-commit'].installedAt;
+
+    await fs.writeJson(
+      knownMarketplacePath,
+      {
+        marketplaces: {
+          'agent-workflows': {
+            source: '/tmp/stale-marketplace.json',
+            materializedAt: '2000-01-01T00:00:00.000Z',
+            plugins: [],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await fs.writeJson(cachePath, { name: 'agent-workflows', plugins: [] }, { spaces: 2 });
+
+    await upgradeCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    await expect(fs.readJson(settingsPath)).resolves.toMatchObject({
+      plugins: {
+        installed: {
+          'git-commit': {
+            installedAt,
+          },
+        },
+      },
+    });
+    await expect(fs.readJson(knownMarketplacePath)).resolves.toMatchObject({
+      marketplaces: {
+        'agent-workflows': {
+          source: path.join(repoRoot, '.claude-plugin', 'marketplace.json'),
+          plugins: ['git-commit'],
+        },
+      },
+    });
+    await expect(fs.readJson(cachePath)).resolves.toMatchObject({
+      name: 'agent-workflows',
+      plugins: [
+        {
+          name: 'git-commit',
+        },
+      ],
+    });
+  });
+
+  it('preserves existing Claude permissions and hooks when installing and uninstalling extensions', async () => {
+    const { repoRoot, claudeHome } = await makeWorkspace();
+    process.env.AW_CLAUDE_HOME = claudeHome;
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+
+    await fs.ensureDir(path.join(repoRoot, '.claude'));
+    await fs.writeJson(
+      path.join(repoRoot, '.claude', 'settings.json'),
+      {
+        permissions: {
+          allow: ['npm test'],
+          ask: ['git push'],
+        },
+        hooks: [
+          {
+            event: 'beforeToolUse',
+            matcher: 'npm *',
+            command: 'echo keep-user-hook',
+            description: '保留手写 hook',
+          },
+        ],
+      },
+      { spaces: 2 },
+    );
+
+    await installCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    await expect(fs.readJson(path.join(repoRoot, '.claude', 'settings.json'))).resolves.toMatchObject({
+      permissions: {
+        allow: ['npm test', 'git status', 'git diff'],
+        ask: ['git push', 'git commit'],
+      },
+      hooks: [
+        {
+          event: 'beforeToolUse',
+          matcher: 'npm *',
+          command: 'echo keep-user-hook',
+          description: '保留手写 hook',
+        },
+        {
+          event: 'command',
+          matcher: 'git *',
+          command: 'echo git hook',
+          description: '观察 git 命令',
+        },
+      ],
+    });
+
+    await uninstallCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    await expect(fs.readJson(path.join(repoRoot, '.claude', 'settings.json'))).resolves.toMatchObject({
+      permissions: {
+        allow: ['npm test'],
+        ask: ['git push'],
+      },
+      hooks: [
+        {
+          event: 'beforeToolUse',
+          matcher: 'npm *',
+          command: 'echo keep-user-hook',
+          description: '保留手写 hook',
+        },
+      ],
+    });
+  });
+
   it('writes Codex native registry to user scope and extensions to project scope', async () => {
     const { repoRoot, codexHome } = await makeWorkspace();
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';
 
-    await installCommand(['git-commit'], {
+    const result = await installCommand(['git-commit'], {
       cwd: repoRoot,
       scope: 'project',
       platform: 'codex',
@@ -160,10 +313,16 @@ describe('CLI integration', () => {
     await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain(
       '[marketplaces.agent-workflows]',
     );
+    await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain(
+      path.join(repoRoot, '.agents', 'plugins', 'marketplace.json'),
+    );
     await expect(fs.pathExists(path.join(repoRoot, '.codex', 'AGENTS.md'))).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules')),
     ).resolves.toBe(true);
+    expect(result.warnings).toContain(
+      'Codex 原生 plugin / marketplace 注册仅支持 user scope，已回退到 `~/.codex/config.toml`；`--scope project` 只影响 `.codex/` 自定义扩展。',
+    );
   });
 
   it('preserves unrelated Codex config and merges shared artifacts across multiple plugins', async () => {
@@ -323,6 +482,7 @@ describe('CLI integration', () => {
       'git-commit',
       'repo-check',
     ]);
+    expect(status.output).toContain('detected-platforms');
     expect((status.output.match(/codex \(project\)/g) ?? [])).toHaveLength(1);
     expect(status.output).toContain('native:');
     expect(status.output).toContain('artifacts: none');
@@ -385,8 +545,59 @@ describe('CLI integration', () => {
     await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('version = "1.0.0"');
   });
 
+  it('rejects Codex install when marketplace mirrors drift', async () => {
+    const { repoRoot, codexHome } = await makeWorkspace();
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    const codexMarketplacePath = path.join(repoRoot, '.agents', 'plugins', 'marketplace.json');
+    const codexMarketplace = await fs.readJson(codexMarketplacePath);
+    codexMarketplace.plugins[0].description = 'drifted description';
+    await fs.writeJson(codexMarketplacePath, codexMarketplace, { spaces: 2 });
+
+    await expect(
+      installCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      }),
+    ).rejects.toThrow('marketplace 镜像不一致');
+  });
+
+  it('does not upgrade uninitialized Codex plugins implicitly', async () => {
+    const { repoRoot, codexHome } = await makeWorkspace();
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    await expect(
+      upgradeCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      }),
+    ).rejects.toThrow('尚未初始化');
+
+    await expect(
+      upgradeCommand([], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        all: true,
+      }),
+    ).resolves.toMatchObject({
+      plugins: [],
+      warnings: [
+        'Codex 原生 plugin / marketplace 注册仅支持 user scope，已回退到 `~/.codex/config.toml`；`--scope project` 只影响 `.codex/` 自定义扩展。',
+      ],
+    });
+
+    await expect(fs.pathExists(path.join(codexHome, 'config.toml'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'AGENTS.md'))).resolves.toBe(false);
+  });
+
   it('enforces auto and both platform resolution rules', async () => {
     const { repoRoot, claudeHome, codexHome } = await makeWorkspace();
+    process.env.PATH = '';
     process.env.AW_CLAUDE_HOME = claudeHome;
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
@@ -419,6 +630,7 @@ describe('CLI integration', () => {
     const singlePlatformWorkspace = await makeWorkspace();
     process.env.AW_CLAUDE_HOME = path.join(singlePlatformWorkspace.repoRoot, 'missing-claude-home');
     process.env.AW_CODEX_HOME = singlePlatformWorkspace.codexHome;
+    process.env.PATH = '';
     delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';
 

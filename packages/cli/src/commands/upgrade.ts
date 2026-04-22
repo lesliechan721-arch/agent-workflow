@@ -1,5 +1,10 @@
 import type { CommandOptions } from '../types.js';
-import { createAdapters, loadPluginsForCommand, resolveTargetPlatforms } from './common.js';
+import {
+  collectCommandWarnings,
+  createAdapters,
+  loadPluginsForCommand,
+  resolveTargetPlatforms,
+} from './common.js';
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
@@ -8,7 +13,7 @@ export interface UpgradeCommandOptions extends CommandOptions {
 export async function upgradeCommand(
   pluginNames: string[],
   options: UpgradeCommandOptions,
-): Promise<{ platforms: string[]; plugins: string[] }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
   const plugins = await loadPluginsForCommand(
     options.cwd,
     options.all ? undefined : pluginNames,
@@ -31,14 +36,43 @@ export async function upgradeCommand(
     adapters,
   );
 
+  const warnings = collectCommandWarnings(platforms, options.scope);
+  const upgradedPlugins = new Set<string>();
   for (const platform of platforms) {
+    const initializedPlugins = [];
+
     for (const plugin of plugins) {
+      const status = await adapters[platform].status(plugin, options.scope);
+      if (!status.initialized) {
+        if (options.all) {
+          continue;
+        }
+
+        throw new Error(
+          `${plugin.manifest.name} 在 ${platform} (${options.scope}) 尚未初始化，不能执行 upgrade。`,
+        );
+      }
+
+      initializedPlugins.push(plugin);
+    }
+
+    if (options.all && initializedPlugins.length === 0) {
+      continue;
+    }
+
+    for (const plugin of initializedPlugins) {
       await adapters[platform].upgradePlugin(plugin, options.scope);
+      const status = await adapters[platform].status(plugin, options.scope);
+      for (const warning of status.plugins[0]?.driftWarnings ?? []) {
+        warnings.push(`[${platform}/${plugin.manifest.name}] ${warning}`);
+      }
+      upgradedPlugins.add(plugin.manifest.name);
     }
   }
 
   return {
     platforms,
-    plugins: plugins.map((plugin) => plugin.manifest.name),
+    plugins: [...upgradedPlugins],
+    warnings,
   };
 }

@@ -1,10 +1,15 @@
 import type { CommandOptions } from '../types.js';
-import { createAdapters, loadPluginsForCommand, resolveTargetPlatforms } from './common.js';
+import {
+  collectCommandWarnings,
+  createAdapters,
+  loadPluginsForCommand,
+  resolveTargetPlatforms,
+} from './common.js';
 
 export async function uninstallCommand(
   pluginNames: string[],
   options: CommandOptions,
-): Promise<{ platforms: string[]; plugins: string[] }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
   if (pluginNames.length === 0) {
     throw new Error('uninstall 命令至少需要一个插件名。');
   }
@@ -32,5 +37,6 @@ export async function uninstallCommand(
   return {
     platforms,
     plugins: plugins.map((plugin) => plugin.manifest.name),
+    warnings: collectCommandWarnings(platforms, options.scope),
   };
 }

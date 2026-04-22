@@ -23,10 +23,29 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
+function repoPath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    '..',
+    ...segments,
+  );
+}
+
 async function makeTempRepo(): Promise<string> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-manifest-'));
   tempDirs.push(tempDir);
   await fs.copy(fixturePath('repo-template'), tempDir);
+  return tempDir;
+}
+
+async function makeRepoFromCurrentPlugins(): Promise<string> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-real-manifest-'));
+  tempDirs.push(tempDir);
+  await fs.ensureDir(path.join(tempDir, 'plugins'));
+  await fs.copy(repoPath('plugins'), path.join(tempDir, 'plugins'));
   return tempDir;
 }
 
@@ -83,6 +102,28 @@ describe('manifest utils', () => {
       fs.readJson(path.join(repoRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       name: 'git-commit',
+      skills: './skills',
+    });
+  });
+
+  it('keeps Claude and Codex marketplace manifests in sync in the real repo', async () => {
+    const claudeMarketplace = await fs.readJson(repoPath('.claude-plugin', 'marketplace.json'));
+    const codexMarketplace = await fs.readJson(repoPath('.agents', 'plugins', 'marketplace.json'));
+
+    expect(codexMarketplace).toEqual(claudeMarketplace);
+  });
+
+  it('can generate platform manifests from plugins committed in the real repo', async () => {
+    const repoRoot = await makeRepoFromCurrentPlugins();
+    const plugins = await discoverPlugins(repoRoot);
+    const written = await syncGeneratedPluginManifests(plugins);
+
+    expect(written['git-commit']).toHaveLength(2);
+    await expect(
+      fs.readJson(path.join(repoRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      name: 'git-commit',
+      version: '0.1.0',
       skills: './skills',
     });
   });

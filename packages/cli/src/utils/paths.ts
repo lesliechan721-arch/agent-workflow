@@ -1,8 +1,11 @@
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_MARKETPLACE_PATH } from '../constants.js';
-import type { Scope } from '../types.js';
+import {
+  CLAUDE_MARKETPLACE_PATH,
+  CODEX_MARKETPLACE_PATH,
+} from '../constants.js';
+import type { PlatformName, Scope } from '../types.js';
 
 export interface ClaudePaths {
   platform: 'claude';
@@ -76,6 +79,21 @@ export function resolveCodexPaths(
   };
 }
 
-export function getMarketplaceManifestPath(repoRoot: string): string {
-  return path.join(repoRoot, DEFAULT_MARKETPLACE_PATH);
+export function getMarketplaceManifestPath(
+  repoRoot: string,
+  platform: PlatformName,
+): string {
+  return path.join(
+    repoRoot,
+    platform === 'codex' ? CODEX_MARKETPLACE_PATH : CLAUDE_MARKETPLACE_PATH,
+  );
+}
+
+export function getMarketplaceManifestPaths(
+  repoRoot: string,
+): Record<PlatformName, string> {
+  return {
+    claude: getMarketplaceManifestPath(repoRoot, 'claude'),
+    codex: getMarketplaceManifestPath(repoRoot, 'codex'),
+  };
 }

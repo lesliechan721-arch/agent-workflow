@@ -4,6 +4,7 @@ import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import type {
   CommandAction,
+  EnvironmentDetection,
   PlatformAdapter,
   PlatformName,
   PlatformSelection,
@@ -108,6 +109,33 @@ export async function loadPluginsForCommand(
   return plugins;
 }
 
+export function formatDetectedPlatforms(detection: EnvironmentDetection): string[] {
+  const lines = [chalk.bold('detected-platforms')];
+
+  for (const platform of ['codex', 'claude'] as const) {
+    const result = detection[platform];
+    const scopes = result.scopes.length > 0 ? result.scopes.join(',') : '-';
+    lines.push(
+      `  - ${platform}: ${result.available ? 'available' : 'unavailable'} scopes=${scopes}${result.reason ? ` reason=${result.reason}` : ''}`,
+    );
+  }
+
+  return lines;
+}
+
+export function collectCommandWarnings(
+  platforms: PlatformName[],
+  scope: Scope,
+): string[] {
+  if (scope === 'project' && platforms.includes('codex')) {
+    return [
+      'Codex 原生 plugin / marketplace 注册仅支持 user scope，已回退到 `~/.codex/config.toml`；`--scope project` 只影响 `.codex/` 自定义扩展。',
+    ];
+  }
+
+  return [];
+}
+
 export function formatStatusReports(reports: StatusReport[]): string {
   const lines: string[] = [];
   for (const report of reports) {
@@ -141,4 +169,13 @@ export function formatStatusReports(reports: StatusReport[]): string {
     lines.push('');
   }
   return lines.join('\n').trimEnd();
+}
+
+export function formatStatusOutput(
+  detection: EnvironmentDetection,
+  reports: StatusReport[],
+): string {
+  return [...formatDetectedPlatforms(detection), '', formatStatusReports(reports)]
+    .join('\n')
+    .trimEnd();
 }

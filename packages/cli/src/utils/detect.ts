@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import type {
@@ -28,10 +30,71 @@ async function detectScopes(
   return scopes;
 }
 
-async function detectFromPaths(
+async function pathExistsAndExecutable(filePath: string): Promise<boolean> {
+  if (!(await fs.pathExists(filePath))) {
+    return false;
+  }
+
+  if (process.platform === 'win32') {
+    return true;
+  }
+
+  try {
+    await fs.access(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findExecutable(
+  commandNames: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  const searchPath = env.PATH;
+  if (!searchPath) {
+    return undefined;
+  }
+
+  const pathEntries = searchPath
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [''];
+
+  for (const directory of pathEntries) {
+    for (const commandName of commandNames) {
+      const candidates = process.platform === 'win32'
+        ? extensions.map((extension) =>
+            commandName.toLowerCase().endsWith(extension.toLowerCase())
+              ? commandName
+              : `${commandName}${extension}`,
+          )
+        : [commandName];
+
+      for (const candidate of candidates) {
+        const executablePath = path.join(directory, candidate);
+        if (await pathExistsAndExecutable(executablePath)) {
+          return executablePath;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+async function detectInstalledPlatform(
   envFlag: string | undefined,
+  commandNames: string[],
   pathsByScope: Record<Scope, string[]>,
   missingReason: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<PlatformDetection> {
   const scopes = await detectScopes(pathsByScope);
 
@@ -43,7 +106,7 @@ async function detectFromPaths(
     };
   }
 
-  if (scopes.length > 0) {
+  if (await findExecutable(commandNames, env)) {
     return {
       available: true,
       scopes,
@@ -53,7 +116,7 @@ async function detectFromPaths(
 
   return {
     available: false,
-    scopes: [],
+    scopes,
     reason: missingReason,
   };
 }
@@ -68,16 +131,19 @@ export async function detectEnvironment(
   const codexUserPaths = resolveCodexPaths(cwd, 'user', env);
 
   const [claude, codex] = await Promise.all([
-    detectFromPaths(
+    detectInstalledPlatform(
       env.AW_FORCE_CLAUDE_AVAILABLE,
+      ['claude'],
       {
         project: [claudeProjectPaths.configDir, claudeProjectPaths.settingsPath],
         user: [claudeUserPaths.configDir, claudeUserPaths.settingsPath],
       },
-      'Claude config directory was not found.',
+      'Claude executable was not found in PATH.',
+      env,
     ),
-    detectFromPaths(
+    detectInstalledPlatform(
       env.AW_FORCE_CODEX_AVAILABLE,
+      ['codex'],
       {
         project: [
           codexProjectPaths.configDir,
@@ -91,7 +157,8 @@ export async function detectEnvironment(
           codexUserPaths.registryConfigPath,
         ],
       },
-      'Codex config directory was not found.',
+      'Codex executable was not found in PATH.',
+      env,
     ),
   ]);
 

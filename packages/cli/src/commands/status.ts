@@ -1,5 +1,6 @@
 import type { CommandOptions, StatusReport } from '../types.js';
-import { createAdapters, formatStatusReports, loadPluginsForCommand, resolveTargetPlatforms } from './common.js';
+import { detectEnvironment } from '../utils/detect.js';
+import { createAdapters, formatStatusOutput, loadPluginsForCommand, resolveTargetPlatforms } from './common.js';
 
 export async function statusCommand(
   pluginNames: string[],
@@ -41,8 +42,9 @@ export async function statusCommand(
     });
   }
 
+  const detection = await detectEnvironment(options.cwd);
   return {
     reports,
-    output: formatStatusReports(reports),
+    output: formatStatusOutput(detection, reports),
   };
 }

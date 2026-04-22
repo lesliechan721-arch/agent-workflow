@@ -6,6 +6,7 @@
     "build": "pnpm --filter @yiliang/aw build",
     "test": "pnpm --filter @yiliang/aw test",
     "test:unit": "pnpm --filter @yiliang/aw test:unit",
-    "test:integration": "pnpm --filter @yiliang/aw test:integration"
+    "test:integration": "pnpm --filter @yiliang/aw test:integration",
+    "test:coverage": "pnpm --filter @yiliang/aw test:coverage"
   }
 }

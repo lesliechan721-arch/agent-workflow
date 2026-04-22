@@ -16,15 +16,18 @@ import type {
   StatusReport,
 } from '../types.js';
 import { detectEnvironment } from '../utils/detect.js';
-import { readJsonFile, writeJsonFile } from '../utils/json.js';
+import { writeJsonFile } from '../utils/json.js';
+import { readMarketplaceManifest } from '../utils/marketplace.js';
 import { resolvePlugins } from '../utils/manifest.js';
-import { getMarketplaceManifestPath, resolveCodexPaths, type CodexPaths } from '../utils/paths.js';
+import { resolveCodexPaths, type CodexPaths } from '../utils/paths.js';
 import {
   readTrackingManifest,
   removeTrackingRecord,
   upsertTrackingRecord,
 } from '../utils/tracking.js';
 import { readCodexRegistry, writeCodexRegistry } from './helpers.js';
+
+const MARKETPLACE_NAME = 'agent-workflows';
 
 async function writeTextArtifact(
   baseDir: string,
@@ -98,6 +101,23 @@ async function syncSharedCodexArtifacts(
   };
 }
 
+async function removeTrackedFileArtifacts(
+  trackingDir: string,
+  pluginName: string,
+): Promise<void> {
+  const trackingManifest = await readTrackingManifest(trackingDir);
+  const trackingRecord = trackingManifest.plugins[pluginName];
+  if (!trackingRecord) {
+    return;
+  }
+
+  for (const artifact of trackingRecord.artifacts) {
+    if (artifact.kind === 'permission' || artifact.kind === 'agent') {
+      await fs.remove(artifact.path);
+    }
+  }
+}
+
 export class CodexAdapter implements PlatformAdapter {
   readonly name = 'codex' as const;
 
@@ -111,13 +131,14 @@ export class CodexAdapter implements PlatformAdapter {
   async installPlugin(plugin: PluginMeta, _scope: Scope): Promise<void> {
     const paths = resolveCodexPaths(this.cwd, 'user');
     const registryFile = await readCodexRegistry(paths.registryConfigPath);
-    registryFile.registry.marketplaces['agent-workflows'] = {
-      ...(registryFile.registry.marketplaces['agent-workflows'] ?? {}),
-      source: getMarketplaceManifestPath(this.cwd),
+    const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
+    registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
+      ...(registryFile.registry.marketplaces[MARKETPLACE_NAME] ?? {}),
+      source: marketplacePath,
     };
     registryFile.registry.plugins[plugin.manifest.name] = {
       ...(registryFile.registry.plugins[plugin.manifest.name] ?? {}),
-      marketplace: 'agent-workflows',
+      marketplace: MARKETPLACE_NAME,
       version: plugin.manifest.version,
     };
     await writeCodexRegistry(paths.registryConfigPath, registryFile);
@@ -128,10 +149,10 @@ export class CodexAdapter implements PlatformAdapter {
     const registryFile = await readCodexRegistry(paths.registryConfigPath);
     delete registryFile.registry.plugins[plugin.manifest.name];
     const hasMarketplaceReferences = Object.values(registryFile.registry.plugins).some(
-      (entry) => entry.marketplace === 'agent-workflows',
+      (entry) => entry.marketplace === MARKETPLACE_NAME,
     );
     if (!hasMarketplaceReferences) {
-      delete registryFile.registry.marketplaces['agent-workflows'];
+      delete registryFile.registry.marketplaces[MARKETPLACE_NAME];
     }
     await writeCodexRegistry(paths.registryConfigPath, registryFile);
   }
@@ -140,6 +161,7 @@ export class CodexAdapter implements PlatformAdapter {
     const paths = resolveCodexPaths(this.cwd, scope);
     const extensions = plugin.manifest.extensions ?? {};
     const artifacts: GeneratedArtifact[] = [];
+    await removeTrackedFileArtifacts(paths.trackingDir, plugin.manifest.name);
 
     const trackedPlugins = await resolveTrackedPlugins(this.cwd, paths.trackingDir, [
       plugin.manifest.name,
@@ -204,7 +226,29 @@ export class CodexAdapter implements PlatformAdapter {
   }
 
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    await this.installPlugin(plugin, scope);
+    const paths = resolveCodexPaths(this.cwd, 'user');
+    const registryFile = await readCodexRegistry(paths.registryConfigPath);
+    const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
+
+    registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
+      ...(registryFile.registry.marketplaces[MARKETPLACE_NAME] ?? {}),
+      source: marketplacePath,
+    };
+
+    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
+    if (
+      !installedPlugin ||
+      installedPlugin.marketplace !== MARKETPLACE_NAME ||
+      installedPlugin.version !== plugin.manifest.version
+    ) {
+      registryFile.registry.plugins[plugin.manifest.name] = {
+        ...(installedPlugin ?? {}),
+        marketplace: MARKETPLACE_NAME,
+        version: plugin.manifest.version,
+      };
+    }
+
+    await writeCodexRegistry(paths.registryConfigPath, registryFile);
     await this.installExtensions(plugin, scope);
   }
 
@@ -226,13 +270,13 @@ export class CodexAdapter implements PlatformAdapter {
       }
     }
 
-    const marketplace = await readJsonFile<{
-      name: string;
-      plugins: Array<{ name: string }>;
-    }>(getMarketplaceManifestPath(this.cwd));
-    const marketplaceRecord = registry.marketplaces['agent-workflows'];
+    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
+      this.cwd,
+      'codex',
+    );
+    const marketplaceRecord = registry.marketplaces[MARKETPLACE_NAME];
     const installedRecord = registry.plugins[plugin.manifest.name];
-    const marketplaceSourceMatches = marketplaceRecord?.source === getMarketplaceManifestPath(this.cwd);
+    const marketplaceSourceMatches = marketplaceRecord?.source === marketplacePath;
 
     const driftWarnings: string[] = [];
     if (generatedArtifacts.some((artifact) => !artifact.exists)) {
@@ -247,7 +291,7 @@ export class CodexAdapter implements PlatformAdapter {
     if (marketplaceRegistered && !marketplaceSourceMatches) {
       driftWarnings.push('marketplace 已注册，但 source 与当前仓库不一致。');
     }
-    if (installedRecord && installedRecord.marketplace !== 'agent-workflows') {
+    if (installedRecord && installedRecord.marketplace !== MARKETPLACE_NAME) {
       driftWarnings.push('插件已安装，但 marketplace 字段不属于 agent-workflows。');
     }
     if (installedRecord?.version && installedRecord.version !== plugin.manifest.version) {
