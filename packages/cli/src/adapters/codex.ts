@@ -29,6 +29,19 @@ import { readCodexRegistry, writeCodexRegistry } from './helpers.js';
 
 const MARKETPLACE_NAME = 'agent-workflows';
 
+function assertCodexPluginOwnership(
+  pluginName: string,
+  installedRecord: Record<string, string> | undefined,
+): void {
+  if (!installedRecord || installedRecord.marketplace === MARKETPLACE_NAME) {
+    return;
+  }
+
+  throw new Error(
+    `${pluginName} 已由 marketplace ${JSON.stringify(installedRecord.marketplace ?? 'unknown')} 安装，agent-workflows 不会覆盖或删除外部同名插件。`,
+  );
+}
+
 async function writeTextArtifact(
   baseDir: string,
   relativePath: string,
@@ -131,13 +144,15 @@ export class CodexAdapter implements PlatformAdapter {
   async installPlugin(plugin: PluginMeta, _scope: Scope): Promise<void> {
     const paths = resolveCodexPaths(this.cwd, 'user');
     const registryFile = await readCodexRegistry(paths.registryConfigPath);
+    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
+    assertCodexPluginOwnership(plugin.manifest.name, installedPlugin);
     const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
     registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
       ...(registryFile.registry.marketplaces[MARKETPLACE_NAME] ?? {}),
       source: marketplacePath,
     };
     registryFile.registry.plugins[plugin.manifest.name] = {
-      ...(registryFile.registry.plugins[plugin.manifest.name] ?? {}),
+      ...(installedPlugin ?? {}),
       marketplace: MARKETPLACE_NAME,
       version: plugin.manifest.version,
     };
@@ -147,6 +162,10 @@ export class CodexAdapter implements PlatformAdapter {
   async uninstallPlugin(plugin: PluginMeta, _scope: Scope): Promise<void> {
     const paths = resolveCodexPaths(this.cwd, 'user');
     const registryFile = await readCodexRegistry(paths.registryConfigPath);
+    assertCodexPluginOwnership(
+      plugin.manifest.name,
+      registryFile.registry.plugins[plugin.manifest.name],
+    );
     delete registryFile.registry.plugins[plugin.manifest.name];
     const hasMarketplaceReferences = Object.values(registryFile.registry.plugins).some(
       (entry) => entry.marketplace === MARKETPLACE_NAME,
@@ -228,6 +247,8 @@ export class CodexAdapter implements PlatformAdapter {
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
     const paths = resolveCodexPaths(this.cwd, 'user');
     const registryFile = await readCodexRegistry(paths.registryConfigPath);
+    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
+    assertCodexPluginOwnership(plugin.manifest.name, installedPlugin);
     const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
 
     registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
@@ -235,7 +256,6 @@ export class CodexAdapter implements PlatformAdapter {
       source: marketplacePath,
     };
 
-    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
     if (
       !installedPlugin ||
       installedPlugin.marketplace !== MARKETPLACE_NAME ||

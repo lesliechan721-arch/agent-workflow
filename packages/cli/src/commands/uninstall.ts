@@ -29,8 +29,8 @@ export async function uninstallCommand(
 
   for (const platform of platforms) {
     for (const plugin of plugins) {
-      await adapters[platform].uninstallExtensions(plugin, options.scope);
       await adapters[platform].uninstallPlugin(plugin, options.scope);
+      await adapters[platform].uninstallExtensions(plugin, options.scope);
     }
   }
 

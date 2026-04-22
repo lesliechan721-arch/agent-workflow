@@ -43,6 +43,12 @@ export interface ClaudeSettings {
   awGenerated?: {
     permissions?: Record<string, { allow: string[]; ask: string[]; deny: string[] }>;
     hooks?: Record<string, Array<Record<string, unknown>>>;
+    manualPermissions?: {
+      allow?: string[];
+      ask?: string[];
+      deny?: string[];
+    };
+    manualHooks?: Array<Record<string, unknown>>;
   };
 }
 

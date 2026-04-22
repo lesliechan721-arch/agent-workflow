@@ -299,6 +299,65 @@ describe('CLI integration', () => {
     });
   });
 
+  it('preserves overlapping Claude permissions and hooks without duplicating shared values', async () => {
+    const { repoRoot, claudeHome } = await makeWorkspace();
+    process.env.AW_CLAUDE_HOME = claudeHome;
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+
+    const sharedHook = {
+      event: 'command',
+      matcher: 'git *',
+      command: 'echo git hook',
+      description: '观察 git 命令',
+    };
+    const userHook = {
+      event: 'beforeToolUse',
+      matcher: 'npm *',
+      command: 'echo keep-user-hook',
+      description: '保留手写 hook',
+    };
+
+    await fs.ensureDir(path.join(repoRoot, '.claude'));
+    await fs.writeJson(
+      path.join(repoRoot, '.claude', 'settings.json'),
+      {
+        permissions: {
+          allow: ['git status', 'npm test'],
+          ask: ['git commit', 'git push'],
+        },
+        hooks: [sharedHook, userHook],
+      },
+      { spaces: 2 },
+    );
+
+    await installCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    const installedSettings = await fs.readJson(path.join(repoRoot, '.claude', 'settings.json'));
+    expect(installedSettings.permissions).toMatchObject({
+      allow: ['git status', 'npm test', 'git diff'],
+      ask: ['git commit', 'git push'],
+    });
+    expect(installedSettings.hooks).toEqual([sharedHook, userHook]);
+
+    await uninstallCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+
+    await expect(fs.readJson(path.join(repoRoot, '.claude', 'settings.json'))).resolves.toMatchObject({
+      permissions: {
+        allow: ['git status', 'npm test'],
+        ask: ['git commit', 'git push'],
+      },
+      hooks: [sharedHook, userHook],
+    });
+  });
+
   it('writes Codex native registry to user scope and extensions to project scope', async () => {
     const { repoRoot, codexHome } = await makeWorkspace();
     process.env.AW_CODEX_HOME = codexHome;
@@ -448,6 +507,123 @@ describe('CLI integration', () => {
     expect(finalConfig).not.toContain('[marketplaces.agent-workflows]');
     expect(finalConfig).toContain('[profiles.default]');
     expect(finalConfig).toContain('[plugins.external-tool]');
+  });
+
+  it('protects external same-name plugins from install, upgrade and uninstall', async () => {
+    const { repoRoot, claudeHome, codexHome } = await makeWorkspace();
+    process.env.AW_CLAUDE_HOME = claudeHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    await fs.writeFile(
+      path.join(codexHome, 'config.toml'),
+      [
+        '[plugins.git-commit]',
+        'marketplace = "vendor-market"',
+        'version = "9.9.9"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await fs.ensureDir(path.join(repoRoot, '.claude'));
+    await fs.writeJson(
+      path.join(repoRoot, '.claude', 'settings.json'),
+      {
+        plugins: {
+          installed: {
+            'git-commit': {
+              marketplace: 'vendor-market',
+              version: '9.9.9',
+              installedAt: '2026-01-01T00:00:00.000Z',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const codexStatus = await statusCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+    expect(codexStatus.reports[0].plugins[0].driftWarnings).toContain(
+      '插件已安装，但 marketplace 字段不属于 agent-workflows。',
+    );
+
+    const claudeStatus = await statusCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'claude',
+    });
+    expect(claudeStatus.reports[0].plugins[0].driftWarnings).toContain(
+      '插件已安装，但 marketplace 字段不属于 agent-workflows。',
+    );
+
+    await expect(
+      installCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+    await expect(
+      upgradeCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+    await expect(
+      uninstallCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+
+    await expect(
+      installCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+    await expect(
+      upgradeCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+    await expect(
+      uninstallCommand(['git-commit'], {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      }),
+    ).rejects.toThrow('不会覆盖或删除外部同名插件');
+
+    await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain(
+      'marketplace = "vendor-market"',
+    );
+    await expect(fs.readJson(path.join(repoRoot, '.claude', 'settings.json'))).resolves.toMatchObject({
+      plugins: {
+        installed: {
+          'git-commit': {
+            marketplace: 'vendor-market',
+            version: '9.9.9',
+          },
+        },
+      },
+    });
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'AGENTS.md'))).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(repoRoot, '.claude', 'rules', 'aw-git-commit-commit-policy.md')),
+    ).resolves.toBe(false);
   });
 
   it('keeps status read-only and groups multiple plugin reports by platform', async () => {
