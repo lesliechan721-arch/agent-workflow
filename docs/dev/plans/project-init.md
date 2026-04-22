@@ -90,6 +90,7 @@ agent-workflows/
 - 每个插件以 `plugins/<name>/.agents-plugin/plugin.json` 作为唯一源 manifest
 - `.claude-plugin/plugin.json` 与 `.codex-plugin/plugin.json` 都由源 manifest 生成；至少要有自动化测试校验生成结果不漂移
 - 原因是 Codex 会优先读取 `.codex-plugin/plugin.json`，如果平台产物可手写，Codex 和 Claude 看到的能力面很容易分叉
+- 仓库内面向 agent 的脚手架和辅助脚本优先使用 Node.js，避免把 Python 当成默认前置环境；如果必须引入其他运行时，需要先说明理由
 
 ## 实施步骤
 
@@ -288,6 +289,13 @@ CLI 层负责把用户指定的插件名称集合解析成 `PluginMeta[]`，再�
 - `hooks/hooks.json` 走 Claude 的默认自动发现；`manifest.hooks` 只用来补充额外 hooks 文件或内联 hooks，不能重复声明默认路径
 - 生成链路通过自动化测试校验一致性
 - Codex 会忽略未知顶层字段，不会报错
+
+### 2.1 脚本运行时约束
+
+- 仓库内用于初始化、同步、校验插件骨架的脚本优先使用 Node.js
+- 默认目标是“安装 agent 的环境通常已经有 Node.js”，不要让 Python 成为创建插件的隐性前置条件
+- 如果脚本只是操作 JSON、文本文件、目录和 marketplace manifest，优先写成零依赖 Node.js 脚本
+- 只有在 Node.js 明显不合适时，才考虑引入 Python 或其他运行时，并在文档里写明原因
 
 ### 3. `git-commit` 插件的入口契约
 
