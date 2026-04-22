@@ -146,9 +146,8 @@ skill 被调用后，指导 agent 按以下流程执行：
    - body 每条变更以 `-` 列出，多模块按模块分组
    - 涉及不兼容变更时，footer 必须声明 `BREAKING CHANGE: xxx`
    - 关联 issue/PR 时在 footer 使用 `Closes #N` / `See #N`
-4. 将草拟的 commit message 展示给用户确认
-5. 用户确认后执行 `git add` 和 `git commit`
-6. 提交后运行 `git status` 验证
+4. 按文件路径精确执行 `git add` 和 `git commit`，不要把无关改动一起纳入提交
+5. 提交后运行 `git status` 验证
 
 ### Phase 3：CLI 安装工具
 
