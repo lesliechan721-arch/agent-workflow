@@ -1,0 +1,26 @@
+{
+  "name": "@yiliang/aw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "aw": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^14.0.1",
+    "fs-extra": "^11.3.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

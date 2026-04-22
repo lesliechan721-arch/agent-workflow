@@ -1,0 +1,11 @@
+{
+  "name": "agent-workflows",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "pnpm --filter @yiliang/aw build",
+    "test": "pnpm --filter @yiliang/aw test",
+    "test:unit": "pnpm --filter @yiliang/aw test:unit",
+    "test:integration": "pnpm --filter @yiliang/aw test:integration"
+  }
+}

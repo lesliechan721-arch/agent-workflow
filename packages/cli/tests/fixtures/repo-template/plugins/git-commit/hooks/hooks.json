@@ -1,0 +1,9 @@
+{
+  "hooks": [
+    {
+      "event": "command",
+      "matcher": "git *",
+      "command": "echo git hook"
+    }
+  ]
+}
