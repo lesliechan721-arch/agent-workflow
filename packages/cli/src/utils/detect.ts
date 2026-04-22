@@ -4,29 +4,56 @@ import type {
   EnvironmentDetection,
   PlatformDetection,
   PlatformName,
+  Scope,
 } from '../types.js';
 import {
   resolveClaudePaths,
   resolveCodexPaths,
 } from './paths.js';
 
-async function detectFromPaths(
-  envFlag: string | undefined,
-  candidatePaths: string[],
-  missingReason: string,
-): Promise<PlatformDetection> {
-  if (envFlag === '1') {
-    return { available: true };
+async function detectScopes(
+  pathsByScope: Record<Scope, string[]>,
+): Promise<Scope[]> {
+  const scopes: Scope[] = [];
+
+  for (const scope of ['project', 'user'] as const) {
+    for (const candidatePath of pathsByScope[scope]) {
+      if (await fs.pathExists(candidatePath)) {
+        scopes.push(scope);
+        break;
+      }
+    }
   }
 
-  for (const candidatePath of candidatePaths) {
-    if (await fs.pathExists(candidatePath)) {
-      return { available: true };
-    }
+  return scopes;
+}
+
+async function detectFromPaths(
+  envFlag: string | undefined,
+  pathsByScope: Record<Scope, string[]>,
+  missingReason: string,
+): Promise<PlatformDetection> {
+  const scopes = await detectScopes(pathsByScope);
+
+  if (envFlag === '1') {
+    return {
+      available: true,
+      scopes,
+      preferredScope: scopes[0],
+    };
+  }
+
+  if (scopes.length > 0) {
+    return {
+      available: true,
+      scopes,
+      preferredScope: scopes[0],
+    };
   }
 
   return {
     available: false,
+    scopes: [],
     reason: missingReason,
   };
 }
@@ -43,21 +70,27 @@ export async function detectEnvironment(
   const [claude, codex] = await Promise.all([
     detectFromPaths(
       env.AW_FORCE_CLAUDE_AVAILABLE,
-      [
-        claudeProjectPaths.configDir,
-        claudeUserPaths.configDir,
-        claudeProjectPaths.settingsPath,
-        claudeUserPaths.settingsPath,
-      ],
+      {
+        project: [claudeProjectPaths.configDir, claudeProjectPaths.settingsPath],
+        user: [claudeUserPaths.configDir, claudeUserPaths.settingsPath],
+      },
       'Claude config directory was not found.',
     ),
     detectFromPaths(
       env.AW_FORCE_CODEX_AVAILABLE,
-      [
-        codexProjectPaths.configDir,
-        codexUserPaths.configDir,
-        codexUserPaths.registryConfigPath,
-      ],
+      {
+        project: [
+          codexProjectPaths.configDir,
+          codexProjectPaths.instructionsPath,
+          codexProjectPaths.hooksPath,
+        ],
+        user: [
+          codexUserPaths.configDir,
+          codexUserPaths.instructionsPath,
+          codexUserPaths.hooksPath,
+          codexUserPaths.registryConfigPath,
+        ],
+      },
       'Codex config directory was not found.',
     ),
   ]);

@@ -103,6 +103,8 @@ export interface TrackingManifest {
 
 export interface PlatformDetection {
   available: boolean;
+  scopes: Scope[];
+  preferredScope?: Scope;
   reason?: string;
 }
 

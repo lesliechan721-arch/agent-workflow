@@ -40,6 +40,46 @@ async function makeWorkspace(): Promise<{
   return { repoRoot, claudeHome, codexHome };
 }
 
+async function registerPluginInMarketplaces(
+  repoRoot: string,
+  pluginName: string,
+  description: string,
+): Promise<void> {
+  const marketplacePaths = [
+    path.join(repoRoot, '.claude-plugin', 'marketplace.json'),
+    path.join(repoRoot, '.agents', 'plugins', 'marketplace.json'),
+  ];
+
+  for (const marketplacePath of marketplacePaths) {
+    const marketplace = await fs.readJson(marketplacePath);
+    marketplace.plugins.push({
+      name: pluginName,
+      source: `./plugins/${pluginName}`,
+      description,
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+        products: ['CODEX'],
+      },
+    });
+    await fs.writeJson(marketplacePath, marketplace, { spaces: 2 });
+  }
+}
+
+async function addPlugin(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', String(manifest.name));
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.ensureDir(path.join(pluginRoot, 'skills'));
+  await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, {
+    spaces: 2,
+  });
+}
+
 afterEach(async () => {
   delete process.env.AW_CLAUDE_HOME;
   delete process.env.AW_CODEX_HOME;
@@ -124,6 +164,225 @@ describe('CLI integration', () => {
     await expect(
       fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules')),
     ).resolves.toBe(true);
+  });
+
+  it('preserves unrelated Codex config and merges shared artifacts across multiple plugins', async () => {
+    const { repoRoot, codexHome } = await makeWorkspace();
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    await fs.writeFile(
+      path.join(codexHome, 'config.toml'),
+      [
+        '# existing config',
+        'model = "gpt-5"',
+        '',
+        '[profiles.default]',
+        'enabled = true',
+        '',
+        '[plugins.external-tool]',
+        'marketplace = "vendor-market"',
+        'version = "9.9.9"',
+        'enabled = true',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await addPlugin(repoRoot, {
+      name: 'repo-check',
+      version: '0.2.0',
+      description: '检查仓库状态。',
+      extensions: {
+        instructions: [
+          {
+            name: 'repo-check-policy',
+            title: '仓库检查',
+            content: '执行检查前先确认当前分支。',
+          },
+        ],
+        hooks: [
+          {
+            event: 'command',
+            matcher: 'pnpm *',
+            command: 'echo repo hook',
+            description: '观察 pnpm 命令',
+          },
+        ],
+      },
+    });
+    await registerPluginInMarketplaces(repoRoot, 'repo-check', '检查仓库状态。');
+
+    await installCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+    await installCommand(['repo-check'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    await expect(fs.readFile(path.join(repoRoot, '.codex', 'AGENTS.md'), 'utf8')).resolves.toContain(
+      'git-commit',
+    );
+    await expect(fs.readFile(path.join(repoRoot, '.codex', 'AGENTS.md'), 'utf8')).resolves.toContain(
+      'repo-check',
+    );
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toMatchObject({
+      commands: [
+        {
+          matcher: 'git *',
+          command: 'echo git hook',
+          description: '观察 git 命令',
+        },
+        {
+          matcher: 'pnpm *',
+          command: 'echo repo hook',
+          description: '观察 pnpm 命令',
+        },
+      ],
+    });
+
+    const installedConfig = await fs.readFile(path.join(codexHome, 'config.toml'), 'utf8');
+    expect(installedConfig).toContain('# existing config');
+    expect(installedConfig).toContain('[profiles.default]');
+    expect(installedConfig).toContain('[plugins.external-tool]');
+    expect(installedConfig).toContain('[marketplaces.agent-workflows]');
+
+    await uninstallCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    await expect(fs.readFile(path.join(repoRoot, '.codex', 'AGENTS.md'), 'utf8')).resolves.not.toContain(
+      'git-commit',
+    );
+    await expect(fs.readFile(path.join(repoRoot, '.codex', 'AGENTS.md'), 'utf8')).resolves.toContain(
+      'repo-check',
+    );
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toMatchObject({
+      commands: [
+        {
+          matcher: 'pnpm *',
+          command: 'echo repo hook',
+          description: '观察 pnpm 命令',
+        },
+      ],
+    });
+    await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain(
+      '[marketplaces.agent-workflows]',
+    );
+
+    await uninstallCommand(['repo-check'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'AGENTS.md'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(false);
+
+    const finalConfig = await fs.readFile(path.join(codexHome, 'config.toml'), 'utf8');
+    expect(finalConfig).not.toContain('[marketplaces.agent-workflows]');
+    expect(finalConfig).toContain('[profiles.default]');
+    expect(finalConfig).toContain('[plugins.external-tool]');
+  });
+
+  it('keeps status read-only and groups multiple plugin reports by platform', async () => {
+    const { repoRoot, codexHome } = await makeWorkspace();
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    await addPlugin(repoRoot, {
+      name: 'repo-check',
+      version: '0.2.0',
+      description: '检查仓库状态。',
+      extensions: {
+        instructions: [
+          {
+            name: 'repo-check-policy',
+            title: '仓库检查',
+            content: '执行检查前先确认当前分支。',
+          },
+        ],
+      },
+    });
+    await registerPluginInMarketplaces(repoRoot, 'repo-check', '检查仓库状态。');
+
+    const status = await statusCommand(['git-commit', 'repo-check'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    expect(status.reports).toHaveLength(1);
+    expect(status.reports[0].plugins.map((plugin) => plugin.pluginName)).toEqual([
+      'git-commit',
+      'repo-check',
+    ]);
+    expect((status.output.match(/codex \(project\)/g) ?? [])).toHaveLength(1);
+    expect(status.output).toContain('native:');
+    expect(status.output).toContain('artifacts: none');
+
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'repo-check', '.claude-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'repo-check', '.codex-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+  });
+
+  it('reports native version drift and refreshes Codex registry data on upgrade', async () => {
+    const { repoRoot, codexHome } = await makeWorkspace();
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+
+    await installCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    const configPath = path.join(codexHome, 'config.toml');
+    const staleConfig = (await fs.readFile(configPath, 'utf8')).replace(
+      'version = "1.0.0"',
+      'version = "0.9.0"',
+    );
+    await fs.writeFile(configPath, staleConfig, 'utf8');
+
+    const beforeUpgrade = await statusCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+    expect(beforeUpgrade.reports[0].plugins[0].driftWarnings).toContain(
+      '原生安装版本与当前插件 manifest version 不一致。',
+    );
+
+    await upgradeCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+
+    const afterUpgrade = await statusCommand(['git-commit'], {
+      cwd: repoRoot,
+      scope: 'project',
+      platform: 'codex',
+    });
+    expect(afterUpgrade.reports[0].plugins[0].driftWarnings).not.toContain(
+      '原生安装版本与当前插件 manifest version 不一致。',
+    );
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('version = "1.0.0"');
   });
 
   it('enforces auto and both platform resolution rules', async () => {

@@ -94,12 +94,17 @@ export async function resolveTargetPlatforms(
 export async function loadPluginsForCommand(
   cwd: string,
   pluginNames?: string[],
+  options: {
+    syncGeneratedManifests?: boolean;
+  } = {},
 ): Promise<PluginMeta[]> {
   const plugins = await resolvePlugins(cwd, pluginNames);
   if (plugins.length === 0) {
     throw new Error('没有发现可用插件。');
   }
-  await syncGeneratedPluginManifests(plugins);
+  if (options.syncGeneratedManifests !== false) {
+    await syncGeneratedPluginManifests(plugins);
+  }
   return plugins;
 }
 
@@ -107,15 +112,33 @@ export function formatStatusReports(reports: StatusReport[]): string {
   const lines: string[] = [];
   for (const report of reports) {
     lines.push(chalk.bold(`${report.platform} (${report.scope})`));
+    lines.push(`  initialized: ${report.initialized ? 'yes' : 'no'}`);
     for (const plugin of report.plugins) {
+      lines.push(`  - ${plugin.pluginName}`);
       lines.push(
-        `  - ${plugin.pluginName}: native=${plugin.native.pluginInstalled ? 'installed' : 'missing'}, artifacts=${plugin.generatedArtifacts.length}`,
+        `    native: marketplace=${plugin.native.marketplaceRegistered ? 'registered' : 'missing'}, available=${plugin.native.pluginAvailable ? 'yes' : 'no'}, installed=${plugin.native.pluginInstalled ? 'yes' : 'no'}, version=${plugin.native.version ?? '-'}`,
       );
+      if (plugin.native.details) {
+        lines.push(`    native-details: ${plugin.native.details}`);
+      }
+      if (plugin.generatedArtifacts.length === 0) {
+        lines.push('    artifacts: none');
+      } else {
+        lines.push('    artifacts:');
+        for (const artifact of plugin.generatedArtifacts) {
+          lines.push(
+            `      - ${artifact.kind} ${artifact.exists ? 'present' : 'missing'} ${artifact.path}`,
+          );
+        }
+      }
+      if (plugin.driftWarnings.length === 0) {
+        lines.push('    drift: none');
+      }
       for (const warning of plugin.driftWarnings) {
-        lines.push(`    warning: ${warning}`);
+        lines.push(`    drift: ${warning}`);
       }
     }
+    lines.push('');
   }
-  return lines.join('\n');
+  return lines.join('\n').trimEnd();
 }
-

@@ -6,6 +6,11 @@ export interface GeneratedTextArtifact {
   content: string;
 }
 
+export interface CodexInstructionBundle {
+  pluginName: string;
+  instructions: InstructionDefinition[];
+}
+
 function renderClaudePathsFrontmatter(paths: string[] | undefined): string {
   if (!paths?.length) {
     return '';
@@ -15,21 +20,41 @@ function renderClaudePathsFrontmatter(paths: string[] | undefined): string {
   return `---\npaths:\n${renderedPaths}\n---\n\n`;
 }
 
-export function renderCodexInstructions(
+function renderCodexInstructionSection(
   pluginName: string,
   instructions: InstructionDefinition[],
-): string {
+): string[] {
   const lines: string[] = [
-    `# ${pluginName}`,
+    `## ${pluginName}`,
+  ];
+
+  for (const instruction of instructions) {
+    lines.push('', `### ${instruction.title}`, '', instruction.content.trim());
+    if (instruction.paths?.length) {
+      lines.push('', `适用路径：${instruction.paths.join(', ')}`);
+    }
+  }
+
+  return lines;
+}
+
+export function renderCodexInstructions(bundles: CodexInstructionBundle[]): string | null {
+  const populatedBundles = bundles
+    .filter((bundle) => bundle.instructions.length > 0)
+    .sort((left, right) => left.pluginName.localeCompare(right.pluginName));
+
+  if (populatedBundles.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = [
+    '# Agent Workflows',
     '',
     '以下内容由 `@yiliang/aw` 从中立指令模型生成。',
   ];
 
-  for (const instruction of instructions) {
-    lines.push('', `## ${instruction.title}`, '', instruction.content.trim());
-    if (instruction.paths?.length) {
-      lines.push('', `适用路径：${instruction.paths.join(', ')}`);
-    }
+  for (const bundle of populatedBundles) {
+    lines.push('', ...renderCodexInstructionSection(bundle.pluginName, bundle.instructions));
   }
 
   return `${lines.join('\n')}\n`;
@@ -45,10 +70,15 @@ export function generateInstructionArtifacts(
   }
 
   if (platform === 'codex') {
+    const content = renderCodexInstructions([{ pluginName, instructions }]);
+    if (!content) {
+      return [];
+    }
+
     return [
       {
         relativePath: 'AGENTS.md',
-        content: renderCodexInstructions(pluginName, instructions),
+        content,
       },
     ];
   }

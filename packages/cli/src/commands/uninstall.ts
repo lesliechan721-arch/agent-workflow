@@ -9,7 +9,9 @@ export async function uninstallCommand(
     throw new Error('uninstall 命令至少需要一个插件名。');
   }
 
-  const plugins = await loadPluginsForCommand(options.cwd, pluginNames);
+  const plugins = await loadPluginsForCommand(options.cwd, pluginNames, {
+    syncGeneratedManifests: false,
+  });
   const adapters = createAdapters(options.cwd);
   const platforms = await resolveTargetPlatforms(
     'uninstall',
@@ -32,4 +34,3 @@ export async function uninstallCommand(
     plugins: plugins.map((plugin) => plugin.manifest.name),
   };
 }
-

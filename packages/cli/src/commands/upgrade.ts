@@ -12,6 +12,9 @@ export async function upgradeCommand(
   const plugins = await loadPluginsForCommand(
     options.cwd,
     options.all ? undefined : pluginNames,
+    {
+      syncGeneratedManifests: true,
+    },
   );
 
   if (!options.all && pluginNames.length === 0) {
@@ -39,4 +42,3 @@ export async function upgradeCommand(
     plugins: plugins.map((plugin) => plugin.manifest.name),
   };
 }
-

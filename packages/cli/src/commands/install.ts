@@ -9,7 +9,9 @@ export async function installCommand(
     throw new Error('install 命令至少需要一个插件名。');
   }
 
-  const plugins = await loadPluginsForCommand(options.cwd, pluginNames);
+  const plugins = await loadPluginsForCommand(options.cwd, pluginNames, {
+    syncGeneratedManifests: true,
+  });
   const adapters = createAdapters(options.cwd);
   const platforms = await resolveTargetPlatforms(
     'install',
@@ -32,4 +34,3 @@ export async function installCommand(
     plugins: plugins.map((plugin) => plugin.manifest.name),
   };
 }
-

@@ -5,6 +5,11 @@ export interface RenderedHooksArtifact {
   content: Record<string, unknown>;
 }
 
+export interface CodexHookBundle {
+  pluginName: string;
+  hooks: HookDefinition[];
+}
+
 function renderClaudeEventName(event: HookDefinition['event']): string {
   switch (event) {
     case 'before_tool':
@@ -31,22 +36,7 @@ export function renderHooksArtifact(
   }
 
   if (platform === 'codex') {
-    const commands = hooks
-      .filter((hook) => hook.event === 'command')
-      .map((hook) => ({
-        matcher: hook.matcher ?? '*',
-        command: hook.command,
-        description: hook.description,
-      }));
-
-    if (commands.length === 0) {
-      return null;
-    }
-
-    return {
-      relativePath: 'hooks.json',
-      content: { commands },
-    };
+    return renderCodexHooks([{ pluginName: 'aw', hooks }]);
   }
 
   return {
@@ -59,5 +49,30 @@ export function renderHooksArtifact(
         description: hook.description,
       })),
     },
+  };
+}
+
+export function renderCodexHooks(
+  bundles: CodexHookBundle[],
+): RenderedHooksArtifact | null {
+  const commands = bundles
+    .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
+    .flatMap((bundle) =>
+      bundle.hooks
+        .filter((hook) => hook.event === 'command')
+        .map((hook) => ({
+          matcher: hook.matcher ?? '*',
+          command: hook.command,
+          description: hook.description,
+        })),
+    );
+
+  if (commands.length === 0) {
+    return null;
+  }
+
+  return {
+    relativePath: 'hooks.json',
+    content: { commands },
   };
 }

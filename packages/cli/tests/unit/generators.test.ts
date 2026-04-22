@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { generateAgentArtifacts } from '../../src/generators/agents.js';
-import { renderHooksArtifact } from '../../src/generators/hooks.js';
-import { generateInstructionArtifacts } from '../../src/generators/instructions.js';
+import { renderCodexHooks, renderHooksArtifact } from '../../src/generators/hooks.js';
+import { generateInstructionArtifacts, renderCodexInstructions } from '../../src/generators/instructions.js';
 import {
   generateCodexPermissionArtifacts,
   mergeClaudePermissions,
@@ -68,6 +68,63 @@ describe('generators', () => {
     ).toBe('beforeToolUse');
   });
 
+  it('merges shared Codex instructions and hooks across plugins', () => {
+    expect(
+      renderCodexInstructions([
+        {
+          pluginName: 'git-commit',
+          instructions: [
+            {
+              name: 'commit-policy',
+              title: '提交规范',
+              content: '提交前先看 diff。',
+            },
+          ],
+        },
+        {
+          pluginName: 'repo-check',
+          instructions: [
+            {
+              name: 'repo-check-policy',
+              title: '仓库检查',
+              content: '执行检查前先确认分支。',
+            },
+          ],
+        },
+      ]),
+    ).toContain('repo-check');
+
+    expect(
+      renderCodexHooks([
+        {
+          pluginName: 'git-commit',
+          hooks: [
+            {
+              event: 'command',
+              matcher: 'git *',
+              command: 'echo git hook',
+            },
+          ],
+        },
+        {
+          pluginName: 'repo-check',
+          hooks: [
+            {
+              event: 'command',
+              matcher: 'pnpm *',
+              command: 'echo repo hook',
+            },
+          ],
+        },
+      ])?.content,
+    ).toEqual({
+      commands: [
+        { matcher: 'git *', command: 'echo git hook', description: undefined },
+        { matcher: 'pnpm *', command: 'echo repo hook', description: undefined },
+      ],
+    });
+  });
+
   it('renders agent definitions for both platforms', () => {
     const agents = [
       {
@@ -86,4 +143,3 @@ describe('generators', () => {
     );
   });
 });
-

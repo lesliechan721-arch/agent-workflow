@@ -5,7 +5,13 @@ export async function statusCommand(
   pluginNames: string[],
   options: CommandOptions,
 ): Promise<{ reports: StatusReport[]; output: string }> {
-  const plugins = await loadPluginsForCommand(options.cwd, pluginNames.length > 0 ? pluginNames : undefined);
+  const plugins = await loadPluginsForCommand(
+    options.cwd,
+    pluginNames.length > 0 ? pluginNames : undefined,
+    {
+      syncGeneratedManifests: false,
+    },
+  );
   const adapters = createAdapters(options.cwd);
   const platforms = await resolveTargetPlatforms(
     'status',
@@ -18,9 +24,21 @@ export async function statusCommand(
 
   const reports: StatusReport[] = [];
   for (const platform of platforms) {
+    const pluginReports = [];
+    let initialized = false;
+
     for (const plugin of plugins) {
-      reports.push(await adapters[platform].status(plugin, options.scope));
+      const status = await adapters[platform].status(plugin, options.scope);
+      pluginReports.push(...status.plugins);
+      initialized ||= status.initialized;
     }
+
+    reports.push({
+      platform,
+      scope: options.scope,
+      initialized,
+      plugins: pluginReports,
+    });
   }
 
   return {
@@ -28,4 +46,3 @@ export async function statusCommand(
     output: formatStatusReports(reports),
   };
 }
-

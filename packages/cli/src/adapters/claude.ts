@@ -128,10 +128,10 @@ export class ClaudeAdapter implements PlatformAdapter {
       delete settings.plugins.installed[plugin.manifest.name];
     }
 
-    const hasInstalledPlugins = Boolean(
-      settings.plugins?.installed && Object.keys(settings.plugins.installed).length > 0,
+    const hasMarketplaceReferences = Object.values(settings.plugins?.installed ?? {}).some(
+      (entry) => entry.marketplace === marketplace.name,
     );
-    if (!hasInstalledPlugins) {
+    if (!hasMarketplaceReferences) {
       if (settings.extraKnownMarketplaces) {
         delete settings.extraKnownMarketplaces[marketplace.name];
       }
@@ -256,6 +256,7 @@ export class ClaudeAdapter implements PlatformAdapter {
     const marketplace = await readJsonFile<{ name: string }>(marketplacePath);
     const installedRecord = settings.plugins?.installed?.[plugin.manifest.name];
     const materializedMarketplace = marketplaceState.marketplaces[marketplace.name];
+    const registeredSource = settings.extraKnownMarketplaces?.[marketplace.name];
 
     const driftWarnings: string[] = [];
     if (generatedArtifacts.some((artifact) => !artifact.exists)) {
@@ -264,16 +265,24 @@ export class ClaudeAdapter implements PlatformAdapter {
     if (installedRecord && !settings.extraKnownMarketplaces?.[marketplace.name]) {
       driftWarnings.push('插件已记录为安装状态，但 extraKnownMarketplaces 缺失。');
     }
+    if (registeredSource && registeredSource !== marketplacePath) {
+      driftWarnings.push('marketplace 已注册，但 source 与当前仓库不一致。');
+    }
+    if (installedRecord?.version && installedRecord.version !== plugin.manifest.version) {
+      driftWarnings.push('原生安装版本与当前插件 manifest version 不一致。');
+    }
 
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
       native: {
-        marketplaceRegistered: Boolean(settings.extraKnownMarketplaces?.[marketplace.name]),
+        marketplaceRegistered: Boolean(registeredSource),
         pluginAvailable: Boolean(
-          materializedMarketplace?.plugins.includes(plugin.manifest.name),
+          materializedMarketplace?.source === marketplacePath &&
+            materializedMarketplace.plugins.includes(plugin.manifest.name),
         ),
         pluginInstalled: Boolean(installedRecord),
         version: installedRecord?.version,
+        details: registeredSource ? `source=${registeredSource}` : undefined,
       },
       generatedArtifacts,
       driftWarnings,
@@ -290,4 +299,3 @@ export class ClaudeAdapter implements PlatformAdapter {
     };
   }
 }
-
