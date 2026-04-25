@@ -1,4 +1,4 @@
-# `create-agent-workflows-plugin` Skill 实现评审报告
+# `create-agent-workflows-plugin` Skill 实现复审报告
 
 审查对象：`.agents/skills/create-agent-workflows-plugin/`  
 审查时间：2026-04-26
@@ -10,247 +10,225 @@
 - `scripts/init_plugin.js`
 - `scripts/validate_plugin.js`
 - `references/*.md`
-- 对照实现：`packages/cli/src/utils/manifest.ts`、`packages/cli/src/generators/local-plugin.ts`、`packages/cli/src/adapters/codex.ts`、`packages/cli/src/generators/agents.ts`
+- 对照实现：`packages/cli/src/utils/manifest.ts`、`packages/cli/src/generators/local-plugin.ts`、`packages/cli/src/adapters/codex.ts`、`packages/cli/src/generators/{instructions,permissions}.ts`
 - 对照测试：`packages/cli/tests/integration/authoring-tools.test.ts`
+- 权威对照源码（本地 checkout）：
+  - Codex：`/Users/LeslieChan/Desktop/codex/codex-rs`
+  - Claude Code：`/Users/LeslieChan/Desktop/claude-code-source-code/src`
 
 本轮实际验证：
 
 - 静态对照 skill 文档、脚手架脚本、校验脚本与 `packages/cli` 当前实现
 - 执行 `pnpm --filter @yiliang/aw test -- tests/integration/authoring-tools.test.ts`
   实际跑了全量 `26` 个测试文件、`107` 个用例，全部通过
-- 执行 `node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js .agents/skills/create-agent-workflows-plugin/references/example-plugin`
-  结果失败，报错 `manifest name "code-review" does not match directory name "example-plugin"`
-- 将 `references/example-plugin/` 临时重命名为 `code-review/` 后再次执行同一校验脚本
+- 执行 `node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js .agents/skills/create-agent-workflows-plugin/references/code-review`
   结果通过
-- 基于 `plugins/git-commit/` 构造越界路径样例，把 manifest 中的 `skills` 改成 `./../shared-skills`
-  `validate_plugin.js` 仍返回 `[PASS] All checks passed.`
+- 复制 `references/code-review/` 到临时目录，把 manifest 中的 `skills` 改成 `./../shared-skills`，并保证越界目标真实存在
+  `validate_plugin.js` 返回 `Invalid skills: path must stay inside the plugin root.`
+- 用 `init_plugin.js` 在临时仓库生成 `repo-check` 插件骨架
+  生成的 `SKILL.md` 只有 `name` / `description` 两个 frontmatter 字段；生成的 `agents/openai.yaml` 固定写入 `allow_implicit_invocation: false`
+- 对照平台源码确认默认行为：
+  - Codex：`allow_implicit_invocation` 缺省时默认允许隐式调用
+  - Claude Code：`user-invocable` 缺省为 `true`，`disable-model-invocation` 缺省为 `false`
+  - Codex 当前 loader 对 `interface.short_description` 的实际约束是“非空且不超过 1024 字符”，不是 `25-64`
 
 ## 总体结论
 
-这个 skill 的整体方向是对的：
+上轮报告里的核心问题，这次基本都修到了位：
 
-- 源码 manifest、build bundle、本地 marketplace 的边界基本讲清楚了。
-- 参考资料按主题拆分，作者在大多数场景下能快速定位到对应规范。
-- `init_plugin.js` 已经收敛到“只生成源码结构，不碰 runtime 产物”的正确模型。
-- Codex 侧触发策略是保守的，`agents/openai.yaml` 明确关闭了隐式调用。
+- `references/comprehensive-example.md` 现在已经把 build 阶段 bundle 和 Codex 安装阶段生成的 repo-managed artifacts 分开描述；
+- 当前这个 skill 自己的触发口径已经双平台对齐，`SKILL.md` 明确写了 `disable-model-invocation: true`，`agents/openai.yaml` 也关闭了 Codex 隐式调用；
+- `validate_plugin.js` 在 CLI 已构建时会复用真实 manifest 校验逻辑，越界路径样例已经能被拦住；
+- `SKILL.md` 入口重写成按场景选最短阅读路径，整体上已经符合渐进式披露，而不是一上来把全手册平铺出来。
 
-但这套作者工具还没有完全收口。我这轮确认有 `3` 个中严重度问题和 `1` 个低严重度问题：
+现在这套 skill 的总体设计是合理的：
 
-- 有两处文档内容已经和真实实现脱节；
-- 触发条件在双平台上没有完全对齐；
-- `validate_plugin.js` 的定位写得过强，实际能力远弱于当前 schema contract；
-- 渐进式披露方向是对的，但入口仍然偏“全量手册”，不够克制。
+- 触发条件保守，边界清楚，符合“用户明确要新增或维护插件时再进入作者模式”的定位；
+- 参考资料拆分按主题划分，绝大多数场景都能走最短路径；
+- `完整参考` 和 `参考文档索引` 虽然有少量重叠，但一个偏按能力查，一个偏按文档查，我认为还不需要为了压缩篇幅强行合并。
+
+不过这轮复审仍然发现 `1` 个中严重度问题和 `2` 个低严重度问题。
+
+## 上轮问题复核
+
+### 1. 已修复：综合示例不再把 Codex 的 repo-managed artifacts 误写成 build bundle 内容
+
+位置：
+
+- `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md:43-53`
+- `packages/cli/src/generators/local-plugin.ts:229-351`
+- `packages/cli/src/adapters/codex.ts:608-650`
+- `packages/cli/src/generators/instructions.ts:70-97`
+- `packages/cli/src/generators/permissions.ts:21-39`
+
+结论：
+
+文档现在已经明确区分：
+
+- build 阶段进入 bundle 的内容
+- Codex 安装阶段写入 repo scope 的 instructions / permissions / hooks / agents 产物
+
+这点和当前 CLI 实现已经一致。
+
+### 2. 已修复：skill 自身的双平台触发策略已经统一成保守手动触发
+
+位置：
+
+- `.agents/skills/create-agent-workflows-plugin/SKILL.md:1-4`
+- `.agents/skills/create-agent-workflows-plugin/agents/openai.yaml:1-6`
+- `/Users/LeslieChan/Desktop/claude-code-source-code/src/skills/loadSkillsDir.ts:216-258`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/model.rs:24-30`
+
+结论：
+
+当前 skill 已显式写出：
+
+- Claude Code：`disable-model-invocation: true`
+- Codex：`allow_implicit_invocation: false`
+
+考虑到两个平台的默认值分别是“Claude 允许模型调用”和“Codex 允许隐式调用”，这次补齐是必要且正确的。
+
+### 3. 已修复：`validate_plugin.js` 不再放过越界路径，示例目录也能直接校验
+
+位置：
+
+- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:33-50`
+- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:255-276`
+- `.agents/skills/create-agent-workflows-plugin/references/code-review/.agents-plugin/plugin.json:1-100`
+- `packages/cli/src/utils/manifest.ts:75-99`
+- `packages/cli/src/utils/manifest.ts:657-718`
+
+结论：
+
+- `references/code-review/` 现在目录名和 manifest 名一致，直接跑脚本可以通过
+- 当 `packages/cli/dist/` 存在时，脚本会走真实的 `validatePluginManifest()`，越界路径能被拦住
+
+### 4. 已修复：入口已经明显更符合渐进式披露
+
+位置：
+
+- `.agents/skills/create-agent-workflows-plugin/SKILL.md:11-57`
+- `.agents/skills/create-agent-workflows-plugin/SKILL.md:59-95`
+
+结论：
+
+当前入口先按插件形态把阅读路径切成 A / B / C 三类，再把全量能力矩阵和索引放到后面，信息组织比上一版克制得多。
 
 ## Findings
 
-### 1. 中严重度：综合示例把 Codex 的 repo-managed artifacts 写成了 build bundle 产物，和真实实现不一致
+### 1. 中严重度：`init_plugin.js` 生成的新 skill 仍然默认落在“Codex 保守手动、Claude 允许模型调用”的不一致状态
 
 位置：
 
-- `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md:43-51`
-- `packages/cli/src/generators/local-plugin.ts:229-351`
-- `packages/cli/src/adapters/codex.ts:608-650`
-- `packages/cli/src/generators/agents.ts:17-52`
+- `.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js:90-122`
+- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md:107-136`
+- `/Users/LeslieChan/Desktop/claude-code-source-code/src/skills/loadSkillsDir.ts:216-258`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/model.rs:24-30`
+- `/Users/LeslieChan/Desktop/claude-code-source-code/src/commands/init.ts:182`
 
 问题：
 
-`comprehensive-example.md` 现在把下面这些内容写成了 Codex bundle 的组成部分：
+脚手架脚本现在会同时生成两份平台元数据，但默认策略并不一致：
 
-- `hooks.json`
-- `agents toml`
-- `rules markdown`
+- `renderOpenAiYaml()` 固定写 `allow_implicit_invocation: false`
+- `renderSkillMd()` 只写 `name` 和 `description`，没有补 `disable-model-invocation: true`
 
-但按当前实现，`bundleLocalPlugin()` 在 build 阶段只会把声明路径下的源码文件复制进平台 bundle，并额外生成 Claude 侧的 `hooks` 和 `agents`：
+而平台源码的真实默认值是：
 
-- Codex bundle 在这里会带上 `skills`、`.mcp.json`、`.app.json`、以及 `fileRules` 选中的源码文件
-- Codex 的 instructions / permissions / hooks / agents 并不是在 build 阶段写进 embedded bundle
-- 这些 repo-managed artifacts 是在安装阶段由 `CodexAdapter.installExtensions()` 写到目标 scope 配置目录里的
+- Codex：`allow_implicit_invocation` 缺省时为 `true`
+- Claude Code：`user-invocable` 缺省为 `true`，`disable-model-invocation` 缺省为 `false`
 
-这不是单纯的表述差异，而是会把作者和排障路径一起带偏。按这份示例去理解，开发者会以为：
+这意味着脚手架一落地，默认行为就是：
 
-- `pnpm build` 之后应该能在 bundle 里直接看到 Codex 的 `.toml` / `.rules` / `hooks.json`
-- repo-managed artifacts 的问题应该去查 `packages/cli/plugins-dist/`
+- Codex：只能显式 `$skill-name`
+- Claude Code：用户可手动调用，模型也仍可自动调用
 
-实际上，这些问题要去查的是安装阶段生成的 scope 文件，而不是 embedded bundle。
+这和当前 skill 自己倡导的“保守手动触发”配方不一致，也会让新作者误以为两端都已经被收紧了。
 
-另外，现有作者工具回归测试只覆盖了 `SKILL.md`、`plugin-manifest-spec.md` 和 `skills-and-triggers.md`，没有覆盖 `comprehensive-example.md`，所以这类漂移目前不会被测试拦住：
+建议：
+
+- 最直接的修法是在生成的 `SKILL.md` frontmatter 里补上：
+  - `user-invocable: true`
+  - `disable-model-invocation: true`
+- 如果产品意图其实是“脚手架保持中性，不预设触发策略”，那就不要只在 Codex 侧强行写 `allow_implicit_invocation: false`，而应让两端都显式留空，再在模板正文里提示作者自己选配方。
+
+### 2. 低严重度：`skills-and-triggers.md` 把 `interface.short_description` 写成了硬约束，但 Codex 源码实际只做更宽松的长度校验
+
+位置：
+
+- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md:74-97`
+- `.agents/skills/create-agent-workflows-plugin/agents/openai.yaml:1-6`
+- `.agents/skills/create-agent-workflows-plugin/references/code-review/skills/review/agents/openai.yaml:1-6`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/loader.rs:110-113`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/loader.rs:745-748`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/loader.rs:879-893`
+- `/Users/LeslieChan/Desktop/codex/codex-rs/core-skills/src/loader_tests.rs:1205-1227`
+
+问题：
+
+文档把 `short_description` 写成“`25-64` 字符”，读起来像硬性 contract；但从 Codex 源码看，当前实际行为是：
+
+- 只做非空和最大长度校验
+- 最大长度走的是 `MAX_SHORT_DESCRIPTION_LEN = MAX_DESCRIPTION_LEN = 1024`
+- 并没有 `25` 的最小长度约束，也没有 `64` 的上限约束
+
+同时，仓库里自己的示例也没遵守这个写法：
+
+- 当前 skill 的 `agents/openai.yaml` 用的是 `按当前 manifest 和 bundle 规则创建插件`
+- `references/code-review` 的 `short_description` 也是明显短于 `25` 字符的中文短句
+
+这会把“平台建议”和“平台硬约束”混在一起。作者很难判断：
+
+- 哪些是必须满足的 contract
+- 哪些只是更利于 UI 展示的推荐写法
+
+建议：
+
+- 如果要保留这条经验规则，建议改成“推荐保持在 `25-64` 字符，便于 UI 快速扫读；Codex 当前 loader 的实际校验更宽松”
+- 如果希望文档只描述当前真实 contract，就直接删掉 `25-64` 的硬性表述
+
+### 3. 低严重度：这轮修复还缺少回归测试保护，后续仍有回漂风险
+
+位置：
 
 - `packages/cli/tests/integration/authoring-tools.test.ts:143-178`
-
-建议：
-
-- 修正文档里对 Codex bundle 的描述，明确区分“embedded bundle 内容”和“安装阶段生成的 repo-managed artifacts”
-- 给 `comprehensive-example.md` 补一条作者工具回归，至少锁住这几个关键名词
-
-### 2. 中严重度：skill 说明要求“用户明确要新增或维护插件”时才使用，但 Claude 侧实际仍然允许模型自动调用
-
-位置：
-
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:2-3`
-- `.agents/skills/create-agent-workflows-plugin/agents/openai.yaml:1-6`
-- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md:29-30`
-- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md:109-136`
-- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md:175-178`
+- `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md:43-53`
+- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:33-50`
+- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:255-276`
 
 问题：
 
-这个 skill 在 frontmatter 里把触发场景写得很窄：
+当前回归测试只锁住了：
 
-- 只有当用户明确要在当前仓库新增或维护 `plugins/<name>/` 时才使用
+- `SKILL.md`
+- `plugin-manifest-spec.md`
+- `skills-and-triggers.md`
 
-Codex 侧也确实按这个口径配置了：
+但这轮真正修过、也最容易再次漂移的两个点，仍然没有自动化保护：
 
-- `agents/openai.yaml` 里 `allow_implicit_invocation: false`
+- `comprehensive-example.md` 对 build / install 边界的描述
+- `validate_plugin.js` 在“CLI 已构建”和“路径越界”场景下的真实行为
 
-但 Claude 侧 frontmatter 没有显式写：
-
-- `disable-model-invocation: true`
-
-根据同目录下 `skills-and-triggers.md` 的说明，Claude 的默认值是：
-
-- `user-invocable: true`
-- `disable-model-invocation: false`
-
-这意味着这份 skill 在双平台上的触发策略并不一致：
-
-- Codex：保守手动触发
-- Claude：仍可能被模型自动调用
-
-对一个高上下文、高修改范围的作者工具 skill 来说，这个默认值偏宽了。它不是“低风险辅助型 skill”，更接近参考文档里写的“保守手动触发”配方。
-
-影响：
-
-- 在 Claude 侧可能出现不必要的自动注入
-- 会让 skill 的“触发条件”和“实际配置”两张口径并存
-- 也会削弱“按用户明确请求才进入插件作者模式”这条边界
+也就是说，这次修复虽然已经生效，但它们仍主要依赖人工 review，而不是测试来兜底。
 
 建议：
 
-- 如果产品意图确实是双平台都保守手动触发，就在 `SKILL.md` frontmatter 里补上 `disable-model-invocation: true`
-- 如果有意保留 Claude 自动调用，那就要把 `SKILL.md` 顶部描述改成更宽的口径，并说明原因
-
-### 3. 中严重度：`validate_plugin.js` 被写成“检查插件完整性”的统一校验入口，但它既会误报，也会漏报
-
-位置：
-
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:91`
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:123-137`
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:158`
-- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:17-29`
-- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js:74-87`
-- `packages/cli/src/utils/manifest.ts:39-49`
-- `packages/cli/src/utils/manifest.ts:75-99`
-- `packages/cli/src/utils/manifest.ts:657-750`
-
-问题：
-
-`SKILL.md` 当前把 `validate_plugin.js` 放在正式工作流第 7 步，并直接写成“检查插件完整性”。这个定位太强了，因为脚本和真实 manifest contract 之间还有明显落差。
-
-先看漏报：
-
-- 真实实现会拒绝 unknown top-level fields，`validate_plugin.js` 不检查
-- 真实实现会拒绝越出插件根目录的路径，`validate_plugin.js` 只检查“是否以 `./` 开头”和“目标是否存在”
-- 真实实现会在默认入口文件存在但 manifest 未声明时直接报错，`validate_plugin.js` 不检查
-- 真实实现会归一化并校验 `extensions`、`buildConfig`、`manifestOverrides` 等结构，`validate_plugin.js` 基本没有覆盖
-
-我这轮做了一个最直接的复现：
-
-- 复制 `plugins/git-commit/`
-- 把 `skills/` 挪到插件目录外
-- 把 manifest 里的 `skills` 改成 `./../shared-skills`
-- 运行 `validate_plugin.js`
-
-结果脚本返回 `[PASS] All checks passed.`，但这类路径会被真实实现的 `normalizePluginRelativePath()` 明确拒绝。
-
-再看误报：
-
-- `SKILL.md` 把 `references/example-plugin/` 说成“可直接读取的完整示例插件目录”
-- 但它的目录名叫 `example-plugin`，manifest 里的真实插件名是 `code-review`
-- 直接跑 `validate_plugin.js` 会失败
-- 只要把目录临时改名为 `code-review/`，脚本马上就能通过
-
-这会导致两类问题同时存在：
-
-- 作者可能把 `validate_plugin.js` 的通过结果当成“符合当前 contract”
-- 作者也可能对官方示例目录跑校验时莫名失败，不知道问题出在示例目录命名而不是示例内容本身
-
-建议：
-
-- 如果保留这个脚本，就把它明确降级为“轻量预检”，不要写成“完整性校验”
-- 更稳的做法是让它复用 `packages/cli/src/utils/manifest.ts` 的真实校验逻辑，而不是再维护一套手写弱校验
-- `references/example-plugin/` 要么改成 `code-review/`，要么文档里明确写“这是参考目录名，不能直接拿来跑 validate”
-
-### 4. 低严重度：参考资料拆分是合理的，但 `SKILL.md` 入口还不够符合渐进式披露
-
-位置：
-
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:12-29`
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:35-77`
-- `.agents/skills/create-agent-workflows-plugin/SKILL.md:123-158`
-
-问题：
-
-这个 skill 的资料拆分方向是对的，主题也分得清楚：
-
-- manifest
-- skills 与触发
-- extensions
-- buildConfig
-- Claude 专属能力
-- MCP / apps
-- 综合示例
-
-但真正落到 `SKILL.md` 入口时，还是把下面几层信息几乎同时铺开了：
-
-- 全能力矩阵
-- 三种常见结构
-- 详细验证清单
-- 全量参考索引
-
-这会让 skill 更像“作者手册总览页”，而不是“先帮 agent 选最短阅读路径的执行入口”。对简单需求，比如：
-
-- 只新建一个纯 skill 插件
-- 只维护 `extensions.instructions`
-- 只补一个 Claude command
-
-当前入口都显得偏重。
-
-这不是错误，更像信息组织上的最后一段路没走完。现在已经具备渐进式披露的素材了，只差把入口做成决策式。
-
-建议：
-
-- 在 `SKILL.md` 最前面增加“先判定插件类型”的 3 条最小路径
-- 例如：
-  - 纯 skill 插件：先读 `plugin-manifest-spec.md` + `skills-and-triggers.md`
-  - extension 插件：先读 `plugin-manifest-spec.md` + `extensions-spec.md`
-  - Claude 专属能力：再补 `build-config-spec.md` + `claude-only-capabilities.md`
-- 保留综合示例和全量矩阵，但放到“需要时再看”的位置
+- 给 `comprehensive-example.md` 补一个最小文本回归，至少锁住 “Codex 安装时生成 repo-managed artifacts” 这组关键词
+- 给 `validate_plugin.js` 补一个脚本级测试：
+  - `references/code-review/` 可直接通过
+  - `./../shared-skills` 这类越界路径在 CLI 已构建时必须失败
 
 ## 优点
 
-除上面的发现外，这套作者工具也有几处明显做得不错：
+除上面的发现外，这套 skill 现在也有几处明显做得不错：
 
-- `SKILL.md:8-10` 已经把“源码层 / build / 安装”边界讲清楚了，这是当前仓库里最重要的作者认知前提。
-- `init_plugin.js:253-317` 的行为是干净的，只生成源码结构，不偷写 runtime marketplace 或平台 manifest。
-- `skills-and-triggers.md` 把 Codex 和 Claude 的 skill 触发开关明确拆开了，这个规范本身是清楚的。
-- `authoring-tools.test.ts:143-178` 至少已经把最核心的 source-only 模型和几份关键文档锁住了，说明这部分不是完全无测试状态。
+- `SKILL.md:11-57` 的场景化入口已经能把“只建 skill”“只做 extensions”“混合型/Claude 专属能力”三类路径拆开，渐进式披露基本成立。
+- `SKILL.md:59-72` 的工作流顺序合理，先定能力组合，再改 manifest，再 build / validate / test，和仓库实际开发路径一致。
+- `validate_plugin.js` 现在优先复用 `packages/cli/dist` 的真实 manifest 校验，这个方向是对的，比继续维护一套孤立的弱校验可靠得多。
+- `references/code-review/` 现在既能直接跑校验，又和 `comprehensive-example.md` 配套，作为完整样例的可用性已经比上一版好很多。
 
 ## 建议修复顺序
 
-1. 先修 `comprehensive-example.md`，因为这是内容错误，会直接误导作者理解 build 与 install 的边界。
-2. 再收紧这份 skill 自己的触发策略，避免双平台口径不一致。
-3. 处理 `validate_plugin.js` 的定位问题。
-   要么让它复用真实 schema 校验，要么把文档里的承诺降级。
-4. 最后再做 `SKILL.md` 的入口瘦身，把渐进式披露做完整。
-
-## 最终判断
-
-如果只看大方向，这个 skill 的总体设计是合理的，也基本符合当前仓库的插件规范。  
-但如果把要求提高到“作者照着它做，不会被错误文档、过宽触发或弱校验误导”，那它现在还差一轮收口。
-
-更准确的判断是：
-
-- 结构设计合理
-- 触发条件在 Codex 侧合理、在 Claude 侧还没完全对齐
-- 主要内容大体正确，但已有两处实现级漂移
-- 渐进式披露有基础，但入口还可以再收一层
+1. 先修 `init_plugin.js` 的默认触发策略不一致问题，这是当前唯一还会直接影响新插件默认行为的实质性问题。
+2. 再修 `skills-and-triggers.md` 里 `short_description` 的约束表述，避免把推荐写法写成硬 contract。
+3. 最后补回归测试，把这次已修复的边界固定下来。

@@ -73,7 +73,7 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 ```yaml
 interface:
   display_name: "Repo Check"              # UI 显示名称
-  short_description: "检查仓库状态"        # 25-64 字符
+  short_description: "检查仓库状态"        # 推荐 25-64 字符
   icon_small: "./assets/icon-small.png"    # 可选：小图标路径
   icon_large: "./assets/icon-large.svg"    # 可选：大图标路径
   brand_color: "#3B82F6"                   # 可选：品牌主色
@@ -94,7 +94,7 @@ policy:
 ### interface 块
 
 - `display_name`：Title Case 格式，自动格式化 kebab-case
-- `short_description`：25-64 字符
+- `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
 - `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用
 
 ### policy 块

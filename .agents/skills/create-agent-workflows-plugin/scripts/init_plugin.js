@@ -92,6 +92,8 @@ function renderSkillMd(skillName, skillDescription) {
   return `---
 name: ${skillName}
 description: ${skillDescription}
+user-invocable: true
+disable-model-invocation: true
 ---
 
 # ${skillTitle}

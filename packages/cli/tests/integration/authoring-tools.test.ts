@@ -126,6 +126,12 @@ describe('authoring tools', () => {
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
     ).resolves.toBe(true);
+    const skillMdContent = await fs.readFile(
+      path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md'),
+      'utf8',
+    );
+    expect(skillMdContent).toContain('user-invocable: true');
+    expect(skillMdContent).toContain('disable-model-invocation: true');
     await expect(
       fs.pathExists(
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
@@ -175,6 +181,77 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).toContain('禁止手改');
 
     expect(triggersDoc).toContain('两个平台的触发开关完全独立');
+
+    const exampleDoc = await fs.readFile(
+      path.join(refBase, 'comprehensive-example.md'),
+      'utf8',
+    );
+    expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
+  });
+
+  it('validate_plugin.js passes on the reference code-review example', async () => {
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const pluginDir = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'references',
+      'code-review',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('validate_plugin.js rejects out-of-bounds skills path when CLI is built', async () => {
+    const distPath = path.join(repoRoot(), 'packages', 'cli', 'dist');
+    if (!fs.existsSync(distPath)) return;
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-boundary-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'boundary-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'boundary-test',
+      version: '0.1.0',
+      description: 'Test plugin for boundary check.',
+      skills: './../shared-skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+      interface: { displayName: 'Boundary Test', shortDescription: 'Test' },
+    });
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toBeDefined();
   });
 
   it('marks replaced plans as historical documents and links the current plan', async () => {
