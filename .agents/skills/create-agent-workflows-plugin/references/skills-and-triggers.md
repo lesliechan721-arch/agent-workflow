@@ -29,6 +29,8 @@ plugins/<name>/skills/
 | `user-invocable` | boolean | `true` | Claude Code：是否允许用户手动调用 |
 | `disable-model-invocation` | boolean | `false` | Claude Code：是否禁止模型自动调用 |
 | `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示 |
+| `allowed-tools` | string[] | — | Claude Code：声明 shell 插值中允许执行的命令模式（如 `Bash(git *)` ） |
+| `shell` | string | `bash` | Claude Code：shell 插值使用的解释器，仅支持 `bash` 和 `powershell` |
 
 示例：
 
@@ -55,6 +57,12 @@ metadata:
 保持简洁，避免重复 frontmatter 中已有的信息。大段参考资料放 `references/` 目录，按需加载。
 
 SKILL.md 和 `references/` 下的 Markdown 文件均支持模板渲染（`{{var}}`、`{{#if}}`、`{{#unless}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置 include glob 和变量，详见 `references/build-config-spec.md`。
+
+### 命令结果填充（Claude Code 专属）
+
+SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` 行内语法和 `` ```! `` 代码块语法，在加载时执行 shell 命令并将输出内联到 prompt。**此能力为 Claude Code 专属，Codex 不支持。**
+
+使用此功能时需在 frontmatter 中声明 `allowed-tools` 和（可选的）`shell` 字段。完整语法规范、支持范围和 frontmatter 配置见 `references/claude-only-capabilities.md` § 命令结果填充。
 
 ## agents/openai.yaml 规范
 

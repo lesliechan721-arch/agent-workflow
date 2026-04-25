@@ -29,6 +29,50 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 ---
 
+## 命令结果填充（Claude Code 专属）
+
+**此能力为 Claude Code 运行时专属，Codex 不支持。** Claude Code 在加载 `commands` 和 `skills` 的 Markdown prompt 文件时，可执行嵌入的 shell 命令并将输出内联到最终 prompt。
+
+### 支持范围
+
+| 扩展类型 | 支持 | 说明 |
+|----------|:----:|------|
+| `commands/*.md` | ✓ | 用户触发斜杠命令时执行 |
+| `skills/*/SKILL.md` | ✓ | skill 被触发加载时执行 |
+| `skills/*/references/*.md` | ✓ | 随 skill 加载时执行 |
+| `extensions.agents` | ✗ | 仅支持 `${CLAUDE_PLUGIN_ROOT}` 和 `${user_config.X}` 变量替换 |
+| MCP skills | ✗ | 框架显式禁用 |
+| `output-styles/*.md` | ✗ | 未接入 prompt shell 预处理链路 |
+| Hooks | ✗ | 未接入 prompt shell 预处理链路 |
+
+### 语法
+
+**行内形式**——反引号包裹、前缀 `!`：
+
+```text
+当前分支：!`git branch --show-current`
+当前变更：!`git diff --cached --name-only`
+```
+
+**代码块形式**——围栏语言标记写 `!`（三个反引号后紧跟 `!`）：
+
+    ```!
+    git diff --cached --stat
+    ```
+
+两种形式在文件加载时执行，命令输出替换原始语法后成为最终 prompt 的一部分。
+
+### Frontmatter 配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `allowed-tools` | string[] | — | 放行命令执行的工具模式（如 `Bash(git *)`），未声明则可能被权限系统拦截 |
+| `shell` | string | `bash` | 使用的 shell 解释器，仅支持 `bash` 和 `powershell` |
+
+`commands` 和 `skills` 的 frontmatter 均支持这两个字段。
+
+---
+
 ## commands/
 
 Claude Code 的自定义斜杠命令（slash commands）。用户通过 `/command-name` 触发。
@@ -77,11 +121,14 @@ disable-model-invocation: false
 | `model` | string | 指定模型（`inherit` 继承当前模型） |
 | `argument-hint` | string | 参数提示（如 `[file]`、`[branch]`） |
 | `disable-model-invocation` | boolean | 禁止模型自动调用此命令 |
+| `shell` | string | shell 插值使用的解释器（默认 `bash`，可选 `powershell`） |
 
 ### 动态参数
 
 - `$ARGUMENTS`：用户在命令名后输入的全部参数
 - `$1`、`$2`、`$3`：按空格分割的第 1、2、3 个参数
+
+命令文件正文支持命令结果填充语法（`` !`command` `` 和 `` ```! ``），详见上方 § 命令结果填充。
 
 ### manifest 声明
 

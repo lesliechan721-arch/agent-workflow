@@ -28,6 +28,8 @@ description: 当用户明确要在 `agent-workflows` 仓库新增或维护 `plug
 | Template 渲染 | 双平台 | `buildConfig.templates` | `references/build-config-spec.md` |
 | 平台文件规则 | 双平台 | `buildConfig.fileRules` | `references/build-config-spec.md` |
 
+> **命令结果填充（Claude Code 专属）**：`commands` 和 `skills` 的 Markdown 文件支持 `` !`command` `` 行内语法和 `` ```! `` 代码块语法，在加载时执行 shell 命令并将输出内联到 prompt。Codex 不支持。详见 `references/claude-only-capabilities.md` § 命令结果填充。
+
 插件不要求包含所有能力——按需选择。一个只有 extensions 的插件（无 skill、无 MCP）也是合法的。
 
 ## 最小插件结构
@@ -147,11 +149,11 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 | 文档 | 覆盖范围 |
 |------|---------|
 | `references/plugin-manifest-spec.md` | plugin.json 完整字段规范、marketplace、interface、三层分发模型 |
-| `references/skills-and-triggers.md` | Skills 目录结构、SKILL.md 规范、agents/openai.yaml、双平台触发配置 |
+| `references/skills-and-triggers.md` | Skills 目录结构、SKILL.md 规范、命令结果填充、agents/openai.yaml、双平台触发配置 |
 | `references/extensions-spec.md` | instructions / permissions / hooks / agents 四种 extension + agentOverrides 机制 |
 | `references/build-config-spec.md` | templates 模板渲染 / fileRules 平台文件规则 / manifestOverrides 覆盖 |
 | `references/mcp-and-apps.md` | .mcp.json 和 .app.json 配置格式与平台行为 |
-| `references/claude-only-capabilities.md` | commands / output-styles / lspServers / userConfig / channels |
+| `references/claude-only-capabilities.md` | commands（含命令结果填充）/ output-styles / lspServers / userConfig / channels |
 | `references/comprehensive-example.md` | 综合示例说明 + 构建产物预览 |
 | `references/example-plugin/` | 可直接读取的完整示例插件目录（code-review） |
 
