@@ -301,6 +301,11 @@ async function addHookOnlyPlugin(repoRoot: string): Promise<void> {
   );
 }
 
+async function addInstructionAndHookOnlyPlugins(repoRoot: string): Promise<void> {
+  await addInstructionOnlyPlugin(repoRoot);
+  await addHookOnlyPlugin(repoRoot);
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
@@ -1057,6 +1062,62 @@ describe('CLI integration', () => {
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.not.toMatchObject({
       ledgerState: {
         reason: 'operation_interrupted_after_native_write',
+      },
+    });
+  });
+
+  it('keeps historical Codex hooks when uninstalling an instruction-only plugin after ~/.aw is refreshed', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(addInstructionAndHookOnlyPlugins);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await installCommand(
+      ['docs-note', 'npm-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await fs.remove(path.join(repoRoot, 'plugins', 'npm-guard'));
+    const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(nextEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(nextEmbeddedRoot);
+
+    await initCommand({ force: true });
+
+    await uninstallCommand(
+      ['docs-note'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
+      commands: [
+        {
+          matcher: 'npm *',
+          command: 'echo npm hook',
+          description: '观察 npm 命令',
+        },
+      ],
+    });
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
+      plugins: {
+        'npm-guard': {
+          lastResolvedVersion: '0.1.0',
+        },
+      },
+    });
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.not.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_artifact_write',
       },
     });
   });

@@ -25,6 +25,8 @@ import type {
   Scope,
   ScopeInitializedState,
   StatusReport,
+  TrackingManifest,
+  TrackingPluginRecord,
 } from '../types.js';
 import {
   detectCodexProjectLayerEvidence,
@@ -342,6 +344,56 @@ function normalizeCodexHookCommands(value: unknown): CodexHookCommand[] | null {
   return commands;
 }
 
+function readTrackedCodexHookCommands(
+  record: TrackingPluginRecord | undefined,
+): CodexHookCommand[] | null {
+  if (!record) {
+    return [];
+  }
+
+  const commands: CodexHookCommand[] = [];
+  for (const artifact of record.artifacts) {
+    if (artifact.kind !== 'hook') {
+      continue;
+    }
+
+    if (artifact.hookCommands === undefined) {
+      return null;
+    }
+
+    const trackedCommands = normalizeCodexHookCommands(artifact.hookCommands);
+    if (!trackedCommands) {
+      return null;
+    }
+
+    commands.push(...trackedCommands);
+  }
+
+  return commands;
+}
+
+function resolveTrackedCodexHookCommands(
+  trackingManifest: TrackingManifest,
+  excludedPluginNames: string[] = [],
+): CodexHookCommand[] | null {
+  const excluded = new Set(excludedPluginNames);
+  const commands: CodexHookCommand[] = [];
+  const pluginNames = Object.keys(trackingManifest.plugins)
+    .filter((pluginName) => !excluded.has(pluginName))
+    .sort();
+
+  for (const pluginName of pluginNames) {
+    const trackedCommands = readTrackedCodexHookCommands(trackingManifest.plugins[pluginName]);
+    if (!trackedCommands) {
+      return null;
+    }
+
+    commands.push(...trackedCommands);
+  }
+
+  return commands;
+}
+
 async function readCodexHookCommands(hooksPath: string): Promise<CodexHookCommand[]> {
   if (!(await fs.pathExists(hooksPath))) {
     return [];
@@ -593,13 +645,26 @@ export class CodexAdapter implements PlatformAdapter {
     await removeManagedDeveloperInstructionsFile(paths.configTomlPath, plugin.manifest.name);
 
     const trackedHookArtifact = trackingRecord?.artifacts.find((artifact) => artifact.kind === 'hook');
-    const trackedHookCommands = normalizeCodexHookCommands(trackedHookArtifact?.hookCommands);
+    const trackedHookCommands = readTrackedCodexHookCommands(trackingRecord);
     if (trackedHookCommands && trackedHookCommands.length > 0) {
       const remainingCommands = subtractCodexHookCommands(
         await readCodexHookCommands(paths.hooksPath),
         trackedHookCommands,
       );
       await writeCodexHookCommands(paths.hooksPath, remainingCommands);
+      return;
+    }
+
+    const remainingTrackedHookCommands = resolveTrackedCodexHookCommands(
+      trackingManifest,
+      [plugin.manifest.name],
+    );
+    if (remainingTrackedHookCommands) {
+      await writeCodexHookCommands(paths.hooksPath, remainingTrackedHookCommands);
+      return;
+    }
+
+    if (!trackedHookArtifact || trackedHookCommands !== null) {
       return;
     }
 
