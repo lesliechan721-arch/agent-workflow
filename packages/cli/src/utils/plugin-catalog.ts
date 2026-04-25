@@ -4,8 +4,11 @@ import fs from 'fs-extra';
 
 import type { CatalogResolution } from '../types.js';
 import { resolvePluginsFromCatalog } from './manifest.js';
-import { calculateBundleFingerprint, validateLocalMarketplaceLayout } from './local-marketplace.js';
-import { readJsonFileIfExists } from './json.js';
+import {
+  calculateBundleFingerprint,
+  readLocalMarketplaceConfig,
+  validateLocalMarketplaceLayout,
+} from './local-marketplace.js';
 import {
   resolveAwHome,
   resolveCliPackageRoot,
@@ -27,10 +30,7 @@ export async function resolveCurrentCatalog(
   const [embeddedFingerprint, sourceVersion, localConfig] = await Promise.all([
     calculateBundleFingerprint(embeddedRoot),
     readCurrentSourceVersion(),
-    readJsonFileIfExists<{
-      sourceVersion: string;
-      bundleFingerprint: string;
-    }>(path.join(awHome, 'config.json')),
+    readLocalMarketplaceConfig(awHome),
   ]);
 
   if (

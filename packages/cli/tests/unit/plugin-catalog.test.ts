@@ -69,6 +69,37 @@ describe('plugin catalog', () => {
     });
   });
 
+  it('falls back to the embedded root when local config.json is malformed', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
+
+    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
+      rootDir: embeddedRoot,
+      source: 'embedded',
+    });
+  });
+
+  it('falls back to the embedded root when local config.json uses an unsupported schema version', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    config.version = 2;
+    await fs.writeJson(configPath, config, { spaces: 2 });
+
+    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
+      rootDir: embeddedRoot,
+      source: 'embedded',
+    });
+  });
+
   it('falls back to the embedded root when a local source manifest is unreadable', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;

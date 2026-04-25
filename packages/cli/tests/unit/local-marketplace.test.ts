@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   calculateBundleFingerprint,
   initializeLocalMarketplace,
+  readInstalledLedger,
   validateLocalMarketplaceLayout,
 } from '../../src/utils/local-marketplace.js';
 import { readJsonFile } from '../../src/utils/json.js';
@@ -116,6 +117,39 @@ describe('local marketplace', () => {
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
+  it('rebuilds ~/.aw when config.json is malformed during a non-force refresh', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
+
+    await expect(initializeLocalMarketplace({ force: false, env: process.env })).resolves.toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
+  it('rebuilds ~/.aw when config.json uses an unsupported schema version during a non-force refresh', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    config.version = 2;
+    await fs.writeJson(configPath, config, { spaces: 2 });
+
+    await expect(initializeLocalMarketplace({ force: false, env: process.env })).resolves.toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
   it('treats an invalid source manifest as an unhealthy local marketplace layout', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -129,6 +163,22 @@ describe('local marketplace', () => {
     );
 
     await expect(validateLocalMarketplaceLayout(awHome)).rejects.toThrow();
+  });
+
+  it('returns a degraded ledger when installed.json contains malformed JSON', async () => {
+    const { awHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+
+    await fs.ensureDir(awHome);
+    await fs.writeFile(path.join(awHome, 'installed.json'), '{"version":', 'utf8');
+
+    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'rebuilt_from_missing_or_invalid',
+      },
+      plugins: {},
+    });
   });
 
   it('writes a degraded ledger when the previous installed.json is missing or invalid', async () => {

@@ -12,7 +12,7 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
-import { readJsonFile, readJsonFileIfExists, writeJsonFile } from './json.js';
+import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
 import {
   resolveAwHome,
   resolveCliPackageRoot,
@@ -191,7 +191,7 @@ export function getInstalledLedgerPath(
 export async function readInstalledLedger(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<InstalledLedger> {
-  const rawLedger = await readJsonFileIfExists<unknown>(getInstalledLedgerPath(env));
+  const rawLedger = await readJsonFileIfExistsSafe<unknown>(getInstalledLedgerPath(env));
   return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
 }
 
@@ -292,8 +292,20 @@ async function copyBundleToStaging(embeddedRoot: string, stagingRoot: string): P
   await fs.copy(path.join(embeddedRoot, 'plugins'), path.join(stagingRoot, 'plugins'));
 }
 
-async function readLocalMarketplaceConfig(rootDir: string): Promise<LocalMarketplaceConfig | null> {
-  return readJsonFileIfExists<LocalMarketplaceConfig>(path.join(rootDir, 'config.json'));
+function isLocalMarketplaceConfig(value: unknown): value is LocalMarketplaceConfig {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.initializedAt === 'string' &&
+    typeof value.sourcePackage === 'string' &&
+    typeof value.sourceVersion === 'string' &&
+    typeof value.bundleFingerprint === 'string'
+  );
+}
+
+export async function readLocalMarketplaceConfig(rootDir: string): Promise<LocalMarketplaceConfig | null> {
+  const rawConfig = await readJsonFileIfExistsSafe<unknown>(path.join(rootDir, 'config.json'));
+  return isLocalMarketplaceConfig(rawConfig) ? rawConfig : null;
 }
 
 async function isFreshLocalMarketplace(
@@ -303,10 +315,6 @@ async function isFreshLocalMarketplace(
 ): Promise<boolean> {
   const config = await readLocalMarketplaceConfig(awHome);
   if (!config) {
-    return false;
-  }
-
-  if (config.version !== 1) {
     return false;
   }
 
@@ -323,7 +331,7 @@ async function isFreshLocalMarketplace(
 }
 
 async function readPreservedLedger(awHome: string): Promise<InstalledLedger> {
-  const rawLedger = await readJsonFileIfExists<unknown>(path.join(awHome, 'installed.json'));
+  const rawLedger = await readJsonFileIfExistsSafe<unknown>(path.join(awHome, 'installed.json'));
   return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
 }
 

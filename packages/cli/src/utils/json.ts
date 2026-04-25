@@ -14,6 +14,14 @@ export async function readJsonFileIfExists<T>(filePath: string): Promise<T | nul
   return readJsonFile<T>(filePath);
 }
 
+export async function readJsonFileIfExistsSafe<T>(filePath: string): Promise<T | null> {
+  try {
+    return await readJsonFileIfExists<T>(filePath);
+  } catch {
+    return null;
+  }
+}
+
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   await fs.writeJson(filePath, value, { spaces: 2 });
