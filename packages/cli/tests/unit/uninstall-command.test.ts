@@ -7,9 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as commonModule from '../../src/commands/common.js';
 import { uninstallCommand, uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
+import {
+  readCodexConfigFile,
+  removeManagedDeveloperInstructionsFile,
+  upsertManagedDeveloperInstructionsFile,
+} from '../../src/utils/codex-config.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { resolveCodexPaths } from '../../src/utils/paths.js';
+import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type {
   GeneratedArtifact,
@@ -123,6 +128,14 @@ class FakeAdapter implements PlatformAdapter {
     readonly name: PlatformName,
     private readonly statusSequence: StatusReport[],
     private readonly options: {
+      installExtensionsAction?: (
+        plugin: { manifest: { name: string; version?: string } },
+        scope: Scope,
+      ) => Promise<GeneratedArtifact[] | void> | GeneratedArtifact[] | void;
+      uninstallExtensionsAction?: (
+        plugin: { manifest: { name: string; version?: string } },
+        scope: Scope,
+      ) => Promise<void> | void;
       uninstallExtensionsError?: string;
     } = {},
   ) {}
@@ -137,17 +150,22 @@ class FakeAdapter implements PlatformAdapter {
     this.uninstallPluginCalls.push(plugin.manifest.name);
   }
 
-  async installExtensions(plugin: { manifest: { name: string } }): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: { manifest: { name: string; version?: string } },
+    scope: Scope,
+  ): Promise<GeneratedArtifact[]> {
     this.reinstallExtensionsCalls.push(plugin.manifest.name);
-    return [];
+    const artifacts = await this.options.installExtensionsAction?.(plugin, scope);
+    return artifacts ?? [];
   }
 
   async uninstallExtensions(
-    plugin: { manifest: { name: string } },
-    _scope?: Scope,
+    plugin: { manifest: { name: string; version?: string } },
+    scope: Scope = 'project',
     _generatedArtifacts?: GeneratedArtifact[],
   ): Promise<void> {
     this.uninstallExtensionsCalls.push(plugin.manifest.name);
+    await this.options.uninstallExtensionsAction?.(plugin, scope);
     if (this.options.uninstallExtensionsError) {
       throw new Error(this.options.uninstallExtensionsError);
     }
@@ -160,6 +178,70 @@ class FakeAdapter implements PlatformAdapter {
     this.statusIndex += 1;
     return this.statusSequence[index];
   }
+}
+
+async function seedManagedCodexInstruction(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  instructionValue: string,
+  resolvedVersion = '0.1.0',
+): Promise<{ configTomlPath: string; trackingDir: string }> {
+  const paths = resolveCodexPaths(repoRoot, 'project', env);
+  const projectKey = await resolveCodexProjectKey(repoRoot);
+
+  await localMarketplaceModule.writeInstalledLedger(
+    {
+      ...localMarketplaceModule.createAvailableLedger(),
+      plugins: {
+        [pluginName]: {
+          lastResolvedVersion: resolvedVersion,
+          platforms: {
+            codex: {
+              projectScopes: {
+                [projectKey]: {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion,
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                  },
+                },
+              },
+              sharedNativeRefs: {
+                user: false,
+                projects: [],
+              },
+            },
+          },
+        },
+      },
+    },
+    env,
+  );
+
+  await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
+    pluginName,
+    value: instructionValue,
+  });
+  await upsertTrackingRecord(paths.trackingDir, pluginName, [
+    {
+      path: paths.configTomlPath,
+      kind: 'instruction',
+      platform: 'codex',
+    },
+  ]);
+
+  return paths;
+}
+
+async function readManagedCodexInstruction(
+  configTomlPath: string,
+  pluginName: string,
+): Promise<string | undefined> {
+  const { snapshot } = await readCodexConfigFile(configTomlPath);
+  return snapshot.developerInstructions.managedBlocks[pluginName]?.value?.trimEnd();
 }
 
 afterEach(async () => {
@@ -446,20 +528,13 @@ describe('uninstall command coverage', () => {
       currentPlugin: plugin,
       source: 'currentCatalog',
     };
-    const trackingDir = resolveCodexPaths(repoRoot, 'project', env).trackingDir;
-    const baselineArtifactPath = path.join(trackingDir, 'git-commit.rule');
-
-    await localMarketplaceModule.writeInstalledLedger(
-      localMarketplaceModule.createAvailableLedger(),
+    const legacyInstruction = 'Legacy managed instruction';
+    const { configTomlPath, trackingDir } = await seedManagedCodexInstruction(
+      repoRoot,
       env,
+      plugin.manifest.name,
+      legacyInstruction,
     );
-    await upsertTrackingRecord(trackingDir, plugin.manifest.name, [
-      {
-        path: baselineArtifactPath,
-        kind: 'instruction',
-        platform: 'codex',
-      },
-    ]);
 
     const codex = new FakeAdapter('codex', [
       makeStatusReport('codex', 'project', [
@@ -472,7 +547,11 @@ describe('uninstall command coverage', () => {
           },
         }),
       ]),
-    ]);
+    ], {
+      uninstallExtensionsAction: async (currentPlugin) => {
+        await removeManagedDeveloperInstructionsFile(configTomlPath, currentPlugin.manifest.name);
+      },
+    });
 
     const writeInstalledLedgerImpl = localMarketplaceModule.writeInstalledLedger;
     vi.spyOn(localMarketplaceModule, 'writeInstalledLedger')
@@ -500,13 +579,15 @@ describe('uninstall command coverage', () => {
       ),
     ).rejects.toThrow('ledger boom');
 
-    expect(codex.reinstallExtensionsCalls).toEqual([plugin.manifest.name]);
+    await expect(readManagedCodexInstruction(configTomlPath, plugin.manifest.name)).resolves.toBe(
+      legacyInstruction,
+    );
     await expect(readTrackingManifest(trackingDir)).resolves.toMatchObject({
       plugins: {
         'git-commit': {
           artifacts: [
             {
-              path: baselineArtifactPath,
+              path: configTomlPath,
             },
           ],
         },
@@ -520,29 +601,23 @@ describe('uninstall command coverage', () => {
     });
   });
 
-  it('rolls artifacts back when uninstallExtensions fails after artifact cleanup started', async () => {
+  it('restores historical uninstall artifacts from the pre-uninstall snapshot', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const target: ResolvedPluginTarget = {
       pluginName: plugin.manifest.name,
       plugin,
-      currentPlugin: plugin,
-      source: 'currentCatalog',
+      currentPlugin: undefined,
+      source: 'historical',
     };
-    const trackingDir = resolveCodexPaths(repoRoot, 'project', env).trackingDir;
-    const baselineArtifactPath = path.join(trackingDir, 'git-commit.rule');
-
-    await localMarketplaceModule.writeInstalledLedger(
-      localMarketplaceModule.createAvailableLedger(),
+    const legacyInstruction = 'Historical managed instruction';
+    const { configTomlPath, trackingDir } = await seedManagedCodexInstruction(
+      repoRoot,
       env,
+      plugin.manifest.name,
+      legacyInstruction,
+      '0.0.5',
     );
-    await upsertTrackingRecord(trackingDir, plugin.manifest.name, [
-      {
-        path: baselineArtifactPath,
-        kind: 'instruction',
-        platform: 'codex',
-      },
-    ]);
 
     const codex = new FakeAdapter(
       'codex',
@@ -550,6 +625,7 @@ describe('uninstall command coverage', () => {
         makeStatusReport('codex', 'project', [
           makePluginStatus(plugin.manifest.name, {
             scopeInitialized: 'yes',
+            catalogCompatibility: 'missing',
             scopeManagedEvidence: {
               ledger: true,
               tracking: true,
@@ -559,6 +635,15 @@ describe('uninstall command coverage', () => {
         ]),
       ],
       {
+        installExtensionsAction: async (currentPlugin) => {
+          await upsertManagedDeveloperInstructionsFile(configTomlPath, {
+            pluginName: currentPlugin.manifest.name,
+            value: `rollback-from-${currentPlugin.manifest.version ?? 'unknown'}`,
+          });
+        },
+        uninstallExtensionsAction: async (currentPlugin) => {
+          await removeManagedDeveloperInstructionsFile(configTomlPath, currentPlugin.manifest.name);
+        },
         uninstallExtensionsError: 'artifact cleanup boom',
       },
     );
@@ -582,13 +667,112 @@ describe('uninstall command coverage', () => {
       ),
     ).rejects.toThrow('artifact cleanup boom');
 
-    expect(codex.reinstallExtensionsCalls).toEqual([plugin.manifest.name]);
+    expect(codex.reinstallExtensionsCalls).toEqual([]);
+    await expect(readManagedCodexInstruction(configTomlPath, plugin.manifest.name)).resolves.toBe(
+      legacyInstruction,
+    );
     await expect(readTrackingManifest(trackingDir)).resolves.toMatchObject({
       plugins: {
         'git-commit': {
           artifacts: [
             {
-              path: baselineArtifactPath,
+              path: configTomlPath,
+            },
+          ],
+        },
+      },
+    });
+    await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_artifact_write',
+      },
+    });
+  });
+
+  it('restores capability-changed uninstall artifacts to the installed snapshot instead of the current catalog', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const currentPlugin = {
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        version: '9.9.0',
+      },
+    };
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin: currentPlugin,
+      currentPlugin,
+      source: 'currentCatalog',
+    };
+    const legacyInstruction = 'Installed snapshot instruction';
+    const { configTomlPath, trackingDir } = await seedManagedCodexInstruction(
+      repoRoot,
+      env,
+      plugin.manifest.name,
+      legacyInstruction,
+      '0.3.0',
+    );
+
+    const codex = new FakeAdapter(
+      'codex',
+      [
+        makeStatusReport('codex', 'project', [
+          makePluginStatus(plugin.manifest.name, {
+            scopeInitialized: 'yes',
+            catalogCompatibility: 'capabilityChanged',
+            scopeManagedEvidence: {
+              ledger: true,
+              tracking: true,
+              sharedNativeRef: false,
+            },
+          }),
+        ]),
+      ],
+      {
+        installExtensionsAction: async (rollbackPlugin) => {
+          await upsertManagedDeveloperInstructionsFile(configTomlPath, {
+            pluginName: rollbackPlugin.manifest.name,
+            value: `rollback-from-${rollbackPlugin.manifest.version ?? 'unknown'}`,
+          });
+        },
+        uninstallExtensionsAction: async (currentPluginMeta) => {
+          await removeManagedDeveloperInstructionsFile(configTomlPath, currentPluginMeta.manifest.name);
+        },
+        uninstallExtensionsError: 'artifact cleanup boom',
+      },
+    );
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('artifact cleanup boom');
+
+    expect(codex.reinstallExtensionsCalls).toEqual([]);
+    await expect(readManagedCodexInstruction(configTomlPath, plugin.manifest.name)).resolves.toBe(
+      legacyInstruction,
+    );
+    await expect(readTrackingManifest(trackingDir)).resolves.toMatchObject({
+      plugins: {
+        'git-commit': {
+          artifacts: [
+            {
+              path: configTomlPath,
             },
           ],
         },
