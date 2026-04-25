@@ -1,11 +1,11 @@
 # 综合示例：code-review 插件
 
-`references/example-plugin/` 目录包含一个完整的示例插件，展示了大部分插件能力的组合使用。可以直接读取各文件作为参考。
+`references/code-review/` 目录包含一个完整的示例插件，展示了大部分插件能力的组合使用。可以直接读取各文件作为参考。
 
 ## 目录结构
 
 ```text
-example-plugin/
+code-review/
 ├── .agents-plugin/
 │   └── plugin.json              # 完整 manifest：skills + MCP + extensions + buildConfig
 ├── skills/
@@ -42,10 +42,12 @@ example-plugin/
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，各平台 bundle 的差异：
+运行 `pnpm build` 后，两个平台的 embedded bundle 内容不同。此外，Codex 的 extensions 产物不在 build 阶段生成，而是在安装阶段由 `CodexAdapter.installExtensions()` 动态写入。
 
-**Claude bundle** 包含：skills、.mcp.json、commands、output-styles、hooks.json（2 个 hook）、agents markdown、rules markdown、userConfig
+**Claude bundle（build 时写入）**：skills、.mcp.json、commands、output-styles、hooks.json（2 个 hook）、agents markdown、rules markdown、userConfig
 
-**Codex bundle** 包含：skills、.mcp.json、hooks.json（只含 command 类型 hook）、agents toml、rules markdown
+**Codex bundle（build 时写入）**：skills、.mcp.json（+ fileRules 选中的源码文件）
 
-**Codex bundle 不包含**：commands/、output-styles/、userConfig、before_tool hook（被 agentOverrides 排除）
+**Codex bundle 不包含**：commands/、output-styles/、userConfig、extensions 衍生产物（均在安装时生成）
+
+**Codex 安装时生成的 repo-managed artifacts**：instructions managed blocks、permissions rules files、hooks.json（仅 command 类型 hook，before_tool 被 agentOverrides 排除）、agents .toml
