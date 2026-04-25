@@ -38,8 +38,8 @@ function writeJson(filePath, content) {
   fs.writeFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
 }
 
-function buildPluginManifest(pluginName, version, description, displayName, shortDescription) {
-  return {
+function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
+  const manifest = {
     name: pluginName,
     version,
     description,
@@ -65,6 +65,15 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
       agents: [],
     },
   };
+
+  if (opts.withMcp) {
+    manifest.mcpServers = './.mcp.json';
+  }
+  if (opts.withApps) {
+    manifest.apps = './.app.json';
+  }
+
+  return manifest;
 }
 
 function renderSkillMd(skillName, skillDescription) {
@@ -91,9 +100,28 @@ description: ${skillDescription}
 `;
 }
 
-function renderOpenAiYaml() {
-  return `policy:
+function renderOpenAiYaml(displayName, shortDescription, skillName) {
+  const defaultPrompt = `Use $${skillName} to ${shortDescription.toLowerCase().replace(/[。.]$/, '')}.`;
+  return `interface:
+  display_name: "${displayName}"
+  short_description: "${shortDescription}"
+  default_prompt: "${defaultPrompt}"
+policy:
   allow_implicit_invocation: false
+`;
+}
+
+function renderMcpJson() {
+  return `{
+  "mcpServers": {}
+}
+`;
+}
+
+function renderAppJson() {
+  return `{
+  "apps": {}
+}
 `;
 }
 
@@ -109,6 +137,8 @@ Options:
   --skill-description <text>    Initial skill frontmatter description.
   --version <semver>            Plugin version. Default: 0.1.0
   --repo-root <path>            Repository root. Default: current directory.
+  --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
+  --with-apps                   Create .app.json stub and add apps to manifest.
   -h, --help                    Show this help message.
 `);
 }
@@ -133,6 +163,8 @@ function parseArgs(argv) {
   const options = {
     version: '0.1.0',
     repoRoot: '.',
+    withMcp: false,
+    withApps: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -141,6 +173,15 @@ function parseArgs(argv) {
     if (arg === '-h' || arg === '--help') {
       printUsage();
       process.exit(0);
+    }
+
+    if (arg === '--with-mcp') {
+      options.withMcp = true;
+      continue;
+    }
+    if (arg === '--with-apps') {
+      options.withApps = true;
+      continue;
     }
 
     if (!arg.startsWith('--')) {
@@ -222,6 +263,7 @@ function main() {
     args.description,
     displayName,
     shortDescription,
+    { withMcp: args.withMcp, withApps: args.withApps },
   );
 
   const createdPaths = [
@@ -232,7 +274,18 @@ function main() {
 
   writeJson(createdPaths[0], pluginManifest);
   writeText(createdPaths[1], renderSkillMd(skillName, skillDescription));
-  writeText(createdPaths[2], renderOpenAiYaml());
+  writeText(createdPaths[2], renderOpenAiYaml(displayName, shortDescription, skillName));
+
+  if (args.withMcp) {
+    const mcpPath = path.join(pluginRoot, '.mcp.json');
+    writeText(mcpPath, renderMcpJson());
+    createdPaths.push(mcpPath);
+  }
+  if (args.withApps) {
+    const appPath = path.join(pluginRoot, '.app.json');
+    writeText(appPath, renderAppJson());
+    createdPaths.push(appPath);
+  }
 
   console.log('[OK] Created plugin scaffold:');
   for (const createdPath of createdPaths) {
