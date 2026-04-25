@@ -4,7 +4,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { detectEnvironment } from '../../src/utils/detect.js';
+import {
+  detectCodexSessionState,
+  detectEnvironment,
+  resolveCodexProjectTrust,
+} from '../../src/utils/detect.js';
 
 const tempDirs: string[] = [];
 
@@ -90,5 +94,102 @@ describe('detect utils', () => {
     expect(detection.codex.available).toBe(false);
     expect(detection.codex.scopes).toEqual(['project', 'user']);
     expect(detection.codex.reason).toContain('executable');
+  });
+
+  it('derives Codex project trust from lookup keys and project-layer presence', () => {
+    expect(
+      resolveCodexProjectTrust({
+        applicable: true,
+        lookupKeys: ['/repo/current', '/repo/root'],
+        trustLevels: {
+          '/repo/root': 'trusted',
+        },
+        hasProjectLayerArtifacts: true,
+      }),
+    ).toBe('trusted');
+
+    expect(
+      resolveCodexProjectTrust({
+        applicable: true,
+        lookupKeys: ['/repo/current'],
+        trustLevels: {},
+        hasProjectLayerArtifacts: true,
+      }),
+    ).toBe('unknown');
+
+    expect(
+      resolveCodexProjectTrust({
+        applicable: false,
+        lookupKeys: [],
+        trustLevels: {},
+        hasProjectLayerArtifacts: false,
+      }),
+    ).toBe('not_applicable');
+  });
+
+  it('calculates Codex instructions and repo-managed session state', () => {
+    expect(
+      detectCodexSessionState({
+        scope: 'user',
+        declarations: {
+          instructions: true,
+          permissions: true,
+          hooks: true,
+          agents: true,
+        },
+        managed: {
+          instructions: true,
+          rules: true,
+          hooks: true,
+          agents: true,
+          agentRoleNames: ['aw-git-commit-reviewer'],
+        },
+        higherPriorityExternal: {
+          developerInstructions: false,
+          rules: true,
+          hooks: true,
+          agentRoleNames: ['aw-git-commit-reviewer'],
+        },
+        projectLayerDeveloperInstructionsDefined: true,
+        projectTrust: 'trusted',
+      }),
+    ).toMatchObject({
+      instructions: 'shadowedByProjectDeveloperInstructions',
+      rules: 'visible',
+      hooks: 'visible',
+      agents: 'unknownByExternalLayer',
+    });
+
+    expect(
+      detectCodexSessionState({
+        scope: 'project',
+        declarations: {
+          instructions: true,
+          permissions: true,
+          hooks: true,
+          agents: true,
+        },
+        managed: {
+          instructions: true,
+          rules: true,
+          hooks: true,
+          agents: true,
+          agentRoleNames: ['aw-git-commit-reviewer'],
+        },
+        higherPriorityExternal: {
+          developerInstructions: false,
+          rules: false,
+          hooks: false,
+          agentRoleNames: [],
+        },
+        projectLayerDeveloperInstructionsDefined: true,
+        projectTrust: 'untrusted',
+      }),
+    ).toMatchObject({
+      instructions: 'blockedByProjectTrust',
+      rules: 'blockedByProjectTrust',
+      hooks: 'blockedByProjectTrust',
+      agents: 'blockedByProjectTrust',
+    });
   });
 });

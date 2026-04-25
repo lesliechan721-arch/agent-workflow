@@ -1,5 +1,10 @@
 # NPM 插件市场分发方案
 
+> 历史文档
+> 适用背景：本文是同主题中间稿，保留了已被后续实现替换的过渡约束。
+> 失效说明：文中的旧 bundle contract、旧文档口径和部分运行时路径不再代表当前实现。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
+
 ## 背景
 
 当前 CLI 的插件安装流程会直接改写 Claude / Codex 的配置文件，运行时又默认依赖当前仓库里的 `plugins/` 目录，导致分发、安装、升级和状态判断都和源码仓库强耦合。

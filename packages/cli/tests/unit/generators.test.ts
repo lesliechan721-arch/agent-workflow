@@ -1,145 +1,104 @@
-import { describe, expect, it } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import fs from 'fs-extra';
+import { parseTOML } from 'toml-eslint-parser';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { generateAgentArtifacts } from '../../src/generators/agents.js';
-import { renderCodexHooks, renderHooksArtifact } from '../../src/generators/hooks.js';
-import { generateInstructionArtifacts, renderCodexInstructions } from '../../src/generators/instructions.js';
-import {
-  generateCodexPermissionArtifacts,
-  mergeClaudePermissions,
-} from '../../src/generators/permissions.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 
-describe('generators', () => {
-  it('renders instruction outputs for both platforms', () => {
-    const instructions = [
-      {
-        name: 'commit-policy',
-        title: '提交规范',
-        content: '按 Conventional Commits 提交。',
-        paths: ['src/**'],
-      },
-    ];
+const tempDirs: string[] = [];
 
-    expect(generateInstructionArtifacts('git-commit', instructions, 'codex')[0]).toMatchObject({
-      relativePath: 'AGENTS.md',
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
+
+async function makeTempRepo(): Promise<string> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-local-plugin-'));
+  tempDirs.push(tempDir);
+  await fs.copy(fixturePath('repo-template'), tempDir);
+  return tempDir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe('local-plugin generator', () => {
+  it('generates Claude and Codex runtime manifests with explicit bundle-local paths', async () => {
+    const repoRoot = await makeTempRepo();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+
+    const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    expect(result.claudeManifest).toMatchObject({
+      skills: './claude/skills',
+      hooks: './claude/hooks/hooks.json',
+      agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
     });
-    expect(generateInstructionArtifacts('git-commit', instructions, 'claude')[0]).toMatchObject({
-      relativePath: 'rules/aw-git-commit-commit-policy.md',
+    expect(result.codexManifest).toMatchObject({
+      skills: './codex/skills',
     });
+
+    await expect(
+      fs.readFile(path.join(outputRoot, 'claude', 'agents', 'aw-git-commit-commit-reviewer.md'), 'utf8'),
+    ).resolves.toContain('name: "commit-reviewer"');
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'codex', 'skills', 'commit', 'SKILL.md')),
+    ).resolves.toBe(true);
   });
 
-  it('merges Claude permissions and renders Codex execpolicy files', () => {
-    const permissions = [
-      {
-        name: 'git-ops',
-        allow: ['git status', 'git diff'],
-        ask: ['git commit'],
-      },
-    ];
-
-    expect(mergeClaudePermissions(permissions)).toEqual({
-      allow: ['git status', 'git diff'],
-      ask: ['git commit'],
-      deny: [],
-    });
-    expect(generateCodexPermissionArtifacts('git-commit', permissions)[0].content).toContain(
-      'ask git commit',
-    );
-  });
-
-  it('keeps only command hooks for Codex and emits full Claude hooks', () => {
-    const hooks = [
-      {
-        event: 'before_tool' as const,
-        command: 'echo before',
-      },
-      {
-        event: 'command' as const,
-        matcher: 'git *',
-        command: 'echo git hook',
-      },
-    ];
-
-    expect(renderHooksArtifact(hooks, 'codex')?.content).toEqual({
-      commands: [{ matcher: 'git *', command: 'echo git hook', description: undefined }],
-    });
-    expect(
-      (renderHooksArtifact(hooks, 'claude')?.content.hooks as Array<Record<string, unknown>>)[0]
-        .event,
-    ).toBe('beforeToolUse');
-  });
-
-  it('merges shared Codex instructions and hooks across plugins', () => {
-    expect(
-      renderCodexInstructions([
+  it('renders Claude agents with frontmatter and Codex agents as valid role-file TOML', () => {
+    const [claudeArtifact] = generateAgentArtifacts(
+      'git-commit',
+      [
         {
-          pluginName: 'git-commit',
-          instructions: [
-            {
-              name: 'commit-policy',
-              title: '提交规范',
-              content: '提交前先看 diff。',
-            },
-          ],
+          name: 'commit-reviewer',
+          description: '检查提交范围和信息是否匹配。',
+          prompt: '请检查这次提交是否符合提交规范，并指出 scope 是否准确。',
+          tools: ['shell'],
         },
-        {
-          pluginName: 'repo-check',
-          instructions: [
-            {
-              name: 'repo-check-policy',
-              title: '仓库检查',
-              content: '执行检查前先确认分支。',
-            },
-          ],
-        },
-      ]),
-    ).toContain('repo-check');
-
-    expect(
-      renderCodexHooks([
-        {
-          pluginName: 'git-commit',
-          hooks: [
-            {
-              event: 'command',
-              matcher: 'git *',
-              command: 'echo git hook',
-            },
-          ],
-        },
-        {
-          pluginName: 'repo-check',
-          hooks: [
-            {
-              event: 'command',
-              matcher: 'pnpm *',
-              command: 'echo repo hook',
-            },
-          ],
-        },
-      ])?.content,
-    ).toEqual({
-      commands: [
-        { matcher: 'git *', command: 'echo git hook', description: undefined },
-        { matcher: 'pnpm *', command: 'echo repo hook', description: undefined },
       ],
+      'claude',
+    );
+    expect(claudeArtifact).toMatchObject({
+      relativePath: 'agents/aw-git-commit-commit-reviewer.md',
     });
-  });
+    expect(claudeArtifact.content).toContain('name: "commit-reviewer"');
+    expect(claudeArtifact.content).toContain('description:');
+    expect(claudeArtifact.content).toContain('tools:');
+    expect(claudeArtifact.content).toContain('请检查这次提交是否符合提交规范');
 
-  it('renders agent definitions for both platforms', () => {
-    const agents = [
-      {
-        name: 'commit-reviewer',
-        description: '检查提交',
-        prompt: '检查提交信息',
-        tools: ['shell'],
-      },
-    ];
-
-    expect(generateAgentArtifacts('git-commit', agents, 'codex')[0].relativePath).toBe(
-      'agents/aw-git-commit-commit-reviewer.json',
+    const [codexArtifact] = generateAgentArtifacts(
+      'git-commit',
+      [
+        {
+          name: 'commit-reviewer',
+          description: '检查提交范围和信息是否匹配。',
+          prompt: '请检查这次提交是否符合提交规范，并指出 scope 是否准确。',
+          tools: ['shell'],
+        },
+      ],
+      'codex',
     );
-    expect(generateAgentArtifacts('git-commit', agents, 'claude')[0].content).toContain(
-      '## Prompt',
-    );
+    expect(codexArtifact).toMatchObject({
+      relativePath: 'agents/aw-git-commit-commit-reviewer.toml',
+    });
+    const parsed = parseTOML(codexArtifact.content);
+    const rendered = parsed.body[0];
+    expect(rendered.type).toBe('TOMLTopLevelTable');
+    expect(codexArtifact.content).toContain('name = "commit-reviewer"');
+    expect(codexArtifact.content).toContain('description = "检查提交范围和信息是否匹配。');
+    expect(codexArtifact.content).toContain('developer_instructions =');
+    expect(codexArtifact.content).not.toContain('tools =');
   });
 });

@@ -2,7 +2,14 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import type {
+  ExternalOwnershipStatus,
+  PlatformNativeFallbackEvidence,
+  PlatformRuntimeEvidence,
+  Scope,
+} from '../types.js';
 import { readJsonFileIfExists, writeJsonFile } from '../utils/json.js';
+import { getMarketplaceManifestPath } from '../utils/paths.js';
 
 export interface CodexRegistry {
   marketplaces: Record<string, Record<string, string>>;
@@ -30,9 +37,12 @@ export interface CodexRegistryFile {
 }
 
 export interface ClaudeSettings {
-  extraKnownMarketplaces?: Record<string, string>;
+  extraKnownMarketplaces?: Record<string, string | { source: string }>;
   plugins?: {
-    installed?: Record<string, { marketplace: string; version: string; installedAt: string }>;
+    installed?: Record<
+      string,
+      ClaudeSettingsInstalledRecord
+    >;
   };
   permissions?: {
     allow?: string[];
@@ -52,15 +62,43 @@ export interface ClaudeSettings {
   };
 }
 
-interface KnownMarketplaceState {
+export interface ClaudeSettingsInstalledRecord {
+  marketplace: string;
+  version: string;
+  installedAt: string;
+  scope?: Scope;
+  projectPath?: string;
+  enabled?: boolean;
+  owner?: string;
+}
+
+export interface ClaudeKnownMarketplaceRecord {
+  installLocation?: string;
+  source?: string;
+  materializedAt?: string;
+  plugins?: string[];
+}
+
+export interface ClaudeKnownMarketplaceState {
   marketplaces: Record<
     string,
-    {
-      source: string;
-      materializedAt: string;
-      plugins: string[];
-    }
+    ClaudeKnownMarketplaceRecord
   >;
+}
+
+export interface ClaudeInstalledPluginRecord {
+  name: string;
+  marketplace: string;
+  scope: Scope;
+  projectPath?: string;
+  version?: string;
+  installedAt?: string;
+  installPath?: string;
+  owner?: string;
+}
+
+export interface ClaudeInstalledPluginsState {
+  plugins: Record<string, ClaudeInstalledPluginRecord[]>;
 }
 
 function createEmptyCodexRegistry(): CodexRegistry {
@@ -351,16 +389,323 @@ export async function writeClaudeSettings(
 
 export async function readKnownMarketplaceState(
   knownMarketplacesPath: string,
-): Promise<KnownMarketplaceState> {
-  const state = await readJsonFileIfExists<KnownMarketplaceState>(knownMarketplacesPath);
+): Promise<ClaudeKnownMarketplaceState> {
+  const state = await readJsonFileIfExists<ClaudeKnownMarketplaceState>(knownMarketplacesPath);
   return state ?? { marketplaces: {} };
 }
 
 export async function writeKnownMarketplaceState(
   knownMarketplacesPath: string,
-  state: KnownMarketplaceState,
+  state: ClaudeKnownMarketplaceState,
 ): Promise<void> {
   await writeJsonFile(knownMarketplacesPath, state);
+}
+
+function normalizeInstalledPluginsState(
+  rawState: unknown,
+): ClaudeInstalledPluginsState {
+  if (!rawState || typeof rawState !== 'object' || !('plugins' in rawState)) {
+    return { plugins: {} };
+  }
+
+  const plugins: ClaudeInstalledPluginsState['plugins'] = {};
+  for (const [pluginKey, value] of Object.entries(
+    (rawState as { plugins?: Record<string, unknown> }).plugins ?? {},
+  )) {
+    const records = Array.isArray(value) ? value : [value];
+    const normalizedRecords = records
+      .filter((record): record is Record<string, unknown> => typeof record === 'object' && record !== null)
+      .map((record): ClaudeInstalledPluginRecord => {
+        const scope: Scope = record.scope === 'project' ? 'project' : 'user';
+        return {
+          name: typeof record.name === 'string'
+            ? record.name
+            : pluginKey.includes('@')
+              ? pluginKey.slice(0, pluginKey.indexOf('@'))
+              : pluginKey,
+          marketplace:
+            typeof record.marketplace === 'string'
+              ? record.marketplace
+              : pluginKey.includes('@')
+                ? pluginKey.slice(pluginKey.indexOf('@') + 1)
+                : 'aw',
+          scope,
+          projectPath:
+            typeof record.projectPath === 'string' ? record.projectPath : undefined,
+          version: typeof record.version === 'string' ? record.version : undefined,
+          installedAt:
+            typeof record.installedAt === 'string' ? record.installedAt : undefined,
+          installPath:
+            typeof record.installPath === 'string' ? record.installPath : undefined,
+          owner: typeof record.owner === 'string' ? record.owner : undefined,
+        };
+      });
+
+    if (normalizedRecords.length > 0) {
+      plugins[pluginKey] = normalizedRecords;
+    }
+  }
+
+  return { plugins };
+}
+
+export async function readClaudeInstalledPluginsState(
+  installedPluginsPath: string,
+): Promise<ClaudeInstalledPluginsState> {
+  const rawState = await readJsonFileIfExists<unknown>(installedPluginsPath);
+  return normalizeInstalledPluginsState(rawState);
+}
+
+export async function writeClaudeInstalledPluginsState(
+  installedPluginsPath: string,
+  state: ClaudeInstalledPluginsState,
+): Promise<void> {
+  await writeJsonFile(installedPluginsPath, state);
+}
+
+export function getClaudeMarketplaceSource(
+  settings: ClaudeSettings,
+  marketplaceName: string,
+): string | undefined {
+  const value = settings.extraKnownMarketplaces?.[marketplaceName];
+  if (typeof value === 'string') {
+    return value;
+  }
+  return value?.source;
+}
+
+export function getClaudeSettingsInstalledRecord(
+  settings: ClaudeSettings,
+  pluginName: string,
+): ClaudeSettingsInstalledRecord | undefined {
+  return settings.plugins?.installed?.[pluginName];
+}
+
+export function isClaudePluginEnabledForScope(
+  settings: ClaudeSettings,
+  pluginName: string,
+  marketplaceName: string,
+  scope: Scope,
+  projectPath?: string,
+): boolean {
+  const record = getClaudeSettingsInstalledRecord(settings, pluginName);
+  if (!record || record.marketplace !== marketplaceName) {
+    return false;
+  }
+
+  if (scope === 'user') {
+    return record.scope !== 'project';
+  }
+
+  return record.scope === 'project' && record.projectPath === projectPath;
+}
+
+export function resolveClaudeInstalledRecordForScope(
+  installedPlugins: ClaudeInstalledPluginsState,
+  pluginName: string,
+  marketplaceName: string,
+  scope: Scope,
+  projectPath?: string,
+): ClaudeInstalledPluginRecord | undefined {
+  const pluginKey = `${pluginName}@${marketplaceName}`;
+  const records = installedPlugins.plugins[pluginKey] ?? [];
+  return records.find((record) =>
+    record.scope === scope &&
+    (scope === 'user' || record.projectPath === projectPath),
+  );
+}
+
+export function resolveClaudeKnownMarketplaceInstallLocation(
+  record: ClaudeKnownMarketplaceRecord | undefined,
+): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+  return record.installLocation ?? record.source;
+}
+
+export async function resolveClaudeActiveLocalBundle(
+  pluginName: string,
+  marketplaceName: string,
+  installLocation: string | undefined,
+): Promise<{
+  activeLocalBundle: string | null;
+  details?: string;
+}> {
+  if (!installLocation) {
+    return {
+      activeLocalBundle: null,
+      details: 'known_marketplaces.json 中缺少 installLocation。',
+    };
+  }
+
+  const manifestPath = getMarketplaceManifestPath(installLocation, 'claude');
+  if (!(await fs.pathExists(manifestPath))) {
+    return {
+      activeLocalBundle: null,
+      details: `materialized marketplace manifest 缺失: ${manifestPath}`,
+    };
+  }
+
+  try {
+    const manifest = await fs.readJson(manifestPath) as {
+      name?: string;
+      plugins?: Array<{ name?: string; source?: string }>;
+    };
+    if (manifest.name !== marketplaceName) {
+      return {
+        activeLocalBundle: null,
+        details: `materialized marketplace 名称不是 ${marketplaceName}。`,
+      };
+    }
+
+    const entry = manifest.plugins?.find((item) => item.name === pluginName);
+    if (!entry?.source) {
+      return {
+        activeLocalBundle: null,
+        details: `materialized marketplace 缺少 ${pluginName} 的 source。`,
+      };
+    }
+
+    const bundlePath = path.resolve(installLocation, entry.source);
+    return {
+      activeLocalBundle: await fs.pathExists(bundlePath) ? bundlePath : null,
+      details: await fs.pathExists(bundlePath)
+        ? undefined
+        : `materialized bundle 不存在: ${bundlePath}`,
+    };
+  } catch (error) {
+    return {
+      activeLocalBundle: null,
+      details: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function resolveClaudePlatformRuntimeEvidence(
+  settings: ClaudeSettings,
+  installedPlugins: ClaudeInstalledPluginsState,
+  knownMarketplace: ClaudeKnownMarketplaceRecord | undefined,
+  pluginName: string,
+  marketplaceName: string,
+  scope: Scope,
+  projectPath?: string,
+): Promise<PlatformRuntimeEvidence & { activeLocalBundle: string | null }> {
+  if (!isClaudePluginEnabledForScope(settings, pluginName, marketplaceName, scope, projectPath)) {
+    return {
+      present: false,
+      activeLocalBundle: null,
+      details: '当前 scope 的 settings.json 未启用该插件。',
+    };
+  }
+
+  const fallbackRecord = resolveClaudeInstalledRecordForScope(
+    installedPlugins,
+    pluginName,
+    marketplaceName,
+    scope,
+    projectPath,
+  );
+  const installLocation = resolveClaudeKnownMarketplaceInstallLocation(knownMarketplace);
+  const bundle = await resolveClaudeActiveLocalBundle(pluginName, marketplaceName, installLocation);
+  return {
+    present: Boolean(bundle.activeLocalBundle),
+    activeLocalBundle: bundle.activeLocalBundle,
+    details: bundle.details ?? (fallbackRecord ? undefined : 'installed_plugins.json 未命中当前 scope 记录。'),
+  };
+}
+
+export function resolveClaudePlatformNativeFallbackEvidence(
+  settings: ClaudeSettings,
+  installedPlugins: ClaudeInstalledPluginsState,
+  pluginName: string,
+  marketplaceName: string,
+  scope: Scope,
+  projectPath?: string,
+): PlatformNativeFallbackEvidence {
+  if (!isClaudePluginEnabledForScope(settings, pluginName, marketplaceName, scope, projectPath)) {
+    return {
+      present: false,
+      details: '当前 scope 的 settings.json 未启用该插件。',
+    };
+  }
+
+  const record = resolveClaudeInstalledRecordForScope(
+    installedPlugins,
+    pluginName,
+    marketplaceName,
+    scope,
+    projectPath,
+  );
+  return {
+    present: Boolean(record),
+    details: record
+      ? undefined
+      : `installed_plugins.json 未命中 ${scope} scope 的 ${pluginName}@${marketplaceName} 记录。`,
+  };
+}
+
+export function detectClaudeExternalOwnership(
+  settings: ClaudeSettings,
+  installedPlugins: ClaudeInstalledPluginsState,
+  pluginName: string,
+  marketplaceName: string,
+  scope: Scope,
+  projectPath?: string,
+): ExternalOwnershipStatus | undefined {
+  const settingsRecord = getClaudeSettingsInstalledRecord(settings, pluginName);
+  if (settingsRecord && settingsRecord.marketplace !== marketplaceName) {
+    return {
+      present: true,
+      marketplace: settingsRecord.marketplace,
+      owner: settingsRecord.owner,
+      details: `settings.json 显示 ${pluginName} 由 ${settingsRecord.marketplace} 管理。`,
+    };
+  }
+
+  const records = Object.values(installedPlugins.plugins)
+    .flat()
+    .filter((record) =>
+      record.name === pluginName &&
+      record.marketplace !== marketplaceName &&
+      record.scope === scope &&
+      (scope === 'user' || record.projectPath === projectPath),
+    );
+  const record = records[0];
+  if (!record) {
+    return undefined;
+  }
+
+  return {
+    present: true,
+    marketplace: record.marketplace,
+    owner: record.owner,
+    details: `installed_plugins.json 显示 ${pluginName} 由 ${record.marketplace} 管理。`,
+  };
+}
+
+export function detectCodexExternalOwnership(
+  pluginStates: Record<string, { enabled?: boolean }>,
+  pluginName: string,
+  marketplaceName: string,
+): ExternalOwnershipStatus | undefined {
+  const prefix = `${pluginName}@`;
+  const entry = Object.entries(pluginStates).find(
+    ([key, value]) =>
+      key.startsWith(prefix) &&
+      key !== `${pluginName}@${marketplaceName}` &&
+      value.enabled === true,
+  );
+  if (!entry) {
+    return undefined;
+  }
+
+  const [pluginRef] = entry;
+  return {
+    present: true,
+    marketplace: pluginRef.slice(prefix.length),
+    details: `Codex config.toml 中已启用外部同名插件 ${pluginRef}。`,
+  };
 }
 
 export async function removeFileIfExists(filePath: string): Promise<void> {

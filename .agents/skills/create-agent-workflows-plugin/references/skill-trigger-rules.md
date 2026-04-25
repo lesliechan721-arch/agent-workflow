@@ -1,5 +1,7 @@
 # Skill 自动 / 手动触发规则
 
+这份说明只讨论源码目录 `plugins/<name>/skills/**` 里的触发语义。运行时 `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 仍由 build 产物生成，不是作者手工维护目标。
+
 ## 先看结论
 
 Codex 和 Claude Code 的触发开关不是一套语义：

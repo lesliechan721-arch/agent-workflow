@@ -1,15 +1,10 @@
-import type { PlatformName } from '../types.js';
+import type { MarketplaceManifest, PlatformName } from '../types.js';
 import { readJsonFile } from './json.js';
+import { resolveCurrentCatalog } from './plugin-catalog.js';
 import {
   getMarketplaceManifestPath,
   getMarketplaceManifestPaths,
 } from './paths.js';
-
-export interface MarketplaceManifest {
-  name: string;
-  plugins: Array<{ name: string }>;
-  [key: string]: unknown;
-}
 
 function normalizeComparableValue(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -32,14 +27,15 @@ function serializeComparableValue(value: unknown): string {
 }
 
 export async function readMarketplaceManifest(
-  repoRoot: string,
+  _cwd: string,
   platform: PlatformName,
 ): Promise<{
   path: string;
   manifest: MarketplaceManifest;
 }> {
-  const marketplacePaths = getMarketplaceManifestPaths(repoRoot);
-  const targetPath = getMarketplaceManifestPath(repoRoot, platform);
+  const catalog = await resolveCurrentCatalog();
+  const marketplacePaths = getMarketplaceManifestPaths(catalog.rootDir);
+  const targetPath = getMarketplaceManifestPath(catalog.rootDir, platform);
   const [targetManifest, claudeManifest, codexManifest] = await Promise.all([
     readJsonFile<MarketplaceManifest>(targetPath),
     readJsonFile<MarketplaceManifest>(marketplacePaths.claude),
@@ -48,7 +44,7 @@ export async function readMarketplaceManifest(
 
   if (serializeComparableValue(claudeManifest) !== serializeComparableValue(codexManifest)) {
     throw new Error(
-      'marketplace 镜像不一致，请先同步 `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。',
+      'marketplace mirrors are inconsistent; rebuild the embedded bundle before continuing.',
     );
   }
 

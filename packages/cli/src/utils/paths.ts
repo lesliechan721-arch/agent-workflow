@@ -1,11 +1,37 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import fs from 'fs-extra';
 
 import {
   CLAUDE_MARKETPLACE_PATH,
   CODEX_MARKETPLACE_PATH,
 } from '../constants.js';
 import type { PlatformName, Scope } from '../types.js';
+import { validateBundleLayout } from './bundle-layout.js';
+
+let embeddedPluginsRootOverride: string | null = null;
+
+export function resolveCliPackageRoot(): string {
+  let currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+  while (true) {
+    const packageJsonPath = path.join(currentDir, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      const packageJson = fs.readJsonSync(packageJsonPath) as { name?: string };
+      if (packageJson.name === '@yiliang/aw') {
+        return currentDir;
+      }
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      throw new Error('Unable to resolve @yiliang/aw package root.');
+    }
+    currentDir = parentDir;
+  }
+}
 
 export interface ClaudePaths {
   platform: 'claude';
@@ -15,6 +41,7 @@ export interface ClaudePaths {
   rulesDir: string;
   agentsDir: string;
   knownMarketplacesPath: string;
+  installedPluginsPath: string;
   marketplaceCacheDir: string;
   trackingDir: string;
 }
@@ -23,6 +50,7 @@ export interface CodexPaths {
   platform: 'codex';
   scope: Scope;
   configDir: string;
+  configTomlPath: string;
   instructionsPath: string;
   rulesDir: string;
   agentsDir: string;
@@ -30,6 +58,10 @@ export interface CodexPaths {
   trackingDir: string;
   registryConfigPath: string;
   registryScope: 'user';
+}
+
+export function setEmbeddedPluginsRootOverrideForTests(rootDir: string | null): void {
+  embeddedPluginsRootOverride = rootDir;
 }
 
 export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -40,12 +72,36 @@ export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.AW_CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
+export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AW_HOME || path.join(os.homedir(), '.aw');
+}
+
+export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getClaudeHome(env), 'plugins');
+}
+
+export async function resolveEmbeddedPluginsRoot(): Promise<string> {
+  const candidate = embeddedPluginsRootOverride ?? path.join(resolveCliPackageRoot(), 'plugins-dist');
+  try {
+    await validateBundleLayout(candidate);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (embeddedPluginsRootOverride) {
+      throw new Error(`Invalid embedded plugins root override: ${message}`);
+    }
+    throw new Error(`Embedded plugins root is unavailable; run \`pnpm build\` first. ${message}`);
+  }
+
+  return candidate;
+}
+
 export function resolveClaudePaths(
   cwd: string,
   scope: Scope,
   env: NodeJS.ProcessEnv = process.env,
 ): ClaudePaths {
   const configDir = scope === 'project' ? path.join(cwd, '.claude') : getClaudeHome(env);
+  const pluginsDir = resolveClaudePluginsDir(env);
   return {
     platform: 'claude',
     scope,
@@ -53,8 +109,9 @@ export function resolveClaudePaths(
     settingsPath: path.join(configDir, 'settings.json'),
     rulesDir: path.join(configDir, 'rules'),
     agentsDir: path.join(configDir, 'agents'),
-    knownMarketplacesPath: path.join(configDir, 'plugins', 'known_marketplaces.json'),
-    marketplaceCacheDir: path.join(configDir, 'plugins', 'marketplaces'),
+    knownMarketplacesPath: path.join(pluginsDir, 'known_marketplaces.json'),
+    installedPluginsPath: path.join(pluginsDir, 'installed_plugins.json'),
+    marketplaceCacheDir: path.join(pluginsDir, 'marketplaces'),
     trackingDir: configDir,
   };
 }
@@ -65,10 +122,12 @@ export function resolveCodexPaths(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexPaths {
   const configDir = scope === 'project' ? path.join(cwd, '.codex') : getCodexHome(env);
+  const configTomlPath = path.join(configDir, 'config.toml');
   return {
     platform: 'codex',
     scope,
     configDir,
+    configTomlPath,
     instructionsPath: path.join(configDir, 'AGENTS.md'),
     rulesDir: path.join(configDir, 'rules'),
     agentsDir: path.join(configDir, 'agents'),
@@ -80,20 +139,56 @@ export function resolveCodexPaths(
 }
 
 export function getMarketplaceManifestPath(
-  repoRoot: string,
+  catalogRoot: string,
   platform: PlatformName,
 ): string {
   return path.join(
-    repoRoot,
+    catalogRoot,
     platform === 'codex' ? CODEX_MARKETPLACE_PATH : CLAUDE_MARKETPLACE_PATH,
   );
 }
 
 export function getMarketplaceManifestPaths(
-  repoRoot: string,
+  catalogRoot: string,
 ): Record<PlatformName, string> {
   return {
-    claude: getMarketplaceManifestPath(repoRoot, 'claude'),
-    codex: getMarketplaceManifestPath(repoRoot, 'codex'),
+    claude: getMarketplaceManifestPath(catalogRoot, 'claude'),
+    codex: getMarketplaceManifestPath(catalogRoot, 'codex'),
   };
+}
+
+async function realpathOrResolved(inputPath: string): Promise<string> {
+  const resolved = path.resolve(inputPath);
+  try {
+    return await fs.realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export async function resolveRepoRoot(cwd: string): Promise<string> {
+  let currentDir = path.resolve(cwd);
+
+  while (true) {
+    const gitDir = path.join(currentDir, '.git');
+    const workspaceFile = path.join(currentDir, 'pnpm-workspace.yaml');
+    if (await fs.pathExists(gitDir) || await fs.pathExists(workspaceFile)) {
+      return currentDir;
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return path.resolve(cwd);
+    }
+    currentDir = parentDir;
+  }
+}
+
+export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
+  return realpathOrResolved(cwd);
+}
+
+export async function resolveCodexProjectKey(cwd: string): Promise<string> {
+  const repoRoot = await resolveRepoRoot(cwd);
+  return realpathOrResolved(repoRoot);
 }

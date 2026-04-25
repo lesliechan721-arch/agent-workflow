@@ -1,25 +1,40 @@
-import type { CommandOptions, StatusReport } from '../types.js';
+import type { CommandOptions, PlatformAdapter, PlatformName, StatusReport } from '../types.js';
 import { detectEnvironment } from '../utils/detect.js';
-import { createAdapters, formatStatusOutput, loadPluginsForCommand, resolveTargetPlatforms } from './common.js';
+import {
+  createAdapters,
+  formatStatusOutput,
+  hasHistoricalEvidence,
+  loadPluginTargetsForCommand,
+  resolveTargetPlatforms,
+} from './common.js';
+
+interface CommandRuntime {
+  adapters?: Record<PlatformName, PlatformAdapter>;
+  env?: NodeJS.ProcessEnv;
+}
 
 export async function statusCommand(
   pluginNames: string[],
   options: CommandOptions,
+  runtime: CommandRuntime = {},
 ): Promise<{ reports: StatusReport[]; output: string }> {
-  const plugins = await loadPluginsForCommand(
+  const env = runtime.env ?? process.env;
+  const targets = await loadPluginTargetsForCommand(
     options.cwd,
+    options.scope,
     pluginNames.length > 0 ? pluginNames : undefined,
     {
-      syncGeneratedManifests: false,
+      allowHistoricalFallback: pluginNames.length > 0,
+      env,
     },
   );
-  const adapters = createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd);
   const platforms = await resolveTargetPlatforms(
     'status',
     options.platform,
     options.cwd,
     options.scope,
-    plugins,
+    targets.map((target) => target.plugin),
     adapters,
   );
 
@@ -28,8 +43,13 @@ export async function statusCommand(
     const pluginReports = [];
     let initialized = false;
 
-    for (const plugin of plugins) {
-      const status = await adapters[platform].status(plugin, options.scope);
+    for (const target of targets) {
+      const status = await adapters[platform].status(target.plugin, options.scope);
+      const pluginStatus = status.plugins[0];
+      if (target.source === 'historical' && pluginStatus && !hasHistoricalEvidence(pluginStatus)) {
+        throw new Error(`Unknown plugin "${target.pluginName}".`);
+      }
+
       pluginReports.push(...status.plugins);
       initialized ||= status.initialized;
     }
@@ -42,7 +62,7 @@ export async function statusCommand(
     });
   }
 
-  const detection = await detectEnvironment(options.cwd);
+  const detection = await detectEnvironment(options.cwd, env);
   return {
     reports,
     output: formatStatusOutput(detection, reports),

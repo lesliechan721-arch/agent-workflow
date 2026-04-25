@@ -1,5 +1,10 @@
 # Codex 与 Claude Code 扩展能力调研
 
+> 历史文档
+> 适用背景：本文记录的是 npm marketplace 新方案定稿前，对 Claude / Codex 扩展能力对齐的中间调研。
+> 失效说明：文中把共享 `.claude-plugin/plugin.json` 作为当前推荐落点的部分，已经被 source manifest + build bundle 模型替代。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./dev/plans/npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](./dev/todos/npm-plugin-marketplace-new.md) 为准。
+
 本文基于以下源码做实现层调研，用来支撑“一个尽量共用的工作流扩展项目”后续的架构决策，不把源码现状当作长期稳定的产品承诺。
 
 - Codex: `/Users/LeslieChan/Desktop/codex/codex-rs`

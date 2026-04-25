@@ -1,27 +1,38 @@
 {
   "name": "@yiliang/aw",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "bin": {
     "aw": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "plugins-dist/"
+  ],
+  "publishConfig": {
+    "registry": "https://packages.aliyun.com/5fa510142f8cc15c287b3dcd/npm/npm-registry/"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:smoke": "vitest run --config vitest.smoke.config.ts",
+    "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
+    "test:smoke:pack": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
+    "prepack": "pnpm build"
   },
   "dependencies": {
     "chalk": "^5.4.1",
     "commander": "^14.0.1",
-    "fs-extra": "^11.3.0"
+    "fs-extra": "^11.3.0",
+    "toml-eslint-parser": "^1.0.3"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^3.2.4",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

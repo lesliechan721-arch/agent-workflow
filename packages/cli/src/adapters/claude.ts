@@ -2,47 +2,52 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { generateAgentArtifacts } from '../generators/agents.js';
-import { renderHooksArtifact } from '../generators/hooks.js';
 import { generateInstructionArtifacts } from '../generators/instructions.js';
 import { mergeClaudePermissions } from '../generators/permissions.js';
 import type {
+  CatalogCompatibility,
+  ClaudeCapabilitySnapshot,
   GeneratedArtifact,
   GeneratedArtifactStatus,
+  InstalledLedger,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
   Scope,
+  ScopeInitializedState,
   StatusReport,
 } from '../types.js';
 import { detectEnvironment } from '../utils/detect.js';
-import { writeJsonFile } from '../utils/json.js';
-import { readMarketplaceManifest } from '../utils/marketplace.js';
-import { resolveClaudePaths } from '../utils/paths.js';
 import {
+  ensureLocalMarketplace,
+  readInstalledLedger,
+  resolveScopeInitialized,
+} from '../utils/local-marketplace.js';
+import { readMarketplaceManifest } from '../utils/marketplace.js';
+import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
+import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import { resolveAwHome, resolveClaudePaths, resolveClaudeProjectKey } from '../utils/paths.js';
+import {
+  getTrackingRecord,
   readTrackingManifest,
-  removeTrackingRecord,
-  upsertTrackingRecord,
 } from '../utils/tracking.js';
 import {
   type ClaudeSettings,
+  detectClaudeExternalOwnership,
+  getClaudeMarketplaceSource,
+  isClaudePluginEnabledForScope,
+  readClaudeInstalledPluginsState,
   readClaudeSettings,
   readKnownMarketplaceState,
-  removeFileIfExists,
+  resolveClaudeActiveLocalBundle,
+  resolveClaudeInstalledRecordForScope,
+  resolveClaudeKnownMarketplaceInstallLocation,
+  resolveClaudePlatformNativeFallbackEvidence,
+  resolveClaudePlatformRuntimeEvidence,
   writeClaudeSettings,
-  writeKnownMarketplaceState,
 } from './helpers.js';
 
-async function writeTextArtifact(
-  baseDir: string,
-  relativePath: string,
-  content: string,
-): Promise<string> {
-  const targetPath = path.join(baseDir, relativePath);
-  await fs.ensureDir(path.dirname(targetPath));
-  await fs.writeFile(targetPath, content, 'utf8');
-  return targetPath;
-}
+const MARKETPLACE_NAME = 'aw';
 
 type ClaudePermissionState = {
   allow: string[];
@@ -50,52 +55,63 @@ type ClaudePermissionState = {
   deny: string[];
 };
 
-function assertClaudePluginOwnership(
-  pluginName: string,
-  installedRecord: { marketplace: string; version: string; installedAt: string } | undefined,
-  marketplaceName: string,
-): void {
-  if (!installedRecord || installedRecord.marketplace === marketplaceName) {
-    return;
-  }
-
-  throw new Error(
-    `${pluginName} 已由 marketplace ${JSON.stringify(installedRecord.marketplace)} 安装，agent-workflows 不会覆盖或删除外部同名插件。`,
-  );
+function normalizeComparableArray(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
 }
 
-function aggregateClaudePermissions(settings: ClaudeSettings): ClaudePermissionState {
-  const generated = settings.awGenerated?.permissions ?? {};
-  const allow = new Set<string>();
-  const ask = new Set<string>();
-  const deny = new Set<string>();
-
-  for (const entry of Object.values(generated)) {
-    entry.allow.forEach((value) => allow.add(value));
-    entry.ask.forEach((value) => ask.add(value));
-    entry.deny.forEach((value) => deny.add(value));
-  }
-
-  return {
-    allow: [...allow],
-    ask: [...ask],
-    deny: [...deny],
-  };
+function normalizeManagedExtensions(
+  snapshot: ClaudeCapabilitySnapshot | undefined,
+): string[] {
+  return normalizeComparableArray(snapshot?.managedExtensions);
 }
 
-function aggregateClaudeHooks(settings: ClaudeSettings): Array<Record<string, unknown>> {
-  const generated = settings.awGenerated?.hooks ?? {};
+function getClaudeManagedExtensions(plugin: PluginMeta): string[] {
+  const managedExtensions: string[] = [];
+  if ((plugin.manifest.extensions?.instructions ?? []).length > 0) {
+    managedExtensions.push('instructions');
+  }
+  if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+    managedExtensions.push('permissions');
+  }
+  return managedExtensions;
+}
 
-  return Object.values(generated).flat();
+export function resolveClaudeCatalogCompatibility(options: {
+  currentManifestPresent: boolean;
+  currentManagedExtensions: string[];
+  currentScopeManagedEvidence: boolean;
+  platformRuntimeEvidence: boolean;
+  platformNativeFallbackEvidence: boolean;
+  installedCapabilitySnapshot?: ClaudeCapabilitySnapshot;
+}): CatalogCompatibility | undefined {
+  if (!options.currentManifestPresent) {
+    return (
+      options.currentScopeManagedEvidence ||
+      options.platformRuntimeEvidence ||
+      options.platformNativeFallbackEvidence
+    )
+      ? 'missing'
+      : undefined;
+  }
+
+  if (!options.currentScopeManagedEvidence || !options.installedCapabilitySnapshot) {
+    return undefined;
+  }
+
+  const installedExtensions = normalizeManagedExtensions(options.installedCapabilitySnapshot);
+  const currentExtensions = normalizeComparableArray(options.currentManagedExtensions);
+  return JSON.stringify(installedExtensions) === JSON.stringify(currentExtensions)
+    ? 'current'
+    : 'capabilityChanged';
 }
 
 function normalizeClaudePermissions(
-  permissions: ClaudeSettings['permissions'] | undefined,
+  permissions: ClaudeSettings['permissions'] | ClaudePermissionState | undefined,
 ): ClaudePermissionState {
   return {
-    allow: [...new Set(permissions?.allow ?? [])],
-    ask: [...new Set(permissions?.ask ?? [])],
-    deny: [...new Set(permissions?.deny ?? [])],
+    allow: normalizeComparableArray(permissions?.allow),
+    ask: normalizeComparableArray(permissions?.ask),
+    deny: normalizeComparableArray(permissions?.deny),
   };
 }
 
@@ -104,30 +120,6 @@ function hasClaudePermissions(
 ): boolean {
   const normalized = normalizeClaudePermissions(permissions);
   return normalized.allow.length > 0 || normalized.ask.length > 0 || normalized.deny.length > 0;
-}
-
-function subtractClaudePermissions(
-  currentPermissions: ClaudeSettings['permissions'] | undefined,
-  generatedPermissions: ClaudePermissionState,
-): ClaudeSettings['permissions'] | undefined {
-  const current = normalizeClaudePermissions(currentPermissions);
-  const generated = {
-    allow: new Set(generatedPermissions.allow),
-    ask: new Set(generatedPermissions.ask),
-    deny: new Set(generatedPermissions.deny),
-  };
-
-  const preserved = {
-    allow: current.allow.filter((value) => !generated.allow.has(value)),
-    ask: current.ask.filter((value) => !generated.ask.has(value)),
-    deny: current.deny.filter((value) => !generated.deny.has(value)),
-  };
-
-  if (preserved.allow.length === 0 && preserved.ask.length === 0 && preserved.deny.length === 0) {
-    return undefined;
-  }
-
-  return preserved;
 }
 
 function mergeClaudePermissionStates(
@@ -145,197 +137,38 @@ function mergeClaudePermissionStates(
   }
 
   return {
-    allow: [...allow],
-    ask: [...ask],
-    deny: [...deny],
+    allow: [...allow].sort(),
+    ask: [...ask].sort(),
+    deny: [...deny].sort(),
   };
 }
 
-function normalizeComparableValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeComparableValue(entry));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, normalizeComparableValue(entry)]),
-    );
-  }
-
-  return value;
-}
-
-function serializeComparableValue(value: unknown): string {
-  return JSON.stringify(normalizeComparableValue(value));
-}
-
-function countComparableValues(
-  values: Array<Record<string, unknown>>,
-): Map<string, number> {
-  const counts = new Map<string, number>();
-
-  for (const value of values) {
-    const key = serializeComparableValue(value);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-
-  return counts;
-}
-
-function subtractClaudeHooks(
-  currentHooks: ClaudeSettings['hooks'] | undefined,
-  generatedHooks: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  const generatedCounts = new Map<string, number>();
-
-  for (const hook of generatedHooks) {
-    const key = serializeComparableValue(hook);
-    generatedCounts.set(key, (generatedCounts.get(key) ?? 0) + 1);
-  }
-
-  const preserved: Array<Record<string, unknown>> = [];
-  for (const hook of currentHooks ?? []) {
-    const key = serializeComparableValue(hook);
-    const remaining = generatedCounts.get(key) ?? 0;
-
-    if (remaining > 0) {
-      generatedCounts.set(key, remaining - 1);
-      continue;
-    }
-
-    preserved.push(hook);
-  }
-
-  return preserved;
-}
-
-function filterStoredClaudePermissions(
-  storedPermissions: ClaudeSettings['permissions'] | undefined,
+function subtractClaudePermissions(
   currentPermissions: ClaudeSettings['permissions'] | undefined,
   generatedPermissions: ClaudePermissionState,
 ): ClaudePermissionState {
-  const stored = normalizeClaudePermissions(storedPermissions);
   const current = normalizeClaudePermissions(currentPermissions);
   const generated = {
     allow: new Set(generatedPermissions.allow),
     ask: new Set(generatedPermissions.ask),
     deny: new Set(generatedPermissions.deny),
   };
-  const currentSets = {
-    allow: new Set(current.allow),
-    ask: new Set(current.ask),
-    deny: new Set(current.deny),
-  };
 
   return {
-    allow: stored.allow.filter(
-      (value) => currentSets.allow.has(value) || generated.allow.has(value),
-    ),
-    ask: stored.ask.filter((value) => currentSets.ask.has(value) || generated.ask.has(value)),
-    deny: stored.deny.filter(
-      (value) => currentSets.deny.has(value) || generated.deny.has(value),
-    ),
+    allow: current.allow.filter((value) => !generated.allow.has(value)),
+    ask: current.ask.filter((value) => !generated.ask.has(value)),
+    deny: current.deny.filter((value) => !generated.deny.has(value)),
   };
 }
 
-function deriveClaudeManualPermissions(settings: ClaudeSettings): ClaudePermissionState {
-  const generatedPermissions = aggregateClaudePermissions(settings);
-  const visibleManualPermissions = subtractClaudePermissions(
-    settings.permissions,
-    generatedPermissions,
-  );
-
-  return mergeClaudePermissionStates(
-    filterStoredClaudePermissions(
-      settings.awGenerated?.manualPermissions,
-      settings.permissions,
-      generatedPermissions,
-    ),
-    visibleManualPermissions,
-  );
-}
-
-function filterStoredClaudeHooks(
-  storedHooks: Array<Record<string, unknown>>,
-  currentHooks: Array<Record<string, unknown>>,
-  generatedHooks: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  const currentCounts = countComparableValues(currentHooks);
-  const generatedCounts = countComparableValues(generatedHooks);
-  const emittedCounts = new Map<string, number>();
-  const filtered: Array<Record<string, unknown>> = [];
-
-  for (const hook of storedHooks) {
-    const key = serializeComparableValue(hook);
-    const limit = Math.max(currentCounts.get(key) ?? 0, generatedCounts.get(key) ?? 0);
-    const emitted = emittedCounts.get(key) ?? 0;
-
-    if (emitted >= limit) {
-      continue;
-    }
-
-    filtered.push(hook);
-    emittedCounts.set(key, emitted + 1);
-  }
-
-  return filtered;
-}
-
-function mergeHookListsByMaxCount(
-  primary: Array<Record<string, unknown>>,
-  secondary: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  const primaryCounts = countComparableValues(primary);
-  const secondaryCounts = countComparableValues(secondary);
-  const limits = new Map<string, number>();
-
-  for (const [key, count] of primaryCounts) {
-    limits.set(key, count);
-  }
-
-  for (const [key, count] of secondaryCounts) {
-    limits.set(key, Math.max(limits.get(key) ?? 0, count));
-  }
-
-  const emittedCounts = new Map<string, number>();
-  const merged: Array<Record<string, unknown>> = [];
-
-  for (const hook of [...primary, ...secondary]) {
-    const key = serializeComparableValue(hook);
-    const emitted = emittedCounts.get(key) ?? 0;
-    const limit = limits.get(key) ?? 0;
-
-    if (emitted >= limit) {
-      continue;
-    }
-
-    merged.push(hook);
-    emittedCounts.set(key, emitted + 1);
-  }
-
-  return merged;
-}
-
-function deriveClaudeManualHooks(settings: ClaudeSettings): Array<Record<string, unknown>> {
-  const generatedHooks = aggregateClaudeHooks(settings);
-  const visibleManualHooks = subtractClaudeHooks(settings.hooks, generatedHooks);
-  const storedManualHooks = settings.awGenerated?.manualHooks ?? [];
-
-  return mergeHookListsByMaxCount(
-    filterStoredClaudeHooks(storedManualHooks, settings.hooks ?? [], generatedHooks),
-    visibleManualHooks,
-  );
+function aggregateGeneratedClaudePermissions(settings: ClaudeSettings): ClaudePermissionState {
+  const generated = settings.awGenerated?.permissions ?? {};
+  return mergeClaudePermissionStates(...Object.values(generated));
 }
 
 function cleanupClaudeGeneratedState(settings: ClaudeSettings): void {
   if (settings.awGenerated?.permissions && Object.keys(settings.awGenerated.permissions).length === 0) {
     delete settings.awGenerated.permissions;
-  }
-
-  if (settings.awGenerated?.hooks && Object.keys(settings.awGenerated.hooks).length === 0) {
-    delete settings.awGenerated.hooks;
   }
 
   if (!hasClaudePermissions(settings.awGenerated?.manualPermissions)) {
@@ -344,63 +177,31 @@ function cleanupClaudeGeneratedState(settings: ClaudeSettings): void {
     }
   }
 
-  if (settings.awGenerated?.manualHooks && settings.awGenerated.manualHooks.length === 0) {
-    delete settings.awGenerated.manualHooks;
-  }
-
   if (
     settings.awGenerated &&
     settings.awGenerated.permissions === undefined &&
-    settings.awGenerated.hooks === undefined &&
     settings.awGenerated.manualPermissions === undefined &&
+    settings.awGenerated.hooks === undefined &&
     settings.awGenerated.manualHooks === undefined
   ) {
     delete settings.awGenerated;
   }
 }
 
-function mergeClaudeHooksState(
-  manualHooks: Array<Record<string, unknown>>,
-  generatedHooks: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  const merged = [...manualHooks];
-  const seen = new Set(merged.map((hook) => serializeComparableValue(hook)));
-
-  for (const hook of generatedHooks) {
-    const key = serializeComparableValue(hook);
-    if (seen.has(key)) {
-      continue;
-    }
-
-    merged.push(hook);
-    seen.add(key);
-  }
-
-  return merged;
-}
-
-function rebuildClaudeSettingsState(
+function rebuildClaudePermissionState(
   settings: ClaudeSettings,
   manualPermissions: ClaudePermissionState,
-  manualHooks: Array<Record<string, unknown>>,
 ): void {
   settings.awGenerated ??= {};
-
   if (hasClaudePermissions(manualPermissions)) {
     settings.awGenerated.manualPermissions = manualPermissions;
   } else {
     delete settings.awGenerated.manualPermissions;
   }
 
-  if (manualHooks.length > 0) {
-    settings.awGenerated.manualHooks = manualHooks;
-  } else {
-    delete settings.awGenerated.manualHooks;
-  }
-
   const mergedPermissions = mergeClaudePermissionStates(
     manualPermissions,
-    aggregateClaudePermissions(settings),
+    aggregateGeneratedClaudePermissions(settings),
   );
   if (hasClaudePermissions(mergedPermissions)) {
     settings.permissions = mergedPermissions;
@@ -408,320 +209,499 @@ function rebuildClaudeSettingsState(
     delete settings.permissions;
   }
 
-  const hooks = mergeClaudeHooksState(manualHooks, aggregateClaudeHooks(settings));
-  if (hooks.length > 0) {
-    settings.hooks = hooks;
-  } else {
-    delete settings.hooks;
-  }
-
   cleanupClaudeGeneratedState(settings);
 }
 
-async function removeTrackedFileArtifacts(
-  trackingDir: string,
-  pluginName: string,
-): Promise<void> {
-  const trackingManifest = await readTrackingManifest(trackingDir);
-  const trackingRecord = trackingManifest.plugins[pluginName];
-  if (!trackingRecord) {
-    return;
+function normalizeLocalPath(input: string | undefined): string | undefined {
+  return input ? path.resolve(input) : undefined;
+}
+
+function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
+  if (ledger.ledgerState.status === 'available') {
+    return ledger;
   }
 
-  for (const artifact of trackingRecord.artifacts) {
-    if (artifact.kind === 'instruction' || artifact.kind === 'agent') {
-      await fs.remove(artifact.path);
+  return {
+    ...ledger,
+    ledgerState: {
+      status: 'available',
+      degradedAt: null,
+      reason: null,
+    },
+  };
+}
+
+function upsertClaudeScopeLedger(
+  ledger: InstalledLedger,
+  plugin: PluginMeta,
+  scope: Scope,
+  projectKey: string | undefined,
+): InstalledLedger {
+  const nextLedger = readMutableLedger(ledger);
+  const timestamp = new Date().toISOString();
+  const pluginRecord = nextLedger.plugins[plugin.manifest.name] ?? {
+    lastResolvedVersion: plugin.manifest.version,
+    platforms: {},
+  };
+  pluginRecord.lastResolvedVersion = plugin.manifest.version;
+  pluginRecord.platforms.claude ??= {
+    projectScopes: {},
+  };
+  pluginRecord.platforms.claude.lastRequestedScope = scope;
+  pluginRecord.platforms.claude.lastRequestedAt = timestamp;
+
+  const scopeRecord = {
+    managed: true,
+    updatedAt: timestamp,
+    resolvedVersion: plugin.manifest.version,
+    capabilitySnapshot: {
+      managedExtensions: getClaudeManagedExtensions(plugin),
+    } satisfies ClaudeCapabilitySnapshot,
+  };
+
+  if (scope === 'user') {
+    pluginRecord.platforms.claude.userScope = scopeRecord;
+  } else if (projectKey) {
+    pluginRecord.platforms.claude.projectScopes ??= {};
+    pluginRecord.platforms.claude.projectScopes[projectKey] = scopeRecord;
+  }
+
+  nextLedger.plugins[plugin.manifest.name] = pluginRecord;
+  return nextLedger;
+}
+
+export async function applyClaudeInstallLedger(
+  ledger: InstalledLedger,
+  plugin: PluginMeta,
+  scope: Scope,
+  cwd: string,
+): Promise<InstalledLedger> {
+  const projectKey = scope === 'project' ? await resolveClaudeProjectKey(cwd) : undefined;
+  return upsertClaudeScopeLedger(ledger, plugin, scope, projectKey);
+}
+
+function removeClaudeScopeLedger(
+  ledger: InstalledLedger,
+  pluginName: string,
+  scope: Scope,
+  projectKey: string | undefined,
+): InstalledLedger {
+  const nextLedger = readMutableLedger(ledger);
+  const pluginRecord = nextLedger.plugins[pluginName];
+  if (!pluginRecord?.platforms.claude) {
+    return nextLedger;
+  }
+
+  if (scope === 'user') {
+    delete pluginRecord.platforms.claude.userScope;
+  } else if (projectKey) {
+    delete pluginRecord.platforms.claude.projectScopes?.[projectKey];
+    if (
+      pluginRecord.platforms.claude.projectScopes &&
+      Object.keys(pluginRecord.platforms.claude.projectScopes).length === 0
+    ) {
+      delete pluginRecord.platforms.claude.projectScopes;
     }
   }
+
+  const claudePlatform = pluginRecord.platforms.claude;
+  const hasProjectScopes = Object.keys(claudePlatform.projectScopes ?? {}).length > 0;
+  if (!claudePlatform.userScope && !hasProjectScopes) {
+    delete pluginRecord.platforms.claude;
+  }
+
+  if (Object.keys(pluginRecord.platforms).length === 0) {
+    delete nextLedger.plugins[pluginName];
+  }
+
+  return nextLedger;
+}
+
+export async function applyClaudeUninstallLedger(
+  ledger: InstalledLedger,
+  pluginName: string,
+  scope: Scope,
+  cwd: string,
+): Promise<InstalledLedger> {
+  const projectKey = scope === 'project' ? await resolveClaudeProjectKey(cwd) : undefined;
+  return removeClaudeScopeLedger(ledger, pluginName, scope, projectKey);
+}
+
+async function collectGeneratedArtifacts(
+  pluginName: string,
+  trackingDir: string,
+): Promise<GeneratedArtifactStatus[]> {
+  const trackingManifest = await readTrackingManifest(trackingDir);
+  const trackingRecord = getTrackingRecord(trackingManifest, pluginName);
+  if (!trackingRecord) {
+    return [];
+  }
+
+  return Promise.all(
+    trackingRecord.artifacts.map(async (artifact) => ({
+      path: artifact.path,
+      exists: await fs.pathExists(artifact.path),
+      kind: artifact.kind,
+    })),
+  );
 }
 
 export class ClaudeAdapter implements PlatformAdapter {
   readonly name = 'claude' as const;
 
-  constructor(private readonly cwd: string) {}
+  constructor(
+    private readonly cwd: string,
+    private readonly nativeCliRunner?: NativeCliRunner,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+  ) {}
 
   async detect(cwd: string): Promise<boolean> {
-    const detection = await detectEnvironment(cwd);
+    const detection = await detectEnvironment(cwd, this.env);
     return detection.claude.available;
   }
 
   async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveClaudePaths(this.cwd, scope);
+    const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const settings = await readClaudeSettings(paths.settingsPath);
-    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
-      this.cwd,
-      'claude',
+    const installedPlugins = await readClaudeInstalledPluginsState(paths.installedPluginsPath);
+    const externalOwnership = detectClaudeExternalOwnership(
+      settings,
+      installedPlugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined,
     );
-    const installedRecord = settings.plugins?.installed?.[plugin.manifest.name];
-    assertClaudePluginOwnership(plugin.manifest.name, installedRecord, marketplace.name);
+    if (externalOwnership?.present) {
+      throw new Error(externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+    }
 
-    settings.extraKnownMarketplaces ??= {};
-    settings.extraKnownMarketplaces[marketplace.name] = marketplacePath;
-    settings.plugins ??= {};
-    settings.plugins.installed ??= {};
-    settings.plugins.installed[plugin.manifest.name] = {
-      marketplace: marketplace.name,
-      version: plugin.manifest.version,
-      installedAt:
-        installedRecord?.installedAt && installedRecord.version === plugin.manifest.version
-          ? installedRecord.installedAt
-          : new Date().toISOString(),
-    };
-    await writeClaudeSettings(paths.settingsPath, settings);
+    await ensureLocalMarketplace(this.env);
+    const awHome = resolveAwHome(this.env);
+    const knownMarketplaces = await readKnownMarketplaceState(paths.knownMarketplacesPath);
+    const declaredSource = normalizeLocalPath(getClaudeMarketplaceSource(settings, MARKETPLACE_NAME));
+    const materializedInstallLocation = normalizeLocalPath(
+      resolveClaudeKnownMarketplaceInstallLocation(knownMarketplaces.marketplaces[MARKETPLACE_NAME]),
+    );
+    const activeBundle = await resolveClaudeActiveLocalBundle(
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      materializedInstallLocation,
+    );
+    const shouldAddMarketplace =
+      declaredSource !== normalizeLocalPath(awHome) ||
+      materializedInstallLocation !== normalizeLocalPath(awHome) ||
+      !activeBundle.activeLocalBundle;
 
-    const knownMarketplaceState = await readKnownMarketplaceState(paths.knownMarketplacesPath);
-    knownMarketplaceState.marketplaces[marketplace.name] = {
-      source: marketplacePath,
-      materializedAt: new Date().toISOString(),
-      plugins: marketplace.plugins.map((entry) => entry.name),
-    };
-    await writeKnownMarketplaceState(paths.knownMarketplacesPath, knownMarketplaceState);
-    await writeJsonFile(
-      path.join(paths.marketplaceCacheDir, `${marketplace.name}.json`),
-      marketplace,
+    if (shouldAddMarketplace) {
+      await runNativeCli(
+        {
+          command: 'claude',
+          args: ['plugin', 'marketplace', 'add', awHome, '--scope', scope],
+          cwd: this.cwd,
+          env: this.env,
+        },
+        this.nativeCliRunner,
+      );
+    }
+
+    await runNativeCli(
+      {
+        command: 'claude',
+        args: ['plugin', 'install', `${plugin.manifest.name}@${MARKETPLACE_NAME}`, '--scope', scope],
+        cwd: this.cwd,
+        env: this.env,
+      },
+      this.nativeCliRunner,
     );
   }
 
   async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveClaudePaths(this.cwd, scope);
-    const settings = await readClaudeSettings(paths.settingsPath);
-    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
-      this.cwd,
-      'claude',
+    await runNativeCli(
+      {
+        command: 'claude',
+        args: ['plugin', 'uninstall', `${plugin.manifest.name}@${MARKETPLACE_NAME}`, '--scope', scope],
+        cwd: this.cwd,
+        env: this.env,
+      },
+      this.nativeCliRunner,
     );
-    assertClaudePluginOwnership(
-      plugin.manifest.name,
-      settings.plugins?.installed?.[plugin.manifest.name],
-      marketplace.name,
-    );
-
-    if (settings.plugins?.installed) {
-      delete settings.plugins.installed[plugin.manifest.name];
-    }
-
-    const hasMarketplaceReferences = Object.values(settings.plugins?.installed ?? {}).some(
-      (entry) => entry.marketplace === marketplace.name,
-    );
-    if (!hasMarketplaceReferences) {
-      if (settings.extraKnownMarketplaces) {
-        delete settings.extraKnownMarketplaces[marketplace.name];
-      }
-
-      const knownMarketplaceState = await readKnownMarketplaceState(paths.knownMarketplacesPath);
-      delete knownMarketplaceState.marketplaces[marketplace.name];
-      await writeKnownMarketplaceState(paths.knownMarketplacesPath, knownMarketplaceState);
-      await removeFileIfExists(path.join(paths.marketplaceCacheDir, `${marketplace.name}.json`));
-    }
-
-    await writeClaudeSettings(paths.settingsPath, settings);
   }
 
   async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
-    const paths = resolveClaudePaths(this.cwd, scope);
-    const extensions = plugin.manifest.extensions ?? {};
+    const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
-    await removeTrackedFileArtifacts(paths.trackingDir, plugin.manifest.name);
 
     for (const artifact of generateInstructionArtifacts(
       plugin.manifest.name,
-      extensions.instructions ?? [],
+      plugin.manifest.extensions?.instructions ?? [],
       'claude',
     )) {
-      const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
+      const artifactPath = path.join(paths.configDir, artifact.relativePath);
+      await fs.ensureDir(path.dirname(artifactPath));
+      await fs.writeFile(artifactPath, artifact.content, 'utf8');
       artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
     }
 
-    for (const artifact of generateAgentArtifacts(
-      plugin.manifest.name,
-      extensions.agents ?? [],
-      'claude',
-    )) {
-      const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
-      artifacts.push({ path: artifactPath, kind: 'agent', platform: 'claude' });
-    }
-
     const settings = await readClaudeSettings(paths.settingsPath);
-    const manualPermissions = deriveClaudeManualPermissions(settings);
-    const manualHooks = deriveClaudeManualHooks(settings);
+    const manualPermissions = subtractClaudePermissions(
+      settings.permissions,
+      aggregateGeneratedClaudePermissions(settings),
+    );
     settings.awGenerated ??= {};
 
-    if ((extensions.permissions ?? []).length > 0) {
+    if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
       settings.awGenerated.permissions ??= {};
       settings.awGenerated.permissions[plugin.manifest.name] = mergeClaudePermissions(
-        extensions.permissions ?? [],
+        plugin.manifest.extensions?.permissions ?? [],
       );
       artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
     } else if (settings.awGenerated.permissions) {
       delete settings.awGenerated.permissions[plugin.manifest.name];
     }
 
-    const hooksArtifact = renderHooksArtifact(extensions.hooks ?? [], 'claude');
-    if (hooksArtifact) {
-      settings.awGenerated.hooks ??= {};
-      settings.awGenerated.hooks[plugin.manifest.name] = (
-        hooksArtifact.content.hooks as Array<Record<string, unknown>>
-      ) ?? [];
-      artifacts.push({ path: paths.settingsPath, kind: 'hook', platform: 'claude' });
-    } else if (settings.awGenerated.hooks) {
-      delete settings.awGenerated.hooks[plugin.manifest.name];
-    }
-
-    rebuildClaudeSettingsState(settings, manualPermissions, manualHooks);
+    rebuildClaudePermissionState(settings, manualPermissions);
     await writeClaudeSettings(paths.settingsPath, settings);
-
-    if (artifacts.length > 0) {
-      await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
-    } else {
-      await removeTrackingRecord(paths.trackingDir, plugin.manifest.name);
-    }
 
     return artifacts;
   }
 
   async uninstallExtensions(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveClaudePaths(this.cwd, scope);
+    const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
-    const trackingRecord = trackingManifest.plugins[plugin.manifest.name];
-    if (!trackingRecord) {
-      return;
-    }
+    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
 
-    for (const artifact of trackingRecord.artifacts) {
-      if (artifact.kind === 'instruction' || artifact.kind === 'agent') {
-        await fs.remove(artifact.path);
+    if (trackingRecord) {
+      for (const artifact of trackingRecord.artifacts) {
+        if (artifact.kind === 'instruction') {
+          await fs.remove(artifact.path);
+        }
       }
     }
 
     const settings = await readClaudeSettings(paths.settingsPath);
-    const manualPermissions = deriveClaudeManualPermissions(settings);
-    const manualHooks = deriveClaudeManualHooks(settings);
+    const manualPermissions = subtractClaudePermissions(
+      settings.permissions,
+      aggregateGeneratedClaudePermissions(settings),
+    );
 
     if (settings.awGenerated?.permissions) {
       delete settings.awGenerated.permissions[plugin.manifest.name];
     }
-    if (settings.awGenerated?.hooks) {
-      delete settings.awGenerated.hooks[plugin.manifest.name];
-    }
 
-    rebuildClaudeSettingsState(settings, manualPermissions, manualHooks);
+    rebuildClaudePermissionState(settings, manualPermissions);
     await writeClaudeSettings(paths.settingsPath, settings);
-
-    await removeTrackingRecord(paths.trackingDir, plugin.manifest.name);
   }
 
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveClaudePaths(this.cwd, scope);
-    const settings = await readClaudeSettings(paths.settingsPath);
-    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
-      this.cwd,
-      'claude',
-    );
-    const installedRecord = settings.plugins?.installed?.[plugin.manifest.name];
-    assertClaudePluginOwnership(plugin.manifest.name, installedRecord, marketplace.name);
-
-    settings.extraKnownMarketplaces ??= {};
-    settings.plugins ??= {};
-    settings.plugins.installed ??= {};
-    settings.extraKnownMarketplaces[marketplace.name] = marketplacePath;
-
-    if (
-      !installedRecord ||
-      installedRecord.marketplace !== marketplace.name ||
-      installedRecord.version !== plugin.manifest.version
-    ) {
-      settings.plugins.installed[plugin.manifest.name] = {
-        marketplace: marketplace.name,
-        version: plugin.manifest.version,
-        installedAt:
-          installedRecord?.installedAt && installedRecord.version === plugin.manifest.version
-            ? installedRecord.installedAt
-            : new Date().toISOString(),
-      };
+    const status = await this.status(plugin, scope);
+    const pluginStatus = status.plugins[0];
+    if (pluginStatus?.catalogCompatibility === 'missing') {
+      throw new Error(`${plugin.manifest.name} 当前 catalog 已缺失，请先执行 uninstall。`);
     }
 
-    await writeClaudeSettings(paths.settingsPath, settings);
+    if (pluginStatus?.catalogCompatibility === 'capabilityChanged') {
+      await this.uninstallExtensions(plugin, scope);
+    }
 
-    const knownMarketplaceState = await readKnownMarketplaceState(paths.knownMarketplacesPath);
-    knownMarketplaceState.marketplaces[marketplace.name] = {
-      source: marketplacePath,
-      materializedAt: new Date().toISOString(),
-      plugins: marketplace.plugins.map((entry) => entry.name),
-    };
-    await writeKnownMarketplaceState(paths.knownMarketplacesPath, knownMarketplaceState);
-    await writeJsonFile(
-      path.join(paths.marketplaceCacheDir, `${marketplace.name}.json`),
-      marketplace,
-    );
-
+    await this.installPlugin(plugin, scope);
     await this.installExtensions(plugin, scope);
   }
 
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
-    const paths = resolveClaudePaths(this.cwd, scope);
-    const settings = await readClaudeSettings(paths.settingsPath);
-    const marketplaceState = await readKnownMarketplaceState(paths.knownMarketplacesPath);
-    const trackingManifest = await readTrackingManifest(paths.trackingDir);
-    const trackingRecord = trackingManifest.plugins[plugin.manifest.name];
-    const generatedArtifacts: GeneratedArtifactStatus[] = [];
+    const paths = resolveClaudePaths(this.cwd, scope, this.env);
+    const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
+    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog] =
+      await Promise.all([
+        readClaudeSettings(paths.settingsPath),
+        readKnownMarketplaceState(paths.knownMarketplacesPath),
+        readClaudeInstalledPluginsState(paths.installedPluginsPath),
+        readInstalledLedger(this.env),
+        collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir),
+        resolveCurrentCatalog(this.env),
+      ]);
 
-    if (trackingRecord) {
-      for (const artifact of trackingRecord.artifacts) {
-        generatedArtifacts.push({
-          path: artifact.path,
-          exists: await fs.pathExists(artifact.path),
-          kind: artifact.kind,
-        });
-      }
-    }
-
-    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
-      this.cwd,
-      'claude',
+    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude');
+    const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
+      (entry) => entry.name === plugin.manifest.name,
     );
-    const installedRecord = settings.plugins?.installed?.[plugin.manifest.name];
-    const materializedMarketplace = marketplaceState.marketplaces[marketplace.name];
-    const registeredSource = settings.extraKnownMarketplaces?.[marketplace.name];
+    const declaredSource = getClaudeMarketplaceSource(settings, MARKETPLACE_NAME);
+    const knownMarketplace = knownMarketplaces.marketplaces[MARKETPLACE_NAME];
+    const materializedInstallLocation =
+      resolveClaudeKnownMarketplaceInstallLocation(knownMarketplace);
+    const installedRecord = resolveClaudeInstalledRecordForScope(
+      installedPlugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      projectKey,
+    );
+    const runtimeEvidence = await resolveClaudePlatformRuntimeEvidence(
+      settings,
+      installedPlugins,
+      knownMarketplace,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      projectKey,
+    );
+    const nativeFallbackEvidence = resolveClaudePlatformNativeFallbackEvidence(
+      settings,
+      installedPlugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      projectKey,
+    );
+    const externalOwnership = detectClaudeExternalOwnership(
+      settings,
+      installedPlugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      projectKey,
+    );
+    const scopeInitialized = resolveScopeInitialized(
+      ledger,
+      plugin.manifest.name,
+      'claude',
+      scope,
+      projectKey,
+    );
+    const trackingManifest = await readTrackingManifest(paths.trackingDir);
+    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const hasScopeManagedEvidence = Boolean(
+      (scopeInitialized === 'yes') ||
+      trackingRecord,
+    );
+    const catalogCompatibility = resolveClaudeCatalogCompatibility({
+      currentManifestPresent: currentCatalogAvailable,
+      currentManagedExtensions: getClaudeManagedExtensions(plugin),
+      currentScopeManagedEvidence: hasScopeManagedEvidence,
+      platformRuntimeEvidence: runtimeEvidence.present,
+      platformNativeFallbackEvidence: nativeFallbackEvidence.present,
+      installedCapabilitySnapshot:
+        scope === 'user'
+          ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.userScope?.capabilitySnapshot
+          : projectKey
+            ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.projectScopes?.[projectKey]?.capabilitySnapshot
+            : undefined,
+    });
+
+    const permissionManaged = Boolean(
+      settings.awGenerated?.permissions?.[plugin.manifest.name],
+    );
+    const artifactsInitialized = generatedArtifacts.every((artifact) => artifact.exists) &&
+      (
+        !trackingRecord?.artifacts.some((artifact) => artifact.kind === 'permission') ||
+        permissionManaged
+      );
 
     const driftWarnings: string[] = [];
+    const expectedAwHome = normalizeLocalPath(resolveAwHome(this.env));
+    const normalizedDeclaredSource = normalizeLocalPath(declaredSource);
+    const normalizedMaterializedInstallLocation = normalizeLocalPath(materializedInstallLocation);
+
     if (generatedArtifacts.some((artifact) => !artifact.exists)) {
-      driftWarnings.push('存在记录在 tracking manifest 中但已经缺失的生成产物。');
+      driftWarnings.push('tracking manifest 记录的 Claude 受管产物存在缺失。');
     }
-    if (installedRecord && !settings.extraKnownMarketplaces?.[marketplace.name]) {
-      driftWarnings.push('插件已记录为安装状态，但 extraKnownMarketplaces 缺失。');
+    if (declaredSource && normalizedDeclaredSource !== expectedAwHome) {
+      driftWarnings.push('marketplace 已声明，但 declared source 已漂移。');
     }
-    if (registeredSource && registeredSource !== marketplacePath) {
-      driftWarnings.push('marketplace 已注册，但 source 与当前仓库不一致。');
+    if (materializedInstallLocation && normalizedMaterializedInstallLocation !== expectedAwHome) {
+      driftWarnings.push('known_marketplaces.json 中的 installLocation 已漂移。');
     }
-    if (installedRecord && installedRecord.marketplace !== marketplace.name) {
-      driftWarnings.push('插件已安装，但 marketplace 字段不属于 agent-workflows。');
+    if (declaredSource && !materializedInstallLocation) {
+      driftWarnings.push('settings.json 已声明 marketplace，但物化层缺失。');
     }
-    if (installedRecord?.version && installedRecord.version !== plugin.manifest.version) {
-      driftWarnings.push('原生安装版本与当前插件 manifest version 不一致。');
+    if (runtimeEvidence.details && !runtimeEvidence.present) {
+      driftWarnings.push(`runtime evidence 不完整：${runtimeEvidence.details}`);
     }
+    if (nativeFallbackEvidence.details && !nativeFallbackEvidence.present) {
+      driftWarnings.push(`native fallback evidence 不完整：${nativeFallbackEvidence.details}`);
+    }
+    if (externalOwnership?.present) {
+      driftWarnings.push(externalOwnership.details ?? '同名插件由外部 marketplace 管理。');
+    }
+    if (
+      runtimeEvidence.activeLocalBundle &&
+      normalizeLocalPath(runtimeEvidence.activeLocalBundle) !==
+        normalizeLocalPath(path.join(currentCatalog.rootDir, 'plugins', plugin.manifest.name))
+    ) {
+      driftWarnings.push('currentCatalog 与 activeLocalBundle 指向的 bundle 不一致。');
+    }
+
+    const pluginInstalled = isClaudePluginEnabledForScope(
+      settings,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+      scope,
+      projectKey,
+    ) && Boolean(installedRecord);
 
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
       native: {
-        marketplaceRegistered: Boolean(registeredSource),
-        pluginAvailable: Boolean(
-          materializedMarketplace?.source === marketplacePath &&
-            materializedMarketplace.plugins.includes(plugin.manifest.name),
-        ),
-        pluginInstalled: Boolean(installedRecord),
-        version: installedRecord?.version,
-        details: registeredSource ? `source=${registeredSource}` : undefined,
+        marketplaceRegistered: Boolean(declaredSource),
+        pluginAvailable: currentCatalogAvailable,
+        pluginInstalled,
+        version: installedRecord?.version ?? plugin.manifest.version,
+        details: declaredSource ? `declaredSource=${declaredSource}` : undefined,
+        declaredSource,
+        materializedInstallLocation,
+        activeLocalBundlePath: runtimeEvidence.activeLocalBundle,
       },
       generatedArtifacts,
       driftWarnings,
+      ledgerStateStatus: ledger.ledgerState.status,
+      ledgerStateReason: ledger.ledgerState.reason,
+      scopeInitialized,
+      catalogCompatibility,
+      externalOwnership,
+      platformRuntimeEvidence: {
+        present: !hasScopeManagedEvidence && runtimeEvidence.present,
+        details: runtimeEvidence.details,
+      },
+      platformNativeFallbackEvidence: {
+        present: !hasScopeManagedEvidence && nativeFallbackEvidence.present,
+        details: nativeFallbackEvidence.details,
+      },
+      scopeManagedEvidence: {
+        ledger: scopeInitialized === 'yes',
+        tracking: Boolean(trackingRecord),
+        sharedNativeRef: false,
+      },
+      currentCatalog: {
+        rootDir: currentCatalog.rootDir,
+        source: currentCatalog.source,
+        available: currentCatalogAvailable,
+        reason: currentCatalog.reason,
+      },
+      activeLocalBundle: runtimeEvidence.activeLocalBundle,
+      artifactsInitialized,
+      repoManagedSessionState: {
+        instructions: (plugin.manifest.extensions?.instructions ?? []).length > 0
+          ? (trackingRecord ? 'visible' : 'absent')
+          : 'not_applicable',
+        rules: (plugin.manifest.extensions?.permissions ?? []).length > 0
+          ? (permissionManaged ? 'visible' : 'absent')
+          : 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
+        diagnostics: [],
+      },
     };
 
     return {
       platform: 'claude',
       scope,
       initialized:
-        pluginStatus.native.marketplaceRegistered ||
-        pluginStatus.native.pluginInstalled ||
-        generatedArtifacts.length > 0,
+        scopeInitialized === 'yes' ||
+        pluginInstalled ||
+        generatedArtifacts.length > 0 ||
+        runtimeEvidence.present ||
+        nativeFallbackEvidence.present,
+      scopeInitialized: scopeInitialized as ScopeInitializedState,
       plugins: [pluginStatus],
     };
   }

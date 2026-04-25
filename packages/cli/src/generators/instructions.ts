@@ -38,6 +38,13 @@ function renderCodexInstructionSection(
   return lines;
 }
 
+export function renderCodexManagedInstructionBlock(
+  pluginName: string,
+  instructions: InstructionDefinition[],
+): string {
+  return renderCodexInstructionSection(pluginName, instructions).join('\n').trim();
+}
+
 export function renderCodexInstructions(bundles: CodexInstructionBundle[]): string | null {
   const populatedBundles = bundles
     .filter((bundle) => bundle.instructions.length > 0)

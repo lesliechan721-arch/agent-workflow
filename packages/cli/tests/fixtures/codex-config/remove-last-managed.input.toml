@@ -1,0 +1,10 @@
+# comment stays
+developer_instructions = """
+[[aw-managed:start plugin="git-commit" kind="developer_instructions"]]
+## Commit
+- keep clean
+[[aw-managed:end plugin="git-commit"]]
+"""
+
+[projects."/workspace/repo"]
+trust_level = "trusted"

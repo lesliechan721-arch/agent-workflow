@@ -44,6 +44,15 @@ function buildSourceManifest(pluginName, version, description, displayName, shor
     version,
     description,
     skills: './skills',
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+        products: ['CODEX'],
+      },
+    },
     interface: {
       displayName,
       shortDescription,
@@ -55,16 +64,6 @@ function buildSourceManifest(pluginName, version, description, displayName, shor
       hooks: [],
       agents: [],
     },
-  };
-}
-
-function buildPlatformManifest(sourceManifest) {
-  return {
-    name: sourceManifest.name,
-    version: sourceManifest.version,
-    description: sourceManifest.description,
-    skills: sourceManifest.skills,
-    interface: sourceManifest.interface,
   };
 }
 
@@ -98,41 +97,6 @@ function renderOpenAiYaml() {
 `;
 }
 
-function marketplaceEntry(pluginName, description) {
-  return {
-    name: pluginName,
-    source: `./plugins/${pluginName}`,
-    description,
-    category: 'workflow',
-    strict: true,
-    policy: {
-      installation: 'AVAILABLE',
-      authentication: 'NONE',
-      products: ['CODEX'],
-    },
-  };
-}
-
-function updateMarketplace(marketplacePath, entry) {
-  const marketplace = JSON.parse(fs.readFileSync(marketplacePath, 'utf8'));
-  if (!Array.isArray(marketplace.plugins)) {
-    fail(`${marketplacePath} is missing a valid plugins array.`);
-  }
-
-  const existingIndex = marketplace.plugins.findIndex(
-    (item) => item && typeof item === 'object' && item.name === entry.name,
-  );
-
-  if (existingIndex >= 0) {
-    marketplace.plugins[existingIndex] = entry;
-  } else {
-    marketplace.plugins.push(entry);
-  }
-
-  marketplace.plugins.sort((left, right) => left.name.localeCompare(right.name));
-  writeJson(marketplacePath, marketplace);
-}
-
 function printUsage() {
   console.log(`Usage:
   node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin_name> --description "..."
@@ -145,7 +109,6 @@ Options:
   --skill-description <text>    Initial skill frontmatter description.
   --version <semver>            Plugin version. Default: 0.1.0
   --repo-root <path>            Repository root. Default: current directory.
-  --skip-marketplace            Do not edit marketplace manifests.
   -h, --help                    Show this help message.
 `);
 }
@@ -170,7 +133,6 @@ function parseArgs(argv) {
   const options = {
     version: '0.1.0',
     repoRoot: '.',
-    skipMarketplace: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -187,11 +149,6 @@ function parseArgs(argv) {
         continue;
       }
       fail(`Unexpected positional argument: ${arg}`);
-    }
-
-    if (arg === '--skip-marketplace') {
-      options.skipMarketplace = true;
-      continue;
     }
 
     const normalizedFlag = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
@@ -245,24 +202,18 @@ function main() {
   const skillDescription = args.skillDescription || args.description;
   const repoRoot = path.resolve(args.repoRoot);
 
-  const claudeMarketplace = path.join(repoRoot, '.claude-plugin', 'marketplace.json');
-  const codexMarketplace = path.join(repoRoot, '.agents', 'plugins', 'marketplace.json');
   const pluginsRoot = path.join(repoRoot, 'plugins');
+  const marketplaceSourcePath = path.join(pluginsRoot, 'marketplace-source.json');
   const pluginRoot = path.join(pluginsRoot, pluginName);
 
   if (!fs.existsSync(pluginsRoot)) {
     fail(`plugins directory not found: ${pluginsRoot}`);
   }
+  if (!fs.existsSync(marketplaceSourcePath)) {
+    fail(`marketplace source metadata not found: ${marketplaceSourcePath}`);
+  }
   if (fs.existsSync(pluginRoot)) {
     fail(`plugin already exists: ${pluginRoot}`);
-  }
-  if (!args.skipMarketplace) {
-    if (!fs.existsSync(claudeMarketplace)) {
-      fail(`missing marketplace manifest: ${claudeMarketplace}`);
-    }
-    if (!fs.existsSync(codexMarketplace)) {
-      fail(`missing marketplace manifest: ${codexMarketplace}`);
-    }
   }
 
   const sourceManifest = buildSourceManifest(
@@ -272,40 +223,23 @@ function main() {
     displayName,
     shortDescription,
   );
-  const platformManifest = buildPlatformManifest(sourceManifest);
 
   const createdPaths = [
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
-    path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
-    path.join(pluginRoot, '.codex-plugin', 'plugin.json'),
     path.join(pluginRoot, 'skills', skillName, 'SKILL.md'),
     path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml'),
   ];
 
   writeJson(createdPaths[0], sourceManifest);
-  writeJson(createdPaths[1], platformManifest);
-  writeJson(createdPaths[2], platformManifest);
-  writeText(createdPaths[3], renderSkillMd(skillName, skillDescription));
-  writeText(createdPaths[4], renderOpenAiYaml());
+  writeText(createdPaths[1], renderSkillMd(skillName, skillDescription));
+  writeText(createdPaths[2], renderOpenAiYaml());
 
-  if (!args.skipMarketplace) {
-    const entry = marketplaceEntry(pluginName, args.description);
-    updateMarketplace(claudeMarketplace, entry);
-    updateMarketplace(codexMarketplace, entry);
-  }
-
-  console.log('[OK] Created plugin scaffold:');
+  console.log('[OK] Created source-only plugin scaffold:');
   for (const createdPath of createdPaths) {
     console.log(`  - ${createdPath}`);
   }
-
-  if (args.skipMarketplace) {
-    console.log('[OK] Marketplace manifests were left unchanged.');
-  } else {
-    console.log('[OK] Updated marketplace manifests:');
-    console.log(`  - ${claudeMarketplace}`);
-    console.log(`  - ${codexMarketplace}`);
-  }
+  console.log(`[OK] Left marketplace source metadata unchanged: ${marketplaceSourcePath}`);
+  console.log('[OK] Runtime marketplace and platform manifests will be generated by `pnpm build`.');
 }
 
 main();

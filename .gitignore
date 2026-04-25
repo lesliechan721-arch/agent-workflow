@@ -5,4 +5,6 @@ coverage
 .DS_Store
 *.tsbuildinfo
 packages/cli/.vitest
+packages/cli/plugins-dist
 .idea
+*.tgz

@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 
+import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
 import { statusCommand } from './commands/status.js';
 import { uninstallCommand } from './commands/uninstall.js';
@@ -36,6 +37,16 @@ function toCommandOptions(
 async function main(): Promise<void> {
   const program = new Command();
   program.name('aw').description('Agent workflow marketplace installer');
+
+  program
+    .command('init')
+    .option('--force', 'refresh the local marketplace bundle', false)
+    .action(async (rawOptions: { force?: boolean }) => {
+      const result = await initCommand({ force: rawOptions.force });
+      console.log(
+        `${result.changed ? 'Initialized' : 'Reused'} local marketplace at ${result.rootDir}.`,
+      );
+    });
 
   program
     .command('install')

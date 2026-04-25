@@ -2,23 +2,36 @@
 
 这份摘要只保留创建插件时反复会用到的约束。细节和推导过程来自：
 
+- `docs/dev/plans/npm-plugin-marketplace-new.md`
 - `docs/codex-plugins.md`
 - `docs/codex-claude-code-extension-research.md`
-- `docs/codex-claude-plugin-marketplace-research.md`
-- `docs/dev/plans/project-init.md`
 - `packages/cli/src/utils/manifest.ts`
+- `packages/cli/src/generators/local-plugin.ts`
 
-## 仓库结构
+## 三层目录角色
+
+当前仓库把插件相关内容拆成三层：
+
+1. 源码层
+   - `plugins/marketplace-source.json`
+   - `plugins/<name>/.agents-plugin/plugin.json`
+   - `plugins/<name>/skills/**`、`hooks/**`、`agents/**`、配置文件等源码素材
+2. embedded runtime bundle
+   - `packages/cli/plugins-dist/**`
+   - 由 `pnpm build` 生成，是 npm 包内唯一 runtime 真值
+3. 本地 marketplace 镜像
+   - `~/.aw/**`
+   - 由 `aw init` 或 `ensureLocalMarketplace()` 复制和校验，不做二次生成
+
+作者日常只维护源码层。embedded bundle 和 `~/.aw` 都不是手工编辑目标。
+
+## 源码目录结构
 
 新插件放在 `plugins/<name>/`，最小稳定结构如下：
 
 ```text
 plugins/<name>/
 ├── .agents-plugin/
-│   └── plugin.json
-├── .claude-plugin/
-│   └── plugin.json
-├── .codex-plugin/
 │   └── plugin.json
 └── skills/
     └── <skill-name>/
@@ -27,41 +40,98 @@ plugins/<name>/
             └── openai.yaml
 ```
 
-根目录的 marketplace 入口也有两份：
+如果插件需要额外源码素材，可以继续在源码目录下添加：
 
-- `.claude-plugin/marketplace.json`
-- `.agents/plugins/marketplace.json`
+- `hooks/`
+- `agents/`
+- `config/`
+- `commands/`
+- `output-styles/`
+- `lsp/`
 
-这两份内容应保持同步。
+但这些都属于源码输入，最终落点由 build 生成器决定。
 
 ## 唯一源 manifest
 
-当前项目把 `plugins/<name>/.agents-plugin/plugin.json` 视为唯一源 manifest。
+当前项目把 `plugins/<name>/.agents-plugin/plugin.json` 视为唯一源码 manifest。
 
-创建或修改插件时，先改这份文件，再同步：
+创建或修改插件时，只改这份文件和它引用的源码素材。不要手改：
 
-- `.claude-plugin/plugin.json`
-- `.codex-plugin/plugin.json`
+- repo root `.claude-plugin/marketplace.json`
+- repo root `.agents/plugins/marketplace.json`
+- 源码树 `plugins/<name>/.claude-plugin/plugin.json`
+- 源码树 `plugins/<name>/.codex-plugin/plugin.json`
 
-如果平台产物和 source manifest 分叉，Claude Code 与 Codex 看到的能力面会漂移。
+这些路径要么已经退出运行时角色，要么根本不该再出现在源码树里。
+
+## marketplace 作者模型
+
+marketplace metadata 分成两层：
+
+- root metadata：`plugins/marketplace-source.json`
+  - 当前正式字段只保留 `owner` 与 `interface.displayName`
+- entry metadata：`plugins/<name>/.agents-plugin/plugin.json.marketplace`
+  - 当前正式字段包括 `category`、`tags`、`strict`、`policy`
+
+也就是说：
+
+- `plugins/marketplace-source.json` 不是运行时 marketplace manifest
+- 插件 entry 不能回头去写 repo root marketplace
+- build 会基于这两层源码元数据重建两份 runtime marketplace manifest
 
 ## 共享字段约束
 
 共享字段遵循 Codex 可解析的最窄子集：
 
 - `skills` 使用单个字符串路径，例如 `./skills`
-- `mcpServers` 使用单个字符串路径，例如 `./.mcp.json`
+- `mcpServers` 使用单个字符串路径，例如 `./config/mcp-servers.json`
 - `apps` 如需共用，也按单个字符串路径处理
 - 路径必须以 `./` 开头
 - 路径必须留在插件根目录内
 - `interface` 只放展示信息，不是 capability 开关
 
-当前仓库的 source manifest 还支持：
+## extensions 与 buildConfig 的分工
 
-- `extensions`
-- `claude`
+### `extensions`
 
-它们用于项目自己的生成和适配逻辑，不改变 Codex 对共享字段的窄类型要求。
+`extensions` 描述需要在安装或运行期派生的跨平台能力：
+
+- `extensions.instructions`
+- `extensions.permissions`
+- `extensions.hooks`
+- `extensions.agents`
+
+共享 `hooks` / `agents` 一律继续写在这里。不要新增顶层 `claude` block，也不要伪造 `manifestOverrides.claude.hooks` / `agents`。
+
+### `buildConfig`
+
+`buildConfig` 只负责 build 阶段的 bundle 生成差异：
+
+- `templates`
+- `fileRules`
+- `manifestOverrides`
+
+当前 `manifestOverrides.claude` 的白名单只有：
+
+- `commands`
+- `outputStyles`
+- `lspServers`
+- `userConfig`
+- `channels`
+
+换句话说，`buildConfig` 不是一个任意扩展的 Claude 私有逃生口。
+
+## 运行时生成结果
+
+`pnpm build` 后，生成器会把源码素材展开为 bundle：
+
+- `packages/cli/plugins-dist/plugins/<name>/.agents-plugin/plugin.json`
+- `packages/cli/plugins-dist/plugins/<name>/.claude-plugin/plugin.json`
+- `packages/cli/plugins-dist/plugins/<name>/.codex-plugin/plugin.json`
+- `packages/cli/plugins-dist/.claude-plugin/marketplace.json`
+- `packages/cli/plugins-dist/.agents/plugins/marketplace.json`
+
+随后 `aw init` 只会把这套 bundle 复制并校验到 `~/.aw`。
 
 ## Skill 触发配置
 
@@ -84,35 +154,16 @@ skill 的自动 / 手动触发不是共享 manifest 层的能力，而是各平�
 
 - Claude Code 插件原生支持 `agents`、`hooks`、`commands`、`LSP`
 - Codex 插件运行时只稳定承认 `skills`、`MCP`、`apps`
-- Codex 的 `hooks`、`AGENTS.md`、agent roles、`execpolicy` 更接近配置层，不是插件原生能力
+- Codex 的 hooks、agent roles、repo-managed instructions 更接近配置层，不是插件原生能力
 
 因此新插件应先把共享层做薄，再决定是否追加平台差异。
 
-## marketplace 约束
-
-共享 marketplace entry 的稳定写法：
-
-- `source` 用相对路径字符串：`./plugins/<name>`
-- 不在共享 manifest 里使用 Claude 专属 source 类型
-- `policy` 可以保留给 Codex 使用，Claude 会忽略
-- `owner` 是给 Claude 的，`interface` 是给 Codex 的；两边都不会因为对方字段报错
-
-## 脚本语言约束
-
-当前项目把“agent 会直接执行的脚手架和辅助脚本”默认收敛到 Node.js：
-
-- 初始化插件骨架、同步 manifest、更新 marketplace 这类脚本优先使用 Node.js
-- 默认假设 agent 环境会经过 Node.js 相关链路，不把 Python 当成必然存在的前置条件
-- 如果需求只是文件系统、JSON、文本模板处理，优先使用 Node.js 标准库，不额外引入运行时
-- 只有当任务明显依赖 Python 生态时，才考虑用 Python，并且要在技能和项目文档里说明原因
-
 ## 创建插件时最容易犯的错
 
-- 把 slash command 当成双端共享入口。当前项目要求共享入口收敛到“手动触发 skill”。
+- 把 `plugins/marketplace-source.json` 当成运行时 marketplace 去手改。
+- 在源码树里创建 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
+- 想靠 repo root marketplace 作为运行时真值，而不是走 build 产物和 `~/.aw`。
 - 把 Claude 的 `user-invocable` / `disable-model-invocation` 当成 Codex 也会识别的字段。
-- 以为 `allow_implicit_invocation: false` 会让 Codex 完全不能显式调用这个 skill。
-- 直接手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`，忘了回写 source manifest。
-- 给 `skills`、`mcpServers` 写数组或对象，导致 Codex 解析失败。
-- 假设 Claude 普通 skill 的 `hooks/context/agent` 语义也会原样出现在 Claude 插件 skill 或 Codex 插件 skill 上。
-- 只更新 `.claude-plugin/marketplace.json`，忘了同步 `.agents/plugins/marketplace.json`。
+- 直接给 `skills`、`mcpServers`、`apps` 写数组或对象，导致 Codex 解析失败。
+- 共享 `hooks` / `agents` 没写 `extensions.*`，反而去滥用 `manifestOverrides`。
 - 新增脚本时顺手写成 Python，导致技能变成依赖 Python 环境才能正常使用。

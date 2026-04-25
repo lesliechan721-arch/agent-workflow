@@ -1,0 +1,3 @@
+# comment stays
+[projects."/workspace/repo"]
+trust_level = "trusted"

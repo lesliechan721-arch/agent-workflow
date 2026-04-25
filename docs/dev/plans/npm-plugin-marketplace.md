@@ -1,5 +1,10 @@
 # NPM 插件市场分发方案
 
+> 历史文档
+> 适用背景：本文是早期 npm marketplace 迁移草案，成稿时还保留 repo root marketplace 与源码树平台 manifest 的运行时角色。
+> 失效说明：文中的 runtime 路径、初始化策略和命令阶段生成口径已经被 `embedded plugins root + ~/.aw` 新模型替代。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
+
 ## Context
 
 当前插件安装流程直接操作 agent 配置文件（Claude 的 settings.json、Codex 的 config.toml），实现脆弱且与平台内部格式强耦合。本方案将插件分发迁移到私有 npm 仓库，引入本地插件市场（`~/.aw`），让 Codex 和 Claude Code 通过各自 CLI 的原生插件命令完成安装/卸载，降低对平台内部配置的直接依赖。

@@ -4,8 +4,12 @@ import fs from 'fs-extra';
 
 import type {
   EnvironmentDetection,
+  InstructionsSessionState,
   PlatformDetection,
   PlatformName,
+  ProjectTrust,
+  RepoManagedSessionStateReport,
+  RepoManagedSessionVisibility,
   Scope,
 } from '../types.js';
 import {
@@ -174,4 +178,200 @@ export function listDetectedPlatforms(detection: EnvironmentDetection): Platform
     platforms.push('claude');
   }
   return platforms;
+}
+
+export interface CodexProjectTrustOptions {
+  applicable: boolean;
+  lookupKeys: string[];
+  trustLevels: Record<string, string | undefined>;
+  hasProjectLayerArtifacts: boolean;
+}
+
+export interface CodexManagedArtifactPresence {
+  instructions: boolean;
+  rules: boolean;
+  hooks: boolean;
+  agents: boolean;
+  agentRoleNames: string[];
+}
+
+export interface CodexHigherPrioritySessionState {
+  developerInstructions: boolean;
+  rules: boolean;
+  hooks: boolean;
+  agentRoleNames: string[];
+}
+
+export interface DetectCodexSessionStateOptions {
+  scope: Scope;
+  declarations: {
+    instructions: boolean;
+    permissions: boolean;
+    hooks: boolean;
+    agents: boolean;
+  };
+  managed: CodexManagedArtifactPresence;
+  higherPriorityExternal: CodexHigherPrioritySessionState;
+  projectLayerDeveloperInstructionsDefined: boolean;
+  projectTrust: ProjectTrust;
+}
+
+function projectTrustToVisibility(
+  projectTrust: ProjectTrust,
+): Exclude<RepoManagedSessionVisibility, 'unknownByExternalLayer' | 'absent' | 'not_applicable'> {
+  switch (projectTrust) {
+    case 'trusted':
+      return 'visible';
+    case 'untrusted':
+      return 'blockedByProjectTrust';
+    case 'unknown':
+    case 'not_applicable':
+    default:
+      return 'projectTrustUnknown';
+  }
+}
+
+export function resolveCodexProjectTrust(
+  options: CodexProjectTrustOptions,
+): ProjectTrust {
+  if (!options.applicable) {
+    return 'not_applicable';
+  }
+
+  for (const lookupKey of options.lookupKeys) {
+    const trustLevel = options.trustLevels[lookupKey];
+    if (trustLevel === 'trusted') {
+      return 'trusted';
+    }
+    if (trustLevel === 'untrusted') {
+      return 'untrusted';
+    }
+  }
+
+  return options.hasProjectLayerArtifacts ? 'unknown' : 'not_applicable';
+}
+
+function resolveProjectScopedInstructionsState(
+  declared: boolean,
+  managed: boolean,
+  projectTrust: ProjectTrust,
+): InstructionsSessionState {
+  if (!declared) {
+    return 'not_applicable';
+  }
+  if (!managed) {
+    return 'absent';
+  }
+  return projectTrustToVisibility(projectTrust);
+}
+
+function resolveUserScopedInstructionsState(
+  declared: boolean,
+  managed: boolean,
+  higherPriorityExternal: boolean,
+  projectLayerDeveloperInstructionsDefined: boolean,
+  projectTrust: ProjectTrust,
+): InstructionsSessionState {
+  if (!declared) {
+    return 'not_applicable';
+  }
+  if (!managed) {
+    return 'absent';
+  }
+  if (higherPriorityExternal) {
+    return 'unknownByExternalLayer';
+  }
+  if (projectLayerDeveloperInstructionsDefined && projectTrust === 'trusted') {
+    return 'shadowedByProjectDeveloperInstructions';
+  }
+  return 'visible';
+}
+
+function resolveProjectScopedArtifactVisibility(
+  declared: boolean,
+  managed: boolean,
+  projectTrust: ProjectTrust,
+): RepoManagedSessionVisibility {
+  if (!declared) {
+    return 'not_applicable';
+  }
+  if (!managed) {
+    return 'absent';
+  }
+  return projectTrustToVisibility(projectTrust);
+}
+
+export function detectCodexSessionState(
+  options: DetectCodexSessionStateOptions,
+): RepoManagedSessionStateReport {
+  const diagnostics: string[] = [];
+  const instructions =
+    options.scope === 'project'
+      ? resolveProjectScopedInstructionsState(
+          options.declarations.instructions,
+          options.managed.instructions,
+          options.projectTrust,
+        )
+      : resolveUserScopedInstructionsState(
+          options.declarations.instructions,
+          options.managed.instructions,
+          options.higherPriorityExternal.developerInstructions,
+          options.projectLayerDeveloperInstructionsDefined,
+          options.projectTrust,
+        );
+
+  const rules =
+    options.scope === 'project'
+      ? resolveProjectScopedArtifactVisibility(
+          options.declarations.permissions,
+          options.managed.rules,
+          options.projectTrust,
+        )
+      : !options.declarations.permissions
+        ? 'not_applicable'
+        : !options.managed.rules
+          ? 'absent'
+          : 'visible';
+
+  const hooks =
+    options.scope === 'project'
+      ? resolveProjectScopedArtifactVisibility(
+          options.declarations.hooks,
+          options.managed.hooks,
+          options.projectTrust,
+        )
+      : !options.declarations.hooks
+        ? 'not_applicable'
+        : !options.managed.hooks
+          ? 'absent'
+          : 'visible';
+
+  let agents: RepoManagedSessionVisibility;
+  if (!options.declarations.agents) {
+    agents = 'not_applicable';
+  } else if (!options.managed.agents) {
+    agents = 'absent';
+  } else if (options.scope === 'project') {
+    agents = projectTrustToVisibility(options.projectTrust);
+  } else {
+    const higherPriorityAgentNames = new Set(options.higherPriorityExternal.agentRoleNames);
+    agents = options.managed.agentRoleNames.some((roleName) => higherPriorityAgentNames.has(roleName))
+      ? 'unknownByExternalLayer'
+      : 'visible';
+  }
+
+  if (options.scope === 'user' && options.managed.rules && options.higherPriorityExternal.rules) {
+    diagnostics.push('effective exec policy 还叠加了外部 layer 的 rules。');
+  }
+  if (options.scope === 'user' && options.managed.hooks && options.higherPriorityExternal.hooks) {
+    diagnostics.push('effective hooks registry 还叠加了外部 layer 的 hooks。');
+  }
+
+  return {
+    instructions,
+    rules,
+    hooks,
+    agents,
+    diagnostics,
+  };
 }

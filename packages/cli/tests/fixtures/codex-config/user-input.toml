@@ -1,0 +1,21 @@
+# user config comment
+model = "gpt-5"
+
+developer_instructions = """
+用户手写说明，保持不动。
+
+[[aw-managed:start plugin="other-plugin" kind="developer_instructions"]]
+## Other Plugin
+- existing managed block
+[[aw-managed:end plugin="other-plugin"]]
+"""
+
+[marketplaces.aw]
+# legacy source should be repaired
+source = "/tmp/aw/.agents/plugins/marketplace.json"
+
+[plugins."other-plugin@aw"]
+enabled = true
+
+[projects."/workspace/repo"]
+trust_level = "trusted"

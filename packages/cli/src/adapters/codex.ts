@@ -4,42 +4,104 @@ import fs from 'fs-extra';
 
 import { generateAgentArtifacts } from '../generators/agents.js';
 import { renderCodexHooks } from '../generators/hooks.js';
-import { renderCodexInstructions } from '../generators/instructions.js';
+import { renderCodexManagedInstructionBlock } from '../generators/instructions.js';
 import { generateCodexPermissionArtifacts } from '../generators/permissions.js';
+import { buildGeneratedName } from '../generators/shared.js';
 import type {
+  CatalogCompatibility,
+  CodexCapabilitySnapshot,
+  CodexSharedNativeRefs,
   GeneratedArtifact,
   GeneratedArtifactStatus,
+  InstalledLedger,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
   Scope,
+  ScopeInitializedState,
   StatusReport,
 } from '../types.js';
-import { detectEnvironment } from '../utils/detect.js';
+import {
+  detectCodexSessionState,
+  detectEnvironment,
+  resolveCodexProjectTrust,
+} from '../utils/detect.js';
+import {
+  type CodexConfigSnapshot,
+  readCodexConfigFile,
+  removeCodexMarketplaceFile,
+  removeCodexPluginEnabledFile,
+  removeManagedDeveloperInstructionsFile,
+  upsertCodexMarketplaceFile,
+  upsertCodexPluginEnabledFile,
+  upsertManagedDeveloperInstructionsFile,
+} from '../utils/codex-config.js';
+import {
+  ensureLocalMarketplace,
+  readInstalledLedger,
+  resolveScopeInitialized,
+} from '../utils/local-marketplace.js';
 import { writeJsonFile } from '../utils/json.js';
 import { readMarketplaceManifest } from '../utils/marketplace.js';
-import { resolvePlugins } from '../utils/manifest.js';
-import { resolveCodexPaths, type CodexPaths } from '../utils/paths.js';
+import { resolveCatalogPlugins, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
+  resolveAwHome,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+  resolveRepoRoot,
+} from '../utils/paths.js';
+import {
+  getTrackingRecord,
   readTrackingManifest,
-  removeTrackingRecord,
-  upsertTrackingRecord,
 } from '../utils/tracking.js';
-import { readCodexRegistry, writeCodexRegistry } from './helpers.js';
+import { detectCodexExternalOwnership } from './helpers.js';
 
-const MARKETPLACE_NAME = 'agent-workflows';
+const MARKETPLACE_NAME = 'aw';
 
-function assertCodexPluginOwnership(
-  pluginName: string,
-  installedRecord: Record<string, string> | undefined,
-): void {
-  if (!installedRecord || installedRecord.marketplace === MARKETPLACE_NAME) {
-    return;
+function normalizeCodexCapabilitySnapshot(
+  snapshot: CodexCapabilitySnapshot | undefined,
+): Required<CodexCapabilitySnapshot> {
+  return {
+    requiresNativePlugin: snapshot?.requiresNativePlugin === true,
+    hasRepoManagedArtifacts: snapshot?.hasRepoManagedArtifacts === true,
+  };
+}
+
+export function requiresNativePlugin(plugin: PluginMeta): boolean {
+  return Boolean(plugin.manifest.skills || plugin.manifest.mcpServers || plugin.manifest.apps);
+}
+
+export function hasRepoManagedArtifacts(plugin: PluginMeta): boolean {
+  return Boolean(
+    (plugin.manifest.extensions?.instructions ?? []).length > 0 ||
+      (plugin.manifest.extensions?.permissions ?? []).length > 0 ||
+      (plugin.manifest.extensions?.hooks ?? []).length > 0 ||
+      (plugin.manifest.extensions?.agents ?? []).length > 0,
+  );
+}
+
+export function resolveCodexCatalogCompatibility(options: {
+  currentManifestPresent: boolean;
+  currentScopeManagedEvidence: boolean;
+  platformNativeFallbackEvidence: boolean;
+  currentCapabilities: CodexCapabilitySnapshot;
+  installedCapabilitySnapshot?: CodexCapabilitySnapshot;
+}): CatalogCompatibility | undefined {
+  if (!options.currentManifestPresent) {
+    return options.currentScopeManagedEvidence || options.platformNativeFallbackEvidence
+      ? 'missing'
+      : undefined;
   }
 
-  throw new Error(
-    `${pluginName} 已由 marketplace ${JSON.stringify(installedRecord.marketplace ?? 'unknown')} 安装，agent-workflows 不会覆盖或删除外部同名插件。`,
-  );
+  if (!options.currentScopeManagedEvidence || !options.installedCapabilitySnapshot) {
+    return undefined;
+  }
+
+  const installed = normalizeCodexCapabilitySnapshot(options.installedCapabilitySnapshot);
+  const current = normalizeCodexCapabilitySnapshot(options.currentCapabilities);
+  return JSON.stringify(installed) === JSON.stringify(current)
+    ? 'current'
+    : 'capabilityChanged';
 }
 
 async function writeTextArtifact(
@@ -53,8 +115,167 @@ async function writeTextArtifact(
   return targetPath;
 }
 
-async function resolveTrackedPlugins(
+function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
+  if (ledger.ledgerState.status === 'available') {
+    return ledger;
+  }
+
+  return {
+    ...ledger,
+    ledgerState: {
+      status: 'available',
+      degradedAt: null,
+      reason: null,
+    },
+  };
+}
+
+function normalizeSharedNativeRefs(
+  sharedNativeRefs: CodexSharedNativeRefs | undefined,
+): CodexSharedNativeRefs {
+  return {
+    user: sharedNativeRefs?.user === true,
+    projects: [...new Set(sharedNativeRefs?.projects ?? [])].sort(),
+  };
+}
+
+function upsertCodexScopeLedger(
+  ledger: InstalledLedger,
+  plugin: PluginMeta,
+  scope: Scope,
+  projectKey: string | undefined,
+): InstalledLedger {
+  const nextLedger = readMutableLedger(ledger);
+  const timestamp = new Date().toISOString();
+  const pluginRecord = nextLedger.plugins[plugin.manifest.name] ?? {
+    lastResolvedVersion: plugin.manifest.version,
+    platforms: {},
+  };
+  pluginRecord.lastResolvedVersion = plugin.manifest.version;
+  pluginRecord.platforms.codex ??= {
+    projectScopes: {},
+    sharedNativeRefs: {
+      user: false,
+      projects: [],
+    },
+  };
+  pluginRecord.platforms.codex.lastRequestedScope = scope;
+  pluginRecord.platforms.codex.lastRequestedAt = timestamp;
+
+  const capabilitySnapshot: CodexCapabilitySnapshot = {
+    requiresNativePlugin: requiresNativePlugin(plugin),
+    hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
+  };
+
+  const scopeRecord = {
+    managed: true,
+    updatedAt: timestamp,
+    resolvedVersion: plugin.manifest.version,
+    capabilitySnapshot,
+  };
+
+  if (scope === 'user') {
+    pluginRecord.platforms.codex.userScope = scopeRecord;
+  } else if (projectKey) {
+    pluginRecord.platforms.codex.projectScopes ??= {};
+    pluginRecord.platforms.codex.projectScopes[projectKey] = scopeRecord;
+  }
+
+  const sharedNativeRefs = normalizeSharedNativeRefs(pluginRecord.platforms.codex.sharedNativeRefs);
+  if (capabilitySnapshot.requiresNativePlugin) {
+    if (scope === 'user') {
+      sharedNativeRefs.user = true;
+    } else if (projectKey) {
+      sharedNativeRefs.projects = [...new Set([...sharedNativeRefs.projects, projectKey])].sort();
+    }
+  }
+  pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
+
+  nextLedger.plugins[plugin.manifest.name] = pluginRecord;
+  return nextLedger;
+}
+
+export async function applyCodexInstallLedger(
+  ledger: InstalledLedger,
+  plugin: PluginMeta,
+  scope: Scope,
   cwd: string,
+): Promise<InstalledLedger> {
+  const projectKey = scope === 'project' ? await resolveCodexProjectKey(cwd) : undefined;
+  return upsertCodexScopeLedger(ledger, plugin, scope, projectKey);
+}
+
+function removeCodexScopeLedger(
+  ledger: InstalledLedger,
+  pluginName: string,
+  scope: Scope,
+  projectKey: string | undefined,
+): InstalledLedger {
+  const nextLedger = readMutableLedger(ledger);
+  const pluginRecord = nextLedger.plugins[pluginName];
+  if (!pluginRecord?.platforms.codex) {
+    return nextLedger;
+  }
+
+  if (scope === 'user') {
+    delete pluginRecord.platforms.codex.userScope;
+  } else if (projectKey) {
+    delete pluginRecord.platforms.codex.projectScopes?.[projectKey];
+    if (
+      pluginRecord.platforms.codex.projectScopes &&
+      Object.keys(pluginRecord.platforms.codex.projectScopes).length === 0
+    ) {
+      delete pluginRecord.platforms.codex.projectScopes;
+    }
+  }
+
+  const sharedNativeRefs = normalizeSharedNativeRefs(pluginRecord.platforms.codex.sharedNativeRefs);
+  if (scope === 'user') {
+    sharedNativeRefs.user = false;
+  } else if (projectKey) {
+    sharedNativeRefs.projects = sharedNativeRefs.projects.filter((value) => value !== projectKey);
+  }
+  pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
+
+  const hasProjectScopes = Object.keys(pluginRecord.platforms.codex.projectScopes ?? {}).length > 0;
+  const hasSharedRefs = sharedNativeRefs.user || sharedNativeRefs.projects.length > 0;
+  if (!pluginRecord.platforms.codex.userScope && !hasProjectScopes && !hasSharedRefs) {
+    delete pluginRecord.platforms.codex;
+  }
+
+  if (Object.keys(pluginRecord.platforms).length === 0) {
+    delete nextLedger.plugins[pluginName];
+  }
+
+  return nextLedger;
+}
+
+export async function applyCodexUninstallLedger(
+  ledger: InstalledLedger,
+  pluginName: string,
+  scope: Scope,
+  cwd: string,
+): Promise<InstalledLedger> {
+  const projectKey = scope === 'project' ? await resolveCodexProjectKey(cwd) : undefined;
+  return removeCodexScopeLedger(ledger, pluginName, scope, projectKey);
+}
+
+function getInstalledScopeSnapshot(
+  ledger: InstalledLedger,
+  pluginName: string,
+  scope: Scope,
+  projectKey: string | undefined,
+): CodexCapabilitySnapshot | undefined {
+  if (scope === 'user') {
+    return ledger.plugins[pluginName]?.platforms.codex?.userScope?.capabilitySnapshot;
+  }
+
+  return projectKey
+    ? ledger.plugins[pluginName]?.platforms.codex?.projectScopes?.[projectKey]?.capabilitySnapshot
+    : undefined;
+}
+
+async function resolveTrackedPlugins(
   trackingDir: string,
   excludedPluginNames: string[] = [],
 ): Promise<PluginMeta[]> {
@@ -63,285 +284,449 @@ async function resolveTrackedPlugins(
   const pluginNames = Object.keys(trackingManifest.plugins)
     .filter((pluginName) => !excluded.has(pluginName))
     .sort();
-
   if (pluginNames.length === 0) {
     return [];
   }
 
-  return resolvePlugins(cwd, pluginNames);
+  const { plugins } = await resolveCatalogPlugins(pluginNames);
+  return plugins;
 }
 
-async function syncSharedCodexArtifacts(
-  paths: CodexPaths,
-  plugins: PluginMeta[],
-): Promise<{
-  instructionsPath?: string;
-  hooksPath?: string;
-}> {
-  const instructionsContent = renderCodexInstructions(
-    plugins.map((plugin) => ({
-      pluginName: plugin.manifest.name,
-      instructions: plugin.manifest.extensions?.instructions ?? [],
-    })),
-  );
-
-  const instructionsPath = instructionsContent
-    ? await writeTextArtifact(paths.configDir, 'AGENTS.md', instructionsContent)
-    : undefined;
-  if (!instructionsContent) {
-    await fs.remove(paths.instructionsPath);
-  }
-
+async function syncCodexHooks(
+  scopeDir: string,
+  plugin: PluginMeta,
+  trackedPlugins: PluginMeta[],
+): Promise<string | undefined> {
   const hooksArtifact = renderCodexHooks(
-    plugins.map((plugin) => ({
-      pluginName: plugin.manifest.name,
-      hooks: plugin.manifest.extensions?.hooks ?? [],
+    [...trackedPlugins, plugin].map((entry) => ({
+      pluginName: entry.manifest.name,
+      hooks: entry.manifest.extensions?.hooks ?? [],
     })),
   );
 
-  const hooksPath = hooksArtifact
-    ? path.join(paths.configDir, hooksArtifact.relativePath)
-    : undefined;
-  if (hooksArtifact && hooksPath) {
-    await writeJsonFile(hooksPath, hooksArtifact.content);
-  } else {
-    await fs.remove(paths.hooksPath);
+  const hooksPath = path.join(scopeDir, 'hooks.json');
+  if (!hooksArtifact) {
+    await fs.remove(hooksPath);
+    return undefined;
   }
 
-  return {
-    instructionsPath,
-    hooksPath,
-  };
+  await writeJsonFile(hooksPath, hooksArtifact.content);
+  return hooksPath;
 }
 
-async function removeTrackedFileArtifacts(
-  trackingDir: string,
+async function collectGeneratedArtifacts(
   pluginName: string,
-): Promise<void> {
+  trackingDir: string,
+): Promise<GeneratedArtifactStatus[]> {
   const trackingManifest = await readTrackingManifest(trackingDir);
-  const trackingRecord = trackingManifest.plugins[pluginName];
+  const trackingRecord = getTrackingRecord(trackingManifest, pluginName);
   if (!trackingRecord) {
-    return;
+    return [];
   }
 
-  for (const artifact of trackingRecord.artifacts) {
-    if (artifact.kind === 'permission' || artifact.kind === 'agent') {
-      await fs.remove(artifact.path);
-    }
+  return Promise.all(
+    trackingRecord.artifacts.map(async (artifact) => ({
+      path: artifact.path,
+      exists: await fs.pathExists(artifact.path),
+      kind: artifact.kind,
+    })),
+  );
+}
+
+async function listGeneratedAgentIds(agentsDir: string): Promise<string[]> {
+  if (!(await fs.pathExists(agentsDir))) {
+    return [];
   }
+  const entries = await fs.readdir(agentsDir);
+  return entries
+    .filter((entry) => entry.endsWith('.toml'))
+    .map((entry) => entry.slice(0, -'.toml'.length))
+    .sort();
 }
 
 export class CodexAdapter implements PlatformAdapter {
   readonly name = 'codex' as const;
 
-  constructor(private readonly cwd: string) {}
+  constructor(
+    private readonly cwd: string,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+  ) {}
 
   async detect(cwd: string): Promise<boolean> {
-    const detection = await detectEnvironment(cwd);
+    const detection = await detectEnvironment(cwd, this.env);
     return detection.codex.available;
   }
 
-  async installPlugin(plugin: PluginMeta, _scope: Scope): Promise<void> {
-    const paths = resolveCodexPaths(this.cwd, 'user');
-    const registryFile = await readCodexRegistry(paths.registryConfigPath);
-    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
-    assertCodexPluginOwnership(plugin.manifest.name, installedPlugin);
-    const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
-    registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
-      ...(registryFile.registry.marketplaces[MARKETPLACE_NAME] ?? {}),
-      source: marketplacePath,
-    };
-    registryFile.registry.plugins[plugin.manifest.name] = {
-      ...(installedPlugin ?? {}),
-      marketplace: MARKETPLACE_NAME,
-      version: plugin.manifest.version,
-    };
-    await writeCodexRegistry(paths.registryConfigPath, registryFile);
+  async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    if (scope === 'project' && !hasRepoManagedArtifacts(plugin)) {
+      throw new Error(
+        `${plugin.manifest.name} 不包含任何 repo-managed artifacts，Codex project scope 不支持纯 native-only 安装。`,
+      );
+    }
+
+    if (!requiresNativePlugin(plugin)) {
+      return;
+    }
+
+    await ensureLocalMarketplace(this.env);
+    const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
+    const userConfig = await readCodexConfigFile(userPaths.configTomlPath);
+    const externalOwnership = detectCodexExternalOwnership(
+      userConfig.snapshot.plugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+    );
+    if (externalOwnership?.present) {
+      throw new Error(externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+    }
+
+    await upsertCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME, {
+      source: path.resolve(resolveAwHome(this.env)),
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`, {
+      enabled: true,
+    });
   }
 
-  async uninstallPlugin(plugin: PluginMeta, _scope: Scope): Promise<void> {
-    const paths = resolveCodexPaths(this.cwd, 'user');
-    const registryFile = await readCodexRegistry(paths.registryConfigPath);
-    assertCodexPluginOwnership(
-      plugin.manifest.name,
-      registryFile.registry.plugins[plugin.manifest.name],
-    );
-    delete registryFile.registry.plugins[plugin.manifest.name];
-    const hasMarketplaceReferences = Object.values(registryFile.registry.plugins).some(
-      (entry) => entry.marketplace === MARKETPLACE_NAME,
-    );
-    if (!hasMarketplaceReferences) {
-      delete registryFile.registry.marketplaces[MARKETPLACE_NAME];
+  async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    const ledger = await readInstalledLedger(this.env);
+    const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
+    const projectKey = await resolveCodexProjectKey(this.cwd);
+    const installedSnapshot = getInstalledScopeSnapshot(ledger, plugin.manifest.name, scope, projectKey);
+    if (!normalizeCodexCapabilitySnapshot(installedSnapshot).requiresNativePlugin) {
+      return;
     }
-    await writeCodexRegistry(paths.registryConfigPath, registryFile);
+
+    const currentRefs = normalizeSharedNativeRefs(
+      ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
+    );
+    const nextRefs = normalizeSharedNativeRefs(currentRefs);
+    if (scope === 'user') {
+      nextRefs.user = false;
+    } else {
+      nextRefs.projects = nextRefs.projects.filter((value) => value !== projectKey);
+    }
+
+    if (!nextRefs.user && nextRefs.projects.length === 0) {
+      await removeCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`);
+    }
+
+    const hasRemainingNativeRefs = Object.entries(ledger.plugins).some(([name, record]) => {
+      if (name === plugin.manifest.name) {
+        return nextRefs.user || nextRefs.projects.length > 0;
+      }
+
+      const snapshot = normalizeCodexCapabilitySnapshot(record.platforms.codex?.userScope?.capabilitySnapshot);
+      const refs = normalizeSharedNativeRefs(record.platforms.codex?.sharedNativeRefs);
+      return snapshot.requiresNativePlugin && (refs.user || refs.projects.length > 0);
+    });
+    if (!hasRemainingNativeRefs) {
+      await removeCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME);
+    }
   }
 
   async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
-    const paths = resolveCodexPaths(this.cwd, scope);
-    const extensions = plugin.manifest.extensions ?? {};
+    const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
-    await removeTrackedFileArtifacts(paths.trackingDir, plugin.manifest.name);
 
-    const trackedPlugins = await resolveTrackedPlugins(this.cwd, paths.trackingDir, [
-      plugin.manifest.name,
-    ]);
-    const sharedArtifacts = await syncSharedCodexArtifacts(paths, [...trackedPlugins, plugin]);
-
-    if ((extensions.instructions ?? []).length > 0 && sharedArtifacts.instructionsPath) {
-      artifacts.push({
-        path: sharedArtifacts.instructionsPath,
-        kind: 'instruction',
-        platform: 'codex',
+    if ((plugin.manifest.extensions?.instructions ?? []).length > 0) {
+      await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
+        pluginName: plugin.manifest.name,
+        value: renderCodexManagedInstructionBlock(
+          plugin.manifest.name,
+          plugin.manifest.extensions?.instructions ?? [],
+        ),
       });
+      artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
     }
 
     for (const artifact of generateCodexPermissionArtifacts(
       plugin.manifest.name,
-      extensions.permissions ?? [],
+      plugin.manifest.extensions?.permissions ?? [],
     )) {
       const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
       artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
     }
 
-    if ((extensions.hooks ?? []).some((hook) => hook.event === 'command') && sharedArtifacts.hooksPath) {
-      artifacts.push({ path: sharedArtifacts.hooksPath, kind: 'hook', platform: 'codex' });
+    const trackedPlugins = await resolveTrackedPlugins(paths.trackingDir, [plugin.manifest.name]);
+    const hooksPath = await syncCodexHooks(paths.configDir, plugin, trackedPlugins);
+    if ((plugin.manifest.extensions?.hooks ?? []).length > 0 && hooksPath) {
+      artifacts.push({ path: hooksPath, kind: 'hook', platform: 'codex' });
     }
 
     for (const artifact of generateAgentArtifacts(
       plugin.manifest.name,
-      extensions.agents ?? [],
+      plugin.manifest.extensions?.agents ?? [],
       'codex',
     )) {
       const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
       artifacts.push({ path: artifactPath, kind: 'agent', platform: 'codex' });
     }
 
-    if (artifacts.length > 0) {
-      await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
-    } else {
-      await removeTrackingRecord(paths.trackingDir, plugin.manifest.name);
-    }
-
     return artifacts;
   }
 
   async uninstallExtensions(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveCodexPaths(this.cwd, scope);
+    const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
-    const trackingRecord = trackingManifest.plugins[plugin.manifest.name];
-    if (!trackingRecord) {
-      return;
-    }
-
-    for (const artifact of trackingRecord.artifacts) {
-      if (artifact.kind === 'permission' || artifact.kind === 'agent') {
-        await fs.remove(artifact.path);
+    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    if (trackingRecord) {
+      for (const artifact of trackingRecord.artifacts) {
+        if (artifact.kind === 'permission' || artifact.kind === 'agent') {
+          await fs.remove(artifact.path);
+        }
       }
     }
 
-    await removeTrackingRecord(paths.trackingDir, plugin.manifest.name);
-    const remainingPlugins = await resolveTrackedPlugins(this.cwd, paths.trackingDir);
-    await syncSharedCodexArtifacts(paths, remainingPlugins);
+    await removeManagedDeveloperInstructionsFile(paths.configTomlPath, plugin.manifest.name);
+
+    const remainingPlugins = await resolveTrackedPlugins(paths.trackingDir, [plugin.manifest.name]);
+    const hooksArtifact = renderCodexHooks(
+      remainingPlugins.map((entry) => ({
+        pluginName: entry.manifest.name,
+        hooks: entry.manifest.extensions?.hooks ?? [],
+      })),
+    );
+    if (hooksArtifact) {
+      await writeJsonFile(paths.hooksPath, hooksArtifact.content);
+    } else {
+      await fs.remove(paths.hooksPath);
+    }
   }
 
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const paths = resolveCodexPaths(this.cwd, 'user');
-    const registryFile = await readCodexRegistry(paths.registryConfigPath);
-    const installedPlugin = registryFile.registry.plugins[plugin.manifest.name];
-    assertCodexPluginOwnership(plugin.manifest.name, installedPlugin);
-    const { path: marketplacePath } = await readMarketplaceManifest(this.cwd, 'codex');
-
-    registryFile.registry.marketplaces[MARKETPLACE_NAME] = {
-      ...(registryFile.registry.marketplaces[MARKETPLACE_NAME] ?? {}),
-      source: marketplacePath,
-    };
-
-    if (
-      !installedPlugin ||
-      installedPlugin.marketplace !== MARKETPLACE_NAME ||
-      installedPlugin.version !== plugin.manifest.version
-    ) {
-      registryFile.registry.plugins[plugin.manifest.name] = {
-        ...(installedPlugin ?? {}),
-        marketplace: MARKETPLACE_NAME,
-        version: plugin.manifest.version,
-      };
+    const status = await this.status(plugin, scope);
+    const pluginStatus = status.plugins[0];
+    if (pluginStatus?.catalogCompatibility === 'missing') {
+      throw new Error(`${plugin.manifest.name} 当前 catalog 已缺失，请先执行 uninstall。`);
     }
 
-    await writeCodexRegistry(paths.registryConfigPath, registryFile);
+    if (pluginStatus?.catalogCompatibility === 'capabilityChanged') {
+      await this.uninstallPlugin(plugin, scope);
+      await this.uninstallExtensions(plugin, scope);
+    }
+
+    await this.installPlugin(plugin, scope);
     await this.installExtensions(plugin, scope);
   }
 
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
-    const registryPaths = resolveCodexPaths(this.cwd, 'user');
-    const scopePaths = resolveCodexPaths(this.cwd, scope);
-    const { registry } = await readCodexRegistry(registryPaths.registryConfigPath);
+    const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
+    const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
+    const projectPaths = resolveCodexPaths(this.cwd, 'project', this.env);
+    const [userConfig, scopeConfig, projectConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot] =
+      await Promise.all([
+        readCodexConfigFile(userPaths.configTomlPath),
+        readCodexConfigFile(scopePaths.configTomlPath),
+        readCodexConfigFile(projectPaths.configTomlPath),
+        readInstalledLedger(this.env),
+        collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
+        resolveCurrentCatalog(this.env),
+        resolveCodexProjectKey(this.cwd),
+        resolveRepoRoot(this.cwd),
+      ]);
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
-    const trackingRecord = trackingManifest.plugins[plugin.manifest.name];
-    const generatedArtifacts: GeneratedArtifactStatus[] = [];
-
-    if (trackingRecord) {
-      for (const artifact of trackingRecord.artifacts) {
-        generatedArtifacts.push({
-          path: artifact.path,
-          exists: await fs.pathExists(artifact.path),
-          kind: artifact.kind,
-        });
-      }
-    }
-
-    const { path: marketplacePath, manifest: marketplace } = await readMarketplaceManifest(
-      this.cwd,
-      'codex',
+    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'codex');
+    const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
+      (entry) => entry.name === plugin.manifest.name,
     );
-    const marketplaceRecord = registry.marketplaces[MARKETPLACE_NAME];
-    const installedRecord = registry.plugins[plugin.manifest.name];
-    const marketplaceSourceMatches = marketplaceRecord?.source === marketplacePath;
+    const scopeInitialized = resolveScopeInitialized(
+      ledger,
+      plugin.manifest.name,
+      'codex',
+      scope,
+      projectKey,
+    );
+    const sharedNativeRefs = normalizeSharedNativeRefs(
+      ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
+    );
+    const currentScopeManagedEvidence =
+      scopeInitialized === 'yes' ||
+      Boolean(trackingRecord) ||
+      (scope === 'user' ? sharedNativeRefs.user : sharedNativeRefs.projects.includes(projectKey));
+    const platformNativeFallbackEvidence =
+      scope === 'user' &&
+      userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true &&
+      !currentScopeManagedEvidence;
+    const currentCapabilities: CodexCapabilitySnapshot = {
+      requiresNativePlugin: requiresNativePlugin(plugin),
+      hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
+    };
+    const catalogCompatibility = resolveCodexCatalogCompatibility({
+      currentManifestPresent: currentCatalogAvailable,
+      currentScopeManagedEvidence,
+      platformNativeFallbackEvidence,
+      currentCapabilities,
+      installedCapabilitySnapshot: getInstalledScopeSnapshot(
+        ledger,
+        plugin.manifest.name,
+        scope,
+        projectKey,
+      ),
+    });
+
+    const currentLayerConfigPath = path.join(this.cwd, 'config.toml');
+    const currentLayerConfig = await readCodexConfigFile(currentLayerConfigPath);
+    const projectLayerArtifactExists =
+      scope === 'project' ||
+      projectConfig.snapshot.developerInstructions.defined ||
+      (await fs.pathExists(projectPaths.rulesDir)) ||
+      (await fs.pathExists(projectPaths.hooksPath)) ||
+      (await fs.pathExists(projectPaths.agentsDir));
+    const projectTrust = resolveCodexProjectTrust({
+      applicable: scope === 'project' || projectLayerArtifactExists,
+      lookupKeys: [
+        path.resolve(this.cwd),
+        path.resolve(repoRoot),
+        projectKey,
+      ],
+      trustLevels: Object.fromEntries(
+        Object.entries(userConfig.snapshot.projects).map(([key, value]) => [key, value.trustLevel]),
+      ),
+      hasProjectLayerArtifacts: projectLayerArtifactExists,
+    });
+
+    const trackedAgentIds = (plugin.manifest.extensions?.agents ?? []).map((agent) =>
+      buildGeneratedName(plugin.manifest.name, agent.name),
+    );
+    const projectAgentIds = projectTrust === 'trusted'
+      ? await listGeneratedAgentIds(projectPaths.agentsDir)
+      : [];
+
+    const instructionManaged = Boolean(
+      scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
+    );
+    const rulesManaged = Boolean(
+      trackingRecord?.artifacts.some((artifact) => artifact.kind === 'permission'),
+    ) && generatedArtifacts
+      .filter((artifact) => artifact.kind === 'permission')
+      .every((artifact) => artifact.exists);
+    const hooksManaged = Boolean(
+      trackingRecord?.artifacts.some((artifact) => artifact.kind === 'hook'),
+    ) && generatedArtifacts
+      .filter((artifact) => artifact.kind === 'hook')
+      .every((artifact) => artifact.exists);
+    const agentsManaged = Boolean(
+      trackingRecord?.artifacts.some((artifact) => artifact.kind === 'agent'),
+    ) && generatedArtifacts
+      .filter((artifact) => artifact.kind === 'agent')
+      .every((artifact) => artifact.exists);
+
+    const repoManagedSessionState = detectCodexSessionState({
+      scope,
+      declarations: {
+        instructions: (plugin.manifest.extensions?.instructions ?? []).length > 0,
+        permissions: (plugin.manifest.extensions?.permissions ?? []).length > 0,
+        hooks: (plugin.manifest.extensions?.hooks ?? []).length > 0,
+        agents: (plugin.manifest.extensions?.agents ?? []).length > 0,
+      },
+      managed: {
+        instructions: instructionManaged,
+        rules: rulesManaged,
+        hooks: hooksManaged,
+        agents: agentsManaged,
+        agentRoleNames: trackedAgentIds,
+      },
+      higherPriorityExternal: {
+        developerInstructions:
+          currentLayerConfig.snapshot.developerInstructions.defined &&
+          !currentLayerConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
+        rules: scope === 'user' && projectTrust === 'trusted' && (await fs.pathExists(projectPaths.rulesDir)),
+        hooks: scope === 'user' && projectTrust === 'trusted' && (await fs.pathExists(projectPaths.hooksPath)),
+        agentRoleNames:
+          scope === 'user' && projectTrust === 'trusted'
+            ? projectAgentIds.filter((agentId) => !trackedAgentIds.includes(agentId))
+            : [],
+      },
+      projectLayerDeveloperInstructionsDefined:
+        scope === 'user' && projectConfig.snapshot.developerInstructions.defined,
+      projectTrust,
+    });
+
+    const externalOwnership = detectCodexExternalOwnership(
+      userConfig.snapshot.plugins,
+      plugin.manifest.name,
+      MARKETPLACE_NAME,
+    );
+    const artifactsInitialized = generatedArtifacts.every((artifact) => artifact.exists) &&
+      (
+        !trackingRecord?.artifacts.some((artifact) => artifact.kind === 'instruction') ||
+        instructionManaged
+      );
 
     const driftWarnings: string[] = [];
     if (generatedArtifacts.some((artifact) => !artifact.exists)) {
-      driftWarnings.push('存在记录在 tracking manifest 中但已经缺失的生成产物。');
+      driftWarnings.push('tracking manifest 记录的 Codex 受管产物存在缺失。');
     }
-
-    const nativeInstalled = Boolean(installedRecord);
-    const marketplaceRegistered = Boolean(marketplaceRecord);
-    if (nativeInstalled && !marketplaceRegistered) {
-      driftWarnings.push('插件已记录为安装状态，但 marketplace 注册缺失。');
+    if (platformNativeFallbackEvidence) {
+      driftWarnings.push('平台真值仍在，但 CLI 账本或 tracking manifest 缺失。');
     }
-    if (marketplaceRegistered && !marketplaceSourceMatches) {
-      driftWarnings.push('marketplace 已注册，但 source 与当前仓库不一致。');
+    if (externalOwnership?.present) {
+      driftWarnings.push(externalOwnership.details ?? '同名插件由外部 marketplace 管理。');
     }
-    if (installedRecord && installedRecord.marketplace !== MARKETPLACE_NAME) {
-      driftWarnings.push('插件已安装，但 marketplace 字段不属于 agent-workflows。');
+    if (projectTrust === 'untrusted') {
+      driftWarnings.push('当前 repo 处于 untrusted 状态，project scope 产物不会进入会话。');
     }
-    if (installedRecord?.version && installedRecord.version !== plugin.manifest.version) {
-      driftWarnings.push('原生安装版本与当前插件 manifest version 不一致。');
+    if (projectTrust === 'unknown') {
+      driftWarnings.push('当前 repo trust 状态未知，project scope 会话可见性无法确定。');
     }
+    driftWarnings.push(...repoManagedSessionState.diagnostics);
 
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
       native: {
-        marketplaceRegistered,
-        pluginAvailable: Boolean(
-          marketplaceRegistered &&
-            marketplaceSourceMatches &&
-            marketplace.plugins.some((entry) => entry.name === plugin.manifest.name),
-        ),
-        pluginInstalled: nativeInstalled,
-        version: installedRecord?.version,
-        details: marketplaceRecord?.source
-          ? `source=${marketplaceRecord.source}`
+        marketplaceRegistered:
+          Boolean(userConfig.snapshot.marketplaces[MARKETPLACE_NAME]) &&
+          !userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourcePointsToManifest,
+        pluginAvailable: currentCatalogAvailable,
+        pluginInstalled:
+          userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true,
+        details: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source
+          ? `source=${userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source}`
           : undefined,
+        sharedNativeRefs,
       },
       generatedArtifacts,
       driftWarnings,
+      ledgerStateStatus: ledger.ledgerState.status,
+      ledgerStateReason: ledger.ledgerState.reason,
+      scopeInitialized,
+      catalogCompatibility,
+      externalOwnership,
+      projectTrust,
+      platformNativeFallbackEvidence: {
+        present: platformNativeFallbackEvidence,
+        details: platformNativeFallbackEvidence
+          ? 'user scope 的 [plugins."<plugin>@aw"] enabled 仍然存在。'
+          : undefined,
+      },
+      scopeManagedEvidence: {
+        ledger: scopeInitialized === 'yes',
+        tracking: Boolean(trackingRecord),
+        sharedNativeRef:
+          scope === 'user' ? sharedNativeRefs.user : sharedNativeRefs.projects.includes(projectKey),
+      },
+      currentCatalog: {
+        rootDir: currentCatalog.rootDir,
+        source: currentCatalog.source,
+        available: currentCatalogAvailable,
+        reason: currentCatalog.reason,
+      },
+      artifactsInitialized,
+      repoManagedSessionState,
     };
 
     return {
       platform: 'codex',
       scope,
       initialized:
-        marketplaceRegistered || nativeInstalled || generatedArtifacts.length > 0,
+        scopeInitialized === 'yes' ||
+        pluginStatus.native.pluginInstalled ||
+        generatedArtifacts.length > 0 ||
+        platformNativeFallbackEvidence,
+      scopeInitialized: scopeInitialized as ScopeInitializedState,
       plugins: [pluginStatus],
     };
   }

@@ -7,6 +7,10 @@
     "test": "pnpm --filter @yiliang/aw test",
     "test:unit": "pnpm --filter @yiliang/aw test:unit",
     "test:integration": "pnpm --filter @yiliang/aw test:integration",
-    "test:coverage": "pnpm --filter @yiliang/aw test:coverage"
+    "test:coverage": "pnpm --filter @yiliang/aw test:coverage",
+    "test:smoke": "pnpm --filter @yiliang/aw test:smoke",
+    "test:smoke:build": "pnpm --filter @yiliang/aw test:smoke:build",
+    "test:smoke:pack": "pnpm --filter @yiliang/aw test:smoke:pack",
+    "pack:cli": "pnpm --filter @yiliang/aw pack"
   }
 }

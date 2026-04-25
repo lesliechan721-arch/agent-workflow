@@ -3,15 +3,52 @@
   "version": "0.1.0",
   "description": "在用户要求提交当前改动时自动触发 skill，引导 agent 按 Conventional Commits 规范完成 git 提交。",
   "skills": "./skills",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["git", "commit"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
   "interface": {
     "displayName": "Git Commit",
     "shortDescription": "自动触发的 Conventional Commits 提交流程",
     "capabilities": ["Skills"]
   },
   "extensions": {
-    "instructions": [],
-    "permissions": [],
-    "hooks": [],
-    "agents": []
+    "instructions": [
+      {
+        "name": "commit-policy",
+        "title": "提交规范",
+        "content": "所有提交都必须遵守 Conventional Commits，并在必要时补充 body 说明原因。",
+        "paths": ["src/**"]
+      }
+    ],
+    "permissions": [
+      {
+        "name": "git-ops",
+        "allow": ["git status", "git diff"],
+        "ask": ["git commit"]
+      }
+    ],
+    "hooks": [
+      {
+        "event": "command",
+        "matcher": "git *",
+        "command": "echo git hook",
+        "description": "观察 git 命令"
+      }
+    ],
+    "agents": [
+      {
+        "name": "commit-reviewer",
+        "description": "检查提交范围和信息是否匹配。",
+        "prompt": "请检查这次提交是否符合提交规范，并指出 scope 是否准确。",
+        "tools": ["shell"]
+      }
+    ]
   }
 }
