@@ -64,6 +64,10 @@ import {
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
+  attachGeneratedArtifactsToError,
+  mergeGeneratedArtifacts,
+} from '../utils/generated-artifacts.js';
+import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
@@ -372,6 +376,23 @@ function readTrackedCodexHookCommands(
   return commands;
 }
 
+function createTrackingRecordFromArtifacts(
+  pluginName: string,
+  trackingRecord: TrackingPluginRecord | undefined,
+  generatedArtifacts: GeneratedArtifact[],
+): TrackingPluginRecord | undefined {
+  const artifacts = mergeGeneratedArtifacts(trackingRecord?.artifacts, generatedArtifacts);
+  if (artifacts.length === 0) {
+    return undefined;
+  }
+
+  return {
+    name: trackingRecord?.name ?? pluginName,
+    generatedAt: trackingRecord?.generatedAt ?? new Date(0).toISOString(),
+    artifacts,
+  };
+}
+
 function resolveTrackedCodexHookCommands(
   trackingManifest: TrackingManifest,
   excludedPluginNames: string[] = [],
@@ -588,52 +609,64 @@ export class CodexAdapter implements PlatformAdapter {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
 
-    if ((plugin.manifest.extensions?.instructions ?? []).length > 0) {
-      await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
-        pluginName: plugin.manifest.name,
-        value: renderCodexManagedInstructionBlock(
-          plugin.manifest.name,
-          plugin.manifest.extensions?.instructions ?? [],
-        ),
-      });
-      artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
-    }
+    try {
+      if ((plugin.manifest.extensions?.instructions ?? []).length > 0) {
+        await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
+          pluginName: plugin.manifest.name,
+          value: renderCodexManagedInstructionBlock(
+            plugin.manifest.name,
+            plugin.manifest.extensions?.instructions ?? [],
+          ),
+        });
+        artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
+      }
 
-    for (const artifact of generateCodexPermissionArtifacts(
-      plugin.manifest.name,
-      plugin.manifest.extensions?.permissions ?? [],
-    )) {
-      const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
-      artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
-    }
+      for (const artifact of generateCodexPermissionArtifacts(
+        plugin.manifest.name,
+        plugin.manifest.extensions?.permissions ?? [],
+      )) {
+        const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
+        artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
+      }
 
-    const trackedPlugins = await resolveTrackedPlugins(paths.trackingDir, this.env, [plugin.manifest.name]);
-    const hooksPath = await syncCodexHooks(paths.configDir, plugin, trackedPlugins);
-    if ((plugin.manifest.extensions?.hooks ?? []).length > 0 && hooksPath) {
-      artifacts.push({
-        path: hooksPath,
-        kind: 'hook',
-        platform: 'codex',
-        hookCommands: extractCodexHookCommands(plugin.manifest.extensions?.hooks ?? []),
-      });
-    }
+      const trackedPlugins = await resolveTrackedPlugins(paths.trackingDir, this.env, [plugin.manifest.name]);
+      const hooksPath = await syncCodexHooks(paths.configDir, plugin, trackedPlugins);
+      if ((plugin.manifest.extensions?.hooks ?? []).length > 0 && hooksPath) {
+        artifacts.push({
+          path: hooksPath,
+          kind: 'hook',
+          platform: 'codex',
+          hookCommands: extractCodexHookCommands(plugin.manifest.extensions?.hooks ?? []),
+        });
+      }
 
-    for (const artifact of generateAgentArtifacts(
-      plugin.manifest.name,
-      plugin.manifest.extensions?.agents ?? [],
-      'codex',
-    )) {
-      const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
-      artifacts.push({ path: artifactPath, kind: 'agent', platform: 'codex' });
-    }
+      for (const artifact of generateAgentArtifacts(
+        plugin.manifest.name,
+        plugin.manifest.extensions?.agents ?? [],
+        'codex',
+      )) {
+        const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
+        artifacts.push({ path: artifactPath, kind: 'agent', platform: 'codex' });
+      }
 
-    return artifacts;
+      return artifacts;
+    } catch (error) {
+      throw attachGeneratedArtifactsToError(error, artifacts);
+    }
   }
 
-  async uninstallExtensions(plugin: PluginMeta, scope: Scope): Promise<void> {
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    generatedArtifacts: GeneratedArtifact[] = [],
+  ): Promise<void> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
-    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const trackingRecord = createTrackingRecordFromArtifacts(
+      plugin.manifest.name,
+      getTrackingRecord(trackingManifest, plugin.manifest.name),
+      generatedArtifacts,
+    );
     if (trackingRecord) {
       for (const artifact of trackingRecord.artifacts) {
         if (artifact.kind === 'permission' || artifact.kind === 'agent') {

@@ -18,6 +18,7 @@ import type {
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import { attachGeneratedArtifactsToError } from '../../src/utils/generated-artifacts.js';
 import { resolveCodexProjectKey, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -151,7 +152,11 @@ class FakeAdapter implements PlatformAdapter {
     }];
   }
 
-  async uninstallExtensions(plugin: PluginMeta, scope: 'project' | 'user'): Promise<void> {
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    scope: 'project' | 'user',
+    _generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void> {
     const state = this.getState(plugin.manifest.name);
     const trackingDir = this.getTrackingDir(scope);
     await fs.chmod(trackingDir, 0o700).catch(() => undefined);
@@ -238,6 +243,19 @@ class FakeAdapter implements PlatformAdapter {
   }
 }
 
+class FailingInstallExtensionsCodexAdapter extends CodexAdapter {
+  override async installExtensions(
+    plugin: PluginMeta,
+    scope: 'project' | 'user',
+  ): Promise<GeneratedArtifact[]> {
+    const artifacts = await super.installExtensions(plugin, scope);
+    throw attachGeneratedArtifactsToError(
+      new Error('simulated codex rollback window'),
+      artifacts,
+    );
+  }
+}
+
 async function addInstructionOnlyPlugin(repoRoot: string): Promise<void> {
   const pluginRoot = path.join(repoRoot, 'plugins', 'docs-note');
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
@@ -309,6 +327,7 @@ async function addInstructionAndHookOnlyPlugins(repoRoot: string): Promise<void>
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
+  delete process.env.AW_CLAUDE_HOME;
   delete process.env.AW_CODEX_HOME;
   delete process.env.AW_FORCE_CODEX_AVAILABLE;
   delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
@@ -617,6 +636,52 @@ describe('CLI integration', () => {
       ledgerState: {
         status: 'degraded',
         reason: 'operation_interrupted_after_artifact_write',
+      },
+    });
+  });
+
+  it('rolls back real Codex repo-managed artifacts when install fails before tracking is written', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: new FailingInstallExtensionsCodexAdapter(repoRoot, process.env),
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).rejects.toThrow('simulated codex rollback window');
+
+    const projectCodexDir = path.join(repoRoot, '.codex');
+    const rulesEntries = await fs.pathExists(path.join(projectCodexDir, 'rules'))
+      ? await fs.readdir(path.join(projectCodexDir, 'rules'))
+      : [];
+    const agentEntries = await fs.pathExists(path.join(projectCodexDir, 'agents'))
+      ? await fs.readdir(path.join(projectCodexDir, 'agents'))
+      : [];
+
+    await expect(fs.pathExists(path.join(projectCodexDir, 'hooks.json'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(projectCodexDir, 'config.toml'), 'utf8')).resolves.not.toContain('git-commit');
+    expect(rulesEntries).toEqual([]);
+    expect(agentEntries).toEqual([]);
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_native_write',
       },
     });
   });

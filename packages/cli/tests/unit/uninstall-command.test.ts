@@ -142,7 +142,11 @@ class FakeAdapter implements PlatformAdapter {
     return [];
   }
 
-  async uninstallExtensions(plugin: { manifest: { name: string } }): Promise<void> {
+  async uninstallExtensions(
+    plugin: { manifest: { name: string } },
+    _scope?: Scope,
+    _generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void> {
     this.uninstallExtensionsCalls.push(plugin.manifest.name);
     if (this.options.uninstallExtensionsError) {
       throw new Error(this.options.uninstallExtensionsError);

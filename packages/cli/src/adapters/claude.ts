@@ -28,6 +28,10 @@ import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { resolveAwHome, resolveClaudePaths, resolveClaudeProjectKey } from '../utils/paths.js';
 import {
+  attachGeneratedArtifactsToError,
+  mergeGeneratedArtifacts,
+} from '../utils/generated-artifacts.js';
+import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
@@ -432,50 +436,60 @@ export class ClaudeAdapter implements PlatformAdapter {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
 
-    for (const artifact of generateInstructionArtifacts(
-      plugin.manifest.name,
-      plugin.manifest.extensions?.instructions ?? [],
-      'claude',
-    )) {
-      const artifactPath = path.join(paths.configDir, artifact.relativePath);
-      await fs.ensureDir(path.dirname(artifactPath));
-      await fs.writeFile(artifactPath, artifact.content, 'utf8');
-      artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
-    }
+    try {
+      for (const artifact of generateInstructionArtifacts(
+        plugin.manifest.name,
+        plugin.manifest.extensions?.instructions ?? [],
+        'claude',
+      )) {
+        const artifactPath = path.join(paths.configDir, artifact.relativePath);
+        await fs.ensureDir(path.dirname(artifactPath));
+        await fs.writeFile(artifactPath, artifact.content, 'utf8');
+        artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
+      }
 
-    const settings = await readClaudeSettings(paths.settingsPath);
-    const manualPermissions = subtractClaudePermissions(
-      settings.permissions,
-      aggregateGeneratedClaudePermissions(settings),
-    );
-    settings.awGenerated ??= {};
-
-    if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
-      settings.awGenerated.permissions ??= {};
-      settings.awGenerated.permissions[plugin.manifest.name] = mergeClaudePermissions(
-        plugin.manifest.extensions?.permissions ?? [],
+      const settings = await readClaudeSettings(paths.settingsPath);
+      const manualPermissions = subtractClaudePermissions(
+        settings.permissions,
+        aggregateGeneratedClaudePermissions(settings),
       );
-      artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
-    } else if (settings.awGenerated.permissions) {
-      delete settings.awGenerated.permissions[plugin.manifest.name];
+      settings.awGenerated ??= {};
+
+      if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+        settings.awGenerated.permissions ??= {};
+        settings.awGenerated.permissions[plugin.manifest.name] = mergeClaudePermissions(
+          plugin.manifest.extensions?.permissions ?? [],
+        );
+      } else if (settings.awGenerated.permissions) {
+        delete settings.awGenerated.permissions[plugin.manifest.name];
+      }
+
+      rebuildClaudePermissionState(settings, manualPermissions);
+      await writeClaudeSettings(paths.settingsPath, settings);
+
+      if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+        artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
+      }
+
+      return artifacts;
+    } catch (error) {
+      throw attachGeneratedArtifactsToError(error, artifacts);
     }
-
-    rebuildClaudePermissionState(settings, manualPermissions);
-    await writeClaudeSettings(paths.settingsPath, settings);
-
-    return artifacts;
   }
 
-  async uninstallExtensions(plugin: PluginMeta, scope: Scope): Promise<void> {
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    generatedArtifacts: GeneratedArtifact[] = [],
+  ): Promise<void> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const artifacts = mergeGeneratedArtifacts(trackingRecord?.artifacts, generatedArtifacts);
 
-    if (trackingRecord) {
-      for (const artifact of trackingRecord.artifacts) {
-        if (artifact.kind === 'instruction') {
-          await fs.remove(artifact.path);
-        }
+    for (const artifact of artifacts) {
+      if (artifact.kind === 'instruction') {
+        await fs.remove(artifact.path);
       }
     }
 

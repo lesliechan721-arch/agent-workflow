@@ -111,7 +111,11 @@ class FakeAdapter implements PlatformAdapter {
     }];
   }
 
-  async uninstallExtensions(plugin: PluginMeta): Promise<void> {
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    _scope: 'project' | 'user',
+    _generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void> {
     this.extensionUninstallCalls.push(plugin.manifest.name);
     const state = this.getState(plugin.manifest.name);
     if (state.artifactPath) {

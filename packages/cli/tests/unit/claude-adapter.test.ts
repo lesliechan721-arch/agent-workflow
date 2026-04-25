@@ -279,6 +279,35 @@ describe('ClaudeAdapter', () => {
     await expect(fs.readJson(paths.settingsPath)).resolves.toEqual({});
   });
 
+  it('removes Claude generated artifacts without relying on tracking records', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const paths = resolveClaudePaths(repoRoot, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    const instructionArtifact = artifacts.find((artifact) => artifact.kind === 'instruction');
+
+    expect(instructionArtifact?.path).toBeTruthy();
+    await expect(fs.pathExists(instructionArtifact!.path)).resolves.toBe(true);
+    await expect(fs.readJson(paths.settingsPath)).resolves.toMatchObject({
+      awGenerated: {
+        permissions: {
+          'git-commit': {
+            allow: ['git status', 'git diff'],
+            ask: ['git commit'],
+            deny: [],
+          },
+        },
+      },
+    });
+
+    await adapter.uninstallExtensions(plugin, 'project', artifacts);
+
+    await expect(fs.pathExists(instructionArtifact!.path)).resolves.toBe(false);
+    await expect(fs.readJson(paths.settingsPath)).resolves.toEqual({});
+  });
+
   it('applies Claude upgrade guardrails before reinstalling changed capabilities', async () => {
     const { repoRoot } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

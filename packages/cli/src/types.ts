@@ -348,7 +348,11 @@ export interface PlatformAdapter {
   installPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]>;
-  uninstallExtensions(plugin: PluginMeta, scope: Scope): Promise<void>;
+  uninstallExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void>;
   upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   status(plugin: PluginMeta, scope: Scope): Promise<StatusReport>;
 }

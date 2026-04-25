@@ -14,6 +14,10 @@ import {
 } from '../utils/local-marketplace.js';
 import { resolveClaudePaths, resolveCodexPaths } from '../utils/paths.js';
 import {
+  getGeneratedArtifactsFromError,
+  mergeGeneratedArtifacts,
+} from '../utils/generated-artifacts.js';
+import {
   readTrackingManifest,
   removeTrackingRecordFromManifest,
   upsertTrackingRecordInManifest,
@@ -109,12 +113,13 @@ async function rollbackArtifacts(
   adapter: PlatformAdapter,
   target: ResolvedPluginTarget,
   scope: CommandOptions['scope'],
+  generatedArtifacts: GeneratedArtifact[],
 ): Promise<void> {
   if (!target.currentPlugin) {
     return;
   }
 
-  await adapter.uninstallExtensions(target.currentPlugin, scope);
+  await adapter.uninstallExtensions(target.currentPlugin, scope, generatedArtifacts);
 }
 
 export async function installTargetsOnPlatforms(
@@ -176,9 +181,20 @@ export async function installTargetsOnPlatforms(
         );
         await writeInstalledLedger(nextLedger, env);
       } catch (error) {
+        generatedArtifacts = mergeGeneratedArtifacts(
+          generatedArtifacts,
+          getGeneratedArtifactsFromError(error),
+        );
+        artifactsWritten = artifactsWritten || generatedArtifacts.length > 0;
+
         if (artifactsWritten) {
           try {
-            await rollbackArtifacts(adapters[platform], target, options.scope);
+            await rollbackArtifacts(
+              adapters[platform],
+              target,
+              options.scope,
+              generatedArtifacts,
+            );
           } catch {
             // noop
           }

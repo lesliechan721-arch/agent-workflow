@@ -181,4 +181,41 @@ describe('CodexAdapter', () => {
       'effective hooks registry 还叠加了外部 layer 的 hooks。',
     );
   });
+
+  it('removes repo-managed Codex artifacts without relying on tracking records', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    const permissionArtifact = artifacts.find((artifact) => artifact.kind === 'permission');
+    const agentArtifact = artifacts.find((artifact) => artifact.kind === 'agent');
+    const hookArtifact = artifacts.find((artifact) => artifact.kind === 'hook');
+
+    expect(permissionArtifact?.path).toBeTruthy();
+    expect(agentArtifact?.path).toBeTruthy();
+    expect(hookArtifact?.path).toBeTruthy();
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        developerInstructions: {
+          defined: true,
+        },
+      },
+    });
+
+    await adapter.uninstallExtensions(plugin, 'project', artifacts);
+
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        developerInstructions: {
+          defined: false,
+          managedBlocks: {},
+        },
+      },
+    });
+    await expect(fs.pathExists(permissionArtifact!.path)).resolves.toBe(false);
+    await expect(fs.pathExists(agentArtifact!.path)).resolves.toBe(false);
+    await expect(fs.pathExists(hookArtifact!.path)).resolves.toBe(false);
+  });
 });
