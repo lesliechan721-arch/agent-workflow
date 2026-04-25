@@ -3,7 +3,7 @@
 > 历史文档
 > 适用背景：本文记录的是项目尚未落地 npm embedded bundle 与 `~/.aw` 本地市场之前的前期调研。
 > 失效说明：文中把 repo root marketplace、源码树 `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 当当前推荐路径的部分已经失效。
-> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./dev/plans/npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](./dev/todos/npm-plugin-marketplace-new.md) 为准。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](plans/npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](todos/npm-plugin-marketplace-new.md) 为准。
 
 本文只聚焦一件事：
 

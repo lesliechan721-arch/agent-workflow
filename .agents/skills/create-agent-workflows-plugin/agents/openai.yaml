@@ -1,6 +1,6 @@
 interface:
   display_name: "Agent Workflows Plugin Creator"
-  short_description: "为 agent-workflows 仓库创建双端兼容插件"
-  default_prompt: "Use $create-agent-workflows-plugin to add a new plugin to this repository."
+  short_description: "按当前 manifest 和 bundle 规则创建插件"
+  default_prompt: "Use $create-agent-workflows-plugin to create or update an agent-workflows plugin."
 policy:
   allow_implicit_invocation: false
