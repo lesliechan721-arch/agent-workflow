@@ -381,8 +381,6 @@ export function formatStatusReports(reports: StatusReport[]): string {
       }
       if (plugin.catalogCompatibility) {
         lines.push(`      catalogCompatibility=${plugin.catalogCompatibility}`);
-      } else if (plugin.currentCatalog?.available) {
-        lines.push('      catalogCompatibility=not_applicable');
       }
       if (plugin.scopeManagedEvidence) {
         lines.push(

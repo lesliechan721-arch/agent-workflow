@@ -269,6 +269,38 @@ async function addInstructionOnlyPlugin(repoRoot: string): Promise<void> {
   );
 }
 
+async function addHookOnlyPlugin(repoRoot: string): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', 'npm-guard');
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: 'npm-guard',
+      version: '0.1.0',
+      description: 'hook only test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+        },
+      },
+      extensions: {
+        hooks: [
+          {
+            event: 'command',
+            matcher: 'npm *',
+            command: 'echo npm hook',
+            description: '观察 npm 命令',
+          },
+        ],
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
@@ -414,6 +446,39 @@ describe('CLI integration', () => {
 
     expect(result.output).toContain('catalogCompatibility=current');
     expect(result.output).toContain('ledgerState=degraded (operation_interrupted_after_native_write)');
+  });
+
+  it('omits catalogCompatibility when the current catalog is available but no compatibility state applies', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const result = await statusCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              currentCatalogAvailable: true,
+              scopeInitialized: 'no',
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.output).not.toContain('catalogCompatibility=not_applicable');
+    expect(result.output).not.toContain('catalogCompatibility=');
   });
 
   it('reports Unknown plugin for install misses but keeps status fallback on historical evidence', async () => {
@@ -928,6 +993,72 @@ describe('CLI integration', () => {
 
     await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[plugins."git-commit@aw"]');
     await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[marketplaces.aw]');
+  });
+
+  it('preserves remaining Codex hooks when another tracked plugin disappears from the current catalog', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(addHookOnlyPlugin);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await installCommand(
+      ['git-commit', 'npm-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toMatchObject({
+      commands: expect.arrayContaining([
+        expect.objectContaining({
+          matcher: 'git *',
+          command: 'echo git hook',
+        }),
+        expect.objectContaining({
+          matcher: 'npm *',
+          command: 'echo npm hook',
+        }),
+      ]),
+    });
+
+    await fs.remove(path.join(repoRoot, 'plugins', 'npm-guard'));
+    const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(nextEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(nextEmbeddedRoot);
+
+    await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
+      commands: [
+        {
+          matcher: 'npm *',
+          command: 'echo npm hook',
+          description: '观察 npm 命令',
+        },
+      ],
+    });
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
+      plugins: {
+        'npm-guard': {
+          lastResolvedVersion: '0.1.0',
+        },
+      },
+    });
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.not.toMatchObject({
+      ledgerState: {
+        reason: 'operation_interrupted_after_native_write',
+      },
+    });
   });
 
   it('anchors Codex project artifacts at the repo root when commands run from a subdirectory', async () => {

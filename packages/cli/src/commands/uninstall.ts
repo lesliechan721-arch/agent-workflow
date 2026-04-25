@@ -112,6 +112,22 @@ function shouldRefuseHistoricalUninstall(
   return null;
 }
 
+function didUninstallWriteNativeState(
+  platform: PlatformName,
+  scope: CommandOptions['scope'],
+  pluginStatus: PluginStatusReport,
+): boolean {
+  if (platform === 'codex') {
+    if (scope === 'project') {
+      return false;
+    }
+
+    return pluginStatus.native.pluginInstalled;
+  }
+
+  return pluginStatus.native.pluginInstalled;
+}
+
 async function rollbackArtifacts(
   adapter: PlatformAdapter,
   target: ResolvedPluginTarget,
@@ -173,11 +189,11 @@ export async function uninstallTargetsOnPlatforms(
 
       try {
         await adapters[platform].uninstallPlugin(target.plugin, options.scope);
-        nativeWritten = managedEvidence || nativeFallback;
+        nativeWritten = didUninstallWriteNativeState(platform, options.scope, pluginStatus);
 
         if (managedEvidence) {
-          await adapters[platform].uninstallExtensions(target.plugin, options.scope);
           artifactsWritten = true;
+          await adapters[platform].uninstallExtensions(target.plugin, options.scope);
 
           await writeTrackingManifest(
             trackingDir,

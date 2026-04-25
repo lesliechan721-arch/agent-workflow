@@ -3,13 +3,18 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { generateAgentArtifacts } from '../generators/agents.js';
-import { renderCodexHooks } from '../generators/hooks.js';
+import {
+  extractCodexHookCommands,
+  renderCodexHookCommands,
+  renderCodexHooks,
+} from '../generators/hooks.js';
 import { renderCodexManagedInstructionBlock } from '../generators/instructions.js';
 import { generateCodexPermissionArtifacts } from '../generators/permissions.js';
 import { buildGeneratedName } from '../generators/shared.js';
 import type {
   CatalogCompatibility,
   CodexCapabilitySnapshot,
+  CodexHookCommand,
   CodexSharedNativeRefs,
   GeneratedArtifact,
   GeneratedArtifactStatus,
@@ -43,8 +48,13 @@ import {
   resolveScopeInitialized,
 } from '../utils/local-marketplace.js';
 import { writeJsonFile } from '../utils/json.js';
+import { readPluginManifest } from '../utils/manifest.js';
 import { readMarketplaceManifest } from '../utils/marketplace.js';
-import { resolveCatalogPlugins, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import {
+  resolveActiveLocalBundle,
+  resolveCatalogPlugins,
+  resolveCurrentCatalog,
+} from '../utils/plugin-catalog.js';
 import {
   resolveAwHome,
   resolveCodexPaths,
@@ -276,8 +286,114 @@ function getInstalledScopeSnapshot(
     : undefined;
 }
 
+function serializeCodexHookCommand(command: CodexHookCommand): string {
+  return JSON.stringify([command.matcher, command.command, command.description ?? '']);
+}
+
+function subtractCodexHookCommands(
+  commands: CodexHookCommand[],
+  removedCommands: CodexHookCommand[],
+): CodexHookCommand[] {
+  const removedCounts = new Map<string, number>();
+  for (const command of removedCommands) {
+    const key = serializeCodexHookCommand(command);
+    removedCounts.set(key, (removedCounts.get(key) ?? 0) + 1);
+  }
+
+  return commands.filter((command) => {
+    const key = serializeCodexHookCommand(command);
+    const remaining = removedCounts.get(key) ?? 0;
+    if (remaining === 0) {
+      return true;
+    }
+
+    removedCounts.set(key, remaining - 1);
+    return false;
+  });
+}
+
+function normalizeCodexHookCommands(value: unknown): CodexHookCommand[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const commands: CodexHookCommand[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return null;
+    }
+
+    const record = entry as Record<string, unknown>;
+    if (
+      typeof record.matcher !== 'string' ||
+      typeof record.command !== 'string' ||
+      (record.description !== undefined && typeof record.description !== 'string')
+    ) {
+      return null;
+    }
+
+    commands.push({
+      matcher: record.matcher,
+      command: record.command,
+      description: typeof record.description === 'string' ? record.description : undefined,
+    });
+  }
+
+  return commands;
+}
+
+async function readCodexHookCommands(hooksPath: string): Promise<CodexHookCommand[]> {
+  if (!(await fs.pathExists(hooksPath))) {
+    return [];
+  }
+
+  const raw = await fs.readJson(hooksPath) as { commands?: unknown };
+  const commands = normalizeCodexHookCommands(raw.commands);
+  if (!commands) {
+    throw new Error(`Invalid Codex hooks artifact: ${hooksPath}`);
+  }
+
+  return commands;
+}
+
+async function writeCodexHookCommands(
+  hooksPath: string,
+  commands: CodexHookCommand[],
+): Promise<string | undefined> {
+  const hooksArtifact = renderCodexHookCommands(commands);
+  if (!hooksArtifact) {
+    await fs.remove(hooksPath);
+    return undefined;
+  }
+
+  await writeJsonFile(hooksPath, hooksArtifact.content);
+  return hooksPath;
+}
+
+async function resolveTrackedPlugin(
+  pluginName: string,
+  env: NodeJS.ProcessEnv,
+): Promise<PluginMeta> {
+  try {
+    const { plugins } = await resolveCatalogPlugins([pluginName], env);
+    return plugins[0];
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== `Unknown plugin "${pluginName}".`) {
+      throw error;
+    }
+
+    const bundleRoot = await resolveActiveLocalBundle(pluginName, env);
+    if (bundleRoot) {
+      return readPluginManifest(bundleRoot);
+    }
+
+    throw error;
+  }
+}
+
 async function resolveTrackedPlugins(
   trackingDir: string,
+  env: NodeJS.ProcessEnv,
   excludedPluginNames: string[] = [],
 ): Promise<PluginMeta[]> {
   const trackingManifest = await readTrackingManifest(trackingDir);
@@ -289,8 +405,7 @@ async function resolveTrackedPlugins(
     return [];
   }
 
-  const { plugins } = await resolveCatalogPlugins(pluginNames);
-  return plugins;
+  return Promise.all(pluginNames.map((pluginName) => resolveTrackedPlugin(pluginName, env)));
 }
 
 async function syncCodexHooks(
@@ -440,10 +555,15 @@ export class CodexAdapter implements PlatformAdapter {
       artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
     }
 
-    const trackedPlugins = await resolveTrackedPlugins(paths.trackingDir, [plugin.manifest.name]);
+    const trackedPlugins = await resolveTrackedPlugins(paths.trackingDir, this.env, [plugin.manifest.name]);
     const hooksPath = await syncCodexHooks(paths.configDir, plugin, trackedPlugins);
     if ((plugin.manifest.extensions?.hooks ?? []).length > 0 && hooksPath) {
-      artifacts.push({ path: hooksPath, kind: 'hook', platform: 'codex' });
+      artifacts.push({
+        path: hooksPath,
+        kind: 'hook',
+        platform: 'codex',
+        hookCommands: extractCodexHookCommands(plugin.manifest.extensions?.hooks ?? []),
+      });
     }
 
     for (const artifact of generateAgentArtifacts(
@@ -472,7 +592,18 @@ export class CodexAdapter implements PlatformAdapter {
 
     await removeManagedDeveloperInstructionsFile(paths.configTomlPath, plugin.manifest.name);
 
-    const remainingPlugins = await resolveTrackedPlugins(paths.trackingDir, [plugin.manifest.name]);
+    const trackedHookArtifact = trackingRecord?.artifacts.find((artifact) => artifact.kind === 'hook');
+    const trackedHookCommands = normalizeCodexHookCommands(trackedHookArtifact?.hookCommands);
+    if (trackedHookCommands && trackedHookCommands.length > 0) {
+      const remainingCommands = subtractCodexHookCommands(
+        await readCodexHookCommands(paths.hooksPath),
+        trackedHookCommands,
+      );
+      await writeCodexHookCommands(paths.hooksPath, remainingCommands);
+      return;
+    }
+
+    const remainingPlugins = await resolveTrackedPlugins(paths.trackingDir, this.env, [plugin.manifest.name]);
     const hooksArtifact = renderCodexHooks(
       remainingPlugins.map((entry) => ({
         pluginName: entry.manifest.name,

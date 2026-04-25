@@ -122,6 +122,9 @@ class FakeAdapter implements PlatformAdapter {
   constructor(
     readonly name: PlatformName,
     private readonly statusSequence: StatusReport[],
+    private readonly options: {
+      uninstallExtensionsError?: string;
+    } = {},
   ) {}
 
   async detect(_cwd: string): Promise<boolean> {
@@ -141,6 +144,9 @@ class FakeAdapter implements PlatformAdapter {
 
   async uninstallExtensions(plugin: { manifest: { name: string } }): Promise<void> {
     this.uninstallExtensionsCalls.push(plugin.manifest.name);
+    if (this.options.uninstallExtensionsError) {
+      throw new Error(this.options.uninstallExtensionsError);
+    }
   }
 
   async upgradePlugin(): Promise<void> {}
@@ -505,7 +511,89 @@ describe('uninstall command coverage', () => {
     await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
       ledgerState: {
         status: 'degraded',
-        reason: 'operation_interrupted_after_native_write',
+        reason: 'operation_interrupted_after_artifact_write',
+      },
+    });
+  });
+
+  it('rolls artifacts back when uninstallExtensions fails after artifact cleanup started', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    const trackingDir = resolveCodexPaths(repoRoot, 'project', env).trackingDir;
+    const baselineArtifactPath = path.join(trackingDir, 'git-commit.rule');
+
+    await localMarketplaceModule.writeInstalledLedger(
+      localMarketplaceModule.createAvailableLedger(),
+      env,
+    );
+    await upsertTrackingRecord(trackingDir, plugin.manifest.name, [
+      {
+        path: baselineArtifactPath,
+        kind: 'instruction',
+        platform: 'codex',
+      },
+    ]);
+
+    const codex = new FakeAdapter(
+      'codex',
+      [
+        makeStatusReport('codex', 'project', [
+          makePluginStatus(plugin.manifest.name, {
+            scopeInitialized: 'yes',
+            scopeManagedEvidence: {
+              ledger: true,
+              tracking: true,
+              sharedNativeRef: false,
+            },
+          }),
+        ]),
+      ],
+      {
+        uninstallExtensionsError: 'artifact cleanup boom',
+      },
+    );
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('artifact cleanup boom');
+
+    expect(codex.reinstallExtensionsCalls).toEqual([plugin.manifest.name]);
+    await expect(readTrackingManifest(trackingDir)).resolves.toMatchObject({
+      plugins: {
+        'git-commit': {
+          artifacts: [
+            {
+              path: baselineArtifactPath,
+            },
+          ],
+        },
+      },
+    });
+    await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_artifact_write',
       },
     });
   });

@@ -1,4 +1,4 @@
-import type { HookDefinition, PlatformName } from '../types.js';
+import type { CodexHookCommand, HookDefinition, PlatformName } from '../types.js';
 
 export interface RenderedHooksArtifact {
   relativePath: string;
@@ -8,6 +8,17 @@ export interface RenderedHooksArtifact {
 export interface CodexHookBundle {
   pluginName: string;
   hooks: HookDefinition[];
+}
+
+function compareCodexHookCommands(
+  left: CodexHookCommand,
+  right: CodexHookCommand,
+): number {
+  return (
+    left.matcher.localeCompare(right.matcher) ||
+    left.command.localeCompare(right.command) ||
+    (left.description ?? '').localeCompare(right.description ?? '')
+  );
 }
 
 function renderClaudeEventName(event: HookDefinition['event']): string {
@@ -52,27 +63,39 @@ export function renderHooksArtifact(
   };
 }
 
-export function renderCodexHooks(
-  bundles: CodexHookBundle[],
-): RenderedHooksArtifact | null {
-  const commands = bundles
-    .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
-    .flatMap((bundle) =>
-      bundle.hooks
-        .filter((hook) => hook.event === 'command')
-        .map((hook) => ({
-          matcher: hook.matcher ?? '*',
-          command: hook.command,
-          description: hook.description,
-        })),
-    );
+export function extractCodexHookCommands(hooks: HookDefinition[]): CodexHookCommand[] {
+  return hooks
+    .filter((hook) => hook.event === 'command')
+    .map((hook) => ({
+      matcher: hook.matcher ?? '*',
+      command: hook.command,
+      description: hook.description,
+    }));
+}
 
+export function renderCodexHookCommands(
+  commands: CodexHookCommand[],
+): RenderedHooksArtifact | null {
   if (commands.length === 0) {
     return null;
   }
 
   return {
     relativePath: 'hooks.json',
-    content: { commands },
+    content: {
+      commands: [...commands].sort(compareCodexHookCommands),
+    },
   };
+}
+
+export function renderCodexHooks(
+  bundles: CodexHookBundle[],
+): RenderedHooksArtifact | null {
+  return renderCodexHookCommands(
+    bundles
+    .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
+    .flatMap((bundle) =>
+      extractCodexHookCommands(bundle.hooks),
+    ),
+  );
 }

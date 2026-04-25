@@ -197,10 +197,17 @@ export interface PlatformPluginManifest {
   channels?: Record<string, unknown> | Array<Record<string, unknown>>;
 }
 
+export interface CodexHookCommand {
+  matcher: string;
+  command: string;
+  description?: string;
+}
+
 export interface GeneratedArtifact {
   path: string;
   kind: 'instruction' | 'permission' | 'hook' | 'agent';
   platform: PlatformName;
+  hookCommands?: CodexHookCommand[];
 }
 
 export interface TrackingPluginRecord {
