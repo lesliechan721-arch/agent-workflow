@@ -12,6 +12,7 @@ import type {
   RepoManagedSessionVisibility,
   Scope,
 } from '../types.js';
+import { readCodexConfigFile } from './codex-config.js';
 import {
   resolveClaudePaths,
   resolveCodexPaths,
@@ -178,6 +179,126 @@ export function listDetectedPlatforms(detection: EnvironmentDetection): Platform
     platforms.push('claude');
   }
   return platforms;
+}
+
+export interface CodexProjectLayerEvidence {
+  currentLayerDeveloperInstructionsDefined: boolean;
+  ancestorDeveloperInstructionsDefined: boolean;
+  projectLayerDeveloperInstructionsDefined: boolean;
+  higherPriorityRulesPresent: boolean;
+  higherPriorityHooksPresent: boolean;
+  higherPriorityAgentRoleNames: string[];
+  hasProjectLayerArtifacts: boolean;
+}
+
+interface CodexTreeLayerEvidence {
+  developerInstructionsDefined: boolean;
+  hasRulesDir: boolean;
+  hasHooksFile: boolean;
+  hasAgentsDir: boolean;
+  rulesPresent: boolean;
+  agentRoleNames: string[];
+}
+
+function listCodexAncestorLayerRoots(cwd: string, repoRoot: string): string[] {
+  const ancestorRoots: string[] = [];
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  let currentDir = path.resolve(cwd);
+
+  while (currentDir !== resolvedRepoRoot) {
+    ancestorRoots.push(path.join(currentDir, '.codex'));
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  return ancestorRoots;
+}
+
+async function listCodexAgentRoleNames(agentsDir: string): Promise<string[]> {
+  if (!(await fs.pathExists(agentsDir))) {
+    return [];
+  }
+
+  const entries = await fs.readdir(agentsDir);
+  return entries
+    .filter((entry) => entry.endsWith('.toml'))
+    .map((entry) => entry.slice(0, -'.toml'.length))
+    .sort();
+}
+
+async function hasCodexRuleFiles(rulesDir: string): Promise<boolean> {
+  if (!(await fs.pathExists(rulesDir))) {
+    return false;
+  }
+
+  const entries = await fs.readdir(rulesDir);
+  return entries.some((entry) => entry.endsWith('.rules'));
+}
+
+async function readCodexTreeLayerEvidence(layerRoot: string): Promise<CodexTreeLayerEvidence> {
+  const configPath = path.join(layerRoot, 'config.toml');
+  const rulesDir = path.join(layerRoot, 'rules');
+  const hooksPath = path.join(layerRoot, 'hooks.json');
+  const agentsDir = path.join(layerRoot, 'agents');
+  const [config, hasRulesDir, hasHooksFile, hasAgentsDir, rulesPresent, agentRoleNames] = await Promise.all([
+    readCodexConfigFile(configPath),
+    fs.pathExists(rulesDir),
+    fs.pathExists(hooksPath),
+    fs.pathExists(agentsDir),
+    hasCodexRuleFiles(rulesDir),
+    listCodexAgentRoleNames(agentsDir),
+  ]);
+
+  return {
+    developerInstructionsDefined: config.snapshot.developerInstructions.defined,
+    hasRulesDir,
+    hasHooksFile,
+    hasAgentsDir,
+    rulesPresent,
+    agentRoleNames,
+  };
+}
+
+export async function detectCodexProjectLayerEvidence(
+  cwd: string,
+  repoRoot: string,
+): Promise<CodexProjectLayerEvidence> {
+  const currentLayerConfigPath = path.join(cwd, 'config.toml');
+  const ancestorLayerRoots = listCodexAncestorLayerRoots(cwd, repoRoot);
+  const projectLayerRoot = path.join(repoRoot, '.codex');
+  const [currentLayerConfig, ancestorLayerEvidence, projectLayerEvidence] = await Promise.all([
+    readCodexConfigFile(currentLayerConfigPath),
+    Promise.all(ancestorLayerRoots.map((layerRoot) => readCodexTreeLayerEvidence(layerRoot))),
+    readCodexTreeLayerEvidence(projectLayerRoot),
+  ]);
+
+  const higherPriorityLayerEvidence = [...ancestorLayerEvidence, projectLayerEvidence];
+
+  return {
+    currentLayerDeveloperInstructionsDefined:
+      currentLayerConfig.snapshot.developerInstructions.defined,
+    ancestorDeveloperInstructionsDefined:
+      ancestorLayerEvidence.some((layer) => layer.developerInstructionsDefined),
+    projectLayerDeveloperInstructionsDefined:
+      projectLayerEvidence.developerInstructionsDefined,
+    higherPriorityRulesPresent:
+      higherPriorityLayerEvidence.some((layer) => layer.rulesPresent),
+    higherPriorityHooksPresent:
+      higherPriorityLayerEvidence.some((layer) => layer.hasHooksFile),
+    higherPriorityAgentRoleNames:
+      [...new Set(higherPriorityLayerEvidence.flatMap((layer) => layer.agentRoleNames))].sort(),
+    hasProjectLayerArtifacts:
+      currentLayerConfig.snapshot.developerInstructions.defined ||
+      higherPriorityLayerEvidence.some((layer) =>
+        layer.developerInstructionsDefined ||
+        layer.hasRulesDir ||
+        layer.hasHooksFile ||
+        layer.hasAgentsDir
+      ),
+  };
 }
 
 export interface CodexProjectTrustOptions {

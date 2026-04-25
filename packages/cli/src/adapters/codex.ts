@@ -22,6 +22,7 @@ import type {
   StatusReport,
 } from '../types.js';
 import {
+  detectCodexProjectLayerEvidence,
   detectCodexSessionState,
   detectEnvironment,
   resolveCodexProjectTrust,
@@ -333,17 +334,6 @@ async function collectGeneratedArtifacts(
   );
 }
 
-async function listGeneratedAgentIds(agentsDir: string): Promise<string[]> {
-  if (!(await fs.pathExists(agentsDir))) {
-    return [];
-  }
-  const entries = await fs.readdir(agentsDir);
-  return entries
-    .filter((entry) => entry.endsWith('.toml'))
-    .map((entry) => entry.slice(0, -'.toml'.length))
-    .sort();
-}
-
 export class CodexAdapter implements PlatformAdapter {
   readonly name = 'codex' as const;
 
@@ -515,12 +505,10 @@ export class CodexAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const projectPaths = resolveCodexPaths(this.cwd, 'project', this.env);
-    const [userConfig, scopeConfig, projectConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot] =
+    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot] =
       await Promise.all([
         readCodexConfigFile(userPaths.configTomlPath),
         readCodexConfigFile(scopePaths.configTomlPath),
-        readCodexConfigFile(projectPaths.configTomlPath),
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
         resolveCurrentCatalog(this.env),
@@ -568,14 +556,9 @@ export class CodexAdapter implements PlatformAdapter {
       ),
     });
 
-    const currentLayerConfigPath = path.join(this.cwd, 'config.toml');
-    const currentLayerConfig = await readCodexConfigFile(currentLayerConfigPath);
+    const projectLayerEvidence = await detectCodexProjectLayerEvidence(this.cwd, repoRoot);
     const projectLayerArtifactExists =
-      scope === 'project' ||
-      projectConfig.snapshot.developerInstructions.defined ||
-      (await fs.pathExists(projectPaths.rulesDir)) ||
-      (await fs.pathExists(projectPaths.hooksPath)) ||
-      (await fs.pathExists(projectPaths.agentsDir));
+      scope === 'project' || projectLayerEvidence.hasProjectLayerArtifacts;
     const projectTrust = resolveCodexProjectTrust({
       applicable: scope === 'project' || projectLayerArtifactExists,
       lookupKeys: [
@@ -592,9 +575,6 @@ export class CodexAdapter implements PlatformAdapter {
     const trackedAgentIds = (plugin.manifest.extensions?.agents ?? []).map((agent) =>
       buildGeneratedName(plugin.manifest.name, agent.name),
     );
-    const projectAgentIds = projectTrust === 'trusted'
-      ? await listGeneratedAgentIds(projectPaths.agentsDir)
-      : [];
 
     const instructionManaged = Boolean(
       scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
@@ -632,17 +612,27 @@ export class CodexAdapter implements PlatformAdapter {
       },
       higherPriorityExternal: {
         developerInstructions:
-          currentLayerConfig.snapshot.developerInstructions.defined &&
-          !currentLayerConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
-        rules: scope === 'user' && projectTrust === 'trusted' && (await fs.pathExists(projectPaths.rulesDir)),
-        hooks: scope === 'user' && projectTrust === 'trusted' && (await fs.pathExists(projectPaths.hooksPath)),
+          scope === 'user' &&
+          projectTrust === 'trusted' &&
+          (
+            projectLayerEvidence.currentLayerDeveloperInstructionsDefined ||
+            projectLayerEvidence.ancestorDeveloperInstructionsDefined
+          ),
+        rules:
+          scope === 'user' &&
+          projectTrust === 'trusted' &&
+          projectLayerEvidence.higherPriorityRulesPresent,
+        hooks:
+          scope === 'user' &&
+          projectTrust === 'trusted' &&
+          projectLayerEvidence.higherPriorityHooksPresent,
         agentRoleNames:
           scope === 'user' && projectTrust === 'trusted'
-            ? projectAgentIds.filter((agentId) => !trackedAgentIds.includes(agentId))
+            ? projectLayerEvidence.higherPriorityAgentRoleNames
             : [],
       },
       projectLayerDeveloperInstructionsDefined:
-        scope === 'user' && projectConfig.snapshot.developerInstructions.defined,
+        scope === 'user' && projectLayerEvidence.projectLayerDeveloperInstructionsDefined,
       projectTrust,
     });
 

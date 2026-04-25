@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  detectCodexProjectLayerEvidence,
   detectCodexSessionState,
   detectEnvironment,
   resolveCodexProjectTrust,
@@ -125,6 +126,60 @@ describe('detect utils', () => {
         hasProjectLayerArtifacts: false,
       }),
     ).toBe('not_applicable');
+  });
+
+  it('discovers current, tree, and repo Codex layers from the filesystem', async () => {
+    const { repoRoot } = await makeWorkspace();
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    await fs.ensureDir(cwd);
+
+    await fs.writeFile(
+      path.join(cwd, 'config.toml'),
+      'developer_instructions = "cwd layer"\n',
+      'utf8',
+    );
+
+    const ancestorCodexDir = path.join(repoRoot, 'packages', '.codex');
+    await fs.ensureDir(path.join(ancestorCodexDir, 'rules'));
+    await fs.ensureDir(path.join(ancestorCodexDir, 'agents'));
+    await fs.writeFile(
+      path.join(ancestorCodexDir, 'config.toml'),
+      'developer_instructions = "tree layer"\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(ancestorCodexDir, 'rules', 'overlay.rules'), 'allow = []\n', 'utf8');
+    await fs.writeJson(path.join(ancestorCodexDir, 'hooks.json'), { hooks: [] }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(ancestorCodexDir, 'agents', 'tree-reviewer.toml'),
+      'name = "tree-reviewer"\ndescription = "tree"\ndeveloper_instructions = "tree"\n',
+      'utf8',
+    );
+
+    const repoCodexDir = path.join(repoRoot, '.codex');
+    await fs.ensureDir(path.join(repoCodexDir, 'rules'));
+    await fs.ensureDir(path.join(repoCodexDir, 'agents'));
+    await fs.writeFile(
+      path.join(repoCodexDir, 'config.toml'),
+      'developer_instructions = "repo layer"\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(repoCodexDir, 'rules', 'repo.rules'), 'deny = []\n', 'utf8');
+    await fs.writeJson(path.join(repoCodexDir, 'hooks.json'), { hooks: [] }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(repoCodexDir, 'agents', 'repo-reviewer.toml'),
+      'name = "repo-reviewer"\ndescription = "repo"\ndeveloper_instructions = "repo"\n',
+      'utf8',
+    );
+
+    await expect(detectCodexProjectLayerEvidence(cwd, repoRoot)).resolves.toEqual({
+      currentLayerDeveloperInstructionsDefined: true,
+      ancestorDeveloperInstructionsDefined: true,
+      projectLayerDeveloperInstructionsDefined: true,
+      higherPriorityRulesPresent: true,
+      higherPriorityHooksPresent: true,
+      higherPriorityAgentRoleNames: ['repo-reviewer', 'tree-reviewer'],
+      hasProjectLayerArtifacts: true,
+    });
   });
 
   it('calculates Codex instructions and repo-managed session state', () => {

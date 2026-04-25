@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { MarketplaceManifest, PlatformPluginManifest } from '../types.js';
+import { validatePluginManifest } from './manifest.js';
 import { readJsonFile } from './json.js';
 
 function normalizeComparableValue(value: unknown): unknown {
@@ -167,11 +168,13 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
       }
     }
 
-    const [claudeManifest, codexManifest] = await Promise.all([
+    const [sourceManifest, claudeManifest, codexManifest] = await Promise.all([
+      readJsonFile<unknown>(path.join(pluginRoot, '.agents-plugin', 'plugin.json')),
       readJsonFile<PlatformPluginManifest>(path.join(pluginRoot, '.claude-plugin', 'plugin.json')),
       readJsonFile<PlatformPluginManifest>(path.join(pluginRoot, '.codex-plugin', 'plugin.json')),
     ]);
 
+    validatePluginManifest(pluginRoot, sourceManifest);
     await validateClaudeManifest(pluginRoot, claudeManifest);
     await validateCodexManifest(pluginRoot, codexManifest);
   }

@@ -116,6 +116,21 @@ describe('local marketplace', () => {
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
+  it('treats an invalid source manifest as an unhealthy local marketplace layout', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.writeFile(
+      path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+      '{"name":',
+      'utf8',
+    );
+
+    await expect(validateLocalMarketplaceLayout(awHome)).rejects.toThrow();
+  });
+
   it('writes a degraded ledger when the previous installed.json is missing or invalid', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;

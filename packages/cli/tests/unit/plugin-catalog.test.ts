@@ -68,4 +68,22 @@ describe('plugin catalog', () => {
       source: 'embedded',
     });
   });
+
+  it('falls back to the embedded root when a local source manifest is unreadable', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.writeFile(
+      path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+      '{"name":',
+      'utf8',
+    );
+
+    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
+      rootDir: embeddedRoot,
+      source: 'embedded',
+    });
+  });
 });
