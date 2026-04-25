@@ -718,10 +718,36 @@ export function validatePluginManifest(
   return manifest;
 }
 
+async function validateDeclaredNativeAssets(
+  pluginRoot: string,
+  manifest: PluginManifestSource,
+): Promise<void> {
+  const declaredAssets = [
+    { field: 'skills', defaultPath: 'skills' },
+    { field: 'mcpServers', defaultPath: '.mcp.json' },
+    { field: 'apps', defaultPath: '.app.json' },
+  ] as const;
+
+  await Promise.all(
+    declaredAssets.map(async ({ field, defaultPath }) => {
+      if (manifest[field]) {
+        return;
+      }
+
+      if (await fs.pathExists(path.join(pluginRoot, defaultPath))) {
+        throw new Error(
+          `Invalid plugin manifest: found ${defaultPath} but missing "${field}" declaration.`,
+        );
+      }
+    }),
+  );
+}
+
 export async function readPluginManifest(pluginRoot: string): Promise<PluginMeta> {
   const manifestPath = path.join(pluginRoot, SOURCE_MANIFEST_PATH);
   const rawManifest = await readJsonFile<unknown>(manifestPath);
   const manifest = validatePluginManifest(pluginRoot, rawManifest);
+  await validateDeclaredNativeAssets(pluginRoot, manifest);
   return {
     rootDir: pluginRoot,
     manifestPath,

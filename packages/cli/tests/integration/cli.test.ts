@@ -859,4 +859,139 @@ describe('CLI integration', () => {
     await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[plugins."git-commit@aw"]');
     await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[marketplaces.aw]');
   });
+
+  it('keeps Codex shared user native state when uninstalling project scope', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    const installedLedgerPath = path.join(awHome, 'installed.json');
+    const installedLedger = await fs.readJson(installedLedgerPath);
+    installedLedger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [projectKey],
+          },
+        },
+      },
+    };
+    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+
+    await fs.ensureDir(codexHome);
+    await fs.writeFile(
+      path.join(codexHome, 'config.toml'),
+      [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(awHome)}`,
+        'source_type = "local"',
+        '',
+        '[plugins."git-commit@aw"]',
+        'enabled = true',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new CodexAdapter(repoRoot, process.env),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[plugins."git-commit@aw"]');
+    await expect(fs.readFile(path.join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('[marketplaces.aw]');
+  });
+
+  it('anchors Codex project artifacts at the repo root when commands run from a subdirectory', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const subdir = path.join(repoRoot, 'packages', 'feature');
+    await fs.ensureDir(subdir);
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: subdir,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'config.toml'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'agents', 'aw-git-commit-commit-reviewer.toml'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(subdir, '.codex'))).resolves.toBe(false);
+
+    await expect(
+      statusCommand(
+        ['git-commit'],
+        {
+          cwd: subdir,
+          scope: 'project',
+          platform: 'codex',
+        },
+      ),
+    ).resolves.toMatchObject({
+      reports: [
+        {
+          platform: 'codex',
+          plugins: [
+            {
+              pluginName: 'git-commit',
+              scopeInitialized: 'yes',
+              artifactsInitialized: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: subdir,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'agents', 'aw-git-commit-commit-reviewer.toml'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(subdir, '.codex'))).resolves.toBe(false);
+  });
 });

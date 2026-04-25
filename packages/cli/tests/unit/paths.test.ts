@@ -4,7 +4,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import {
+  resolveClaudeProjectKey,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+} from '../../src/utils/paths.js';
 
 const tempDirs: string[] = [];
 
@@ -32,5 +36,21 @@ describe('project key paths', () => {
 
     expect(claudeAlias).toBe(claudeReal);
     expect(codexAlias).toBe(codexReal);
+  });
+
+  it('anchors Codex project paths at the repo root when invoked from a subdirectory', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-paths-'));
+    tempDirs.push(root);
+
+    const repoRoot = path.join(root, 'repo');
+    const nestedDir = path.join(repoRoot, 'packages', 'feature');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(nestedDir);
+
+    const paths = resolveCodexPaths(nestedDir, 'project');
+
+    expect(paths.configDir).toBe(path.join(repoRoot, '.codex'));
+    expect(paths.trackingDir).toBe(path.join(repoRoot, '.codex'));
+    expect(paths.hooksPath).toBe(path.join(repoRoot, '.codex', 'hooks.json'));
   });
 });

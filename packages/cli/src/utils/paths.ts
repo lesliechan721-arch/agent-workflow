@@ -121,7 +121,9 @@ export function resolveCodexPaths(
   scope: Scope,
   env: NodeJS.ProcessEnv = process.env,
 ): CodexPaths {
-  const configDir = scope === 'project' ? path.join(cwd, '.codex') : getCodexHome(env);
+  const configDir = scope === 'project'
+    ? path.join(resolveRepoRootSync(cwd), '.codex')
+    : getCodexHome(env);
   const configTomlPath = path.join(configDir, 'config.toml');
   return {
     platform: 'codex',
@@ -166,13 +168,13 @@ async function realpathOrResolved(inputPath: string): Promise<string> {
   }
 }
 
-export async function resolveRepoRoot(cwd: string): Promise<string> {
+export function resolveRepoRootSync(cwd: string): string {
   let currentDir = path.resolve(cwd);
 
   while (true) {
     const gitDir = path.join(currentDir, '.git');
     const workspaceFile = path.join(currentDir, 'pnpm-workspace.yaml');
-    if (await fs.pathExists(gitDir) || await fs.pathExists(workspaceFile)) {
+    if (fs.pathExistsSync(gitDir) || fs.pathExistsSync(workspaceFile)) {
       return currentDir;
     }
 
@@ -182,6 +184,10 @@ export async function resolveRepoRoot(cwd: string): Promise<string> {
     }
     currentDir = parentDir;
   }
+}
+
+export async function resolveRepoRoot(cwd: string): Promise<string> {
+  return resolveRepoRootSync(cwd);
 }
 
 export async function resolveClaudeProjectKey(cwd: string): Promise<string> {

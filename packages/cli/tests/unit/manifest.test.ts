@@ -98,4 +98,42 @@ describe('manifest utils', () => {
       'unknown field "metadata"',
     );
   });
+
+  it('rejects undeclared default skills directory', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifestPath = path.join(
+      repoRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath);
+    delete manifest.skills;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(
+      readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit')),
+    ).rejects.toThrow('found skills but missing "skills" declaration');
+  });
+
+  it('rejects undeclared default MCP manifest', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    await fs.writeJson(path.join(pluginRoot, '.mcp.json'), { servers: [] }, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'found .mcp.json but missing "mcpServers" declaration',
+    );
+  });
+
+  it('rejects undeclared default app manifest', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: [] }, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'found .app.json but missing "apps" declaration',
+    );
+  });
 });

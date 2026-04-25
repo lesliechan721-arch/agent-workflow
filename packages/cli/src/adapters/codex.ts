@@ -398,15 +398,16 @@ export class CodexAdapter implements PlatformAdapter {
       return;
     }
 
+    // Codex project uninstall only removes repo-managed artifacts; shared user native state stays in place.
+    if (scope === 'project') {
+      return;
+    }
+
     const currentRefs = normalizeSharedNativeRefs(
       ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
     );
     const nextRefs = normalizeSharedNativeRefs(currentRefs);
-    if (scope === 'user') {
-      nextRefs.user = false;
-    } else {
-      nextRefs.projects = nextRefs.projects.filter((value) => value !== projectKey);
-    }
+    nextRefs.user = false;
 
     if (!nextRefs.user && nextRefs.projects.length === 0) {
       await removeCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`);
