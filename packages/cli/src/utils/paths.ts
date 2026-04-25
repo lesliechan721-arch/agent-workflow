@@ -76,6 +76,12 @@ export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.AW_HOME || path.join(os.homedir(), '.aw');
 }
 
+export async function resolveAwHomeCanonical(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  return realpathOrResolved(resolveAwHome(env));
+}
+
 export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(getClaudeHome(env), 'plugins');
 }

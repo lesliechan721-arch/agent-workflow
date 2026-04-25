@@ -47,7 +47,7 @@ describe('pack smoke', () => {
 
     await execFileAsync(
       'pnpm',
-      ['--filter', '@yiliang/aw', 'pack', '--pack-destination', packDir],
+      ['pack:cli', '--pack-destination', packDir],
       {
         cwd: root,
         env: process.env,

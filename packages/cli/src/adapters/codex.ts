@@ -58,7 +58,7 @@ import {
   resolveCurrentCatalog,
 } from '../utils/plugin-catalog.js';
 import {
-  resolveAwHome,
+  resolveAwHomeCanonical,
   resolveCodexPaths,
   resolveCodexProjectKey,
   resolveRepoRoot,
@@ -538,7 +538,7 @@ export class CodexAdapter implements PlatformAdapter {
     }
 
     await upsertCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME, {
-      source: path.resolve(resolveAwHome(this.env)),
+      source: await resolveAwHomeCanonical(this.env),
       sourceType: 'local',
     });
     await upsertCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`, {

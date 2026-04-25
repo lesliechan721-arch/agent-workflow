@@ -67,6 +67,38 @@ afterEach(async () => {
 });
 
 describe('CodexAdapter', () => {
+  it('writes the Codex marketplace source using the canonical AW_HOME path', async () => {
+    const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
+    const realAwHome = `${env.AW_HOME}-real`;
+    const aliasAwHome = `${env.AW_HOME}-alias`;
+    await fs.ensureDir(realAwHome);
+    await fs.symlink(realAwHome, aliasAwHome);
+    env.AW_HOME = aliasAwHome;
+    process.env.AW_HOME = aliasAwHome;
+    process.env.AW_CODEX_HOME = env.AW_CODEX_HOME;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+
+    await adapter.installPlugin(plugin, 'user');
+
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    const configSnapshot = await readCodexConfigFile(configPath);
+    const canonicalAwHome = await fs.realpath(aliasAwHome);
+
+    expect(configSnapshot.snapshot.marketplaces.aw).toMatchObject({
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(
+      `source = ${JSON.stringify(canonicalAwHome)}`,
+    );
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(
+      `source = ${JSON.stringify(aliasAwHome)}`,
+    );
+  });
+
   it('detects enabled higher-priority current/tree/repo layers in user scope status', async () => {
     const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
     process.env.AW_HOME = env.AW_HOME;
