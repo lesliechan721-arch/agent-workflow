@@ -105,7 +105,7 @@ async function runExplicitUpgrade(
   runtime: CommandRuntime,
 ): Promise<{ warnings: string[]; plugins: string[] }> {
   const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const warnings: string[] = [];
   const upgradedPlugins = new Set<string>();
 
@@ -200,7 +200,7 @@ async function runUpgradeAll(
   runtime: CommandRuntime,
 ): Promise<{ warnings: string[]; plugins: string[] }> {
   const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
 
   const namesByPlatform = {
     codex: platforms.includes('codex')
@@ -309,7 +309,7 @@ export async function upgradeCommand(
     throw new Error('upgrade 命令需要插件名，或者显式传入 `--all`。');
   }
 
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const platforms = options.all
     ? await resolveUpgradeAllPlatforms(options.platform, options.cwd, options.scope, env)
     : await resolveTargetPlatforms(
@@ -325,6 +325,7 @@ export async function upgradeCommand(
           })
         ).map((target) => target.plugin),
         adapters,
+        env,
       );
 
   const result = options.all

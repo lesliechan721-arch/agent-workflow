@@ -129,7 +129,7 @@ export async function installTargetsOnPlatforms(
   runtime: CommandRuntime = {},
 ): Promise<{ warnings: string[] }> {
   const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const warnings: string[] = [];
 
   for (const platform of platforms) {
@@ -258,7 +258,7 @@ export async function installCommand(
       env,
     },
   );
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const platforms = await resolveTargetPlatforms(
     'install',
     options.platform,
@@ -266,6 +266,7 @@ export async function installCommand(
     options.scope,
     targets.map((target) => target.plugin),
     adapters,
+    env,
   );
 
   const result = await installTargetsOnPlatforms(targets, platforms, options, {

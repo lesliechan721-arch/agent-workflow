@@ -535,7 +535,7 @@ export class ClaudeAdapter implements PlatformAdapter {
         resolveCurrentCatalog(this.env),
       ]);
 
-    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude');
+    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude', this.env);
     const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );

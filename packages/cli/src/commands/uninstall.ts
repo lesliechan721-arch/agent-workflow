@@ -354,7 +354,7 @@ export async function uninstallTargetsOnPlatforms(
   runtime: CommandRuntime = {},
 ): Promise<{ warnings: string[] }> {
   const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const warnings: string[] = [];
 
   for (const platform of platforms) {
@@ -492,7 +492,7 @@ export async function uninstallCommand(
       env,
     },
   );
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const platforms = await resolveTargetPlatforms(
     'uninstall',
     options.platform,
@@ -500,6 +500,7 @@ export async function uninstallCommand(
     options.scope,
     targets.map((target) => target.plugin),
     adapters,
+    env,
   );
 
   const result = await uninstallTargetsOnPlatforms(targets, platforms, options, {

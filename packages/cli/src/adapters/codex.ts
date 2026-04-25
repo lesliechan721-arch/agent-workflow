@@ -746,7 +746,7 @@ export class CodexAdapter implements PlatformAdapter {
       ]);
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
-    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'codex');
+    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'codex', this.env);
     const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );

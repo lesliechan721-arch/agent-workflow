@@ -28,7 +28,7 @@ export async function statusCommand(
       env,
     },
   );
-  const adapters = runtime.adapters ?? createAdapters(options.cwd);
+  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const platforms = await resolveTargetPlatforms(
     'status',
     options.platform,
@@ -36,6 +36,7 @@ export async function statusCommand(
     options.scope,
     targets.map((target) => target.plugin),
     adapters,
+    env,
   );
 
   const reports: StatusReport[] = [];

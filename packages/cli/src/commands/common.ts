@@ -27,10 +27,13 @@ import {
 } from '../utils/paths.js';
 import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
 
-export function createAdapters(cwd: string): Record<PlatformName, PlatformAdapter> {
+export function createAdapters(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<PlatformName, PlatformAdapter> {
   return {
-    codex: new CodexAdapter(cwd),
-    claude: new ClaudeAdapter(cwd),
+    codex: new CodexAdapter(cwd, env),
+    claude: new ClaudeAdapter(cwd, undefined, env),
   };
 }
 
@@ -255,8 +258,9 @@ export async function resolveTargetPlatforms(
   scope: Scope,
   plugins: PluginMeta[],
   adapters: Record<PlatformName, PlatformAdapter>,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<PlatformName[]> {
-  const detection = await detectEnvironment(cwd);
+  const detection = await detectEnvironment(cwd, env);
   const availablePlatforms = listDetectedPlatforms(detection);
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {

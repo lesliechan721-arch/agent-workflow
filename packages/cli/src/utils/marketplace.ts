@@ -29,11 +29,12 @@ function serializeComparableValue(value: unknown): string {
 export async function readMarketplaceManifest(
   _cwd: string,
   platform: PlatformName,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{
   path: string;
   manifest: MarketplaceManifest;
 }> {
-  const catalog = await resolveCurrentCatalog();
+  const catalog = await resolveCurrentCatalog(env);
   const marketplacePaths = getMarketplaceManifestPaths(catalog.rootDir);
   const targetPath = getMarketplaceManifestPath(catalog.rootDir, platform);
   const [targetManifest, claudeManifest, codexManifest] = await Promise.all([

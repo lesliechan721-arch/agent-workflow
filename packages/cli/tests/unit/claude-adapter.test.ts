@@ -11,10 +11,19 @@ import {
   applyClaudeUninstallLedger,
 } from '../../src/adapters/claude.js';
 import type { InstalledLedger, PluginMeta, StatusReport } from '../../src/types.js';
-import { createAvailableLedger } from '../../src/utils/local-marketplace.js';
+import {
+  createAvailableLedger,
+  initializeLocalMarketplace,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { resolveClaudePaths, resolveClaudeProjectKey } from '../../src/utils/paths.js';
+import {
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
 
@@ -42,9 +51,36 @@ async function makeWorkspace(): Promise<{ repoRoot: string; env: NodeJS.ProcessE
 }
 
 afterEach(async () => {
+  setEmbeddedPluginsRootOverrideForTests(null);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
+
+async function setupLocalMarketplace(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+  await initializeLocalMarketplace({ force: true, env });
+}
+
+async function removePluginFromLocalMarketplace(
+  awHome: string,
+  pluginName: string,
+): Promise<void> {
+  for (const manifestPath of [
+    path.join(awHome, '.claude-plugin', 'marketplace.json'),
+    path.join(awHome, '.agents', 'plugins', 'marketplace.json'),
+  ]) {
+    const manifest = await fs.readJson(manifestPath);
+    manifest.plugins = (manifest.plugins ?? []).filter(
+      (entry: { name?: string }) => entry.name !== pluginName,
+    );
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  }
+}
 
 function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capabilityChanged'): StatusReport {
   return {
@@ -345,5 +381,200 @@ describe('ClaudeAdapter', () => {
       degradedAt: null,
       reason: null,
     });
+  });
+
+  it('detects Claude via injected env and adds the marketplace when local native state is missing', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
+    env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    await setupLocalMarketplace(repoRoot, env);
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const adapter = new ClaudeAdapter(repoRoot, nativeCliRunner, env);
+
+    await expect(adapter.detect(repoRoot)).resolves.toBe(true);
+    await adapter.installPlugin(plugin, 'project');
+    await adapter.uninstallPlugin(plugin, 'project');
+
+    expect(nativeCliRunner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+      ['plugin', 'marketplace', 'add', env.AW_HOME, '--scope', 'project'],
+      ['plugin', 'install', 'git-commit@aw', '--scope', 'project'],
+      ['plugin', 'uninstall', 'git-commit@aw', '--scope', 'project'],
+    ]);
+  });
+
+  it('skips Claude marketplace add when the active local bundle already matches AW_HOME', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
+    await setupLocalMarketplace(repoRoot, env);
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const adapter = new ClaudeAdapter(repoRoot, nativeCliRunner, env);
+    const paths = resolveClaudePaths(repoRoot, 'project', env);
+
+    await fs.ensureDir(paths.configDir);
+    await fs.ensureDir(path.dirname(paths.knownMarketplacesPath));
+    await fs.writeJson(
+      paths.settingsPath,
+      {
+        extraKnownMarketplaces: {
+          aw: {
+            source: env.AW_HOME,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await fs.writeJson(
+      paths.knownMarketplacesPath,
+      {
+        marketplaces: {
+          aw: {
+            installLocation: env.AW_HOME,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    await adapter.installPlugin(plugin, 'project');
+
+    expect(nativeCliRunner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+      ['plugin', 'install', 'git-commit@aw', '--scope', 'project'],
+    ]);
+  });
+
+  it('reports Claude drift and missing current-catalog entries using the injected local marketplace env', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
+    await setupLocalMarketplace(repoRoot, env);
+    await removePluginFromLocalMarketplace(env.AW_HOME, 'git-commit');
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const paths = resolveClaudePaths(repoRoot, 'project', env);
+    const projectKey = await resolveClaudeProjectKey(repoRoot);
+    const driftedSource = path.join(path.dirname(repoRoot), 'drifted-aw');
+    const driftedInstallLocation = path.join(path.dirname(repoRoot), 'materialized-aw');
+
+    await fs.ensureDir(paths.configDir);
+    await fs.ensureDir(path.join(driftedInstallLocation, '.claude-plugin'));
+    await fs.writeJson(
+      path.join(driftedInstallLocation, '.claude-plugin', 'marketplace.json'),
+      {
+        name: 'aw',
+        plugins: [],
+      },
+      { spaces: 2 },
+    );
+    await fs.ensureDir(path.dirname(paths.knownMarketplacesPath));
+    await fs.writeJson(
+      paths.settingsPath,
+      {
+        extraKnownMarketplaces: {
+          aw: {
+            source: driftedSource,
+          },
+        },
+        plugins: {
+          installed: {
+            'git-commit': {
+              marketplace: 'aw',
+              version: '0.1.0',
+              installedAt: '2026-04-25T00:00:00.000Z',
+              scope: 'project',
+              projectPath: projectKey,
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await fs.writeJson(
+      paths.knownMarketplacesPath,
+      {
+        marketplaces: {
+          aw: {
+            installLocation: driftedInstallLocation,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const ledger = await applyClaudeInstallLedger(
+      createAvailableLedger(),
+      plugin,
+      'project',
+      repoRoot,
+    );
+    await writeInstalledLedger(ledger, env);
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [
+      {
+        path: path.join(paths.configDir, 'instructions', 'missing.md'),
+        kind: 'instruction',
+        platform: 'claude',
+      },
+      {
+        path: paths.settingsPath,
+        kind: 'permission',
+        platform: 'claude',
+      },
+    ]);
+
+    const status = await adapter.status(plugin, 'project');
+    const pluginStatus = status.plugins[0];
+
+    expect(status.initialized).toBe(true);
+    expect(pluginStatus).toMatchObject({
+      catalogCompatibility: 'missing',
+      artifactsInitialized: false,
+      native: {
+        marketplaceRegistered: true,
+        pluginAvailable: false,
+        pluginInstalled: false,
+        declaredSource: driftedSource,
+        materializedInstallLocation: driftedInstallLocation,
+      },
+      currentCatalog: {
+        rootDir: env.AW_HOME,
+        source: 'local',
+        available: false,
+      },
+      platformRuntimeEvidence: {
+        present: false,
+        details: 'materialized marketplace 缺少 git-commit 的 source。',
+      },
+      platformNativeFallbackEvidence: {
+        present: false,
+        details: 'installed_plugins.json 未命中 project scope 的 git-commit@aw 记录。',
+      },
+      scopeManagedEvidence: {
+        ledger: true,
+        tracking: true,
+        sharedNativeRef: false,
+      },
+      repoManagedSessionState: {
+        instructions: 'visible',
+        rules: 'absent',
+      },
+    });
+    expect(pluginStatus?.driftWarnings).toEqual(expect.arrayContaining([
+      'tracking manifest 记录的 Claude 受管产物存在缺失。',
+      'marketplace 已声明，但 declared source 已漂移。',
+      'known_marketplaces.json 中的 installLocation 已漂移。',
+      'runtime evidence 不完整：materialized marketplace 缺少 git-commit 的 source。',
+      'native fallback evidence 不完整：installed_plugins.json 未命中 project scope 的 git-commit@aw 记录。',
+    ]));
   });
 });
