@@ -142,70 +142,45 @@ describe('authoring tools', () => {
 
   it('keeps authoring docs aligned with the build-bundle model', async () => {
     const root = repoRoot();
+    const refBase = path.join(
+      root,
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'references',
+    );
     const skillDoc = await fs.readFile(
       path.join(root, '.agents', 'skills', 'create-agent-workflows-plugin', 'SKILL.md'),
       'utf8',
     );
-    const checklistDoc = await fs.readFile(
-      path.join(
-        root,
-        '.agents',
-        'skills',
-        'create-agent-workflows-plugin',
-        'references',
-        'plugin-scaffold-checklist.md',
-      ),
+    const manifestSpecDoc = await fs.readFile(
+      path.join(refBase, 'plugin-manifest-spec.md'),
       'utf8',
     );
-    const contractDoc = await fs.readFile(
-      path.join(
-        root,
-        '.agents',
-        'skills',
-        'create-agent-workflows-plugin',
-        'references',
-        'project-plugin-contract.md',
-      ),
-      'utf8',
-    );
-    const triggerRulesDoc = await fs.readFile(
-      path.join(
-        root,
-        '.agents',
-        'skills',
-        'create-agent-workflows-plugin',
-        'references',
-        'skill-trigger-rules.md',
-      ),
+    const triggersDoc = await fs.readFile(
+      path.join(refBase, 'skills-and-triggers.md'),
       'utf8',
     );
 
     expect(skillDoc).toContain('`plugins/marketplace-source.json`');
     expect(skillDoc).toContain('`pnpm build`');
-    expect(skillDoc).toContain('不会生成源码树 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`');
+    expect(skillDoc).toContain('`.claude-plugin/plugin.json`');
+    expect(skillDoc).toContain('`.codex-plugin/plugin.json`');
     expect(skillDoc).not.toContain('同步 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json`');
     expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
 
-    expect(checklistDoc).toContain('`plugins/marketplace-source.json` 是 marketplace root 级源码输入');
-    expect(checklistDoc).toContain('运行时 bundle 出现在 `packages/cli/plugins-dist/plugins/<name>/`');
-    expect(checklistDoc).toContain('没有源码树 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`');
+    expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
+    expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
+    expect(manifestSpecDoc).toContain('packages/cli/plugins-dist/');
+    expect(manifestSpecDoc).toContain('禁止手改');
 
-    expect(contractDoc).toContain('`plugins/marketplace-source.json` 不是运行时 marketplace manifest');
-    expect(contractDoc).toContain('作者日常只维护源码层');
-    expect(contractDoc).toContain('不要手改：');
-
-    expect(triggerRulesDoc).toContain(
-      '运行时 `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 仍由 build 产物生成',
-    );
+    expect(triggersDoc).toContain('两个平台的触发开关完全独立');
   });
 
   it('marks replaced plans as historical documents and links the current plan', async () => {
     const historicalDocs = [
       path.join(repoRoot(), 'docs', 'dev', 'plans', 'project-init.md'),
-      path.join(repoRoot(), 'docs', 'codex-claude-plugin-marketplace-research.md'),
-      path.join(repoRoot(), 'docs', 'codex-claude-code-extension-research.md'),
       path.join(repoRoot(), 'docs', 'dev', 'plans', 'npm-plugin-marketplace.md'),
-      path.join(repoRoot(), 'docs', 'dev', 'plans', 'npm-plugin-marketplace-copy.md'),
       path.join(repoRoot(), 'docs', 'dev', 'plans', 'codex-repo-managed-artifacts.md'),
     ];
 

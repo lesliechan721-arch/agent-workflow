@@ -1,0 +1,100 @@
+{
+  "name": "code-review",
+  "version": "0.2.0",
+  "description": "自动化代码审查插件：集成外部审查服务，提供结构化审查流程和报告。",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["code-review", "quality", "ci"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Code Review",
+    "shortDescription": "自动化代码审查与质量报告",
+    "capabilities": ["Skills", "MCP Servers"]
+  },
+  "extensions": {
+    "instructions": [
+      {
+        "name": "review-standards",
+        "title": "审查标准",
+        "content": "代码审查必须检查：1) 逻辑正确性 2) 安全隐患 3) 性能问题 4) 可维护性。严重问题必须阻断提交。",
+        "paths": ["src/**", "lib/**"]
+      }
+    ],
+    "permissions": [
+      {
+        "name": "review-ops",
+        "allow": ["git diff", "git log", "git show"],
+        "ask": ["git checkout"],
+        "deny": ["git push --force"]
+      }
+    ],
+    "hooks": [
+      {
+        "event": "session_start",
+        "command": "cat .review-config.json 2>/dev/null || echo '{}'",
+        "description": "会话开始时加载审查配置"
+      },
+      {
+        "event": "before_tool",
+        "matcher": "Write",
+        "command": "echo 'Reviewing file write operation'",
+        "description": "写入前审查提示",
+        "agentOverrides": {
+          "codex": null
+        }
+      }
+    ],
+    "agents": [
+      {
+        "name": "review-summarizer",
+        "description": "汇总审查结论，生成结构化审查报告。",
+        "prompt": "你是一个代码审查报告生成器。根据收到的审查结论，生成以下格式的报告：\n\n## 审查摘要\n- 总文件数\n- 问题数（按严重程度分类）\n\n## 严重问题\n逐条列出\n\n## 改进建议\n按优先级排列",
+        "tools": ["Read", "Write"]
+      }
+    ]
+  },
+  "buildConfig": {
+    "templates": {
+      "include": ["skills/**/*.md"],
+      "vars": {
+        "platformName": { "claude": "Claude Code", "codex": "Codex" },
+        "supportsCommands": { "claude": true, "codex": false }
+      }
+    },
+    "fileRules": {
+      "claude": { "include": ["commands/**", "output-styles/**"], "exclude": [] },
+      "codex": { "include": [], "exclude": ["commands/**", "output-styles/**"] }
+    },
+    "manifestOverrides": {
+      "claude": {
+        "commands": "./commands",
+        "outputStyles": "./output-styles",
+        "userConfig": {
+          "reviewServiceApiKey": {
+            "type": "string",
+            "title": "审查服务 API Key",
+            "description": "外部代码审查服务的 API 密钥",
+            "required": false,
+            "sensitive": true
+          },
+          "maxFilesPerReview": {
+            "type": "number",
+            "title": "单次审查最大文件数",
+            "description": "单次审查处理的最大文件数量",
+            "default": 20,
+            "min": 1,
+            "max": 100
+          }
+        }
+      }
+    }
+  }
+}

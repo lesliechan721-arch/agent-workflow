@@ -43,28 +43,11 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
     name: pluginName,
     version,
     description,
-    skills: './skills',
-    marketplace: {
-      category: 'workflow',
-      strict: true,
-      policy: {
-        installation: 'AVAILABLE',
-        authentication: 'NONE',
-        products: ['CODEX'],
-      },
-    },
-    interface: {
-      displayName,
-      shortDescription,
-      capabilities: ['Skills'],
-    },
-    extensions: {
-      instructions: [],
-      permissions: [],
-      hooks: [],
-      agents: [],
-    },
   };
+
+  if (!opts.noSkills) {
+    manifest.skills = './skills';
+  }
 
   if (opts.withMcp) {
     manifest.mcpServers = './.mcp.json';
@@ -72,6 +55,34 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
   if (opts.withApps) {
     manifest.apps = './.app.json';
   }
+
+  manifest.marketplace = {
+    category: 'workflow',
+    strict: true,
+    policy: {
+      installation: 'AVAILABLE',
+      authentication: 'NONE',
+      products: ['CODEX'],
+    },
+  };
+
+  const capabilities = [];
+  if (!opts.noSkills) capabilities.push('Skills');
+  if (opts.withMcp) capabilities.push('MCP Servers');
+  if (opts.withApps) capabilities.push('Apps');
+
+  manifest.interface = {
+    displayName,
+    shortDescription,
+    ...(capabilities.length > 0 ? { capabilities } : {}),
+  };
+
+  manifest.extensions = {
+    instructions: [],
+    permissions: [],
+    hooks: [],
+    agents: [],
+  };
 
   return manifest;
 }
@@ -137,6 +148,7 @@ Options:
   --skill-description <text>    Initial skill frontmatter description.
   --version <semver>            Plugin version. Default: 0.1.0
   --repo-root <path>            Repository root. Default: current directory.
+  --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create .app.json stub and add apps to manifest.
   -h, --help                    Show this help message.
@@ -165,6 +177,7 @@ function parseArgs(argv) {
     repoRoot: '.',
     withMcp: false,
     withApps: false,
+    noSkills: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -181,6 +194,10 @@ function parseArgs(argv) {
     }
     if (arg === '--with-apps') {
       options.withApps = true;
+      continue;
+    }
+    if (arg === '--no-skills') {
+      options.noSkills = true;
       continue;
     }
 
@@ -237,10 +254,8 @@ function main() {
   const args = parseArgs(process.argv);
 
   const pluginName = requireHyphenName(args.pluginName, 'plugin_name');
-  const skillName = requireHyphenName(args.skillName || pluginName, 'skill_name');
   const displayName = args.displayName || titleCaseSlug(pluginName);
   const shortDescription = args.shortDescription || args.description;
-  const skillDescription = args.skillDescription || args.description;
   const repoRoot = path.resolve(args.repoRoot);
 
   const pluginsRoot = path.join(repoRoot, 'plugins');
@@ -263,18 +278,24 @@ function main() {
     args.description,
     displayName,
     shortDescription,
-    { withMcp: args.withMcp, withApps: args.withApps },
+    { withMcp: args.withMcp, withApps: args.withApps, noSkills: args.noSkills },
   );
 
-  const createdPaths = [
-    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
-    path.join(pluginRoot, 'skills', skillName, 'SKILL.md'),
-    path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml'),
-  ];
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const createdPaths = [manifestPath];
 
-  writeJson(createdPaths[0], pluginManifest);
-  writeText(createdPaths[1], renderSkillMd(skillName, skillDescription));
-  writeText(createdPaths[2], renderOpenAiYaml(displayName, shortDescription, skillName));
+  writeJson(manifestPath, pluginManifest);
+
+  if (!args.noSkills) {
+    const skillName = requireHyphenName(args.skillName || pluginName, 'skill_name');
+    const skillDescription = args.skillDescription || args.description;
+    const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
+    const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
+
+    writeText(skillMdPath, renderSkillMd(skillName, skillDescription));
+    writeText(openaiYamlPath, renderOpenAiYaml(displayName, shortDescription, skillName));
+    createdPaths.push(skillMdPath, openaiYamlPath);
+  }
 
   if (args.withMcp) {
     const mcpPath = path.join(pluginRoot, '.mcp.json');

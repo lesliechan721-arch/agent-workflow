@@ -95,7 +95,54 @@ function validatePluginDir(pluginDir) {
     error('.codex-plugin/ directory must not exist in plugin source (it is a build output)');
   }
 
-  // 10-12. Validate skills if declared
+  // 9. Validate mcpServers file content if declared
+  if (manifest.mcpServers) {
+    const mcpPath = path.join(pluginDir, manifest.mcpServers);
+    if (fs.existsSync(mcpPath)) {
+      try {
+        const mcpContent = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+        if (!mcpContent.mcpServers || typeof mcpContent.mcpServers !== 'object') {
+          error(`${manifest.mcpServers} must have a "mcpServers" top-level key`);
+        }
+      } catch (e) {
+        error(`${manifest.mcpServers} is not valid JSON: ${e.message}`);
+      }
+    }
+  }
+
+  // 10. Validate apps file content if declared
+  if (manifest.apps) {
+    const appsPath = path.join(pluginDir, manifest.apps);
+    if (fs.existsSync(appsPath)) {
+      try {
+        const appsContent = JSON.parse(fs.readFileSync(appsPath, 'utf8'));
+        if (!appsContent.apps || typeof appsContent.apps !== 'object') {
+          error(`${manifest.apps} must have an "apps" top-level key`);
+        }
+      } catch (e) {
+        error(`${manifest.apps} is not valid JSON: ${e.message}`);
+      }
+    }
+  }
+
+  // 11. Validate extensions name uniqueness if declared
+  if (manifest.extensions) {
+    for (const extType of ['instructions', 'permissions', 'hooks', 'agents']) {
+      const items = manifest.extensions[extType];
+      if (!Array.isArray(items)) continue;
+      const names = new Set();
+      for (const item of items) {
+        if (item.name) {
+          if (names.has(item.name)) {
+            error(`extensions.${extType} has duplicate name: "${item.name}"`);
+          }
+          names.add(item.name);
+        }
+      }
+    }
+  }
+
+  // 12-14. Validate skills if declared
   if (manifest.skills) {
     const skillsDir = path.join(pluginDir, manifest.skills);
     if (fs.existsSync(skillsDir)) {
