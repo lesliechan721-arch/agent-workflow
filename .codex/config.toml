@@ -1,0 +1,11 @@
+# Keep the repo writable in normal workspace-write mode, but do not
+# auto-protect `.agents` as a read-only metadata directory.
+default_permissions = "workspace-with-agents-write"
+
+[permissions.workspace-with-agents-write.filesystem]
+":minimal" = "read"
+
+[permissions.workspace-with-agents-write.filesystem.":project_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+在当前仓库创建或维护同时支持 Codex 和 Claude Code 的双平台插件。
 
 ## Overview
 
