@@ -9,7 +9,7 @@ plugins/<name>/skills/
 └── <skill-name>/
     ├── SKILL.md                 # 必需：skill 定义（frontmatter + 正文）
     ├── agents/
-    │   └── openai.yaml          # 推荐：Codex 平台元数据
+    │   └── openai.yaml          # 面向 Codex 时必需：Codex 平台元数据
     ├── references/              # 可选：按需加载的参考文档
     │   └── *.md
     └── scripts/                 # 可选：辅助脚本
@@ -66,7 +66,7 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 
 ## agents/openai.yaml 规范
 
-此文件只给 Codex 平台读取，Claude Code 不读取。
+此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确限制为非 Codex 产品，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台。
 
 ### 完整字段
 
@@ -99,7 +99,7 @@ policy:
 
 ### policy 块
 
-- `allow_implicit_invocation: true`（或省略）：允许 Codex 自动注入和隐式识别
+- `allow_implicit_invocation: true`：允许 Codex 自动注入和隐式识别
 - `allow_implicit_invocation: false`：关闭自动注入，但仍可通过 `$skill-name` 显式触发
 
 ---

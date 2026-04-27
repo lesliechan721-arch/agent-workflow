@@ -49,7 +49,7 @@
   - `"NONE"`：无需认证
   - `"ON_INSTALL"`：安装时认证
   - `"ON_USE"`：使用时认证
-- `products`：省略时不限制平台；声明后只在指定产品中可用
+- `products`：省略时不限制平台；声明后只在指定产品中可用。脚手架默认省略该字段，让插件保持双平台可见；只有明确要限制平台时才添加。
 
 ## interface block
 
@@ -130,7 +130,7 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "permissions": [
       {
         "name": "lint",
-        "allow": ["npx eslint *", "npx prettier *"]
+        "allow": ["npx eslint", "npx prettier"]
       }
     ]
   }
@@ -154,8 +154,7 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

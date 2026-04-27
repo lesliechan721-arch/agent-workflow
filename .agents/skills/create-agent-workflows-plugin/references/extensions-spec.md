@@ -123,7 +123,7 @@
 | `session_start` | 会话开始 | — |
 | `session_stop` | 会话结束 | — |
 
-`command` 已从公共 hook contract 移除；需要命令级控制时，请使用 permissions。
+`command` 是公共 hook contract 的必填字段，表示触发 hook 时执行的 shell 命令。`description` 不属于公共 hook 字段；需要解释 hook 用途时，把说明放在插件文档或相邻注释里。
 
 ### 平台生成行为
 

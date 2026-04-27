@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { validatePluginManifest } from '../../src/utils/manifest.js';
+
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
@@ -21,6 +23,17 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
+}
+
+function extractJsonFenceAfter(document: string, heading: string): unknown {
+  const headingIndex = document.indexOf(heading);
+  expect(headingIndex).toBeGreaterThanOrEqual(0);
+  const fenceStart = document.indexOf('```json', headingIndex);
+  expect(fenceStart).toBeGreaterThanOrEqual(0);
+  const jsonStart = document.indexOf('\n', fenceStart) + 1;
+  const fenceEnd = document.indexOf('```', jsonStart);
+  expect(fenceEnd).toBeGreaterThanOrEqual(0);
+  return JSON.parse(document.slice(jsonStart, fenceEnd));
 }
 
 afterEach(async () => {
@@ -96,9 +109,10 @@ describe('authoring tools', () => {
       },
     );
 
-    await expect(
-      fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
+    const scaffoldManifest = await fs.readJson(
+      path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json'),
+    );
+    expect(scaffoldManifest).toMatchObject({
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
@@ -110,7 +124,6 @@ describe('authoring tools', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'NONE',
-          products: ['CODEX'],
         },
       },
       interface: {
@@ -125,6 +138,7 @@ describe('authoring tools', () => {
         agents: [],
       },
     });
+    expect(scaffoldManifest.marketplace.policy).not.toHaveProperty('products');
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
     ).resolves.toBe(true);
@@ -178,6 +192,10 @@ describe('authoring tools', () => {
       path.join(refBase, 'skills-and-triggers.md'),
       'utf8',
     );
+    const extensionsSpecDoc = await fs.readFile(
+      path.join(refBase, 'extensions-spec.md'),
+      'utf8',
+    );
 
     expect(skillDoc).toContain('`plugins/marketplace-source.json`');
     expect(skillDoc).toContain('`pnpm build`');
@@ -190,8 +208,19 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
     expect(manifestSpecDoc).toContain('packages/cli/plugins-dist/');
     expect(manifestSpecDoc).toContain('禁止手改');
+    expect(manifestSpecDoc).not.toContain('npx eslint *');
+    expect(manifestSpecDoc).not.toContain('npx prettier *');
+    expect(() =>
+      validatePluginManifest(
+        '/tmp/coding-standards',
+        extractJsonFenceAfter(manifestSpecDoc, '## 最小 manifest 示例'),
+      ),
+    ).not.toThrow();
 
     expect(triggersDoc).toContain('两个平台的触发开关完全独立');
+    expect(triggersDoc).toContain('面向 Codex 时必需');
+    expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
+    expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
     const exampleDoc = await fs.readFile(
       path.join(refBase, 'comprehensive-example.md'),
@@ -224,6 +253,163 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).resolves.toBeDefined();
+  });
+
+  it('validate_plugin.js enforces Codex skill metadata and YAML shape', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-metadata-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'metadata-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'metadata-test'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'metadata-test',
+      version: '0.1.0',
+      description: 'Test plugin for skill metadata checks.',
+      skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
+      [
+        '---',
+        'name: metadata-test',
+        'description: Validate metadata handling.',
+        '---',
+        '',
+        '# Metadata Test',
+        '',
+        'Run the metadata validation workflow.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('openai.yaml not found'),
+    });
+
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'metadata-test', 'agents'));
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'policy:',
+        '  allow_implicit_invocation: "false"',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('allow_implicit_invocation must be a boolean'),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
+      [
+        '---',
+        'name: metadata-test',
+        'description: "unterminated',
+        '---',
+        '',
+        '# Metadata Test',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('invalid YAML frontmatter'),
+    });
+  });
+
+  it('validate_plugin.js treats openai.yaml as optional for non-Codex skills', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-skill-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'claude-only');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'claude-only'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'claude-only',
+      version: '0.1.0',
+      description: 'Test plugin for Claude-only skill metadata checks.',
+      skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CLAUDE'],
+        },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'claude-only', 'SKILL.md'),
+      [
+        '---',
+        'name: claude-only',
+        'description: Validate Claude-only metadata handling.',
+        '---',
+        '',
+        '# Claude Only',
+        '',
+        'Run the Claude-only validation workflow.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
   });
 
   it('validate_plugin.js rejects out-of-bounds skills path when CLI is built', async () => {

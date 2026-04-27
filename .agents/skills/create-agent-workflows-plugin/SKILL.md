@@ -21,7 +21,7 @@ plugins/<name>/
 ├── .agents-plugin/plugin.json
 └── skills/<skill-name>/
     ├── SKILL.md
-    └── agents/openai.yaml
+    └── agents/openai.yaml          # 面向 Codex 时必需；Claude-only skill 可省略
 ```
 
 **先读**：`references/plugin-manifest-spec.md` → `references/skills-and-triggers.md`
@@ -46,7 +46,7 @@ plugins/<name>/
 ├── .agents-plugin/plugin.json
 ├── skills/<skill-name>/
 │   ├── SKILL.md
-│   └── agents/openai.yaml
+│   └── agents/openai.yaml          # 面向 Codex 时必需；Claude-only skill 可省略
 ├── .mcp.json
 ├── commands/
 │   └── *.md
@@ -63,12 +63,12 @@ plugins/<name>/
 3. **脚手架**（可选）：新建插件先跑 `scripts/init_plugin.js`（见下方）；维护已有插件先读 `.agents-plugin/plugin.json`。
 4. **编辑 manifest**：按需补齐 `.agents-plugin/plugin.json` 字段。字段规范见 `references/plugin-manifest-spec.md`。
 5. **实现各能力**：
-   - Skills → 编写 `SKILL.md` 和 `agents/openai.yaml`，配置触发策略
+   - Skills → 编写 `SKILL.md`；面向 Codex 的 skill 同时提供 `agents/openai.yaml`，配置触发策略
    - Extensions → 在 manifest 的 `extensions` 中声明
    - MCP/Apps → 创建 `.mcp.json` / `.app.json`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
-7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` 仍属于作者工具体验检查。
+7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
 8. **测试**：改到 manifest、bundle 或安装逻辑时，至少运行 `pnpm test` 相关用例。
 
 ## 脚手架脚本
@@ -91,63 +91,18 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--no-skills`：创建不含 skill 的插件（不需要 `--skill-name` 和 `--skill-description`）
 - `--with-mcp`：同时创建 `.mcp.json` 存根
 - `--with-apps`：同时创建带示例 connector id 的最小 `.app.json`，作者需要替换成真实 id
+- 默认省略 `marketplace.policy.products`，让插件保持双平台可见；需要限制平台时再手动声明
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
 
-## 完整参考
+## 最小检查
 
-### 插件能力清单
+- `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
+- `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
+- `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
+- 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
+- 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
 
-| 能力 | 适用平台 | 配置位置 | 参考文档 |
-|------|---------|---------|---------|
-| Skills | 双平台 | `skills/` 目录 + `SKILL.md` + `agents/openai.yaml` | `references/skills-and-triggers.md` |
-| Instructions | 双平台 | `extensions.instructions` | `references/extensions-spec.md` |
-| Permissions | 双平台 | `extensions.permissions` | `references/extensions-spec.md` |
-| Hooks | 双平台 | `extensions.hooks` | `references/extensions-spec.md` |
-| Agents | 双平台 | `extensions.agents` | `references/extensions-spec.md` |
-| MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` 字段 | `references/mcp-and-apps.md` |
-| Apps | Codex | `.app.json` + manifest `apps` 字段 | `references/mcp-and-apps.md` |
-| Commands | Claude | `commands/` 目录 + `manifestOverrides` | `references/claude-only-capabilities.md` |
-| Output Styles | Claude | `output-styles/` 目录 + `manifestOverrides` | `references/claude-only-capabilities.md` |
-| LSP Servers | Claude | `manifestOverrides.claude.lspServers` | `references/claude-only-capabilities.md` |
-| User Config | Claude | `manifestOverrides.claude.userConfig` | `references/claude-only-capabilities.md` |
-| Channels | Claude | `manifestOverrides.claude.channels` | `references/claude-only-capabilities.md` |
-| Template 渲染 | 双平台 | `buildConfig.templates` | `references/build-config-spec.md` |
-| 平台文件规则 | 双平台 | `buildConfig.fileRules` | `references/build-config-spec.md` |
-
-> **命令结果填充（Claude Code 专属）**：`commands` 和 `skills` 的 Markdown 文件支持 `` !`command` `` 行内语法和 `` ```! `` 代码块语法，在加载时执行 shell 命令并将输出内联到 prompt。Codex 不支持。详见 `references/claude-only-capabilities.md` § 命令结果填充。
-
-插件不要求包含所有能力——按需选择。
-
-### 文件组织规约
-
-- 命名：插件名、skill 名、extension 名都用小写短横线格式
-- 路径：`skills`、`mcpServers`、`apps` 字段只能是单个 `./` 开头的字符串
-- 生成文件前缀：CLI 生成的文件统一以 `aw-` 开头（`GENERATED_FILE_PREFIX`）
-- 三层分发：源码层 → Embedded Runtime Bundle → 本地 Marketplace 镜像
-
-### 验证清单
-
-- [ ] `.agents-plugin/plugin.json` 是唯一手动维护的 manifest
-- [ ] manifest 已包含 `marketplace` block（category、strict、policy 必填）
-- [ ] `plugins/marketplace-source.json` 未被无关改写
-- [ ] 插件目录里没有 `.claude-plugin/` 或 `.codex-plugin/` 目录
-- [ ] 声明的路径（skills、mcpServers、apps）都实际存在
-- [ ] Skills（如有）：`SKILL.md` 无 TODO 占位符，已写入真实工作流
-- [ ] Skills（如有）：`agents/openai.yaml` 已明确 Codex 触发策略
-- [ ] MCP（如有）：`.mcp.json` 含有效的 `mcpServers` 配置
-- [ ] Apps（如有）：`.app.json` 含有效的 `apps` 配置
-- [ ] Extensions（如有）：各数组中条目的 `name` 不重复
-- [ ] Claude 专属能力（如有）：`buildConfig` 中 fileRules 和 manifestOverrides 配合正确
-- [ ] `pnpm build` 能生成 `packages/cli/plugins-dist/plugins/<name>/`
-- [ ] 改到 manifest、bundle 或安装逻辑时，至少运行对应的 `pnpm test:*`
-
-### 禁止操作
-
-- 不要手改 `packages/cli/plugins-dist`、`~/.aw`、仓库根目录 marketplace manifest
-- 不要在插件目录里手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`
-- 不要给 `skills`、`mcpServers`、`apps` 写数组或对象
-- 不要把 hooks / agents 塞进 `buildConfig.manifestOverrides`
-- 不要混用平台触发字段（Claude 的 `user-invocable` 不影响 Codex，反之亦然）
+更细的能力矩阵、平台差异、命令结果填充和长 checklist 都在下方参考文档里，按场景加载即可。
 
 ## 参考文档索引
 

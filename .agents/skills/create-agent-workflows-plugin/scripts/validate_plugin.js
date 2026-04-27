@@ -15,19 +15,232 @@ function warn(msg) {
   warnings.push(msg);
 }
 
-function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-  const result = {};
-  for (const line of match[1].split('\n')) {
-    const colonIndex = line.indexOf(':');
-    if (colonIndex > 0) {
-      const key = line.slice(0, colonIndex).trim();
-      const value = line.slice(colonIndex + 1).trim();
-      result[key] = value;
+function stripYamlComment(value) {
+  let quote = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote && value[index - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '#' && (index === 0 || /\s/.test(value[index - 1]))) {
+      return value.slice(0, index).trimEnd();
     }
   }
-  return result;
+  return value.trimEnd();
+}
+
+function parseYamlScalar(rawValue, sourceName, lineNo) {
+  const value = stripYamlComment(rawValue).trim();
+  if (value.length === 0) return '';
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null' || value === '~') return null;
+  if (value === '[]') return [];
+  if (value === '{}') return {};
+
+  if (value.startsWith('"')) {
+    if (!value.endsWith('"') || value.length === 1) {
+      throw new Error(`${sourceName}:${lineNo}: unterminated double-quoted string`);
+    }
+    return JSON.parse(value);
+  }
+
+  if (value.startsWith("'")) {
+    if (!value.endsWith("'") || value.length === 1) {
+      throw new Error(`${sourceName}:${lineNo}: unterminated single-quoted string`);
+    }
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+
+  if (value.startsWith('[') || value.startsWith('{')) {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      throw new Error(`${sourceName}:${lineNo}: invalid inline JSON-style YAML value: ${e.message}`);
+    }
+  }
+
+  return value;
+}
+
+function parseYamlKeyValue(text, sourceName, lineNo) {
+  const colonIndex = text.indexOf(':');
+  if (colonIndex <= 0) {
+    throw new Error(`${sourceName}:${lineNo}: expected "key: value"`);
+  }
+
+  const key = text.slice(0, colonIndex).trim();
+  if (!/^[A-Za-z0-9_.-]+$/.test(key)) {
+    throw new Error(`${sourceName}:${lineNo}: invalid key "${key}"`);
+  }
+
+  return {
+    key,
+    valueText: text.slice(colonIndex + 1),
+  };
+}
+
+function preprocessYamlLines(content, sourceName) {
+  const lines = [];
+  const rawLines = content.replace(/\r\n/g, '\n').split('\n');
+  for (const [lineIndex, rawLine] of rawLines.entries()) {
+    if (/^\t+/.test(rawLine)) {
+      throw new Error(`${sourceName}:${lineIndex + 1}: tabs are not supported for indentation`);
+    }
+
+    const trimmed = rawLine.trim();
+    if (
+      trimmed.length === 0 ||
+      trimmed.startsWith('#') ||
+      /^{{[#/^]|^{{else\b/.test(trimmed)
+    ) {
+      continue;
+    }
+
+    const indent = rawLine.match(/^ */)[0].length;
+    const text = stripYamlComment(rawLine.slice(indent));
+    if (text.trim().length === 0) continue;
+
+    lines.push({
+      indent,
+      text,
+      lineNo: lineIndex + 1,
+    });
+  }
+
+  return lines;
+}
+
+function parseYamlBlock(lines, index, indent, sourceName) {
+  if (index >= lines.length) {
+    return { value: {}, index };
+  }
+
+  if (lines[index].indent < indent) {
+    return { value: {}, index };
+  }
+
+  if (lines[index].text.startsWith('- ')) {
+    return parseYamlSequence(lines, index, indent, sourceName);
+  }
+
+  return parseYamlMap(lines, index, indent, sourceName);
+}
+
+function parseYamlMap(lines, index, indent, sourceName) {
+  const result = {};
+  let cursor = index;
+
+  while (cursor < lines.length) {
+    const line = lines[cursor];
+    if (line.indent < indent) break;
+    if (line.indent > indent) {
+      throw new Error(`${sourceName}:${line.lineNo}: unexpected indentation`);
+    }
+    if (line.text.startsWith('- ')) break;
+
+    const { key, valueText } = parseYamlKeyValue(line.text, sourceName, line.lineNo);
+    if (Object.prototype.hasOwnProperty.call(result, key)) {
+      throw new Error(`${sourceName}:${line.lineNo}: duplicate key "${key}"`);
+    }
+
+    cursor += 1;
+    if (valueText.trim().length === 0) {
+      if (cursor < lines.length && lines[cursor].indent > indent) {
+        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
+        result[key] = parsed.value;
+        cursor = parsed.index;
+      } else {
+        result[key] = {};
+      }
+    } else {
+      result[key] = parseYamlScalar(valueText, sourceName, line.lineNo);
+    }
+  }
+
+  return { value: result, index: cursor };
+}
+
+function parseYamlSequence(lines, index, indent, sourceName) {
+  const result = [];
+  let cursor = index;
+
+  while (cursor < lines.length) {
+    const line = lines[cursor];
+    if (line.indent < indent) break;
+    if (line.indent > indent) {
+      throw new Error(`${sourceName}:${line.lineNo}: unexpected indentation`);
+    }
+    if (!line.text.startsWith('- ')) break;
+
+    const itemText = line.text.slice(2).trim();
+    cursor += 1;
+
+    if (itemText.length === 0) {
+      if (cursor < lines.length && lines[cursor].indent > indent) {
+        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
+        result.push(parsed.value);
+        cursor = parsed.index;
+      } else {
+        result.push(null);
+      }
+      continue;
+    }
+
+    if (/^[A-Za-z0-9_.-]+\s*:/.test(itemText)) {
+      const { key, valueText } = parseYamlKeyValue(itemText, sourceName, line.lineNo);
+      const item = {};
+      if (valueText.trim().length === 0) {
+        if (cursor < lines.length && lines[cursor].indent > indent) {
+          const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
+          item[key] = parsed.value;
+          cursor = parsed.index;
+        } else {
+          item[key] = {};
+        }
+      } else {
+        item[key] = parseYamlScalar(valueText, sourceName, line.lineNo);
+      }
+
+      if (cursor < lines.length && lines[cursor].indent > indent) {
+        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
+        if (!isRecord(parsed.value)) {
+          throw new Error(`${sourceName}:${lines[cursor].lineNo}: expected mapping fields for list item`);
+        }
+        Object.assign(item, parsed.value);
+        cursor = parsed.index;
+      }
+
+      result.push(item);
+      continue;
+    }
+
+    result.push(parseYamlScalar(itemText, sourceName, line.lineNo));
+  }
+
+  return { value: result, index: cursor };
+}
+
+function parseYaml(content, sourceName) {
+  const lines = preprocessYamlLines(content, sourceName);
+  if (lines.length === 0) return {};
+  const parsed = parseYamlBlock(lines, 0, lines[0].indent, sourceName);
+  if (parsed.index < lines.length) {
+    const line = lines[parsed.index];
+    throw new Error(`${sourceName}:${line.lineNo}: could not parse line`);
+  }
+  return parsed.value;
+}
+
+function parseFrontmatter(content, sourceName) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return null;
+  return parseYaml(match[1], sourceName);
 }
 
 async function tryLoadCliValidator() {
@@ -98,6 +311,38 @@ function isTemplateAsset(manifest, relativePath) {
     }
     return false;
   });
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateAllowedKeys(record, fieldName, allowedKeys) {
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.includes(key)) {
+      error(`${fieldName} has unknown field "${key}"`);
+    }
+  }
+}
+
+function expectRecord(value, fieldName) {
+  if (!isRecord(value)) {
+    error(`${fieldName} must be an object`);
+    return null;
+  }
+  return value;
+}
+
+function expectOptionalString(record, key, fieldName) {
+  if (record[key] !== undefined && typeof record[key] !== 'string') {
+    error(`${fieldName}.${key} must be a string`);
+  }
+}
+
+function isCodexTargeted(manifest) {
+  const products = manifest.marketplace?.policy?.products;
+  if (!Array.isArray(products)) return true;
+  return products.some((product) => String(product).trim().toUpperCase() === 'CODEX');
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +448,114 @@ function validateExtensionNameUniqueness(manifest) {
   }
 }
 
+function validateOpenAiYaml(openaiYamlPath, skillName, required) {
+  const fieldName = `skills/${skillName}/agents/openai.yaml`;
+
+  if (!fs.existsSync(openaiYamlPath)) {
+    if (required) {
+      error(`${fieldName} not found; Codex-targeted skills must declare Codex trigger policy`);
+    } else {
+      warn(`${fieldName} not found; this is acceptable only for non-Codex skills`);
+    }
+    return;
+  }
+
+  let config;
+  try {
+    config = parseYaml(fs.readFileSync(openaiYamlPath, 'utf8'), fieldName);
+  } catch (e) {
+    error(`${fieldName} is not valid YAML: ${e.message}`);
+    return;
+  }
+
+  const root = expectRecord(config, fieldName);
+  if (!root) return;
+  validateAllowedKeys(root, fieldName, ['interface', 'dependencies', 'policy']);
+
+  if (root.interface !== undefined) {
+    const interfaceBlock = expectRecord(root.interface, `${fieldName}.interface`);
+    if (interfaceBlock) {
+      validateAllowedKeys(interfaceBlock, `${fieldName}.interface`, [
+        'display_name',
+        'short_description',
+        'icon_small',
+        'icon_large',
+        'brand_color',
+        'default_prompt',
+      ]);
+      for (const key of [
+        'display_name',
+        'short_description',
+        'icon_small',
+        'icon_large',
+        'brand_color',
+        'default_prompt',
+      ]) {
+        expectOptionalString(interfaceBlock, key, `${fieldName}.interface`);
+      }
+    }
+  }
+
+  if (root.dependencies !== undefined) {
+    const dependenciesBlock = expectRecord(root.dependencies, `${fieldName}.dependencies`);
+    if (dependenciesBlock) {
+      validateAllowedKeys(dependenciesBlock, `${fieldName}.dependencies`, ['tools']);
+      if (dependenciesBlock.tools !== undefined) {
+        if (!Array.isArray(dependenciesBlock.tools)) {
+          error(`${fieldName}.dependencies.tools must be an array`);
+        } else {
+          for (const [index, tool] of dependenciesBlock.tools.entries()) {
+            const toolField = `${fieldName}.dependencies.tools[${index}]`;
+            const toolBlock = expectRecord(tool, toolField);
+            if (!toolBlock) continue;
+            validateAllowedKeys(toolBlock, toolField, [
+              'type',
+              'value',
+              'description',
+              'transport',
+              'url',
+            ]);
+            for (const key of ['type', 'value', 'description', 'transport', 'url']) {
+              expectOptionalString(toolBlock, key, toolField);
+            }
+            if (
+              toolBlock.transport !== undefined &&
+              toolBlock.transport !== 'streamable_http' &&
+              toolBlock.transport !== 'stdio'
+            ) {
+              error(`${toolField}.transport must be "streamable_http" or "stdio"`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (root.policy === undefined) {
+    if (required) {
+      error(`${fieldName}.policy is required for Codex-targeted skills`);
+    }
+    return;
+  }
+
+  const policyBlock = expectRecord(root.policy, `${fieldName}.policy`);
+  if (!policyBlock) return;
+  validateAllowedKeys(policyBlock, `${fieldName}.policy`, ['allow_implicit_invocation']);
+
+  if (policyBlock.allow_implicit_invocation === undefined) {
+    if (required) {
+      error(`${fieldName}.policy.allow_implicit_invocation is required`);
+    }
+  } else if (typeof policyBlock.allow_implicit_invocation !== 'boolean') {
+    error(`${fieldName}.policy.allow_implicit_invocation must be a boolean`);
+  }
+}
+
 function validateSkills(pluginDir, manifest) {
   if (!manifest.skills) return;
   const skillsDir = path.join(pluginDir, manifest.skills);
   if (!fs.existsSync(skillsDir)) return;
+  const requiresCodexMetadata = isCodexTargeted(manifest);
 
   const skillDirs = fs
     .readdirSync(skillsDir, { withFileTypes: true })
@@ -227,21 +576,33 @@ function validateSkills(pluginDir, manifest) {
     }
 
     const content = fs.readFileSync(skillMdPath, 'utf8');
-    const fm = parseFrontmatter(content);
+    let fm;
+    let frontmatterParseFailed = false;
+    try {
+      fm = parseFrontmatter(content, `skills/${dir.name}/SKILL.md`);
+    } catch (e) {
+      error(`skills/${dir.name}/SKILL.md has invalid YAML frontmatter: ${e.message}`);
+      frontmatterParseFailed = true;
+      fm = null;
+    }
     if (!fm) {
-      error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
+      if (!frontmatterParseFailed) {
+        error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
+      }
     } else {
       if (!fm.name)
         error(`skills/${dir.name}/SKILL.md frontmatter missing "name"`);
+      else if (typeof fm.name !== 'string')
+        error(`skills/${dir.name}/SKILL.md frontmatter "name" must be a string`);
       if (!fm.description)
         error(
           `skills/${dir.name}/SKILL.md frontmatter missing "description"`,
         );
+      else if (typeof fm.description !== 'string')
+        error(`skills/${dir.name}/SKILL.md frontmatter "description" must be a string`);
     }
 
-    if (!fs.existsSync(openaiYamlPath)) {
-      warn(`skills/${dir.name}/agents/openai.yaml not found`);
-    }
+    validateOpenAiYaml(openaiYamlPath, dir.name, requiresCodexMetadata);
 
     if (/\[TODO[:\]]/i.test(content)) {
       error(

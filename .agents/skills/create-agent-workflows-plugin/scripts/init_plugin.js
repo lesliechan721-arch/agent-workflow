@@ -62,7 +62,6 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
     policy: {
       installation: 'AVAILABLE',
       authentication: 'NONE',
-      products: ['CODEX'],
     },
   };
 
