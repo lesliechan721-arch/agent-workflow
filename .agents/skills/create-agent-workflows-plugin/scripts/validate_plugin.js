@@ -6,6 +6,10 @@ const { pathToFileURL } = require('node:url');
 
 const errors = [];
 const warnings = [];
+const MAX_SKILL_NAME_LEN = 64;
+const MAX_SKILL_DESCRIPTION_LEN = 1024;
+const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
+const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
 
 function error(msg) {
   errors.push(msg);
@@ -339,10 +343,122 @@ function expectOptionalString(record, key, fieldName) {
   }
 }
 
+function validateNonEmptyString(value, fieldName, maxLength) {
+  if (typeof value !== 'string') {
+    error(`${fieldName} must be a string`);
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    error(`${fieldName} must not be empty`);
+    return null;
+  }
+  if (maxLength !== undefined && trimmed.length > maxLength) {
+    error(`${fieldName} must be <= ${maxLength} characters`);
+  }
+  return trimmed;
+}
+
+function validateOptionalBoolean(record, key, fieldName) {
+  if (record[key] !== undefined && typeof record[key] !== 'boolean') {
+    error(`${fieldName}.${key} must be a boolean`);
+  }
+}
+
+function validateAllowedTools(value, fieldName) {
+  if (typeof value === 'string') {
+    if (value.trim().length === 0) {
+      error(`${fieldName} must not be an empty string`);
+    }
+    return;
+  }
+
+  if (!Array.isArray(value)) {
+    error(`${fieldName} must be a string or an array of strings`);
+    return;
+  }
+
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== 'string') {
+      error(`${fieldName}[${index}] must be a string`);
+    } else if (item.trim().length === 0) {
+      error(`${fieldName}[${index}] must not be empty`);
+    }
+  }
+}
+
+function validateSkillFrontmatter(fm, skillName, targetsClaude) {
+  const fieldName = `skills/${skillName}/SKILL.md frontmatter`;
+
+  if (fm.name === undefined) {
+    error(`${fieldName} missing "name"`);
+  } else {
+    const name = validateNonEmptyString(fm.name, `${fieldName}.name`, MAX_SKILL_NAME_LEN);
+    if (name) {
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+        error(`${fieldName}.name must use lowercase hyphen-case`);
+      }
+      if (name !== skillName) {
+        error(`${fieldName}.name "${name}" must match skill directory "${skillName}"`);
+      }
+    }
+  }
+
+  if (fm.description === undefined) {
+    error(`${fieldName} missing "description"`);
+  } else {
+    validateNonEmptyString(
+      fm.description,
+      `${fieldName}.description`,
+      MAX_SKILL_DESCRIPTION_LEN,
+    );
+  }
+
+  if (fm.when_to_use !== undefined) {
+    validateNonEmptyString(fm.when_to_use, `${fieldName}.when_to_use`);
+  } else if (targetsClaude && fm['disable-model-invocation'] !== true) {
+    warn(
+      `${fieldName}.when_to_use is recommended when Claude model invocation is enabled`,
+    );
+  }
+
+  validateOptionalBoolean(fm, 'user-invocable', fieldName);
+  validateOptionalBoolean(fm, 'disable-model-invocation', fieldName);
+
+  if (fm.metadata !== undefined) {
+    const metadata = expectRecord(fm.metadata, `${fieldName}.metadata`);
+    if (metadata && metadata['short-description'] !== undefined) {
+      validateNonEmptyString(
+        metadata['short-description'],
+        `${fieldName}.metadata.short-description`,
+        MAX_SKILL_SHORT_DESCRIPTION_LEN,
+      );
+    }
+  }
+
+  if (fm['allowed-tools'] !== undefined) {
+    validateAllowedTools(fm['allowed-tools'], `${fieldName}.allowed-tools`);
+  }
+
+  if (fm.shell !== undefined) {
+    if (typeof fm.shell !== 'string') {
+      error(`${fieldName}.shell must be a string`);
+    } else if (!CLAUDE_FRONTMATTER_SHELLS.has(fm.shell)) {
+      error(`${fieldName}.shell must be "bash" or "powershell"`);
+    }
+  }
+}
+
 function isCodexTargeted(manifest) {
   const products = manifest.marketplace?.policy?.products;
   if (!Array.isArray(products)) return true;
   return products.some((product) => String(product).trim().toUpperCase() === 'CODEX');
+}
+
+function isClaudeTargeted(manifest) {
+  const products = manifest.marketplace?.policy?.products;
+  if (!Array.isArray(products)) return true;
+  return products.some((product) => String(product).trim().toUpperCase() === 'CLAUDE');
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +672,7 @@ function validateSkills(pluginDir, manifest) {
   const skillsDir = path.join(pluginDir, manifest.skills);
   if (!fs.existsSync(skillsDir)) return;
   const requiresCodexMetadata = isCodexTargeted(manifest);
+  const targetsClaude = isClaudeTargeted(manifest);
 
   const skillDirs = fs
     .readdirSync(skillsDir, { withFileTypes: true })
@@ -590,16 +707,7 @@ function validateSkills(pluginDir, manifest) {
         error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
       }
     } else {
-      if (!fm.name)
-        error(`skills/${dir.name}/SKILL.md frontmatter missing "name"`);
-      else if (typeof fm.name !== 'string')
-        error(`skills/${dir.name}/SKILL.md frontmatter "name" must be a string`);
-      if (!fm.description)
-        error(
-          `skills/${dir.name}/SKILL.md frontmatter missing "description"`,
-        );
-      else if (typeof fm.description !== 'string')
-        error(`skills/${dir.name}/SKILL.md frontmatter "description" must be a string`);
+      validateSkillFrontmatter(fm, dir.name, targetsClaude);
     }
 
     validateOpenAiYaml(openaiYamlPath, dir.name, requiresCodexMetadata);

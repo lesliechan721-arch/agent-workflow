@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 ## 快速开始
 
-按你要创建的插件类型，选择最短阅读路径。唯一必需的文件始终只有 `.agents-plugin/plugin.json`。
+按你要创建的插件类型，选择最短阅读路径。所有插件都必须有 `.agents-plugin/plugin.json`；如果包含面向 Codex 的 skill，还需要对应的 `SKILL.md` 和 `agents/openai.yaml`。
 
 ### 场景 A：纯 Skill 插件（最常见）
 

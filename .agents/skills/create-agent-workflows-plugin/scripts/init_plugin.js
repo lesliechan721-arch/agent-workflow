@@ -86,13 +86,15 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
   return manifest;
 }
 
-function renderSkillMd(skillName, skillDescription) {
+function renderSkillMd(skillName, skillDescription, shortDescription) {
   const skillTitle = titleCaseSlug(skillName);
   return `---
 name: ${skillName}
 description: ${skillDescription}
 user-invocable: true
 disable-model-invocation: true
+metadata:
+  short-description: ${shortDescription}
 ---
 
 # ${skillTitle}
@@ -297,7 +299,7 @@ function main() {
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 
-    writeText(skillMdPath, renderSkillMd(skillName, skillDescription));
+    writeText(skillMdPath, renderSkillMd(skillName, skillDescription, shortDescription));
     writeText(openaiYamlPath, renderOpenAiYaml(displayName, shortDescription, skillName));
     createdPaths.push(skillMdPath, openaiYamlPath);
   }

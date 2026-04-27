@@ -25,10 +25,11 @@ plugins/<name>/skills/
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `name` | string | — | 必填。skill 标识，小写短横线，≤64 字符 |
-| `description` | string | — | 必填。说明"做什么"和"什么时候用"；影响平台 skill 发现和匹配质量 |
+| `description` | string | — | 必填。说明"做什么"和"什么时候用"；影响平台 skill 发现和匹配质量，≤1024 字符 |
+| `when_to_use` | string | — | Claude Code：可选但建议自动发现型 skill 提供。写清楚模型什么时候应自动调用，可包含触发短语和用户说法示例 |
 | `user-invocable` | boolean | `true` | Claude Code：是否允许用户手动调用 |
 | `disable-model-invocation` | boolean | `false` | Claude Code：是否禁止模型自动调用 |
-| `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示 |
+| `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示，≤1024 字符 |
 | `allowed-tools` | string[] | — | Claude Code：声明 shell 插值中允许执行的命令模式（如 `Bash(git *)` ） |
 | `shell` | string | `bash` | Claude Code：shell 插值使用的解释器，仅支持 `bash` 和 `powershell` |
 
@@ -93,7 +94,7 @@ policy:
 
 ### interface 块
 
-- `display_name`：Title Case 格式，自动格式化 kebab-case
+- `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行和校验长度，不会把 `repo-check` 自动转换成 `Repo Check`
 - `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
 - `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用
 
@@ -144,8 +145,11 @@ policy:
 ---
 name: your-skill
 description: 当用户需要某类低风险辅助工作时，执行对应工作流。
+when_to_use: Use when the user asks for this low-risk helper workflow, including phrases like "check this setup" or "summarize this state".
 ---
 ```
+
+允许 Claude Code 自动发现时，建议显式写 `when_to_use`。`description` 仍是公共字段；`when_to_use` 是 Claude 自动匹配质量优化项，不会被 Codex 读取。
 
 ```yaml
 # agents/openai.yaml

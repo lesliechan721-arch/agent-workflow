@@ -148,6 +148,7 @@ describe('authoring tools', () => {
     );
     expect(skillMdContent).toContain('user-invocable: true');
     expect(skillMdContent).toContain('disable-model-invocation: true');
+    expect(skillMdContent).toContain('metadata:\n  short-description: 检查仓库状态');
     await expect(
       fs.pathExists(
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
@@ -201,6 +202,8 @@ describe('authoring tools', () => {
     expect(skillDoc).toContain('`pnpm build`');
     expect(skillDoc).toContain('`.claude-plugin/plugin.json`');
     expect(skillDoc).toContain('`.codex-plugin/plugin.json`');
+    expect(skillDoc).toContain('所有插件都必须有 `.agents-plugin/plugin.json`');
+    expect(skillDoc).not.toContain('唯一必需的文件始终只有 `.agents-plugin/plugin.json`');
     expect(skillDoc).not.toContain('同步 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json`');
     expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
 
@@ -219,6 +222,9 @@ describe('authoring tools', () => {
 
     expect(triggersDoc).toContain('两个平台的触发开关完全独立');
     expect(triggersDoc).toContain('面向 Codex 时必需');
+    expect(triggersDoc).toContain('`when_to_use`');
+    expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
+    expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
@@ -410,6 +416,107 @@ describe('authoring tools', () => {
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+  });
+
+  it('validate_plugin.js checks skill frontmatter fields used by Codex and Claude', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-frontmatter-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'frontmatter-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'frontmatter-test', 'agents'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'frontmatter-test',
+      version: '0.1.0',
+      description: 'Test plugin for skill frontmatter checks.',
+      skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'frontmatter-test', 'agents', 'openai.yaml'),
+      [
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+    await fs.writeFile(
+      skillMdPath,
+      [
+        '---',
+        'name: frontmatter-test',
+        'description: Validate frontmatter handling.',
+        'user-invocable: "true"',
+        'disable-model-invocation: false',
+        'metadata:',
+        '  short-description: false',
+        'allowed-tools:',
+        '  - Bash(git status *)',
+        '  - false',
+        'shell: zsh',
+        '---',
+        '',
+        '# Frontmatter Test',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    let invalidFrontmatterStdout = '';
+    try {
+      await execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (error) {
+      invalidFrontmatterStdout = (error as { stdout?: string }).stdout ?? '';
+    }
+    expect(invalidFrontmatterStdout).toContain('frontmatter.user-invocable must be a boolean');
+    expect(invalidFrontmatterStdout).toContain('frontmatter.metadata.short-description must be a string');
+    expect(invalidFrontmatterStdout).toContain('frontmatter.allowed-tools[1] must be a string');
+    expect(invalidFrontmatterStdout).toContain('frontmatter.shell must be "bash" or "powershell"');
+
+    await fs.writeFile(
+      skillMdPath,
+      [
+        '---',
+        'name: frontmatter-test',
+        'description: Validate frontmatter handling.',
+        'user-invocable: true',
+        'disable-model-invocation: false',
+        'metadata:',
+        '  short-description: Frontmatter validation',
+        'allowed-tools:',
+        '  - Bash(git status *)',
+        'shell: bash',
+        '---',
+        '',
+        '# Frontmatter Test',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await execFileAsync('node', [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(result.stdout).toContain('when_to_use is recommended');
+    expect(result.stdout).toContain('[PASS] All checks passed.');
   });
 
   it('validate_plugin.js rejects out-of-bounds skills path when CLI is built', async () => {
