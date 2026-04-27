@@ -113,6 +113,40 @@ describe('rendered contract validators', () => {
         },
       }, 'codex.hooks'),
     ).toThrow('valid Codex matcher pattern');
+
+    expect(() =>
+      validateRenderedHooksContent({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Write(?=File)',
+              hooks: [{ type: 'command', command: 'echo lookahead' }],
+            },
+          ],
+        },
+      }, 'codex.hooks'),
+    ).toThrow('valid Codex matcher pattern');
+  });
+
+  it('accepts Rust-regex-only valid Codex matcher syntax in strict generated mode', () => {
+    expect(() =>
+      validateRenderedHooksContent({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '(?i:write)',
+              hooks: [{ type: 'command', command: 'echo inline flags' }],
+            },
+          ],
+          PostToolUse: [
+            {
+              matcher: '(?P<tool>Write|Bash)',
+              hooks: [{ type: 'command', command: 'echo named capture' }],
+            },
+          ],
+        },
+      }, 'codex.hooks'),
+    ).not.toThrow();
   });
 
   it('rejects non-minimal handler shapes in strict generated mode', () => {

@@ -131,6 +131,7 @@ export const NATIVE_HOOK_EVENT_CONTRACTS = {
 const PUBLIC_HOOK_EVENT_SET = new Set<string>(PUBLIC_HOOK_EVENTS);
 const PUBLIC_SESSION_START_SOURCE_SET = new Set<string>(PUBLIC_SESSION_START_SOURCES);
 const CODEX_EXACT_MATCHER_PATTERN = /^[A-Za-z0-9_|]+$/;
+const CODEX_REGEX_FLAG_SET = new Set(['i', 'm', 'R', 's', 'U', 'u', 'x']);
 const NATIVE_HOOK_EVENT_SETS = {
   claude: new Set<string>(CLAUDE_NATIVE_HOOK_EVENTS),
   codex: new Set<string>(CODEX_NATIVE_HOOK_EVENTS),
@@ -173,6 +174,15 @@ export interface PlannedCodexSharedHooksUpdate {
 }
 
 type TrackedHookGroupIdentityCounts = Map<string, number>;
+type CodexMatcherFlags = {
+  x: boolean;
+};
+
+type CodexMatcherValidationState = {
+  source: string;
+  index: number;
+  flagStack: CodexMatcherFlags[];
+};
 
 function assertNonEmptyString(value: unknown, fieldName: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -228,6 +238,593 @@ function normalizePublicSessionStartMatcher(
   return PUBLIC_SESSION_START_SOURCES.filter((part) => selected.has(part)).join('|');
 }
 
+function isCodexMatcherWhitespace(char: string | undefined): boolean {
+  return char !== undefined && /\s/u.test(char);
+}
+
+function isCodexCaptureNameStart(char: string | undefined): boolean {
+  return char !== undefined && /[A-Za-z_]/u.test(char);
+}
+
+function isCodexCaptureNameChar(char: string | undefined): boolean {
+  return char !== undefined && /[A-Za-z0-9_.[\]]/u.test(char);
+}
+
+function createCodexMatcherSyntaxError(
+  state: CodexMatcherValidationState,
+  detail: string,
+): Error {
+  return new Error(`${detail} at offset ${state.index}.`);
+}
+
+function currentCodexMatcherFlags(
+  state: CodexMatcherValidationState,
+): CodexMatcherFlags {
+  return state.flagStack[state.flagStack.length - 1]!;
+}
+
+function cloneCodexMatcherFlags(flags: CodexMatcherFlags): CodexMatcherFlags {
+  return { ...flags };
+}
+
+function advanceCodexMatcherVerboseTrivia(
+  state: CodexMatcherValidationState,
+): void {
+  if (!currentCodexMatcherFlags(state).x) {
+    return;
+  }
+
+  while (state.index < state.source.length) {
+    const char = state.source[state.index];
+    if (isCodexMatcherWhitespace(char)) {
+      state.index += 1;
+      continue;
+    }
+    if (char === '#') {
+      state.index += 1;
+      while (state.index < state.source.length && state.source[state.index] !== '\n') {
+        state.index += 1;
+      }
+      continue;
+    }
+    break;
+  }
+}
+
+function consumeCodexMatcherCaptureName(
+  state: CodexMatcherValidationState,
+): void {
+  if (!isCodexCaptureNameStart(state.source[state.index])) {
+    throw createCodexMatcherSyntaxError(state, 'invalid capture group name');
+  }
+
+  state.index += 1;
+  while (isCodexCaptureNameChar(state.source[state.index])) {
+    state.index += 1;
+  }
+}
+
+function consumeCodexMatcherHexDigits(
+  state: CodexMatcherValidationState,
+  length: number,
+  detail: string,
+): void {
+  for (let count = 0; count < length; count += 1) {
+    const char = state.source[state.index];
+    if (char === undefined || !/[0-9A-Fa-f]/.test(char)) {
+      throw createCodexMatcherSyntaxError(state, detail);
+    }
+    state.index += 1;
+  }
+}
+
+function consumeCodexMatcherBracedHexDigits(
+  state: CodexMatcherValidationState,
+  detail: string,
+): void {
+  if (state.source[state.index] !== '{') {
+    throw createCodexMatcherSyntaxError(state, detail);
+  }
+
+  state.index += 1;
+  let sawDigit = false;
+  while (state.index < state.source.length && state.source[state.index] !== '}') {
+    const char = state.source[state.index];
+    if (char === undefined || !/[0-9A-Fa-f_]/.test(char)) {
+      throw createCodexMatcherSyntaxError(state, detail);
+    }
+    if (char !== '_') {
+      sawDigit = true;
+    }
+    state.index += 1;
+  }
+
+  if (state.source[state.index] !== '}' || !sawDigit) {
+    throw createCodexMatcherSyntaxError(state, detail);
+  }
+  state.index += 1;
+}
+
+function consumeCodexMatcherUnicodeProperty(
+  state: CodexMatcherValidationState,
+): void {
+  const char = state.source[state.index];
+  if (char === '{') {
+    state.index += 1;
+    let sawContent = false;
+    while (state.index < state.source.length && state.source[state.index] !== '}') {
+      sawContent = true;
+      state.index += 1;
+    }
+    if (state.source[state.index] !== '}' || !sawContent) {
+      throw createCodexMatcherSyntaxError(state, 'unterminated Unicode character class escape');
+    }
+    state.index += 1;
+    return;
+  }
+
+  if (char === undefined || !/[A-Za-z]/.test(char)) {
+    throw createCodexMatcherSyntaxError(state, 'invalid Unicode character class escape');
+  }
+  state.index += 1;
+}
+
+function consumeCodexMatcherEscape(
+  state: CodexMatcherValidationState,
+  inCharacterClass = false,
+): boolean {
+  state.index += 1;
+  const escaped = state.source[state.index];
+  if (escaped === undefined) {
+    throw createCodexMatcherSyntaxError(state, 'trailing escape');
+  }
+
+  if (/[0-9]/.test(escaped)) {
+    throw createCodexMatcherSyntaxError(
+      state,
+      'backreferences and octal escapes are not supported by Codex matchers',
+    );
+  }
+
+  switch (escaped) {
+    case 'a':
+    case 'f':
+    case 't':
+    case 'n':
+    case 'r':
+    case 'v':
+    case 'd':
+    case 'D':
+    case 's':
+    case 'S':
+    case 'w':
+    case 'W':
+      state.index += 1;
+      return true;
+    case 'A':
+    case 'z':
+    case 'b':
+    case 'B':
+    case '<':
+    case '>':
+      if (inCharacterClass) {
+        throw createCodexMatcherSyntaxError(
+          state,
+          `escape \\${escaped} is not valid inside a character class`,
+        );
+      }
+      state.index += 1;
+      return false;
+    case 'x':
+      state.index += 1;
+      if (state.source[state.index] === '{') {
+        consumeCodexMatcherBracedHexDigits(
+          state,
+          'invalid braced hex escape',
+        );
+      } else {
+        consumeCodexMatcherHexDigits(
+          state,
+          2,
+          'invalid hex escape',
+        );
+      }
+      return true;
+    case 'u':
+      state.index += 1;
+      if (state.source[state.index] === '{') {
+        consumeCodexMatcherBracedHexDigits(
+          state,
+          'invalid braced Unicode escape',
+        );
+      } else {
+        consumeCodexMatcherHexDigits(
+          state,
+          4,
+          'invalid Unicode escape',
+        );
+      }
+      return true;
+    case 'U':
+      state.index += 1;
+      if (state.source[state.index] === '{') {
+        consumeCodexMatcherBracedHexDigits(
+          state,
+          'invalid braced Unicode escape',
+        );
+      } else {
+        consumeCodexMatcherHexDigits(
+          state,
+          8,
+          'invalid Unicode escape',
+        );
+      }
+      return true;
+    case 'p':
+    case 'P':
+      state.index += 1;
+      consumeCodexMatcherUnicodeProperty(state);
+      return true;
+    case 'k':
+    case 'g':
+      throw createCodexMatcherSyntaxError(
+        state,
+        'backreferences are not supported by Codex matchers',
+      );
+    default:
+      if (/[A-Za-z<>]/.test(escaped)) {
+        throw createCodexMatcherSyntaxError(
+          state,
+          `unsupported escape \\${escaped}`,
+        );
+      }
+      state.index += 1;
+      return true;
+  }
+}
+
+function consumeCodexMatcherPosixCharacterClass(
+  state: CodexMatcherValidationState,
+): void {
+  state.index += 1; // [
+  if (state.source[state.index] !== ':') {
+    throw createCodexMatcherSyntaxError(state, 'unsupported nested character class');
+  }
+
+  state.index += 1; // :
+  if (state.source[state.index] === '^') {
+    state.index += 1;
+  }
+
+  let sawContent = false;
+  while (state.index < state.source.length) {
+    const char = state.source[state.index];
+    if (char === ':') {
+      if (state.source[state.index + 1] !== ']') {
+        throw createCodexMatcherSyntaxError(state, 'unterminated POSIX character class');
+      }
+      if (!sawContent) {
+        throw createCodexMatcherSyntaxError(state, 'empty POSIX character class');
+      }
+      state.index += 2;
+      return;
+    }
+    if (char === '[' || char === ']' || char === '\\') {
+      throw createCodexMatcherSyntaxError(state, 'unterminated POSIX character class');
+    }
+    sawContent = true;
+    state.index += 1;
+  }
+
+  throw createCodexMatcherSyntaxError(state, 'unterminated POSIX character class');
+}
+
+function consumeCodexMatcherCharacterClass(
+  state: CodexMatcherValidationState,
+): void {
+  state.index += 1; // [
+  if (state.source[state.index] === '^') {
+    state.index += 1;
+  }
+  if (state.source[state.index] === ']') {
+    state.index += 1;
+  }
+
+  while (state.index < state.source.length) {
+    advanceCodexMatcherVerboseTrivia(state);
+    const char = state.source[state.index];
+    if (char === undefined) {
+      break;
+    }
+    if (char === ']') {
+      state.index += 1;
+      return;
+    }
+    if (char === '\\') {
+      consumeCodexMatcherEscape(state, true);
+      continue;
+    }
+    if (char === '[' && state.source[state.index + 1] === ':') {
+      consumeCodexMatcherPosixCharacterClass(state);
+      continue;
+    }
+    if (char === '[') {
+      consumeCodexMatcherCharacterClass(state);
+      continue;
+    }
+    state.index += 1;
+  }
+
+  throw createCodexMatcherSyntaxError(state, 'unterminated character class');
+}
+
+function consumeCodexMatcherFlags(
+  state: CodexMatcherValidationState,
+): CodexMatcherFlags {
+  const flags = cloneCodexMatcherFlags(currentCodexMatcherFlags(state));
+  let enabledCount = 0;
+  while (CODEX_REGEX_FLAG_SET.has(state.source[state.index] ?? '')) {
+    if (state.source[state.index] === 'x') {
+      flags.x = true;
+    }
+    enabledCount += 1;
+    state.index += 1;
+  }
+
+  let disabledCount = 0;
+  if (state.source[state.index] === '-') {
+    state.index += 1;
+    while (CODEX_REGEX_FLAG_SET.has(state.source[state.index] ?? '')) {
+      if (state.source[state.index] === 'x') {
+        flags.x = false;
+      }
+      disabledCount += 1;
+      state.index += 1;
+    }
+    if (disabledCount === 0) {
+      throw createCodexMatcherSyntaxError(state, 'expected flags after "-"');
+    }
+  }
+
+  if (enabledCount === 0 && disabledCount === 0) {
+    throw createCodexMatcherSyntaxError(state, 'expected inline regex flags');
+  }
+
+  return flags;
+}
+
+function tryConsumeCodexMatcherCountedRepetition(
+  state: CodexMatcherValidationState,
+): boolean {
+  const startIndex = state.index;
+  if (state.source[state.index] !== '{') {
+    return false;
+  }
+
+  state.index += 1;
+  advanceCodexMatcherVerboseTrivia(state);
+
+  let lower = '';
+  while (/[0-9]/.test(state.source[state.index] ?? '')) {
+    lower += state.source[state.index];
+    state.index += 1;
+  }
+  if (lower.length === 0) {
+    state.index = startIndex;
+    return false;
+  }
+
+  advanceCodexMatcherVerboseTrivia(state);
+  if (state.source[state.index] === '}') {
+    state.index += 1;
+    return true;
+  }
+
+  if (state.source[state.index] !== ',') {
+    state.index = startIndex;
+    return false;
+  }
+
+  state.index += 1;
+  advanceCodexMatcherVerboseTrivia(state);
+
+  let upper = '';
+  while (/[0-9]/.test(state.source[state.index] ?? '')) {
+    upper += state.source[state.index];
+    state.index += 1;
+  }
+
+  advanceCodexMatcherVerboseTrivia(state);
+  if (state.source[state.index] !== '}') {
+    state.index = startIndex;
+    return false;
+  }
+  if (upper.length > 0 && Number(lower) > Number(upper)) {
+    throw createCodexMatcherSyntaxError(state, 'invalid counted repetition range');
+  }
+  state.index += 1;
+  return true;
+}
+
+function parseCodexMatcherSequence(
+  state: CodexMatcherValidationState,
+  closingChar?: ')',
+): void {
+  while (true) {
+    advanceCodexMatcherVerboseTrivia(state);
+    if (state.index >= state.source.length) {
+      if (closingChar) {
+        throw createCodexMatcherSyntaxError(
+          state,
+          `unterminated group, expected "${closingChar}"`,
+        );
+      }
+      return;
+    }
+
+    const char = state.source[state.index];
+    if (char === '|') {
+      state.index += 1;
+      continue;
+    }
+    if (char === ')') {
+      if (!closingChar) {
+        throw createCodexMatcherSyntaxError(state, 'unmatched ")"');
+      }
+      state.index += 1;
+      return;
+    }
+
+    const quantifiable = parseCodexMatcherAtom(state);
+    advanceCodexMatcherVerboseTrivia(state);
+
+    const next = state.source[state.index];
+    if (next === '*' || next === '+' || next === '?') {
+      if (!quantifiable) {
+        throw createCodexMatcherSyntaxError(state, 'dangling quantifier');
+      }
+      state.index += 1;
+      if (state.source[state.index] === '?') {
+        state.index += 1;
+      }
+      continue;
+    }
+
+    if (next === '{' && tryConsumeCodexMatcherCountedRepetition(state)) {
+      if (!quantifiable) {
+        throw createCodexMatcherSyntaxError(state, 'dangling quantifier');
+      }
+      if (state.source[state.index] === '?') {
+        state.index += 1;
+      }
+    }
+  }
+}
+
+function parseCodexMatcherGroup(
+  state: CodexMatcherValidationState,
+): boolean {
+  state.index += 1; // (
+  if (state.source[state.index] !== '?') {
+    state.flagStack.push(cloneCodexMatcherFlags(currentCodexMatcherFlags(state)));
+    parseCodexMatcherSequence(state, ')');
+    state.flagStack.pop();
+    return true;
+  }
+
+  state.index += 1; // ?
+  const char = state.source[state.index];
+  if (char === '=' || char === '!') {
+    throw createCodexMatcherSyntaxError(
+      state,
+      'look-around assertions are not supported by Codex matchers',
+    );
+  }
+  if (char === ':') {
+    state.index += 1;
+    state.flagStack.push(cloneCodexMatcherFlags(currentCodexMatcherFlags(state)));
+    parseCodexMatcherSequence(state, ')');
+    state.flagStack.pop();
+    return true;
+  }
+  if (char === '<') {
+    const next = state.source[state.index + 1];
+    if (next === '=' || next === '!') {
+      throw createCodexMatcherSyntaxError(
+        state,
+        'look-around assertions are not supported by Codex matchers',
+      );
+    }
+    state.index += 1;
+    consumeCodexMatcherCaptureName(state);
+    if (state.source[state.index] !== '>') {
+      throw createCodexMatcherSyntaxError(state, 'unterminated capture group name');
+    }
+    state.index += 1;
+    state.flagStack.push(cloneCodexMatcherFlags(currentCodexMatcherFlags(state)));
+    parseCodexMatcherSequence(state, ')');
+    state.flagStack.pop();
+    return true;
+  }
+  if (char === 'P' && state.source[state.index + 1] === '<') {
+    state.index += 2;
+    consumeCodexMatcherCaptureName(state);
+    if (state.source[state.index] !== '>') {
+      throw createCodexMatcherSyntaxError(state, 'unterminated capture group name');
+    }
+    state.index += 1;
+    state.flagStack.push(cloneCodexMatcherFlags(currentCodexMatcherFlags(state)));
+    parseCodexMatcherSequence(state, ')');
+    state.flagStack.pop();
+    return true;
+  }
+
+  const flags = consumeCodexMatcherFlags(state);
+  if (state.source[state.index] === ')') {
+    state.flagStack[state.flagStack.length - 1] = flags;
+    state.index += 1;
+    return false;
+  }
+  if (state.source[state.index] !== ':') {
+    throw createCodexMatcherSyntaxError(state, 'unsupported group construct');
+  }
+  state.index += 1;
+  state.flagStack.push(flags);
+  parseCodexMatcherSequence(state, ')');
+  state.flagStack.pop();
+  return true;
+}
+
+function parseCodexMatcherAtom(
+  state: CodexMatcherValidationState,
+): boolean {
+  advanceCodexMatcherVerboseTrivia(state);
+  const char = state.source[state.index];
+  if (char === undefined) {
+    return false;
+  }
+
+  if (char === '*' || char === '+' || char === '?') {
+    throw createCodexMatcherSyntaxError(state, 'dangling quantifier');
+  }
+  if (char === '{' && tryConsumeCodexMatcherCountedRepetition(state)) {
+    throw createCodexMatcherSyntaxError(state, 'dangling quantifier');
+  }
+  if (char === '(') {
+    return parseCodexMatcherGroup(state);
+  }
+  if (char === '[') {
+    consumeCodexMatcherCharacterClass(state);
+    return true;
+  }
+  if (char === '\\') {
+    return consumeCodexMatcherEscape(state);
+  }
+  if (char === '^' || char === '$') {
+    state.index += 1;
+    return false;
+  }
+
+  state.index += 1;
+  return true;
+}
+
+function assertCodexRegexSyntax(
+  matcher: string,
+): void {
+  const state: CodexMatcherValidationState = {
+    source: matcher,
+    index: 0,
+    flagStack: [{ x: false }],
+  };
+
+  parseCodexMatcherSequence(state);
+  advanceCodexMatcherVerboseTrivia(state);
+  if (state.index !== matcher.length) {
+    throw createCodexMatcherSyntaxError(state, 'unexpected trailing token');
+  }
+}
+
 // Codex matcher semantics source:
 // - codex-rs/hooks/src/events/common.rs: validate_matcher_pattern / matches_matcher
 // - codex-rs/hooks/src/engine/discovery.rs: invalid matcher groups are skipped
@@ -244,10 +841,9 @@ function getCodexMatcherPatternError(
   }
 
   try {
-    // Codex runtime uses Rust regex, but the accepted-shape split between
-    // exact tokens and regex patterns is mirrored here so malformed patterns
-    // don't get treated as managed hooks by AW.
-    new RegExp(matcher);
+    // Codex runtime uses Rust regex, so validation here follows Codex's
+    // exact-token fast path plus a dedicated syntax parser instead of JS RegExp.
+    assertCodexRegexSyntax(matcher);
     return undefined;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);

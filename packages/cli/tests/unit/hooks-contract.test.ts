@@ -229,6 +229,39 @@ describe('hooks contract', () => {
     });
   });
 
+  it('accepts Rust-regex-only valid Codex shared matchers as managed identities', () => {
+    const parsed = parseCodexSharedHooksFile({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '(?i:write)',
+            hooks: [{ type: 'command', command: 'echo inline flags' }],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: '(?P<tool>Write|Bash)',
+            hooks: [{ type: 'command', command: 'echo named capture' }],
+          },
+        ],
+      },
+    });
+
+    expect(parsed.managedIdentities).toEqual([
+      {
+        event: 'PreToolUse',
+        matcher: '(?i:write)',
+        command: 'echo inline flags',
+      },
+      {
+        event: 'PostToolUse',
+        matcher: '(?P<tool>Write|Bash)',
+        command: 'echo named capture',
+      },
+    ]);
+    expect(parsed.opaqueRawGroups).toEqual([]);
+  });
+
   it('rejects invalid Codex shared matcher and runtime field types', () => {
     const parsedWithInvalidRegex = parseCodexSharedHooksFile({
       hooks: {
@@ -245,6 +278,23 @@ describe('hooks contract', () => {
     expect(parsedWithInvalidRegex.opaqueRawGroups[0]).toMatchObject({
       event: 'PreToolUse',
       matcher: '[',
+    });
+
+    const parsedWithJsOnlyRegex = parseCodexSharedHooksFile({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write(?=File)',
+            hooks: [{ type: 'command', command: 'echo invalid lookahead' }],
+          },
+        ],
+      },
+    });
+    expect(parsedWithJsOnlyRegex.managedIdentities).toEqual([]);
+    expect(parsedWithJsOnlyRegex.opaqueRawGroups).toHaveLength(1);
+    expect(parsedWithJsOnlyRegex.opaqueRawGroups[0]).toMatchObject({
+      event: 'PreToolUse',
+      matcher: 'Write(?=File)',
     });
 
     expect(() =>

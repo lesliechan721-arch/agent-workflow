@@ -437,6 +437,20 @@ describe('manifest utils', () => {
     );
 
     manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'PreToolUse',
+          matcher: 'Write(?=File)',
+          command: 'echo unsupported lookahead',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'valid Codex matcher pattern',
+    );
+
+    manifest.extensions.nativeHooks = {
       claude: [
         {
           event: 'Notification',
@@ -501,6 +515,50 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'duplicate codex hook',
     );
+  });
+
+  it('accepts Rust-regex-only valid Codex native hook matchers in source manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'PreToolUse',
+          matcher: '(?i:write)',
+          command: 'echo inline flags',
+        },
+        {
+          event: 'PostToolUse',
+          matcher: '(?P<tool>Write|Bash)',
+          command: 'echo named capture',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        extensions: {
+          nativeHooks: {
+            codex: [
+              {
+                event: 'PreToolUse',
+                matcher: '(?i:write)',
+                command: 'echo inline flags',
+              },
+              {
+                event: 'PostToolUse',
+                matcher: '(?P<tool>Write|Bash)',
+                command: 'echo named capture',
+              },
+            ],
+          },
+        },
+      },
+    });
   });
 
   it('accepts every Claude native hook event and enforces the full matcher capability table', async () => {
