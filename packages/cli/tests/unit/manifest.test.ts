@@ -110,6 +110,12 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'only plain token prefixes are supported',
     );
+
+    manifest.extensions.permissions[0].allow = ['git;rm -rf'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'shell control characters',
+    );
   });
 
   it('rejects unknown root marketplace metadata fields', async () => {
@@ -160,6 +166,10 @@ describe('manifest utils', () => {
   it('rejects undeclared default MCP manifest', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    delete manifest.mcpServers;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.writeJson(path.join(pluginRoot, '.mcp.json'), { servers: [] }, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
@@ -170,6 +180,10 @@ describe('manifest utils', () => {
   it('rejects undeclared default app manifest', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    delete manifest.apps;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: [] }, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(

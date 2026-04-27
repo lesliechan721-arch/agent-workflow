@@ -17,8 +17,10 @@ export function parsePermissionCommand(value: string, fieldName = 'permission'):
   if (trimmed.length === 0) {
     throw new Error(`Invalid ${fieldName}: expected a non-empty command prefix.`);
   }
-  if (/["'\\*]/.test(trimmed)) {
-    throw new Error(`Invalid ${fieldName}: only plain token prefixes are supported; quotes, escapes and "*" are not allowed.`);
+  if (/["'\\*;&|<>`$()]/.test(trimmed)) {
+    throw new Error(
+      `Invalid ${fieldName}: only plain token prefixes are supported; quotes, escapes, shell control characters and "*" are not allowed.`,
+    );
   }
 
   const tokens = trimmed.split(/\s+/);

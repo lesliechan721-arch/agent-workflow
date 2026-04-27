@@ -165,4 +165,24 @@ describe('local-plugin generator', () => {
       'prefix_rule(pattern = ["git","commit"], decision = "prompt")',
     );
   });
+
+  it('rejects permission prefixes with shell control characters', () => {
+    expect(() =>
+      mergeClaudePermissions([
+        {
+          name: 'unsafe',
+          allow: ['git;rm -rf'],
+        },
+      ]),
+    ).toThrow('shell control characters');
+
+    expect(() =>
+      generateCodexPermissionArtifacts('git-commit', [
+        {
+          name: 'unsafe',
+          allow: ['git && rm'],
+        },
+      ]),
+    ).toThrow('shell control characters');
+  });
 });

@@ -265,4 +265,59 @@ describe('authoring tools', () => {
     ).rejects.toBeDefined();
   });
 
+  it('validate_plugin.js fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
+    tempDirs.push(tempRoot);
+
+    const scriptSource = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const scriptPath = path.join(
+      tempRoot,
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await fs.ensureDir(path.dirname(scriptPath));
+    await fs.copy(scriptSource, scriptPath);
+
+    const pluginDir = path.join(tempRoot, 'plugins', 'fallback-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'fallback-test',
+      version: '0.1.0',
+      description: 'Test plugin for fallback validation.',
+      mcpServers: './.mcp.json',
+      apps: './.app.json',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+      buildConfig: {
+        templates: {
+          include: ['.mcp.json', '.app.json'],
+        },
+      },
+    }, { spaces: 2 });
+    await fs.writeJson(path.join(pluginDir, '.mcp.json'), { template: true }, { spaces: 2 });
+    await fs.writeJson(path.join(pluginDir, '.app.json'), { template: true }, { spaces: 2 });
+
+    const result = await execFileAsync('node', [scriptPath, pluginDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    expect(result.stdout).toContain('仅执行轻量预检');
+    expect(result.stdout).toContain('[PASS] All checks passed.');
+  });
+
 });

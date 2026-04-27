@@ -1,0 +1,8 @@
+{
+  "apps": {
+    "git-commit": {
+      "id": "git-commit",
+      "name": "Git Commit"
+    }
+  }
+}

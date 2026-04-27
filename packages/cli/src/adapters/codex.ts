@@ -64,6 +64,10 @@ import {
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
+  validateRenderedCodexRules,
+  validateRenderedHooksContent,
+} from '../utils/rendered-contract.js';
+import {
   attachGeneratedArtifactsToError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
@@ -460,6 +464,7 @@ async function writeCodexHookGroups(
     return undefined;
   }
 
+  validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
   await writeJsonFile(hooksPath, hooksArtifact.content);
   return hooksPath;
 }
@@ -520,6 +525,7 @@ async function syncCodexHooks(
     return undefined;
   }
 
+  validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
   await writeJsonFile(hooksPath, hooksArtifact.content);
   return hooksPath;
 }
@@ -647,6 +653,7 @@ export class CodexAdapter implements PlatformAdapter {
         plugin.manifest.name,
         resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex'),
       )) {
+        validateRenderedCodexRules(artifact.content);
         const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
         artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
       }
@@ -732,6 +739,7 @@ export class CodexAdapter implements PlatformAdapter {
       })),
     );
     if (hooksArtifact) {
+      validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
       await writeJsonFile(paths.hooksPath, hooksArtifact.content);
     } else {
       await fs.remove(paths.hooksPath);

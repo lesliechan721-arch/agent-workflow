@@ -27,6 +27,7 @@ import { readMarketplaceManifest } from '../utils/marketplace.js';
 import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { resolveAwHome, resolveClaudePaths, resolveClaudeProjectKey } from '../utils/paths.js';
+import { validateRenderedClaudePermissions } from '../utils/rendered-contract.js';
 import {
   attachGeneratedArtifactsToError,
   mergeGeneratedArtifacts,
@@ -458,10 +459,10 @@ export class ClaudeAdapter implements PlatformAdapter {
 
       const permissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude');
       if (permissions.length > 0) {
+        const renderedPermissions = mergeClaudePermissions(permissions);
+        validateRenderedClaudePermissions(renderedPermissions);
         settings.awGenerated.permissions ??= {};
-        settings.awGenerated.permissions[plugin.manifest.name] = mergeClaudePermissions(
-          permissions,
-        );
+        settings.awGenerated.permissions[plugin.manifest.name] = renderedPermissions;
       } else if (settings.awGenerated.permissions) {
         delete settings.awGenerated.permissions[plugin.manifest.name];
       }

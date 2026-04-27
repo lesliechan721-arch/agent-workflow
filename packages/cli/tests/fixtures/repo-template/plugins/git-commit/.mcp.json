@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "git-commit": {
+      "command": "git",
+      "args": ["status"]
+    }
+  }
+}
