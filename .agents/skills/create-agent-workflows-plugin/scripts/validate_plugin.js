@@ -9,6 +9,15 @@ const warnings = [];
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
+const MAX_OPENAI_INTERFACE_NAME_LEN = 64;
+const MAX_OPENAI_INTERFACE_DESCRIPTION_LEN = 1024;
+const MAX_OPENAI_DEFAULT_PROMPT_LEN = 1024;
+const MAX_OPENAI_DEPENDENCY_TYPE_LEN = 64;
+const MAX_OPENAI_DEPENDENCY_TRANSPORT_LEN = 64;
+const MAX_OPENAI_DEPENDENCY_VALUE_LEN = 1024;
+const MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN = 1024;
+const MAX_OPENAI_DEPENDENCY_COMMAND_LEN = 1024;
+const MAX_OPENAI_DEPENDENCY_URL_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
 let yamlParser = null;
@@ -281,12 +290,6 @@ function expectRecord(value, fieldName) {
   return value;
 }
 
-function expectOptionalString(record, key, fieldName) {
-  if (record[key] !== undefined && typeof record[key] !== 'string') {
-    error(`${fieldName}.${key} must be a string`);
-  }
-}
-
 function validateNonEmptyString(value, fieldName, maxLength) {
   if (typeof value !== 'string') {
     error(`${fieldName} must be a string`);
@@ -301,6 +304,88 @@ function validateNonEmptyString(value, fieldName, maxLength) {
     error(`${fieldName} must be <= ${maxLength} characters`);
   }
   return trimmed;
+}
+
+function countCharacters(value) {
+  return Array.from(value).length;
+}
+
+function sanitizeSingleLine(value) {
+  return value.trim().split(/\s+/).filter(Boolean).join(' ');
+}
+
+function validateCodexMetadataString(record, key, fieldName, maxLength, required = false) {
+  if (record[key] === undefined) {
+    if (required) {
+      error(`${fieldName}.${key} is required`);
+    }
+    return null;
+  }
+
+  if (typeof record[key] !== 'string') {
+    error(`${fieldName}.${key} must be a string`);
+    return null;
+  }
+
+  const sanitized = sanitizeSingleLine(record[key]);
+  if (sanitized.length === 0) {
+    error(`${fieldName}.${key} must not be empty`);
+    return null;
+  }
+
+  if (countCharacters(sanitized) > maxLength) {
+    error(`${fieldName}.${key} must be <= ${maxLength} characters`);
+  }
+
+  return sanitized;
+}
+
+function validateCodexBrandColor(record, key, fieldName) {
+  if (record[key] === undefined) return;
+  if (typeof record[key] !== 'string') {
+    error(`${fieldName}.${key} must be a string`);
+    return;
+  }
+
+  const value = record[key].trim();
+  if (value.length === 0) {
+    error(`${fieldName}.${key} must not be empty`);
+    return;
+  }
+
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+    error(`${fieldName}.${key} must match #RRGGBB`);
+  }
+}
+
+function validateCodexIconPath(record, key, fieldName) {
+  if (record[key] === undefined) return;
+  if (typeof record[key] !== 'string') {
+    error(`${fieldName}.${key} must be a string`);
+    return;
+  }
+
+  const value = record[key].trim();
+  if (value.length === 0) {
+    error(`${fieldName}.${key} must not be empty`);
+    return;
+  }
+
+  if (path.isAbsolute(value) || path.win32.isAbsolute(value)) {
+    error(`${fieldName}.${key} must be a relative path under assets/`);
+    return;
+  }
+
+  const components = value.split('/');
+  if (components.some((component) => component === '..')) {
+    error(`${fieldName}.${key} must be a relative path under assets/`);
+    return;
+  }
+
+  const normalized = path.posix.normalize(stripDotSlash(value));
+  if (normalized !== 'assets' && !normalized.startsWith('assets/')) {
+    error(`${fieldName}.${key} must be a relative path under assets/`);
+  }
 }
 
 function validateOptionalBoolean(record, key, fieldName) {
@@ -387,7 +472,7 @@ function validateSkillFrontmatter(fm, skillName, targetsClaude) {
   if (fm.shell !== undefined) {
     if (typeof fm.shell !== 'string') {
       error(`${fieldName}.shell must be a string`);
-    } else if (!CLAUDE_FRONTMATTER_SHELLS.has(fm.shell)) {
+    } else if (!CLAUDE_FRONTMATTER_SHELLS.has(fm.shell.trim().toLowerCase())) {
       error(`${fieldName}.shell must be "bash" or "powershell"`);
     }
   }
@@ -555,16 +640,27 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
         'brand_color',
         'default_prompt',
       ]);
-      for (const key of [
+      validateCodexMetadataString(
+        interfaceBlock,
         'display_name',
+        `${fieldName}.interface`,
+        MAX_OPENAI_INTERFACE_NAME_LEN,
+      );
+      validateCodexMetadataString(
+        interfaceBlock,
         'short_description',
-        'icon_small',
-        'icon_large',
-        'brand_color',
+        `${fieldName}.interface`,
+        MAX_OPENAI_INTERFACE_DESCRIPTION_LEN,
+      );
+      validateCodexMetadataString(
+        interfaceBlock,
         'default_prompt',
-      ]) {
-        expectOptionalString(interfaceBlock, key, `${fieldName}.interface`);
-      }
+        `${fieldName}.interface`,
+        MAX_OPENAI_DEFAULT_PROMPT_LEN,
+      );
+      validateCodexIconPath(interfaceBlock, 'icon_small', `${fieldName}.interface`);
+      validateCodexIconPath(interfaceBlock, 'icon_large', `${fieldName}.interface`);
+      validateCodexBrandColor(interfaceBlock, 'brand_color', `${fieldName}.interface`);
     }
   }
 
@@ -588,13 +684,48 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
               'url',
               'command',
             ]);
-            for (const key of ['type', 'value', 'description', 'transport', 'url', 'command']) {
-              expectOptionalString(toolBlock, key, toolField);
-            }
+            validateCodexMetadataString(
+              toolBlock,
+              'type',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_TYPE_LEN,
+              true,
+            );
+            validateCodexMetadataString(
+              toolBlock,
+              'value',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_VALUE_LEN,
+              true,
+            );
+            validateCodexMetadataString(
+              toolBlock,
+              'description',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN,
+            );
+            const transport = validateCodexMetadataString(
+              toolBlock,
+              'transport',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_TRANSPORT_LEN,
+            );
+            validateCodexMetadataString(
+              toolBlock,
+              'url',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_URL_LEN,
+            );
+            validateCodexMetadataString(
+              toolBlock,
+              'command',
+              toolField,
+              MAX_OPENAI_DEPENDENCY_COMMAND_LEN,
+            );
             if (
-              toolBlock.transport !== undefined &&
-              toolBlock.transport !== 'streamable_http' &&
-              toolBlock.transport !== 'stdio'
+              transport !== null &&
+              transport !== 'streamable_http' &&
+              transport !== 'stdio'
             ) {
               error(`${toolField}.transport must be "streamable_http" or "stdio"`);
             }

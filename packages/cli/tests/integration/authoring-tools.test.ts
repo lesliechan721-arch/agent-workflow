@@ -405,6 +405,9 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('`when_to_use`');
     expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
     expect(triggersDoc).toContain('`command`：`stdio` 场景下启动本地 MCP server 的命令');
+    expect(triggersDoc).toContain('`allowed-tools` 可写单个字符串');
+    expect(triggersDoc).toContain('`brand_color`：可选；填写时必须是 `#RRGGBB`');
+    expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
@@ -517,6 +520,46 @@ describe('authoring tools', () => {
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('allow_implicit_invocation must be a boolean'),
     });
+
+    const overlongCodexText = 'x'.repeat(1025);
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  display_name: "   "',
+        `  short_description: "${overlongCodexText}"`,
+        '  default_prompt: ""',
+        '  icon_small: "../icon.png"',
+        '  icon_large: "./images/icon.png"',
+        '  brand_color: "3B82F6"',
+        'dependencies:',
+        '  tools:',
+        '    - description: "Missing tool identifiers"',
+        '      transport: "websocket"',
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+    let invalidOpenAiYamlStdout = '';
+    try {
+      await execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (error) {
+      invalidOpenAiYamlStdout = (error as { stdout?: string }).stdout ?? '';
+    }
+    expect(invalidOpenAiYamlStdout).toContain('interface.display_name must not be empty');
+    expect(invalidOpenAiYamlStdout).toContain('interface.short_description must be <= 1024 characters');
+    expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt must not be empty');
+    expect(invalidOpenAiYamlStdout).toContain('interface.icon_small must be a relative path under assets/');
+    expect(invalidOpenAiYamlStdout).toContain('interface.icon_large must be a relative path under assets/');
+    expect(invalidOpenAiYamlStdout).toContain('interface.brand_color must match #RRGGBB');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type is required');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value is required');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport must be "streamable_http" or "stdio"');
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
@@ -892,9 +935,8 @@ describe('authoring tools', () => {
         'disable-model-invocation: false',
         'metadata:',
         '  short-description: Frontmatter validation',
-        'allowed-tools:',
-        '  - Bash(git status *)',
-        'shell: bash',
+        'allowed-tools: Bash(git status *)',
+        'shell: PowerShell',
         '---',
         '',
         '# Frontmatter Test',

@@ -30,8 +30,10 @@ plugins/<name>/skills/
 | `user-invocable` | boolean | `true` | Claude Code：是否允许用户手动调用 |
 | `disable-model-invocation` | boolean | `false` | Claude Code：是否禁止模型自动调用 |
 | `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示，≤1024 字符 |
-| `allowed-tools` | string[] | — | Claude Code：声明 shell 插值中允许执行的命令模式（如 `Bash(git *)` ） |
+| `allowed-tools` | `string` \| `string[]` | — | Claude Code：声明 shell 插值中允许执行的命令模式（如 `Bash(git *)` ） |
 | `shell` | string | `bash` | Claude Code：shell 插值使用的解释器，仅支持 `bash` 和 `powershell` |
+
+`allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
 
 示例：
 
@@ -95,13 +97,16 @@ policy:
 
 ### interface 块
 
-- `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行和校验长度，不会把 `repo-check` 自动转换成 `Repo Check`
+- `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行并校验非空且 ≤ 64 字符，不会把 `repo-check` 自动转换成 `Repo Check`
 - `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
-- `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用
+- `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用；Codex loader 实际校验为非空且 ≤ 1024 字符
+- `brand_color`：可选；填写时必须是 `#RRGGBB`
+- `icon_small` / `icon_large`：可选；填写时必须是相对路径，且位于当前 skill 的 `assets/` 目录下，例如 `./assets/icon-small.png`。不要使用绝对路径、`..` 或 `assets/` 之外的目录
 
 ### dependencies.tools[] 块
 
-- `type` / `value` / `description`：声明工具依赖的类型、标识和说明
+- `type` / `value`：必填，声明工具依赖的类型和标识；缺失或空值会被 Codex loader 丢弃
+- `description`：可选，说明工具用途
 - `transport`：可选，当前 Codex 支持 `streamable_http` 和 `stdio`
 - `url`：`streamable_http` 场景下的远端服务地址
 - `command`：`stdio` 场景下启动本地 MCP server 的命令

@@ -66,8 +66,10 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `allowed-tools` | string[] | — | 放行命令执行的工具模式（如 `Bash(git *)`），未声明则可能被权限系统拦截 |
+| `allowed-tools` | `string` \| `string[]` | — | 放行命令执行的工具模式（如 `Bash(git *)`），未声明则可能被权限系统拦截 |
 | `shell` | string | `bash` | 使用的 shell 解释器，仅支持 `bash` 和 `powershell` |
+
+`allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
 
 `commands` 和 `skills` 的 frontmatter 均支持这两个字段。
 
@@ -117,11 +119,13 @@ disable-model-invocation: false
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `description` | string | 命令描述，显示在命令列表中 |
-| `allowed-tools` | string[] | 命令执行期间允许使用的工具 |
+| `allowed-tools` | `string` \| `string[]` | 命令执行期间允许使用的工具 |
 | `model` | string | 指定模型（`inherit` 继承当前模型） |
 | `argument-hint` | string | 参数提示（如 `[file]`、`[branch]`） |
 | `disable-model-invocation` | boolean | 禁止模型自动调用此命令 |
 | `shell` | string | shell 插值使用的解释器（默认 `bash`，可选 `powershell`） |
+
+命令文件里的 `allowed-tools` 同样兼容单个字符串；多条规则建议写成数组。
 
 ### 动态参数
 
