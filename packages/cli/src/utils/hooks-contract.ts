@@ -130,6 +130,7 @@ export const NATIVE_HOOK_EVENT_CONTRACTS = {
 
 const PUBLIC_HOOK_EVENT_SET = new Set<string>(PUBLIC_HOOK_EVENTS);
 const PUBLIC_SESSION_START_SOURCE_SET = new Set<string>(PUBLIC_SESSION_START_SOURCES);
+const CODEX_EXACT_MATCHER_PATTERN = /^[A-Za-z0-9_|]+$/;
 const NATIVE_HOOK_EVENT_SETS = {
   claude: new Set<string>(CLAUDE_NATIVE_HOOK_EVENTS),
   codex: new Set<string>(CODEX_NATIVE_HOOK_EVENTS),
@@ -227,6 +228,46 @@ function normalizePublicSessionStartMatcher(
   return PUBLIC_SESSION_START_SOURCES.filter((part) => selected.has(part)).join('|');
 }
 
+// Codex matcher semantics source:
+// - codex-rs/hooks/src/events/common.rs: validate_matcher_pattern / matches_matcher
+// - codex-rs/hooks/src/engine/discovery.rs: invalid matcher groups are skipped
+// Verified against codex-rs on 2026-04-28.
+function getCodexMatcherPatternError(
+  matcher: string,
+): string | undefined {
+  if (
+    matcher === '' ||
+    matcher === '*' ||
+    CODEX_EXACT_MATCHER_PATTERN.test(matcher)
+  ) {
+    return undefined;
+  }
+
+  try {
+    // Codex runtime uses Rust regex, but the accepted-shape split between
+    // exact tokens and regex patterns is mirrored here so malformed patterns
+    // don't get treated as managed hooks by AW.
+    new RegExp(matcher);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function assertCodexMatcherPattern(
+  matcher: string,
+  fieldName: string,
+): void {
+  const errorMessage = getCodexMatcherPatternError(matcher);
+  if (errorMessage === undefined) {
+    return;
+  }
+
+  throw new Error(
+    `Invalid ${fieldName}: matcher ${JSON.stringify(matcher)} is not a valid Codex matcher pattern (${errorMessage}).`,
+  );
+}
+
 function normalizeCodexSharedMatcherValue(
   matcher: string | null | undefined,
   matcherAllowed: boolean,
@@ -245,12 +286,27 @@ function normalizeCodexSharedMatcherValue(
 function normalizeStrictMatcherValue(
   matcher: string | undefined,
   matcherAllowed: boolean,
+  platform: PlatformName,
+  fieldName: string,
 ): string | undefined {
   if (!matcherAllowed) {
     return undefined;
   }
 
-  if (matcher === undefined || matcher === '*') {
+  if (matcher === undefined) {
+    return undefined;
+  }
+
+  if (platform === 'codex') {
+    assertCodexMatcherPattern(matcher, fieldName);
+    if (matcher === '' || matcher === '*') {
+      return undefined;
+    }
+
+    return matcher;
+  }
+
+  if (matcher === '*') {
     return undefined;
   }
 
@@ -337,6 +393,13 @@ export function assertHookMatcherAllowed(
     throw new Error(
       `Invalid ${options.fieldName}: ${options.platform} event "${options.event}" does not allow matcher.`,
     );
+  }
+  if (
+    contract.matcherAllowed &&
+    options.platform === 'codex' &&
+    options.matcher !== undefined
+  ) {
+    assertCodexMatcherPattern(options.matcher, options.fieldName);
   }
 }
 
@@ -427,7 +490,12 @@ export function normalizeRenderedHookGroupIdentity(options: {
         `Invalid ${options.platform}.${options.event}.matcher: event "${options.event}" does not allow matcher.`,
       );
     }
-    matcher = normalizeStrictMatcherValue(options.matcher ?? undefined, contract.matcherAllowed);
+    matcher = normalizeStrictMatcherValue(
+      options.matcher ?? undefined,
+      contract.matcherAllowed,
+      options.platform,
+      `${options.platform}.${options.event}.matcher`,
+    );
   }
 
   return matcher === undefined
@@ -564,6 +632,7 @@ export function normalizeCodexSharedHookGroupForRead(
   fieldName: string,
 ): ParsedCodexSharedHookGroup {
   assertNativeHookEvent(event, 'codex', `${fieldName}.event`);
+  const contract = getNativeHookEventContract(event, 'codex', `${fieldName}.event`);
 
   const groupRecord = assertObject(value, fieldName);
   if (!Array.isArray(groupRecord.hooks)) {
@@ -604,6 +673,13 @@ export function normalizeCodexSharedHookGroupForRead(
   };
 
   if (!isMinimalManagedCodexGroup(groupRecord, handlers)) {
+    return { rawGroup };
+  }
+  if (
+    contract.matcherAllowed &&
+    typeof matcher === 'string' &&
+    getCodexMatcherPatternError(matcher) !== undefined
+  ) {
     return { rawGroup };
   }
 

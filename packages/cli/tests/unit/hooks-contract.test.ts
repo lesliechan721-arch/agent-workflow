@@ -230,6 +230,23 @@ describe('hooks contract', () => {
   });
 
   it('rejects invalid Codex shared matcher and runtime field types', () => {
+    const parsedWithInvalidRegex = parseCodexSharedHooksFile({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '[',
+            hooks: [{ type: 'command', command: 'echo invalid regex' }],
+          },
+        ],
+      },
+    });
+    expect(parsedWithInvalidRegex.managedIdentities).toEqual([]);
+    expect(parsedWithInvalidRegex.opaqueRawGroups).toHaveLength(1);
+    expect(parsedWithInvalidRegex.opaqueRawGroups[0]).toMatchObject({
+      event: 'PreToolUse',
+      matcher: '[',
+    });
+
     expect(() =>
       parseCodexSharedHooksFile({
         hooks: {

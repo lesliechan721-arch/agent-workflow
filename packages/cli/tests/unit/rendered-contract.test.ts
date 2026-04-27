@@ -100,6 +100,21 @@ describe('rendered contract validators', () => {
     ).toThrow('does not allow matcher');
   });
 
+  it('rejects invalid Codex matcher syntax in strict generated mode', () => {
+    expect(() =>
+      validateRenderedHooksContent({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '[',
+              hooks: [{ type: 'command', command: 'echo invalid' }],
+            },
+          ],
+        },
+      }, 'codex.hooks'),
+    ).toThrow('valid Codex matcher pattern');
+  });
+
   it('rejects non-minimal handler shapes in strict generated mode', () => {
     expect(() =>
       validateRenderedHooksContent({

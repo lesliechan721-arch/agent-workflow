@@ -423,6 +423,20 @@ describe('manifest utils', () => {
     );
 
     manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'PreToolUse',
+          matcher: '[',
+          command: 'echo invalid regex',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'valid Codex matcher pattern',
+    );
+
+    manifest.extensions.nativeHooks = {
       claude: [
         {
           event: 'Notification',
