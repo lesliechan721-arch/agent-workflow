@@ -136,6 +136,52 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('replaces current plugin shared hook groups during install when legacy tracking lacks hook groups', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [
+      {
+        path: paths.hooksPath,
+        kind: 'hook',
+        platform: 'codex',
+      },
+    ]);
+    await fs.writeJson(paths.hooksPath, {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+
+    await adapter.installExtensions(plugin, 'project');
+
+    await expect(fs.readJson(paths.hooksPath)).resolves.toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ],
+      },
+    });
+  });
+
   it('installs and uninstalls nativeHooks-only Codex plugins without removing foreign shared groups', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     const basePlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

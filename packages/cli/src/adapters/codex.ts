@@ -445,15 +445,25 @@ type ResolvedTrackedCodexHookRewrite = {
   historicalTrackedIdentities: TrackedHookGroupIdentity[];
 };
 
+function resolveInstallTrackedCodexHookGroups(
+  trackedHookGroups: TrackedHookGroupIdentity[] | null,
+  resolvedHookGroups: TrackedHookGroupIdentity[],
+): TrackedHookGroupIdentity[] {
+  return trackedHookGroups ?? resolvedHookGroups;
+}
+
 async function resolveTrackedCodexHookRewrite(
   plugin: PluginMeta,
   trackingManifest: TrackingManifest,
   env: NodeJS.ProcessEnv,
 ): Promise<ResolvedTrackedCodexHookRewrite> {
   const currentTrackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
-  const currentTrackedIdentities = readTrackedCodexHookGroups(currentTrackingRecord) ?? [];
   const currentHookIdentities = extractCodexHookGroups(
     resolvePlatformHookDefinitions(plugin.manifest, 'codex'),
+  );
+  const currentTrackedIdentities = resolveInstallTrackedCodexHookGroups(
+    readTrackedCodexHookGroups(currentTrackingRecord),
+    currentHookIdentities,
   );
 
   const previousTrackedIdentities = [...currentTrackedIdentities];
@@ -473,12 +483,13 @@ async function resolveTrackedCodexHookRewrite(
 
     try {
       const trackedPlugin = await resolveTrackedPlugin(trackedPluginName, env);
-      previousTrackedIdentities.push(...(trackedHookGroups ?? []));
-      nextHookIdentities.push(
-        ...extractCodexHookGroups(
-          resolvePlatformHookDefinitions(trackedPlugin.manifest, 'codex'),
-        ),
+      const resolvedHookGroups = extractCodexHookGroups(
+        resolvePlatformHookDefinitions(trackedPlugin.manifest, 'codex'),
       );
+      previousTrackedIdentities.push(
+        ...resolveInstallTrackedCodexHookGroups(trackedHookGroups, resolvedHookGroups),
+      );
+      nextHookIdentities.push(...resolvedHookGroups);
     } catch {
       if (trackedHookGroups && trackedHookGroups.length > 0) {
         historicalTrackedIdentities.push(...trackedHookGroups);
