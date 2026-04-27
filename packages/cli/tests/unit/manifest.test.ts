@@ -60,8 +60,8 @@ describe('manifest utils', () => {
       },
     });
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
-      event: 'command',
-      matcher: 'git *',
+      event: 'before_tool',
+      matcher: 'Bash',
     });
   });
 
@@ -83,6 +83,33 @@ describe('manifest utils', () => {
     await expect(
       readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit')),
     ).rejects.toThrow('unknown field "claude"');
+  });
+
+  it('rejects hook fields and permission patterns outside the public source contract', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions.hooks[0].event = 'command';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unsupported hook event "command"',
+    );
+
+    manifest.extensions.hooks[0].event = 'before_tool';
+    manifest.extensions.hooks[0].description = 'old field';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unknown field "description"',
+    );
+
+    delete manifest.extensions.hooks[0].description;
+    manifest.extensions.permissions[0].allow = ['git *'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'only plain token prefixes are supported',
+    );
   });
 
   it('rejects unknown root marketplace metadata fields', async () => {
@@ -135,5 +162,68 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'found .app.json but missing "apps" declaration',
     );
+  });
+
+  it('allows templated JSON native assets at source time but validates non-template JSON shape', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.mcpServers = './.mcp.json';
+    manifest.apps = './.app.json';
+    manifest.buildConfig = {
+      templates: {
+        include: ['.mcp.json', '.app.json'],
+        vars: {
+          serverName: { claude: 'claude-server', codex: 'codex-server' },
+        },
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.writeFile(path.join(pluginRoot, '.mcp.json'), '{"mcpServers": {{serverName}}}', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, '.app.json'), '{"apps": {{serverName}}}', 'utf8');
+
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        mcpServers: './.mcp.json',
+        apps: './.app.json',
+      },
+    });
+
+    delete manifest.buildConfig;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.writeJson(path.join(pluginRoot, '.mcp.json'), { mcpServers: [] }, { spaces: 2 });
+    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} }, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'expected top-level "mcpServers" object',
+    );
+  });
+
+  it('loads bundle manifests without applying source-only default asset checks', async () => {
+    const repoRoot = await makeTempRepo();
+    const sourcePluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const bundlePluginRoot = path.join(repoRoot, 'bundle', 'plugins', 'git-commit');
+    await fs.ensureDir(path.join(bundlePluginRoot, '.agents-plugin'));
+    const manifest = await fs.readJson(
+      path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
+    );
+    delete manifest.skills;
+    await fs.writeJson(
+      path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
+      manifest,
+      { spaces: 2 },
+    );
+    await fs.ensureDir(path.join(bundlePluginRoot, 'skills'));
+
+    await expect(readPluginManifest(bundlePluginRoot)).rejects.toThrow(
+      'found skills but missing "skills" declaration',
+    );
+    await expect(
+      readPluginManifest(bundlePluginRoot, { mode: 'bundle' }),
+    ).resolves.toMatchObject({
+      manifest: {
+        name: 'git-commit',
+      },
+    });
   });
 });

@@ -24,6 +24,8 @@ import type {
   TemplateVarByPlatform,
 } from '../types.js';
 import { readJsonFile } from './json.js';
+import { parsePermissionCommand } from '../generators/permissions.js';
+import { applyFileRules } from './file-rules.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
@@ -62,6 +64,38 @@ function ensureStringArray(value: unknown, fieldName: string): string[] {
   }
 
   return value.map((entry, index) => ensureString(entry, `${fieldName}[${index}]`));
+}
+
+const PUBLIC_HOOK_EVENTS = new Set<HookEvent>([
+  'before_tool',
+  'after_tool',
+  'session_start',
+  'session_stop',
+]);
+
+function ensureHookEvent(value: unknown, fieldName: string): HookEvent {
+  const event = ensureString(value, fieldName);
+  if (!PUBLIC_HOOK_EVENTS.has(event as HookEvent)) {
+    throw new Error(`Invalid ${fieldName}: unsupported hook event "${event}".`);
+  }
+
+  return event as HookEvent;
+}
+
+function normalizePermissionCommandArray(
+  value: unknown,
+  fieldName: string,
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const entries = ensureStringArray(value, fieldName);
+  for (const [index, entry] of entries.entries()) {
+    parsePermissionCommand(entry, `${fieldName}[${index}]`);
+  }
+
+  return entries;
 }
 
 function normalizeComparableStringArray(value: string[] | undefined): string[] | undefined {
@@ -443,18 +477,9 @@ function normalizePermissionEntry(
 
   return {
     name: ensureString(input.name, `${fieldName}.name`),
-    allow:
-      input.allow === undefined
-        ? undefined
-        : ensureStringArray(input.allow, `${fieldName}.allow`),
-    ask:
-      input.ask === undefined
-        ? undefined
-        : ensureStringArray(input.ask, `${fieldName}.ask`),
-    deny:
-      input.deny === undefined
-        ? undefined
-        : ensureStringArray(input.deny, `${fieldName}.deny`),
+    allow: normalizePermissionCommandArray(input.allow, `${fieldName}.allow`),
+    ask: normalizePermissionCommandArray(input.ask, `${fieldName}.ask`),
+    deny: normalizePermissionCommandArray(input.deny, `${fieldName}.deny`),
     agentOverrides:
       input.agentOverrides === undefined
         ? undefined
@@ -468,18 +493,18 @@ function normalizePermissionEntry(
                   overrideInput.name === undefined
                     ? undefined
                     : ensureString(overrideInput.name, `${overrideFieldName}.name`),
-                allow:
-                  overrideInput.allow === undefined
-                    ? undefined
-                    : ensureStringArray(overrideInput.allow, `${overrideFieldName}.allow`),
-                ask:
-                  overrideInput.ask === undefined
-                    ? undefined
-                    : ensureStringArray(overrideInput.ask, `${overrideFieldName}.ask`),
-                deny:
-                  overrideInput.deny === undefined
-                    ? undefined
-                    : ensureStringArray(overrideInput.deny, `${overrideFieldName}.deny`),
+                allow: normalizePermissionCommandArray(
+                  overrideInput.allow,
+                  `${overrideFieldName}.allow`,
+                ),
+                ask: normalizePermissionCommandArray(
+                  overrideInput.ask,
+                  `${overrideFieldName}.ask`,
+                ),
+                deny: normalizePermissionCommandArray(
+                  overrideInput.deny,
+                  `${overrideFieldName}.deny`,
+                ),
               };
             },
           ),
@@ -488,19 +513,15 @@ function normalizePermissionEntry(
 
 function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
   const input = assertObject(entry, fieldName);
-  assertAllowedKeys(input, fieldName, ['event', 'matcher', 'command', 'description', 'agentOverrides']);
+  assertAllowedKeys(input, fieldName, ['event', 'matcher', 'command', 'agentOverrides']);
 
   return {
-    event: ensureString(input.event, `${fieldName}.event`) as HookEvent,
+    event: ensureHookEvent(input.event, `${fieldName}.event`),
     matcher:
       input.matcher === undefined
         ? undefined
         : ensureString(input.matcher, `${fieldName}.matcher`),
     command: ensureString(input.command, `${fieldName}.command`),
-    description:
-      input.description === undefined
-        ? undefined
-        : ensureString(input.description, `${fieldName}.description`),
     agentOverrides:
       input.agentOverrides === undefined
         ? undefined
@@ -508,20 +529,12 @@ function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
             input.agentOverrides,
             `${fieldName}.agentOverrides`,
             (overrideInput, overrideFieldName) => {
-              assertAllowedKeys(overrideInput, overrideFieldName, [
-                'event',
-                'matcher',
-                'command',
-                'description',
-              ]);
+              assertAllowedKeys(overrideInput, overrideFieldName, ['event', 'matcher', 'command']);
               return {
                 event:
                   overrideInput.event === undefined
                     ? undefined
-                    : (ensureString(
-                        overrideInput.event,
-                        `${overrideFieldName}.event`,
-                      ) as HookEvent),
+                    : ensureHookEvent(overrideInput.event, `${overrideFieldName}.event`),
                 matcher:
                   overrideInput.matcher === undefined
                     ? undefined
@@ -530,13 +543,6 @@ function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
                   overrideInput.command === undefined
                     ? undefined
                     : ensureString(overrideInput.command, `${overrideFieldName}.command`),
-                description:
-                  overrideInput.description === undefined
-                    ? undefined
-                    : ensureString(
-                        overrideInput.description,
-                        `${overrideFieldName}.description`,
-                      ),
               };
             },
           ),
@@ -743,11 +749,80 @@ async function validateDeclaredNativeAssets(
   );
 }
 
-export async function readPluginManifest(pluginRoot: string): Promise<PluginMeta> {
-  const manifestPath = path.join(pluginRoot, SOURCE_MANIFEST_PATH);
-  const rawManifest = await readJsonFile<unknown>(manifestPath);
+function stripDotSlash(value: string): string {
+  return value.startsWith('./') ? value.slice(2) : value;
+}
+
+function isTemplateAsset(manifest: PluginManifestSource, relativePath: string): boolean {
+  const normalized = stripDotSlash(relativePath).split(path.sep).join('/');
+  const include = manifest.buildConfig?.templates?.include ?? [];
+  return include.length > 0 && applyFileRules([normalized], include, []).length > 0;
+}
+
+async function validateSourceJsonNativeAsset(
+  pluginRoot: string,
+  manifest: PluginManifestSource,
+  field: 'mcpServers' | 'apps',
+): Promise<void> {
+  const relativePath = manifest[field];
+  if (!relativePath || isTemplateAsset(manifest, relativePath)) {
+    return;
+  }
+
+  const absolutePath = path.join(pluginRoot, stripDotSlash(relativePath));
+  if (!(await fs.pathExists(absolutePath))) {
+    return;
+  }
+
+  let content: unknown;
+  try {
+    content = await fs.readJson(absolutePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ${field}: source JSON is invalid (${message}).`);
+  }
+
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    throw new Error(`Invalid ${field}: expected a JSON object.`);
+  }
+
+  const record = content as Record<string, unknown>;
+  if (field === 'mcpServers') {
+    if (!record.mcpServers || typeof record.mcpServers !== 'object' || Array.isArray(record.mcpServers)) {
+      throw new Error('Invalid mcpServers: expected top-level "mcpServers" object.');
+    }
+  } else if (!record.apps || typeof record.apps !== 'object' || Array.isArray(record.apps)) {
+    throw new Error('Invalid apps: expected top-level "apps" object.');
+  }
+}
+
+export async function validateSourcePluginManifest(
+  pluginRoot: string,
+  rawManifest: unknown,
+): Promise<PluginManifestSource> {
   const manifest = validatePluginManifest(pluginRoot, rawManifest);
   await validateDeclaredNativeAssets(pluginRoot, manifest);
+  await Promise.all([
+    validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
+    validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
+  ]);
+  return manifest;
+}
+
+export interface ReadPluginManifestOptions {
+  mode?: 'source' | 'bundle';
+}
+
+export async function readPluginManifest(
+  pluginRoot: string,
+  options: ReadPluginManifestOptions = {},
+): Promise<PluginMeta> {
+  const manifestPath = path.join(pluginRoot, SOURCE_MANIFEST_PATH);
+  const rawManifest = await readJsonFile<unknown>(manifestPath);
+  const mode = options.mode ?? 'source';
+  const manifest = mode === 'source'
+    ? await validateSourcePluginManifest(pluginRoot, rawManifest)
+    : validatePluginManifest(pluginRoot, rawManifest);
   return {
     rootDir: pluginRoot,
     manifestPath,
@@ -755,7 +830,10 @@ export async function readPluginManifest(pluginRoot: string): Promise<PluginMeta
   };
 }
 
-export async function discoverPluginsInDirectory(pluginsDir: string): Promise<PluginMeta[]> {
+export async function discoverPluginsInDirectory(
+  pluginsDir: string,
+  options: ReadPluginManifestOptions = {},
+): Promise<PluginMeta[]> {
   if (!(await fs.pathExists(pluginsDir))) {
     return [];
   }
@@ -769,7 +847,7 @@ export async function discoverPluginsInDirectory(pluginsDir: string): Promise<Pl
         return null;
       }
 
-      return readPluginManifest(pluginRoot);
+      return readPluginManifest(pluginRoot, options);
     }),
   );
 
@@ -809,7 +887,10 @@ export async function resolvePluginsFromCatalog(
   catalogRoot: string,
   pluginNames?: string[],
 ): Promise<PluginMeta[]> {
-  const plugins = await discoverPluginsInDirectory(path.join(catalogRoot, 'plugins'));
+  const plugins = await discoverPluginsInDirectory(
+    path.join(catalogRoot, 'plugins'),
+    { mode: 'bundle' },
+  );
   return selectPlugins(plugins, pluginNames);
 }
 

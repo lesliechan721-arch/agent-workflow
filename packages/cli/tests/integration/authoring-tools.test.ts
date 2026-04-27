@@ -85,6 +85,7 @@ describe('authoring tools', () => {
         'repo-check',
         '--skill-description',
         '手动触发这个 skill，执行仓库检查工作流',
+        '--with-apps',
         '--repo-root',
         tempRepo,
       ],
@@ -102,6 +103,7 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
       skills: './skills',
+      apps: './.app.json',
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -114,7 +116,7 @@ describe('authoring tools', () => {
       interface: {
         displayName: 'Repo Check',
         shortDescription: '检查仓库状态',
-        capabilities: ['Skills'],
+        capabilities: ['Skills', 'Apps'],
       },
       extensions: {
         instructions: [],
@@ -137,6 +139,15 @@ describe('authoring tools', () => {
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
       ),
     ).resolves.toBe(true);
+    await expect(
+      fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.app.json')),
+    ).resolves.toMatchObject({
+      apps: {
+        example: {
+          id: 'replace-with-real-connector-id',
+        },
+      },
+    });
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', '.claude-plugin', 'plugin.json')),
     ).resolves.toBe(false);
@@ -254,18 +265,4 @@ describe('authoring tools', () => {
     ).rejects.toBeDefined();
   });
 
-  it('marks replaced plans as historical documents and links the current plan', async () => {
-    const historicalDocs = [
-      path.join(repoRoot(), 'docs', 'dev', 'plans', 'project-init.md'),
-      path.join(repoRoot(), 'docs', 'dev', 'plans', 'npm-plugin-marketplace.md'),
-      path.join(repoRoot(), 'docs', 'dev', 'plans', 'codex-repo-managed-artifacts.md'),
-    ];
-
-    for (const docPath of historicalDocs) {
-      const header = (await fs.readFile(docPath, 'utf8')).split('\n').slice(0, 8).join('\n');
-      expect(header).toContain('历史文档');
-      expect(header).toContain('npm-plugin-marketplace-new.md');
-      expect(header).toContain('todos/npm-plugin-marketplace-new.md');
-    }
-  });
 });

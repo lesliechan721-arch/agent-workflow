@@ -35,6 +35,7 @@ import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   type ClaudeSettings,
   detectClaudeExternalOwnership,
@@ -71,10 +72,10 @@ function normalizeManagedExtensions(
 
 function getClaudeManagedExtensions(plugin: PluginMeta): string[] {
   const managedExtensions: string[] = [];
-  if ((plugin.manifest.extensions?.instructions ?? []).length > 0) {
+  if (resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'claude').length > 0) {
     managedExtensions.push('instructions');
   }
-  if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+  if (resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude').length > 0) {
     managedExtensions.push('permissions');
   }
   return managedExtensions;
@@ -439,7 +440,7 @@ export class ClaudeAdapter implements PlatformAdapter {
     try {
       for (const artifact of generateInstructionArtifacts(
         plugin.manifest.name,
-        plugin.manifest.extensions?.instructions ?? [],
+        resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'claude'),
         'claude',
       )) {
         const artifactPath = path.join(paths.configDir, artifact.relativePath);
@@ -455,10 +456,11 @@ export class ClaudeAdapter implements PlatformAdapter {
       );
       settings.awGenerated ??= {};
 
-      if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+      const permissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude');
+      if (permissions.length > 0) {
         settings.awGenerated.permissions ??= {};
         settings.awGenerated.permissions[plugin.manifest.name] = mergeClaudePermissions(
-          plugin.manifest.extensions?.permissions ?? [],
+          permissions,
         );
       } else if (settings.awGenerated.permissions) {
         delete settings.awGenerated.permissions[plugin.manifest.name];
@@ -467,7 +469,7 @@ export class ClaudeAdapter implements PlatformAdapter {
       rebuildClaudePermissionState(settings, manualPermissions);
       await writeClaudeSettings(paths.settingsPath, settings);
 
-      if ((plugin.manifest.extensions?.permissions ?? []).length > 0) {
+      if (permissions.length > 0) {
         artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
       }
 
@@ -694,10 +696,10 @@ export class ClaudeAdapter implements PlatformAdapter {
       activeLocalBundle: runtimeEvidence.activeLocalBundle,
       artifactsInitialized,
       repoManagedSessionState: {
-        instructions: (plugin.manifest.extensions?.instructions ?? []).length > 0
+        instructions: resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'claude').length > 0
           ? (trackingRecord ? 'visible' : 'absent')
           : 'not_applicable',
-        rules: (plugin.manifest.extensions?.permissions ?? []).length > 0
+        rules: resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude').length > 0
           ? (permissionManaged ? 'visible' : 'absent')
           : 'not_applicable',
         hooks: 'not_applicable',

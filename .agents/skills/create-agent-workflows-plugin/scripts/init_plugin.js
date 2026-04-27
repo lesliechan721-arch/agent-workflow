@@ -133,7 +133,11 @@ function renderMcpJson() {
 
 function renderAppJson() {
   return `{
-  "apps": {}
+  "apps": {
+    "example": {
+      "id": "replace-with-real-connector-id"
+    }
+  }
 }
 `;
 }
@@ -152,7 +156,7 @@ Options:
   --repo-root <path>            Repository root. Default: current directory.
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
-  --with-apps                   Create .app.json stub and add apps to manifest.
+  --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
   -h, --help                    Show this help message.
 `);
 }

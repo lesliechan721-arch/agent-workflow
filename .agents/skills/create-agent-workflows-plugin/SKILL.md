@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Create Agent Workflows Plugin
 
-在当前仓库创建或维护同时支持 Codex 和 Claude Code 的双平台插件。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle 和本地 marketplace 镜像由 CLI 自动生成。
+在当前仓库创建或维护同时支持 Codex 和 Claude Code 的双平台插件。这里描述的是 `agent-workflows` 源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle 和本地 marketplace 镜像由 CLI 自动生成。
 
 ## 快速开始
 
@@ -68,7 +68,7 @@ plugins/<name>/
    - MCP/Apps → 创建 `.mcp.json` / `.app.json`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
-7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构（构建后可复用 CLI 真实校验，否则回退轻量预检）。
+7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` 仍属于作者工具体验检查。
 8. **测试**：改到 manifest、bundle 或安装逻辑时，至少运行 `pnpm test` 相关用例。
 
 ## 脚手架脚本
@@ -90,7 +90,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - 默认创建带 skill 的插件骨架
 - `--no-skills`：创建不含 skill 的插件（不需要 `--skill-name` 和 `--skill-description`）
 - `--with-mcp`：同时创建 `.mcp.json` 存根
-- `--with-apps`：同时创建 `.app.json` 存根
+- `--with-apps`：同时创建带示例 connector id 的最小 `.app.json`，作者需要替换成真实 id
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
 
 ## 完整参考

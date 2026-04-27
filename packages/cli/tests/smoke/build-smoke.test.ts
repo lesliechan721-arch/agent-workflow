@@ -30,5 +30,10 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
+
+    const { validateBundleLayout } = (await import(
+      '../../src/utils/bundle-layout.js'
+    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
+    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
 });

@@ -12,6 +12,7 @@ import {
 } from '../utils/manifest.js';
 import { writeJsonFile } from '../utils/json.js';
 import { renderTemplate } from '../utils/template-engine.js';
+import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import type {
   AgentDefinition,
   HookDefinition,
@@ -75,35 +76,6 @@ async function collectFilesForPath(pluginRoot: string, relativePath: string): Pr
   }
 
   return [stripDotSlash(relativePath).split(path.sep).join('/')];
-}
-
-function applyPlatformOverride<T extends { agentOverrides?: { claude?: Partial<T> | null; codex?: Partial<T> | null } }>(
-  entry: T,
-  platform: PlatformName,
-): T | null {
-  const override = entry.agentOverrides?.[platform];
-  if (override === null) {
-    return null;
-  }
-
-  if (!override) {
-    return { ...entry };
-  }
-
-  return {
-    ...entry,
-    ...override,
-    agentOverrides: undefined,
-  };
-}
-
-function resolvePlatformEntries<T extends { agentOverrides?: { claude?: Partial<T> | null; codex?: Partial<T> | null } }>(
-  entries: T[] | undefined,
-  platform: PlatformName,
-): T[] {
-  return (entries ?? [])
-    .map((entry) => applyPlatformOverride(entry, platform))
-    .filter((entry): entry is T => entry !== null);
 }
 
 function renderClaudeAgentContent(agent: AgentDefinition): string {

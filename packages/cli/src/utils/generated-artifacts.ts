@@ -32,7 +32,7 @@ export function mergeGeneratedArtifacts(
         artifact.path,
         artifact.kind,
         artifact.platform,
-        artifact.hookCommands ?? null,
+        artifact.hookGroups ?? null,
       ]);
       if (seen.has(key)) {
         continue;

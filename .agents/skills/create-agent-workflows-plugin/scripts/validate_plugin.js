@@ -44,7 +44,7 @@ async function tryLoadCliValidator() {
   if (!fs.existsSync(modulePath)) return null;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
-    return mod.validatePluginManifest ?? null;
+    return mod.validateSourcePluginManifest ?? null;
   } catch {
     return null;
   }
@@ -81,6 +81,23 @@ function validateManifestLightweight(manifest) {
       error(`${field} path must start with "./", got "${manifest[field]}"`);
     }
   }
+}
+
+function isTemplateAsset(manifest, relativePath) {
+  const normalized = relativePath.replace(/^\.\//, '').split(path.sep).join('/');
+  const include = manifest.buildConfig?.templates?.include;
+  if (!Array.isArray(include)) return false;
+  return include.some((pattern) => {
+    if (pattern === normalized) return true;
+    if (pattern.endsWith('/**')) {
+      return normalized.startsWith(pattern.slice(0, -3));
+    }
+    if (pattern.includes('**/*')) {
+      const [prefix, suffix] = pattern.split('**/*');
+      return normalized.startsWith(prefix) && normalized.endsWith(suffix);
+    }
+    return false;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +156,7 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
 
 function validateMcpContent(pluginDir, manifest) {
   if (!manifest.mcpServers) return;
+  if (isTemplateAsset(manifest, manifest.mcpServers)) return;
   const mcpPath = path.join(pluginDir, manifest.mcpServers);
   if (!fs.existsSync(mcpPath)) return;
   try {
@@ -153,6 +171,7 @@ function validateMcpContent(pluginDir, manifest) {
 
 function validateAppsContent(pluginDir, manifest) {
   if (!manifest.apps) return;
+  if (isTemplateAsset(manifest, manifest.apps)) return;
   const appsPath = path.join(pluginDir, manifest.apps);
   if (!fs.existsSync(appsPath)) return;
   try {
@@ -255,13 +274,13 @@ async function validatePluginDir(pluginDir) {
   const cliValidate = await tryLoadCliValidator();
   if (cliValidate) {
     try {
-      cliValidate(pluginDir, manifest);
+      await cliValidate(pluginDir, manifest);
     } catch (e) {
       error(e.message);
     }
   } else {
     warn(
-      'CLI 未构建（packages/cli/dist/ 不存在），使用轻量预检；运行 pnpm build 后可获得完整校验',
+      'CLI 未构建（packages/cli/dist/ 不存在），仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',
     );
     validateManifestLightweight(manifest);
   }

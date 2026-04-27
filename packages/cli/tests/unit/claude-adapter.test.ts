@@ -242,8 +242,8 @@ describe('ClaudeAdapter', () => {
 
     await expect(fs.readJson(paths.settingsPath)).resolves.toMatchObject({
       permissions: {
-        allow: ['git diff', 'git status', 'manual:allow', 'old:allow'],
-        ask: ['git commit', 'manual:ask', 'old:ask'],
+        allow: ['Bash(git diff)', 'Bash(git status)', 'manual:allow', 'old:allow'],
+        ask: ['Bash(git commit)', 'manual:ask', 'old:ask'],
         deny: ['manual:deny'],
       },
       awGenerated: {
@@ -254,8 +254,8 @@ describe('ClaudeAdapter', () => {
             deny: [],
           },
           'git-commit': {
-            allow: ['git status', 'git diff'],
-            ask: ['git commit'],
+            allow: ['Bash(git status)', 'Bash(git diff)'],
+            ask: ['Bash(git commit)'],
             deny: [],
           },
         },
@@ -330,8 +330,8 @@ describe('ClaudeAdapter', () => {
       awGenerated: {
         permissions: {
           'git-commit': {
-            allow: ['git status', 'git diff'],
-            ask: ['git commit'],
+            allow: ['Bash(git status)', 'Bash(git diff)'],
+            ask: ['Bash(git commit)'],
             deny: [],
           },
         },

@@ -123,9 +123,9 @@ aw status [插件名...] [--scope project|user] [--platform codex|claude|both|au
 
 **Codex**
 - `.codex/config.toml` — 追加 managed instructions block
-- `.codex/permissions.json` — permissions 配置
-- `.codex/hooks.json` — hooks 配置
-- `.codex/agents.json` — agents 配置
+- `.codex/rules/*.rules` — Codex execpolicy `prefix_rule(...)` 权限规则
+- `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置
+- `.codex/agents/*.toml` — Codex agent role 文件
 
 同时会在 `~/.aw/installed.json` 更新安装账本，在平台目录下写入 `.agent-workflows-manifest.json` 追踪清单（用于精确卸载/升级）。
 

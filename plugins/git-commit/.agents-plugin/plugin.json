@@ -36,10 +36,9 @@
     ],
     "hooks": [
       {
-        "event": "command",
-        "matcher": "git *",
-        "command": "echo git hook",
-        "description": "观察 git 命令"
+        "event": "before_tool",
+        "matcher": "Bash",
+        "command": "echo git hook"
       }
     ],
     "agents": [

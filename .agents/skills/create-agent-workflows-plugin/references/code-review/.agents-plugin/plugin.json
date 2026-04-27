@@ -39,14 +39,12 @@
     "hooks": [
       {
         "event": "session_start",
-        "command": "cat .review-config.json 2>/dev/null || echo '{}'",
-        "description": "会话开始时加载审查配置"
+        "command": "cat .review-config.json 2>/dev/null || echo '{}'"
       },
       {
         "event": "before_tool",
         "matcher": "Write",
         "command": "echo 'Reviewing file write operation'",
-        "description": "写入前审查提示",
         "agentOverrides": {
           "codex": null
         }

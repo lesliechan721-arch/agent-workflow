@@ -57,6 +57,78 @@ async function assertBundlePathExists(
   }
 }
 
+async function assertJsonObjectFile(filePath: string, fieldName: string): Promise<Record<string, unknown>> {
+  let content: unknown;
+  try {
+    content = await fs.readJson(filePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ${fieldName}: expected valid JSON (${message}).`);
+  }
+
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    throw new Error(`Invalid ${fieldName}: expected a JSON object.`);
+  }
+
+  return content as Record<string, unknown>;
+}
+
+async function assertMcpArtifact(
+  pluginRoot: string,
+  relativePath: string,
+  fieldName: string,
+  expectedPrefix: string,
+): Promise<void> {
+  const resolved = assertRelativeBundlePath(pluginRoot, relativePath, fieldName, expectedPrefix);
+  if (!(await fs.pathExists(resolved))) {
+    throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
+  }
+  const content = await assertJsonObjectFile(resolved, fieldName);
+  if (!content.mcpServers || typeof content.mcpServers !== 'object' || Array.isArray(content.mcpServers)) {
+    throw new Error(`Invalid ${fieldName}: expected top-level "mcpServers" object.`);
+  }
+}
+
+async function assertAppsArtifact(
+  pluginRoot: string,
+  relativePath: string,
+  fieldName: string,
+  expectedPrefix: string,
+): Promise<void> {
+  const resolved = assertRelativeBundlePath(pluginRoot, relativePath, fieldName, expectedPrefix);
+  if (!(await fs.pathExists(resolved))) {
+    throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
+  }
+  const content = await assertJsonObjectFile(resolved, fieldName);
+  if (!content.apps || typeof content.apps !== 'object' || Array.isArray(content.apps)) {
+    throw new Error(`Invalid ${fieldName}: expected top-level "apps" object.`);
+  }
+
+  for (const [name, app] of Object.entries(content.apps as Record<string, unknown>)) {
+    if (!app || typeof app !== 'object' || Array.isArray(app)) {
+      throw new Error(`Invalid ${fieldName}.apps.${name}: expected an object.`);
+    }
+    const id = (app as Record<string, unknown>).id;
+    if (typeof id !== 'string' || id.trim() === '') {
+      throw new Error(`Invalid ${fieldName}.apps.${name}.id: expected a non-empty string.`);
+    }
+  }
+}
+
+async function assertClaudeHooksArtifact(
+  pluginRoot: string,
+  relativePath: string,
+): Promise<void> {
+  const resolved = assertRelativeBundlePath(pluginRoot, relativePath, 'claude.hooks', './claude/');
+  if (!(await fs.pathExists(resolved))) {
+    throw new Error(`Invalid claude.hooks: "${relativePath}" does not exist in bundle.`);
+  }
+  const content = await assertJsonObjectFile(resolved, 'claude.hooks');
+  if (!content.hooks || typeof content.hooks !== 'object' || Array.isArray(content.hooks)) {
+    throw new Error('Invalid claude.hooks: expected top-level "hooks" object.');
+  }
+}
+
 async function validateClaudeManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
@@ -71,10 +143,10 @@ async function validateClaudeManifest(
     if (typeof manifest.hooks !== 'string') {
       throw new Error('Invalid claude.hooks: expected a bundle-local path string.');
     }
-    await assertBundlePathExists(pluginRoot, manifest.hooks, 'claude.hooks', './claude/');
+    await assertClaudeHooksArtifact(pluginRoot, manifest.hooks);
   }
   if (manifest.mcpServers) {
-    await assertBundlePathExists(pluginRoot, manifest.mcpServers, 'claude.mcpServers', './claude/');
+    await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'claude.mcpServers', './claude/');
   }
   if (manifest.outputStyles) {
     await assertBundlePathExists(
@@ -125,10 +197,10 @@ async function validateCodexManifest(
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');
   }
   if (manifest.mcpServers) {
-    await assertBundlePathExists(pluginRoot, manifest.mcpServers, 'codex.mcpServers', './codex/');
+    await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'codex.mcpServers', './codex/');
   }
   if (manifest.apps) {
-    await assertBundlePathExists(pluginRoot, manifest.apps, 'codex.apps', './codex/');
+    await assertAppsArtifact(pluginRoot, manifest.apps, 'codex.apps', './codex/');
   }
 }
 

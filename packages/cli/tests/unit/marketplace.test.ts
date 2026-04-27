@@ -66,4 +66,47 @@ describe('marketplace bundle', () => {
 
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
+
+  it('rejects rendered native assets and hooks with invalid bundle semantics', async () => {
+    const repoRoot = await makeTempRepo();
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const claudeManifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    const codexManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+
+    const codexManifest = await fs.readJson(codexManifestPath);
+    codexManifest.apps = './codex/.app.json';
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+    await fs.writeJson(path.join(pluginRoot, 'codex', '.app.json'), {
+      apps: {
+        dashboard: {},
+      },
+    }, { spaces: 2 });
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'codex.apps.apps.dashboard.id',
+    );
+
+    delete codexManifest.apps;
+    codexManifest.mcpServers = './codex/.mcp.json';
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+    await fs.writeJson(path.join(pluginRoot, 'codex', '.mcp.json'), {
+      mcpServers: [],
+    }, { spaces: 2 });
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'expected top-level "mcpServers" object',
+    );
+
+    delete codexManifest.mcpServers;
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+    const claudeManifest = await fs.readJson(claudeManifestPath);
+    claudeManifest.hooks = './claude/hooks/hooks.json';
+    await fs.writeJson(claudeManifestPath, claudeManifest, { spaces: 2 });
+    await fs.writeJson(path.join(pluginRoot, 'claude', 'hooks', 'hooks.json'), {
+      hooks: [],
+    }, { spaces: 2 });
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'expected top-level "hooks" object',
+    );
+  });
 });

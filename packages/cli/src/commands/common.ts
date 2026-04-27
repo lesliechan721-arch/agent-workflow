@@ -69,7 +69,7 @@ function createHistoricalExtensionKinds(
       : undefined,
     hooks: kinds.has('hook')
       ? [{
-          event: 'command',
+          event: 'session_start',
           command: 'true',
         }]
       : undefined,

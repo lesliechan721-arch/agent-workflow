@@ -79,16 +79,14 @@
 
 ### 命令模式语法
 
-- 精确匹配：`"git status"`
-- 前缀通配：`"git *"`
-- 允许所有 git 子命令：`"git diff"`, `"git log"` 逐一列出或 `"git *"` 通配
+公共层只接受普通空格分隔的命令 token 前缀，例如 `"git status"`、`"git commit"`、`"git push --force"`。该语义是 token 级前缀匹配：`"git status"` 会覆盖 `git status --short`。`"git *"`、引号和转义当前不属于公共 contract，manifest 读取阶段会直接拒绝。
 
 ### 平台生成行为
 
 | 平台 | 输出 | 格式 |
 |------|------|------|
-| Claude | 合并到 `settings.awGenerated.permissions` | allow/ask/deny 数组去重合并 |
-| Codex | `rules/aw-<plugin>-<name>.rules` | `allow <pattern>` / `ask <pattern>` / `deny <pattern>` |
+| Claude | 合并到 `settings.awGenerated.permissions` | `Bash(<token prefix>)` 这类带工具作用域的原生规则 |
+| Codex | `rules/aw-<plugin>-<name>.rules` | `prefix_rule(pattern = [...], decision = "...")` |
 
 ### 示例
 
@@ -114,7 +112,6 @@
 | `event` | string | 是 | 事件类型（见下方事件列表） |
 | `matcher` | string | 否 | 事件匹配模式，缩小触发范围 |
 | `command` | string | 是 | 触发时执行的 shell 命令 |
-| `description` | string | 否 | 人类可读说明 |
 | `agentOverrides` | object | 否 | 平台特定覆盖 |
 
 ### 事件类型
@@ -125,14 +122,15 @@
 | `after_tool` | 工具使用后 | 匹配工具名称 |
 | `session_start` | 会话开始 | — |
 | `session_stop` | 会话结束 | — |
-| `command` | 命令执行时 | 匹配命令模式 |
+
+`command` 已从公共 hook contract 移除；需要命令级控制时，请使用 permissions。
 
 ### 平台生成行为
 
 | 平台 | 输出 | 说明 |
 |------|------|------|
-| Claude | `hooks/hooks.json` | 事件名映射：`before_tool` → `beforeToolUse`、`after_tool` → `afterToolUse`、`session_start` → `sessionStart`、`session_stop` → `sessionStop`、`command` → `command` |
-| Codex | `hooks.json` | 只聚合 `event: "command"` 的 hook，其他事件类型不写入 |
+| Claude | `hooks/hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart/SessionEnd: [...] } }` |
+| Codex | `hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart/Stop: [...] } }` |
 
 ### 示例
 
@@ -140,16 +138,14 @@
 {
   "event": "before_tool",
   "matcher": "Write",
-  "command": "echo 'File write detected'",
-  "description": "在文件写入前打印提示"
+  "command": "echo 'File write detected'"
 }
 ```
 
 ```json
 {
   "event": "session_start",
-  "command": "cat .project-context.md 2>/dev/null || true",
-  "description": "会话开始时加载项目上下文"
+  "command": "cat .project-context.md 2>/dev/null || true"
 }
 ```
 

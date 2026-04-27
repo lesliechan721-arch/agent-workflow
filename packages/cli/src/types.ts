@@ -107,19 +107,16 @@ export type HookEvent =
   | 'before_tool'
   | 'after_tool'
   | 'session_start'
-  | 'session_stop'
-  | 'command';
+  | 'session_stop';
 
 export interface HookDefinition {
   event: HookEvent;
   matcher?: string;
   command: string;
-  description?: string;
   agentOverrides?: PlatformAgentOverrides<{
     event: HookEvent;
     matcher?: string;
     command: string;
-    description?: string;
   }>;
 }
 
@@ -197,17 +194,22 @@ export interface PlatformPluginManifest {
   channels?: Record<string, unknown> | Array<Record<string, unknown>>;
 }
 
-export interface CodexHookCommand {
-  matcher: string;
+export interface CodexHookHandler {
+  type: 'command';
   command: string;
-  description?: string;
+}
+
+export interface CodexHookGroup {
+  event: string;
+  matcher: string;
+  hooks: CodexHookHandler[];
 }
 
 export interface GeneratedArtifact {
   path: string;
   kind: 'instruction' | 'permission' | 'hook' | 'agent';
   platform: PlatformName;
-  hookCommands?: CodexHookCommand[];
+  hookGroups?: CodexHookGroup[];
 }
 
 export interface TrackingPluginRecord {

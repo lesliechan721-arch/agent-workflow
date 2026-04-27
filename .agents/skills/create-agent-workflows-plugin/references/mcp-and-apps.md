@@ -157,14 +157,13 @@ plugins/<name>/
 {
   "apps": {
     "<app-name>": {
-      "url": "<app-url>",
-      "description": "<app-description>"
+      "id": "<connector-id>"
     }
   }
 }
 ```
 
-顶层必须有 `apps` 键。Apps 主要用于 Codex 平台的应用集成，向 ChatGPT Apps SDK 暴露 Web UI 和工具。
+顶层必须有 `apps` 键；渲染后的最终产物还要求每个 `apps.*.id` 都是非空字符串。Codex loader 当前消费的是 connector id，`url` / `description` 不是当前公共 contract 的有效字段。
 
 ### 示例
 
@@ -172,8 +171,7 @@ plugins/<name>/
 {
   "apps": {
     "dashboard": {
-      "url": "https://dashboard.example.com",
-      "description": "项目仪表盘"
+      "id": "dashboard-connector"
     }
   }
 }
@@ -200,5 +198,5 @@ plugins/<name>/
 - `.mcp.json` 和 `.app.json` 是独立的 JSON 文件，不嵌入 `plugin.json`
 - 文件存在时必须在 manifest 中声明对应字段，反之亦然
 - 路径字段只能是单个字符串，不能是数组或对象
-- 脚手架脚本支持 `--with-mcp` 和 `--with-apps` 标志生成存根文件
-- `.mcp.json` 和 `.app.json` 作为 JSON 文件支持模板渲染（`{{var}}`），可按平台生成不同配置。需在 `buildConfig.templates` 中配置，详见 `references/build-config-spec.md`
+- 脚手架脚本支持 `--with-mcp` 和 `--with-apps` 标志；`--with-apps` 会生成带示例 connector id 的最小文件，作者需要替换成真实 id
+- `.mcp.json` 和 `.app.json` 作为模板化 JSON 原生资产走同一套规则：命中 `buildConfig.templates` 时源码层不强制 raw JSON 可解析，最终渲染产物必须分别满足 `mcpServers` 对象和 `apps.*.id` 非空字符串。详见 `references/build-config-spec.md`

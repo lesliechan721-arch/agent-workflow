@@ -1,4 +1,4 @@
-import type { CodexHookCommand, HookDefinition, PlatformName } from '../types.js';
+import type { CodexHookGroup, HookDefinition, PlatformName } from '../types.js';
 
 export interface RenderedHooksArtifact {
   relativePath: string;
@@ -10,32 +10,54 @@ export interface CodexHookBundle {
   hooks: HookDefinition[];
 }
 
-function compareCodexHookCommands(
-  left: CodexHookCommand,
-  right: CodexHookCommand,
+function compareCodexHookGroups(
+  left: CodexHookGroup,
+  right: CodexHookGroup,
 ): number {
   return (
+    left.event.localeCompare(right.event) ||
     left.matcher.localeCompare(right.matcher) ||
-    left.command.localeCompare(right.command) ||
-    (left.description ?? '').localeCompare(right.description ?? '')
+    JSON.stringify(left.hooks).localeCompare(JSON.stringify(right.hooks))
   );
 }
 
-function renderClaudeEventName(event: HookDefinition['event']): string {
+function renderNativeEventName(event: HookDefinition['event'], platform: PlatformName): string {
   switch (event) {
     case 'before_tool':
-      return 'beforeToolUse';
+      return 'PreToolUse';
     case 'after_tool':
-      return 'afterToolUse';
+      return 'PostToolUse';
     case 'session_start':
-      return 'sessionStart';
+      return 'SessionStart';
     case 'session_stop':
-      return 'sessionStop';
-    case 'command':
-      return 'command';
+      return platform === 'claude' ? 'SessionEnd' : 'Stop';
     default:
       return event;
   }
+}
+
+function renderHookGroups(
+  hooks: HookDefinition[],
+  platform: PlatformName,
+): Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> {
+  const groups: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+  for (const hook of hooks) {
+    const event = renderNativeEventName(hook.event, platform);
+    groups[event] ??= [];
+    groups[event].push({
+      matcher: hook.matcher ?? '*',
+      hooks: [{ type: 'command', command: hook.command }],
+    });
+  }
+
+  for (const event of Object.keys(groups)) {
+    groups[event].sort((left, right) =>
+      (left.matcher ?? '').localeCompare(right.matcher ?? '') ||
+      JSON.stringify(left.hooks).localeCompare(JSON.stringify(right.hooks)),
+    );
+  }
+
+  return groups;
 }
 
 export function renderHooksArtifact(
@@ -53,49 +75,50 @@ export function renderHooksArtifact(
   return {
     relativePath: 'hooks/hooks.json',
     content: {
-      hooks: hooks.map((hook) => ({
-        event: renderClaudeEventName(hook.event),
-        matcher: hook.matcher ?? '*',
-        command: hook.command,
-        description: hook.description,
-      })),
+      hooks: renderHookGroups(hooks, 'claude'),
     },
   };
 }
 
-export function extractCodexHookCommands(hooks: HookDefinition[]): CodexHookCommand[] {
+export function extractCodexHookGroups(hooks: HookDefinition[]): CodexHookGroup[] {
   return hooks
-    .filter((hook) => hook.event === 'command')
     .map((hook) => ({
+      event: renderNativeEventName(hook.event, 'codex'),
       matcher: hook.matcher ?? '*',
-      command: hook.command,
-      description: hook.description,
+      hooks: [{ type: 'command', command: hook.command }],
     }));
 }
 
-export function renderCodexHookCommands(
-  commands: CodexHookCommand[],
+export function renderCodexHookGroups(
+  groups: CodexHookGroup[],
 ): RenderedHooksArtifact | null {
-  if (commands.length === 0) {
+  if (groups.length === 0) {
     return null;
+  }
+
+  const hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+  for (const group of [...groups].sort(compareCodexHookGroups)) {
+    hooks[group.event] ??= [];
+    hooks[group.event].push({
+      matcher: group.matcher,
+      hooks: group.hooks,
+    });
   }
 
   return {
     relativePath: 'hooks.json',
-    content: {
-      commands: [...commands].sort(compareCodexHookCommands),
-    },
+    content: { hooks },
   };
 }
 
 export function renderCodexHooks(
   bundles: CodexHookBundle[],
 ): RenderedHooksArtifact | null {
-  return renderCodexHookCommands(
+  return renderCodexHookGroups(
     bundles
     .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
     .flatMap((bundle) =>
-      extractCodexHookCommands(bundle.hooks),
+      extractCodexHookGroups(bundle.hooks),
     ),
   );
 }

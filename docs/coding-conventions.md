@@ -18,5 +18,5 @@ TypeScript + ESM，2 空格缩进，NodeNext 导入风格，本地模块导入�
 - **`TrackingManifest`**（写入 `.agent-workflows-manifest.json`）— 版本化记录每个插件的生成产物清单，供 uninstall/upgrade 做精确清理
 - **`InstalledLedger`**（写入 `~/.aw/installed.json`）— 区分 Claude / Codex、user / project scope 的安装状态账本，包含 capability snapshot 和 `LedgerState`（available / degraded）
 - **`CatalogCompatibility`** — `'current' | 'missing' | 'capabilityChanged'`，判定 plugin 是否需要重新安装
-- **`HookEvent`** — `'before_tool' | 'after_tool' | 'session_start' | 'session_stop' | 'command'`
+- **`HookEvent`** — `'before_tool' | 'after_tool' | 'session_start' | 'session_stop'`；`command` 不属于公共 hook contract
 - **Extensions 类型**：`InstructionDefinition`、`PermissionDefinition`、`HookDefinition`（含 `event`/`matcher`/`command`）、`AgentDefinition`

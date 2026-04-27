@@ -218,4 +218,26 @@ describe('CodexAdapter', () => {
     await expect(fs.pathExists(agentArtifact!.path)).resolves.toBe(false);
     await expect(fs.pathExists(hookArtifact!.path)).resolves.toBe(false);
   });
+
+  it('reports Codex hook drift when the shared hooks file loses this plugin handlers', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    await fs.writeJson(paths.hooksPath, {
+      hooks: {
+        PreToolUse: [],
+      },
+    }, { spaces: 2 });
+
+    const status = await adapter.status(plugin, 'project');
+
+    expect(status.plugins[0].repoManagedSessionState?.hooks).toBe('absent');
+    expect(status.plugins[0].driftWarnings).toContain(
+      'Codex hooks artifact 中缺少当前插件声明的 hook handlers。',
+    );
+  });
 });

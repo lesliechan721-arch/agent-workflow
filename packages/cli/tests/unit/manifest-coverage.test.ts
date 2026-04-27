@@ -107,14 +107,13 @@ describe('manifest coverage', () => {
         ],
         hooks: [
           {
-            event: 'command',
+            event: 'session_start',
             command: 'echo base hook',
             agentOverrides: {
               codex: {
                 event: 'before_tool',
-                matcher: 'git *',
+                matcher: 'Bash',
                 command: 'echo codex hook',
-                description: 'Codex hook override',
               },
             },
           },
@@ -248,13 +247,11 @@ describe('manifest coverage', () => {
     });
     expect(manifest.extensions?.hooks?.[0]).toMatchObject({
       matcher: undefined,
-      description: undefined,
       agentOverrides: {
         codex: {
           event: 'before_tool',
-          matcher: 'git *',
+          matcher: 'Bash',
           command: 'echo codex hook',
-          description: 'Codex hook override',
         },
       },
     });

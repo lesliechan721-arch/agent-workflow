@@ -307,10 +307,9 @@ async function addHookOnlyPlugin(repoRoot: string): Promise<void> {
       extensions: {
         hooks: [
           {
-            event: 'command',
-            matcher: 'npm *',
+            event: 'before_tool',
+            matcher: 'Bash',
             command: 'echo npm hook',
-            description: '观察 npm 命令',
           },
         ],
       },
@@ -1082,16 +1081,18 @@ describe('CLI integration', () => {
     );
 
     await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toMatchObject({
-      commands: expect.arrayContaining([
-        expect.objectContaining({
-          matcher: 'git *',
-          command: 'echo git hook',
-        }),
-        expect.objectContaining({
-          matcher: 'npm *',
-          command: 'echo npm hook',
-        }),
+      hooks: {
+        PreToolUse: expect.arrayContaining([
+          expect.objectContaining({
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          }),
+          expect.objectContaining({
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo npm hook' }],
+          }),
       ]),
+      },
     });
 
     await fs.remove(path.join(repoRoot, 'plugins', 'npm-guard'));
@@ -1109,13 +1110,14 @@ describe('CLI integration', () => {
     );
 
     await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
-      commands: [
-        {
-          matcher: 'npm *',
-          command: 'echo npm hook',
-          description: '观察 npm 命令',
-        },
-      ],
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo npm hook' }],
+          },
+        ],
+      },
     });
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
       plugins: {
@@ -1164,13 +1166,14 @@ describe('CLI integration', () => {
     );
 
     await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
-      commands: [
-        {
-          matcher: 'npm *',
-          command: 'echo npm hook',
-          description: '观察 npm 命令',
-        },
-      ],
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo npm hook' }],
+          },
+        ],
+      },
     });
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
       plugins: {

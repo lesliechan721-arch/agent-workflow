@@ -50,4 +50,4 @@ code-review/
 
 **Codex bundle 不包含**：commands/、output-styles/、userConfig、extensions 衍生产物（均在安装时生成）
 
-**Codex 安装时生成的 repo-managed artifacts**：instructions managed blocks、permissions rules files、hooks.json（仅 command 类型 hook，before_tool 被 agentOverrides 排除）、agents .toml
+**Codex 安装时生成的 repo-managed artifacts**：instructions managed blocks、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（只包含目标平台生效的公共 hook 条目）、agents .toml
