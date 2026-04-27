@@ -144,6 +144,19 @@ describe('manifest utils', () => {
     ).rejects.toThrow('found skills but missing "skills" declaration');
   });
 
+  it('rejects declared native asset paths that do not exist', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skills = './missing-skills';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'skills points to "./missing-skills" but path does not exist',
+    );
+  });
+
   it('rejects undeclared default MCP manifest', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

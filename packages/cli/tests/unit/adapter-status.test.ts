@@ -16,6 +16,17 @@ import {
   requiresNativePlugin,
   resolveCodexCatalogCompatibility,
 } from '../../src/adapters/codex.js';
+import { loadPluginTargetsForCommand } from '../../src/commands/common.js';
+import {
+  createAvailableLedger,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
+import {
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
+import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type { PluginMeta } from '../../src/types.js';
 
 const tempDirs: string[] = [];
@@ -42,10 +53,102 @@ function makePluginMeta(overrides: Partial<PluginMeta['manifest']>): PluginMeta 
 }
 
 afterEach(async () => {
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('adapter status helpers', () => {
+  async function makeEmptyEmbeddedRoot(root: string): Promise<string> {
+    const embeddedRoot = path.join(root, 'embedded');
+    await fs.ensureDir(path.join(embeddedRoot, '.claude-plugin'));
+    await fs.ensureDir(path.join(embeddedRoot, '.agents', 'plugins'));
+    await fs.ensureDir(path.join(embeddedRoot, 'plugins'));
+    const marketplace = {
+      name: 'aw',
+      owner: {
+        name: 'Test',
+        url: 'https://example.test',
+      },
+      interface: {
+        displayName: 'Test',
+      },
+      plugins: [],
+    };
+
+    await fs.writeJson(path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'), marketplace, { spaces: 2 });
+    await fs.writeJson(
+      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
+      marketplace,
+      { spaces: 2 },
+    );
+    return embeddedRoot;
+  }
+
+  it('keeps historical fallback extension placeholders scoped to their original platform', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-historical-status-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          'history-only': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              claude: {
+                projectScopes: {
+                  [claudeProjectKey]: {
+                    managed: true,
+                    updatedAt: '2026-04-25T00:00:00.000Z',
+                    resolvedVersion: '0.1.0',
+                    capabilitySnapshot: {
+                      managedExtensions: ['permissions'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+    await upsertTrackingRecord(
+      resolveClaudePaths(repoRoot, 'project', env).trackingDir,
+      'history-only',
+      [
+        {
+          path: path.join(repoRoot, '.claude', 'rules', 'history-only.md'),
+          kind: 'permission',
+          platform: 'claude',
+        },
+      ],
+    );
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['history-only'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.plugin.manifest.extensions?.permissions).toHaveLength(1);
+    expect(hasRepoManagedArtifacts(target.plugin)).toBe(false);
+  });
+
   it('resolves Claude runtime and native fallback evidence with scope-sensitive project matching', async () => {
     const installLocation = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-runtime-'));
     tempDirs.push(installLocation);

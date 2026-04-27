@@ -7,7 +7,12 @@ import { parseTOML } from 'toml-eslint-parser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { generateAgentArtifacts } from '../../src/generators/agents.js';
+import { renderHooksArtifact } from '../../src/generators/hooks.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
+import {
+  generateCodexPermissionArtifacts,
+  mergeClaudePermissions,
+} from '../../src/generators/permissions.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 
 const tempDirs: string[] = [];
@@ -100,5 +105,64 @@ describe('local-plugin generator', () => {
     expect(codexArtifact.content).toContain('description = "检查提交范围和信息是否匹配。');
     expect(codexArtifact.content).toContain('developer_instructions =');
     expect(codexArtifact.content).not.toContain('tools =');
+  });
+
+  it('renders hook event mappings for Claude and Codex runtime contracts', () => {
+    const claudeArtifact = renderHooksArtifact([
+      {
+        event: 'session_stop',
+        command: 'echo done',
+      },
+    ], 'claude');
+    const codexArtifact = renderHooksArtifact([
+      {
+        event: 'session_stop',
+        command: 'echo done',
+      },
+    ], 'codex');
+
+    expect(claudeArtifact?.content).toEqual({
+      hooks: {
+        SessionEnd: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo done' }],
+          },
+        ],
+      },
+    });
+    expect(codexArtifact?.content).toEqual({
+      hooks: {
+        Stop: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo done' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('renders permissions into platform-native allow, prompt, and forbidden rules', () => {
+    const permissions = [
+      {
+        name: 'git-ops',
+        allow: ['git status'],
+        ask: ['git commit'],
+        deny: ['git push'],
+      },
+    ];
+
+    expect(mergeClaudePermissions(permissions)).toEqual({
+      allow: ['Bash(git status)'],
+      ask: ['Bash(git commit)'],
+      deny: ['Bash(git push)'],
+    });
+    expect(generateCodexPermissionArtifacts('git-commit', permissions)[0].content).toContain(
+      'prefix_rule(pattern = ["git","push"], decision = "forbidden")',
+    );
+    expect(generateCodexPermissionArtifacts('git-commit', permissions)[0].content).toContain(
+      'prefix_rule(pattern = ["git","commit"], decision = "prompt")',
+    );
   });
 });

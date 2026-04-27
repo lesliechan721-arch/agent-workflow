@@ -749,6 +749,29 @@ async function validateDeclaredNativeAssets(
   );
 }
 
+async function validateDeclaredAssetPathsExist(
+  pluginRoot: string,
+  manifest: PluginManifestSource,
+): Promise<void> {
+  const declaredAssets = ['skills', 'mcpServers', 'apps'] as const;
+
+  await Promise.all(
+    declaredAssets.map(async (field) => {
+      const relativePath = manifest[field];
+      if (!relativePath) {
+        return;
+      }
+
+      const absolutePath = path.join(pluginRoot, stripDotSlash(relativePath));
+      if (!(await fs.pathExists(absolutePath))) {
+        throw new Error(
+          `Invalid plugin manifest: ${field} points to "${relativePath}" but path does not exist.`,
+        );
+      }
+    }),
+  );
+}
+
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
@@ -802,6 +825,7 @@ export async function validateSourcePluginManifest(
 ): Promise<PluginManifestSource> {
   const manifest = validatePluginManifest(pluginRoot, rawManifest);
   await validateDeclaredNativeAssets(pluginRoot, manifest);
+  await validateDeclaredAssetPathsExist(pluginRoot, manifest);
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),

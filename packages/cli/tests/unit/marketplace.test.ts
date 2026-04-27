@@ -108,5 +108,23 @@ describe('marketplace bundle', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
       'expected top-level "hooks" object',
     );
+
+    await fs.writeJson(path.join(pluginRoot, 'claude', 'hooks', 'hooks.json'), {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                command: 'echo missing type',
+              },
+            ],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'claude.hooks.PreToolUse[0].hooks[0].type',
+    );
   });
 });

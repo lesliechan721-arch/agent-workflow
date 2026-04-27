@@ -3,12 +3,16 @@ import chalk from 'chalk';
 import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import type {
+  AgentDefinition,
   CommandAction,
   EnvironmentDetection,
+  HookDefinition,
+  InstructionDefinition,
   PlatformAdapter,
   PlatformName,
   PlatformSelection,
   PluginMeta,
+  PermissionDefinition,
   PluginStatusReport,
   Scope,
   StatusReport,
@@ -44,41 +48,55 @@ export interface ResolvedPluginTarget {
   source: 'currentCatalog' | 'historical';
 }
 
+type HistoricalExtensionKind = 'instruction' | 'permission' | 'hook' | 'agent';
+type HistoricalExtensionKindsByPlatform = Record<PlatformName, Set<HistoricalExtensionKind>>;
+
 function createHistoricalExtensionKinds(
-  kinds: Set<'instruction' | 'permission' | 'hook' | 'agent'>,
+  kindsByPlatform: HistoricalExtensionKindsByPlatform,
 ): PluginMeta['manifest']['extensions'] | undefined {
-  if (kinds.size === 0) {
+  const hasKind = (kind: HistoricalExtensionKind): boolean =>
+    kindsByPlatform.claude.has(kind) || kindsByPlatform.codex.has(kind);
+  const platformOverrides = (kind: HistoricalExtensionKind) => ({
+    claude: kindsByPlatform.claude.has(kind) ? undefined : null,
+    codex: kindsByPlatform.codex.has(kind) ? undefined : null,
+  });
+
+  if (!Object.values(kindsByPlatform).some((kinds) => kinds.size > 0)) {
     return undefined;
   }
 
   return {
-    instructions: kinds.has('instruction')
+    instructions: hasKind('instruction')
       ? [{
           name: 'historical-instruction',
           title: 'Historical Instruction',
           content: 'Historical managed instruction placeholder.',
+          agentOverrides: platformOverrides('instruction') as InstructionDefinition['agentOverrides'],
         }]
       : undefined,
-    permissions: kinds.has('permission')
+    permissions: hasKind('permission')
       ? [{
           name: 'historical-permission',
           allow: [],
           ask: [],
           deny: [],
+          agentOverrides: platformOverrides('permission') as PermissionDefinition['agentOverrides'],
         }]
       : undefined,
-    hooks: kinds.has('hook')
+    hooks: hasKind('hook')
       ? [{
           event: 'session_start',
           command: 'true',
+          agentOverrides: platformOverrides('hook') as HookDefinition['agentOverrides'],
         }]
       : undefined,
-    agents: kinds.has('agent')
+    agents: hasKind('agent')
       ? [{
           name: 'historical-agent',
           description: 'Historical agent placeholder.',
           prompt: 'Historical agent placeholder.',
           tools: [],
+          agentOverrides: platformOverrides('agent') as AgentDefinition['agentOverrides'],
         }]
       : undefined,
   };
@@ -97,7 +115,10 @@ async function createHistoricalPluginMeta(
     resolveCodexProjectKey(cwd),
   ]);
 
-  const trackedKinds = new Set<'instruction' | 'permission' | 'hook' | 'agent'>();
+  const trackedKindsByPlatform: HistoricalExtensionKindsByPlatform = {
+    claude: new Set(),
+    codex: new Set(),
+  };
   const [claudeTracking, codexTracking] = await Promise.all([
     readTrackingManifest(resolveClaudePaths(cwd, scope, env).trackingDir),
     readTrackingManifest(resolveCodexPaths(cwd, scope, env).trackingDir),
@@ -106,7 +127,7 @@ async function createHistoricalPluginMeta(
   for (const manifest of [claudeTracking, codexTracking]) {
     const record = getTrackingRecord(manifest, pluginName);
     for (const artifact of record?.artifacts ?? []) {
-      trackedKinds.add(artifact.kind);
+      trackedKindsByPlatform[artifact.platform].add(artifact.kind);
     }
   }
 
@@ -115,10 +136,10 @@ async function createHistoricalPluginMeta(
       ? pluginRecord?.platforms.claude?.userScope
       : pluginRecord?.platforms.claude?.projectScopes?.[claudeProjectKey];
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('instructions')) {
-    trackedKinds.add('instruction');
+    trackedKindsByPlatform.claude.add('instruction');
   }
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('permissions')) {
-    trackedKinds.add('permission');
+    trackedKindsByPlatform.claude.add('permission');
   }
 
   const codexScopeRecord =
@@ -142,7 +163,7 @@ async function createHistoricalPluginMeta(
           authentication: 'NONE',
         },
       },
-      extensions: createHistoricalExtensionKinds(trackedKinds),
+      extensions: createHistoricalExtensionKinds(trackedKindsByPlatform),
     },
   };
 }

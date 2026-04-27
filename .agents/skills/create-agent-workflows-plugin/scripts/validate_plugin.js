@@ -283,11 +283,11 @@ async function validatePluginDir(pluginDir) {
       'CLI 未构建（packages/cli/dist/ 不存在），仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',
     );
     validateManifestLightweight(manifest);
+    validateDeclaredPathsExist(pluginDir, manifest);
   }
 
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
-  validateDeclaredPathsExist(pluginDir, manifest);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);

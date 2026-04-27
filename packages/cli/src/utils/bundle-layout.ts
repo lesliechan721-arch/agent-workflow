@@ -127,6 +127,42 @@ async function assertClaudeHooksArtifact(
   if (!content.hooks || typeof content.hooks !== 'object' || Array.isArray(content.hooks)) {
     throw new Error('Invalid claude.hooks: expected top-level "hooks" object.');
   }
+
+  for (const [eventName, groups] of Object.entries(content.hooks as Record<string, unknown>)) {
+    if (!Array.isArray(groups)) {
+      throw new Error(`Invalid claude.hooks.${eventName}: expected an array of hook groups.`);
+    }
+
+    for (const [groupIndex, group] of groups.entries()) {
+      const groupField = `claude.hooks.${eventName}[${groupIndex}]`;
+      if (!group || typeof group !== 'object' || Array.isArray(group)) {
+        throw new Error(`Invalid ${groupField}: expected an object.`);
+      }
+
+      const groupRecord = group as Record<string, unknown>;
+      if (groupRecord.matcher !== undefined && typeof groupRecord.matcher !== 'string') {
+        throw new Error(`Invalid ${groupField}.matcher: expected a string.`);
+      }
+      if (!Array.isArray(groupRecord.hooks)) {
+        throw new Error(`Invalid ${groupField}.hooks: expected an array.`);
+      }
+
+      for (const [handlerIndex, handler] of groupRecord.hooks.entries()) {
+        const handlerField = `${groupField}.hooks[${handlerIndex}]`;
+        if (!handler || typeof handler !== 'object' || Array.isArray(handler)) {
+          throw new Error(`Invalid ${handlerField}: expected an object.`);
+        }
+
+        const handlerRecord = handler as Record<string, unknown>;
+        if (handlerRecord.type !== 'command') {
+          throw new Error(`Invalid ${handlerField}.type: expected "command".`);
+        }
+        if (typeof handlerRecord.command !== 'string' || handlerRecord.command.trim() === '') {
+          throw new Error(`Invalid ${handlerField}.command: expected a non-empty string.`);
+        }
+      }
+    }
+  }
 }
 
 async function validateClaudeManifest(
