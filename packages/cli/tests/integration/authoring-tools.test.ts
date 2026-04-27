@@ -148,7 +148,7 @@ describe('authoring tools', () => {
     );
     expect(skillMdContent).toContain('user-invocable: true');
     expect(skillMdContent).toContain('disable-model-invocation: true');
-    expect(skillMdContent).toContain('metadata:\n  short-description: 手动触发这个 skill，执行仓库检查工作流');
+    expect(skillMdContent).toContain('metadata:\n  short-description: "手动触发这个 skill，执行仓库检查工作流"');
     await expect(
       fs.pathExists(
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
@@ -235,8 +235,8 @@ describe('authoring tools', () => {
       'utf8',
     );
     expect(skillMdContent).toContain('name: repo-diagnose');
-    expect(skillMdContent).toContain('description: 检查仓库状态并输出诊断结论');
-    expect(skillMdContent).toContain('metadata:\n  short-description: 检查仓库状态并输出诊断结论');
+    expect(skillMdContent).toContain('description: "检查仓库状态并输出诊断结论"');
+    expect(skillMdContent).toContain('metadata:\n  short-description: "检查仓库状态并输出诊断结论"');
 
     const openaiYamlContent = await fs.readFile(
       path.join(
@@ -257,6 +257,95 @@ describe('authoring tools', () => {
     );
     expect(openaiYamlContent).not.toContain('display_name: "Automation Suite"');
     expect(openaiYamlContent).not.toContain('short_description: "自动化插件集合"');
+  });
+
+  it('scaffolds YAML-safe skill metadata when descriptions contain quotes and colons', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-yaml-'));
+    tempDirs.push(tempRoot);
+
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+
+    const initScriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'init_plugin.js',
+    );
+    const validateScriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+
+    await execFileAsync(
+      'node',
+      [
+        initScriptPath,
+        'repo-audit',
+        '--description',
+        'Summarize "repo" state: quick view',
+        '--display-name',
+        'Quote "Test"',
+        '--short-description',
+        'Summarize "repo" state: quick view',
+        '--skill-description',
+        'Check "repo" state: produce report',
+        '--repo-root',
+        tempRepo,
+      ],
+      {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    const pluginDir = path.join(tempRepo, 'plugins', 'repo-audit');
+    const skillMdPath = path.join(pluginDir, 'skills', 'repo-audit', 'SKILL.md');
+    const openaiYamlPath = path.join(pluginDir, 'skills', 'repo-audit', 'agents', 'openai.yaml');
+
+    const skillMdContent = await fs.readFile(skillMdPath, 'utf8');
+    expect(skillMdContent).toContain('description: "Check \\"repo\\" state: produce report"');
+    expect(skillMdContent).toContain(
+      'metadata:\n  short-description: "Check \\"repo\\" state: produce report"',
+    );
+
+    const openaiYamlContent = await fs.readFile(openaiYamlPath, 'utf8');
+    expect(openaiYamlContent).toContain('display_name: "Repo Audit"');
+    expect(openaiYamlContent).toContain(
+      'short_description: "Check \\"repo\\" state: produce report"',
+    );
+    expect(openaiYamlContent).toContain(
+      'default_prompt: "Use $repo-audit to check \\"repo\\" state: produce report."',
+    );
+
+    await fs.writeFile(
+      skillMdPath,
+      skillMdContent
+        .replace('[TODO: 写清楚这个插件实际要完成的工作流]', '检查仓库状态。')
+        .replace('[TODO: 第一步]', '收集状态')
+        .replace('[TODO: 第二步]', '分析风险')
+        .replace('[TODO: 第三步]', '输出报告')
+        .replace('[TODO: 不要扩大修改范围]', '不要扩大修改范围')
+        .replace('[TODO: 遇到高风险操作时先停下来说明]', '遇到高风险操作时先停下来说明'),
+      'utf8',
+    );
+
+    await expect(
+      execFileAsync('node', [validateScriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
   });
 
   it('keeps authoring docs aligned with the build-bundle model', async () => {
@@ -293,6 +382,10 @@ describe('authoring tools', () => {
     expect(skillDoc).not.toContain('唯一必需的文件始终只有 `.agents-plugin/plugin.json`');
     expect(skillDoc).not.toContain('同步 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json`');
     expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
+    expect(skillDoc).toContain(
+      '场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md`',
+    );
+    expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
 
     expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
     expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
@@ -452,6 +545,28 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('invalid YAML frontmatter'),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
+      [
+        '---',
+        'name: metadata-test',
+        'description: Check "repo" state: produce report',
+        '---',
+        '',
+        '# Metadata Test',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('plain scalar values containing ": " must be quoted'),
     });
   });
 

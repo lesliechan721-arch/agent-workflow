@@ -69,6 +69,10 @@ function parseYamlScalar(rawValue, sourceName, lineNo) {
     }
   }
 
+  if (/:($|\s)/.test(value)) {
+    throw new Error(`${sourceName}:${lineNo}: plain scalar values containing ": " must be quoted`);
+  }
+
   return value;
 }
 

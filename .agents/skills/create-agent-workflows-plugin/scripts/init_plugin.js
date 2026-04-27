@@ -38,6 +38,10 @@ function writeJson(filePath, content) {
   fs.writeFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
 }
 
+function yamlString(value) {
+  return JSON.stringify(String(value));
+}
+
 function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
     name: pluginName,
@@ -90,11 +94,11 @@ function renderSkillMd(skillName, skillDescription, shortDescription) {
   const skillTitle = titleCaseSlug(skillName);
   return `---
 name: ${skillName}
-description: ${skillDescription}
+description: ${yamlString(skillDescription)}
 user-invocable: true
 disable-model-invocation: true
 metadata:
-  short-description: ${shortDescription}
+  short-description: ${yamlString(shortDescription)}
 ---
 
 # ${skillTitle}
@@ -117,9 +121,9 @@ metadata:
 function renderOpenAiYaml(displayName, shortDescription, skillName) {
   const defaultPrompt = `Use $${skillName} to ${shortDescription.toLowerCase().replace(/[。.]$/, '')}.`;
   return `interface:
-  display_name: "${displayName}"
-  short_description: "${shortDescription}"
-  default_prompt: "${defaultPrompt}"
+  display_name: ${yamlString(displayName)}
+  short_description: ${yamlString(shortDescription)}
+  default_prompt: ${yamlString(defaultPrompt)}
 policy:
   allow_implicit_invocation: false
 `;
