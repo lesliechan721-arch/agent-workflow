@@ -164,5 +164,4 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 ## 现有样例
 
-- `plugins/git-commit/`：skills + extensions 四种类型的简单示例
 - `references/code-review/`：覆盖 skills、extensions、MCP、commands、output-styles、buildConfig 的完整示例插件目录，配合 `references/comprehensive-example.md` 阅读
