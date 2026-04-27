@@ -88,6 +88,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 ```
 
 - 默认创建带 skill 的插件骨架
+- `--display-name` / `--short-description` 只写入插件级 `interface`；初始 skill 的 Codex 展示名默认由 `--skill-name` 推导，展示简述优先使用 `--skill-description`
 - `--no-skills`：创建不含 skill 的插件（不需要 `--skill-name` 和 `--skill-description`）
 - `--with-mcp`：同时创建 `.mcp.json` 存根
 - `--with-apps`：同时创建带示例 connector id 的最小 `.app.json`，作者需要替换成真实 id

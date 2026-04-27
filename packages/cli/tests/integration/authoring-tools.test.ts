@@ -148,12 +148,20 @@ describe('authoring tools', () => {
     );
     expect(skillMdContent).toContain('user-invocable: true');
     expect(skillMdContent).toContain('disable-model-invocation: true');
-    expect(skillMdContent).toContain('metadata:\n  short-description: 检查仓库状态');
+    expect(skillMdContent).toContain('metadata:\n  short-description: 手动触发这个 skill，执行仓库检查工作流');
     await expect(
       fs.pathExists(
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
       ),
     ).resolves.toBe(true);
+    const openaiYamlContent = await fs.readFile(
+      path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'agents', 'openai.yaml'),
+      'utf8',
+    );
+    expect(openaiYamlContent).toContain('display_name: "Repo Check"');
+    expect(openaiYamlContent).toContain(
+      'short_description: "手动触发这个 skill，执行仓库检查工作流"',
+    );
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.app.json')),
     ).resolves.toMatchObject({
@@ -170,6 +178,85 @@ describe('authoring tools', () => {
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(false);
     await expect(fs.readFile(marketplaceSourcePath, 'utf8')).resolves.toBe(beforeMarketplaceSource);
+  });
+
+  it('scaffolds skill metadata from the skill name and description when they differ from plugin metadata', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-skill-'));
+    tempDirs.push(tempRoot);
+
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'init_plugin.js',
+    );
+
+    await execFileAsync(
+      'node',
+      [
+        scriptPath,
+        'automation-suite',
+        '--description',
+        '提供多种自动化工作流。',
+        '--display-name',
+        'Automation Suite',
+        '--short-description',
+        '自动化插件集合',
+        '--skill-name',
+        'repo-diagnose',
+        '--skill-description',
+        '检查仓库状态并输出诊断结论',
+        '--repo-root',
+        tempRepo,
+      ],
+      {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    const scaffoldManifest = await fs.readJson(
+      path.join(tempRepo, 'plugins', 'automation-suite', '.agents-plugin', 'plugin.json'),
+    );
+    expect(scaffoldManifest.interface).toMatchObject({
+      displayName: 'Automation Suite',
+      shortDescription: '自动化插件集合',
+      capabilities: ['Skills'],
+    });
+
+    const skillMdContent = await fs.readFile(
+      path.join(tempRepo, 'plugins', 'automation-suite', 'skills', 'repo-diagnose', 'SKILL.md'),
+      'utf8',
+    );
+    expect(skillMdContent).toContain('name: repo-diagnose');
+    expect(skillMdContent).toContain('description: 检查仓库状态并输出诊断结论');
+    expect(skillMdContent).toContain('metadata:\n  short-description: 检查仓库状态并输出诊断结论');
+
+    const openaiYamlContent = await fs.readFile(
+      path.join(
+        tempRepo,
+        'plugins',
+        'automation-suite',
+        'skills',
+        'repo-diagnose',
+        'agents',
+        'openai.yaml',
+      ),
+      'utf8',
+    );
+    expect(openaiYamlContent).toContain('display_name: "Repo Diagnose"');
+    expect(openaiYamlContent).toContain('short_description: "检查仓库状态并输出诊断结论"');
+    expect(openaiYamlContent).toContain(
+      'default_prompt: "Use $repo-diagnose to 检查仓库状态并输出诊断结论."',
+    );
+    expect(openaiYamlContent).not.toContain('display_name: "Automation Suite"');
+    expect(openaiYamlContent).not.toContain('short_description: "自动化插件集合"');
   });
 
   it('keeps authoring docs aligned with the build-bundle model', async () => {
@@ -227,6 +314,12 @@ describe('authoring tools', () => {
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
+
+    const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
+    expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
+    expect(authoringDoc).toContain('references/skills-and-triggers.md');
+    expect(authoringDoc).not.toContain('references/project-plugin-contract.md');
+    expect(authoringDoc).not.toContain('references/skill-trigger-rules.md');
 
     const exampleDoc = await fs.readFile(
       path.join(refBase, 'comprehensive-example.md'),

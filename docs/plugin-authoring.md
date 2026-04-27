@@ -8,7 +8,9 @@
 - 路径字段（`skills`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物）
-- 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/project-plugin-contract.md`
+- 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
+
+创建或维护插件时，优先从 `.agents/skills/create-agent-workflows-plugin/SKILL.md` 的场景入口开始读。
 
 ## Skill Trigger Rules（两平台不共享开关）
 
@@ -17,7 +19,7 @@
 - **Claude 用户手动触发**：取决于 `SKILL.md` frontmatter 的 `user-invocable`
 - **Claude 模型自动调用**：取决于 `SKILL.md` frontmatter 的 `disable-model-invocation`
 
-详见 `.agents/skills/create-agent-workflows-plugin/references/skill-trigger-rules.md`。
+详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 
 ## Scope Semantics
 

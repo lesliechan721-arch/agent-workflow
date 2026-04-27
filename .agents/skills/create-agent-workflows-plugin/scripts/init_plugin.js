@@ -152,7 +152,7 @@ Options:
   --display-name <text>         Human-facing plugin display name.
   --short-description <text>    Short UI description.
   --skill-name <name>           Initial skill directory name.
-  --skill-description <text>    Initial skill frontmatter description.
+  --skill-description <text>    Initial skill description and UI summary.
   --version <semver>            Plugin version. Default: 0.1.0
   --repo-root <path>            Repository root. Default: current directory.
   --no-skills                   Create plugin without skills directory.
@@ -296,11 +296,13 @@ function main() {
   if (!args.noSkills) {
     const skillName = requireHyphenName(args.skillName || pluginName, 'skill_name');
     const skillDescription = args.skillDescription || args.description;
+    const skillDisplayName = titleCaseSlug(skillName);
+    const skillShortDescription = args.skillDescription || shortDescription;
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 
-    writeText(skillMdPath, renderSkillMd(skillName, skillDescription, shortDescription));
-    writeText(openaiYamlPath, renderOpenAiYaml(displayName, shortDescription, skillName));
+    writeText(skillMdPath, renderSkillMd(skillName, skillDescription, skillShortDescription));
+    writeText(openaiYamlPath, renderOpenAiYaml(skillDisplayName, skillShortDescription, skillName));
     createdPaths.push(skillMdPath, openaiYamlPath);
   }
 
