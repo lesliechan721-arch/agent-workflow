@@ -1,10 +1,10 @@
 import type { ClaudePermissions } from '../generators/permissions.js';
 import type { PlatformName } from '../types.js';
-
-const ALLOWED_RENDERED_HOOK_EVENTS: Record<PlatformName, Set<string>> = {
-  claude: new Set(['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd']),
-  codex: new Set(['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop']),
-};
+import {
+  assertHookMatcherAllowed,
+  assertNativeHookEvent,
+  parseCodexSharedHooksFile,
+} from './hooks-contract.js';
 
 function inferRenderedHooksPlatform(fieldName: string): PlatformName | undefined {
   if (fieldName === 'claude' || fieldName.startsWith('claude.')) {
@@ -95,32 +95,50 @@ export function validateRenderedHooksContent(
   platform?: PlatformName,
 ): void {
   const root = assertRecord(content, fieldName);
-  if (!root.hooks || typeof root.hooks !== 'object' || Array.isArray(root.hooks)) {
-    throw new Error(`Invalid ${fieldName}: expected top-level "hooks" object.`);
-  }
-  const hooks = root.hooks as Record<string, unknown>;
+  const hooks = assertRecord(root.hooks, `${fieldName}.hooks`);
   const renderedPlatform = platform ?? inferRenderedHooksPlatform(fieldName);
-  const allowedEvents = renderedPlatform ? ALLOWED_RENDERED_HOOK_EVENTS[renderedPlatform] : undefined;
 
   for (const [eventName, groups] of Object.entries(hooks)) {
-    if (allowedEvents && !allowedEvents.has(eventName)) {
-      throw new Error(
-        `Invalid ${fieldName}.${eventName}: unsupported ${renderedPlatform} hook event.`,
-      );
+    if (!renderedPlatform) {
+      throw new Error(`Invalid ${fieldName}: unable to infer rendered hooks platform.`);
     }
 
+    assertNativeHookEvent(
+      eventName,
+      renderedPlatform,
+      `${fieldName}.hooks.${eventName}`,
+    );
+
     if (!Array.isArray(groups)) {
-      throw new Error(`Invalid ${fieldName}.${eventName}: expected an array of hook groups.`);
+      throw new Error(`Invalid ${fieldName}.hooks.${eventName}: expected an array of hook groups.`);
     }
 
     for (const [groupIndex, group] of groups.entries()) {
-      const groupField = `${fieldName}.${eventName}[${groupIndex}]`;
+      const groupField = `${fieldName}.hooks.${eventName}[${groupIndex}]`;
       const groupRecord = assertRecord(group, groupField);
-      if (groupRecord.matcher !== undefined && typeof groupRecord.matcher !== 'string') {
+      const extraGroupKeys = Object.keys(groupRecord).filter((key) => key !== 'matcher' && key !== 'hooks');
+      if (extraGroupKeys.length > 0) {
+        throw new Error(
+          `Invalid ${groupField}: unsupported fields ${extraGroupKeys.map((key) => `"${key}"`).join(', ')}.`,
+        );
+      }
+      const matcher = groupRecord.matcher;
+      if (matcher !== undefined && typeof matcher !== 'string') {
         throw new Error(`Invalid ${groupField}.matcher: expected a string.`);
       }
+      assertHookMatcherAllowed({
+        kind: 'native',
+        platform: renderedPlatform,
+        event: eventName,
+        matcher: matcher as string | undefined,
+        fieldName: `${groupField}.matcher`,
+      });
+
       if (!Array.isArray(groupRecord.hooks)) {
         throw new Error(`Invalid ${groupField}.hooks: expected an array.`);
+      }
+      if (groupRecord.hooks.length !== 1) {
+        throw new Error(`Invalid ${groupField}.hooks: expected exactly one hook handler.`);
       }
 
       for (const [handlerIndex, handler] of groupRecord.hooks.entries()) {
@@ -131,6 +149,12 @@ export function validateRenderedHooksContent(
         }
         if (typeof handlerRecord.command !== 'string' || handlerRecord.command.trim() === '') {
           throw new Error(`Invalid ${handlerField}.command: expected a non-empty string.`);
+        }
+        const extraKeys = Object.keys(handlerRecord).filter((key) => key !== 'type' && key !== 'command');
+        if (extraKeys.length > 0) {
+          throw new Error(
+            `Invalid ${handlerField}: unsupported fields ${extraKeys.map((key) => `"${key}"`).join(', ')}.`,
+          );
         }
       }
     }
@@ -149,4 +173,11 @@ export function validateRenderedCodexHooksContent(
   fieldName = 'codex.hooks',
 ): void {
   validateRenderedHooksContent(content, fieldName, 'codex');
+}
+
+export function validateCodexSharedHooksContent(
+  content: unknown,
+  fieldName = 'codex.hooks',
+): void {
+  parseCodexSharedHooksFile(content, fieldName);
 }

@@ -9,6 +9,10 @@ import {
   readMarketplaceSourceMeta,
   readPluginManifest,
 } from '../../src/utils/manifest.js';
+import {
+  CLAUDE_NATIVE_HOOK_EVENTS,
+  NATIVE_HOOK_EVENT_CONTRACTS,
+} from '../../src/utils/hooks-contract.js';
 
 const tempDirs: string[] = [];
 
@@ -252,5 +256,339 @@ describe('manifest utils', () => {
         name: 'git-commit',
       },
     });
+  });
+
+  it('accepts native hooks and public session_start shared matcher values', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions.hooks = [
+      {
+        event: 'session_start',
+        matcher: 'startup|resume|clear',
+        command: 'echo shared session start',
+      },
+    ];
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo claude notification',
+        },
+        {
+          event: 'Stop',
+          command: 'echo claude stop',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo codex prompt',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        extensions: {
+          hooks: [
+            {
+              event: 'session_start',
+              matcher: 'startup|resume|clear',
+              command: 'echo shared session start',
+            },
+          ],
+          nativeHooks: {
+            claude: [
+              {
+                event: 'Notification',
+                matcher: '*',
+                command: 'echo claude notification',
+              },
+              {
+                event: 'Stop',
+                command: 'echo claude stop',
+              },
+            ],
+            codex: [
+              {
+                event: 'UserPromptSubmit',
+                command: 'echo codex prompt',
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it('rejects removed public session_stop and invalid public session_start matchers', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions.hooks = [
+      {
+        event: 'session_stop',
+        command: 'echo stop',
+      },
+    ];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'public event "session_stop" has been removed',
+    );
+
+    manifest.extensions.hooks = [
+      {
+        event: 'before_tool',
+        matcher: 'Bash',
+        command: 'echo shared',
+        agentOverrides: {
+          codex: {
+            event: 'session_stop',
+            command: 'echo codex stop',
+          },
+        },
+      },
+    ];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'public event "session_stop" has been removed',
+    );
+
+    manifest.extensions.hooks = [
+      {
+        event: 'session_start',
+        matcher: 'compact',
+        command: 'echo invalid compact',
+      },
+    ];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'public session_start only allows startup, resume, clear',
+    );
+
+    manifest.extensions.hooks[0].matcher = '*';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'public session_start only allows startup, resume, clear',
+    );
+  });
+
+  it('rejects invalid native hook platform keys, matcherless matcher, extra fields, and platform duplicates', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions.nativeHooks = {
+      openai: [],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'extensions.nativeHooks: unknown field "openai"',
+    );
+
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          matcher: '*',
+          command: 'echo codex prompt',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'does not allow matcher',
+    );
+
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'Stop',
+          matcher: '*',
+          command: 'echo codex stop',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'does not allow matcher',
+    );
+
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo notify',
+          description: 'old field',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unknown field "description"',
+    );
+
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo notify',
+          agentOverrides: {
+            codex: null,
+          },
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unknown field "agentOverrides"',
+    );
+
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'Notification',
+          command: 'echo wrong platform event',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unsupported codex hook event "Notification"',
+    );
+
+    manifest.extensions.hooks = [
+      {
+        event: 'before_tool',
+        matcher: 'Bash',
+        command: 'echo duplicate',
+      },
+    ];
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'PreToolUse',
+          matcher: 'Bash',
+          command: 'echo duplicate',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'duplicate codex hook',
+    );
+  });
+
+  it('accepts every Claude native hook event and enforces the full matcher capability table', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const originalManifest = await fs.readJson(manifestPath);
+
+    for (const event of CLAUDE_NATIVE_HOOK_EVENTS) {
+      const manifest = structuredClone(originalManifest);
+      manifest.extensions.nativeHooks = {
+        claude: [
+          {
+            event,
+            ...(NATIVE_HOOK_EVENT_CONTRACTS.claude[event].matcherAllowed
+              ? { matcher: '*' }
+              : {}),
+            command: `echo ${event}`,
+          },
+        ],
+      };
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+        manifest: {
+          extensions: {
+            nativeHooks: {
+              claude: [
+                {
+                  event,
+                  command: `echo ${event}`,
+                },
+              ],
+            },
+          },
+        },
+      });
+    }
+
+    for (const [event, contract] of Object.entries(NATIVE_HOOK_EVENT_CONTRACTS.claude)) {
+      const manifest = structuredClone(originalManifest);
+      manifest.extensions.nativeHooks = {
+        claude: [
+          {
+            event,
+            matcher: '*',
+            command: `echo ${event}`,
+          },
+        ],
+      };
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      if (contract.matcherAllowed) {
+        await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+          manifest: {
+            extensions: {
+              nativeHooks: {
+                claude: [
+                  {
+                    event,
+                    matcher: '*',
+                    command: `echo ${event}`,
+                  },
+                ],
+              },
+            },
+          },
+        });
+      } else {
+        await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+          'does not allow matcher',
+        );
+      }
+    }
+  });
+
+  it('accepts the portable public session_start matcher variants', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    for (const matcher of ['startup', 'resume', 'clear', 'startup|resume|clear']) {
+      manifest.extensions.hooks = [
+        {
+          event: 'session_start',
+          matcher,
+          command: 'echo start',
+        },
+      ];
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+        manifest: {
+          extensions: {
+            hooks: [
+              {
+                event: 'session_start',
+                matcher,
+                command: 'echo start',
+              },
+            ],
+          },
+        },
+      });
+    }
   });
 });

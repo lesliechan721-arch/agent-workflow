@@ -52,7 +52,7 @@ describe('build smoke', () => {
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
 
-  it('bundles declared MCP and app assets through the compiled bundle script', async () => {
+  it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {
     const root = repoRoot();
     await execFileAsync('pnpm', ['build'], {
       cwd: root,
@@ -65,6 +65,24 @@ describe('build smoke', () => {
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
     await fs.copy(fixturePath('repo-template'), tempRepo);
+    const manifestPath = path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo smoke claude notification',
+        },
+      ],
+      codex: [
+        {
+          event: 'Stop',
+          command: 'echo smoke codex stop',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     const { bundlePlugins } = (await import(
       '../../dist/scripts/bundle-plugins.js'
@@ -77,6 +95,39 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'codex', '.app.json')),
     ).resolves.toBe(true);
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      extensions: {
+        nativeHooks: {
+          claude: [
+            {
+              event: 'Notification',
+              matcher: '*',
+              command: 'echo smoke claude notification',
+            },
+          ],
+          codex: [
+            {
+              event: 'Stop',
+              command: 'echo smoke codex stop',
+            },
+          ],
+        },
+      },
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'hooks', 'hooks.json')),
+    ).resolves.toMatchObject({
+      hooks: {
+        Notification: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo smoke claude notification' }],
+          },
+        ],
+      },
+    });
 
     const { validateBundleLayout } = (await import(
       '../../src/utils/bundle-layout.js'

@@ -67,6 +67,152 @@ afterEach(async () => {
 });
 
 describe('CodexAdapter', () => {
+  it('preserves foreign and unresolved historical shared hook groups while rerendering the current plugin', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await upsertTrackingRecord(paths.trackingDir, 'history-only', [
+      {
+        path: paths.hooksPath,
+        kind: 'hook',
+        platform: 'codex',
+        hookGroups: [
+          {
+            event: 'PreToolUse',
+            matcher: 'Edit',
+            command: 'echo historical',
+          },
+        ],
+      },
+    ]);
+    await fs.writeJson(paths.hooksPath, {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Edit',
+            hooks: [{ type: 'command', command: 'echo historical' }],
+          },
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+        ],
+        UserPromptSubmit: [
+          {
+            matcher: 'ignored',
+            hooks: [{ type: 'command', command: 'echo foreign prompt' }],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+
+    await adapter.installExtensions(plugin, 'project');
+
+    await expect(fs.readJson(paths.hooksPath)).resolves.toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Edit',
+            hooks: [{ type: 'command', command: 'echo historical' }],
+          },
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ],
+        UserPromptSubmit: [
+          {
+            matcher: 'ignored',
+            hooks: [{ type: 'command', command: 'echo foreign prompt' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('installs and uninstalls nativeHooks-only Codex plugins without removing foreign shared groups', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const basePlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const plugin = {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        extensions: {
+          nativeHooks: {
+            codex: [
+              {
+                event: 'Stop',
+                command: 'echo native stop',
+              },
+            ],
+          },
+        },
+      },
+    };
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await fs.ensureDir(path.dirname(paths.hooksPath));
+    await fs.writeJson(paths.hooksPath, {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    const hookArtifact = artifacts.find((artifact) => artifact.kind === 'hook');
+    expect(hookArtifact?.path).toBeTruthy();
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    expect(await fs.pathExists(hookArtifact!.path)).toBe(true);
+    const installedHooks = await fs.readJson(hookArtifact!.path).catch((error: Error) => {
+      throw new Error(`read after install failed: ${error.message}`);
+    });
+    expect(installedHooks).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [{ type: 'command', command: 'echo native stop' }],
+          },
+        ],
+      },
+    });
+
+    await adapter.uninstallExtensions(plugin, 'project', artifacts);
+
+    expect(await fs.pathExists(hookArtifact!.path)).toBe(true);
+    const remainingHooks = await fs.readJson(hookArtifact!.path).catch((error: Error) => {
+      throw new Error(`read after uninstall failed: ${error.message}`);
+    });
+    expect(remainingHooks).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo foreign', timeout: 1000 }],
+          },
+        ],
+      },
+    });
+  });
+
   it('writes the Codex marketplace source using the canonical AW_HOME path', async () => {
     const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
     const realAwHome = `${env.AW_HOME}-real`;
@@ -241,6 +387,43 @@ describe('CodexAdapter', () => {
     );
   });
 
+  it('falls back to tracked hook identities when the current Codex catalog entry is missing', async () => {
+    const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
+    process.env.AW_HOME = env.AW_HOME;
+    process.env.AW_CODEX_HOME = env.AW_CODEX_HOME;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'user', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'user');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    for (const manifestPath of [
+      path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'),
+      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
+    ]) {
+      const manifest = await fs.readJson(manifestPath);
+      manifest.plugins = (manifest.plugins ?? []).filter(
+        (entry: { name?: string }) => entry.name !== plugin.manifest.name,
+      );
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    }
+
+    const status = await adapter.status(plugin, 'user');
+
+    expect(status.plugins[0]).toMatchObject({
+      catalogCompatibility: 'missing',
+      repoManagedSessionState: {
+        hooks: 'visible',
+      },
+    });
+    expect(status.plugins[0].driftWarnings).not.toContain(
+      'Codex hooks artifact 中缺少当前插件声明的 hook handlers。',
+    );
+  });
+
   it('rejects existing Codex hooks with unsupported native event names before rewriting', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
@@ -260,7 +443,7 @@ describe('CodexAdapter', () => {
     }, { spaces: 2 });
 
     await expect(adapter.uninstallExtensions(plugin, 'project', artifacts)).rejects.toThrow(
-      'codex.hooks.sessionStop',
+      'codex.hooks.hooks.sessionStop',
     );
   });
 });

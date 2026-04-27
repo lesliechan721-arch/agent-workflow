@@ -166,6 +166,10 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "instructions": [],
     "permissions": [],
     "hooks": [],
+    "nativeHooks": {
+      "claude": [],
+      "codex": []
+    },
     "agents": []
   },
   "buildConfig": {

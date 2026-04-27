@@ -30,7 +30,8 @@ code-review/
 | Skills | `skills/review/` — 含 SKILL.md、openai.yaml、references |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
-| Hooks | `extensions.hooks` — session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |
+| Hooks | `extensions.hooks` — 公共 session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |
+| Native Hooks | `extensions.nativeHooks.codex` — Codex 原生 UserPromptSubmit，无 matcher |
 | Agents | `extensions.agents` — review-summarizer 报告生成器 |
 | MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${user_config.reviewServiceApiKey}` |
 | Commands | `commands/` — Claude 专属 /review 和 /review-summary 命令 |
@@ -44,10 +45,10 @@ code-review/
 
 运行 `pnpm build` 后，两个平台的 embedded bundle 内容不同。此外，Codex 的 extensions 产物不在 build 阶段生成，而是在安装阶段由 `CodexAdapter.installExtensions()` 动态写入。
 
-**Claude bundle（build 时写入）**：skills、.mcp.json、commands、output-styles、hooks.json（2 个 hook）、agents markdown、rules markdown、userConfig
+**Claude bundle（build 时写入）**：skills、.mcp.json、commands、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、userConfig
 
 **Codex bundle（build 时写入）**：skills、.mcp.json（+ fileRules 选中的源码文件）
 
 **Codex bundle 不包含**：commands/、output-styles/、userConfig、extensions 衍生产物（均在安装时生成）
 
-**Codex 安装时生成的 repo-managed artifacts**：instructions managed blocks、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（只包含目标平台生效的公共 hook 条目）、agents .toml
+**Codex 安装时生成的 repo-managed artifacts**：instructions managed blocks、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（包含目标平台生效的公共 hooks 与 `nativeHooks.codex`）、agents .toml

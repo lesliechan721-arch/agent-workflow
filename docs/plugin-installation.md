@@ -71,7 +71,7 @@ aw upgrade [插件名...] [--all] [--scope project|user] [--platform codex|claud
 ```
 
 - 指定插件名，或用 `--all` 升级当前 scope 下所有已管理的插件
-- 若插件的能力（instructions / permissions / hooks）发生变更，CLI 会先卸载再重新安装
+- 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
 
 ---
 
@@ -120,12 +120,15 @@ aw status [插件名...] [--scope project|user] [--platform codex|claude|both|au
 **Claude**
 - `.claude/rules/aw-<名称>.md` — instructions 文件
 - `.claude/settings.json` — 追加 permissions 配置
+- Claude hooks 来自插件 bundle 内的 `claude/hooks/hooks.json`，由 Claude Code 原生插件加载；CLI 不会把它作为额外 repo-managed hook 文件写入项目目录
 
 **Codex**
 - `.codex/config.toml` — 追加 managed instructions block
 - `.codex/rules/*.rules` — Codex execpolicy `prefix_rule(...)` 权限规则
-- `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置
+- `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置，包含公共 hooks 和 `extensions.nativeHooks.codex`
 - `.codex/agents/*.toml` — Codex agent role 文件
+
+Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到的 hook groups，手写配置或其它工具写入的 runtime-valid groups 会原样保留。
 
 同时会在 `~/.aw/installed.json` 更新安装账本，在平台目录下写入 `.agent-workflows-manifest.json` 追踪清单（用于精确卸载/升级）。
 

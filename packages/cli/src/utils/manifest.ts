@@ -9,10 +9,10 @@ import type {
   BuildConfigTemplates,
   ClaudeManifestOverrides,
   HookDefinition,
-  HookEvent,
   InstructionDefinition,
   MarketplaceManifest,
   MarketplaceSourceMeta,
+  NativeHookDefinition,
   PermissionDefinition,
   PlatformAgentOverrides,
   PlatformName,
@@ -26,6 +26,14 @@ import type {
 import { readJsonFile } from './json.js';
 import { parsePermissionCommand } from '../generators/permissions.js';
 import { applyFileRules } from './file-rules.js';
+import {
+  assertHookMatcherAllowed,
+  assertNativeHookEvent,
+  assertPublicHookEvent,
+  normalizeRenderedHookGroupIdentity,
+  renderHookDefinitionGroup,
+  resolvePlatformHookDefinitions,
+} from './hooks-contract.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
@@ -64,22 +72,6 @@ function ensureStringArray(value: unknown, fieldName: string): string[] {
   }
 
   return value.map((entry, index) => ensureString(entry, `${fieldName}[${index}]`));
-}
-
-const PUBLIC_HOOK_EVENTS = new Set<HookEvent>([
-  'before_tool',
-  'after_tool',
-  'session_start',
-  'session_stop',
-]);
-
-function ensureHookEvent(value: unknown, fieldName: string): HookEvent {
-  const event = ensureString(value, fieldName);
-  if (!PUBLIC_HOOK_EVENTS.has(event as HookEvent)) {
-    throw new Error(`Invalid ${fieldName}: unsupported hook event "${event}".`);
-  }
-
-  return event as HookEvent;
 }
 
 function normalizePermissionCommandArray(
@@ -515,8 +507,8 @@ function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
   const input = assertObject(entry, fieldName);
   assertAllowedKeys(input, fieldName, ['event', 'matcher', 'command', 'agentOverrides']);
 
-  return {
-    event: ensureHookEvent(input.event, `${fieldName}.event`),
+  const normalized: HookDefinition = {
+    event: assertPublicHookEvent(input.event, `${fieldName}.event`),
     matcher:
       input.matcher === undefined
         ? undefined
@@ -534,7 +526,7 @@ function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
                 event:
                   overrideInput.event === undefined
                     ? undefined
-                    : ensureHookEvent(overrideInput.event, `${overrideFieldName}.event`),
+                    : assertPublicHookEvent(overrideInput.event, `${overrideFieldName}.event`),
                 matcher:
                   overrideInput.matcher === undefined
                     ? undefined
@@ -547,6 +539,116 @@ function normalizeHookEntry(entry: unknown, fieldName: string): HookDefinition {
             },
           ),
   };
+
+  assertHookMatcherAllowed({
+    kind: 'public',
+    event: normalized.event,
+    matcher: normalized.matcher,
+    fieldName: `${fieldName}.matcher`,
+  });
+
+  for (const platform of ['claude', 'codex'] as const) {
+    const override = normalized.agentOverrides?.[platform];
+    if (!override || override === null) {
+      continue;
+    }
+
+    assertHookMatcherAllowed({
+      kind: 'public',
+      event: override.event ?? normalized.event,
+      matcher: override.matcher ?? normalized.matcher,
+      fieldName: `${fieldName}.agentOverrides.${platform}.matcher`,
+    });
+  }
+
+  return normalized;
+}
+
+function normalizeNativeHookEntry(
+  entry: unknown,
+  platform: PlatformName,
+  fieldName: string,
+): NativeHookDefinition {
+  const input = assertObject(entry, fieldName);
+  assertAllowedKeys(input, fieldName, ['event', 'matcher', 'command']);
+
+  const event = assertNativeHookEvent(
+    ensureString(input.event, `${fieldName}.event`),
+    platform,
+    `${fieldName}.event`,
+  );
+  const matcher =
+    input.matcher === undefined
+      ? undefined
+      : ensureString(input.matcher, `${fieldName}.matcher`);
+
+  assertHookMatcherAllowed({
+    kind: 'native',
+    platform,
+    event,
+    matcher,
+    fieldName: `${fieldName}.matcher`,
+  });
+
+  return {
+    event,
+    matcher,
+    command: ensureString(input.command, `${fieldName}.command`),
+  };
+}
+
+function normalizeNativeHooks(
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginManifestSource['extensions']>['nativeHooks'] {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['claude', 'codex']);
+
+  const output: NonNullable<PluginManifestSource['extensions']>['nativeHooks'] = {};
+  for (const platform of ['claude', 'codex'] as const) {
+    const entries = input[platform];
+    if (entries === undefined) {
+      continue;
+    }
+    if (!Array.isArray(entries)) {
+      throw new Error(`Invalid ${fieldName}.${platform}: expected an array.`);
+    }
+
+    output[platform] = entries.map((entry, index) =>
+      normalizeNativeHookEntry(entry, platform, `${fieldName}.${platform}[${index}]`),
+    );
+  }
+
+  return output;
+}
+
+function assertNoDuplicatePlatformHooks(
+  extensions: NonNullable<PluginManifestSource['extensions']>,
+  fieldName: string,
+): void {
+  for (const platform of ['claude', 'codex'] as const) {
+    const seen = new Set<string>();
+    for (const definition of resolvePlatformHookDefinitions({ extensions }, platform)) {
+      const group = renderHookDefinitionGroup(definition, platform);
+      const identity = normalizeRenderedHookGroupIdentity({
+        platform,
+        event: group.event,
+        matcher: group.matcher,
+        command: group.hooks[0].command,
+      });
+      const key = JSON.stringify([
+        identity.event,
+        identity.matcher ?? null,
+        identity.command,
+      ]);
+      if (seen.has(key)) {
+        throw new Error(
+          `Invalid ${fieldName}: duplicate ${platform} hook for event "${identity.event}" and command "${identity.command}".`,
+        );
+      }
+      seen.add(key);
+    }
+  }
 }
 
 function normalizeAgentEntry(entry: unknown, fieldName: string): AgentDefinition {
@@ -605,9 +707,9 @@ function normalizeExtensions(
   fieldName: string,
 ): PluginManifestSource['extensions'] {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['instructions', 'permissions', 'hooks', 'agents']);
+  assertAllowedKeys(input, fieldName, ['instructions', 'permissions', 'hooks', 'nativeHooks', 'agents']);
 
-  return {
+  const extensions: NonNullable<PluginManifestSource['extensions']> = {
     instructions: Array.isArray(input.instructions)
       ? input.instructions.map((entry, index) =>
           normalizeInstructionEntry(entry, `${fieldName}.instructions[${index}]`),
@@ -623,12 +725,19 @@ function normalizeExtensions(
           normalizeHookEntry(entry, `${fieldName}.hooks[${index}]`),
         )
       : [],
+    nativeHooks:
+      input.nativeHooks === undefined
+        ? undefined
+        : normalizeNativeHooks(input.nativeHooks, `${fieldName}.nativeHooks`),
     agents: Array.isArray(input.agents)
       ? input.agents.map((entry, index) =>
           normalizeAgentEntry(entry, `${fieldName}.agents[${index}]`),
         )
       : [],
   };
+
+  assertNoDuplicatePlatformHooks(extensions, fieldName);
+  return extensions;
 }
 
 export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSourceMeta {
@@ -948,10 +1057,22 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
     ...plugin.manifest,
     extensions: plugin.manifest.extensions
       ? {
-          instructions: [...(plugin.manifest.extensions.instructions ?? [])],
-          permissions: [...(plugin.manifest.extensions.permissions ?? [])],
-          hooks: [...(plugin.manifest.extensions.hooks ?? [])],
-          agents: [...(plugin.manifest.extensions.agents ?? [])],
+          instructions: plugin.manifest.extensions.instructions
+            ?.map((entry) => structuredClone(entry)),
+          permissions: plugin.manifest.extensions.permissions
+            ?.map((entry) => structuredClone(entry)),
+          hooks: plugin.manifest.extensions.hooks
+            ?.map((entry) => structuredClone(entry)),
+          nativeHooks: plugin.manifest.extensions.nativeHooks
+            ? {
+                claude: plugin.manifest.extensions.nativeHooks.claude
+                  ?.map((entry) => structuredClone(entry)),
+                codex: plugin.manifest.extensions.nativeHooks.codex
+                  ?.map((entry) => structuredClone(entry)),
+              }
+            : undefined,
+          agents: plugin.manifest.extensions.agents
+            ?.map((entry) => structuredClone(entry)),
         }
       : undefined,
   };

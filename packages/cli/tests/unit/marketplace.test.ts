@@ -67,6 +67,63 @@ describe('marketplace bundle', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
+  it('builds Claude bundle hooks with public and native events under strict validation', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions ??= {};
+    manifest.extensions.hooks ??= [];
+    manifest.extensions.hooks.push({
+      event: 'session_start',
+      command: 'echo shared session start',
+    });
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo claude notification',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+    await expect(
+      fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', 'claude', 'hooks', 'hooks.json')),
+    ).resolves.toEqual({
+      hooks: {
+        Notification: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo claude notification' }],
+          },
+        ],
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ],
+        SessionStart: [
+          {
+            matcher: 'startup|resume|clear',
+            hooks: [{ type: 'command', command: 'echo shared session start' }],
+          },
+        ],
+      },
+    });
+    await expect(
+      fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      hooks: './claude/hooks/hooks.json',
+    });
+  });
+
   it('rejects rendered native assets and hooks with invalid bundle semantics', async () => {
     const repoRoot = await makeTempRepo();
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -106,7 +163,7 @@ describe('marketplace bundle', () => {
       hooks: [],
     }, { spaces: 2 });
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'expected top-level "hooks" object',
+      'claude.hooks.hooks',
     );
 
     await fs.writeJson(path.join(pluginRoot, 'claude', 'hooks', 'hooks.json'), {
@@ -124,7 +181,7 @@ describe('marketplace bundle', () => {
       },
     }, { spaces: 2 });
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'claude.hooks.PreToolUse[0].hooks[0].type',
+      'claude.hooks.hooks.PreToolUse[0].hooks[0].type',
     );
 
     await fs.writeJson(path.join(pluginRoot, 'claude', 'hooks', 'hooks.json'), {
@@ -138,7 +195,7 @@ describe('marketplace bundle', () => {
       },
     }, { spaces: 2 });
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'claude.hooks.sessionStop',
+      'claude.hooks.hooks.sessionStop',
     );
   });
 });

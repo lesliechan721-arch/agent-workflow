@@ -1,4 +1,17 @@
-import type { CodexHookGroup, HookDefinition, PlatformName } from '../types.js';
+import type {
+  HookDefinition,
+  PlatformName,
+  RenderedHookGroup,
+  TrackedHookGroupIdentity,
+} from '../types.js';
+import {
+  normalizePublicHookDefinition,
+  normalizeRenderedHookGroupIdentity,
+  renderHookDefinitionGroup,
+  renderTrackedHookGroupIdentity,
+  serializeTrackedHookGroupIdentity,
+  type ResolvedPlatformHookDefinition,
+} from '../utils/hooks-contract.js';
 
 export interface RenderedHooksArtifact {
   relativePath: string;
@@ -7,61 +20,52 @@ export interface RenderedHooksArtifact {
 
 export interface CodexHookBundle {
   pluginName: string;
-  hooks: HookDefinition[];
+  hooks: ResolvedPlatformHookDefinition[];
 }
 
-function compareCodexHookGroups(
-  left: CodexHookGroup,
-  right: CodexHookGroup,
-): number {
-  return (
-    left.event.localeCompare(right.event) ||
-    left.matcher.localeCompare(right.matcher) ||
-    JSON.stringify(left.hooks).localeCompare(JSON.stringify(right.hooks))
-  );
+function sortRenderedHookGroups(
+  groups: RenderedHookGroup[],
+  platform: PlatformName,
+): RenderedHookGroup[] {
+  return [...groups].sort((left, right) => {
+    const leftIdentity = normalizeRenderedHookGroupIdentity({
+      platform,
+      event: left.event,
+      matcher: left.matcher,
+      command: left.hooks[0].command,
+    });
+    const rightIdentity = normalizeRenderedHookGroupIdentity({
+      platform,
+      event: right.event,
+      matcher: right.matcher,
+      command: right.hooks[0].command,
+    });
+
+    return serializeTrackedHookGroupIdentity(leftIdentity).localeCompare(
+      serializeTrackedHookGroupIdentity(rightIdentity),
+    );
+  });
 }
 
-function renderNativeEventName(event: HookDefinition['event'], platform: PlatformName): string {
-  switch (event) {
-    case 'before_tool':
-      return 'PreToolUse';
-    case 'after_tool':
-      return 'PostToolUse';
-    case 'session_start':
-      return 'SessionStart';
-    case 'session_stop':
-      return platform === 'claude' ? 'SessionEnd' : 'Stop';
-    default:
-      return event;
-  }
-}
-
-function renderHookGroups(
-  hooks: HookDefinition[],
+function renderGroupedHooks(
+  groups: RenderedHookGroup[],
   platform: PlatformName,
 ): Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> {
-  const groups: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
-  for (const hook of hooks) {
-    const event = renderNativeEventName(hook.event, platform);
-    groups[event] ??= [];
-    groups[event].push({
-      matcher: hook.matcher ?? '*',
-      hooks: [{ type: 'command', command: hook.command }],
+  const hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+
+  for (const group of sortRenderedHookGroups(groups, platform)) {
+    hooks[group.event] ??= [];
+    hooks[group.event].push({
+      ...(group.matcher === undefined ? {} : { matcher: group.matcher }),
+      hooks: group.hooks,
     });
   }
 
-  for (const event of Object.keys(groups)) {
-    groups[event].sort((left, right) =>
-      (left.matcher ?? '').localeCompare(right.matcher ?? '') ||
-      JSON.stringify(left.hooks).localeCompare(JSON.stringify(right.hooks)),
-    );
-  }
-
-  return groups;
+  return hooks;
 }
 
-export function renderHooksArtifact(
-  hooks: HookDefinition[],
+export function renderResolvedHooksArtifact(
+  hooks: ResolvedPlatformHookDefinition[],
   platform: PlatformName,
 ): RenderedHooksArtifact | null {
   if (hooks.length === 0) {
@@ -72,42 +76,52 @@ export function renderHooksArtifact(
     return renderCodexHooks([{ pluginName: 'aw', hooks }]);
   }
 
+  const renderedGroups = hooks.map((hook) => renderHookDefinitionGroup(hook, 'claude'));
   return {
     relativePath: 'hooks/hooks.json',
     content: {
-      hooks: renderHookGroups(hooks, 'claude'),
+      hooks: renderGroupedHooks(renderedGroups, 'claude'),
     },
   };
 }
 
-export function extractCodexHookGroups(hooks: HookDefinition[]): CodexHookGroup[] {
-  return hooks
-    .map((hook) => ({
-      event: renderNativeEventName(hook.event, 'codex'),
-      matcher: hook.matcher ?? '*',
-      hooks: [{ type: 'command', command: hook.command }],
-    }));
+export function renderHooksArtifact(
+  hooks: HookDefinition[],
+  platform: PlatformName,
+): RenderedHooksArtifact | null {
+  return renderResolvedHooksArtifact(
+    hooks.map((hook) => normalizePublicHookDefinition(hook)),
+    platform,
+  );
+}
+
+export function extractCodexHookGroups(
+  hooks: ResolvedPlatformHookDefinition[],
+): TrackedHookGroupIdentity[] {
+  return hooks.map((hook) => {
+    const renderedGroup = renderHookDefinitionGroup(hook, 'codex');
+    return normalizeRenderedHookGroupIdentity({
+      platform: 'codex',
+      event: renderedGroup.event,
+      matcher: renderedGroup.matcher,
+      command: renderedGroup.hooks[0].command,
+    });
+  });
 }
 
 export function renderCodexHookGroups(
-  groups: CodexHookGroup[],
+  groups: TrackedHookGroupIdentity[],
 ): RenderedHooksArtifact | null {
   if (groups.length === 0) {
     return null;
   }
 
-  const hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
-  for (const group of [...groups].sort(compareCodexHookGroups)) {
-    hooks[group.event] ??= [];
-    hooks[group.event].push({
-      matcher: group.matcher,
-      hooks: group.hooks,
-    });
-  }
-
+  const renderedGroups = groups.map((group) => renderTrackedHookGroupIdentity(group));
   return {
     relativePath: 'hooks.json',
-    content: { hooks },
+    content: {
+      hooks: renderGroupedHooks(renderedGroups, 'codex'),
+    },
   };
 }
 
@@ -116,9 +130,7 @@ export function renderCodexHooks(
 ): RenderedHooksArtifact | null {
   return renderCodexHookGroups(
     bundles
-    .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
-    .flatMap((bundle) =>
-      extractCodexHookGroups(bundle.hooks),
-    ),
+      .sort((left, right) => left.pluginName.localeCompare(right.pluginName))
+      .flatMap((bundle) => extractCodexHookGroups(bundle.hooks)),
   );
 }

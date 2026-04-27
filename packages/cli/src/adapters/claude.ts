@@ -36,6 +36,7 @@ import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   type ClaudeSettings,
@@ -78,6 +79,9 @@ function getClaudeManagedExtensions(plugin: PluginMeta): string[] {
   }
   if (resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude').length > 0) {
     managedExtensions.push('permissions');
+  }
+  if (resolvePlatformHookDefinitions(plugin.manifest, 'claude').length > 0) {
+    managedExtensions.push('hooks');
   }
   return managedExtensions;
 }

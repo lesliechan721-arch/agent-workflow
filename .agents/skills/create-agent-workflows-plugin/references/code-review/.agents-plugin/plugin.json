@@ -50,6 +50,14 @@
         }
       }
     ],
+    "nativeHooks": {
+      "codex": [
+        {
+          "event": "UserPromptSubmit",
+          "command": "echo 'Code review prompt submitted'"
+        }
+      ]
+    },
     "agents": [
       {
         "name": "review-summarizer",

@@ -27,6 +27,73 @@ const CODEX_POLICY_PRODUCTS = new Set([
   'codex',
   'CODEX',
 ]);
+const PUBLIC_HOOK_EVENTS = new Set(['before_tool', 'after_tool', 'session_start']);
+const PUBLIC_SESSION_START_SOURCES = new Set(['startup', 'resume', 'clear']);
+const PUBLIC_SESSION_START_DEFAULT_MATCHER = 'startup|resume|clear';
+const PUBLIC_HOOK_RENDER_MAP = {
+  claude: {
+    before_tool: 'PreToolUse',
+    after_tool: 'PostToolUse',
+    session_start: 'SessionStart',
+  },
+  codex: {
+    before_tool: 'PreToolUse',
+    after_tool: 'PostToolUse',
+    session_start: 'SessionStart',
+  },
+};
+const NATIVE_HOOK_EVENTS = {
+  claude: new Set([
+    'PreToolUse',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'Notification',
+    'UserPromptSubmit',
+    'SessionStart',
+    'SessionEnd',
+    'Stop',
+    'StopFailure',
+    'SubagentStart',
+    'SubagentStop',
+    'PreCompact',
+    'PostCompact',
+    'PermissionRequest',
+    'PermissionDenied',
+    'Setup',
+    'TeammateIdle',
+    'TaskCreated',
+    'TaskCompleted',
+    'Elicitation',
+    'ElicitationResult',
+    'ConfigChange',
+    'WorktreeCreate',
+    'WorktreeRemove',
+    'InstructionsLoaded',
+    'CwdChanged',
+    'FileChanged',
+  ]),
+  codex: new Set([
+    'PreToolUse',
+    'PermissionRequest',
+    'PostToolUse',
+    'SessionStart',
+    'UserPromptSubmit',
+    'Stop',
+  ]),
+};
+const MATCHERLESS_NATIVE_HOOK_EVENTS = {
+  claude: new Set([
+    'UserPromptSubmit',
+    'Stop',
+    'TeammateIdle',
+    'TaskCreated',
+    'TaskCompleted',
+    'WorktreeCreate',
+    'WorktreeRemove',
+    'CwdChanged',
+  ]),
+  codex: new Set(['UserPromptSubmit', 'Stop']),
+};
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
 let yamlParser = null;
 
@@ -272,6 +339,8 @@ function validateManifestLightweight(manifest) {
       error(`${field} path must start with "./", got "${manifest[field]}"`);
     }
   }
+
+  validateExtensionsLightweight(manifest.extensions);
 }
 
 function isTemplateAsset(manifest, relativePath) {
@@ -286,6 +355,210 @@ function validateAllowedKeys(record, fieldName, allowedKeys) {
   for (const key of Object.keys(record)) {
     if (!allowedKeys.includes(key)) {
       error(`${fieldName} has unknown field "${key}"`);
+    }
+  }
+}
+
+function validateManifestString(value, fieldName) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    error(`${fieldName} must be a non-empty string`);
+    return null;
+  }
+  return value;
+}
+
+function validatePublicHookEvent(value, fieldName) {
+  const event = validateManifestString(value, fieldName);
+  if (!event) return null;
+  if (event === 'session_stop') {
+    error(
+      `${fieldName}: public event "session_stop" has been removed; use extensions.nativeHooks.claude[].event = "Stop" or "SessionEnd", or extensions.nativeHooks.codex[].event = "Stop"`,
+    );
+    return null;
+  }
+  if (!PUBLIC_HOOK_EVENTS.has(event)) {
+    error(`${fieldName}: unsupported public hook event "${event}"`);
+    return null;
+  }
+  return event;
+}
+
+function normalizePublicSessionStartMatcher(matcher, fieldName) {
+  if (matcher === undefined) return PUBLIC_SESSION_START_DEFAULT_MATCHER;
+  if (typeof matcher !== 'string' || matcher.trim() === '') {
+    error(`${fieldName} must be a non-empty string`);
+    return null;
+  }
+  const selected = new Set();
+  for (const part of matcher.split('|')) {
+    if (!PUBLIC_SESSION_START_SOURCES.has(part)) {
+      error(`${fieldName}: public session_start only allows startup, resume, clear, or their "|" union`);
+      return null;
+    }
+    selected.add(part);
+  }
+  return ['startup', 'resume', 'clear'].filter((part) => selected.has(part)).join('|');
+}
+
+function validatePublicHookMatcher(event, matcher, fieldName) {
+  if (matcher === undefined) return event === 'session_start' ? PUBLIC_SESSION_START_DEFAULT_MATCHER : undefined;
+  if (typeof matcher !== 'string' || matcher.trim() === '') {
+    error(`${fieldName} must be a non-empty string`);
+    return null;
+  }
+  if (event === 'session_start') {
+    return normalizePublicSessionStartMatcher(matcher, fieldName);
+  }
+  return matcher;
+}
+
+function validateNativeHookEvent(value, platform, fieldName) {
+  const event = validateManifestString(value, fieldName);
+  if (!event) return null;
+  if (!NATIVE_HOOK_EVENTS[platform].has(event)) {
+    error(`${fieldName}: unsupported ${platform} hook event "${event}"`);
+    return null;
+  }
+  return event;
+}
+
+function validateNativeHookMatcher(event, platform, matcher, fieldName) {
+  if (matcher === undefined) return undefined;
+  if (typeof matcher !== 'string' || matcher.trim() === '') {
+    error(`${fieldName} must be a non-empty string`);
+    return null;
+  }
+  if (MATCHERLESS_NATIVE_HOOK_EVENTS[platform].has(event)) {
+    error(`${fieldName}: ${platform} event "${event}" does not allow matcher`);
+    return null;
+  }
+  return matcher;
+}
+
+function validateHookAgentOverrides(value, baseHook, fieldName, duplicateCollector) {
+  if (value === undefined) {
+    for (const platform of ['claude', 'codex']) {
+      duplicateCollector(platform, baseHook);
+    }
+    return;
+  }
+
+  const overrides = expectRecord(value, fieldName);
+  if (!overrides) return;
+  validateAllowedKeys(overrides, fieldName, ['claude', 'codex']);
+
+  for (const platform of ['claude', 'codex']) {
+    const override = overrides[platform];
+    if (override === null) continue;
+    if (override === undefined) {
+      duplicateCollector(platform, baseHook);
+      continue;
+    }
+
+    const overrideRecord = expectRecord(override, `${fieldName}.${platform}`);
+    if (!overrideRecord) continue;
+    validateAllowedKeys(overrideRecord, `${fieldName}.${platform}`, ['event', 'matcher', 'command']);
+    const event = overrideRecord.event === undefined
+      ? baseHook.event
+      : validatePublicHookEvent(overrideRecord.event, `${fieldName}.${platform}.event`);
+    const matcherValue = overrideRecord.matcher === undefined
+      ? baseHook.matcher
+      : overrideRecord.matcher;
+    const matcher = event
+      ? validatePublicHookMatcher(event, matcherValue, `${fieldName}.${platform}.matcher`)
+      : null;
+    const command = overrideRecord.command === undefined
+      ? baseHook.command
+      : validateManifestString(overrideRecord.command, `${fieldName}.${platform}.command`);
+    if (event && matcher !== null && command) {
+      duplicateCollector(platform, { event, matcher, command });
+    }
+  }
+}
+
+function validateHookEntryLightweight(entry, fieldName, duplicateCollector) {
+  const input = expectRecord(entry, fieldName);
+  if (!input) return;
+  validateAllowedKeys(input, fieldName, ['event', 'matcher', 'command', 'agentOverrides']);
+
+  const event = validatePublicHookEvent(input.event, `${fieldName}.event`);
+  const matcher = event
+    ? validatePublicHookMatcher(event, input.matcher, `${fieldName}.matcher`)
+    : null;
+  const command = validateManifestString(input.command, `${fieldName}.command`);
+  if (!event || matcher === null || !command) return;
+
+  validateHookAgentOverrides(
+    input.agentOverrides,
+    { event, matcher, command },
+    `${fieldName}.agentOverrides`,
+    duplicateCollector,
+  );
+}
+
+function validateNativeHookEntryLightweight(entry, platform, fieldName, duplicateCollector) {
+  const input = expectRecord(entry, fieldName);
+  if (!input) return;
+  validateAllowedKeys(input, fieldName, ['event', 'matcher', 'command']);
+
+  const event = validateNativeHookEvent(input.event, platform, `${fieldName}.event`);
+  const matcher = event
+    ? validateNativeHookMatcher(event, platform, input.matcher, `${fieldName}.matcher`)
+    : null;
+  const command = validateManifestString(input.command, `${fieldName}.command`);
+  if (!event || matcher === null || !command) return;
+  duplicateCollector(platform, { event, matcher, command, native: true });
+}
+
+function validateExtensionsLightweight(extensions) {
+  if (extensions === undefined) return;
+  const input = expectRecord(extensions, 'extensions');
+  if (!input) return;
+  validateAllowedKeys(input, 'extensions', ['instructions', 'permissions', 'hooks', 'nativeHooks', 'agents']);
+
+  const seenHooks = {
+    claude: new Set(),
+    codex: new Set(),
+  };
+  const collectHook = (platform, hook) => {
+    const event = hook.native ? hook.event : PUBLIC_HOOK_RENDER_MAP[platform][hook.event];
+    const matcher = hook.matcher === '*' ? undefined : hook.matcher;
+    const key = JSON.stringify([event, matcher ?? null, hook.command]);
+    if (seenHooks[platform].has(key)) {
+      error(`extensions has duplicate ${platform} hook for event "${event}" and command "${hook.command}"`);
+    }
+    seenHooks[platform].add(key);
+  };
+
+  if (input.hooks !== undefined) {
+    if (!Array.isArray(input.hooks)) {
+      error('extensions.hooks must be an array');
+    } else {
+      input.hooks.forEach((entry, index) =>
+        validateHookEntryLightweight(entry, `extensions.hooks[${index}]`, collectHook),
+      );
+    }
+  }
+
+  if (input.nativeHooks !== undefined) {
+    const nativeHooks = expectRecord(input.nativeHooks, 'extensions.nativeHooks');
+    if (nativeHooks) {
+      validateAllowedKeys(nativeHooks, 'extensions.nativeHooks', ['claude', 'codex']);
+      for (const platform of ['claude', 'codex']) {
+        if (nativeHooks[platform] === undefined) continue;
+        if (!Array.isArray(nativeHooks[platform])) {
+          error(`extensions.nativeHooks.${platform} must be an array`);
+          continue;
+        }
+        nativeHooks[platform].forEach((entry, index) =>
+          validateNativeHookEntryLightweight(
+            entry,
+            platform,
+            `extensions.nativeHooks.${platform}[${index}]`,
+            collectHook,
+          ),
+        );
+      }
     }
   }
 }

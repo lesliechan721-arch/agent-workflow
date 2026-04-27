@@ -18,6 +18,7 @@ import {
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
 import type { PluginMeta } from '../../src/types.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
 
@@ -440,6 +441,21 @@ describe('manifest coverage', () => {
               content: 'Keep the workspace tidy.',
             },
           ],
+          nativeHooks: {
+            claude: [
+              {
+                event: 'Notification',
+                matcher: '*',
+                command: 'echo notify',
+              },
+            ],
+            codex: [
+              {
+                event: 'UserPromptSubmit',
+                command: 'echo prompt',
+              },
+            ],
+          },
         },
       }),
     );
@@ -470,6 +486,13 @@ describe('manifest coverage', () => {
       title: 'Extra',
       content: 'Added only in clone.',
     });
+    if (bundleSource.extensions?.nativeHooks?.claude?.[0]) {
+      bundleSource.extensions.nativeHooks.claude[0].command = 'echo mutated notify';
+    }
+    bundleSource.extensions?.nativeHooks?.codex?.push({
+      event: 'Stop',
+      command: 'echo stop',
+    });
 
     expect(entry).toMatchObject({
       name: 'bundle-demo',
@@ -490,6 +513,40 @@ describe('manifest coverage', () => {
     });
     expect(plugin.manifest.extensions?.instructions).toHaveLength(1);
     expect(bundleSource.extensions?.instructions).toHaveLength(2);
+    expect(plugin.manifest.extensions?.nativeHooks).toEqual({
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo notify',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo prompt',
+        },
+      ],
+    });
+    expect(bundleSource.extensions?.nativeHooks).toEqual({
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo mutated notify',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo prompt',
+        },
+        {
+          event: 'Stop',
+          command: 'echo stop',
+        },
+      ],
+    });
     expect(noExtensionsBundle.extensions).toBeUndefined();
     expect(createPlatformManifestBase(plugin)).toMatchObject({
       name: 'bundle-demo',
@@ -497,6 +554,72 @@ describe('manifest coverage', () => {
       description: 'bundle demo',
       interface: {
         displayName: 'Bundle Demo',
+      },
+    });
+  });
+
+  it('preserves nativeHooks through the embedded bundle catalog', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.extensions ??= {};
+    manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo claude notification',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo codex prompt',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+
+    const [plugin] = await resolvePluginsFromCatalog(embeddedRoot, ['git-commit']);
+
+    expect(plugin.manifest.extensions?.nativeHooks).toEqual({
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo claude notification',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo codex prompt',
+        },
+      ],
+    });
+    await expect(
+      fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      extensions: {
+        nativeHooks: {
+          claude: [
+            {
+              event: 'Notification',
+              matcher: '*',
+              command: 'echo claude notification',
+            },
+          ],
+          codex: [
+            {
+              event: 'UserPromptSubmit',
+              command: 'echo codex prompt',
+            },
+          ],
+        },
       },
     });
   });

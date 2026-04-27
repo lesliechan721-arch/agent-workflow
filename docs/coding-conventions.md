@@ -18,5 +18,6 @@ TypeScript + ESM，2 空格缩进，NodeNext 导入风格，本地模块导入�
 - **`TrackingManifest`**（写入 `.agent-workflows-manifest.json`）— 版本化记录每个插件的生成产物清单，供 uninstall/upgrade 做精确清理
 - **`InstalledLedger`**（写入 `~/.aw/installed.json`）— 区分 Claude / Codex、user / project scope 的安装状态账本，包含 capability snapshot 和 `LedgerState`（available / degraded）
 - **`CatalogCompatibility`** — `'current' | 'missing' | 'capabilityChanged'`，判定 plugin 是否需要重新安装
-- **`HookEvent`** — `'before_tool' | 'after_tool' | 'session_start' | 'session_stop'`；`command` 不属于公共 hook contract
-- **Extensions 类型**：`InstructionDefinition`、`PermissionDefinition`、`HookDefinition`（含 `event`/`matcher`/`command`）、`AgentDefinition`
+- **`HookEvent`** — `'before_tool' | 'after_tool' | 'session_start'`；公共 hook 不包含平台原生事件全集，也不再包含 `session_stop`
+- **Hook 类型边界**：`HookDefinition` 表示公共 hooks；`NativeHookDefinition` / `NativeHooksByPlatform` 表示 `extensions.nativeHooks.<agent>`；`RenderedHookGroup` 表示最终 artifact group，`matcher` 可选；`TrackedHookGroupIdentity` 是 tracking/status/drift 使用的 canonical identity，不能和 rendered artifact 类型混用；`CodexSharedHookGroup` 保留 `.codex/hooks.json` 原始 group，用于无损保留外部配置
+- **Extensions 类型**：`InstructionDefinition`、`PermissionDefinition`、`HookDefinition`、`NativeHookDefinition`、`AgentDefinition`

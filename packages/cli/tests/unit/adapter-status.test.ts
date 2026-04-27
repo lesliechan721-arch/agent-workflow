@@ -114,7 +114,7 @@ describe('adapter status helpers', () => {
                     updatedAt: '2026-04-25T00:00:00.000Z',
                     resolvedVersion: '0.1.0',
                     capabilitySnapshot: {
-                      managedExtensions: ['permissions'],
+                      managedExtensions: ['permissions', 'hooks'],
                     },
                   },
                 },
@@ -146,7 +146,118 @@ describe('adapter status helpers', () => {
 
     expect(target.source).toBe('historical');
     expect(target.plugin.manifest.extensions?.permissions).toHaveLength(1);
+    expect(target.plugin.manifest.extensions?.hooks).toHaveLength(1);
+    expect(target.plugin.manifest.extensions?.hooks?.[0]?.agentOverrides).toMatchObject({
+      codex: null,
+    });
     expect(hasRepoManagedArtifacts(target.plugin)).toBe(false);
+  });
+
+  it('does not synthesize Codex historical hook placeholders from ledger-only repo-managed booleans', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-history-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          'repo-only-history': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'user',
+      ['repo-only-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.plugin.manifest.extensions?.hooks).toBeUndefined();
+  });
+
+  it('recovers Claude hook-only historical plugins from ledger snapshots without tracking artifacts', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-hook-history-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          'claude-hook-history': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              claude: {
+                projectScopes: {
+                  [claudeProjectKey]: {
+                    managed: true,
+                    updatedAt: '2026-04-25T00:00:00.000Z',
+                    resolvedVersion: '0.1.0',
+                    capabilitySnapshot: {
+                      managedExtensions: ['hooks'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['claude-hook-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.plugin.manifest.extensions?.hooks).toHaveLength(1);
+    expect(target.plugin.manifest.extensions?.hooks?.[0]?.agentOverrides).toMatchObject({
+      codex: null,
+    });
   });
 
   it('resolves Claude runtime and native fallback evidence with scope-sensitive project matching', async () => {
@@ -270,24 +381,24 @@ describe('adapter status helpers', () => {
     expect(
       resolveClaudeCatalogCompatibility({
         currentManifestPresent: true,
-        currentManagedExtensions: ['instructions', 'permissions'],
+        currentManagedExtensions: ['instructions', 'permissions', 'hooks'],
         currentScopeManagedEvidence: true,
         platformRuntimeEvidence: false,
         platformNativeFallbackEvidence: false,
         installedCapabilitySnapshot: {
-          managedExtensions: ['permissions', 'instructions'],
+          managedExtensions: ['permissions', 'instructions', 'hooks'],
         },
       }),
     ).toBe('current');
     expect(
       resolveClaudeCatalogCompatibility({
         currentManifestPresent: true,
-        currentManagedExtensions: ['instructions'],
+        currentManagedExtensions: ['instructions', 'hooks'],
         currentScopeManagedEvidence: true,
         platformRuntimeEvidence: false,
         platformNativeFallbackEvidence: false,
         installedCapabilitySnapshot: {
-          managedExtensions: ['permissions', 'instructions'],
+          managedExtensions: ['permissions', 'instructions', 'hooks'],
         },
       }),
     ).toBe('capabilityChanged');
@@ -304,6 +415,18 @@ describe('adapter status helpers', () => {
     const nativeOnlyPlugin = makePluginMeta({
       skills: './skills',
     });
+    const nativeHookOnlyPlugin = makePluginMeta({
+      extensions: {
+        nativeHooks: {
+          codex: [
+            {
+              event: 'Stop',
+              command: 'echo stop',
+            },
+          ],
+        },
+      },
+    });
     const hybridPlugin = makePluginMeta({
       skills: './skills',
       extensions: {
@@ -319,6 +442,8 @@ describe('adapter status helpers', () => {
 
     expect(requiresNativePlugin(nativeOnlyPlugin)).toBe(true);
     expect(hasRepoManagedArtifacts(nativeOnlyPlugin)).toBe(false);
+    expect(requiresNativePlugin(nativeHookOnlyPlugin)).toBe(false);
+    expect(hasRepoManagedArtifacts(nativeHookOnlyPlugin)).toBe(true);
     expect(requiresNativePlugin(hybridPlugin)).toBe(true);
     expect(hasRepoManagedArtifacts(hybridPlugin)).toBe(true);
 

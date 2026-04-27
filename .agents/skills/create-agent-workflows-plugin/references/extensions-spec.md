@@ -1,6 +1,6 @@
 # Extensions 规范
 
-`extensions` 是 `.agents-plugin/plugin.json` 中的高级能力声明，用于在安装或构建时派生出跨平台能力。包含四种类型：`instructions`（指令）、`permissions`（权限）、`hooks`（事件钩子）和 `agents`（子 Agent）。
+`extensions` 是 `.agents-plugin/plugin.json` 中的高级能力声明，用于在安装或构建时派生出跨平台能力。包含 `instructions`（指令）、`permissions`（权限）、公共 `hooks`（跨平台事件钩子）、平台独享 `nativeHooks` 和 `agents`（子 Agent）。
 
 不要新增顶层 `claude` block，也不要把 hooks / agents 塞进 `buildConfig.manifestOverrides.claude`。
 
@@ -12,12 +12,16 @@
     "instructions": [],
     "permissions": [],
     "hooks": [],
+    "nativeHooks": {
+      "claude": [],
+      "codex": []
+    },
     "agents": []
   }
 }
 ```
 
-每个数组可以为空。数组中的每个条目都可以附加 `agentOverrides` 做平台特定覆盖（见末尾）。
+每个数组可以为空。`instructions`、`permissions`、公共 `hooks` 和 `agents` 的条目可以附加 `agentOverrides` 做平台特定覆盖（见末尾）。`nativeHooks` 已经按平台分组，不再支持 `agentOverrides`。
 
 ---
 
@@ -103,7 +107,7 @@
 
 ## hooks[]
 
-事件驱动的自动化钩子，在特定生命周期事件发生时执行 shell 命令。
+公共事件钩子，在两个平台语义一致的生命周期事件发生时执行 shell 命令。`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集；只有已经确认可移植的事件会放在这里。
 
 ### 字段
 
@@ -114,14 +118,17 @@
 | `command` | string | 是 | 触发时执行的 shell 命令 |
 | `agentOverrides` | object | 否 | 平台特定覆盖 |
 
-### 事件类型
+### 公共事件类型
 
 | 事件 | 说明 | matcher 用途 |
 |------|------|-------------|
 | `before_tool` | 工具使用前 | 匹配工具名称 |
 | `after_tool` | 工具使用后 | 匹配工具名称 |
-| `session_start` | 会话开始 | — |
-| `session_stop` | 会话结束 | — |
+| `session_start` | 会话开始 | 只能写 `startup`、`resume`、`clear`，或这些值用 `|` 连接 |
+
+公共 `session_start` 只覆盖 `startup / resume / clear`。省略 `matcher` 时，CLI 会在最终 artifact 中显式写成 `startup|resume|clear`；这不会匹配 Claude 的 `compact`。如果需要响应 Claude compact，应使用 `extensions.nativeHooks.claude[]` 声明原生 `SessionStart`，并写 `matcher: "compact"`。
+
+`session_stop` 已从公共 hook 中移除。Claude 的 `Stop` / `SessionEnd` 与 Codex 的 `Stop` 语义不同，应写到对应平台的 `nativeHooks`。
 
 `command` 是公共 hook contract 的必填字段，表示触发 hook 时执行的 shell 命令。`description` 不属于公共 hook 字段；需要解释 hook 用途时，把说明放在插件文档或相邻注释里。
 
@@ -129,8 +136,8 @@
 
 | 平台 | 输出 | 说明 |
 |------|------|------|
-| Claude | `hooks/hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart/SessionEnd: [...] } }` |
-| Codex | `hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart/Stop: [...] } }` |
+| Claude | `hooks/hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
+| Codex | `hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
 
 ### 示例
 
@@ -148,6 +155,66 @@
   "command": "cat .project-context.md 2>/dev/null || true"
 }
 ```
+
+```json
+{
+  "event": "session_start",
+  "matcher": "startup|resume",
+  "command": "cat .project-context.md 2>/dev/null || true"
+}
+```
+
+---
+
+## nativeHooks
+
+平台原生 hook 入口，用于声明只有 Claude 或只有 Codex 才有明确语义的事件。事件名写平台原生名，不做公共事件映射。
+
+### 字段
+
+```json
+{
+  "extensions": {
+    "nativeHooks": {
+      "claude": [
+        {
+          "event": "SessionStart",
+          "matcher": "compact",
+          "command": "echo claude compact"
+        },
+        {
+          "event": "Stop",
+          "command": "echo claude turn stopped"
+        }
+      ],
+      "codex": [
+        {
+          "event": "UserPromptSubmit",
+          "command": "echo codex prompt submitted"
+        },
+        {
+          "event": "Stop",
+          "command": "echo codex turn stopped"
+        }
+      ]
+    }
+  }
+}
+```
+
+`nativeHooks` 只允许 `claude` 和 `codex` 两个 key。每条 native hook 首版只支持同步 `command` handler，结构是 `{ "event": "...", "matcher"?: "...", "command": "..." }`。
+
+`matcher` 不是所有原生事件都有语义。matcherless 事件不要写 `matcher`；CLI 会在 source manifest 校验阶段拒绝这类字段。例如 Codex `UserPromptSubmit` / `Stop` 以及 Claude `UserPromptSubmit` / `Stop` 都不接受 matcher。
+
+`agentOverrides` 不用于 `nativeHooks`。如果一个 hook 是平台独享事件，直接写在对应平台数组里；如果是可移植公共事件，写在 `extensions.hooks`，再用 `agentOverrides` 做平台排除或字段覆盖。
+
+常见迁移：
+
+| 旧写法 / 需求 | 新写法 |
+|------|------|
+| 公共 `session_stop` | Claude 写 `nativeHooks.claude[].event = "Stop"` 或 `"SessionEnd"`；Codex 写 `nativeHooks.codex[].event = "Stop"` |
+| Claude compact 时触发 | `nativeHooks.claude[]` 中写 `event: "SessionStart"`、`matcher: "compact"` |
+| Codex prompt 提交时触发 | `nativeHooks.codex[]` 中写 `event: "UserPromptSubmit"`，不要写 matcher |
 
 ---
 
@@ -234,7 +301,8 @@ developer_instructions = """请检查这次提交是否符合提交规范，并�
 
 ### 使用场景
 
-- 某个 hook 只在 Claude 上有意义 → Codex 侧设为 `null`
+- 某个公共 hook 只在 Claude 上有意义 → Codex 侧设为 `null`
+- 某个原生 hook 只在 Claude 或 Codex 上有意义 → 写入 `extensions.nativeHooks.<agent>`，不要使用 `agentOverrides`
 - 同一 instruction 在两个平台用不同措辞 → 分别覆盖 `content`
 - 某个 agent 的 `tools` 只有 Claude 支持 → Claude 侧覆盖 `tools`，Codex 侧省略
 

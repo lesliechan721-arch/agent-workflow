@@ -131,6 +131,41 @@ function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capa
 }
 
 describe('ClaudeAdapter', () => {
+  it('tracks Claude hook-only capabilities in the ledger without emitting hook artifacts', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const basePlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const hookOnlyPlugin: PluginMeta = {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        extensions: {
+          nativeHooks: {
+            claude: [
+              {
+                event: 'Stop',
+                command: 'echo claude stop',
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    const ledger = await applyClaudeInstallLedger(
+      createAvailableLedger(),
+      hookOnlyPlugin,
+      'user',
+      repoRoot,
+    );
+
+    expect(ledger.plugins['git-commit'].platforms.claude?.userScope?.capabilitySnapshot).toEqual({
+      managedExtensions: ['hooks'],
+    });
+
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    await expect(adapter.installExtensions(hookOnlyPlugin, 'project')).resolves.toEqual([]);
+  });
+
   it('writes and removes Claude scope records in the installed ledger', async () => {
     const { repoRoot } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
@@ -163,7 +198,7 @@ describe('ClaudeAdapter', () => {
           managed: true,
           resolvedVersion: '0.1.0',
           capabilitySnapshot: {
-            managedExtensions: ['instructions', 'permissions'],
+            managedExtensions: ['instructions', 'permissions', 'hooks'],
           },
         },
       },
@@ -181,7 +216,7 @@ describe('ClaudeAdapter', () => {
         managed: true,
         resolvedVersion: '0.1.0',
         capabilitySnapshot: {
-          managedExtensions: ['instructions', 'permissions'],
+          managedExtensions: ['instructions', 'permissions', 'hooks'],
         },
       },
     });

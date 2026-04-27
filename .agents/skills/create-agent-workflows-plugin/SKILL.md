@@ -61,7 +61,7 @@ plugins/<name>/
 | 能力 | 平台 | 配置位置 | 细节 |
 |------|------|----------|------|
 | Skills | 双平台 | `skills/`、`SKILL.md`、`agents/openai.yaml` | `references/skills-and-triggers.md` |
-| Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `agents` | `references/extensions-spec.md` |
+| Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
 | MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
 | Claude 专属能力 | Claude | `commands/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
@@ -123,7 +123,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 |------|---------|
 | `references/plugin-manifest-spec.md` | plugin.json 完整字段规范、marketplace、interface、三层分发模型 |
 | `references/skills-and-triggers.md` | Skills 目录结构、SKILL.md 规范、命令结果填充、agents/openai.yaml、双平台触发配置 |
-| `references/extensions-spec.md` | instructions / permissions / hooks / agents 四种 extension + agentOverrides 机制 |
+| `references/extensions-spec.md` | instructions / permissions / 公共 hooks / nativeHooks / agents + agentOverrides 机制 |
 | `references/build-config-spec.md` | templates 模板渲染 / fileRules 平台文件规则 / manifestOverrides 覆盖 |
 | `references/mcp-and-apps.md` | .mcp.json 和 .app.json 配置格式与平台行为 |
 | `references/claude-only-capabilities.md` | commands（含命令结果填充）/ output-styles / lspServers / userConfig / channels |

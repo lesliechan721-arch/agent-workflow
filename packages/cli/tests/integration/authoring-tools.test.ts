@@ -36,6 +36,30 @@ function extractJsonFenceAfter(document: string, heading: string): unknown {
   return JSON.parse(document.slice(jsonStart, fenceEnd));
 }
 
+async function writeManifestOnlyPlugin(
+  root: string,
+  name: string,
+  extensions: Record<string, unknown>,
+): Promise<string> {
+  const pluginDir = path.join(root, name);
+  await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+  await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    name,
+    version: '0.1.0',
+    description: `${name} test plugin.`,
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+      },
+    },
+    extensions,
+  }, { spaces: 2 });
+  return pluginDir;
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -410,6 +434,12 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
+    expect(extensionsSpecDoc).toContain('`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集');
+    expect(extensionsSpecDoc).toContain('公共 `session_start` 只覆盖 `startup / resume / clear`');
+    expect(extensionsSpecDoc).toContain('`extensions.nativeHooks.<agent>`');
+    expect(extensionsSpecDoc).toContain('matcherless 事件不要写 `matcher`');
+    expect(extensionsSpecDoc).toContain('`agentOverrides` 不用于 `nativeHooks`');
+    expect(extensionsSpecDoc).toContain('`session_stop` 已从公共 hook 中移除');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
     const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
@@ -423,6 +453,145 @@ describe('authoring tools', () => {
       'utf8',
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
+    expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
+  });
+
+  it('validate_plugin.js accepts native hooks and rejects hook contract mistakes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-hooks-authoring-'));
+    tempDirs.push(tempRoot);
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'native-hook-demo', {
+      hooks: [
+        {
+          event: 'session_start',
+          command: 'echo portable start',
+        },
+      ],
+      nativeHooks: {
+        claude: [
+          {
+            event: 'SessionStart',
+            matcher: 'compact',
+            command: 'echo claude compact',
+          },
+          {
+            event: 'Stop',
+            command: 'echo claude stop',
+          },
+        ],
+        codex: [
+          {
+            event: 'UserPromptSubmit',
+            command: 'echo codex prompt',
+          },
+          {
+            event: 'Stop',
+            command: 'echo codex stop',
+          },
+        ],
+      },
+    });
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const validManifest = await fs.readJson(manifestPath);
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        extensions: {
+          nativeHooks: {
+            codex: [
+              {
+                event: 'Notification',
+                command: 'echo wrong platform',
+              },
+            ],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('unsupported codex hook event "Notification"'),
+    });
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        extensions: {
+          nativeHooks: {
+            codex: [
+              {
+                event: 'Stop',
+                matcher: '*',
+                command: 'echo invalid matcher',
+              },
+            ],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('does not allow matcher'),
+    });
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        extensions: {
+          hooks: [
+            {
+              event: 'session_stop',
+              command: 'echo old stop',
+            },
+          ],
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('public event "session_stop" has been removed'),
+    });
   });
 
   it('validate_plugin.js passes on the reference code-review example', async () => {

@@ -106,8 +106,7 @@ export interface PermissionDefinition {
 export type HookEvent =
   | 'before_tool'
   | 'after_tool'
-  | 'session_start'
-  | 'session_stop';
+  | 'session_start';
 
 export interface HookDefinition {
   event: HookEvent;
@@ -118,6 +117,17 @@ export interface HookDefinition {
     matcher?: string;
     command: string;
   }>;
+}
+
+export interface NativeHookDefinition {
+  event: string;
+  matcher?: string;
+  command: string;
+}
+
+export interface NativeHooksByPlatform {
+  claude?: NativeHookDefinition[];
+  codex?: NativeHookDefinition[];
 }
 
 export interface AgentDefinition {
@@ -137,6 +147,7 @@ export interface PluginExtensions {
   instructions?: InstructionDefinition[];
   permissions?: PermissionDefinition[];
   hooks?: HookDefinition[];
+  nativeHooks?: NativeHooksByPlatform;
   agents?: AgentDefinition[];
 }
 
@@ -199,17 +210,30 @@ export interface CodexHookHandler {
   command: string;
 }
 
-export interface CodexHookGroup {
+export interface RenderedHookGroup {
   event: string;
-  matcher: string;
+  matcher?: string;
   hooks: CodexHookHandler[];
+}
+
+export interface TrackedHookGroupIdentity {
+  event: string;
+  matcher?: string;
+  command: string;
+}
+
+export interface CodexSharedHookGroup {
+  event: string;
+  matcher?: string | null;
+  hooks: Record<string, unknown>[];
+  rawGroup: Record<string, unknown>;
 }
 
 export interface GeneratedArtifact {
   path: string;
   kind: 'instruction' | 'permission' | 'hook' | 'agent';
   platform: PlatformName;
-  hookGroups?: CodexHookGroup[];
+  hookGroups?: TrackedHookGroupIdentity[];
 }
 
 export interface TrackingPluginRecord {

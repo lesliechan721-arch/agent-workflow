@@ -2,9 +2,10 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { renderHooksArtifact } from './hooks.js';
+import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
 import { applyFileRules } from '../utils/file-rules.js';
+import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   createBundleSourceManifest,
   createPlatformManifestBase,
@@ -15,7 +16,6 @@ import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import type {
   AgentDefinition,
-  HookDefinition,
   PlatformName,
   PlatformPluginManifest,
   PluginMeta,
@@ -245,11 +245,10 @@ export async function bundleLocalPlugin(
   claudeManifest.userConfig = claudeOverrides?.userConfig;
   claudeManifest.channels = claudeOverrides?.channels;
 
-  const claudeHooks = resolvePlatformEntries<HookDefinition>(
-    plugin.manifest.extensions?.hooks,
+  const hooksArtifact = renderResolvedHooksArtifact(
+    resolvePlatformHookDefinitions(plugin.manifest, 'claude'),
     'claude',
   );
-  const hooksArtifact = renderHooksArtifact(claudeHooks, 'claude');
   if (hooksArtifact) {
     const hooksPath = path.join(outputRoot, 'claude', 'hooks', 'hooks.json');
     await writeJsonFile(hooksPath, hooksArtifact.content);

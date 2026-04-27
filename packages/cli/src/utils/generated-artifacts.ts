@@ -1,4 +1,5 @@
 import type { GeneratedArtifact } from '../types.js';
+import { serializeTrackedHookGroupIdentity } from './hooks-contract.js';
 
 type GeneratedArtifactsCarrier = {
   generatedArtifacts?: unknown;
@@ -32,7 +33,9 @@ export function mergeGeneratedArtifacts(
         artifact.path,
         artifact.kind,
         artifact.platform,
-        artifact.hookGroups ?? null,
+        artifact.hookGroups
+          ?.map((group) => serializeTrackedHookGroupIdentity(group))
+          .sort() ?? null,
       ]);
       if (seen.has(key)) {
         continue;

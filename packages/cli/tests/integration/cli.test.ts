@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ClaudeAdapter } from '../../src/adapters/claude.js';
 import { CodexAdapter } from '../../src/adapters/codex.js';
 import { initCommand } from '../../src/commands/init.js';
 import { installCommand } from '../../src/commands/install.js';
@@ -315,6 +316,200 @@ async function addHookOnlyPlugin(repoRoot: string): Promise<void> {
       },
     },
     { spaces: 2 },
+  );
+}
+
+async function addNativeHookOnlyPlugin(
+  repoRoot: string,
+  pluginName = 'prompt-guard',
+): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: pluginName,
+      version: '0.1.0',
+      description: 'Codex native hook only test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX'],
+        },
+      },
+      extensions: {
+        nativeHooks: {
+          codex: [
+            {
+              event: 'UserPromptSubmit',
+              command: `echo ${pluginName} prompt`,
+            },
+            {
+              event: 'Stop',
+              command: `echo ${pluginName} stop`,
+            },
+          ],
+        },
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
+async function addMixedHookPlugin(repoRoot: string): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', 'mixed-guard');
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: 'mixed-guard',
+      version: '0.1.0',
+      description: 'Public and native hook test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX'],
+        },
+      },
+      extensions: {
+        hooks: [
+          {
+            event: 'before_tool',
+            matcher: 'Bash',
+            command: 'echo mixed public hook',
+          },
+        ],
+        nativeHooks: {
+          codex: [
+            {
+              event: 'Stop',
+              command: 'echo mixed native stop',
+            },
+          ],
+        },
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
+async function addClaudeNativeHookOnlyPlugin(repoRoot: string): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', 'claude-compact');
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: 'claude-compact',
+      version: '0.1.0',
+      description: 'Claude native hook only test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CLAUDE'],
+        },
+      },
+      extensions: {
+        nativeHooks: {
+          claude: [
+            {
+              event: 'SessionStart',
+              matcher: 'compact',
+              command: 'echo claude compact',
+            },
+          ],
+        },
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
+async function addNativeAndMixedHookPlugins(repoRoot: string): Promise<void> {
+  await addNativeHookOnlyPlugin(repoRoot);
+  await addMixedHookPlugin(repoRoot);
+}
+
+async function seedCodexExternalHooks(repoRoot: string): Promise<void> {
+  await fs.ensureDir(path.join(repoRoot, '.codex'));
+  await fs.writeJson(
+    path.join(repoRoot, '.codex', 'hooks.json'),
+    {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'echo external with metadata',
+                timeout: 5,
+                statusMessage: 'external check',
+              },
+            ],
+          },
+          {
+            matcher: 'Write',
+            hooks: [
+              { type: 'command', command: 'echo external command' },
+              { type: 'prompt', prompt: 'external prompt' },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+        ],
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
+async function seedCodexExternalMultiHandlerHooks(repoRoot: string): Promise<void> {
+  await fs.ensureDir(path.join(repoRoot, '.codex'));
+  await fs.writeJson(
+    path.join(repoRoot, '.codex', 'hooks.json'),
+    {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [
+              { type: 'command', command: 'echo external multi first' },
+              { type: 'command', command: 'echo external multi second' },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+        ],
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
+async function trustCodexProject(codexHome: string, repoRoot: string): Promise<void> {
+  const projectKey = await resolveCodexProjectKey(repoRoot);
+  await fs.ensureDir(codexHome);
+  await fs.appendFile(
+    path.join(codexHome, 'config.toml'),
+    ['', `[projects.${JSON.stringify(projectKey)}]`, 'trust_level = "trusted"', ''].join('\n'),
+    'utf8',
   );
 }
 
@@ -1188,6 +1383,494 @@ describe('CLI integration', () => {
         reason: 'operation_interrupted_after_artifact_write',
       },
     });
+  });
+
+  it('installs and uninstalls a Codex nativeHooks-only plugin through the command path', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addNativeHookOnlyPlugin,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'prompt-guard', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      extensions: {
+        nativeHooks: {
+          codex: [
+            { event: 'UserPromptSubmit', command: 'echo prompt-guard prompt' },
+            { event: 'Stop', command: 'echo prompt-guard stop' },
+          ],
+        },
+      },
+    });
+
+    await installCommand(
+      ['prompt-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
+      hooks: {
+        Stop: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt-guard stop' }],
+          },
+        ],
+        UserPromptSubmit: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt-guard prompt' }],
+          },
+        ],
+      },
+    });
+
+    await uninstallCommand(
+      ['prompt-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(false);
+  });
+
+  it('preserves external Codex shared hook groups while installing and uninstalling public/native mixed hooks', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addMixedHookPlugin,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await seedCodexExternalHooks(repoRoot);
+
+    await installCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'echo external with metadata',
+                timeout: 5,
+                statusMessage: 'external check',
+              },
+            ],
+          },
+          {
+            matcher: 'Write',
+            hooks: [
+              { type: 'command', command: 'echo external command' },
+              { type: 'prompt', prompt: 'external prompt' },
+            ],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo mixed public hook' }],
+          },
+        ],
+        Stop: [
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+          {
+            hooks: [{ type: 'command', command: 'echo mixed native stop' }],
+          },
+        ],
+      },
+    });
+
+    await uninstallCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'echo external with metadata',
+                timeout: 5,
+                statusMessage: 'external check',
+              },
+            ],
+          },
+          {
+            matcher: 'Write',
+            hooks: [
+              { type: 'command', command: 'echo external command' },
+              { type: 'prompt', prompt: 'external prompt' },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('keeps external multi-handler groups and remaining AW hook groups when uninstalling one Codex hook plugin', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addNativeAndMixedHookPlugins,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await seedCodexExternalMultiHandlerHooks(repoRoot);
+
+    await installCommand(
+      ['prompt-guard', 'mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    const installedHooks = await fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'));
+    expect(installedHooks).toMatchObject({
+      hooks: {
+        Stop: expect.arrayContaining([
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+          {
+            hooks: [{ type: 'command', command: 'echo prompt-guard stop' }],
+          },
+          {
+            hooks: [{ type: 'command', command: 'echo mixed native stop' }],
+          },
+        ]),
+        UserPromptSubmit: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt-guard prompt' }],
+          },
+        ],
+      },
+    });
+    expect(installedHooks.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'Write',
+        hooks: [
+          { type: 'command', command: 'echo external multi first' },
+          { type: 'command', command: 'echo external multi second' },
+        ],
+      },
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'echo mixed public hook' }],
+      },
+    ]);
+
+    await uninstallCommand(
+      ['prompt-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    const remainingHooks = await fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'));
+    expect(remainingHooks.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'Write',
+        hooks: [
+          { type: 'command', command: 'echo external multi first' },
+          { type: 'command', command: 'echo external multi second' },
+        ],
+      },
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'echo mixed public hook' }],
+      },
+    ]);
+    expect(remainingHooks).toMatchObject({
+      hooks: {
+        Stop: expect.arrayContaining([
+          {
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          },
+          {
+            hooks: [{ type: 'command', command: 'echo mixed native stop' }],
+          },
+        ]),
+      },
+    });
+    expect(remainingHooks.hooks.Stop).toHaveLength(2);
+    expect(remainingHooks.hooks.UserPromptSubmit).toBeUndefined();
+  });
+
+  it('uses tracking identities for Codex native hooks after current catalog entries disappear', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addNativeAndMixedHookPlugins,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await seedCodexExternalHooks(repoRoot);
+    await trustCodexProject(codexHome, repoRoot);
+
+    await installCommand(
+      ['prompt-guard', 'mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await fs.remove(path.join(repoRoot, 'plugins', 'prompt-guard'));
+    const withoutPromptGuard = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(withoutPromptGuard);
+    setEmbeddedPluginsRootOverrideForTests(withoutPromptGuard);
+    await initCommand({ force: true });
+
+    await upgradeCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await expect(fs.readJson(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toMatchObject({
+      hooks: {
+        UserPromptSubmit: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt-guard prompt' }],
+          },
+        ],
+        Stop: expect.arrayContaining([
+          expect.objectContaining({
+            hooks: [{ type: 'command', command: 'echo prompt-guard stop' }],
+          }),
+          expect.objectContaining({
+            hooks: [{ type: 'command', command: 'echo mixed native stop' }],
+          }),
+          expect.objectContaining({
+            matcher: 'legacy-inert',
+            hooks: [{ type: 'command', command: 'echo external stop' }],
+          }),
+        ]),
+      },
+    });
+
+    await fs.remove(path.join(repoRoot, 'plugins', 'mixed-guard'));
+    const withoutHookPlugins = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(withoutHookPlugins);
+    setEmbeddedPluginsRootOverrideForTests(withoutHookPlugins);
+    await initCommand({ force: true });
+
+    const nativeStatus = await statusCommand(
+      ['prompt-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+    expect(nativeStatus.output).toContain('currentCatalog=source:local,available:no');
+    expect(nativeStatus.output).toContain('hooks=visible');
+    expect(nativeStatus.output).not.toContain('Historical managed instruction placeholder');
+    expect(nativeStatus.reports[0].plugins[0].driftWarnings).toEqual([]);
+
+    const mixedStatus = await statusCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+    expect(mixedStatus.output).toContain('currentCatalog=source:local,available:no');
+    expect(mixedStatus.output).toContain('hooks=visible');
+    expect(mixedStatus.reports[0].plugins[0].driftWarnings).toEqual([]);
+  });
+
+  it('reports drift when an expected Codex hook only exists inside an opaque mixed group', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addMixedHookPlugin,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await installCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    await fs.writeJson(
+      path.join(repoRoot, '.codex', 'hooks.json'),
+      {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [
+                { type: 'command', command: 'echo mixed public hook' },
+                { type: 'prompt', prompt: 'external prompt' },
+              ],
+            },
+          ],
+          Stop: [
+            {
+              hooks: [
+                { type: 'command', command: 'echo mixed native stop' },
+                { type: 'agent', agent: 'external-agent' },
+              ],
+            },
+          ],
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const result = await statusCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    expect(result.reports[0].plugins[0].repoManagedSessionState?.hooks).toBe('absent');
+    expect(result.output).toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
+  });
+
+  it('keeps Claude nativeHooks-only capability through embedded catalog and ledger fallback', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addClaudeNativeHookOnlyPlugin,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_CLAUDE_HOME = path.join(path.dirname(codexHome), 'claude-home');
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'claude-compact', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      extensions: {
+        nativeHooks: {
+          claude: [
+            {
+              event: 'SessionStart',
+              matcher: 'compact',
+              command: 'echo claude compact',
+            },
+          ],
+        },
+      },
+    });
+
+    const nativeCliRunner = async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+    await installCommand(
+      ['claude-compact'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        adapters: {
+          claude: new ClaudeAdapter(repoRoot, nativeCliRunner, process.env),
+          codex: new FakeAdapter('codex', repoRoot, {}),
+        },
+      },
+    );
+
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
+      plugins: {
+        'claude-compact': {
+          platforms: {
+            claude: {
+              projectScopes: expect.any(Object),
+            },
+          },
+        },
+      },
+    });
+    const installedLedger = await fs.readJson(path.join(awHome, 'installed.json'));
+    const claudeScopeRecords = Object.values(
+      installedLedger.plugins['claude-compact'].platforms.claude.projectScopes,
+    ) as Array<{ capabilitySnapshot: { managedExtensions: string[] } }>;
+    expect(claudeScopeRecords[0].capabilitySnapshot.managedExtensions).toEqual(['hooks']);
+
+    await fs.remove(path.join(repoRoot, 'plugins', 'claude-compact'));
+    const withoutClaudePlugin = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(withoutClaudePlugin);
+    setEmbeddedPluginsRootOverrideForTests(withoutClaudePlugin);
+    await initCommand({ force: true });
+
+    const result = await statusCommand(
+      ['claude-compact'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        adapters: {
+          claude: new ClaudeAdapter(repoRoot, nativeCliRunner, process.env),
+          codex: new FakeAdapter('codex', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.output).toContain('currentCatalog=source:local,available:no');
+    expect(result.output).toContain('catalogCompatibility=missing');
+    expect(result.reports[0].plugins[0].scopeInitialized).toBe('yes');
   });
 
   it('anchors Codex project artifacts at the repo root when commands run from a subdirectory', async () => {

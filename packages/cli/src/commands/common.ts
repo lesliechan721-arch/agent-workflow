@@ -141,6 +141,9 @@ async function createHistoricalPluginMeta(
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('permissions')) {
     trackedKindsByPlatform.claude.add('permission');
   }
+  if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('hooks')) {
+    trackedKindsByPlatform.claude.add('hook');
+  }
 
   const codexScopeRecord =
     scope === 'user'

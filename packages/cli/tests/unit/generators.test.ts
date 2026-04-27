@@ -7,7 +7,7 @@ import { parseTOML } from 'toml-eslint-parser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { generateAgentArtifacts } from '../../src/generators/agents.js';
-import { renderHooksArtifact } from '../../src/generators/hooks.js';
+import { renderHooksArtifact, renderResolvedHooksArtifact } from '../../src/generators/hooks.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import {
   generateCodexPermissionArtifacts,
@@ -41,6 +41,27 @@ describe('local-plugin generator', () => {
   it('generates Claude and Codex runtime manifests with explicit bundle-local paths', async () => {
     const repoRoot = await makeTempRepo();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    plugin.manifest.extensions ??= {};
+    plugin.manifest.extensions.hooks ??= [];
+    plugin.manifest.extensions.hooks.push({
+      event: 'session_start',
+      command: 'echo shared session start',
+    });
+    plugin.manifest.extensions.nativeHooks = {
+      claude: [
+        {
+          event: 'Notification',
+          matcher: '*',
+          command: 'echo claude notification',
+        },
+      ],
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo codex prompt',
+        },
+      ],
+    };
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
 
     const result = await bundleLocalPlugin(plugin, outputRoot);
@@ -60,6 +81,30 @@ describe('local-plugin generator', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'codex', 'skills', 'commit', 'SKILL.md')),
     ).resolves.toBe(true);
+    await expect(
+      fs.readJson(path.join(outputRoot, 'claude', 'hooks', 'hooks.json')),
+    ).resolves.toEqual({
+      hooks: {
+        Notification: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo claude notification' }],
+          },
+        ],
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ],
+        SessionStart: [
+          {
+            matcher: 'startup|resume|clear',
+            hooks: [{ type: 'command', command: 'echo shared session start' }],
+          },
+        ],
+      },
+    });
   });
 
   it('renders Claude agents with frontmatter and Codex agents as valid role-file TOML', () => {
@@ -107,36 +152,140 @@ describe('local-plugin generator', () => {
     expect(codexArtifact.content).not.toContain('tools =');
   });
 
-  it('renders hook event mappings for Claude and Codex runtime contracts', () => {
+  it('renders public hook event mappings for Claude and Codex runtime contracts', () => {
     const claudeArtifact = renderHooksArtifact([
       {
-        event: 'session_stop',
-        command: 'echo done',
+        event: 'after_tool',
+        matcher: 'Edit',
+        command: 'echo after',
+      },
+      {
+        event: 'session_start',
+        command: 'echo start',
       },
     ], 'claude');
     const codexArtifact = renderHooksArtifact([
       {
-        event: 'session_stop',
-        command: 'echo done',
+        event: 'before_tool',
+        matcher: 'Write',
+        command: 'echo before',
       },
     ], 'codex');
 
     expect(claudeArtifact?.content).toEqual({
       hooks: {
-        SessionEnd: [
+        PostToolUse: [
           {
-            matcher: '*',
-            hooks: [{ type: 'command', command: 'echo done' }],
+            matcher: 'Edit',
+            hooks: [{ type: 'command', command: 'echo after' }],
+          },
+        ],
+        SessionStart: [
+          {
+            matcher: 'startup|resume|clear',
+            hooks: [{ type: 'command', command: 'echo start' }],
           },
         ],
       },
     });
     expect(codexArtifact?.content).toEqual({
       hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo before' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('renders hook groups in stable canonical order', () => {
+    const artifact = renderResolvedHooksArtifact([
+      {
+        kind: 'public',
+        event: 'before_tool',
+        matcher: 'Write',
+        command: 'echo write',
+      },
+      {
+        kind: 'public',
+        event: 'before_tool',
+        matcher: 'Edit',
+        command: 'echo edit',
+      },
+    ], 'codex');
+
+    expect(artifact?.content).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Edit',
+            hooks: [{ type: 'command', command: 'echo edit' }],
+          },
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo write' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('renders native hooks alongside public hooks and omits matcher for matcherless events', () => {
+    const claudeArtifact = renderResolvedHooksArtifact([
+      {
+        kind: 'public',
+        event: 'after_tool',
+        matcher: 'Edit',
+        command: 'echo after',
+      },
+      {
+        kind: 'native',
+        event: 'Stop',
+        command: 'echo stop',
+      },
+    ], 'claude');
+    const codexArtifact = renderResolvedHooksArtifact([
+      {
+        kind: 'public',
+        event: 'before_tool',
+        matcher: 'Write',
+        command: 'echo before',
+      },
+      {
+        kind: 'native',
+        event: 'UserPromptSubmit',
+        command: 'echo prompt',
+      },
+    ], 'codex');
+
+    expect(claudeArtifact?.content).toEqual({
+      hooks: {
+        PostToolUse: [
+          {
+            matcher: 'Edit',
+            hooks: [{ type: 'command', command: 'echo after' }],
+          },
+        ],
         Stop: [
           {
-            matcher: '*',
-            hooks: [{ type: 'command', command: 'echo done' }],
+            hooks: [{ type: 'command', command: 'echo stop' }],
+          },
+        ],
+      },
+    });
+    expect(codexArtifact?.content).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo before' }],
+          },
+        ],
+        UserPromptSubmit: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt' }],
           },
         ],
       },
