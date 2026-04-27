@@ -654,6 +654,106 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.js validates rendered templated skill metadata', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-templated-metadata-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'templated-metadata-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'templated-metadata-test', 'agents'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'templated-metadata-test',
+      version: '0.1.0',
+      description: 'Test plugin for templated skill metadata.',
+      skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+      buildConfig: {
+        templates: {
+          include: ['skills/**/*.md', 'skills/**/*.yaml'],
+          vars: {
+            skillDescription: {
+              claude: 'Run Claude metadata workflow',
+              codex: 'Run Codex metadata workflow',
+            },
+            shortDescription: {
+              claude: 'Claude metadata workflow',
+              codex: 'Codex metadata workflow',
+            },
+            displayName: {
+              claude: 'Claude Metadata',
+              codex: 'Codex Metadata',
+            },
+            defaultPrompt: {
+              claude: 'Use the Claude metadata workflow',
+              codex: 'Use the Codex metadata workflow',
+            },
+            disableModelInvocation: {
+              claude: true,
+              codex: true,
+            },
+            allowImplicitInvocation: {
+              claude: false,
+              codex: false,
+            },
+          },
+        },
+      },
+    }, { spaces: 2 });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'templated-metadata-test', 'SKILL.md'),
+      [
+        '---',
+        'name: templated-metadata-test',
+        'description: {{skillDescription}}',
+        'disable-model-invocation: {{disableModelInvocation}}',
+        'metadata:',
+        '  short-description: {{shortDescription}}',
+        '---',
+        '',
+        '# Templated Metadata Test',
+        '',
+        'Run the {{displayName}} workflow.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'templated-metadata-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  display_name: {{displayName}}',
+        '  short_description: {{shortDescription}}',
+        '  default_prompt: {{defaultPrompt}}',
+        'policy:',
+        '  allow_implicit_invocation: {{allowImplicitInvocation}}',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+  });
+
   it('validate_plugin.js treats openai.yaml as optional for non-Codex skills', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-skill-'));
     tempDirs.push(tempRoot);

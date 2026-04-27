@@ -10,6 +10,7 @@ const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
+const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
 let yamlParser = null;
 
 function error(msg) {
@@ -44,6 +45,127 @@ function stripStandaloneTemplateControlLines(content) {
       return line;
     })
     .join('\n');
+}
+
+function stripDotSlash(value) {
+  return value.startsWith('./') ? value.slice(2) : value;
+}
+
+function escapeRegexSegment(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compileGlob(pattern) {
+  const normalized = pattern.split(path.sep).join('/');
+  let source = '^';
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+
+    if (char === '*' && next === '*') {
+      source += '.*';
+      index += 1;
+      continue;
+    }
+
+    if (char === '*') {
+      source += '[^/]*';
+      continue;
+    }
+
+    if (char === '?') {
+      source += '.';
+      continue;
+    }
+
+    source += escapeRegexSegment(char);
+  }
+
+  source += '$';
+  return new RegExp(source);
+}
+
+function normalizeRelativePath(filePath) {
+  return path.posix.normalize(stripDotSlash(filePath).split(path.sep).join('/'));
+}
+
+function matchesGlob(filePath, pattern) {
+  return compileGlob(pattern).test(normalizeRelativePath(filePath));
+}
+
+function isTemplateTextFile(relativePath) {
+  return TEMPLATE_TEXT_FILE_EXTENSIONS.test(relativePath);
+}
+
+function templateIncludesPath(manifest, relativePath) {
+  const normalized = normalizeRelativePath(relativePath);
+  const include = manifest.buildConfig?.templates?.include;
+  if (!Array.isArray(include) || !isTemplateTextFile(normalized)) return false;
+  return include.some((pattern) => matchesGlob(normalized, pattern));
+}
+
+function resolveTemplateValue(vars, platform) {
+  const resolved = {};
+  for (const [key, entry] of Object.entries(vars)) {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      resolved[key] = entry[platform];
+    }
+  }
+  return resolved;
+}
+
+function replaceConditionalBlocks(input, resolvedVars, tagName) {
+  const pattern = new RegExp(
+    `{{#${tagName}\\s+([a-zA-Z0-9_]+)}}([\\s\\S]*?){{\\/${tagName}}}`,
+    'g',
+  );
+
+  return input.replace(pattern, (_match, rawKey, blockContent) => {
+    const truthy = resolvedVars[rawKey] === true;
+    if (tagName === 'if') {
+      return truthy ? blockContent : '';
+    }
+
+    return truthy ? '' : blockContent;
+  });
+}
+
+function renderTemplate(content, vars, platform) {
+  const resolvedVars = resolveTemplateValue(vars, platform);
+  const withConditionals = replaceConditionalBlocks(
+    replaceConditionalBlocks(content, resolvedVars, 'if'),
+    resolvedVars,
+    'unless',
+  );
+
+  return withConditionals.replace(/{{([a-zA-Z0-9_]+)}}/g, (_match, rawKey) => {
+    const value = resolvedVars[rawKey];
+    if (value === undefined) return '';
+    return String(value);
+  });
+}
+
+function renderTemplateForPlatform(manifest, relativePath, content, platform) {
+  if (!templateIncludesPath(manifest, relativePath)) return content;
+  const vars = manifest.buildConfig?.templates?.vars ?? {};
+  return renderTemplate(content, vars, platform);
+}
+
+function renderedContentVariants(manifest, relativePath, content, platforms) {
+  if (!templateIncludesPath(manifest, relativePath)) {
+    return [{ content, platform: null }];
+  }
+
+  const seen = new Set();
+  const variants = [];
+  for (const platform of platforms) {
+    const rendered = renderTemplateForPlatform(manifest, relativePath, content, platform);
+    if (seen.has(rendered)) continue;
+    seen.add(rendered);
+    variants.push({ content: rendered, platform });
+  }
+  return variants;
 }
 
 function formatYamlError(parseError, lineCounter, sourceName) {
@@ -136,20 +258,7 @@ function validateManifestLightweight(manifest) {
 }
 
 function isTemplateAsset(manifest, relativePath) {
-  const normalized = relativePath.replace(/^\.\//, '').split(path.sep).join('/');
-  const include = manifest.buildConfig?.templates?.include;
-  if (!Array.isArray(include)) return false;
-  return include.some((pattern) => {
-    if (pattern === normalized) return true;
-    if (pattern.endsWith('/**')) {
-      return normalized.startsWith(pattern.slice(0, -3));
-    }
-    if (pattern.includes('**/*')) {
-      const [prefix, suffix] = pattern.split('**/*');
-      return normalized.startsWith(prefix) && normalized.endsWith(suffix);
-    }
-    return false;
-  });
+  return templateIncludesPath(manifest, relativePath);
 }
 
 function isRecord(value) {
@@ -296,6 +405,13 @@ function isClaudeTargeted(manifest) {
   return products.some((product) => String(product).trim().toUpperCase() === 'CLAUDE');
 }
 
+function targetedPlatforms(manifest) {
+  const platforms = [];
+  if (isClaudeTargeted(manifest)) platforms.push('claude');
+  if (isCodexTargeted(manifest)) platforms.push('codex');
+  return platforms.length > 0 ? platforms : ['claude', 'codex'];
+}
+
 // ---------------------------------------------------------------------------
 // Supplemental checks (always run — not covered by CLI validator)
 // ---------------------------------------------------------------------------
@@ -399,7 +515,7 @@ function validateExtensionNameUniqueness(manifest) {
   }
 }
 
-function validateOpenAiYaml(openaiYamlPath, skillName, required) {
+function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, pluginDir) {
   const fieldName = `skills/${skillName}/agents/openai.yaml`;
 
   if (!fs.existsSync(openaiYamlPath)) {
@@ -413,7 +529,12 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required) {
 
   let config;
   try {
-    config = parseYaml(fs.readFileSync(openaiYamlPath, 'utf8'), fieldName);
+    const relativePath = path.relative(pluginDir, openaiYamlPath);
+    const rawContent = fs.readFileSync(openaiYamlPath, 'utf8');
+    config = parseYaml(
+      renderTemplateForPlatform(manifest, relativePath, rawContent, 'codex'),
+      fieldName,
+    );
   } catch (e) {
     error(`${fieldName} is not valid YAML: ${e.message}`);
     return;
@@ -522,6 +643,7 @@ function validateSkills(pluginDir, manifest) {
     const skillPath = path.join(skillsDir, dir.name);
     const skillMdPath = path.join(skillPath, 'SKILL.md');
     const openaiYamlPath = path.join(skillPath, 'agents', 'openai.yaml');
+    const skillMdRelativePath = path.relative(pluginDir, skillMdPath);
 
     if (!fs.existsSync(skillMdPath)) {
       error(`skills/${dir.name}/SKILL.md not found`);
@@ -529,24 +651,43 @@ function validateSkills(pluginDir, manifest) {
     }
 
     const content = fs.readFileSync(skillMdPath, 'utf8');
-    let fm;
-    let frontmatterParseFailed = false;
-    try {
-      fm = parseFrontmatter(content, `skills/${dir.name}/SKILL.md`);
-    } catch (e) {
-      error(`skills/${dir.name}/SKILL.md has invalid YAML frontmatter: ${e.message}`);
-      frontmatterParseFailed = true;
-      fm = null;
-    }
-    if (!fm) {
-      if (!frontmatterParseFailed) {
-        error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
+    const variants = renderedContentVariants(
+      manifest,
+      skillMdRelativePath,
+      content,
+      targetedPlatforms(manifest),
+    );
+    for (const variant of variants) {
+      const sourceName = variant.platform
+        ? `skills/${dir.name}/SKILL.md (${variant.platform} render)`
+        : `skills/${dir.name}/SKILL.md`;
+      let fm;
+      let frontmatterParseFailed = false;
+      try {
+        fm = parseFrontmatter(variant.content, sourceName);
+      } catch (e) {
+        error(`skills/${dir.name}/SKILL.md has invalid YAML frontmatter: ${e.message}`);
+        frontmatterParseFailed = true;
+        fm = null;
       }
-    } else {
-      validateSkillFrontmatter(fm, dir.name, targetsClaude);
+      if (!fm) {
+        if (!frontmatterParseFailed) {
+          error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
+        }
+      } else {
+        const shouldApplyClaudeWarnings =
+          variant.platform === null ? targetsClaude : variant.platform === 'claude';
+        validateSkillFrontmatter(fm, dir.name, shouldApplyClaudeWarnings);
+      }
     }
 
-    validateOpenAiYaml(openaiYamlPath, dir.name, requiresCodexMetadata);
+    validateOpenAiYaml(
+      openaiYamlPath,
+      dir.name,
+      requiresCodexMetadata,
+      manifest,
+      pluginDir,
+    );
 
     if (/\[TODO[:\]]/i.test(content)) {
       error(
