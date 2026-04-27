@@ -10,6 +10,7 @@ const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
+let yamlParser = null;
 
 function error(msg) {
   errors.push(msg);
@@ -19,230 +20,60 @@ function warn(msg) {
   warnings.push(msg);
 }
 
-function stripYamlComment(value) {
-  let quote = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-    if (quote) {
-      if (char === quote && value[index - 1] !== '\\') quote = null;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === '#' && (index === 0 || /\s/.test(value[index - 1]))) {
-      return value.slice(0, index).trimEnd();
-    }
+function loadYamlParser(sourceName) {
+  if (yamlParser) return yamlParser;
+  try {
+    yamlParser = require('yaml');
+    return yamlParser;
+  } catch (e) {
+    throw new Error(
+      `${sourceName}: YAML parser dependency "yaml" is not installed; run pnpm install in the agent-workflows repo`,
+    );
   }
-  return value.trimEnd();
 }
 
-function parseYamlScalar(rawValue, sourceName, lineNo) {
-  const value = stripYamlComment(rawValue).trim();
-  if (value.length === 0) return '';
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === '~') return null;
-  if (value === '[]') return [];
-  if (value === '{}') return {};
-
-  if (value.startsWith('"')) {
-    if (!value.endsWith('"') || value.length === 1) {
-      throw new Error(`${sourceName}:${lineNo}: unterminated double-quoted string`);
-    }
-    return JSON.parse(value);
-  }
-
-  if (value.startsWith("'")) {
-    if (!value.endsWith("'") || value.length === 1) {
-      throw new Error(`${sourceName}:${lineNo}: unterminated single-quoted string`);
-    }
-    return value.slice(1, -1).replace(/''/g, "'");
-  }
-
-  if (value.startsWith('[') || value.startsWith('{')) {
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      throw new Error(`${sourceName}:${lineNo}: invalid inline JSON-style YAML value: ${e.message}`);
-    }
-  }
-
-  if (/:($|\s)/.test(value)) {
-    throw new Error(`${sourceName}:${lineNo}: plain scalar values containing ": " must be quoted`);
-  }
-
-  return value;
-}
-
-function parseYamlKeyValue(text, sourceName, lineNo) {
-  const colonIndex = text.indexOf(':');
-  if (colonIndex <= 0) {
-    throw new Error(`${sourceName}:${lineNo}: expected "key: value"`);
-  }
-
-  const key = text.slice(0, colonIndex).trim();
-  if (!/^[A-Za-z0-9_.-]+$/.test(key)) {
-    throw new Error(`${sourceName}:${lineNo}: invalid key "${key}"`);
-  }
-
-  return {
-    key,
-    valueText: text.slice(colonIndex + 1),
-  };
-}
-
-function preprocessYamlLines(content, sourceName) {
-  const lines = [];
-  const rawLines = content.replace(/\r\n/g, '\n').split('\n');
-  for (const [lineIndex, rawLine] of rawLines.entries()) {
-    if (/^\t+/.test(rawLine)) {
-      throw new Error(`${sourceName}:${lineIndex + 1}: tabs are not supported for indentation`);
-    }
-
-    const trimmed = rawLine.trim();
-    if (
-      trimmed.length === 0 ||
-      trimmed.startsWith('#') ||
-      /^{{[#/^]|^{{else\b/.test(trimmed)
-    ) {
-      continue;
-    }
-
-    const indent = rawLine.match(/^ */)[0].length;
-    const text = stripYamlComment(rawLine.slice(indent));
-    if (text.trim().length === 0) continue;
-
-    lines.push({
-      indent,
-      text,
-      lineNo: lineIndex + 1,
-    });
-  }
-
-  return lines;
-}
-
-function parseYamlBlock(lines, index, indent, sourceName) {
-  if (index >= lines.length) {
-    return { value: {}, index };
-  }
-
-  if (lines[index].indent < indent) {
-    return { value: {}, index };
-  }
-
-  if (lines[index].text.startsWith('- ')) {
-    return parseYamlSequence(lines, index, indent, sourceName);
-  }
-
-  return parseYamlMap(lines, index, indent, sourceName);
-}
-
-function parseYamlMap(lines, index, indent, sourceName) {
-  const result = {};
-  let cursor = index;
-
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent < indent) break;
-    if (line.indent > indent) {
-      throw new Error(`${sourceName}:${line.lineNo}: unexpected indentation`);
-    }
-    if (line.text.startsWith('- ')) break;
-
-    const { key, valueText } = parseYamlKeyValue(line.text, sourceName, line.lineNo);
-    if (Object.prototype.hasOwnProperty.call(result, key)) {
-      throw new Error(`${sourceName}:${line.lineNo}: duplicate key "${key}"`);
-    }
-
-    cursor += 1;
-    if (valueText.trim().length === 0) {
-      if (cursor < lines.length && lines[cursor].indent > indent) {
-        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
-        result[key] = parsed.value;
-        cursor = parsed.index;
-      } else {
-        result[key] = {};
+function stripStandaloneTemplateControlLines(content) {
+  return content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim();
+      if (/^{{[#/^]/.test(trimmed) || /^{{else\b/.test(trimmed)) {
+        return '';
       }
-    } else {
-      result[key] = parseYamlScalar(valueText, sourceName, line.lineNo);
-    }
-  }
-
-  return { value: result, index: cursor };
+      return line;
+    })
+    .join('\n');
 }
 
-function parseYamlSequence(lines, index, indent, sourceName) {
-  const result = [];
-  let cursor = index;
-
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent < indent) break;
-    if (line.indent > indent) {
-      throw new Error(`${sourceName}:${line.lineNo}: unexpected indentation`);
-    }
-    if (!line.text.startsWith('- ')) break;
-
-    const itemText = line.text.slice(2).trim();
-    cursor += 1;
-
-    if (itemText.length === 0) {
-      if (cursor < lines.length && lines[cursor].indent > indent) {
-        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
-        result.push(parsed.value);
-        cursor = parsed.index;
-      } else {
-        result.push(null);
-      }
-      continue;
-    }
-
-    if (/^[A-Za-z0-9_.-]+\s*:/.test(itemText)) {
-      const { key, valueText } = parseYamlKeyValue(itemText, sourceName, line.lineNo);
-      const item = {};
-      if (valueText.trim().length === 0) {
-        if (cursor < lines.length && lines[cursor].indent > indent) {
-          const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
-          item[key] = parsed.value;
-          cursor = parsed.index;
-        } else {
-          item[key] = {};
-        }
-      } else {
-        item[key] = parseYamlScalar(valueText, sourceName, line.lineNo);
-      }
-
-      if (cursor < lines.length && lines[cursor].indent > indent) {
-        const parsed = parseYamlBlock(lines, cursor, lines[cursor].indent, sourceName);
-        if (!isRecord(parsed.value)) {
-          throw new Error(`${sourceName}:${lines[cursor].lineNo}: expected mapping fields for list item`);
-        }
-        Object.assign(item, parsed.value);
-        cursor = parsed.index;
-      }
-
-      result.push(item);
-      continue;
-    }
-
-    result.push(parseYamlScalar(itemText, sourceName, line.lineNo));
+function formatYamlError(parseError, lineCounter, sourceName) {
+  let location = '';
+  if (Array.isArray(parseError.pos) && Number.isInteger(parseError.pos[0])) {
+    const linePos = lineCounter.linePos(parseError.pos[0]);
+    location = `:${linePos.line}:${linePos.col}`;
   }
 
-  return { value: result, index: cursor };
+  let message = parseError.message || String(parseError);
+  if (parseError.code === 'BLOCK_AS_IMPLICIT_KEY') {
+    message = `${message}; plain scalar values containing ": " must be quoted`;
+  }
+  return `${sourceName}${location}: ${message}`;
 }
 
 function parseYaml(content, sourceName) {
-  const lines = preprocessYamlLines(content, sourceName);
-  if (lines.length === 0) return {};
-  const parsed = parseYamlBlock(lines, 0, lines[0].indent, sourceName);
-  if (parsed.index < lines.length) {
-    const line = lines[parsed.index];
-    throw new Error(`${sourceName}:${line.lineNo}: could not parse line`);
+  const yaml = loadYamlParser(sourceName);
+  const lineCounter = new yaml.LineCounter();
+  const document = yaml.parseDocument(stripStandaloneTemplateControlLines(content), {
+    lineCounter,
+    prettyErrors: false,
+  });
+
+  if (document.errors.length > 0) {
+    throw new Error(formatYamlError(document.errors[0], lineCounter, sourceName));
   }
-  return parsed.value;
+
+  const value = document.toJSON();
+  return value ?? {};
 }
 
 function parseFrontmatter(content, sourceName) {
@@ -634,8 +465,9 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required) {
               'description',
               'transport',
               'url',
+              'command',
             ]);
-            for (const key of ['type', 'value', 'description', 'transport', 'url']) {
+            for (const key of ['type', 'value', 'description', 'transport', 'url', 'command']) {
               expectOptionalString(toolBlock, key, toolField);
             }
             if (

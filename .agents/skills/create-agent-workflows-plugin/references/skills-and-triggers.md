@@ -87,6 +87,7 @@ dependencies:                              # 可选：工具依赖
       description: "Tool description"
       transport: "streamable_http"         # streamable_http | stdio
       url: "https://..."                   # streamable_http 用
+      command: "tool-server"               # stdio 用
 
 policy:
   allow_implicit_invocation: false         # 是否允许自动注入
@@ -97,6 +98,13 @@ policy:
 - `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行和校验长度，不会把 `repo-check` 自动转换成 `Repo Check`
 - `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
 - `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用
+
+### dependencies.tools[] 块
+
+- `type` / `value` / `description`：声明工具依赖的类型、标识和说明
+- `transport`：可选，当前 Codex 支持 `streamable_http` 和 `stdio`
+- `url`：`streamable_http` 场景下的远端服务地址
+- `command`：`stdio` 场景下启动本地 MCP server 的命令
 
 ### policy 块
 

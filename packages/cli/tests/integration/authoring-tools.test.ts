@@ -404,6 +404,7 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('面向 Codex 时必需');
     expect(triggersDoc).toContain('`when_to_use`');
     expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
+    expect(triggersDoc).toContain('`command`：`stdio` 场景下启动本地 MCP server 的命令');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
@@ -567,6 +568,89 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('plain scalar values containing ": " must be quoted'),
+    });
+  });
+
+  it('validate_plugin.js accepts runtime-compatible YAML block scalars and tool commands', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-yaml-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'runtime-yaml-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'runtime-yaml-test', 'agents'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'runtime-yaml-test',
+      version: '0.1.0',
+      description: 'Test plugin for runtime-compatible YAML metadata.',
+      skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+    }, { spaces: 2 });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'runtime-yaml-test', 'SKILL.md'),
+      [
+        '---',
+        'name: runtime-yaml-test',
+        'description: >',
+        '  Validate metadata handling with',
+        '  folded YAML scalars.',
+        'metadata:',
+        '  short-description: |',
+        '    Runtime-compatible YAML metadata.',
+        '---',
+        '',
+        '# Runtime YAML Test',
+        '',
+        'Run the runtime-compatible YAML validation workflow.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'runtime-yaml-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  display_name: "Runtime YAML Test"',
+        '  short_description: >',
+        '    Validate block scalar',
+        '    metadata.',
+        '  default_prompt: >',
+        '    Use $runtime-yaml-test to validate',
+        '    runtime-compatible YAML.',
+        'dependencies:',
+        '  tools:',
+        '    - type: "mcp"',
+        '      value: "local-gh"',
+        '      description: >',
+        '        Local GitHub MCP server.',
+        '      transport: "stdio"',
+        '      command: "gh-mcp"',
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 
