@@ -56,10 +56,23 @@ plugins/<name>/
 
 **先读**：场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md` + `references/claude-only-capabilities.md`
 
+## 能力速查
+
+| 能力 | 平台 | 配置位置 | 细节 |
+|------|------|----------|------|
+| Skills | 双平台 | `skills/`、`SKILL.md`、`agents/openai.yaml` | `references/skills-and-triggers.md` |
+| Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `agents` | `references/extensions-spec.md` |
+| MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
+| Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
+| Claude 专属能力 | Claude | `commands/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
+| Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
+
+插件不需要包含所有能力；先按场景选组合，再打开对应参考文档补字段细节。
+
 ## 创建工作流
 
 1. **确认命名**：插件名使用小写短横线格式（如 `code-review`），必须与目录名一致。
-2. **选择能力组合**：参考上方场景或下方能力清单，确定需要哪些能力。
+2. **选择能力组合**：参考上方场景和能力速查，确定需要哪些能力。
 3. **脚手架**（可选）：新建插件先跑 `scripts/init_plugin.js`（见下方）；维护已有插件先读 `.agents-plugin/plugin.json`。
 4. **编辑 manifest**：按需补齐 `.agents-plugin/plugin.json` 字段。字段规范见 `references/plugin-manifest-spec.md`。
 5. **实现各能力**：
