@@ -93,6 +93,7 @@ dependencies:                              # 可选：工具依赖
 
 policy:
   allow_implicit_invocation: false         # 是否允许自动注入
+  products: ["codex", "CHATGPT"]          # 可选：Codex-only 的 per-skill 产品限制
 ```
 
 ### interface 块
@@ -115,6 +116,7 @@ policy:
 
 - `allow_implicit_invocation: true`：允许 Codex 自动注入和隐式识别
 - `allow_implicit_invocation: false`：关闭自动注入，但仍可通过 `$skill-name` 显式触发
+- `products`：可选的 Codex-only per-skill override。一般不需要写；只有同一插件里的不同 skill 需要限制到不同 Codex 产品时才使用。当前 Codex runtime 支持 `codex` / `chatgpt` / `atlas` 及对应全大写别名
 
 ---
 

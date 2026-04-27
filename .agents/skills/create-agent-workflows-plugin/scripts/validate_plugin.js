@@ -19,6 +19,14 @@ const MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_COMMAND_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_URL_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
+const CODEX_POLICY_PRODUCTS = new Set([
+  'atlas',
+  'ATLAS',
+  'chatgpt',
+  'CHATGPT',
+  'codex',
+  'CODEX',
+]);
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
 let yamlParser = null;
 
@@ -744,7 +752,10 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
 
   const policyBlock = expectRecord(root.policy, `${fieldName}.policy`);
   if (!policyBlock) return;
-  validateAllowedKeys(policyBlock, `${fieldName}.policy`, ['allow_implicit_invocation']);
+  validateAllowedKeys(policyBlock, `${fieldName}.policy`, [
+    'allow_implicit_invocation',
+    'products',
+  ]);
 
   if (policyBlock.allow_implicit_invocation === undefined) {
     if (required) {
@@ -752,6 +763,23 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
     }
   } else if (typeof policyBlock.allow_implicit_invocation !== 'boolean') {
     error(`${fieldName}.policy.allow_implicit_invocation must be a boolean`);
+  }
+
+  if (policyBlock.products !== undefined) {
+    if (!Array.isArray(policyBlock.products)) {
+      error(`${fieldName}.policy.products must be an array`);
+    } else {
+      for (const [index, product] of policyBlock.products.entries()) {
+        const productField = `${fieldName}.policy.products[${index}]`;
+        if (typeof product !== 'string' || product.trim() === '') {
+          error(`${productField} must be a non-empty string`);
+        } else if (!CODEX_POLICY_PRODUCTS.has(product)) {
+          error(
+            `${productField} must be one of "codex", "chatgpt", "atlas" or uppercase aliases`,
+          );
+        }
+      }
+    }
   }
 }
 
