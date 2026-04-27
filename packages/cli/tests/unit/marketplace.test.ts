@@ -126,5 +126,19 @@ describe('marketplace bundle', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
       'claude.hooks.PreToolUse[0].hooks[0].type',
     );
+
+    await fs.writeJson(path.join(pluginRoot, 'claude', 'hooks', 'hooks.json'), {
+      hooks: {
+        sessionStop: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo done' }],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'claude.hooks.sessionStop',
+    );
   });
 });

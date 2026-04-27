@@ -65,7 +65,7 @@ import {
 } from '../utils/paths.js';
 import {
   validateRenderedCodexRules,
-  validateRenderedHooksContent,
+  validateRenderedCodexHooksContent,
 } from '../utils/rendered-contract.js';
 import {
   attachGeneratedArtifactsToError,
@@ -446,6 +446,7 @@ async function readCodexHookGroups(hooksPath: string): Promise<CodexHookGroup[]>
   }
 
   const raw = await fs.readJson(hooksPath) as { hooks?: unknown };
+  validateRenderedCodexHooksContent(raw, 'codex.hooks');
   const groups = normalizeCodexHookGroups(raw.hooks);
   if (!groups) {
     throw new Error(`Invalid Codex hooks artifact: ${hooksPath}`);
@@ -464,7 +465,7 @@ async function writeCodexHookGroups(
     return undefined;
   }
 
-  validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
+  validateRenderedCodexHooksContent(hooksArtifact.content, 'codex.hooks');
   await writeJsonFile(hooksPath, hooksArtifact.content);
   return hooksPath;
 }
@@ -525,7 +526,7 @@ async function syncCodexHooks(
     return undefined;
   }
 
-  validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
+  validateRenderedCodexHooksContent(hooksArtifact.content, 'codex.hooks');
   await writeJsonFile(hooksPath, hooksArtifact.content);
   return hooksPath;
 }
@@ -739,7 +740,7 @@ export class CodexAdapter implements PlatformAdapter {
       })),
     );
     if (hooksArtifact) {
-      validateRenderedHooksContent(hooksArtifact.content, 'codex.hooks');
+      validateRenderedCodexHooksContent(hooksArtifact.content, 'codex.hooks');
       await writeJsonFile(paths.hooksPath, hooksArtifact.content);
     } else {
       await fs.remove(paths.hooksPath);

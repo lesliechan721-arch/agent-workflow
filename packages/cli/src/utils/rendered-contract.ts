@@ -1,4 +1,20 @@
 import type { ClaudePermissions } from '../generators/permissions.js';
+import type { PlatformName } from '../types.js';
+
+const ALLOWED_RENDERED_HOOK_EVENTS: Record<PlatformName, Set<string>> = {
+  claude: new Set(['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd']),
+  codex: new Set(['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop']),
+};
+
+function inferRenderedHooksPlatform(fieldName: string): PlatformName | undefined {
+  if (fieldName === 'claude' || fieldName.startsWith('claude.')) {
+    return 'claude';
+  }
+  if (fieldName === 'codex' || fieldName.startsWith('codex.')) {
+    return 'codex';
+  }
+  return undefined;
+}
 
 function assertRecord(value: unknown, fieldName: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -73,14 +89,26 @@ export function validateRenderedCodexRules(
   }
 }
 
-export function validateRenderedHooksContent(content: unknown, fieldName: string): void {
+export function validateRenderedHooksContent(
+  content: unknown,
+  fieldName: string,
+  platform?: PlatformName,
+): void {
   const root = assertRecord(content, fieldName);
   if (!root.hooks || typeof root.hooks !== 'object' || Array.isArray(root.hooks)) {
     throw new Error(`Invalid ${fieldName}: expected top-level "hooks" object.`);
   }
   const hooks = root.hooks as Record<string, unknown>;
+  const renderedPlatform = platform ?? inferRenderedHooksPlatform(fieldName);
+  const allowedEvents = renderedPlatform ? ALLOWED_RENDERED_HOOK_EVENTS[renderedPlatform] : undefined;
 
   for (const [eventName, groups] of Object.entries(hooks)) {
+    if (allowedEvents && !allowedEvents.has(eventName)) {
+      throw new Error(
+        `Invalid ${fieldName}.${eventName}: unsupported ${renderedPlatform} hook event.`,
+      );
+    }
+
     if (!Array.isArray(groups)) {
       throw new Error(`Invalid ${fieldName}.${eventName}: expected an array of hook groups.`);
     }
@@ -107,4 +135,18 @@ export function validateRenderedHooksContent(content: unknown, fieldName: string
       }
     }
   }
+}
+
+export function validateRenderedClaudeHooksContent(
+  content: unknown,
+  fieldName = 'claude.hooks',
+): void {
+  validateRenderedHooksContent(content, fieldName, 'claude');
+}
+
+export function validateRenderedCodexHooksContent(
+  content: unknown,
+  fieldName = 'codex.hooks',
+): void {
+  validateRenderedHooksContent(content, fieldName, 'codex');
 }

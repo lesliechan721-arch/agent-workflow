@@ -240,4 +240,27 @@ describe('CodexAdapter', () => {
       'Codex hooks artifact 中缺少当前插件声明的 hook handlers。',
     );
   });
+
+  it('rejects existing Codex hooks with unsupported native event names before rewriting', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await fs.writeJson(paths.hooksPath, {
+      hooks: {
+        sessionStop: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'echo done' }],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+
+    await expect(adapter.uninstallExtensions(plugin, 'project', artifacts)).rejects.toThrow(
+      'codex.hooks.sessionStop',
+    );
+  });
 });

@@ -5,7 +5,7 @@ import fs from 'fs-extra';
 import type { MarketplaceManifest, PlatformPluginManifest } from '../types.js';
 import { validatePluginManifest } from './manifest.js';
 import { readJsonFile } from './json.js';
-import { validateRenderedHooksContent } from './rendered-contract.js';
+import { validateRenderedClaudeHooksContent } from './rendered-contract.js';
 
 function normalizeComparableValue(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -125,7 +125,7 @@ async function assertClaudeHooksArtifact(
     throw new Error(`Invalid claude.hooks: "${relativePath}" does not exist in bundle.`);
   }
   const content = await assertJsonObjectFile(resolved, 'claude.hooks');
-  validateRenderedHooksContent(content, 'claude.hooks');
+  validateRenderedClaudeHooksContent(content, 'claude.hooks');
 }
 
 async function validateClaudeManifest(
