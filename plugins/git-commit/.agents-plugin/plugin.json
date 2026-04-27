@@ -18,36 +18,19 @@
     "shortDescription": "自动触发的 Conventional Commits 提交流程",
     "capabilities": ["Skills"]
   },
-  "extensions": {
-    "instructions": [
-      {
-        "name": "commit-policy",
-        "title": "提交规范",
-        "content": "所有提交都必须遵守 Conventional Commits，并在必要时补充 body 说明原因。",
-        "paths": ["src/**"]
+  "buildConfig": {
+    "templates": {
+      "include": ["skills/**/*.md"],
+      "vars": {
+        "claudeCommandOutputFill": {
+          "claude": true,
+          "codex": false
+        },
+        "gitInspectionStep": {
+          "claude": "1. 优先使用上方已注入的 Git 快照确认当前工作区有哪些变更；只有快照不足以判断提交范围时，才补充运行必要的 Git 查看命令。",
+          "codex": "1. 运行 `git status` 和必要的 `git diff`，确认当前工作区有哪些变更。"
+        }
       }
-    ],
-    "permissions": [
-      {
-        "name": "git-ops",
-        "allow": ["git status", "git diff"],
-        "ask": ["git commit"]
-      }
-    ],
-    "hooks": [
-      {
-        "event": "before_tool",
-        "matcher": "Bash",
-        "command": "echo git hook"
-      }
-    ],
-    "agents": [
-      {
-        "name": "commit-reviewer",
-        "description": "检查提交范围和信息是否匹配。",
-        "prompt": "请检查这次提交是否符合提交规范，并指出 scope 是否准确。",
-        "tools": ["shell"]
-      }
-    ]
+    }
   }
 }
