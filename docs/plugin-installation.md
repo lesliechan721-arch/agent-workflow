@@ -8,7 +8,7 @@
 ## 快速上手
 
 ```bash
-# 1. 初始化本地 marketplace（每台机器只需一次）
+# 1. 可选：提前初始化本地 marketplace，便于确认 CLI bundle 正常
 aw init
 
 # 2. 安装插件
@@ -18,20 +18,22 @@ aw install git-commit
 aw status
 ```
 
+`aw install` 和 `aw upgrade` 会在需要时自动同步 `~/.aw`。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装、升级 CLI 后排查 bundle 问题，或想提前确认本机 marketplace 状态时使用。
+
 ---
 
 ## 命令参考
 
 ### `aw init`
 
-初始化本地 marketplace，将 npm 包内置的插件包同步到 `~/.aw/`。
+初始化或刷新本地 marketplace，将 npm 包内置的插件包同步到 `~/.aw/`。
 
 ```bash
 aw init [--force]
 ```
 
 - `--force`：忽略缓存，强制重新同步（升级 CLI 版本后如遇异常可使用）
-- 首次使用或 CLI 升级后需重新执行；若包内容未变，重复执行无副作用
+- 若本地镜像缺失、过期或不健康，安装/升级命令也会自动回到 embedded bundle 并尝试同步；重复执行 `aw init` 无副作用
 
 ---
 
@@ -44,7 +46,7 @@ aw install <插件名...> [--scope project|user] [--platform codex|claude|both|a
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--scope` | `project` | `project`：安装到当前目录（`.claude/` 或 `.codex/`）；`user`：安装到用户全局目录（`~/.claude/` 或 `~/.codex/`） |
-| `--platform` | `auto` | `auto` 自动检测已安装的平台；也可显式指定 `claude`、`codex` 或 `both` |
+| `--platform` | `auto` | `auto` 自动检测平台；双平台同时可用时，安装/卸载/升级需要能从当前 scope 的既有状态唯一推断目标平台，否则要显式指定 `claude`、`codex` 或 `both` |
 | `--skill-trigger` | 见下文 | 安装时的 skill 触发偏好：`default`、`manual` 或 `auto` |
 
 一次安装多个插件：
@@ -74,6 +76,7 @@ aw upgrade [插件名...] [--all] [--scope project|user] [--platform codex|claud
 - 指定插件名，或用 `--all` 升级当前 scope 下所有已管理的插件
 - 显式升级某个插件时可传 `--skill-trigger` 调整 skill 触发偏好；`upgrade --all` 不接受这个参数，会按各 scope 的 ledger 记录恢复
 - 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
+- `upgrade --all` 只处理 `catalogCompatibility=current` 且 scope 已初始化的插件；缺失、能力变更、外部 marketplace 管理或 `installed.json` degraded 时需要显式处理
 
 ---
 
@@ -105,11 +108,16 @@ aw status [插件名...] [--scope project|user] [--platform codex|claude|both|au
 
 不指定插件名时，显示所有已安装插件的状态。输出包含：
 
+- `detected-platforms`：当前环境里 Codex / Claude Code 是否可用，以及检测到的 scope
+- `native-state`：平台原生 marketplace/plugin 是否注册、可用、已启用，以及 runtime bundle 路径
 - `scopeInitialized`：当前 scope 是否已初始化
 - `ledgerState`：账本状态（`available` 正常 / `degraded` 异常）
 - `catalogCompatibility`：`current`（最新）/ `capabilityChanged`（能力已变更，需升级）/ `missing`（插件已下线）
+- `managedEvidence`：ledger、tracking 或共享 native 引用是否能证明该 scope 受 CLI 管理
+- `skillTriggerLedger` / `skillTriggerRuntime` / `skillTriggerDrift`：安装偏好、runtime 实际状态和漂移判断
 - `generated-artifacts`：各 artifact 文件是否存在
 - `session-state`：instructions / rules / hooks / agents 当前是否对 AI 可见
+- `drift`：CLI 发现的配置漂移、外部接管或 runtime 不一致问题
 
 ---
 
@@ -122,16 +130,18 @@ aw status [插件名...] [--scope project|user] [--platform codex|claude|both|au
 | 写入位置 | 当前目录下的 `.claude/` 或 `.codex/` | `~/.claude/` 或 `~/.codex/` |
 | 适用场景 | 项目级配置，提交到版本控制 | 跨项目共享的个人配置 |
 
-> **Codex 注意**：无论 `--scope` 如何，原生插件注册始终在 user scope（`~/.codex/config.toml`）进行；`--scope project` 仅影响 `.codex/` 目录下的自定义扩展文件。
+> **Codex 注意**：无论 `--scope` 如何，原生 marketplace/plugin 注册始终在 user scope（`~/.codex/config.toml`）进行；`--scope project` 仅影响当前仓库根目录 `.codex/` 下的自定义扩展文件。
 
 ### Platform
 
 | 值 | 行为 |
 |---|---|
-| `auto`（默认）| 自动检测已安装的平台；若两者均可用，从已有安装记录推断 |
+| `auto`（默认）| 自动检测平台；`status` 会展示所有可用平台，写入型命令会先按插件的 `marketplace.policy.products` 过滤，再在双平台可用时尝试唯一推断目标平台 |
 | `claude` | 仅安装到 Claude Code |
 | `codex` | 仅安装到 Codex |
 | `both` | 同时安装到两个平台（均需可用） |
+
+如果插件声明了 `marketplace.policy.products`，安装和升级时会拦截不匹配的平台；省略该字段表示不限制平台。
 
 ---
 
@@ -141,7 +151,7 @@ aw status [插件名...] [--scope project|user] [--platform codex|claude|both|au
 
 **Claude**
 - `.claude/rules/aw-<名称>.md` — instructions 文件
-- `.claude/settings.json` — 追加 permissions 配置
+- `.claude/settings.json` — 合并 permissions 配置，并在 `awGenerated` 下记录 CLI 生成部分，尽量保留手写权限
 - Claude hooks 来自插件 bundle 内的 `claude/hooks/hooks.json`，由 Claude Code 原生插件加载；CLI 不会把它作为额外 repo-managed hook 文件写入项目目录
 
 **Codex**
@@ -160,7 +170,7 @@ Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到
 
 | 插件名 | 描述 | 支持平台 |
 |--------|------|----------|
-| `git-commit` | 用户要求提交时自动触发 skill，按 Conventional Commits 规范完成 git 提交 | Codex |
+| `git-commit` | 用户要求提交时自动触发 skill，按 Conventional Commits 规范完成 git 提交 | Codex / Claude Code |
 
 查看完整列表：
 
@@ -189,7 +199,7 @@ aw upgrade --all --scope project
 
 ### 迁移到新机器
 
-新机器上只需重新执行 `aw init` 和 `aw install`，原来提交到版本控制的生成文件（`.claude/rules/` 等）会被覆盖为最新版本。
+新机器上重新执行 `aw init` 和 `aw install` 即可恢复本机 marketplace 与平台原生注册。项目里已提交的 repo-managed 文件（如 `.claude/rules/`、`.codex/rules/`、`.codex/hooks.json`）会按当前插件版本刷新；用户级配置仍需要在新机器上重新安装。
 
 ---
 

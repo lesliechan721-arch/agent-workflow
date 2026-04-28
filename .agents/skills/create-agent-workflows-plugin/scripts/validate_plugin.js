@@ -27,6 +27,7 @@ const CODEX_POLICY_PRODUCTS = new Set([
   'codex',
   'CODEX',
 ]);
+const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 const PUBLIC_HOOK_EVENTS = new Set(['before_tool', 'after_tool', 'session_start']);
 const PUBLIC_SESSION_START_SOURCES = new Set(['startup', 'resume', 'clear']);
 const PUBLIC_SESSION_START_DEFAULT_MATCHER = 'startup|resume|clear';
@@ -350,6 +351,7 @@ function validateManifestLightweight(manifest) {
       error('marketplace.policy.installation is required');
     if (!mp.policy || !mp.policy.authentication)
       error('marketplace.policy.authentication is required');
+    validateManifestPolicyProducts(mp.policy?.products);
   }
 
   for (const field of ['skills', 'mcpServers', 'apps']) {
@@ -359,6 +361,32 @@ function validateManifestLightweight(manifest) {
   }
 
   validateExtensionsLightweight(manifest.extensions);
+}
+
+function normalizeManifestProductToken(value) {
+  return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function validateManifestPolicyProducts(products) {
+  if (products === undefined) return;
+
+  if (!Array.isArray(products)) {
+    error('marketplace.policy.products must be an array');
+    return;
+  }
+
+  for (const [index, product] of products.entries()) {
+    const fieldName = `marketplace.policy.products[${index}]`;
+    if (typeof product !== 'string' || product.trim() === '') {
+      error(`${fieldName} must be a non-empty string`);
+      continue;
+    }
+
+    const normalized = normalizeManifestProductToken(product);
+    if (!MANIFEST_POLICY_PRODUCTS.has(normalized)) {
+      error(`${fieldName} must be one of "CODEX" or "CLAUDE"`);
+    }
+  }
 }
 
 function isTemplateAsset(manifest, relativePath) {
@@ -780,13 +808,13 @@ function validateSkillFrontmatter(fm, skillName, targetsClaude) {
 function isCodexTargeted(manifest) {
   const products = manifest.marketplace?.policy?.products;
   if (!Array.isArray(products)) return true;
-  return products.some((product) => String(product).trim().toUpperCase() === 'CODEX');
+  return products.some((product) => normalizeManifestProductToken(product) === 'CODEX');
 }
 
 function isClaudeTargeted(manifest) {
   const products = manifest.marketplace?.policy?.products;
   if (!Array.isArray(products)) return true;
-  return products.some((product) => String(product).trim().toUpperCase() === 'CLAUDE');
+  return products.some((product) => normalizeManifestProductToken(product) === 'CLAUDE');
 }
 
 function targetedPlatforms(manifest) {

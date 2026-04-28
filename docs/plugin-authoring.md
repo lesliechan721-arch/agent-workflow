@@ -8,16 +8,25 @@
 - 路径字段（`skills`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
-- 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物）
+- 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
 创建或维护插件时，优先从 `.agents/skills/create-agent-workflows-plugin/SKILL.md` 的场景入口开始读。
+
+## Bundle Contract
+
+`pnpm build` 会把每个源码插件打包到 `packages/cli/plugins-dist/plugins/<name>/`，并生成两份 platform manifest：
+
+- `.claude-plugin/plugin.json`：Claude Code 原生 plugin manifest，可包含 skills、MCP、commands、output styles、hooks、agents 等平台能力
+- `.codex-plugin/plugin.json`：Codex 原生 plugin manifest，可包含 skills、MCP、apps 等平台能力
+
+根级 marketplace 也会生成两份镜像：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。CLI 读取时会校验两份 marketplace 内容一致；本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
 
 ## Hook Contract
 
 - `extensions.hooks` 只放跨平台公共事件：`before_tool`、`after_tool`、`session_start`。
 - 公共 `session_start` 只表示 `startup / resume / clear`。Claude compact 场景请写 `extensions.nativeHooks.claude[]`，事件为 `SessionStart`，matcher 为 `compact`。
-- `extensions.nativeHooks.<agent>` 用平台原生事件名，例如 Claude `Notification`、`SessionEnd`，Codex `UserPromptSubmit`、`Stop`。
+- `extensions.nativeHooks.<agent>` 用平台原生事件名，例如 Claude `Notification`、`SessionEnd`、`PreCompact`，Codex `UserPromptSubmit`、`Stop`。完整 allowlist 以 `packages/cli/src/utils/hooks-contract.ts` 为准。
 - matcherless 原生事件不要写 `matcher`；`agentOverrides` 只用于公共 extension 条目，不用于 `nativeHooks`。
 - 公共 `session_stop` 已移除；Claude `Stop` / `SessionEnd`、Codex `Stop` 都应写到对应平台的 `nativeHooks`。
 
@@ -48,4 +57,6 @@
 ## Scope Semantics
 
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
-- **Codex**：native plugin enabled 仍仅 user scope；`project` scope 只代表 repo-managed artifacts（`.agents/`、`.claude/`、`.codex/` 下的 managed 文件），不代表 native plugin 已在 project 级别启用
+- **Codex**：native plugin enabled 仍仅 user scope；`project` scope 只代表当前仓库 `.codex/` 下的 repo-managed artifacts，不代表 native plugin 已在 project 级别启用
+- **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
+- **共享 runtime**：`~/.aw` 对同一用户共享。若同一插件在多个 scope 使用不同 `--skill-trigger` 偏好，后安装的一侧可能改变共享 runtime，CLI 会通过 warning 和 `aw status` 提示 drift。

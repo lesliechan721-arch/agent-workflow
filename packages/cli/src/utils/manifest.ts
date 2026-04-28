@@ -38,6 +38,7 @@ import {
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
+const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -97,6 +98,26 @@ function normalizeComparableStringArray(value: string[] | undefined): string[] |
   }
 
   return [...new Set(value.map((entry) => entry.trim()).filter(Boolean))];
+}
+
+function normalizeManifestProductToken(value: string): string {
+  return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function normalizeMarketplaceProducts(value: unknown, fieldName: string): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const products = ensureStringArray(value, fieldName);
+  for (const [index, product] of products.entries()) {
+    const normalized = normalizeManifestProductToken(product);
+    if (!MANIFEST_POLICY_PRODUCTS.has(normalized)) {
+      throw new Error(`Invalid ${fieldName}[${index}]: expected one of "CODEX" or "CLAUDE".`);
+    }
+  }
+
+  return normalizeComparableStringArray(products);
 }
 
 export function normalizePluginRelativePath(
@@ -169,12 +190,7 @@ function normalizeMarketplacePolicy(
   return {
     installation: ensureString(input.installation, `${fieldName}.installation`),
     authentication: ensureString(input.authentication, `${fieldName}.authentication`),
-    products:
-      input.products === undefined
-        ? undefined
-        : normalizeComparableStringArray(
-            ensureStringArray(input.products, `${fieldName}.products`),
-          ),
+    products: normalizeMarketplaceProducts(input.products, `${fieldName}.products`),
   };
 }
 

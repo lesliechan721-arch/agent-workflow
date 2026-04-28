@@ -908,6 +908,62 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.js validates manifest marketplace policy products', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-manifest-products-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'manifest-products-test');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+      name: 'manifest-products-test',
+      version: '0.1.0',
+      description: 'Test plugin for manifest product checks.',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX', 'BROWSER'],
+        },
+      },
+    }, { spaces: 2 });
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('marketplace.policy.products[1]'),
+    });
+
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.marketplace.policy.products = ['codex', 'claude'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+  });
+
   it('validate_plugin.js accepts and validates Codex policy products', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-policy-products-'));
     tempDirs.push(tempRoot);

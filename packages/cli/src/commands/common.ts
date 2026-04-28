@@ -66,6 +66,60 @@ export interface PreparedPluginCommandContext {
 type HistoricalExtensionKind = 'instruction' | 'permission' | 'hook' | 'agent';
 type HistoricalExtensionKindsByPlatform = Record<PlatformName, Set<HistoricalExtensionKind>>;
 
+const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
+  codex: 'CODEX',
+  claude: 'CLAUDE',
+};
+
+const PLATFORM_DISPLAY_BY_NAME: Record<PlatformName, string> = {
+  codex: 'Codex',
+  claude: 'Claude Code',
+};
+
+function normalizeProductToken(value: string): string {
+  return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function formatPolicyProducts(plugin: PluginMeta): string {
+  const products = plugin.manifest.marketplace.policy.products;
+  return products && products.length > 0 ? products.join(', ') : '未限制';
+}
+
+export function pluginSupportsPlatform(plugin: PluginMeta, platform: PlatformName): boolean {
+  const products = plugin.manifest.marketplace.policy.products;
+  if (!products || products.length === 0) {
+    return true;
+  }
+
+  const normalizedProducts = new Set(products.map((product) => normalizeProductToken(product)));
+  return normalizedProducts.has(PLATFORM_PRODUCT_BY_NAME[platform]);
+}
+
+export function assertPluginsSupportPlatforms(
+  plugins: PluginMeta[],
+  platforms: PlatformName[],
+): void {
+  const unsupported = plugins.flatMap((plugin) =>
+    platforms
+      .filter((platform) => !pluginSupportsPlatform(plugin, platform))
+      .map((platform) => ({
+        plugin,
+        platform,
+      })),
+  );
+
+  if (unsupported.length === 0) {
+    return;
+  }
+
+  const details = unsupported
+    .map(({ plugin, platform }) =>
+      `${plugin.manifest.name} -> ${PLATFORM_DISPLAY_BY_NAME[platform]} (marketplace.policy.products=[${formatPolicyProducts(plugin)}], 需要 ${PLATFORM_PRODUCT_BY_NAME[platform]})`,
+    )
+    .join('；');
+  throw new Error(`插件不支持目标平台：${details}`);
+}
+
 function createHistoricalExtensionKinds(
   kindsByPlatform: HistoricalExtensionKindsByPlatform,
 ): PluginMeta['manifest']['extensions'] | undefined {
@@ -584,10 +638,19 @@ export async function resolveTargetPlatforms(
 ): Promise<PlatformName[]> {
   const detection = await detectEnvironment(cwd, env);
   const availablePlatforms = listDetectedPlatforms(detection);
+  const shouldEnforceProducts = action === 'install' || action === 'upgrade';
+  const compatibleAvailablePlatforms = shouldEnforceProducts
+    ? availablePlatforms.filter((platform) =>
+        plugins.every((plugin) => pluginSupportsPlatform(plugin, platform)),
+      )
+    : availablePlatforms;
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
     if (!availablePlatforms.includes(requestedPlatform)) {
       throw new Error(`${requestedPlatform} 当前环境不可用。`);
+    }
+    if (shouldEnforceProducts) {
+      assertPluginsSupportPlatforms(plugins, [requestedPlatform]);
     }
     return [requestedPlatform];
   }
@@ -596,6 +659,9 @@ export async function resolveTargetPlatforms(
     if (availablePlatforms.length !== 2) {
       throw new Error('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
     }
+    if (shouldEnforceProducts) {
+      assertPluginsSupportPlatforms(plugins, ['codex', 'claude']);
+    }
     return ['codex', 'claude'];
   }
 
@@ -603,23 +669,28 @@ export async function resolveTargetPlatforms(
     throw new Error('当前环境没有检测到可用平台。');
   }
 
-  if (availablePlatforms.length === 1) {
-    return availablePlatforms;
+  if (compatibleAvailablePlatforms.length === 0) {
+    assertPluginsSupportPlatforms(plugins, availablePlatforms);
+    throw new Error('当前环境没有和插件 marketplace.policy.products 匹配的可用平台。');
+  }
+
+  if (compatibleAvailablePlatforms.length === 1) {
+    return compatibleAvailablePlatforms;
   }
 
   if (action === 'status') {
-    return ['codex', 'claude'];
+    return compatibleAvailablePlatforms;
   }
 
   const autoState = await getAutoPlatformState(adapters, plugins, scope);
-  const unknownPlatforms = availablePlatforms.filter((platform) => autoState[platform] === 'unknown');
+  const unknownPlatforms = compatibleAvailablePlatforms.filter((platform) => autoState[platform] === 'unknown');
   if (unknownPlatforms.length > 0) {
     throw new Error(
       '当前环境同时检测到双平台，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
     );
   }
 
-  const initializedPlatforms = availablePlatforms.filter((platform) => autoState[platform] === 'yes');
+  const initializedPlatforms = compatibleAvailablePlatforms.filter((platform) => autoState[platform] === 'yes');
   if (initializedPlatforms.length === 1) {
     return initializedPlatforms;
   }

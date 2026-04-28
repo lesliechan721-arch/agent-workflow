@@ -60,9 +60,9 @@ describe('manifest utils', () => {
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX'],
       },
     });
+    expect(plugin.manifest.marketplace.policy.products).toBeUndefined();
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
       matcher: 'Bash',

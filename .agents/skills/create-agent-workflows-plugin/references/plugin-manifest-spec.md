@@ -66,7 +66,7 @@
 | `strict` | boolean | 是 | 是否要求 plugin.json 存在 |
 | `policy.installation` | string | 是 | `"AVAILABLE"` 或 `"NOT_AVAILABLE"` 或 `"INSTALLED_BY_DEFAULT"` |
 | `policy.authentication` | string | 是 | `"NONE"` 或 `"ON_INSTALL"` 或 `"ON_USE"` |
-| `policy.products` | string[] | 否 | 产品限制，例如 `["CODEX"]`，会 trim、去空、去重 |
+| `policy.products` | string[] | 否 | 产品限制，例如 `["CODEX"]` 或 `["CLAUDE"]`，会 trim、去空、去重 |
 
 ### policy 字段说明
 
@@ -78,7 +78,7 @@
   - `"NONE"`：无需认证
   - `"ON_INSTALL"`：安装时认证
   - `"ON_USE"`：使用时认证
-- `products`：省略时不限制平台；声明后只在指定产品中可用。脚手架默认省略该字段，让插件保持双平台可见；只有明确要限制平台时才添加。
+- `products`：省略时不限制平台；声明后只在指定产品中可用。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台，`--platform auto` 会先过滤不匹配的平台再推断目标。脚手架默认省略该字段，让插件保持双平台可安装；只有明确要限制平台时才添加。
 
 ## interface block
 

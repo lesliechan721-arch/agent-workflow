@@ -755,6 +755,77 @@ describe('CLI integration', () => {
     });
   });
 
+  it('enforces marketplace.policy.products during install platform resolution', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    await expect(
+      installCommand(
+        ['prompt-guard'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'claude',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', repoRoot, {}),
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).rejects.toThrow('插件不支持目标平台');
+
+    await expect(
+      installCommand(
+        ['prompt-guard'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'both',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', repoRoot, {}),
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).rejects.toThrow('marketplace.policy.products=[CODEX]');
+
+    await expect(
+      installCommand(
+        ['prompt-guard'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'auto',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', repoRoot, {
+              'prompt-guard': {
+                currentCatalogAvailable: true,
+              },
+            }),
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['prompt-guard'],
+    });
+  });
+
   it('marks installed.json degraded after native state succeeded but later install failed', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;

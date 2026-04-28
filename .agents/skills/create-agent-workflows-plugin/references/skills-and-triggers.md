@@ -69,7 +69,7 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 
 ## agents/openai.yaml 规范
 
-此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确限制为非 Codex 产品，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台。
+此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确限制为非 Codex 产品，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台；安装和显式升级时，CLI 会按这个字段拦截不匹配的平台。
 
 ### 完整字段
 

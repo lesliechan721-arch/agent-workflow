@@ -8,6 +8,7 @@ import type {
   LedgerStateReason,
   PlatformAdapter,
   PlatformName,
+  PluginMeta,
   ResolvedInstallOptions,
 } from '../types.js';
 import {
@@ -46,6 +47,7 @@ import {
   collectCommandWarnings,
   createResolvedInstallOptionsResolver,
   createAdapters,
+  assertPluginsSupportPlatforms,
   preparePluginTargetsForCommand,
   resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
@@ -193,6 +195,12 @@ export async function installTargetsOnPlatforms(
   const env = runtime.env ?? process.env;
   const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
   const warnings: string[] = [];
+  assertPluginsSupportPlatforms(
+    targets
+      .map((target) => target.currentPlugin)
+      .filter((plugin): plugin is PluginMeta => Boolean(plugin)),
+    platforms,
+  );
 
   for (const platform of platforms) {
     for (const target of targets) {

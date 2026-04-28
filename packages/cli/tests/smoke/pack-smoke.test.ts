@@ -118,11 +118,14 @@ describe('pack smoke', () => {
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX'],
           },
         }),
       ]),
     });
+    const gitCommitEntry = claudeMarketplace.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'git-commit',
+    );
+    expect(gitCommitEntry?.policy).not.toHaveProperty('products');
 
     const claudeBundlePaths = collectStringPaths([
       claudeManifest.skills,

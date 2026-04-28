@@ -14,8 +14,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {
