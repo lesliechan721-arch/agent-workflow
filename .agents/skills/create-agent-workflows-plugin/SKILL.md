@@ -129,8 +129,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 | `references/mcp-and-apps.md` | .mcp.json 和 .app.json 配置格式与平台行为 |
 | `references/claude-only-capabilities.md` | commands（含命令结果填充）/ output-styles / lspServers / userConfig / channels |
 | `references/comprehensive-example.md` | 综合示例说明 + 构建产物预览 |
-| `references/code-review/` | 可直接读取的完整示例插件目录（code-review） |
+| `references/.examples/code-review/` | 可直接读取的完整示例插件目录（隐藏父目录用于避免被 Codex 当作 repo skill） |
 
 ## 现有样例
 
-- `references/code-review/`：覆盖 skills、extensions、MCP、commands、output-styles、buildConfig 的完整示例插件目录，配合 `references/comprehensive-example.md` 阅读
+- `references/.examples/code-review/`：覆盖 skills、extensions、MCP、commands、output-styles、buildConfig 的完整示例插件目录。这里故意把样例放在隐藏父目录下，避免 Codex 递归扫描到示例里的 `SKILL.md` 并把它当成当前仓库的真实 skill

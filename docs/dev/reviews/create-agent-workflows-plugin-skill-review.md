@@ -45,7 +45,7 @@
 
 - 主 `SKILL.md` 先按场景 A / B / C 分流，再给出能力速查和最小工作流，字段细节下沉到各 reference 文档，阅读路径短而清楚，见 `.agents/skills/create-agent-workflows-plugin/SKILL.md:11-118`。
 - 主文档明确写出“这里描述的是 `agent-workflows` 源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集”，边界表达准确，见 `.agents/skills/create-agent-workflows-plugin/SKILL.md:9`。
-- `scripts/init_plugin.js` 负责最小骨架，`scripts/validate_plugin.js` 负责作者工具校验，`references/code-review/` 提供完整样例，职责划分自然，没有把 schema 细节堆回主入口文档。
+- `scripts/init_plugin.js` 负责最小骨架，`scripts/validate_plugin.js` 负责作者工具校验，`references/.examples/code-review/` 提供完整样例，职责划分自然，没有把 schema 细节堆回主入口文档。
 
 ## 分项结论
 
@@ -81,7 +81,7 @@
 补充判断：
 
 - 之前缺的 `policy.products` 现在已经补齐到实现、文档和测试三处，没有再看到类似的 schema 漏项。
-- `references/code-review/` 同时出现在“参考文档索引”和“现有样例”里，但一个是索引，一个是学习入口，重复度很轻，不需要为了压缩篇幅强行合并。
+- `references/.examples/code-review/` 同时出现在“参考文档索引”和“现有样例”里，但一个是索引，一个是学习入口，重复度很轻，不需要为了压缩篇幅强行合并。
 
 ## 验证记录
 
@@ -102,12 +102,12 @@
 
 已运行：
 
-- `node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js .agents/skills/create-agent-workflows-plugin/references/code-review`
+- `node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js .agents/skills/create-agent-workflows-plugin/references/.examples/code-review`
 - `pnpm --filter @yiliang/aw exec vitest run tests/integration/authoring-tools.test.ts`
 
 结果：
 
-- `references/code-review` 当前校验通过
+- `references/.examples/code-review` 当前校验通过
 - `authoring-tools.test.ts` 14/14 通过
 - 上一版报告中的遗留问题没有复现
 - 本轮未发现新的实现问题

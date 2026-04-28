@@ -1,6 +1,6 @@
 # 综合示例：code-review 插件
 
-`references/code-review/` 目录包含一个完整的示例插件，展示了大部分插件能力的组合使用。可以直接读取各文件作为参考。
+`references/.examples/code-review/` 目录包含一个完整的示例插件，展示了大部分插件能力的组合使用。这里故意把样例放在隐藏父目录下，避免 Codex 把示例里的 `SKILL.md` 识别成当前仓库的 repo skill。
 
 ## 目录结构
 
