@@ -16,7 +16,7 @@ import { readPluginManifest } from './manifest.js';
 
 type ParsedTriggerBoolean = boolean | 'absent';
 
-const CODEX_DEFAULT_ALLOW_IMPLICIT_INVOCATION = false;
+const CODEX_DEFAULT_ALLOW_IMPLICIT_INVOCATION = true;
 const CLAUDE_DEFAULT_DISABLE_MODEL_INVOCATION = false;
 const CLAUDE_DEFAULT_USER_INVOCABLE = true;
 

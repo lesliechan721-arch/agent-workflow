@@ -181,6 +181,22 @@ description: Commit skill
   );
 }
 
+async function writeCodexSkillWithEmptyPolicy(repoRoot: string): Promise<void> {
+  await fs.writeFile(
+    path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'agents', 'openai.yaml'),
+    'policy: {}\n',
+    'utf8',
+  );
+}
+
+async function writeCodexSkillWithoutPolicy(repoRoot: string): Promise<void> {
+  await fs.writeFile(
+    path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'agents', 'openai.yaml'),
+    'name: commit\n',
+    'utf8',
+  );
+}
+
 async function addCodexSkill(
   repoRoot: string,
   pluginName: string,
@@ -1110,6 +1126,44 @@ describe('skill trigger command integration', () => {
     });
   });
 
+  it('does not warn for Codex default-auto sibling scopes when openai.yaml relies on platform defaults', async () => {
+    const workspace = await makeWorkspace(writeCodexSkillWithEmptyPolicy);
+    configureWorkspaceEnv(workspace);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'default',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+
+    const projectResult = await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'auto',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+
+    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+  });
+
   it('reports sibling drift when an explicit upgrade changes semantics after a bundle change', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
@@ -1616,6 +1670,69 @@ describe('skill trigger command integration', () => {
     expect(result.output).toContain('skillTriggerLedger=default');
     expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
     expect(result.output).toContain('skillTriggerDrift=no');
+  });
+
+  it('reports Codex platform defaults as equivalent runtime candidates without false drift', async () => {
+    const cases = [
+      {
+        name: 'empty policy',
+        customizeRepo: writeCodexSkillWithEmptyPolicy,
+      },
+      {
+        name: 'missing policy',
+        customizeRepo: writeCodexSkillWithoutPolicy,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const workspace = await makeWorkspace(testCase.customizeRepo);
+      configureWorkspaceEnv(workspace);
+      await initCommand({ force: true, env: process.env });
+      await writeInstalledLedger(createAvailableLedger(), process.env);
+
+      await installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+          requestedSkillTrigger: 'default',
+        },
+        {
+          adapters: createAdapters(),
+          env: process.env,
+        },
+      );
+
+      const runtimeMetadata = YAML.parse(
+        await fs.readFile(codexOpenAiYamlPath(workspace.awHome), 'utf8'),
+      ) as Record<string, unknown>;
+      if (testCase.name === 'empty policy') {
+        expect(runtimeMetadata.policy).toEqual({});
+      } else {
+        expect(runtimeMetadata).not.toHaveProperty('policy');
+      }
+
+      const result = await statusCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        { env: process.env },
+      );
+
+      expect(result.output).toContain('skillTriggerLedger=default');
+      expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
+      expect(result.output).toContain('skillTriggerDrift=no');
+      expect(result.reports[0].plugins[0]).toMatchObject({
+        skillTriggerPreference: 'default',
+        skillTriggerRuntimeMatches: ['default', 'auto'],
+        skillTriggerRuntimeState: 'matched',
+        skillTriggerDrift: 'no',
+      });
+    }
   });
 
   it('reports Claude platform defaults as equivalent runtime candidates without false drift', async () => {

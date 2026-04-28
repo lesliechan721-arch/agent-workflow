@@ -58,6 +58,12 @@ const CODEX_SKILL_AUTO_FALSE = `policy:
   allow_implicit_invocation: false
 `;
 
+const CODEX_SKILL_EMPTY_POLICY = `policy: {}
+`;
+
+const CODEX_SKILL_WITHOUT_POLICY = `name: commit
+`;
+
 interface BundleSkillDefinition {
   claude: string;
   codex: string;
@@ -775,6 +781,76 @@ user-invocable: true
     });
     if (differentDefault.status === 'known' && differentAuto.status === 'known') {
       expect(differentDefault.signature).not.toBe(differentAuto.signature);
+    }
+  });
+
+  it('normalizes Codex platform default values when building skill trigger signatures', async () => {
+    const cases = [
+      {
+        pluginName: 'codex-empty-policy-plugin',
+        codex: CODEX_SKILL_EMPTY_POLICY,
+      },
+      {
+        pluginName: 'codex-without-policy-plugin',
+        codex: CODEX_SKILL_WITHOUT_POLICY,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const embeddedRoot = await makeTempDir(`aw-skill-trigger-${testCase.pluginName}-`);
+      await writeBundlePlugin({
+        rootDir: embeddedRoot,
+        pluginName: testCase.pluginName,
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
+        skills: {
+          commit: {
+            claude: CLAUDE_SKILL_AUTO_TRUE,
+            codex: testCase.codex,
+          },
+        },
+      });
+
+      const defaultSignature = await buildSkillTriggerMaterializationSignature({
+        pluginName: testCase.pluginName,
+        platform: 'codex',
+        preference: 'default',
+        embeddedRoot,
+      });
+      const autoSignature = await buildSkillTriggerMaterializationSignature({
+        pluginName: testCase.pluginName,
+        platform: 'codex',
+        preference: 'auto',
+        embeddedRoot,
+      });
+
+      expect(defaultSignature).toMatchObject({ status: 'known' });
+      expect(autoSignature).toMatchObject({ status: 'known' });
+      if (defaultSignature.status === 'known' && autoSignature.status === 'known') {
+        expect(defaultSignature.signature).toBe(autoSignature.signature);
+        expect(defaultSignature.entries).toEqual([
+          {
+            skillName: 'commit',
+            allowInstallOverride: true,
+            allowImplicitInvocation: true,
+          },
+        ]);
+      }
+
+      const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+      const runtimeSignature = await readCurrentSkillTriggerRuntimeSignature({
+        pluginName: testCase.pluginName,
+        platform: 'codex',
+        marketplaceRoot,
+        embeddedRoot,
+      });
+      expect(runtimeSignature).toMatchObject({ status: 'known' });
+      if (runtimeSignature.status === 'known' && defaultSignature.status === 'known') {
+        expect(runtimeSignature.signature).toBe(defaultSignature.signature);
+      }
     }
   });
 
