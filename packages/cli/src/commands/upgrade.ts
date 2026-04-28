@@ -9,10 +9,12 @@ import {
   collectCommandWarnings,
   createResolvedInstallOptionsResolver,
   createAdapters,
+  formatPolicyProducts,
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
   loadPluginTargetsForCommand,
   listManagedPluginNamesForPreparedLedger,
+  pluginSupportsPlatform,
   prepareCommandEnvironment,
   preparePluginTargetsForCommand,
   resolveInstallOptionsForTargets,
@@ -210,6 +212,13 @@ async function runUpgradeAll(
     for (const pluginName of namesByPlatform[platform]) {
       const target = targetMap.get(pluginName);
       if (!target) {
+        continue;
+      }
+
+      if (target.currentPlugin && !pluginSupportsPlatform(target.currentPlugin, platform)) {
+        blockingReasons.push(
+          `${platform}/${pluginName}: marketplace.policy.products=[${formatPolicyProducts(target.currentPlugin)}], 需要 ${platform === 'codex' ? 'CODEX' : 'CLAUDE'}`,
+        );
         continue;
       }
 

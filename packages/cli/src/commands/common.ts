@@ -80,7 +80,7 @@ function normalizeProductToken(value: string): string {
   return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 }
 
-function formatPolicyProducts(plugin: PluginMeta): string {
+export function formatPolicyProducts(plugin: PluginMeta): string {
   const products = plugin.manifest.marketplace.policy.products;
   return products && products.length > 0 ? products.join(', ') : '未限制';
 }
@@ -627,6 +627,31 @@ async function getAutoPlatformState(
   return states;
 }
 
+async function collectManagedTargetsOnExcludedPlatforms(
+  adapters: Record<PlatformName, PlatformAdapter>,
+  plugins: PluginMeta[],
+  scope: Scope,
+  platforms: PlatformName[],
+): Promise<string[]> {
+  const reasons: string[] = [];
+
+  for (const platform of platforms) {
+    for (const plugin of plugins) {
+      const status = await adapters[platform].status(plugin, scope);
+      const pluginStatus = status.plugins[0];
+      if (!pluginStatus || !hasScopeManagedEvidence(pluginStatus)) {
+        continue;
+      }
+
+      reasons.push(
+        `${platform}/${plugin.manifest.name} (scopeInitialized=${pluginStatus.scopeInitialized ?? '-'}, marketplace.policy.products=[${formatPolicyProducts(plugin)}])`,
+      );
+    }
+  }
+
+  return reasons;
+}
+
 export async function resolveTargetPlatforms(
   action: CommandAction,
   requestedPlatform: PlatformSelection,
@@ -675,6 +700,26 @@ export async function resolveTargetPlatforms(
   }
 
   if (compatibleAvailablePlatforms.length === 1) {
+    if (action === 'upgrade' && compatibleAvailablePlatforms.length !== availablePlatforms.length) {
+      const excludedPlatforms = availablePlatforms.filter(
+        (platform) => !compatibleAvailablePlatforms.includes(platform),
+      );
+      const blockingReasons = await collectManagedTargetsOnExcludedPlatforms(
+        adapters,
+        plugins,
+        scope,
+        excludedPlatforms,
+      );
+
+      if (blockingReasons.length > 0) {
+        throw new Error(
+          '`--platform auto` 经过 marketplace.policy.products 过滤后只剩一个可用平台，但以下插件仍在被排除的平台上保留受管安装：\n' +
+          blockingReasons.map((reason) => `- ${reason}`).join('\n') +
+          '\n请显式传入 `--platform codex|claude|both`，或先卸载不再受支持的平台安装。',
+        );
+      }
+    }
+
     return compatibleAvailablePlatforms;
   }
 

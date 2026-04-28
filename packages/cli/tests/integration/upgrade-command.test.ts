@@ -15,7 +15,11 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
-import { resolveCodexProjectKey, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import {
+  resolveClaudeProjectKey,
+  resolveCodexProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -45,6 +49,33 @@ async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embe
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
   };
+}
+
+async function makeWorkspaceWithMutator(
+  mutateRepo: (repoRoot: string) => Promise<void>,
+): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-upgrade-command-'));
+  tempDirs.push(root);
+
+  const repoRoot = path.join(root, 'repo');
+  await fs.copy(fixturePath('repo-template'), repoRoot);
+  await mutateRepo(repoRoot);
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+
+  return {
+    repoRoot,
+    awHome: path.join(root, 'aw-home'),
+    embeddedRoot,
+    codexHome: path.join(root, 'codex-home'),
+  };
+}
+
+async function restrictGitCommitToCodex(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.marketplace.policy.products = ['CODEX'];
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
 interface FakePluginState {
@@ -412,5 +443,188 @@ describe('upgrade command coverage', () => {
         },
       ),
     ).rejects.toThrow('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
+  });
+
+  it('blocks upgrade --platform auto when products narrowing would skip a managed platform', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      restrictGitCommitToCodex,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const [codexProjectKey, claudeProjectKey] = await Promise.all([
+      resolveCodexProjectKey(repoRoot),
+      resolveClaudeProjectKey(repoRoot),
+    ]);
+    const installedLedger = createAvailableLedger();
+    installedLedger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [codexProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [codexProjectKey],
+          },
+        },
+        claude: {
+          projectScopes: {
+            [claudeProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                managedExtensions: ['instructions', 'permissions', 'hooks'],
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(installedLedger, process.env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new FakeAdapter('claude', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'auto',
+        },
+        {
+          adapters: {
+            codex,
+            claude,
+          },
+        },
+      ),
+    ).rejects.toThrow('被排除的平台上保留受管安装');
+
+    expect(codex.installCalls).toEqual([]);
+    expect(claude.installCalls).toEqual([]);
+  });
+
+  it('preflights products narrowing before upgrade --all --platform both writes anything', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      restrictGitCommitToCodex,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const [codexProjectKey, claudeProjectKey] = await Promise.all([
+      resolveCodexProjectKey(repoRoot),
+      resolveClaudeProjectKey(repoRoot),
+    ]);
+    const installedLedger = createAvailableLedger();
+    installedLedger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [codexProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [codexProjectKey],
+          },
+        },
+        claude: {
+          projectScopes: {
+            [claudeProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                managedExtensions: ['instructions', 'permissions', 'hooks'],
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(installedLedger, process.env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new FakeAdapter('claude', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [],
+        {
+          all: true,
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'both',
+        },
+        {
+          adapters: {
+            codex,
+            claude,
+          },
+        },
+      ),
+    ).rejects.toThrow('marketplace.policy.products=[CODEX]');
+
+    expect(codex.installCalls).toEqual([]);
+    expect(claude.installCalls).toEqual([]);
   });
 });
