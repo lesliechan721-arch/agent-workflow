@@ -46,6 +46,7 @@ async function makeWorkspace(): Promise<{
 
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
   return {
     repoRoot,

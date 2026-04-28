@@ -14,7 +14,11 @@ import {
 } from '../../src/utils/codex-config.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import {
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import * as skillTriggerPreferencesModule from '../../src/utils/skill-trigger-preferences.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type {
@@ -26,6 +30,7 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
 
@@ -247,6 +252,7 @@ async function readManagedCodexInstruction(
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -789,6 +795,10 @@ describe('uninstall command coverage', () => {
 
   it('marks the ledger degraded with native write semantics when post-uninstall skill trigger rematerialization fails', async () => {
     const { repoRoot, env } = await makeWorkspace();
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const target: ResolvedPluginTarget = {
       pluginName: plugin.manifest.name,
