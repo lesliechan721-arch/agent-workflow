@@ -14,7 +14,23 @@ import type {
 } from '../types.js';
 import { readPluginManifest } from './manifest.js';
 
-type SignatureBoolean = boolean | 'absent';
+type ParsedTriggerBoolean = boolean | 'absent';
+
+const CODEX_DEFAULT_ALLOW_IMPLICIT_INVOCATION = false;
+const CLAUDE_DEFAULT_DISABLE_MODEL_INVOCATION = false;
+const CLAUDE_DEFAULT_USER_INVOCABLE = true;
+
+function normalizeCodexAllowImplicitInvocation(value: ParsedTriggerBoolean): boolean {
+  return value === 'absent' ? CODEX_DEFAULT_ALLOW_IMPLICIT_INVOCATION : value;
+}
+
+function normalizeClaudeDisableModelInvocation(value: ParsedTriggerBoolean): boolean {
+  return value === 'absent' ? CLAUDE_DEFAULT_DISABLE_MODEL_INVOCATION : value;
+}
+
+function normalizeClaudeUserInvocable(value: ParsedTriggerBoolean): boolean {
+  return value === 'absent' ? CLAUDE_DEFAULT_USER_INVOCABLE : value;
+}
 
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
@@ -110,14 +126,14 @@ export interface SkillTriggerDiagnostic {
 interface CodexSkillSignatureEntry {
   skillName: string;
   allowInstallOverride: boolean;
-  allowImplicitInvocation: SignatureBoolean;
+  allowImplicitInvocation: boolean;
 }
 
 interface ClaudeSkillSignatureEntry {
   skillName: string;
   allowInstallOverride: boolean;
-  disableModelInvocation: SignatureBoolean;
-  userInvocable: SignatureBoolean;
+  disableModelInvocation: boolean;
+  userInvocable: boolean;
 }
 
 type SkillTriggerSignatureEntry = CodexSkillSignatureEntry | ClaudeSkillSignatureEntry;
@@ -259,7 +275,7 @@ export async function resolveSkillTriggerPolicies(options: {
 }
 
 interface ParsedCodexSkill {
-  allowImplicitInvocation: SignatureBoolean;
+  allowImplicitInvocation: ParsedTriggerBoolean;
 }
 
 async function parseCodexSkillMetadata(filePath: string): Promise<ParsedCodexSkill> {
@@ -347,8 +363,8 @@ function parseClaudeFrontmatter(rawContent: string): ParsedClaudeFrontmatter {
 }
 
 interface ParsedClaudeSkill {
-  disableModelInvocation: SignatureBoolean;
-  userInvocable: SignatureBoolean;
+  disableModelInvocation: ParsedTriggerBoolean;
+  userInvocable: ParsedTriggerBoolean;
 }
 
 async function parseClaudeSkillMetadata(filePath: string): Promise<ParsedClaudeSkill> {
@@ -557,7 +573,9 @@ async function readEmbeddedSignatureEntries(
         entries.push({
           skillName: policy.skillName,
           allowInstallOverride: policy.allowInstallOverride,
-          allowImplicitInvocation: applied.allowImplicitInvocation,
+          allowImplicitInvocation: normalizeCodexAllowImplicitInvocation(
+            applied.allowImplicitInvocation,
+          ),
         });
       } catch (error) {
         diagnostics.push({
@@ -602,8 +620,10 @@ async function readEmbeddedSignatureEntries(
       entries.push({
         skillName: policy.skillName,
         allowInstallOverride: policy.allowInstallOverride,
-        disableModelInvocation: applied.disableModelInvocation,
-        userInvocable: applied.userInvocable,
+        disableModelInvocation: normalizeClaudeDisableModelInvocation(
+          applied.disableModelInvocation,
+        ),
+        userInvocable: normalizeClaudeUserInvocable(applied.userInvocable),
       });
     } catch (error) {
       diagnostics.push({
@@ -658,7 +678,9 @@ async function readRuntimeSignatureEntries(
         entries.push({
           skillName: policy.skillName,
           allowInstallOverride: policy.allowInstallOverride,
-          allowImplicitInvocation: skill.allowImplicitInvocation,
+          allowImplicitInvocation: normalizeCodexAllowImplicitInvocation(
+            skill.allowImplicitInvocation,
+          ),
         });
       } catch (error) {
         diagnostics.push({
@@ -699,8 +721,10 @@ async function readRuntimeSignatureEntries(
       entries.push({
         skillName: policy.skillName,
         allowInstallOverride: policy.allowInstallOverride,
-        disableModelInvocation: skill.disableModelInvocation,
-        userInvocable: skill.userInvocable,
+        disableModelInvocation: normalizeClaudeDisableModelInvocation(
+          skill.disableModelInvocation,
+        ),
+        userInvocable: normalizeClaudeUserInvocable(skill.userInvocable),
       });
     } catch (error) {
       diagnostics.push({

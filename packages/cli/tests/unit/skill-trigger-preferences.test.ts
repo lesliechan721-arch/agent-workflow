@@ -42,6 +42,14 @@ disable-model-invocation: false
 # Commit
 `;
 
+const CLAUDE_SKILL_PLATFORM_DEFAULTS = `---
+name: commit
+description: Commit skill
+---
+
+# Commit
+`;
+
 const CODEX_SKILL_AUTO_TRUE = `policy:
   allow_implicit_invocation: true
 `;
@@ -767,6 +775,73 @@ user-invocable: true
     });
     if (differentDefault.status === 'known' && differentAuto.status === 'known') {
       expect(differentDefault.signature).not.toBe(differentAuto.signature);
+    }
+  });
+
+  it('normalizes platform default values when building Claude skill trigger signatures', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-claude-defaults-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      pluginName: 'claude-defaults-plugin',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_PLATFORM_DEFAULTS,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+
+    const defaultSignature = await buildSkillTriggerMaterializationSignature({
+      pluginName: 'claude-defaults-plugin',
+      platform: 'claude',
+      preference: 'default',
+      embeddedRoot,
+    });
+    const autoSignature = await buildSkillTriggerMaterializationSignature({
+      pluginName: 'claude-defaults-plugin',
+      platform: 'claude',
+      preference: 'auto',
+      embeddedRoot,
+    });
+    expect(defaultSignature).toMatchObject({ status: 'known' });
+    expect(autoSignature).toMatchObject({ status: 'known' });
+    if (defaultSignature.status === 'known' && autoSignature.status === 'known') {
+      expect(defaultSignature.signature).toBe(autoSignature.signature);
+      expect(defaultSignature.entries).toEqual([
+        {
+          skillName: 'commit',
+          allowInstallOverride: true,
+          disableModelInvocation: false,
+          userInvocable: true,
+        },
+      ]);
+    }
+
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+    await materializeSkillTriggerPreference({
+      pluginName: 'claude-defaults-plugin',
+      platform: 'claude',
+      resolvedOptions: {
+        skillTriggerPreference: 'auto',
+      },
+      embeddedRoot,
+      marketplaceRootOrStagingRoot: marketplaceRoot,
+      mode: 'strictExplicit',
+    });
+    const runtimeSignature = await readCurrentSkillTriggerRuntimeSignature({
+      pluginName: 'claude-defaults-plugin',
+      platform: 'claude',
+      marketplaceRoot,
+      embeddedRoot,
+    });
+    expect(runtimeSignature).toMatchObject({ status: 'known' });
+    if (runtimeSignature.status === 'known' && defaultSignature.status === 'known') {
+      expect(runtimeSignature.signature).toBe(defaultSignature.signature);
     }
   });
 

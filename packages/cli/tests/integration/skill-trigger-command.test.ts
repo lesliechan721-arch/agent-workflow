@@ -167,6 +167,20 @@ async function cloneFixturePlugin(repoRoot: string, sourceName: string, targetNa
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function writeClaudeSkillWithPlatformDefaults(repoRoot: string): Promise<void> {
+  await fs.writeFile(
+    path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md'),
+    `---
+name: commit
+description: Commit skill
+---
+
+# Commit
+`,
+    'utf8',
+  );
+}
+
 async function addCodexSkill(
   repoRoot: string,
   pluginName: string,
@@ -1056,6 +1070,46 @@ describe('skill trigger command integration', () => {
     expect(await readCodexAllowImplicitInvocation(equivalent.awHome)).toBe(false);
   });
 
+  it('does not warn for Claude default-auto sibling scopes when frontmatter relies on platform defaults', async () => {
+    const workspace = await makeWorkspace(writeClaudeSkillWithPlatformDefaults);
+    configureWorkspaceEnv(workspace, ['claude']);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+        requestedSkillTrigger: 'default',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+
+    const projectResult = await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'claude',
+        requestedSkillTrigger: 'auto',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+
+    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    expect(await readClaudeFrontmatter(workspace.awHome)).toMatchObject({
+      'disable-model-invocation': false,
+    });
+  });
+
   it('reports sibling drift when an explicit upgrade changes semantics after a bundle change', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
@@ -1555,6 +1609,45 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+      },
+      { env: process.env },
+    );
+
+    expect(result.output).toContain('skillTriggerLedger=default');
+    expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
+    expect(result.output).toContain('skillTriggerDrift=no');
+  });
+
+  it('reports Claude platform defaults as equivalent runtime candidates without false drift', async () => {
+    const workspace = await makeWorkspace(writeClaudeSkillWithPlatformDefaults);
+    configureWorkspaceEnv(workspace, ['claude']);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+        requestedSkillTrigger: 'default',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+
+    const frontmatter = await readClaudeFrontmatter(workspace.awHome);
+    expect(frontmatter).not.toHaveProperty('disable-model-invocation');
+    expect(frontmatter).not.toHaveProperty('user-invocable');
+
+    const result = await statusCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'claude',
       },
       { env: process.env },
     );
