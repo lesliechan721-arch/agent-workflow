@@ -28,6 +28,7 @@ import {
 } from '../utils/generated-artifacts.js';
 import {
   buildSkillTriggerMaterializationSignature,
+  commitMaterializedSkillTriggerPreference,
   collectSkillTriggerSiblingConflictWarnings,
   materializeSkillTriggerPreference,
   readCurrentSkillTriggerRuntimeSignature,
@@ -384,6 +385,18 @@ export async function installTargetsOnPlatforms(
         }
 
         throw error;
+      }
+
+      if (materializationRollbackHandle) {
+        try {
+          await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
+          materializationCommitted = false;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          warnings.push(
+            `[${platform}/${target.currentPlugin.manifest.name}] skill trigger 备份目录清理失败：${detail}`,
+          );
+        }
       }
 
       const postStatus = await adapters[platform].status(target.currentPlugin, options.scope);

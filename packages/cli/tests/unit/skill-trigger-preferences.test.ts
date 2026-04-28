@@ -8,6 +8,7 @@ import type { InstalledLedger } from '../../src/types.js';
 import { createAvailableLedger } from '../../src/utils/local-marketplace.js';
 import {
   buildSkillTriggerMaterializationSignature,
+  commitMaterializedSkillTriggerPreference,
   collectSkillTriggerSiblingConflictWarnings,
   getNextSkillTriggerWriteOrder,
   materializeSkillTriggerPreference,
@@ -625,6 +626,48 @@ user-invocable: "true"
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toContain('allow_implicit_invocation: true');
     await rollbackMaterializedSkillTriggerPreference(result.rollbackHandle);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(originalContent);
+  });
+
+  it('cleans the previous subtree backup after a committed materialization is finalized', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-embedded-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+    const originalContent = 'policy:\n  allow_implicit_invocation: false\n';
+    await fs.writeFile(codexSkillPath(marketplaceRoot), originalContent, 'utf8');
+
+    const result = await materializeSkillTriggerPreference({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      resolvedOptions: {
+        skillTriggerPreference: 'auto',
+      },
+      embeddedRoot,
+      marketplaceRootOrStagingRoot: marketplaceRoot,
+      mode: 'strictExplicit',
+    });
+
+    const backupSkillsRoot = result.rollbackHandle.backupSkillsRoot;
+    expect(backupSkillsRoot).not.toBeNull();
+    await expect(fs.pathExists(backupSkillsRoot!)).resolves.toBe(true);
+
+    await commitMaterializedSkillTriggerPreference(result.rollbackHandle);
+
+    await expect(fs.pathExists(backupSkillsRoot!)).resolves.toBe(false);
+    expect(result.rollbackHandle.committed).toBe(false);
+    await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toContain('allow_implicit_invocation: true');
   });
 
   it('bestEffortReplay skips malformed overridable skills while strictExplicit fails on the same fixture', async () => {

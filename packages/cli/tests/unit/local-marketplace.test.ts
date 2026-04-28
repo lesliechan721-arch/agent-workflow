@@ -70,6 +70,21 @@ async function writeCodexAllowImplicitInvocation(rootDir: string, value: boolean
   );
 }
 
+async function listSkillBackupDirs(
+  rootDir: string,
+  pluginName = 'git-commit',
+  platform = 'codex',
+): Promise<string[]> {
+  const platformRoot = path.join(rootDir, 'plugins', pluginName, platform);
+  if (!(await fs.pathExists(platformRoot))) {
+    return [];
+  }
+
+  return (await fs.readdir(platformRoot))
+    .filter((entry) => entry.startsWith('.skills-backup-'))
+    .sort();
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
@@ -269,6 +284,7 @@ describe('local marketplace', () => {
 
     expect(result.warnings.join('\n')).not.toContain('degraded');
     expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+    expect(await listSkillBackupDirs(awHome)).toEqual([]);
     await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
       ledgerState: {
         status: 'available',

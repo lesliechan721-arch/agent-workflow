@@ -1132,6 +1132,22 @@ export async function rollbackMaterializedSkillTriggerPreference(
   if (handle.backupSkillsRoot) {
     await fs.move(handle.backupSkillsRoot, handle.targetSkillsRoot, { overwrite: true });
   }
+  handle.committed = false;
+  handle.backupSkillsRoot = null;
+}
+
+export async function commitMaterializedSkillTriggerPreference(
+  handle: SkillTriggerMaterializationRollbackHandle,
+): Promise<void> {
+  if (!handle.committed) {
+    return;
+  }
+
+  if (handle.backupSkillsRoot) {
+    await fs.remove(handle.backupSkillsRoot);
+  }
+  handle.committed = false;
+  handle.backupSkillsRoot = null;
 }
 
 function collectManagedScopeRecords(
@@ -1407,6 +1423,12 @@ export async function replaySkillTriggerPreferencesFromLedger(options: {
         mode: 'bestEffortReplay',
       });
       warnings.push(...materialization.warnings);
+      try {
+        await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        warnings.push(`[${platform}/${pluginName}] skill trigger 备份目录清理失败：${detail}`);
+      }
 
       if (!runtimeSignatureBefore) {
         continue;

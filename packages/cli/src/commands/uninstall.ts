@@ -32,6 +32,7 @@ import {
   resolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
 import {
+  commitMaterializedSkillTriggerPreference,
   rematerializeSkillTriggerPreferenceAfterUninstall,
   rollbackMaterializedSkillTriggerPreference,
   type SkillTriggerMaterializationRollbackHandle,
@@ -499,6 +500,16 @@ export async function uninstallTargetsOnPlatforms(
         }
 
         throw error;
+      }
+
+      if (materializationRollbackHandle) {
+        try {
+          await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
+          materializationCommitted = false;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          warnings.push(`[${platform}/${target.pluginName}] skill trigger 备份目录清理失败：${detail}`);
+        }
       }
 
       const postStatus = await adapters[platform].status(target.plugin, options.scope);

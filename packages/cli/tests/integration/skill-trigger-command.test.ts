@@ -114,6 +114,21 @@ async function writeCodexAllowImplicitInvocation(
   );
 }
 
+async function listSkillBackupDirs(
+  awHome: string,
+  pluginName = 'git-commit',
+  platform: PlatformName = 'codex',
+): Promise<string[]> {
+  const platformRoot = path.join(awHome, 'plugins', pluginName, platform);
+  if (!(await fs.pathExists(platformRoot))) {
+    return [];
+  }
+
+  return (await fs.readdir(platformRoot))
+    .filter((entry) => entry.startsWith('.skills-backup-'))
+    .sort();
+}
+
 async function writeCodexSkillAllowImplicitInvocation(
   awHome: string,
   pluginName: string,
@@ -738,6 +753,7 @@ describe('skill trigger command integration', () => {
       skillTriggerPreference: 'default',
     });
     expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder).toBe(3);
+    expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
   });
 
   it('keeps non-overridable skills pristine and ignores tampered local manifest policy', async () => {
@@ -1504,6 +1520,7 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
 
     await uninstallCommand(
       ['git-commit'],
@@ -1523,6 +1540,7 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
 
     await uninstallCommand(
       ['git-commit'],
@@ -1543,6 +1561,7 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
   });
 
   it('skips uninstall re-election under degraded ledgers', async () => {
