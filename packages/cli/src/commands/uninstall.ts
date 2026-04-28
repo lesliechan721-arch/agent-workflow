@@ -25,7 +25,17 @@ import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
-import { resolveClaudePaths, resolveCodexPaths } from '../utils/paths.js';
+import {
+  resolveAwHome,
+  resolveClaudePaths,
+  resolveCodexPaths,
+  resolveEmbeddedPluginsRoot,
+} from '../utils/paths.js';
+import {
+  rematerializeSkillTriggerPreferenceAfterUninstall,
+  rollbackMaterializedSkillTriggerPreference,
+  type SkillTriggerMaterializationRollbackHandle,
+} from '../utils/skill-trigger-preferences.js';
 import {
   getTrackingRecord,
   readTrackingManifest,
@@ -164,6 +174,10 @@ function didUninstallWriteNativeState(
   }
 
   return pluginStatus.native.pluginInstalled;
+}
+
+function shouldRematerializeSkillTriggersAfterUninstall(target: ResolvedPluginTarget): boolean {
+  return target.source === 'currentCatalog' && Boolean(target.embeddedPlugin?.manifest.skills);
 }
 
 function cloneClaudePermissionState(
@@ -396,6 +410,9 @@ export async function uninstallTargetsOnPlatforms(
       let nativeWritten = false;
       let artifactsWritten = false;
       let trackingWritten = false;
+      let materializationCommitted = false;
+      let materializationRollbackFailed = false;
+      let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
 
       try {
         await adapters[platform].uninstallPlugin(target.plugin, options.scope);
@@ -415,9 +432,30 @@ export async function uninstallTargetsOnPlatforms(
             baselineLedger,
             await applyUninstallLedger(platform, baselineLedger, target, options),
           );
+          if (shouldRematerializeSkillTriggersAfterUninstall(target)) {
+            const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
+              pluginName: target.pluginName,
+              platform,
+              ledgerAfterUninstall: nextLedger,
+              embeddedRoot: await resolveEmbeddedPluginsRoot(),
+              marketplaceRoot: resolveAwHome(env),
+            });
+            warnings.push(...rematerialization.warnings);
+            materializationCommitted = rematerialization.materialization?.committed === true;
+            materializationRollbackHandle = rematerialization.materialization?.rollbackHandle;
+          }
           await writeInstalledLedger(nextLedger, env);
         }
       } catch (error) {
+        if (materializationCommitted && materializationRollbackHandle) {
+          try {
+            await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
+            materializationCommitted = false;
+          } catch {
+            materializationRollbackFailed = true;
+          }
+        }
+
         if (trackingWritten) {
           try {
             await writeTrackingManifest(trackingDir, baselineTracking);
@@ -443,11 +481,11 @@ export async function uninstallTargetsOnPlatforms(
           }
         }
 
-        if (nativeWritten || artifactsWritten || trackingWritten) {
+        if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWritten) {
           try {
             await writeDegradedLedger(
               baselineLedger,
-              nativeWritten
+              nativeWritten || materializationRollbackFailed
                 ? 'operation_interrupted_after_native_write'
                 : 'operation_interrupted_after_artifact_write',
               env,

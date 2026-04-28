@@ -45,11 +45,72 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+    });
 
     const { validateBundleLayout } = (await import(
       '../../src/utils/bundle-layout.js'
     )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
+  });
+
+  it('starts the real dist entry and reads the bundled plugins-dist', async () => {
+    const root = repoRoot();
+    await execFileAsync('pnpm', ['build'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    await expect(
+      execFileAsync('node', ['packages/cli/dist/index.js', '--help'], {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('Usage: aw'),
+    });
+
+    await expect(
+      execFileAsync(
+        'node',
+        ['packages/cli/dist/index.js', 'install', 'git-commit', '--skill-trigger', 'sometimes'],
+        {
+          cwd: root,
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('Unsupported skill trigger preference "sometimes"'),
+    });
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dist-entry-'));
+    tempDirs.push(tempRoot);
+    const awHome = path.join(tempRoot, 'aw-home');
+    await expect(
+      execFileAsync('node', ['packages/cli/dist/index.js', 'init', '--force'], {
+        cwd: root,
+        env: {
+          ...process.env,
+          AW_HOME: awHome,
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('local marketplace'),
+    });
+    await expect(
+      fs.pathExists(path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toBe(true);
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {

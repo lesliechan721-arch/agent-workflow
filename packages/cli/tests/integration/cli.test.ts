@@ -1669,6 +1669,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        requestedSkillTrigger: 'default',
       },
     );
 

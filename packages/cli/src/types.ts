@@ -2,6 +2,7 @@ export type PlatformName = 'codex' | 'claude';
 export type PlatformSelection = PlatformName | 'auto' | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
+export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
 
 export interface PluginInterfaceMeta {
   displayName?: string;
@@ -151,11 +152,16 @@ export interface PluginExtensions {
   agents?: AgentDefinition[];
 }
 
+export interface SkillTriggerPolicy {
+  allowInstallOverride: boolean;
+}
+
 export interface PluginManifestSource {
   name: string;
   version: string;
   description: string;
   skills?: string;
+  skillTriggers?: Record<string, SkillTriggerPolicy>;
   mcpServers?: string;
   apps?: string;
   marketplace: PluginMarketplaceMeta;
@@ -339,6 +345,11 @@ export interface PluginStatusReport {
   native: NativePluginStatus;
   generatedArtifacts: GeneratedArtifactStatus[];
   driftWarnings: string[];
+  installOptions?: InstalledScopeInstallOptions;
+  skillTriggerPreference?: SkillTriggerPreference;
+  skillTriggerRuntimeMatches?: SkillTriggerPreference[];
+  skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
+  skillTriggerDrift?: 'yes' | 'no' | 'unknown';
   ledgerStateStatus?: LedgerStateStatus;
   ledgerStateReason?: LedgerStateReason | null;
   scopeInitialized?: ScopeInitializedState;
@@ -366,6 +377,51 @@ export interface CommandOptions {
   scope: Scope;
   platform: PlatformSelection;
   cwd: string;
+}
+
+export interface InstallCommandOptions extends CommandOptions {
+  requestedSkillTrigger?: SkillTriggerPreference;
+}
+
+export interface UpgradeCommandOptions extends CommandOptions {
+  all?: boolean;
+  requestedSkillTrigger?: SkillTriggerPreference;
+}
+
+export type ResolvedInstallOptionsSource = 'cli' | 'ledger' | 'default';
+export type ResolvedInstallOptionsLedgerTrust = 'available' | 'degraded';
+
+export interface ResolvedInstallOptions {
+  skillTriggerPreference: SkillTriggerPreference;
+  skillTriggerSource: ResolvedInstallOptionsSource;
+  ledgerTrust: ResolvedInstallOptionsLedgerTrust;
+}
+
+export class CommandWarningError extends Error {
+  readonly warnings: string[];
+  readonly exitCode: number;
+
+  constructor(
+    message: string,
+    options: {
+      warnings?: string[];
+      exitCode?: number;
+    } = {},
+  ) {
+    super(message);
+    this.name = 'CommandWarningError';
+    this.warnings = [...new Set(options.warnings ?? [])];
+    this.exitCode = options.exitCode ?? 1;
+  }
+}
+
+export function isCommandWarningError(error: unknown): error is CommandWarningError {
+  return (
+    error instanceof Error &&
+    error.name === 'CommandWarningError' &&
+    Array.isArray((error as CommandWarningError).warnings) &&
+    typeof (error as CommandWarningError).exitCode === 'number'
+  );
 }
 
 export interface PlatformAdapter {
@@ -412,11 +468,17 @@ export interface CodexCapabilitySnapshot {
   hasRepoManagedArtifacts?: boolean;
 }
 
+export interface InstalledScopeInstallOptions {
+  skillTriggerPreference?: SkillTriggerPreference;
+}
+
 export interface InstalledScopeRecord<TCapabilitySnapshot> {
   managed: boolean;
   updatedAt: string;
   resolvedVersion: string;
   capabilitySnapshot: TCapabilitySnapshot;
+  installOptions?: InstalledScopeInstallOptions;
+  skillTriggerWriteOrder?: number;
 }
 
 export interface CodexSharedNativeRefs {

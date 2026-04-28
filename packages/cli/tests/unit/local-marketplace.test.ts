@@ -3,13 +3,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
+import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   calculateBundleFingerprint,
+  createAvailableLedger,
   initializeLocalMarketplace,
   readInstalledLedger,
   validateLocalMarketplaceLayout,
+  writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readJsonFile } from '../../src/utils/json.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
@@ -37,6 +40,34 @@ async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embe
   const awHome = path.join(root, 'aw-home');
 
   return { repoRoot, awHome, embeddedRoot };
+}
+
+function codexOpenAiYamlPath(rootDir: string, pluginName = 'git-commit'): string {
+  return path.join(
+    rootDir,
+    'plugins',
+    pluginName,
+    'codex',
+    'skills',
+    'commit',
+    'agents',
+    'openai.yaml',
+  );
+}
+
+async function readCodexAllowImplicitInvocation(rootDir: string): Promise<boolean> {
+  const parsed = YAML.parse(await fs.readFile(codexOpenAiYamlPath(rootDir), 'utf8')) as {
+    policy?: { allow_implicit_invocation?: boolean };
+  };
+  return parsed.policy?.allow_implicit_invocation === true;
+}
+
+async function writeCodexAllowImplicitInvocation(rootDir: string, value: boolean): Promise<void> {
+  await fs.writeFile(
+    codexOpenAiYamlPath(rootDir),
+    YAML.stringify({ policy: { allow_implicit_invocation: value } }),
+    'utf8',
+  );
 }
 
 afterEach(async () => {
@@ -199,5 +230,274 @@ describe('local marketplace', () => {
       plugins: {},
     });
     await expect(calculateBundleFingerprint(awHome)).resolves.toMatch(/^sha256:/);
+  });
+
+  it('replays available ledger skill trigger preferences during force rebuild', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+            skillTriggerWriteOrder: 1,
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await writeCodexAllowImplicitInvocation(awHome, true);
+    const localManifestPath = path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+    const localManifest = await fs.readJson(localManifestPath);
+    localManifest.skillTriggers.commit.allowInstallOverride = false;
+    await fs.writeJson(localManifestPath, localManifest, { spaces: 2 });
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(result.warnings.join('\n')).not.toContain('degraded');
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'available',
+      },
+    });
+  });
+
+  it('uses the shared winner when replaying conflicting scope records', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+            skillTriggerWriteOrder: 1,
+          },
+          projectScopes: {
+            'project-a': {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+              },
+              installOptions: {
+                skillTriggerPreference: 'auto',
+              },
+              skillTriggerWriteOrder: 2,
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await writeCodexAllowImplicitInvocation(awHome, false);
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
+    expect(result.warnings.join('\n')).toContain('user (manual)');
+  });
+
+  it('uses the stable scope identity fallback when replaying old ledgers without write order', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+          },
+          projectScopes: {
+            alpha: {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+              },
+              installOptions: {
+                skillTriggerPreference: 'auto',
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await writeCodexAllowImplicitInvocation(awHome, false);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
+  });
+
+  it('replays skill trigger preferences during non-force stale and bundle refreshes', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+            skillTriggerWriteOrder: 1,
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    await writeCodexAllowImplicitInvocation(awHome, true);
+    await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
+    await initializeLocalMarketplace({ force: false, env: process.env });
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+
+    await writeCodexAllowImplicitInvocation(awHome, true);
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'claude', 'skills', 'commit', 'README.md'),
+      'fingerprint changed\n',
+      'utf8',
+    );
+    await initializeLocalMarketplace({ force: false, env: process.env });
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+  });
+
+  it('skips replay for degraded ledgers and keeps the pristine bundle', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeInstalledLedger(
+      {
+        version: 1,
+        ledgerState: {
+          status: 'degraded',
+          degradedAt: '2026-04-28T00:00:00.000Z',
+          reason: 'operation_interrupted_after_native_write',
+        },
+        plugins: {
+          'git-commit': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-04-28T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                  installOptions: {
+                    skillTriggerPreference: 'manual',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      process.env,
+    );
+    await writeCodexAllowImplicitInvocation(awHome, false);
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(result.warnings.join('\n')).toContain('跳过 skill trigger 偏好 replay');
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
+    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_native_write',
+      },
+    });
+  });
+
+  it('keeps rebuild best-effort when replay sees malformed pristine skill files', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+            skillTriggerWriteOrder: 1,
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await fs.writeFile(codexOpenAiYamlPath(embeddedRoot), 'policy: [', 'utf8');
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(result.warnings.join('\n')).toContain('偏好跳过覆盖');
+    await expect(fs.readFile(codexOpenAiYamlPath(awHome), 'utf8')).resolves.toBe('policy: [');
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 });

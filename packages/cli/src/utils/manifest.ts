@@ -21,6 +21,7 @@ import type {
   PluginManifestSource,
   PluginMarketplaceMeta,
   PluginMeta,
+  SkillTriggerPolicy,
   TemplateVarByPlatform,
 } from '../types.js';
 import { readJsonFile } from './json.js';
@@ -197,6 +198,30 @@ function normalizeMarketplaceMeta(
     strict: input.strict,
     policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
   };
+}
+
+function normalizeSkillTriggerPolicies(
+  value: unknown,
+  fieldName: string,
+): Record<string, SkillTriggerPolicy> {
+  const input = assertObject(value, fieldName);
+  const policies: Record<string, SkillTriggerPolicy> = {};
+
+  for (const [skillName, entry] of Object.entries(input)) {
+    const policyFieldName = `${fieldName}.${skillName}`;
+    const policy = assertObject(entry, policyFieldName);
+    assertAllowedKeys(policy, policyFieldName, ['allowInstallOverride']);
+
+    if (typeof policy.allowInstallOverride !== 'boolean') {
+      throw new Error(`Invalid ${policyFieldName}.allowInstallOverride: expected a boolean.`);
+    }
+
+    policies[skillName] = {
+      allowInstallOverride: policy.allowInstallOverride,
+    };
+  }
+
+  return policies;
 }
 
 function normalizeTemplateVarByPlatform(
@@ -779,6 +804,7 @@ export function validatePluginManifest(
     'version',
     'description',
     'skills',
+    'skillTriggers',
     'mcpServers',
     'apps',
     'marketplace',
@@ -800,6 +826,14 @@ export function validatePluginManifest(
       ensureString(input.skills, 'skills'),
       'skills',
     );
+  }
+
+  if (input.skillTriggers !== undefined) {
+    if (manifest.skills === undefined) {
+      throw new Error('Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory.');
+    }
+
+    manifest.skillTriggers = normalizeSkillTriggerPolicies(input.skillTriggers, 'skillTriggers');
   }
 
   if (input.mcpServers !== undefined) {
@@ -881,6 +915,26 @@ async function validateDeclaredAssetPathsExist(
   );
 }
 
+async function validateSourceSkillTriggerPolicies(
+  pluginRoot: string,
+  manifest: PluginManifestSource,
+): Promise<void> {
+  if (!manifest.skills || !manifest.skillTriggers || Object.keys(manifest.skillTriggers).length === 0) {
+    return;
+  }
+
+  const skillsRoot = path.join(pluginRoot, stripDotSlash(manifest.skills));
+  for (const skillName of Object.keys(manifest.skillTriggers)) {
+    const skillDir = path.join(skillsRoot, skillName);
+    const stats = await fs.stat(skillDir).catch(() => null);
+    if (!stats?.isDirectory()) {
+      throw new Error(
+        `Invalid skillTriggers.${skillName}: expected a skill directory at "${path.relative(pluginRoot, skillDir).split(path.sep).join('/')}".`,
+      );
+    }
+  }
+}
+
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
@@ -938,6 +992,7 @@ export async function validateSourcePluginManifest(
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
+    validateSourceSkillTriggerPolicies(pluginRoot, manifest),
   ]);
   return manifest;
 }
@@ -1055,6 +1110,9 @@ export function createMarketplaceManifest(
 export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSource {
   return {
     ...plugin.manifest,
+    skillTriggers: plugin.manifest.skillTriggers
+      ? structuredClone(plugin.manifest.skillTriggers)
+      : undefined,
     extensions: plugin.manifest.extensions
       ? {
           instructions: plugin.manifest.extensions.instructions

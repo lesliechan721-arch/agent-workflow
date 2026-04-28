@@ -6,6 +6,7 @@
 
 - `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明派生能力，不新增顶层 `claude` block
 - 路径字段（`skills`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
+- `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物）
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
@@ -26,6 +27,21 @@
 - **Codex 显式触发**：用 `$skill-name` 或结构化 skill mention
 - **Claude 用户手动触发**：取决于 `SKILL.md` frontmatter 的 `user-invocable`
 - **Claude 模型自动调用**：取决于 `SKILL.md` frontmatter 的 `disable-model-invocation`
+
+`.agents-plugin/plugin.json` 里的 `skillTriggers` 不定义默认触发策略，只定义安装时是否允许用户覆盖。例如：
+
+```json
+{
+  "skills": "./skills",
+  "skillTriggers": {
+    "commit": {
+      "allowInstallOverride": true
+    }
+  }
+}
+```
+
+`allowInstallOverride: true` 表示 `aw install --skill-trigger manual|auto|default` 可以改写本地 marketplace 里的运行时 skill 文件；默认值仍由源码中的 `SKILL.md` 和 `agents/openai.yaml` 决定。`allowInstallOverride: false` 或省略 `skillTriggers` 都会保持保守策略，不允许安装命令覆盖该 skill。
 
 详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 

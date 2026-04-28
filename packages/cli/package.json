@@ -27,7 +27,8 @@
     "chalk": "^5.4.1",
     "commander": "^14.0.1",
     "fs-extra": "^11.3.0",
-    "toml-eslint-parser": "^1.0.3"
+    "toml-eslint-parser": "^1.0.3",
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",

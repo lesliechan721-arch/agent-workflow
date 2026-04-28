@@ -147,6 +147,7 @@ describe('manifest utils', () => {
     );
     const manifest = await fs.readJson(manifestPath);
     delete manifest.skills;
+    delete manifest.skillTriggers;
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(
@@ -164,6 +165,86 @@ describe('manifest utils', () => {
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'skills points to "./missing-skills" but path does not exist',
+    );
+  });
+
+  it('accepts valid skillTriggers declared against source skills', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skillTriggers = {
+      commit: {
+        allowInstallOverride: true,
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
+      },
+    });
+  });
+
+  it('rejects skillTriggers without skills or with unknown fields', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    delete manifest.skills;
+    manifest.skillTriggers = {
+      commit: {
+        allowInstallOverride: true,
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      '"skillTriggers" requires a declared "skills" directory',
+    );
+
+    manifest.skills = './skills';
+    manifest.skillTriggers = {
+      commit: {
+        allowInstallOverride: true,
+        mode: 'manual',
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'unknown field "mode"',
+    );
+
+    manifest.skillTriggers = {
+      commit: {
+        allowInstallOverride: 'yes',
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'allowInstallOverride: expected a boolean',
+    );
+  });
+
+  it('rejects skillTriggers entries that do not match a source skill directory', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skillTriggers = {
+      missing: {
+        allowInstallOverride: true,
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid skillTriggers.missing: expected a skill directory at "skills/missing".',
     );
   });
 
@@ -239,6 +320,7 @@ describe('manifest utils', () => {
       path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
     );
     delete manifest.skills;
+    delete manifest.skillTriggers;
     await fs.writeJson(
       path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
       manifest,
@@ -254,6 +336,38 @@ describe('manifest utils', () => {
     ).resolves.toMatchObject({
       manifest: {
         name: 'git-commit',
+      },
+    });
+  });
+
+  it('preserves skillTriggers in bundle mode without requiring a source skills directory', async () => {
+    const repoRoot = await makeTempRepo();
+    const sourcePluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const bundlePluginRoot = path.join(repoRoot, 'bundle', 'plugins', 'git-commit');
+    await fs.ensureDir(path.join(bundlePluginRoot, '.agents-plugin'));
+    const manifest = await fs.readJson(
+      path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
+    );
+    manifest.skillTriggers = {
+      commit: {
+        allowInstallOverride: true,
+      },
+    };
+    await fs.writeJson(
+      path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
+      manifest,
+      { spaces: 2 },
+    );
+
+    await expect(
+      readPluginManifest(bundlePluginRoot, { mode: 'bundle' }),
+    ).resolves.toMatchObject({
+      manifest: {
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
       },
     });
   });

@@ -189,6 +189,45 @@ Codex 没有完全等价的"隐藏手动入口"字段；即使 `allow_implicit_i
 
 ---
 
+## 安装时触发偏好
+
+平台原生文件定义的是 skill 的默认策略。`aw install` / 显式 `aw upgrade` 还提供安装时偏好：
+
+常用写法是 `aw install <plugin> --skill-trigger manual`。
+
+```bash
+aw install <plugin> --skill-trigger manual
+aw install <plugin> --skill-trigger auto
+aw install <plugin> --skill-trigger default
+```
+
+偏好映射：
+
+| 偏好 | Codex | Claude Code |
+|------|-------|-------------|
+| `manual` | `allow_implicit_invocation: false` | `disable-model-invocation: true`，并保留 `user-invocable: true` |
+| `auto` | `allow_implicit_invocation: true` | `disable-model-invocation: false`，`user-invocable` 继承默认文件 |
+| `default` | 恢复 `agents/openai.yaml` 默认值 | 恢复 `SKILL.md` 默认 frontmatter |
+
+只有 manifest 中允许安装时覆盖的 skill 才会受这个参数影响：
+
+```json
+{
+  "skills": "./skills",
+  "skillTriggers": {
+    "your-skill": {
+      "allowInstallOverride": true
+    }
+  }
+}
+```
+
+`allowInstallOverride` 只是覆盖许可，不代表默认策略。省略 `skillTriggers` 或写 `allowInstallOverride: false` 时，CLI 会保留该 skill 的默认触发配置，并在用户显式传入 `manual|auto` 时提示 warning。
+
+本地 `~/.aw` 是共享 marketplace。同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；不同 project/scope 选择不同偏好时，最近成功写入的受管记录会成为当前共享策略，其他 scope 可能在 `aw status` 中看到 drift。
+
+---
+
 ## 调试检查点
 
 - 自动触发不符合预期 → 先检查 `description` 是否足够具体，再看 `allow_implicit_invocation`。

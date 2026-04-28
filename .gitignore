@@ -8,3 +8,4 @@ packages/cli/.vitest
 packages/cli/plugins-dist
 .idea
 *.tgz
+.codex/config.toml

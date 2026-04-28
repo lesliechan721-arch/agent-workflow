@@ -300,6 +300,8 @@ async function tryLoadCliValidator() {
     'manifest.js',
   );
   if (!fs.existsSync(modulePath)) return null;
+  const moduleSource = fs.readFileSync(modulePath, 'utf8');
+  if (!moduleSource.includes('skillTriggers')) return null;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
     return mod.validateSourcePluginManifest ?? null;
@@ -313,6 +315,22 @@ async function tryLoadCliValidator() {
 // ---------------------------------------------------------------------------
 
 function validateManifestLightweight(manifest) {
+  const input = expectRecord(manifest, 'plugin manifest');
+  if (!input) return;
+  validateAllowedKeys(input, 'plugin manifest', [
+    'name',
+    'version',
+    'description',
+    'skills',
+    'skillTriggers',
+    'mcpServers',
+    'apps',
+    'marketplace',
+    'interface',
+    'extensions',
+    'buildConfig',
+  ]);
+
   for (const field of ['name', 'version', 'description', 'marketplace']) {
     if (!manifest[field]) {
       error(`Missing required field: ${field}`);
@@ -832,6 +850,39 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
   }
 }
 
+function validateSkillTriggers(pluginDir, manifest) {
+  if (manifest.skillTriggers === undefined) return;
+
+  const skillTriggers = expectRecord(manifest.skillTriggers, 'skillTriggers');
+  if (!skillTriggers) return;
+
+  if (manifest.skills === undefined) {
+    error('skillTriggers requires a declared "skills" directory');
+  }
+
+  const skillsRoot =
+    typeof manifest.skills === 'string'
+      ? path.join(pluginDir, manifest.skills)
+      : null;
+
+  for (const [skillName, rawPolicy] of Object.entries(skillTriggers)) {
+    const fieldName = `skillTriggers.${skillName}`;
+    const policy = expectRecord(rawPolicy, fieldName);
+    if (!policy) continue;
+    validateAllowedKeys(policy, fieldName, ['allowInstallOverride']);
+
+    if (typeof policy.allowInstallOverride !== 'boolean') {
+      error(`${fieldName}.allowInstallOverride must be a boolean`);
+    }
+
+    if (!skillsRoot) continue;
+    const skillDir = path.join(skillsRoot, skillName);
+    if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
+      error(`${fieldName} must match an existing source skill directory`);
+    }
+  }
+}
+
 function validateMcpContent(pluginDir, manifest) {
   if (!manifest.mcpServers) return;
   if (isTemplateAsset(manifest, manifest.mcpServers)) return;
@@ -1167,6 +1218,7 @@ async function validatePluginDir(pluginDir) {
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
+  validateSkillTriggers(pluginDir, manifest);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   validateExtensionNameUniqueness(manifest);

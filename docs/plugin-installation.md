@@ -38,13 +38,14 @@ aw init [--force]
 ### `aw install`
 
 ```bash
-aw install <插件名...> [--scope project|user] [--platform codex|claude|both|auto]
+aw install <插件名...> [--scope project|user] [--platform codex|claude|both|auto] [--skill-trigger default|manual|auto]
 ```
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--scope` | `project` | `project`：安装到当前目录（`.claude/` 或 `.codex/`）；`user`：安装到用户全局目录（`~/.claude/` 或 `~/.codex/`） |
 | `--platform` | `auto` | `auto` 自动检测已安装的平台；也可显式指定 `claude`、`codex` 或 `both` |
+| `--skill-trigger` | 见下文 | 安装时的 skill 触发偏好：`default`、`manual` 或 `auto` |
 
 一次安装多个插件：
 
@@ -67,11 +68,32 @@ aw uninstall <插件名...> [--scope project|user] [--platform codex|claude|both
 ### `aw upgrade`
 
 ```bash
-aw upgrade [插件名...] [--all] [--scope project|user] [--platform codex|claude|both|auto]
+aw upgrade [插件名...] [--all] [--scope project|user] [--platform codex|claude|both|auto] [--skill-trigger default|manual|auto]
 ```
 
 - 指定插件名，或用 `--all` 升级当前 scope 下所有已管理的插件
+- 显式升级某个插件时可传 `--skill-trigger` 调整 skill 触发偏好；`upgrade --all` 不接受这个参数，会按各 scope 的 ledger 记录恢复
 - 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
+
+---
+
+## Skill 触发偏好
+
+`--skill-trigger` 只影响插件作者在 `.agents-plugin/plugin.json` 中允许安装时覆盖的 skill。未允许覆盖的 skill 会保留插件默认策略，并在命令输出中给出 warning。
+
+| 值 | 含义 |
+|----|------|
+| `default` | 恢复插件源码里的默认触发策略 |
+| `manual` | 禁止模型自动触发，但保留用户显式触发入口 |
+| `auto` | 允许模型自动触发 |
+
+默认策略仍来自平台原生文件：Codex 读取 `skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`，Claude Code 读取 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。
+
+重复执行 `aw install` 时，未传 `--skill-trigger` 不等于重置。只要 `installed.json` 处于 available 状态，CLI 会沿用当前 `platform / scope / plugin` 上一次记录的偏好；只有显式传 `--skill-trigger default` 才会主动恢复默认策略。`aw upgrade <插件名>` 未传参数时也遵循同样的 ledger 继承规则。
+
+如果 `installed.json` 处于 degraded 状态，CLI 不能安全相信旧记录。对已经受管的 target，重复 `install` 或显式 `upgrade` 必须传 `--skill-trigger default|manual|auto` 才能继续；未受管的新安装 target 仍按 `default` 安装。
+
+`~/.aw` 是本机共享 marketplace。同一用户、同名插件、同一平台只有一份当前生效的 skill 触发策略；在另一个 project 或 scope 里安装同名插件并选择不同偏好，可能会改变共享 runtime。CLI 会尽量在命令输出和 `aw status` 中提示 sibling scope drift。
 
 ---
 
@@ -181,9 +203,12 @@ aw upgrade --all --scope project
 # 查看具体原因
 aw status
 
-# 尝试重新卸载后安装
+# 已受管插件重新安装或显式升级时，必须明确 skill 触发偏好
+aw install git-commit --scope project --skill-trigger default
+
+# 或尝试重新卸载后安装
 aw uninstall git-commit --scope project
-aw install git-commit --scope project
+aw install git-commit --scope project --skill-trigger default
 ```
 
 ### 插件安装后 AI 看不到 instructions

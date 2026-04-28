@@ -235,6 +235,7 @@ describe('upgrade command coverage', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
@@ -270,6 +271,7 @@ describe('upgrade command coverage', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {

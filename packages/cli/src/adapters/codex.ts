@@ -17,9 +17,11 @@ import type {
   GeneratedArtifact,
   GeneratedArtifactStatus,
   InstalledLedger,
+  InstalledScopeRecord,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
+  ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
   StatusReport,
@@ -60,6 +62,7 @@ import {
   resolveAwHomeCanonical,
   resolveCodexPaths,
   resolveCodexProjectKey,
+  resolveEmbeddedPluginsRoot,
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
@@ -82,6 +85,10 @@ import {
   trackedHookGroupsContainAll,
 } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import {
+  getNextSkillTriggerWriteOrder,
+  resolveSkillTriggerStatusReportFields,
+} from '../utils/skill-trigger-preferences.js';
 import { detectCodexExternalOwnership } from './helpers.js';
 
 const MARKETPLACE_NAME = 'aw';
@@ -172,6 +179,7 @@ function upsertCodexScopeLedger(
   plugin: PluginMeta,
   scope: Scope,
   projectKey: string | undefined,
+  resolvedInstallOptions?: ResolvedInstallOptions,
 ): InstalledLedger {
   const nextLedger = readMutableLedger(ledger);
   const timestamp = new Date().toISOString();
@@ -195,12 +203,24 @@ function upsertCodexScopeLedger(
     hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
   };
 
-  const scopeRecord = {
+  const scopeRecord: InstalledScopeRecord<CodexCapabilitySnapshot> = {
     managed: true,
     updatedAt: timestamp,
     resolvedVersion: plugin.manifest.version,
     capabilitySnapshot,
   };
+  if (resolvedInstallOptions) {
+    scopeRecord.installOptions = {
+      skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
+    };
+    if (ledger.ledgerState.status === 'available') {
+      scopeRecord.skillTriggerWriteOrder = getNextSkillTriggerWriteOrder({
+        ledger,
+        pluginName: plugin.manifest.name,
+        platform: 'codex',
+      });
+    }
+  }
 
   if (scope === 'user') {
     pluginRecord.platforms.codex.userScope = scopeRecord;
@@ -228,9 +248,10 @@ export async function applyCodexInstallLedger(
   plugin: PluginMeta,
   scope: Scope,
   cwd: string,
+  resolvedInstallOptions?: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   const projectKey = scope === 'project' ? await resolveCodexProjectKey(cwd) : undefined;
-  return upsertCodexScopeLedger(ledger, plugin, scope, projectKey);
+  return upsertCodexScopeLedger(ledger, plugin, scope, projectKey, resolvedInstallOptions);
 }
 
 function removeCodexScopeLedger(
@@ -807,7 +828,7 @@ export class CodexAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot] =
+    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot] =
       await Promise.all([
         readCodexConfigFile(userPaths.configTomlPath),
         readCodexConfigFile(scopePaths.configTomlPath),
@@ -816,6 +837,7 @@ export class CodexAdapter implements PlatformAdapter {
         resolveCurrentCatalog(this.env),
         resolveCodexProjectKey(this.cwd),
         resolveRepoRoot(this.cwd),
+        resolveEmbeddedPluginsRoot(),
       ]);
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
@@ -994,6 +1016,19 @@ export class CodexAdapter implements PlatformAdapter {
       driftWarnings.push('当前 repo trust 状态未知，project scope 会话可见性无法确定。');
     }
     driftWarnings.push(...repoManagedSessionState.diagnostics);
+    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope,
+      projectKey,
+      ledger,
+      currentCatalog,
+      currentCatalogAvailable,
+      embeddedRoot,
+    });
+    if (skillTriggerStatus) {
+      driftWarnings.push(...skillTriggerStatus.warnings);
+    }
 
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
@@ -1037,6 +1072,15 @@ export class CodexAdapter implements PlatformAdapter {
       },
       artifactsInitialized,
       repoManagedSessionState,
+      ...(skillTriggerStatus
+        ? {
+            installOptions: skillTriggerStatus.installOptions,
+            skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
+            skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
+            skillTriggerRuntimeState: skillTriggerStatus.skillTriggerRuntimeState,
+            skillTriggerDrift: skillTriggerStatus.skillTriggerDrift,
+          }
+        : {}),
     };
 
     return {

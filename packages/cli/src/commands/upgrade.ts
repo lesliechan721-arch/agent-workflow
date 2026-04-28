@@ -1,64 +1,44 @@
 import type {
-  CommandOptions,
   PlatformAdapter,
   PlatformName,
+  ResolvedInstallOptions,
+  UpgradeCommandOptions,
 } from '../types.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import {
-  readInstalledLedger,
-  resolveScopeInitialized,
-} from '../utils/local-marketplace.js';
-import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/paths.js';
-import {
   collectCommandWarnings,
+  createResolvedInstallOptionsResolver,
   createAdapters,
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
   loadPluginTargetsForCommand,
+  listManagedPluginNamesForPreparedLedger,
+  prepareCommandEnvironment,
+  preparePluginTargetsForCommand,
+  resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
+  wrapCommandErrorWithWarnings,
   type ResolvedPluginTarget,
 } from './common.js';
 import { installTargetsOnPlatforms } from './install.js';
 import { uninstallTargetsOnPlatforms } from './uninstall.js';
 
-export interface UpgradeCommandOptions extends CommandOptions {
-  all?: boolean;
-}
-
 interface CommandRuntime {
   adapters?: Record<PlatformName, PlatformAdapter>;
   env?: NodeJS.ProcessEnv;
-}
-
-async function listManagedPluginNamesForPlatform(
-  platform: PlatformName,
-  scope: CommandOptions['scope'],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string[]> {
-  const ledger = await readInstalledLedger(env);
-  const projectKey = platform === 'claude'
-    ? await resolveClaudeProjectKey(cwd)
-    : await resolveCodexProjectKey(cwd);
-
-  return Object.keys(ledger.plugins)
-    .filter((pluginName) =>
-      resolveScopeInitialized(ledger, pluginName, platform, scope, projectKey) === 'yes',
-    )
-    .sort();
+  resolveInstallOptions?: (
+    platform: PlatformName,
+    target: ResolvedPluginTarget,
+  ) => ResolvedInstallOptions;
 }
 
 async function resolveUpgradeAllPlatforms(
-  requestedPlatform: CommandOptions['platform'],
+  requestedPlatform: UpgradeCommandOptions['platform'],
   cwd: string,
-  scope: CommandOptions['scope'],
+  scope: UpgradeCommandOptions['scope'],
+  preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
   env: NodeJS.ProcessEnv,
 ): Promise<PlatformName[]> {
-  const ledger = await readInstalledLedger(env);
-  if (ledger.ledgerState.status === 'degraded') {
-    throw new Error('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行，请先处理异常记录。');
-  }
-
   const detection = await detectEnvironment(cwd, env);
   const availablePlatforms = listDetectedPlatforms(detection);
 
@@ -85,8 +65,8 @@ async function resolveUpgradeAllPlatforms(
   }
 
   const counts = {
-    codex: (await listManagedPluginNamesForPlatform('codex', scope, cwd, env)).length,
-    claude: (await listManagedPluginNamesForPlatform('claude', scope, cwd, env)).length,
+    codex: (await listManagedPluginNamesForPreparedLedger('codex', scope, cwd, preparedLedger)).length,
+    claude: (await listManagedPluginNamesForPreparedLedger('claude', scope, cwd, preparedLedger)).length,
   };
   const inferred = availablePlatforms.filter((platform) => counts[platform] > 0);
   if (inferred.length === 1) {
@@ -181,6 +161,7 @@ async function runExplicitUpgrade(
         {
           adapters,
           env,
+          resolveInstallOptions: runtime.resolveInstallOptions,
         },
       );
       warnings.push(...installResult.warnings);
@@ -198,16 +179,17 @@ async function runUpgradeAll(
   platforms: PlatformName[],
   options: UpgradeCommandOptions,
   runtime: CommandRuntime,
+  preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
 ): Promise<{ warnings: string[]; plugins: string[] }> {
   const env = runtime.env ?? process.env;
   const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
 
   const namesByPlatform = {
     codex: platforms.includes('codex')
-      ? await listManagedPluginNamesForPlatform('codex', options.scope, options.cwd, env)
+      ? await listManagedPluginNamesForPreparedLedger('codex', options.scope, options.cwd, preparedLedger)
       : [],
     claude: platforms.includes('claude')
-      ? await listManagedPluginNamesForPlatform('claude', options.scope, options.cwd, env)
+      ? await listManagedPluginNamesForPreparedLedger('claude', options.scope, options.cwd, preparedLedger)
       : [],
   };
 
@@ -217,7 +199,6 @@ async function runUpgradeAll(
     options.scope,
     allNames,
     {
-      ensureLocalMarketplace: true,
       allowHistoricalFallback: true,
       env,
     },
@@ -284,6 +265,7 @@ async function runUpgradeAll(
       {
         adapters,
         env,
+        resolveInstallOptions: runtime.resolveInstallOptions,
       },
     );
     warnings.push(...result.warnings);
@@ -309,44 +291,132 @@ export async function upgradeCommand(
     throw new Error('upgrade 命令需要插件名，或者显式传入 `--all`。');
   }
 
+  if (options.all && options.requestedSkillTrigger) {
+    throw new Error('`upgrade --all` 首版不支持 `--skill-trigger`，请改用显式插件名逐个升级。');
+  }
+
   const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
-  const platforms = options.all
-    ? await resolveUpgradeAllPlatforms(options.platform, options.cwd, options.scope, env)
-    : await resolveTargetPlatforms(
-        'upgrade',
+  if (options.all) {
+    const prepared = await prepareCommandEnvironment({
+      ensureLocalMarketplace: true,
+      env,
+    });
+    try {
+      if (prepared.ledger.ledgerState.status === 'degraded') {
+        throw new Error('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行，请先处理异常记录。');
+      }
+
+      const platforms = await resolveUpgradeAllPlatforms(
         options.platform,
         options.cwd,
         options.scope,
-        (
-          await loadPluginTargetsForCommand(options.cwd, options.scope, pluginNames, {
-            ensureLocalMarketplace: true,
-            allowHistoricalFallback: true,
-            env,
-          })
-        ).map((target) => target.plugin),
-        adapters,
+        prepared.ledger,
         env,
       );
-
-  const result = options.all
-    ? await runUpgradeAll(platforms, options, { adapters, env })
-    : await runExplicitUpgrade(
-        await loadPluginTargetsForCommand(options.cwd, options.scope, pluginNames, {
-          ensureLocalMarketplace: true,
+      const allNames = [
+        ...new Set([
+          ...(platforms.includes('codex')
+            ? await listManagedPluginNamesForPreparedLedger('codex', options.scope, options.cwd, prepared.ledger)
+            : []),
+          ...(platforms.includes('claude')
+            ? await listManagedPluginNamesForPreparedLedger('claude', options.scope, options.cwd, prepared.ledger)
+            : []),
+        ]),
+      ].sort();
+      const targets = await loadPluginTargetsForCommand(
+        options.cwd,
+        options.scope,
+        allNames,
+        {
           allowHistoricalFallback: true,
           env,
-        }),
+        },
+      );
+      const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
+        'upgrade-all',
+        targets,
         platforms,
         options,
-        { adapters, env },
+        prepared.ledger,
       );
+      const resolveInstallOptions = await createResolvedInstallOptionsResolver(
+        resolvedInstallOptionsByKey,
+        options.cwd,
+        options.scope,
+      );
+      const result = await runUpgradeAll(platforms, options, {
+        adapters,
+        env,
+        resolveInstallOptions,
+      }, prepared.ledger);
 
-  return {
-    platforms,
-    plugins: result.plugins,
-    warnings: [
-      ...collectCommandWarnings(platforms, options.scope),
-      ...result.warnings,
-    ],
-  };
+      return {
+        platforms,
+        plugins: result.plugins,
+        warnings: [
+          ...prepared.warnings,
+          ...collectCommandWarnings(platforms, options.scope),
+          ...result.warnings,
+        ],
+      };
+    } catch (error) {
+      throw wrapCommandErrorWithWarnings(error, prepared.warnings);
+    }
+  }
+
+  const prepared = await preparePluginTargetsForCommand(
+    options.cwd,
+    options.scope,
+    pluginNames,
+    {
+      ensureLocalMarketplace: true,
+      allowHistoricalFallback: true,
+      env,
+    },
+  );
+  try {
+    const platforms = await resolveTargetPlatforms(
+      'upgrade',
+      options.platform,
+      options.cwd,
+      options.scope,
+      prepared.targets.map((target) => target.plugin),
+      adapters,
+      env,
+    );
+    const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
+      'upgrade',
+      prepared.targets,
+      platforms,
+      options,
+      prepared.ledger,
+    );
+    const resolveInstallOptions = await createResolvedInstallOptionsResolver(
+      resolvedInstallOptionsByKey,
+      options.cwd,
+      options.scope,
+    );
+    const result = await runExplicitUpgrade(
+      prepared.targets,
+      platforms,
+      options,
+      {
+        adapters,
+        env,
+        resolveInstallOptions,
+      },
+    );
+
+    return {
+      platforms,
+      plugins: result.plugins,
+      warnings: [
+        ...prepared.warnings,
+        ...collectCommandWarnings(platforms, options.scope),
+        ...result.warnings,
+      ],
+    };
+  } catch (error) {
+    throw wrapCommandErrorWithWarnings(error, prepared.warnings);
+  }
 }

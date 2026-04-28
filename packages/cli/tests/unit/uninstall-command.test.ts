@@ -15,6 +15,7 @@ import {
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import * as skillTriggerPreferencesModule from '../../src/utils/skill-trigger-preferences.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type {
   GeneratedArtifact,
@@ -782,6 +783,95 @@ describe('uninstall command coverage', () => {
       ledgerState: {
         status: 'degraded',
         reason: 'operation_interrupted_after_artifact_write',
+      },
+    });
+  });
+
+  it('marks the ledger degraded with native write semantics when post-uninstall skill trigger rematerialization fails', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      embeddedPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          [plugin.manifest.name]: {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-04-28T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                  installOptions: {
+                    skillTriggerPreference: 'manual',
+                  },
+                },
+                sharedNativeRefs: {
+                  user: true,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+    vi.spyOn(
+      skillTriggerPreferencesModule,
+      'rematerializeSkillTriggerPreferenceAfterUninstall',
+    ).mockRejectedValueOnce(new Error('rematerialize boom'));
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', [
+              makeStatusReport('codex', 'user', [
+                makePluginStatus(plugin.manifest.name, {
+                  native: {
+                    marketplaceRegistered: true,
+                    pluginAvailable: true,
+                    pluginInstalled: true,
+                    version: '0.1.0',
+                  },
+                  scopeInitialized: 'yes',
+                  scopeManagedEvidence: {
+                    ledger: true,
+                    tracking: false,
+                    sharedNativeRef: true,
+                  },
+                }),
+              ]),
+            ]),
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('rematerialize boom');
+
+    await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_native_write',
       },
     });
   });

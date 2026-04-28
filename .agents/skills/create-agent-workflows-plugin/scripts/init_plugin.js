@@ -163,6 +163,10 @@ Options:
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
   -h, --help                    Show this help message.
+
+Note:
+  New skill scaffolds do not generate skillTriggers by default. This keeps install-time
+  trigger overrides disabled until the plugin author explicitly opts in from plugin.json.
 `);
 }
 

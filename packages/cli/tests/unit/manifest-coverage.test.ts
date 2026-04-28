@@ -57,6 +57,11 @@ describe('manifest coverage', () => {
       version: '1.2.3',
       description: 'demo plugin',
       skills: './skills',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
       mcpServers: './.mcp.json',
       apps: './.app.json',
       marketplace: {
@@ -178,6 +183,11 @@ describe('manifest coverage', () => {
 
     expect(manifest).toMatchObject({
       skills: './skills',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
       mcpServers: './.mcp.json',
       apps: './.app.json',
       marketplace: {
@@ -422,6 +432,12 @@ describe('manifest coverage', () => {
         name: 'bundle-demo',
         version: '0.3.0',
         description: 'bundle demo',
+        skills: './skills',
+        skillTriggers: {
+          review: {
+            allowInstallOverride: true,
+          },
+        },
         marketplace: {
           category: 'workflow',
           strict: true,
@@ -493,6 +509,9 @@ describe('manifest coverage', () => {
       event: 'Stop',
       command: 'echo stop',
     });
+    if (bundleSource.skillTriggers?.review) {
+      bundleSource.skillTriggers.review.allowInstallOverride = false;
+    }
 
     expect(entry).toMatchObject({
       name: 'bundle-demo',
@@ -546,6 +565,16 @@ describe('manifest coverage', () => {
           command: 'echo stop',
         },
       ],
+    });
+    expect(plugin.manifest.skillTriggers).toEqual({
+      review: {
+        allowInstallOverride: true,
+      },
+    });
+    expect(bundleSource.skillTriggers).toEqual({
+      review: {
+        allowInstallOverride: false,
+      },
     });
     expect(noExtensionsBundle.extensions).toBeUndefined();
     expect(createPlatformManifestBase(plugin)).toMatchObject({

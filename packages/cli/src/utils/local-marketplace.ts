@@ -19,6 +19,7 @@ import {
   resolveEmbeddedPluginsRoot,
 } from './paths.js';
 import { validateBundleLayout } from './bundle-layout.js';
+import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -40,23 +41,65 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isSkillTriggerPreference(value: unknown): boolean {
+  return value === 'default' || value === 'manual' || value === 'auto';
+}
+
+function isInstalledScopeInstallOptions(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const allowedKeys = new Set(['skillTriggerPreference']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+
+  return (
+    value.skillTriggerPreference === undefined ||
+    isSkillTriggerPreference(value.skillTriggerPreference)
+  );
+}
+
+function isInstalledScopeRecord(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (
+    typeof value.managed !== 'boolean' ||
+    typeof value.updatedAt !== 'string' ||
+    typeof value.resolvedVersion !== 'string' ||
+    !isRecord(value.capabilitySnapshot)
+  ) {
+    return false;
+  }
+
+  if (value.installOptions !== undefined && !isInstalledScopeInstallOptions(value.installOptions)) {
+    return false;
+  }
+
+  return (
+    value.skillTriggerWriteOrder === undefined ||
+    (
+      typeof value.skillTriggerWriteOrder === 'number' &&
+      Number.isInteger(value.skillTriggerWriteOrder) &&
+      value.skillTriggerWriteOrder >= 0
+    )
+  );
+}
+
 function isClaudePlatformRecord(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
   }
 
   const { userScope, projectScopes, lastRequestedScope, lastRequestedAt } = value;
-  const isScopeRecord = (scopeRecord: unknown): boolean =>
-    isRecord(scopeRecord) &&
-    typeof scopeRecord.managed === 'boolean' &&
-    typeof scopeRecord.updatedAt === 'string' &&
-    typeof scopeRecord.resolvedVersion === 'string' &&
-    isRecord(scopeRecord.capabilitySnapshot);
 
   return (
-    (userScope === undefined || isScopeRecord(userScope)) &&
+    (userScope === undefined || isInstalledScopeRecord(userScope)) &&
     (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isScopeRecord(entry)))) &&
+      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry)))) &&
     (lastRequestedScope === undefined ||
       lastRequestedScope === 'project' ||
       lastRequestedScope === 'user') &&
@@ -70,12 +113,6 @@ function isCodexPlatformRecord(value: unknown): boolean {
   }
 
   const { userScope, projectScopes, sharedNativeRefs, lastRequestedScope, lastRequestedAt } = value;
-  const isScopeRecord = (scopeRecord: unknown): boolean =>
-    isRecord(scopeRecord) &&
-    typeof scopeRecord.managed === 'boolean' &&
-    typeof scopeRecord.updatedAt === 'string' &&
-    typeof scopeRecord.resolvedVersion === 'string' &&
-    isRecord(scopeRecord.capabilitySnapshot);
 
   const sharedNativeRefsValid =
     sharedNativeRefs === undefined ||
@@ -84,9 +121,9 @@ function isCodexPlatformRecord(value: unknown): boolean {
       isStringArray(sharedNativeRefs.projects));
 
   return (
-    (userScope === undefined || isScopeRecord(userScope)) &&
+    (userScope === undefined || isInstalledScopeRecord(userScope)) &&
     (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isScopeRecord(entry)))) &&
+      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry)))) &&
     sharedNativeRefsValid &&
     (lastRequestedScope === undefined ||
       lastRequestedScope === 'project' ||
@@ -330,9 +367,16 @@ async function isFreshLocalMarketplace(
   }
 }
 
-async function readPreservedLedger(awHome: string): Promise<InstalledLedger> {
-  const rawLedger = await readJsonFileIfExistsSafe<unknown>(path.join(awHome, 'installed.json'));
-  return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
+async function readPreservedLedger(
+  awHome: string,
+): Promise<{ ledger: InstalledLedger; ledgerFileExists: boolean }> {
+  const ledgerPath = path.join(awHome, 'installed.json');
+  const ledgerFileExists = await fs.pathExists(ledgerPath);
+  const rawLedger = await readJsonFileIfExistsSafe<unknown>(ledgerPath);
+  return {
+    ledger: validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid'),
+    ledgerFileExists,
+  };
 }
 
 async function replaceDirectoryAtomically(targetDir: string, stagingDir: string): Promise<void> {
@@ -360,6 +404,7 @@ async function replaceDirectoryAtomically(targetDir: string, stagingDir: string)
 export interface EnsureLocalMarketplaceResult {
   rootDir: string;
   changed: boolean;
+  warnings?: string[];
 }
 
 export async function ensureLocalMarketplace(
@@ -385,6 +430,7 @@ export async function initializeLocalMarketplace(
       return {
         rootDir: awHome,
         changed: false,
+        warnings: [],
       };
     }
   }
@@ -392,10 +438,19 @@ export async function initializeLocalMarketplace(
   const parentDir = path.dirname(awHome);
   await fs.ensureDir(parentDir);
   const stagingDir = await fs.mkdtemp(path.join(parentDir, '.aw-staging-'));
+  const warnings: string[] = [];
 
   try {
     await copyBundleToStaging(embeddedRoot, stagingDir);
-    const ledger = await readPreservedLedger(awHome);
+    const { ledger, ledgerFileExists } = await readPreservedLedger(awHome);
+    const replay = await replaySkillTriggerPreferencesFromLedger({
+      ledger,
+      marketplaceRoot: stagingDir,
+      embeddedRoot,
+      previousMarketplaceRoot: awHome,
+      warnOnDegraded: ledgerFileExists,
+    });
+    warnings.push(...replay.warnings);
     await writeJsonFile(path.join(stagingDir, 'installed.json'), ledger);
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
       version: 1,
@@ -414,5 +469,6 @@ export async function initializeLocalMarketplace(
   return {
     rootDir: awHome,
     changed: true,
+    warnings,
   };
 }

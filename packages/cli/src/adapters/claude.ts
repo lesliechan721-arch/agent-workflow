@@ -10,9 +10,11 @@ import type {
   GeneratedArtifact,
   GeneratedArtifactStatus,
   InstalledLedger,
+  InstalledScopeRecord,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
+  ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
   StatusReport,
@@ -26,7 +28,12 @@ import {
 import { readMarketplaceManifest } from '../utils/marketplace.js';
 import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
-import { resolveAwHome, resolveClaudePaths, resolveClaudeProjectKey } from '../utils/paths.js';
+import {
+  resolveAwHome,
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  resolveEmbeddedPluginsRoot,
+} from '../utils/paths.js';
 import { validateRenderedClaudePermissions } from '../utils/rendered-contract.js';
 import {
   attachGeneratedArtifactsToError,
@@ -38,6 +45,10 @@ import {
 } from '../utils/tracking.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import {
+  getNextSkillTriggerWriteOrder,
+  resolveSkillTriggerStatusReportFields,
+} from '../utils/skill-trigger-preferences.js';
 import {
   type ClaudeSettings,
   detectClaudeExternalOwnership,
@@ -246,6 +257,7 @@ function upsertClaudeScopeLedger(
   plugin: PluginMeta,
   scope: Scope,
   projectKey: string | undefined,
+  resolvedInstallOptions?: ResolvedInstallOptions,
 ): InstalledLedger {
   const nextLedger = readMutableLedger(ledger);
   const timestamp = new Date().toISOString();
@@ -260,7 +272,7 @@ function upsertClaudeScopeLedger(
   pluginRecord.platforms.claude.lastRequestedScope = scope;
   pluginRecord.platforms.claude.lastRequestedAt = timestamp;
 
-  const scopeRecord = {
+  const scopeRecord: InstalledScopeRecord<ClaudeCapabilitySnapshot> = {
     managed: true,
     updatedAt: timestamp,
     resolvedVersion: plugin.manifest.version,
@@ -268,6 +280,18 @@ function upsertClaudeScopeLedger(
       managedExtensions: getClaudeManagedExtensions(plugin),
     } satisfies ClaudeCapabilitySnapshot,
   };
+  if (resolvedInstallOptions) {
+    scopeRecord.installOptions = {
+      skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
+    };
+    if (ledger.ledgerState.status === 'available') {
+      scopeRecord.skillTriggerWriteOrder = getNextSkillTriggerWriteOrder({
+        ledger,
+        pluginName: plugin.manifest.name,
+        platform: 'claude',
+      });
+    }
+  }
 
   if (scope === 'user') {
     pluginRecord.platforms.claude.userScope = scopeRecord;
@@ -285,9 +309,10 @@ export async function applyClaudeInstallLedger(
   plugin: PluginMeta,
   scope: Scope,
   cwd: string,
+  resolvedInstallOptions?: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   const projectKey = scope === 'project' ? await resolveClaudeProjectKey(cwd) : undefined;
-  return upsertClaudeScopeLedger(ledger, plugin, scope, projectKey);
+  return upsertClaudeScopeLedger(ledger, plugin, scope, projectKey, resolvedInstallOptions);
 }
 
 function removeClaudeScopeLedger(
@@ -532,7 +557,7 @@ export class ClaudeAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
-    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog] =
+    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog, embeddedRoot] =
       await Promise.all([
         readClaudeSettings(paths.settingsPath),
         readKnownMarketplaceState(paths.knownMarketplacesPath),
@@ -540,6 +565,7 @@ export class ClaudeAdapter implements PlatformAdapter {
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir),
         resolveCurrentCatalog(this.env),
+        resolveEmbeddedPluginsRoot(),
       ]);
 
     const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude', this.env);
@@ -651,6 +677,19 @@ export class ClaudeAdapter implements PlatformAdapter {
     ) {
       driftWarnings.push('currentCatalog 与 activeLocalBundle 指向的 bundle 不一致。');
     }
+    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
+      pluginName: plugin.manifest.name,
+      platform: 'claude',
+      scope,
+      projectKey,
+      ledger,
+      currentCatalog,
+      currentCatalogAvailable,
+      embeddedRoot,
+    });
+    if (skillTriggerStatus) {
+      driftWarnings.push(...skillTriggerStatus.warnings);
+    }
 
     const pluginInstalled = isClaudePluginEnabledForScope(
       settings,
@@ -711,6 +750,15 @@ export class ClaudeAdapter implements PlatformAdapter {
         agents: 'not_applicable',
         diagnostics: [],
       },
+      ...(skillTriggerStatus
+        ? {
+            installOptions: skillTriggerStatus.installOptions,
+            skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
+            skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
+            skillTriggerRuntimeState: skillTriggerStatus.skillTriggerRuntimeState,
+            skillTriggerDrift: skillTriggerStatus.skillTriggerDrift,
+          }
+        : {}),
     };
 
     return {

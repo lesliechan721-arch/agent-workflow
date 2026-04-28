@@ -1,22 +1,40 @@
 import { applyClaudeInstallLedger } from '../adapters/claude.js';
 import { applyCodexInstallLedger } from '../adapters/codex.js';
 import type {
-  CommandOptions,
   GeneratedArtifact,
+  CommandOptions,
+  InstallCommandOptions,
   InstalledLedger,
   LedgerStateReason,
   PlatformAdapter,
   PlatformName,
+  ResolvedInstallOptions,
 } from '../types.js';
 import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
-import { resolveClaudePaths, resolveCodexPaths } from '../utils/paths.js';
+import {
+  resolveAwHome,
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+  resolveEmbeddedPluginsRoot,
+} from '../utils/paths.js';
 import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
+import {
+  buildSkillTriggerMaterializationSignature,
+  collectSkillTriggerSiblingConflictWarnings,
+  materializeSkillTriggerPreference,
+  readCurrentSkillTriggerRuntimeSignature,
+  rollbackMaterializedSkillTriggerPreference,
+  type SkillTriggerMaterializationRollbackHandle,
+  type SkillTriggerSignatureResult,
+} from '../utils/skill-trigger-preferences.js';
 import {
   readTrackingManifest,
   removeTrackingRecordFromManifest,
@@ -25,21 +43,28 @@ import {
 } from '../utils/tracking.js';
 import {
   collectCommandWarnings,
+  createResolvedInstallOptionsResolver,
   createAdapters,
-  loadPluginTargetsForCommand,
+  preparePluginTargetsForCommand,
+  resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
+  wrapCommandErrorWithWarnings,
   type ResolvedPluginTarget,
 } from './common.js';
 
 interface CommandRuntime {
   adapters?: Record<PlatformName, PlatformAdapter>;
   env?: NodeJS.ProcessEnv;
+  resolveInstallOptions?: (
+    platform: PlatformName,
+    target: ResolvedPluginTarget,
+  ) => ResolvedInstallOptions;
 }
 
 function resolveTrackingDir(
   cwd: string,
   platform: PlatformName,
-  scope: CommandOptions['scope'],
+  scope: InstallCommandOptions['scope'],
   env: NodeJS.ProcessEnv,
 ): string {
   return platform === 'claude'
@@ -89,15 +114,16 @@ async function applyInstallLedger(
   platform: PlatformName,
   ledger: InstalledLedger,
   target: ResolvedPluginTarget,
-  options: CommandOptions,
+  options: InstallCommandOptions,
+  resolvedInstallOptions: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   if (!target.currentPlugin) {
     throw new Error(`Unknown plugin "${target.pluginName}".`);
   }
 
   return platform === 'claude'
-    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd)
-    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd);
+    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions)
+    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions);
 }
 
 function mayWriteNativeState(platform: PlatformName, target: ResolvedPluginTarget): boolean {
@@ -107,6 +133,41 @@ function mayWriteNativeState(platform: PlatformName, target: ResolvedPluginTarge
 
   const manifest = target.currentPlugin?.manifest;
   return Boolean(manifest?.skills || manifest?.mcpServers || manifest?.apps);
+}
+
+function shouldMaterializeSkillTriggers(target: ResolvedPluginTarget): boolean {
+  return Boolean(target.embeddedPlugin?.manifest.skills);
+}
+
+function resolveDefaultInstallOptions(ledger: InstalledLedger): ResolvedInstallOptions {
+  return {
+    skillTriggerPreference: 'default',
+    skillTriggerSource: 'default',
+    ledgerTrust: ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
+  };
+}
+
+function resolveMaterializationMode(
+  resolvedInstallOptions: ResolvedInstallOptions,
+): 'strictExplicit' | 'bestEffortReplay' {
+  return resolvedInstallOptions.skillTriggerSource === 'cli' &&
+    resolvedInstallOptions.skillTriggerPreference !== 'default'
+    ? 'strictExplicit'
+    : 'bestEffortReplay';
+}
+
+async function resolveScopeIdentityForTarget(
+  platform: PlatformName,
+  options: CommandOptions,
+): Promise<string> {
+  if (options.scope === 'user') {
+    return 'user';
+  }
+
+  const projectKey = platform === 'claude'
+    ? await resolveClaudeProjectKey(options.cwd)
+    : await resolveCodexProjectKey(options.cwd);
+  return `project:${projectKey}`;
 }
 
 async function rollbackArtifacts(
@@ -125,7 +186,7 @@ async function rollbackArtifacts(
 export async function installTargetsOnPlatforms(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
-  options: CommandOptions,
+  options: InstallCommandOptions,
   runtime: CommandRuntime = {},
 ): Promise<{ warnings: string[] }> {
   const env = runtime.env ?? process.env;
@@ -145,15 +206,70 @@ export async function installTargetsOnPlatforms(
       }
 
       const baselineLedger = await readInstalledLedger(env);
+      const resolvedInstallOptions =
+        runtime.resolveInstallOptions?.(platform, target) ??
+        resolveDefaultInstallOptions(baselineLedger);
       const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
       const baselineTracking = await readTrackingManifest(trackingDir);
+      const materializeSkillTriggers = shouldMaterializeSkillTriggers(target);
 
       let nativeWritten = false;
       let artifactsWritten = false;
       let trackingWritten = false;
+      let materializationCommitted = false;
+      let materializationRollbackFailed = false;
+      let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
+      let runtimeSignatureBefore: SkillTriggerSignatureResult | undefined;
+      let plannedRuntimeSignatureAfter: SkillTriggerSignatureResult | undefined;
+      let writtenScopeIdentity: string | undefined;
       let generatedArtifacts: GeneratedArtifact[] = [];
 
       try {
+        if (materializeSkillTriggers) {
+          const [embeddedRoot, writtenScope] = await Promise.all([
+            resolveEmbeddedPluginsRoot(),
+            resolveScopeIdentityForTarget(platform, options),
+          ]);
+          const marketplaceRoot = resolveAwHome(env);
+          writtenScopeIdentity = writtenScope;
+
+          if (
+            baselineLedger.ledgerState.status === 'available' &&
+            resolvedInstallOptions.ledgerTrust === 'available'
+          ) {
+            runtimeSignatureBefore = await readCurrentSkillTriggerRuntimeSignature({
+              pluginName: target.pluginName,
+              platform,
+              marketplaceRoot,
+              embeddedRoot,
+            });
+          }
+
+          const materialization = await materializeSkillTriggerPreference({
+            pluginName: target.pluginName,
+            platform,
+            resolvedOptions: resolvedInstallOptions,
+            embeddedRoot,
+            marketplaceRootOrStagingRoot: marketplaceRoot,
+            mode: resolveMaterializationMode(resolvedInstallOptions),
+          });
+          materializationCommitted = materialization.committed;
+          materializationRollbackHandle = materialization.rollbackHandle;
+          warnings.push(...materialization.warnings);
+
+          if (
+            baselineLedger.ledgerState.status === 'available' &&
+            resolvedInstallOptions.ledgerTrust === 'available'
+          ) {
+            plannedRuntimeSignatureAfter = await buildSkillTriggerMaterializationSignature({
+              pluginName: target.pluginName,
+              platform,
+              preference: resolvedInstallOptions.skillTriggerPreference,
+              embeddedRoot,
+            });
+          }
+        }
+
         await adapters[platform].installPlugin(target.currentPlugin, options.scope);
         nativeWritten = mayWriteNativeState(platform, target);
 
@@ -177,15 +293,57 @@ export async function installTargetsOnPlatforms(
 
         const nextLedger = preserveLedgerState(
           baselineLedger,
-          await applyInstallLedger(platform, baselineLedger, target, options),
+          await applyInstallLedger(
+            platform,
+            baselineLedger,
+            target,
+            options,
+            resolvedInstallOptions,
+          ),
         );
+        const pendingConflictWarnings: string[] = [];
+        if (
+          materializeSkillTriggers &&
+          baselineLedger.ledgerState.status === 'available' &&
+          nextLedger.ledgerState.status === 'available' &&
+          resolvedInstallOptions.ledgerTrust === 'available' &&
+          runtimeSignatureBefore &&
+          plannedRuntimeSignatureAfter &&
+          writtenScopeIdentity
+        ) {
+          const embeddedRoot = await resolveEmbeddedPluginsRoot();
+          const conflictResult = await collectSkillTriggerSiblingConflictWarnings({
+            ledgerBefore: baselineLedger,
+            ledgerAfter: nextLedger,
+            pluginName: target.pluginName,
+            platform,
+            writtenScopeIdentity,
+            runtimeSignatureBefore,
+            plannedRuntimeSignatureAfter,
+            embeddedRoot,
+          });
+          pendingConflictWarnings.push(
+            ...conflictResult.warnings,
+            ...conflictResult.diagnostics.filter(Boolean),
+          );
+        }
         await writeInstalledLedger(nextLedger, env);
+        warnings.push(...pendingConflictWarnings);
       } catch (error) {
         generatedArtifacts = mergeGeneratedArtifacts(
           generatedArtifacts,
           getGeneratedArtifactsFromError(error),
         );
         artifactsWritten = artifactsWritten || generatedArtifacts.length > 0;
+
+        if (materializationCommitted && materializationRollbackHandle) {
+          try {
+            await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
+            materializationCommitted = false;
+          } catch {
+            materializationRollbackFailed = true;
+          }
+        }
 
         if (artifactsWritten) {
           try {
@@ -208,11 +366,11 @@ export async function installTargetsOnPlatforms(
           }
         }
 
-        if (nativeWritten || artifactsWritten || trackingWritten) {
+        if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWritten) {
           try {
             await writeDegradedLedger(
               baselineLedger,
-              nativeWritten
+              nativeWritten || materializationRollbackFailed
                 ? 'operation_interrupted_after_native_write'
                 : 'operation_interrupted_after_artifact_write',
               env,
@@ -240,7 +398,7 @@ export async function installTargetsOnPlatforms(
 
 export async function installCommand(
   pluginNames: string[],
-  options: CommandOptions,
+  options: InstallCommandOptions,
   runtime: CommandRuntime = {},
 ): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
   if (pluginNames.length === 0) {
@@ -248,7 +406,7 @@ export async function installCommand(
   }
 
   const env = runtime.env ?? process.env;
-  const targets = await loadPluginTargetsForCommand(
+  const prepared = await preparePluginTargetsForCommand(
     options.cwd,
     options.scope,
     pluginNames,
@@ -258,28 +416,46 @@ export async function installCommand(
       env,
     },
   );
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
-  const platforms = await resolveTargetPlatforms(
-    'install',
-    options.platform,
-    options.cwd,
-    options.scope,
-    targets.map((target) => target.plugin),
-    adapters,
-    env,
-  );
+  try {
+    const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+    const platforms = await resolveTargetPlatforms(
+      'install',
+      options.platform,
+      options.cwd,
+      options.scope,
+      prepared.targets.map((target) => target.plugin),
+      adapters,
+      env,
+    );
+    const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
+      'install',
+      prepared.targets,
+      platforms,
+      options,
+      prepared.ledger,
+    );
+    const resolveInstallOptions = await createResolvedInstallOptionsResolver(
+      resolvedInstallOptionsByKey,
+      options.cwd,
+      options.scope,
+    );
 
-  const result = await installTargetsOnPlatforms(targets, platforms, options, {
-    adapters,
-    env,
-  });
+    const result = await installTargetsOnPlatforms(prepared.targets, platforms, options, {
+      adapters,
+      env,
+      resolveInstallOptions,
+    });
 
-  return {
-    platforms,
-    plugins: targets.map((target) => target.pluginName),
-    warnings: [
-      ...collectCommandWarnings(platforms, options.scope),
-      ...result.warnings,
-    ],
-  };
+    return {
+      platforms,
+      plugins: prepared.targets.map((target) => target.pluginName),
+      warnings: [
+        ...prepared.warnings,
+        ...collectCommandWarnings(platforms, options.scope),
+        ...result.warnings,
+      ],
+    };
+  } catch (error) {
+    throw wrapCommandErrorWithWarnings(error, prepared.warnings);
+  }
 }

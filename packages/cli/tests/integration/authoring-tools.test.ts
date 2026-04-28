@@ -162,6 +162,7 @@ describe('authoring tools', () => {
         agents: [],
       },
     });
+    expect(scaffoldManifest).not.toHaveProperty('skillTriggers');
     expect(scaffoldManifest.marketplace.policy).not.toHaveProperty('products');
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
@@ -414,6 +415,8 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
     expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
     expect(manifestSpecDoc).toContain('packages/cli/plugins-dist/');
+    expect(manifestSpecDoc).toContain('`skillTriggers`');
+    expect(manifestSpecDoc).toContain('`allowInstallOverride: true`');
     expect(manifestSpecDoc).toContain('禁止手改');
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
@@ -425,6 +428,8 @@ describe('authoring tools', () => {
     ).not.toThrow();
 
     expect(triggersDoc).toContain('两个平台的触发开关完全独立');
+    expect(triggersDoc).toContain('`aw install <plugin> --skill-trigger manual`');
+    expect(triggersDoc).toContain('`allowInstallOverride` 只是覆盖许可');
     expect(triggersDoc).toContain('面向 Codex 时必需');
     expect(triggersDoc).toContain('`when_to_use`');
     expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
@@ -445,6 +450,7 @@ describe('authoring tools', () => {
     const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
     expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
     expect(authoringDoc).toContain('references/skills-and-triggers.md');
+    expect(authoringDoc).toContain('`skillTriggers` 不定义默认触发策略');
     expect(authoringDoc).not.toContain('references/project-plugin-contract.md');
     expect(authoringDoc).not.toContain('references/skill-trigger-rules.md');
 
@@ -454,6 +460,125 @@ describe('authoring tools', () => {
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
+    expect(exampleDoc).toContain('`skillTriggers.review.allowInstallOverride`');
+  });
+
+  it('validate_plugin.js validates skillTriggers authoring contract', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-triggers-authoring-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'trigger-demo');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'trigger-demo', 'agents'));
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    await fs.writeJson(manifestPath, {
+      name: 'trigger-demo',
+      version: '0.1.0',
+      description: 'Test plugin for install-time trigger override policy.',
+      skills: './skills',
+      skillTriggers: {
+        'trigger-demo': {
+          allowInstallOverride: true,
+        },
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'trigger-demo', 'SKILL.md'),
+      [
+        '---',
+        'name: trigger-demo',
+        'description: Validate install-time trigger override policy.',
+        'user-invocable: true',
+        'disable-model-invocation: true',
+        '---',
+        '',
+        '# Trigger Demo',
+        '',
+        'Validate install-time trigger override policy.',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'trigger-demo', 'agents', 'openai.yaml'),
+      [
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const validManifest = await fs.readJson(manifestPath);
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        skillTriggers: {
+          missing: {
+            allowInstallOverride: true,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'skillTriggers.missing must match an existing source skill directory',
+      ),
+    });
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        skillTriggers: {
+          'trigger-demo': {
+            allowInstallOverride: 'yes',
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'skillTriggers.trigger-demo.allowInstallOverride must be a boolean',
+      ),
+    });
   });
 
   it('validate_plugin.js accepts native hooks and rejects hook contract mistakes', async () => {

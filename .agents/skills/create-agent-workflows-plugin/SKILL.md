@@ -105,6 +105,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--no-skills`：创建不含 skill 的插件（不需要 `--skill-name` 和 `--skill-description`）
 - `--with-mcp` / `--with-apps`：创建 `.mcp.json` / `.app.json` 存根；细节见 `references/mcp-and-apps.md`
 - 默认省略 `marketplace.policy.products`，让插件保持双平台可见；需要限制平台时再手动声明
+- 默认不生成 `skillTriggers`，因此新 skill 不允许安装时覆盖触发策略；确实需要时再在 manifest 里显式添加 `allowInstallOverride`
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
 
 ## 最小检查

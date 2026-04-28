@@ -28,6 +28,7 @@ code-review/
 | 能力 | 在示例中的体现 |
 |------|--------------|
 | Skills | `skills/review/` — 含 SKILL.md、openai.yaml、references |
+| Skill Triggers | `skillTriggers.review.allowInstallOverride` — 允许用户安装时选择 `manual` / `auto` / `default` |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
 | Hooks | `extensions.hooks` — 公共 session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |

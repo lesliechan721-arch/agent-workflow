@@ -10,6 +10,7 @@
 | `version` | string | 是 | semver，例如 `0.1.0` |
 | `description` | string | 是 | 非空字符串 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
+| `skillTriggers` | object | 否 | 按 skill 声明是否允许安装时覆盖触发策略 |
 | `mcpServers` | string | 否 | 单个路径，`./` 开头，指向 `.mcp.json` |
 | `apps` | string | 否 | 单个路径，`./` 开头，指向 `.app.json` |
 | `marketplace` | object | 是 | 见下方 marketplace block |
@@ -25,6 +26,34 @@
 - 路径必须以 `./` 开头，不能是绝对路径，不能逃出插件根目录。
 - 插件目录里出现标准入口文件时必须声明对应字段：有 `skills/` → 声明 `skills`，有 `.mcp.json` → 声明 `mcpServers`，有 `.app.json` → 声明 `apps`。
 - 声明的路径必须实际存在，构建和验证时都会检查。
+
+## skillTriggers block
+
+`skillTriggers` 是 agent-workflows 的安装时覆盖许可，不是平台默认触发策略。默认策略仍由 skill 文件自己定义：
+
+- Codex：`skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`
+- Claude Code：`skills/<skill>/SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`
+
+示例：
+
+```json
+{
+  "skills": "./skills",
+  "skillTriggers": {
+    "review": {
+      "allowInstallOverride": true
+    }
+  }
+}
+```
+
+规则：
+
+- 只有声明了 `skills` 的插件才能声明 `skillTriggers`。
+- `skillTriggers` 的 key 必须对应 source `skills` 目录下真实存在的 skill 子目录。
+- 每个 entry 只允许 `allowInstallOverride`，且必须是 boolean。
+- `allowInstallOverride: true` 表示用户可用 `aw install --skill-trigger manual|auto|default` 或显式 `aw upgrade --skill-trigger ...` 覆盖该 skill 的本地 runtime 触发策略。
+- `allowInstallOverride: false` 或省略 `skillTriggers` 表示安装时不可覆盖，始终使用 skill 默认策略。
 
 ## marketplace block
 
@@ -147,6 +176,11 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
   "version": "0.2.0",
   "description": "自动化代码审查插件。",
   "skills": "./skills",
+  "skillTriggers": {
+    "review": {
+      "allowInstallOverride": true
+    }
+  },
   "mcpServers": "./.mcp.json",
   "marketplace": {
     "category": "workflow",
