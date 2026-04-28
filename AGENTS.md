@@ -20,6 +20,7 @@
 - `pnpm test:smoke:build` — 只校验 `pnpm build` 产物
 - `pnpm test:smoke:pack` — 只校验 `pnpm pack:cli` 的 tarball 内容
 - `pnpm pack:cli` — 打包 `@yiliang/aw`，发包前验收
+- `pnpm publish:cli` — 先执行 `pnpm pack:cli` 验收 tarball，再发布到 `packages/cli/package.json` 的 `publishConfig.registry`
 
 ## References
 

@@ -25,6 +25,11 @@ Embedded Runtime Bundle（npm 包内）
   ├── .agents/plugins/marketplace.json
   └── plugins/<name>/{.agents-plugin,.claude-plugin,.codex-plugin,...}
 
+          ↓ pnpm publish:cli（先执行 `pnpm pack:cli` 验收，再按 `packages/cli/package.json` 的 `publishConfig.registry` 发布）
+
+npm Registry
+  @yiliang/aw
+
           ↓ aw init / 安装流程同步
 
 本地 Marketplace 镜像
@@ -44,6 +49,7 @@ Embedded Runtime Bundle（npm 包内）
 
 ## Key Paths
 
+- `package.json` — repo root 统一入口，包含 `build`、`test`、`pack:cli`、`publish:cli`
 - `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 `plugins-dist`
 - `packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/` — 产物目录，不手改
 - `plugins/git-commit/` — 真实样例插件，演示标准插件结构

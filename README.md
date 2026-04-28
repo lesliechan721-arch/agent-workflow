@@ -34,6 +34,7 @@ pnpm test
 - `pnpm test:integration`：运行 CLI 编排和 adapter 集成测试
 - `pnpm test:smoke:build`：验证真实 build 产物
 - `pnpm pack:cli`：打包 `@yiliang/aw`
+- `pnpm publish:cli`：先执行 `pnpm pack:cli` 验收 tarball，再发布到 `packages/cli/package.json` 的 `publishConfig.registry`
 
 ## 仓库结构
 

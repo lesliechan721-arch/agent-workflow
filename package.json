@@ -11,7 +11,9 @@
     "test:smoke": "pnpm --filter @yiliang/aw test:smoke",
     "test:smoke:build": "pnpm --filter @yiliang/aw test:smoke:build",
     "test:smoke:pack": "pnpm --filter @yiliang/aw test:smoke:pack",
-    "pack:cli": "pnpm --filter @yiliang/aw pack"
+    "pack:cli": "pnpm --filter @yiliang/aw pack",
+    "publish:cli": "pnpm run pack:cli && pnpm run publish:cli:raw",
+    "publish:cli:raw": "pnpm --filter @yiliang/aw publish"
   },
   "dependencies": {
     "yaml": "^2.8.3"

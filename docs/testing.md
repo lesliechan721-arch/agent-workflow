@@ -20,5 +20,6 @@
 
 - 改命令分支、catalog 判定、账本、bundle 生成或打包行为 → 至少运行相关测试
 - 改 build 或 tarball 行为 → 补跑 `pnpm test:smoke:build`，必要时再跑 `pnpm test:smoke:pack`
+- 正式发包时 → 直接执行 `pnpm publish:cli`；它会先跑 `pnpm pack:cli` 验收 tarball，再继续发布
 - 改 plugin manifest contract、本地 marketplace 布局或作者工具 → 同步更新对应 fixture、样例插件和相关文档
 - 只改公开文档 → 不必跑全量测试，但要至少检查 `AGENTS.md`、`README.md`、`docs/*.md` 没有继续引用过期路径或把 `docs/dev` 当作公开权威来源
