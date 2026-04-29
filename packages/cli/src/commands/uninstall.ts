@@ -46,17 +46,24 @@ import {
 import {
   collectCommandWarnings,
   createAdapters,
+  filterPostCommandDriftWarnings,
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
   loadPluginTargetsForCommand,
   resolveTargetPlatforms,
   type ResolvedPluginTarget,
 } from './common.js';
+import {
+  createCommandExecutionContext,
+  emitCommandEvent,
+  type CommandExecutionContextInput,
+} from './runtime.js';
+import {
+  normalizeCommandOptions,
+  type RawCommandOptions,
+} from './options.js';
 
-interface CommandRuntime {
-  adapters?: ReturnType<typeof createAdapters>;
-  env?: NodeJS.ProcessEnv;
-}
+type UninstallCommandRuntime = CommandExecutionContextInput;
 
 interface FileRollbackState {
   path: string;
@@ -366,10 +373,11 @@ export async function uninstallTargetsOnPlatforms(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
   options: CommandOptions,
-  runtime: CommandRuntime = {},
+  runtime: UninstallCommandRuntime = {},
 ): Promise<{ warnings: string[] }> {
-  const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
+  const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
 
   for (const platform of platforms) {
@@ -513,8 +521,19 @@ export async function uninstallTargetsOnPlatforms(
       }
 
       const postStatus = await adapters[platform].status(target.plugin, options.scope);
-      for (const warning of postStatus.plugins[0]?.driftWarnings ?? []) {
+      const drift = filterPostCommandDriftWarnings(postStatus.plugins[0]?.driftWarnings ?? []);
+      for (const warning of drift.visible) {
         warnings.push(`[${platform}/${target.pluginName}] ${warning}`);
+      }
+      if (drift.diagnostics.length > 0) {
+        await emitCommandEvent(context, {
+          type: 'drift:suppressed',
+          data: {
+            platform,
+            plugin: target.pluginName,
+            warnings: drift.diagnostics,
+          },
+        });
       }
     }
   }
@@ -524,14 +543,19 @@ export async function uninstallTargetsOnPlatforms(
 
 export async function uninstallCommand(
   pluginNames: string[],
-  options: CommandOptions,
-  runtime: CommandRuntime = {},
+  rawOptions: RawCommandOptions,
+  runtime: UninstallCommandRuntime = {},
 ): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
+  const options = normalizeCommandOptions(rawOptions, {
+    defaultScope: 'user',
+    defaultPlatform: 'auto',
+  });
   if (pluginNames.length === 0) {
-    throw new Error('uninstall 命令至少需要一个插件名。');
+    throw new Error('uninstall 命令至少需要一个插件名。非交互模式下请运行 `aw uninstall <插件名>`。');
   }
 
-  const env = runtime.env ?? process.env;
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
   const targets = await loadPluginTargetsForCommand(
     options.cwd,
     options.scope,
@@ -541,7 +565,17 @@ export async function uninstallCommand(
       env,
     },
   );
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  await emitCommandEvent(context, {
+    type: 'catalog:resolved',
+    data: {
+      plugins: targets.map((target) => ({
+        name: target.pluginName,
+        source: target.source,
+        current: Boolean(target.currentPlugin),
+      })),
+    },
+  });
+  const adapters = createAdapters(options.cwd, context);
   const platforms = await resolveTargetPlatforms(
     'uninstall',
     options.platform,
@@ -551,10 +585,18 @@ export async function uninstallCommand(
     adapters,
     env,
   );
+  await emitCommandEvent(context, {
+    type: 'platform:resolved',
+    data: {
+      requestedPlatform: options.platform,
+      platforms,
+      scope: options.scope,
+    },
+  });
 
   const result = await uninstallTargetsOnPlatforms(targets, platforms, options, {
+    ...context,
     adapters,
-    env,
   });
 
   return {

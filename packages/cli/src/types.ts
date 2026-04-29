@@ -267,6 +267,9 @@ export interface EnvironmentDetection {
 
 export interface NativePluginStatus {
   marketplaceRegistered: boolean;
+  marketplaceSource?: string;
+  marketplaceSourceType?: string;
+  marketplaceRootResolution?: string;
   pluginAvailable: boolean;
   pluginInstalled: boolean;
   version?: string;
@@ -386,6 +389,14 @@ export interface InstallCommandOptions extends CommandOptions {
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
   requestedSkillTrigger?: SkillTriggerPreference;
+}
+
+export interface StatusCommandOptions {
+  cwd: string;
+  scope?: Scope;
+  platform?: PlatformName | 'both';
+  verbose?: boolean;
+  json?: boolean;
 }
 
 export type ResolvedInstallOptionsSource = 'cli' | 'ledger' | 'default';

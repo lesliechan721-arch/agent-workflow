@@ -48,21 +48,29 @@ import {
   createResolvedInstallOptionsResolver,
   createAdapters,
   assertPluginsSupportPlatforms,
+  filterPostCommandDriftWarnings,
   preparePluginTargetsForCommand,
   resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
   type ResolvedPluginTarget,
 } from './common.js';
+import {
+  createCommandExecutionContext,
+  emitCommandEvent,
+  type CommandExecutionContextInput,
+} from './runtime.js';
+import {
+  normalizeInstallCommandOptions,
+  type RawInstallCommandOptions,
+} from './options.js';
 
-interface CommandRuntime {
-  adapters?: Record<PlatformName, PlatformAdapter>;
-  env?: NodeJS.ProcessEnv;
+type InstallCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
     platform: PlatformName,
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
-}
+};
 
 function resolveTrackingDir(
   cwd: string,
@@ -190,10 +198,11 @@ export async function installTargetsOnPlatforms(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
   options: InstallCommandOptions,
-  runtime: CommandRuntime = {},
+  runtime: InstallCommandRuntime = {},
 ): Promise<{ warnings: string[] }> {
-  const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
+  const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
   assertPluginsSupportPlatforms(
     targets
@@ -408,8 +417,19 @@ export async function installTargetsOnPlatforms(
       }
 
       const postStatus = await adapters[platform].status(target.currentPlugin, options.scope);
-      for (const warning of postStatus.plugins[0]?.driftWarnings ?? []) {
+      const drift = filterPostCommandDriftWarnings(postStatus.plugins[0]?.driftWarnings ?? []);
+      for (const warning of drift.visible) {
         warnings.push(`[${platform}/${target.currentPlugin.manifest.name}] ${warning}`);
+      }
+      if (drift.diagnostics.length > 0) {
+        await emitCommandEvent(context, {
+          type: 'drift:suppressed',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            warnings: drift.diagnostics,
+          },
+        });
       }
     }
   }
@@ -419,14 +439,16 @@ export async function installTargetsOnPlatforms(
 
 export async function installCommand(
   pluginNames: string[],
-  options: InstallCommandOptions,
-  runtime: CommandRuntime = {},
+  rawOptions: RawInstallCommandOptions,
+  runtime: InstallCommandRuntime = {},
 ): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
+  const options = normalizeInstallCommandOptions(rawOptions);
   if (pluginNames.length === 0) {
-    throw new Error('install 命令至少需要一个插件名。');
+    throw new Error('install 命令至少需要一个插件名。非交互模式下请运行 `aw install <插件名>`。');
   }
 
-  const env = runtime.env ?? process.env;
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
   const prepared = await preparePluginTargetsForCommand(
     options.cwd,
     options.scope,
@@ -437,8 +459,19 @@ export async function installCommand(
       env,
     },
   );
+  await emitCommandEvent(context, {
+    type: 'catalog:resolved',
+    data: {
+      plugins: prepared.targets.map((target) => ({
+        name: target.pluginName,
+        source: target.source,
+        current: Boolean(target.currentPlugin),
+      })),
+      warnings: prepared.warnings,
+    },
+  });
   try {
-    const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+    const adapters = createAdapters(options.cwd, context);
     const platforms = await resolveTargetPlatforms(
       'install',
       options.platform,
@@ -448,6 +481,14 @@ export async function installCommand(
       adapters,
       env,
     );
+    await emitCommandEvent(context, {
+      type: 'platform:resolved',
+      data: {
+        requestedPlatform: options.platform,
+        platforms,
+        scope: options.scope,
+      },
+    });
     const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
       'install',
       prepared.targets,
@@ -455,6 +496,17 @@ export async function installCommand(
       options,
       prepared.ledger,
     );
+    await emitCommandEvent(context, {
+      type: 'skill-trigger:resolved',
+      data: {
+        entries: [...resolvedInstallOptionsByKey.entries()].map(([key, value]) => ({
+          key,
+          preference: value.skillTriggerPreference,
+          source: value.skillTriggerSource,
+          ledgerTrust: value.ledgerTrust,
+        })),
+      },
+    });
     const resolveInstallOptions = await createResolvedInstallOptionsResolver(
       resolvedInstallOptionsByKey,
       options.cwd,
@@ -462,8 +514,8 @@ export async function installCommand(
     );
 
     const result = await installTargetsOnPlatforms(prepared.targets, platforms, options, {
+      ...context,
       adapters,
-      env,
       resolveInstallOptions,
     });
 

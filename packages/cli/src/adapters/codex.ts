@@ -41,7 +41,6 @@ import {
   removeCodexMarketplaceFile,
   removeCodexPluginEnabledFile,
   removeManagedDeveloperInstructionsFile,
-  upsertCodexMarketplaceFile,
   upsertCodexPluginEnabledFile,
   upsertManagedDeveloperInstructionsFile,
 } from '../utils/codex-config.js';
@@ -89,9 +88,83 @@ import {
   getNextSkillTriggerWriteOrder,
   resolveSkillTriggerStatusReportFields,
 } from '../utils/skill-trigger-preferences.js';
+import {
+  NativeCliError,
+  runNativeCli,
+  type NativeCliInvocation,
+  type NativeCliRunner,
+} from '../utils/native-cli.js';
 import { detectCodexExternalOwnership } from './helpers.js';
 
 const MARKETPLACE_NAME = 'aw';
+
+export function buildCodexMarketplaceAddInvocation(
+  awHome: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'marketplace', 'add', awHome],
+    cwd,
+    env,
+  };
+}
+
+function normalizeCodexMarketplaceSource(value: string | undefined): string | undefined {
+  return value ? path.normalize(value) : undefined;
+}
+
+function isCodexMarketplaceRegistered(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+  awHome: string,
+): boolean {
+  return (
+    marketplace?.sourceType === 'local' &&
+    normalizeCodexMarketplaceSource(marketplace.source) === normalizeCodexMarketplaceSource(awHome) &&
+    marketplace.sourcePointsToManifest !== true
+  );
+}
+
+function summarizeNativeCliOutput(error: NativeCliError): string {
+  const detail = error.stderr.trim() || error.stdout.trim();
+  return detail || `exit code ${error.exitCode}`;
+}
+
+function nativeCliFailureHint(error: unknown): string {
+  if (!(error instanceof NativeCliError)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  const cause = error.cause as { code?: string; message?: string } | undefined;
+  if (cause?.code === 'ENOENT') {
+    return '找不到 `codex` 可执行文件，请确认 Codex CLI 已安装，并且当前 PATH 可以访问它。';
+  }
+
+  if (error.exitCode === 124) {
+    return 'Codex 原生命令执行超时，请稍后重试；如果仍失败，请先手动运行 `codex plugin marketplace add <AW_HOME>` 查看原因。';
+  }
+
+  return summarizeNativeCliOutput(error);
+}
+
+function createCodexMarketplaceAddError(
+  awHome: string,
+  error: unknown,
+): Error {
+  return new Error(
+    `无法通过 Codex 原生命令注册 AW 本地 marketplace：请确认可以运行 \`codex plugin marketplace add ${awHome}\`。${nativeCliFailureHint(error)}`,
+  );
+}
+
+function createCodexMarketplaceVerificationError(
+  awHome: string,
+  configPath: string,
+): Error {
+  return new Error(
+    `Codex 原生命令已执行，但 ${configPath} 中的 [marketplaces.aw] 没有指向 ${awHome}（source_type 应为 "local"）。请手动运行 \`codex plugin marketplace add ${awHome}\` 后重试。`,
+  );
+}
 
 function normalizeCodexCapabilitySnapshot(
   snapshot: CodexCapabilitySnapshot | undefined,
@@ -628,10 +701,25 @@ async function collectGeneratedArtifacts(
 export class CodexAdapter implements PlatformAdapter {
   readonly name = 'codex' as const;
 
+  private readonly cwd: string;
+  private readonly nativeCliRunner?: NativeCliRunner;
+  private readonly env: NodeJS.ProcessEnv;
+
+  constructor(cwd: string, env?: NodeJS.ProcessEnv);
+  constructor(cwd: string, nativeCliRunner?: NativeCliRunner, env?: NodeJS.ProcessEnv);
   constructor(
-    private readonly cwd: string,
-    private readonly env: NodeJS.ProcessEnv = process.env,
-  ) {}
+    cwd: string,
+    nativeCliRunnerOrEnv?: NativeCliRunner | NodeJS.ProcessEnv,
+    env: NodeJS.ProcessEnv = process.env,
+  ) {
+    this.cwd = cwd;
+    if (typeof nativeCliRunnerOrEnv === 'function') {
+      this.nativeCliRunner = nativeCliRunnerOrEnv;
+      this.env = env;
+    } else {
+      this.env = nativeCliRunnerOrEnv ?? env;
+    }
+  }
 
   async detect(cwd: string): Promise<boolean> {
     const detection = await detectEnvironment(cwd, this.env);
@@ -650,6 +738,7 @@ export class CodexAdapter implements PlatformAdapter {
     }
 
     await ensureLocalMarketplace(this.env);
+    const awHome = await resolveAwHomeCanonical(this.env);
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const userConfig = await readCodexConfigFile(userPaths.configTomlPath);
     const externalOwnership = detectCodexExternalOwnership(
@@ -661,10 +750,22 @@ export class CodexAdapter implements PlatformAdapter {
       throw new Error(externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
     }
 
-    await upsertCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME, {
-      source: await resolveAwHomeCanonical(this.env),
-      sourceType: 'local',
-    });
+    if (!isCodexMarketplaceRegistered(userConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
+      try {
+        await runNativeCli(
+          buildCodexMarketplaceAddInvocation(awHome, this.cwd, this.env),
+          this.nativeCliRunner,
+        );
+      } catch (error) {
+        throw createCodexMarketplaceAddError(awHome, error);
+      }
+
+      const refreshedConfig = await readCodexConfigFile(userPaths.configTomlPath);
+      if (!isCodexMarketplaceRegistered(refreshedConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
+        throw createCodexMarketplaceVerificationError(awHome, userPaths.configTomlPath);
+      }
+    }
+
     await upsertCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`, {
       enabled: true,
     });
@@ -1036,9 +1137,18 @@ export class CodexAdapter implements PlatformAdapter {
         marketplaceRegistered:
           Boolean(userConfig.snapshot.marketplaces[MARKETPLACE_NAME]) &&
           !userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourcePointsToManifest,
+        marketplaceSource: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source,
+        marketplaceSourceType: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourceType,
+        marketplaceRootResolution:
+          userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourcePointsToManifest === true
+            ? 'manifest-file'
+            : userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source
+              ? 'local-source'
+              : 'missing',
         pluginAvailable: currentCatalogAvailable,
         pluginInstalled:
           userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true,
+        declaredSource: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source,
         details: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source
           ? `source=${userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source}`
           : undefined,

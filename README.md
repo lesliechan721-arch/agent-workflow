@@ -7,11 +7,23 @@ Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库�
 ```bash
 npm install -g @yiliang/aw
 aw init
-aw install git-commit --scope project --platform codex
+aw install git-commit
 aw status
 ```
 
-`aw init` 用来显式初始化 `~/.aw`，安装和升级命令也会在需要时自动同步本地 marketplace。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `--platform codex|claude|both`。
+也可以直接运行交互式安装，从候选列表里选择插件、平台和 scope：
+
+```bash
+aw install
+```
+
+`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。常用短选项示例：
+
+```bash
+aw install git-commit -p codex -s user
+```
+
+`aw init` 用来显式初始化 `~/.aw`，安装和升级命令也会在需要时自动同步本地 marketplace。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
 
 ## 当前插件
 

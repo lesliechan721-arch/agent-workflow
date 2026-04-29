@@ -3,13 +3,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CodexAdapter } from '../../src/adapters/codex.js';
+import {
+  buildCodexMarketplaceAddInvocation,
+  CodexAdapter,
+} from '../../src/adapters/codex.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
-import { readCodexConfigFile } from '../../src/utils/codex-config.js';
+import {
+  readCodexConfigFile,
+  upsertCodexMarketplaceFile,
+} from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  NativeCliError,
+  type NativeCliInvocation,
+  type NativeCliRunner,
+} from '../../src/utils/native-cli.js';
 import {
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
@@ -57,6 +68,30 @@ async function makeWorkspace(): Promise<{
       AW_HOME: path.join(root, 'aw-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     },
+  };
+}
+
+function createCodexMarketplaceAddRunner(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  calls: NativeCliInvocation[] = [],
+): NativeCliRunner {
+  return async (invocation) => {
+    calls.push(invocation);
+    const awHome = invocation.args[3] ?? '';
+    await upsertCodexMarketplaceFile(
+      resolveCodexPaths(cwd, 'user', env).configTomlPath,
+      'aw',
+      {
+        source: awHome,
+        sourceType: 'local',
+      },
+    );
+    return {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    };
   };
 }
 
@@ -260,7 +295,7 @@ describe('CodexAdapter', () => {
     });
   });
 
-  it('writes the Codex marketplace source using the canonical AW_HOME path', async () => {
+  it('registers the Codex marketplace through native add using the canonical AW_HOME path', async () => {
     const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
     const realAwHome = `${env.AW_HOME}-real`;
     const aliasAwHome = `${env.AW_HOME}-alias`;
@@ -272,7 +307,8 @@ describe('CodexAdapter', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const adapter = new CodexAdapter(cwd, env);
+    const nativeCalls: NativeCliInvocation[] = [];
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env, nativeCalls), env);
 
     await adapter.installPlugin(plugin, 'user');
 
@@ -280,16 +316,223 @@ describe('CodexAdapter', () => {
     const configSnapshot = await readCodexConfigFile(configPath);
     const canonicalAwHome = await fs.realpath(aliasAwHome);
 
+    expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
+      ['plugin', 'marketplace', 'add', canonicalAwHome],
+    ]);
+    expect(nativeCalls[0]).toMatchObject({
+      command: 'codex',
+      cwd,
+      env,
+    });
     expect(configSnapshot.snapshot.marketplaces.aw).toMatchObject({
       source: canonicalAwHome,
       sourceType: 'local',
     });
+    await expect(
+      fs.pathExists(path.join(env.AW_CODEX_HOME!, 'plugins', '.tmp', 'marketplaces', 'aw')),
+    ).resolves.toBe(false);
     await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(
       `source = ${JSON.stringify(canonicalAwHome)}`,
     );
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(
       `source = ${JSON.stringify(aliasAwHome)}`,
     );
+  });
+
+  it('skips native marketplace add when Codex already points to the canonical AW_HOME', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
+      snapshot: {
+        plugins: {
+          'git-commit@aw': {
+            enabled: true,
+          },
+        },
+      },
+    });
+  });
+
+  it('repairs old manifest-file Codex marketplace sources through native add', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: path.join(env.AW_HOME!, '.agents', 'plugins', 'marketplace.json'),
+      sourceType: 'local',
+    });
+
+    const nativeCalls: NativeCliInvocation[] = [];
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env, nativeCalls), env);
+
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
+      ['plugin', 'marketplace', 'add', await fs.realpath(env.AW_HOME!)],
+    ]);
+  });
+
+  it('repairs wrong local Codex marketplace directories through native add', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: path.join(env.AW_HOME!, 'old-copy'),
+      sourceType: 'local',
+    });
+
+    const nativeCalls: NativeCliInvocation[] = [];
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env, nativeCalls), env);
+
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
+      ['plugin', 'marketplace', 'add', await fs.realpath(env.AW_HOME!)],
+    ]);
+  });
+
+  it('does not call native marketplace add for instruction-only Codex plugins', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const basePlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const plugin = {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: undefined,
+        mcpServers: undefined,
+        apps: undefined,
+      },
+    };
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+  });
+
+  it('wraps native marketplace add failures with an actionable Codex error', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      throw new NativeCliError({
+        invocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'marketplace root is invalid',
+      });
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
+      '无法通过 Codex 原生命令注册 AW 本地 marketplace',
+    );
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
+      'marketplace root is invalid',
+    );
+  });
+
+  it('wraps native marketplace add failures that have no command output', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      throw new NativeCliError({
+        invocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+      });
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
+      '无法通过 Codex 原生命令注册 AW 本地 marketplace',
+    );
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('exit code 1');
+  });
+
+  it('explains native marketplace add timeouts', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      throw new NativeCliError({
+        invocation,
+        exitCode: 124,
+        stdout: '',
+        stderr: '',
+      });
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('超时');
+  });
+
+  it('explains missing codex executables when native marketplace add cannot start', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      const cause = Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
+      throw new NativeCliError({
+        invocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+        cause,
+      });
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('找不到 `codex` 可执行文件');
+  });
+
+  it('fails clearly when native add does not register the canonical marketplace source', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner: NativeCliRunner = async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
+      '[marketplaces.aw] 没有指向',
+    );
+  });
+
+  it('builds Codex local marketplace add invocations without git-only flags', async () => {
+    const env = { PATH: '/tmp/bin' } as NodeJS.ProcessEnv;
+
+    expect(buildCodexMarketplaceAddInvocation('/tmp/aw', '/tmp/project', env)).toEqual({
+      command: 'codex',
+      args: ['plugin', 'marketplace', 'add', '/tmp/aw'],
+      cwd: '/tmp/project',
+      env,
+    });
   });
 
   it('detects enabled higher-priority current/tree/repo layers in user scope status', async () => {

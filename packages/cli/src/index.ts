@@ -3,34 +3,44 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError, InvalidArgumentError } from 'commander';
+import { Command, CommanderError } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
+import {
+  createCliExecutionContext,
+  emitCommandEvent,
+  type CliExecutionContext,
+  type CliExecutionContextInput,
+  type CliIo,
+  type CommandDiagnosticsInput,
+} from './commands/runtime.js';
 import { statusCommand } from './commands/status.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
+  createInteractiveInstallPlan,
+  createInteractiveUninstallPlan,
+  createInteractiveUpgradePlan,
+} from './commands/interactive.js';
+import {
+  normalizeCommandOptions,
+  normalizeInstallCommandOptions,
+  normalizeStatusCommandOptions,
+  normalizeUpgradeCommandOptions,
+  parseSkillTriggerPreference,
+} from './commands/options.js';
+import {
   CommandWarningError,
   isCommandWarningError,
-  type CommandOptions,
-  type InstallCommandOptions,
-  type PlatformSelection,
-  type Scope,
-  type SkillTriggerPreference,
-  type UpgradeCommandOptions,
 } from './types.js';
+import { formatWarnings } from './output/reporter.js';
+import { resolveAwHome } from './utils/paths.js';
 
-export interface CliIo {
-  stdout: (text: string) => void;
-  stderr: (text: string) => void;
-}
+export type { CliIo } from './commands/runtime.js';
+export { parseSkillTriggerPreference } from './commands/options.js';
 
-export interface CliRuntimeOptions {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  io?: Partial<CliIo>;
-}
+export type CliRuntimeOptions = CliExecutionContextInput;
 
 function createDefaultIo(): CliIo {
   return {
@@ -44,70 +54,154 @@ function writeLine(write: (text: string) => void, line: string): void {
 }
 
 function writeWarnings(write: (text: string) => void, warnings: string[]): void {
-  for (const warning of [...new Set(warnings)]) {
-    writeLine(write, `Warning: ${warning}`);
+  for (const warning of formatWarnings(warnings)) {
+    writeLine(write, warning);
   }
 }
 
-function parseScope(scope: string): Scope {
-  if (scope === 'project' || scope === 'user') {
-    return scope;
-  }
-  throw new InvalidArgumentError(`Unsupported scope "${scope}".`);
+function mergeCommandResults(
+  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[] }>,
+): { platforms: string[]; plugins: string[]; warnings: string[] } {
+  return {
+    platforms: [...new Set(results.flatMap((result) => result.platforms))],
+    plugins: [...new Set(results.flatMap((result) => result.plugins))],
+    warnings: results.flatMap((result) => result.warnings),
+  };
 }
 
-function parsePlatform(platform: string): PlatformSelection {
-  if (platform === 'codex' || platform === 'claude' || platform === 'both' || platform === 'auto') {
-    return platform;
-  }
-  throw new InvalidArgumentError(`Unsupported platform "${platform}".`);
+interface CliCommandResult {
+  platforms: string[];
+  plugins: string[];
+  warnings: string[];
 }
 
-export function parseSkillTriggerPreference(preference: string): SkillTriggerPreference {
-  if (preference === 'default' || preference === 'manual' || preference === 'auto') {
-    return preference;
+interface CliCommandReceipt {
+  result: CliCommandResult;
+  scopes: string[];
+}
+
+const PLATFORM_LABELS: Record<string, string> = {
+  codex: 'Codex',
+  claude: 'Claude Code',
+};
+
+function formatList(values: string[]): string {
+  const unique = [...new Set(values)].filter(Boolean);
+  return unique.length > 0 ? unique.join(', ') : '无';
+}
+
+function formatPlatforms(platforms: string[]): string {
+  return formatList(platforms.map((platform) => PLATFORM_LABELS[platform] ?? platform));
+}
+
+function formatScopes(scopes: string[]): string {
+  return formatList(scopes.map((scope) => `${scope} scope`));
+}
+
+function commandVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
+  return action === 'install' ? '已安装' : action === 'uninstall' ? '已卸载' : '已升级';
+}
+
+function commandNoun(action: 'install' | 'uninstall' | 'upgrade'): string {
+  return action === 'install' ? '安装' : action === 'uninstall' ? '卸载' : '升级';
+}
+
+function writeCommandReceipt(
+  write: (text: string) => void,
+  action: 'install' | 'uninstall' | 'upgrade',
+  receipt: CliCommandReceipt,
+  context: CliExecutionContext,
+): void {
+  const { result, scopes } = receipt;
+  const awHome = resolveAwHome(context.env);
+  const firstPlugin = result.plugins[0];
+  const pluginList = formatList(result.plugins);
+  const platformList = formatPlatforms(result.platforms);
+  const scopeList = formatScopes(scopes);
+
+  writeLine(write, `${commandVerb(action)} ${pluginList}：${platformList} / ${scopeList}。`);
+
+  if (action === 'install' || action === 'upgrade') {
+    writeLine(write, `使用插件目录：AW marketplace。`);
+    writeLine(write, `已同步本地 marketplace：${awHome}。`);
+    if (result.platforms.includes('codex')) {
+      writeLine(write, `已确认 Codex marketplace 注册：${awHome}。`);
+      writeLine(write, `已确认插件启用：${result.plugins.map((plugin) => `${plugin}@aw`).join(', ')}。`);
+    }
+    if (result.platforms.includes('claude')) {
+      writeLine(write, `已确认 Claude Code marketplace 和插件状态。`);
+    }
+  } else {
+    writeLine(write, '已清理匹配的受管状态和生成产物。');
   }
 
-  throw new InvalidArgumentError(
-    `Unsupported skill trigger preference "${preference}". Expected one of: default, manual, auto.`,
+  const platformFlag = result.platforms.length === 1 ? ` -p ${result.platforms[0]}` : '';
+  const statusTarget = firstPlugin ? ` ${firstPlugin}` : '';
+  writeLine(
+    write,
+    `完成。下一步：运行 aw status${statusTarget}${platformFlag} 查看${commandNoun(action)}后的状态。`,
   );
 }
 
-function toCommandOptions(
-  cwd: string,
-  rawOptions: { scope?: string; platform?: string },
-): CommandOptions {
+interface RawDiagnosticsOptions {
+  verbose?: boolean;
+  debug?: boolean;
+  logFile?: string;
+  interactive?: boolean;
+}
+
+function toCliDiagnosticsOptions(
+  commandName: string,
+  rawOptions: RawDiagnosticsOptions,
+  runtimeDiagnostics: CommandDiagnosticsInput | undefined,
+): CommandDiagnosticsInput {
   return {
-    cwd,
-    scope: parseScope(rawOptions.scope ?? 'project'),
-    platform: parsePlatform(rawOptions.platform ?? 'auto'),
+    ...runtimeDiagnostics,
+    commandName,
+    verbose: runtimeDiagnostics?.verbose === true || rawOptions.verbose === true,
+    debug: runtimeDiagnostics?.debug === true || rawOptions.debug === true,
+    logFile: rawOptions.logFile ?? runtimeDiagnostics?.logFile,
   };
 }
 
-function toInstallCommandOptions(
-  cwd: string,
-  rawOptions: { scope?: string; platform?: string; skillTrigger?: SkillTriggerPreference },
-): InstallCommandOptions {
-  return {
-    ...toCommandOptions(cwd, rawOptions),
-    requestedSkillTrigger: rawOptions.skillTrigger,
-  };
-}
-
-function toUpgradeCommandOptions(
-  cwd: string,
-  rawOptions: {
-    all?: boolean;
-    scope?: string;
-    platform?: string;
-    skillTrigger?: SkillTriggerPreference;
-  },
-): UpgradeCommandOptions {
-  return {
-    ...toCommandOptions(cwd, rawOptions),
-    all: rawOptions.all,
-    requestedSkillTrigger: rawOptions.skillTrigger,
-  };
+async function runActionWithContext<T>(
+  context: CliExecutionContext,
+  action: () => Promise<T>,
+): Promise<T> {
+  await emitCommandEvent(context, {
+    type: 'command:start',
+    data: {
+      cwd: context.cwd,
+      verbose: context.diagnostics.verbose,
+      debug: context.diagnostics.debug,
+      logFile: context.diagnostics.logFile,
+    },
+  });
+  try {
+    const result = await action();
+    await emitCommandEvent(context, { type: 'command:success' });
+    await context.debugLogger.flush?.();
+    if (context.diagnostics.debug && context.debugLogger.logFile) {
+      writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
+    }
+    return result;
+  } catch (error) {
+    await emitCommandEvent(context, {
+      type: 'command:error',
+      message: error instanceof Error ? error.message : String(error),
+      data: error instanceof Error
+        ? {
+            name: error.name,
+            stack: error.stack,
+          }
+        : undefined,
+    });
+    await context.debugLogger.flush?.();
+    if (context.diagnostics.debug && context.debugLogger.logFile) {
+      writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
+    }
+    throw error;
+  }
 }
 
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
@@ -117,6 +211,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     ...createDefaultIo(),
     ...options.io,
   };
+
+  const createActionContext = (
+    commandName: string,
+    rawOptions: RawDiagnosticsOptions,
+  ): CliExecutionContext =>
+    createCliExecutionContext({
+      ...options,
+      cwd,
+      env,
+      io,
+      interactive: rawOptions.interactive ?? options.interactive,
+      diagnostics: toCliDiagnosticsOptions(commandName, rawOptions, options.diagnostics),
+    });
 
   const program = new Command();
   program
@@ -131,9 +238,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   program
     .command('init')
-    .option('--force', 'refresh the local marketplace bundle', false)
-    .action(async (rawOptions: { force?: boolean }) => {
-      const result = await initCommand({ force: rawOptions.force, env });
+    .option('-f, --force', 'refresh the local marketplace bundle', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (rawOptions: { force?: boolean } & RawDiagnosticsOptions) => {
+      const context = createActionContext('init', rawOptions);
+      const result = await runActionWithContext(context, () =>
+        initCommand({ force: rawOptions.force, env: context.env }),
+      );
       writeLine(
         io.stdout,
         `${result.changed ? 'Initialized' : 'Reused'} local marketplace at ${result.rootDir}.`,
@@ -143,53 +256,135 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   program
     .command('install')
-    .argument('<plugins...>')
-    .option('--scope <scope>', 'project or user', 'project')
-    .option('--platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('--skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-i, --interactive', 'prompt for missing install choices')
+    .option('--no-interactive', 'disable interactive prompts')
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(
       async (
         plugins: string[],
         rawOptions: {
           scope?: string;
           platform?: string;
-          skillTrigger?: SkillTriggerPreference;
-        },
+          skillTrigger?: string;
+        } & RawDiagnosticsOptions,
       ) => {
-        const result = await installCommand(
-          plugins,
-          toInstallCommandOptions(cwd, rawOptions),
-          { env },
+        const context = createActionContext('install', rawOptions);
+        const receipt = await runActionWithContext(
+          context,
+          async () => {
+            const commandOptions = normalizeInstallCommandOptions({
+              cwd,
+              ...rawOptions,
+            });
+            await emitCommandEvent(context, {
+              type: 'options:normalized',
+              data: {
+                plugins: plugins ?? [],
+                options: commandOptions,
+              },
+            });
+            const plan = await createInteractiveInstallPlan(
+              plugins ?? [],
+              commandOptions,
+              context,
+              rawOptions.interactive === true,
+            );
+            if (!plan) {
+              return {
+                result: await installCommand(plugins ?? [], commandOptions, context),
+                scopes: [commandOptions.scope],
+              };
+            }
+
+            const results = [];
+            for (const group of plan.groups) {
+              results.push(await installCommand(group.pluginNames, group.options, context));
+            }
+            return {
+              result: mergeCommandResults(results),
+              scopes: plan.groups.map((group) => group.options.scope),
+            };
+          },
         );
-        writeLine(
-          io.stdout,
-          `Installed ${result.plugins.join(', ')} on ${result.platforms.join(', ')}.`,
-        );
-        writeWarnings(io.stderr, result.warnings);
+        writeCommandReceipt(io.stdout, 'install', receipt, context);
+        writeWarnings(io.stderr, receipt.result.warnings);
       },
     );
 
   program
     .command('uninstall')
-    .argument('<plugins...>')
-    .option('--scope <scope>', 'project or user', 'project')
-    .option('--platform <platform>', 'codex | claude | both | auto', 'auto')
-    .action(async (plugins: string[], rawOptions: { scope?: string; platform?: string }) => {
-      const result = await uninstallCommand(plugins, toCommandOptions(cwd, rawOptions), { env });
-      writeLine(
-        io.stdout,
-        `Uninstalled ${result.plugins.join(', ')} from ${result.platforms.join(', ')}.`,
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-i, --interactive', 'prompt for missing uninstall choices')
+    .option('--no-interactive', 'disable interactive prompts')
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: { scope?: string; platform?: string } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('uninstall', rawOptions);
+      const receipt = await runActionWithContext(
+        context,
+        async () => {
+          const commandOptions = normalizeCommandOptions({
+            cwd,
+            ...rawOptions,
+          });
+          await emitCommandEvent(context, {
+            type: 'options:normalized',
+            data: {
+              plugins: plugins ?? [],
+              options: commandOptions,
+            },
+          });
+          const plan = await createInteractiveUninstallPlan(
+            plugins ?? [],
+            commandOptions,
+            context,
+            rawOptions.interactive === true,
+          );
+          if (!plan) {
+            return {
+              result: await uninstallCommand(plugins ?? [], commandOptions, context),
+              scopes: [commandOptions.scope],
+            };
+          }
+
+          const results = [];
+          for (const group of plan.groups) {
+            results.push(await uninstallCommand(group.pluginNames, group.options, context));
+          }
+          return {
+            result: mergeCommandResults(results),
+            scopes: plan.groups.map((group) => group.options.scope),
+          };
+        },
       );
-      writeWarnings(io.stderr, result.warnings);
+      writeCommandReceipt(io.stdout, 'uninstall', receipt, context);
+      writeWarnings(io.stderr, receipt.result.warnings);
     });
 
   program
     .command('upgrade')
     .argument('[plugins...]')
-    .option('--all', 'upgrade all plugins', false)
-    .option('--scope <scope>', 'project or user', 'project')
-    .option('--platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('--skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-a, --all', 'upgrade all plugins', false)
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-i, --interactive', 'prompt for missing upgrade choices')
+    .option('--no-interactive', 'disable interactive prompts')
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(
       async (
         plugins: string[],
@@ -197,29 +392,81 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           all?: boolean;
           scope?: string;
           platform?: string;
-          skillTrigger?: SkillTriggerPreference;
-        },
+          skillTrigger?: string;
+        } & RawDiagnosticsOptions,
       ) => {
-        const result = await upgradeCommand(
-          plugins,
-          toUpgradeCommandOptions(cwd, rawOptions),
-          { env },
+        const context = createActionContext('upgrade', rawOptions);
+        const receipt = await runActionWithContext(
+          context,
+          async () => {
+            const commandOptions = normalizeUpgradeCommandOptions({
+              cwd,
+              ...rawOptions,
+            });
+            await emitCommandEvent(context, {
+              type: 'options:normalized',
+              data: {
+                plugins: plugins ?? [],
+                options: commandOptions,
+              },
+            });
+            const plan = await createInteractiveUpgradePlan(
+              plugins ?? [],
+              commandOptions,
+              context,
+              rawOptions.interactive === true,
+            );
+            if (!plan) {
+              return {
+                result: await upgradeCommand(plugins ?? [], commandOptions, context),
+                scopes: [commandOptions.scope],
+              };
+            }
+
+            const results = [];
+            for (const group of plan.groups) {
+              results.push(await upgradeCommand(group.pluginNames, group.options, context));
+            }
+            return {
+              result: mergeCommandResults(results),
+              scopes: plan.groups.map((group) => group.options.scope),
+            };
+          },
         );
-        writeLine(
-          io.stdout,
-          `Upgraded ${result.plugins.join(', ')} on ${result.platforms.join(', ')}.`,
-        );
-        writeWarnings(io.stderr, result.warnings);
+        writeCommandReceipt(io.stdout, 'upgrade', receipt, context);
+        writeWarnings(io.stderr, receipt.result.warnings);
       },
     );
 
   program
     .command('status')
     .argument('[plugins...]')
-    .option('--scope <scope>', 'project or user', 'project')
-    .option('--platform <platform>', 'codex | claude | both | auto', 'auto')
-    .action(async (plugins: string[], rawOptions: { scope?: string; platform?: string }) => {
-      const result = await statusCommand(plugins, toCommandOptions(cwd, rawOptions), { env });
+    .option('-s, --scope <scope>', 'filter by scope')
+    .option('-p, --platform <platform>', 'filter by platform')
+    .option('-v, --verbose', 'show status details and command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .option('-j, --json', 'print status as JSON', false)
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('status', rawOptions);
+      const result = await runActionWithContext(
+        context,
+        () => statusCommand(
+          plugins ?? [],
+          normalizeStatusCommandOptions({
+            cwd,
+            ...rawOptions,
+          }),
+          context,
+        ),
+      );
       writeLine(io.stdout, result.output);
     });
 

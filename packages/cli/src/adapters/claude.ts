@@ -703,6 +703,7 @@ export class ClaudeAdapter implements PlatformAdapter {
       pluginName: plugin.manifest.name,
       native: {
         marketplaceRegistered: Boolean(declaredSource),
+        marketplaceSource: declaredSource,
         pluginAvailable: currentCatalogAvailable,
         pluginInstalled,
         version: installedRecord?.version ?? plugin.manifest.version,

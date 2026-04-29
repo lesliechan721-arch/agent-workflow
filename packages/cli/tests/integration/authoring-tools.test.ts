@@ -734,6 +734,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'references',
+      '.examples',
       'code-review',
     );
     await expect(

@@ -1,5 +1,4 @@
 import type {
-  PlatformAdapter,
   PlatformName,
   ResolvedInstallOptions,
   UpgradeCommandOptions,
@@ -23,16 +22,23 @@ import {
   type ResolvedPluginTarget,
 } from './common.js';
 import { installTargetsOnPlatforms } from './install.js';
+import {
+  createCommandExecutionContext,
+  emitCommandEvent,
+  type CommandExecutionContextInput,
+} from './runtime.js';
+import {
+  normalizeUpgradeCommandOptions,
+  type RawUpgradeCommandOptions,
+} from './options.js';
 import { uninstallTargetsOnPlatforms } from './uninstall.js';
 
-interface CommandRuntime {
-  adapters?: Record<PlatformName, PlatformAdapter>;
-  env?: NodeJS.ProcessEnv;
+type UpgradeCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
     platform: PlatformName,
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
-}
+};
 
 async function resolveUpgradeAllPlatforms(
   requestedPlatform: UpgradeCommandOptions['platform'],
@@ -84,10 +90,11 @@ async function runExplicitUpgrade(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
   options: UpgradeCommandOptions,
-  runtime: CommandRuntime,
+  runtime: UpgradeCommandRuntime,
 ): Promise<{ warnings: string[]; plugins: string[] }> {
-  const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
+  const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
   const upgradedPlugins = new Set<string>();
 
@@ -145,8 +152,8 @@ async function runExplicitUpgrade(
             scope: options.scope,
           },
           {
+            ...context,
             adapters,
-            env,
           },
         );
         warnings.push(...uninstallResult.warnings);
@@ -161,8 +168,8 @@ async function runExplicitUpgrade(
           scope: options.scope,
         },
         {
+          ...context,
           adapters,
-          env,
           resolveInstallOptions: runtime.resolveInstallOptions,
         },
       );
@@ -180,11 +187,12 @@ async function runExplicitUpgrade(
 async function runUpgradeAll(
   platforms: PlatformName[],
   options: UpgradeCommandOptions,
-  runtime: CommandRuntime,
+  runtime: UpgradeCommandRuntime,
   preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
 ): Promise<{ warnings: string[]; plugins: string[] }> {
-  const env = runtime.env ?? process.env;
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
+  const adapters = createAdapters(options.cwd, context);
 
   const namesByPlatform = {
     codex: platforms.includes('codex')
@@ -272,8 +280,8 @@ async function runUpgradeAll(
         scope: options.scope,
       },
       {
+        ...context,
         adapters,
-        env,
         resolveInstallOptions: runtime.resolveInstallOptions,
       },
     );
@@ -291,10 +299,12 @@ async function runUpgradeAll(
 
 export async function upgradeCommand(
   pluginNames: string[],
-  options: UpgradeCommandOptions,
-  runtime: CommandRuntime = {},
+  rawOptions: RawUpgradeCommandOptions,
+  runtime: UpgradeCommandRuntime = {},
 ): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
-  const env = runtime.env ?? process.env;
+  const options = normalizeUpgradeCommandOptions(rawOptions);
+  const context = createCommandExecutionContext(runtime);
+  const env = context.env;
 
   if (!options.all && pluginNames.length === 0) {
     throw new Error('upgrade 命令需要插件名，或者显式传入 `--all`。');
@@ -304,7 +314,7 @@ export async function upgradeCommand(
     throw new Error('`upgrade --all` 首版不支持 `--skill-trigger`，请改用显式插件名逐个升级。');
   }
 
-  const adapters = runtime.adapters ?? createAdapters(options.cwd, env);
+  const adapters = createAdapters(options.cwd, context);
   if (options.all) {
     const prepared = await prepareCommandEnvironment({
       ensureLocalMarketplace: true,
@@ -322,6 +332,15 @@ export async function upgradeCommand(
         prepared.ledger,
         env,
       );
+      await emitCommandEvent(context, {
+        type: 'platform:resolved',
+        data: {
+          requestedPlatform: options.platform,
+          platforms,
+          scope: options.scope,
+          all: true,
+        },
+      });
       const allNames = [
         ...new Set([
           ...(platforms.includes('codex')
@@ -341,6 +360,17 @@ export async function upgradeCommand(
           env,
         },
       );
+      await emitCommandEvent(context, {
+        type: 'catalog:resolved',
+        data: {
+          plugins: targets.map((target) => ({
+            name: target.pluginName,
+            source: target.source,
+            current: Boolean(target.currentPlugin),
+          })),
+          all: true,
+        },
+      });
       const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
         'upgrade-all',
         targets,
@@ -348,14 +378,25 @@ export async function upgradeCommand(
         options,
         prepared.ledger,
       );
+      await emitCommandEvent(context, {
+        type: 'skill-trigger:resolved',
+        data: {
+          entries: [...resolvedInstallOptionsByKey.entries()].map(([key, value]) => ({
+            key,
+            preference: value.skillTriggerPreference,
+            source: value.skillTriggerSource,
+            ledgerTrust: value.ledgerTrust,
+          })),
+        },
+      });
       const resolveInstallOptions = await createResolvedInstallOptionsResolver(
         resolvedInstallOptionsByKey,
         options.cwd,
         options.scope,
       );
       const result = await runUpgradeAll(platforms, options, {
+        ...context,
         adapters,
-        env,
         resolveInstallOptions,
       }, prepared.ledger);
 
@@ -383,6 +424,17 @@ export async function upgradeCommand(
       env,
     },
   );
+  await emitCommandEvent(context, {
+    type: 'catalog:resolved',
+    data: {
+      plugins: prepared.targets.map((target) => ({
+        name: target.pluginName,
+        source: target.source,
+        current: Boolean(target.currentPlugin),
+      })),
+      warnings: prepared.warnings,
+    },
+  });
   try {
     const platforms = await resolveTargetPlatforms(
       'upgrade',
@@ -393,6 +445,14 @@ export async function upgradeCommand(
       adapters,
       env,
     );
+    await emitCommandEvent(context, {
+      type: 'platform:resolved',
+      data: {
+        requestedPlatform: options.platform,
+        platforms,
+        scope: options.scope,
+      },
+    });
     const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
       'upgrade',
       prepared.targets,
@@ -400,6 +460,17 @@ export async function upgradeCommand(
       options,
       prepared.ledger,
     );
+    await emitCommandEvent(context, {
+      type: 'skill-trigger:resolved',
+      data: {
+        entries: [...resolvedInstallOptionsByKey.entries()].map(([key, value]) => ({
+          key,
+          preference: value.skillTriggerPreference,
+          source: value.skillTriggerSource,
+          ledgerTrust: value.ledgerTrust,
+        })),
+      },
+    });
     const resolveInstallOptions = await createResolvedInstallOptionsResolver(
       resolvedInstallOptionsByKey,
       options.cwd,
@@ -410,8 +481,8 @@ export async function upgradeCommand(
       platforms,
       options,
       {
+        ...context,
         adapters,
-        env,
         resolveInstallOptions,
       },
     );

@@ -1641,6 +1641,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1682,6 +1683,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1738,6 +1740,7 @@ describe('skill trigger command integration', () => {
           cwd: workspace.repoRoot,
           scope: 'user',
           platform: 'codex',
+          verbose: true,
         },
         { env: process.env },
       );
@@ -1784,6 +1787,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'claude',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1820,6 +1824,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1858,6 +1863,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1895,6 +1901,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1939,6 +1946,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -1975,6 +1983,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2018,6 +2027,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2053,6 +2063,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2069,6 +2080,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2123,6 +2135,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2164,6 +2177,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );
@@ -2207,6 +2221,7 @@ describe('skill trigger command integration', () => {
         cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
+        verbose: true,
       },
       { env: process.env },
     );

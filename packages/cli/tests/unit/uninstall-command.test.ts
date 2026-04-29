@@ -491,6 +491,10 @@ describe('uninstall command coverage', () => {
         }),
       ]),
     ]);
+    const reporter = {
+      event: vi.fn(),
+      notice: vi.fn(),
+    };
 
     await expect(
       uninstallTargetsOnPlatforms(
@@ -506,12 +510,23 @@ describe('uninstall command coverage', () => {
             codex,
             claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
           },
+          reporter,
           env,
         },
       ),
     ).resolves.toEqual({
-      warnings: [`[codex/${plugin.manifest.name}] post-uninstall drift`],
+      warnings: [],
     });
+    expect(reporter.event).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'drift:suppressed',
+        data: expect.objectContaining({
+          platform: 'codex',
+          plugin: plugin.manifest.name,
+          warnings: ['post-uninstall drift'],
+        }),
+      }),
+    );
 
     expect(codex.uninstallPluginCalls).toEqual([plugin.manifest.name]);
     expect(codex.uninstallExtensionsCalls).toEqual([plugin.manifest.name]);

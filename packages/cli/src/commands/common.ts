@@ -23,6 +23,12 @@ import type {
   StatusReport,
   UpgradeCommandOptions,
 } from '../types.js';
+import {
+  createCommandExecutionContext,
+  isCommandExecutionContext,
+  type CommandExecutionContext,
+  type CommandExecutionContextInput,
+} from './runtime.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import {
   ensureLocalMarketplace,
@@ -41,11 +47,24 @@ import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
 
 export function createAdapters(
   cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
+  runtimeOrEnv: CommandExecutionContext | NodeJS.ProcessEnv = process.env,
+  options: CommandExecutionContextInput = {},
 ): Record<PlatformName, PlatformAdapter> {
+  if (isCommandExecutionContext(runtimeOrEnv)) {
+    return runtimeOrEnv.adapters ?? runtimeOrEnv.adaptersFactory(cwd, runtimeOrEnv);
+  }
+
+  const context = createCommandExecutionContext({
+    ...options,
+    env: runtimeOrEnv,
+  });
+  if (context.adapters) {
+    return context.adapters;
+  }
+
   return {
-    codex: new CodexAdapter(cwd, env),
-    claude: new ClaudeAdapter(cwd, undefined, env),
+    codex: new CodexAdapter(cwd, context.nativeCliRunner, context.env),
+    claude: new ClaudeAdapter(cwd, context.nativeCliRunner, context.env),
   };
 }
 
@@ -770,6 +789,25 @@ export function collectCommandWarnings(
   }
 
   return [];
+}
+
+export function filterPostCommandDriftWarnings(driftWarnings: string[]): {
+  visible: string[];
+  diagnostics: string[];
+} {
+  const visible = driftWarnings.filter((warning) =>
+    warning.includes('untrusted') ||
+    warning.includes('trust 状态未知') ||
+    warning.includes('不会进入会话') ||
+    warning.includes('无法进入会话') ||
+    warning.includes('缺失') ||
+    warning.includes('外部 marketplace'),
+  );
+  const visibleSet = new Set(visible);
+  return {
+    visible,
+    diagnostics: driftWarnings.filter((warning) => !visibleSet.has(warning)),
+  };
 }
 
 function formatSkillTriggerRuntime(plugin: PluginStatusReport): string {

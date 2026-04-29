@@ -19,8 +19,17 @@ import type {
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import { upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import { attachGeneratedArtifactsToError } from '../../src/utils/generated-artifacts.js';
-import { resolveCodexProjectKey, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import type {
+  NativeCliInvocation,
+  NativeCliRunner,
+} from '../../src/utils/native-cli.js';
+import {
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -71,6 +80,30 @@ async function makeWorkspaceWithMutator(
     awHome: path.join(root, 'aw-home'),
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
+  };
+}
+
+function createCodexMarketplaceAddRunner(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  calls: NativeCliInvocation[] = [],
+): NativeCliRunner {
+  return async (invocation) => {
+    calls.push(invocation);
+    const awHome = invocation.args[3] ?? '';
+    await upsertCodexMarketplaceFile(
+      resolveCodexPaths(cwd, 'user', env).configTomlPath,
+      'aw',
+      {
+        source: awHome,
+        sourceType: 'local',
+      },
+    );
+    return {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    };
   };
 }
 
@@ -600,6 +633,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'auto',
+        verbose: true,
       },
       {
         adapters: {
@@ -645,6 +679,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
       {
         adapters: {
@@ -666,6 +701,120 @@ describe('CLI integration', () => {
     expect(result.output).toContain('ledgerState=degraded (operation_interrupted_after_native_write)');
   });
 
+  it('renders daily status summaries without raw diagnostic field names by default', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const result = await statusCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              currentCatalogAvailable: true,
+              scopeInitialized: 'yes',
+              catalogCompatibility: 'current',
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.output).toContain('状态摘要');
+    expect(result.output).toContain('git-commit');
+    expect(result.output).not.toContain('catalogCompatibility=');
+    expect(result.output).not.toContain('scopeInitialized=');
+    expect(result.output).not.toContain('driftWarnings=');
+    expect(result.matrix.health).toBe('ready');
+  });
+
+  it('reports unknown status targets as notInstalled instead of throwing', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const result = await statusCommand(
+      ['missing-plugin'],
+      {
+        cwd: repoRoot,
+        platform: 'codex',
+        json: true,
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {}),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    const payload = JSON.parse(result.output) as { health: string; summaries: Array<{ health: string }> };
+    expect(payload.health).toBe('notInstalled');
+    expect(payload.summaries[0].health).toBe('notInstalled');
+  });
+
+  it('lists managed plugin summaries when status has no plugin argument', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {}),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    const result = await statusCommand(
+      [],
+      {
+        cwd: repoRoot,
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              scopeInitialized: 'yes',
+              nativeInstalled: true,
+              marketplaceRegistered: true,
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.output).toContain('git-commit');
+    expect(result.output).toContain('状态摘要');
+    expect(result.matrix.summaries.map((summary) => summary.pluginName)).toContain('git-commit');
+  });
+
   it('omits catalogCompatibility when the current catalog is available but no compatibility state applies', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -681,6 +830,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
       {
         adapters: {
@@ -924,7 +1074,11 @@ describe('CLI integration', () => {
         },
         {
           adapters: {
-            codex: new FailingInstallExtensionsCodexAdapter(repoRoot, process.env),
+            codex: new FailingInstallExtensionsCodexAdapter(
+              repoRoot,
+              createCodexMarketplaceAddRunner(repoRoot),
+              process.env,
+            ),
             claude: new FakeAdapter('claude', repoRoot, {}),
           },
         },
@@ -1317,6 +1471,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
       {
         adapters: {
@@ -1343,6 +1498,10 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
+      },
+      {
+        nativeCliRunner: createCodexMarketplaceAddRunner(repoRoot),
       },
     );
 
@@ -1372,6 +1531,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
     );
 
@@ -1412,6 +1572,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
     );
 
@@ -1428,6 +1589,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
     );
 
@@ -1778,6 +1940,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
     );
     expect(nativeStatus.output).toContain('currentCatalog=source:local,available:no');
@@ -1791,6 +1954,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
+        verbose: true,
       },
     );
     expect(mixedStatus.output).toContain('currentCatalog=source:local,available:no');
@@ -1893,6 +2057,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'claude',
+        verbose: true,
       },
       {
         adapters: {
@@ -1931,6 +2096,7 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'claude',
+        verbose: true,
       },
       {
         adapters: {
@@ -1962,6 +2128,9 @@ describe('CLI integration', () => {
         cwd: subdir,
         scope: 'project',
         platform: 'codex',
+      },
+      {
+        nativeCliRunner: createCodexMarketplaceAddRunner(subdir),
       },
     );
 
