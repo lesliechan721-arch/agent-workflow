@@ -1,11 +1,13 @@
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -195,4 +197,96 @@ describe('build smoke', () => {
     )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
+
+  it('bundles scripts.node plugins through the compiled staging bundle path', async () => {
+    const root = repoRoot();
+    await execFileAsync('pnpm', ['build'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-smoke-scripts-node-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    await writeNodeScriptFixture(tempRepo);
+
+    const { bundlePlugins } = (await import(
+      '../../dist/scripts/bundle-plugins.js'
+    )) as {
+      bundlePlugins: (options: {
+        repoRoot: string;
+        outputRoot: string;
+        buildMode: 'staging';
+      }) => Promise<unknown>;
+    };
+    await bundlePlugins({ repoRoot: tempRepo, outputRoot, buildMode: 'staging' });
+
+    const pluginRoot = path.join(outputRoot, 'plugins', 'git-commit');
+    const bundleManifest = await fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'));
+    expect(bundleManifest).toMatchObject({
+      description: 'Built smoke description',
+      marketplace: {
+        policy: {
+          products: ['CODEX'],
+        },
+      },
+      scripts: {
+        lifecycle: {
+          install: {
+            default: {
+              runner: 'node',
+              path: './scripts/runtime.mjs',
+            },
+          },
+        },
+        node: {
+          packageRoot: './scripts',
+        },
+      },
+    });
+    expect(bundleManifest.scripts.tests).toBeUndefined();
+    expect(bundleManifest.scripts.node.build).toBeUndefined();
+
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'generated.test.mjs')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'yaml', 'package.json')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'chalk')),
+    ).resolves.toBe(false);
+
+    const runtime = (await import(
+      pathToFileURL(path.join(pluginRoot, 'scripts', 'runtime.mjs')).href
+    )) as { parseSmokeConfig: (source: string) => string };
+    expect(runtime.parseSmokeConfig('name: bundle\n')).toBe('bundle:runtime-helper');
+
+    await expect(
+      fs.pathExists(path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'generated.test.mjs')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.readJson(path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      description: expect.not.stringContaining('Built smoke description'),
+      marketplace: {
+        policy: {
+          products: ['CLAUDE'],
+        },
+      },
+      scripts: {
+        tests: {
+          node: ['./scripts/source-only.test.mjs'],
+        },
+      },
+    });
+
+    const { validateBundleLayout } = (await import(
+      '../../src/utils/bundle-layout.js'
+    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
+    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
+  }, 120_000);
 });

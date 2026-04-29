@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -25,6 +27,7 @@ import {
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 
+const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
 async function makeTempRoot(prefix: string): Promise<string> {
@@ -88,6 +91,23 @@ async function writePlugin(root: string, manifest = createManifest()): Promise<P
     manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
     manifest,
   };
+}
+
+async function commandIsAvailable(command: string, args: string[]): Promise<boolean> {
+  try {
+    await execFileAsync(command, args, {
+      env: process.env,
+      maxBuffer: 1024 * 1024,
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readMarkerLines(markerPath: string): Promise<string[]> {
+  return fs.readFile(markerPath, 'utf8').then((content) => content.trimEnd().split(/\r?\n/));
 }
 
 afterEach(async () => {
@@ -205,6 +225,191 @@ describe('plugin lifecycle scripts', () => {
 
     expect(result.executed).toBe(true);
     await expect(fs.readFile(markerPath, 'utf8')).resolves.toBe('script-plugin:secret-token');
+    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
+  });
+
+  it('runs a bash lifecycle script through the real process runner when bash is available', async () => {
+    if (process.platform === 'win32' || !(await commandIsAvailable('bash', ['--version']))) {
+      return;
+    }
+
+    const root = await makeTempRoot('aw-plugin-scripts-bash-');
+    const awHome = path.join(root, 'aw-home');
+    const cwd = path.join(root, 'repo');
+    const markerPath = path.join(cwd, 'shell-marker.txt');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest('bash-plugin');
+    delete manifest.config;
+    manifest.scripts!.lifecycle!.install = {
+      default: {
+        runner: 'bash',
+        path: './scripts/install.sh',
+        args: ['alpha beta', 'gamma'],
+      },
+    };
+    const plugin = await writePlugin(root, manifest);
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'scripts', 'install.sh'),
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'test -f "$AW_PLUGIN_CONTEXT"',
+        'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$AW_PLUGIN_NAME" "$AW_PLUGIN_PLATFORM" "$AW_PLUGIN_EVENT" "$1" "$2" > shell-marker.txt',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const env = {
+      AW_HOME: awHome,
+      PATH: process.env.PATH ?? process.env.Path,
+    } as NodeJS.ProcessEnv;
+
+    const result = await runLifecycleScript({
+      event: 'install',
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      currentPlugin: plugin,
+      context: createCommandExecutionContext({ env }),
+      runtimeOs: process.platform === 'darwin' ? 'darwin' : 'linux',
+    });
+
+    expect(result.executed).toBe(true);
+    await expect(readMarkerLines(markerPath)).resolves.toEqual([
+      'bash-plugin',
+      'codex',
+      'install',
+      'alpha beta',
+      'gamma',
+    ]);
+    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
+  });
+
+  it('runs a powershell lifecycle script through the real process runner when powershell is available', async () => {
+    const hasPowershell = await commandIsAvailable('powershell', [
+      '-NoProfile',
+      '-Command',
+      '$PSVersionTable.PSVersion.ToString()',
+    ]);
+    if (!hasPowershell) {
+      return;
+    }
+
+    const root = await makeTempRoot('aw-plugin-scripts-powershell-');
+    const awHome = path.join(root, 'aw-home');
+    const cwd = path.join(root, 'repo');
+    const markerPath = path.join(cwd, 'shell-marker.txt');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest('powershell-plugin');
+    delete manifest.config;
+    manifest.scripts!.lifecycle!.install = {
+      default: {
+        runner: 'powershell',
+        path: './scripts/install.ps1',
+        args: ['alpha beta', 'gamma'],
+      },
+    };
+    const plugin = await writePlugin(root, manifest);
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'scripts', 'install.ps1'),
+      [
+        'if (-not (Test-Path $env:AW_PLUGIN_CONTEXT)) { exit 21 }',
+        '$lines = @($env:AW_PLUGIN_NAME, $env:AW_PLUGIN_PLATFORM, $env:AW_PLUGIN_EVENT, $args[0], $args[1])',
+        'Set-Content -LiteralPath "shell-marker.txt" -Value $lines -Encoding ascii',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const env = {
+      AW_HOME: awHome,
+      PATH: process.env.PATH ?? process.env.Path,
+    } as NodeJS.ProcessEnv;
+
+    const result = await runLifecycleScript({
+      event: 'install',
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      currentPlugin: plugin,
+      context: createCommandExecutionContext({ env }),
+      runtimeOs: process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
+    });
+
+    expect(result.executed).toBe(true);
+    await expect(readMarkerLines(markerPath)).resolves.toEqual([
+      'powershell-plugin',
+      'codex',
+      'install',
+      'alpha beta',
+      'gamma',
+    ]);
+    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
+  });
+
+  it('runs a cmd lifecycle script through the real process runner on Windows', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = await makeTempRoot('aw-plugin-scripts-cmd-');
+    const awHome = path.join(root, 'aw-home');
+    const cwd = path.join(root, 'repo');
+    const markerPath = path.join(cwd, 'shell-marker.txt');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest('cmd-plugin');
+    delete manifest.config;
+    manifest.scripts!.lifecycle!.install = {
+      win32: {
+        runner: 'cmd',
+        path: './scripts/install.cmd',
+        args: ['alpha beta', 'gamma'],
+      },
+    };
+    const plugin = await writePlugin(root, manifest);
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'scripts', 'install.cmd'),
+      [
+        '@echo off',
+        'if not exist "%AW_PLUGIN_CONTEXT%" exit /b 21',
+        '(',
+        '  echo %AW_PLUGIN_NAME%',
+        '  echo %AW_PLUGIN_PLATFORM%',
+        '  echo %AW_PLUGIN_EVENT%',
+        '  echo %~1',
+        '  echo %~2',
+        ') > shell-marker.txt',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const env = {
+      AW_HOME: awHome,
+      PATH: process.env.PATH ?? process.env.Path,
+      SystemRoot: process.env.SystemRoot,
+      ComSpec: process.env.ComSpec,
+    } as NodeJS.ProcessEnv;
+
+    const result = await runLifecycleScript({
+      event: 'install',
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      currentPlugin: plugin,
+      context: createCommandExecutionContext({ env }),
+      runtimeOs: 'win32',
+    });
+
+    expect(result.executed).toBe(true);
+    await expect(readMarkerLines(markerPath)).resolves.toEqual([
+      'cmd-plugin',
+      'codex',
+      'install',
+      'alpha beta',
+      'gamma',
+    ]);
     await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
   });
 
