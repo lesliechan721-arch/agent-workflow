@@ -125,6 +125,26 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).toBe('');
   });
 
+  it('accepts the pnpm argument separator used by the package script', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.scripts = {
+      tests: {
+        node: ['./scripts/*.test.mjs'],
+      },
+    };
+    await writeManifest(repoRoot, manifest);
+    const output = captureOutput();
+
+    await expect(runPluginScriptTests(['--', 'git-commit'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+    })).resolves.toBe(0);
+    expect(output.readStdout()).toContain('skipped (no tests matched)');
+    expect(output.readStderr()).toBe('');
+  });
+
   it('runs only the requested plugin in single-plugin mode', async () => {
     const repoRoot = await makeTempRepo();
     await addInvalidNeighborPlugin(repoRoot);

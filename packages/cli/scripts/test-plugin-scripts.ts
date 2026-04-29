@@ -63,6 +63,7 @@ interface NodeTestResult {
 }
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const REPO_ROOT_ENV = 'AW_PLUGIN_TEST_REPO_ROOT';
 
 function resolveRepoRoot(): string {
   return path.resolve(resolveCliPackageRoot(), '..', '..');
@@ -82,7 +83,9 @@ function parseArgs(args: string[]): ParsedArgs {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--all') {
+    if (arg === '--') {
+      continue;
+    } else if (arg === '--all') {
       parsed.all = true;
     } else if (arg === '--scope') {
       const value = args[++index];
@@ -682,8 +685,9 @@ export async function runPluginScriptTests(
   options: PluginTestRunnerOptions = {},
 ): Promise<number> {
   const parsed = parseArgs(args);
-  const repoRoot = options.repoRoot ?? resolveRepoRoot();
   const env = options.env ?? process.env;
+  const configuredRepoRoot = options.repoRoot ?? env[REPO_ROOT_ENV];
+  const repoRoot = configuredRepoRoot ? path.resolve(configuredRepoRoot) : resolveRepoRoot();
   const stdout = options.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = options.stderr ?? ((text: string) => process.stderr.write(text));
 
