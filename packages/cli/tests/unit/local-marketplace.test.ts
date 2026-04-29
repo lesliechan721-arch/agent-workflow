@@ -147,6 +147,59 @@ describe('local marketplace', () => {
     });
   });
 
+  it('preserves AW-managed plugin config during local marketplace rebuilds', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.outputJson(
+      path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
+      {
+        token: 'secret',
+      },
+      { spaces: 2 },
+    );
+
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# changed again\n',
+      'utf8',
+    );
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await expect(fs.readJson(
+      path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toEqual({
+      token: 'secret',
+    });
+  });
+
+  it('preserves AW-managed plugin install snapshots during local marketplace rebuilds', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.outputFile(
+      path.join(awHome, 'plugin-install-snapshots', 'codex', 'user', 'scope', 'git-commit', 'digest', 'bundle', 'marker.txt'),
+      'snapshot',
+      'utf8',
+    );
+
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# changed for snapshot preserve\n',
+      'utf8',
+    );
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await expect(fs.readFile(
+      path.join(awHome, 'plugin-install-snapshots', 'codex', 'user', 'scope', 'git-commit', 'digest', 'bundle', 'marker.txt'),
+      'utf8',
+    )).resolves.toBe('snapshot');
+  });
+
   it('repairs a corrupted local marketplace layout during force init', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;

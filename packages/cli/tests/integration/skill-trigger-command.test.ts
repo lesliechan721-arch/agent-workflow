@@ -1403,10 +1403,8 @@ describe('skill trigger command integration', () => {
     await writeInstalledLedger(createAvailableLedger(), process.env);
 
     const originalMove = fs.move.bind(fs);
-    let moveCalls = 0;
     vi.spyOn(fs, 'move').mockImplementation(async (...args: Parameters<typeof fs.move>) => {
-      moveCalls += 1;
-      if (moveCalls === 3) {
+      if (String(args[0]).includes('-backup-')) {
         throw new Error('rollback move failed');
       }
       await originalMove(...args);

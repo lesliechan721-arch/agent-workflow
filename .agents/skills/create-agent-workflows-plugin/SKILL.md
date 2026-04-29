@@ -56,6 +56,21 @@ plugins/<name>/
 
 **先读**：场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md` + `references/claude-only-capabilities.md`
 
+### 场景 D：带 AW Config / Lifecycle / 脚本测试的插件
+
+插件需要安装初始化、卸载清理、跨 Claude/Codex 共享配置，或需要为配置 helper/lifecycle 写 Node 测试时使用。
+
+```text
+plugins/<name>/
+├── .agents-plugin/plugin.json
+└── scripts/
+    ├── aw-config.mjs
+    ├── lifecycle.mjs
+    └── *.test.mjs
+```
+
+**先读**：`references/plugin-manifest-spec.md` 的 `scripts / config block`。可用脚手架 `--with-config-api` / `--with-lifecycle` 生成样板。
+
 ## 能力速查
 
 | 能力 | 平台 | 配置位置 | 细节 |
@@ -66,6 +81,7 @@ plugins/<name>/
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
 | Claude 专属能力 | Claude | `commands/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
 | Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
+| AW Scripts / Config | 双平台 | `scripts` / `config` | `references/plugin-manifest-spec.md` |
 
 插件不需要包含所有能力；先按场景选组合，再打开对应参考文档补字段细节。
 
@@ -80,9 +96,10 @@ plugins/<name>/
    - Extensions → 在 manifest 的 `extensions` 中声明
    - MCP/Apps → 创建 `.mcp.json` / `.app.json`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
+   - AW Config / Lifecycle → 在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
-8. **测试**：改到 manifest、bundle 或安装逻辑时，至少运行 `pnpm test` 相关用例。
+8. **测试**：插件内 Node 脚本用 `pnpm plugin:test <plugin>`；改到 manifest、bundle 或安装逻辑时，再运行相关 `pnpm test:*`。
 
 ## 脚手架脚本
 
@@ -96,6 +113,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
   [--no-skills] \
   [--with-mcp] \
   [--with-apps] \
+  [--with-config-api] \
+  [--with-lifecycle] \
   [--version 0.1.0] \
   [--repo-root .]
 ```
@@ -104,6 +123,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--display-name` / `--short-description` 只写入插件级 `interface`；初始 skill 的 Codex 展示名默认由 `--skill-name` 推导，展示简述优先使用 `--skill-description`
 - `--no-skills`：创建不含 skill 的插件（不需要 `--skill-name` 和 `--skill-description`）
 - `--with-mcp` / `--with-apps`：创建 `.mcp.json` / `.app.json` 存根；细节见 `references/mcp-and-apps.md`
+- `--with-config-api`：添加 AW 自管 `config.schema`、标准 `scripts.helpers.config` helper 和 Node 脚本测试样板
+- `--with-lifecycle`：添加 Node lifecycle 样板和 Node 脚本测试样板
 - 默认省略 `marketplace.policy.products`，让插件保持双平台可安装；声明后 `aw install` / 显式 `aw upgrade` 会拦截不匹配的平台
 - 默认不生成 `skillTriggers`，因此新 skill 不允许安装时覆盖触发策略；确实需要时再在 manifest 里显式添加 `allowInstallOverride`
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
@@ -115,6 +136,20 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
 - 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
+- 插件内 Node 脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
+- lifecycle 支持 Node 和受控 shell 文件，不支持内联 shell 命令；Windows 优先写 Node 入口，或单独提供 `.ps1` / `.cmd`。
+- Node lifecycle/helper/test 默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时声明 `scripts.node.packageRoot`，提交 `package.json` 和 `pnpm-lock.yaml`，并只使用 registry-backed 依赖；运行时依赖离线随 bundle 携带。
+- manifest build 只能通过 `scripts.node.build` 显式触发，并运行在隔离 staging 目录；不要期待 `package.json` scripts 或 npm lifecycle 自动执行，也不要依赖源码树被回写。
+
+## 脚本测试入口
+
+```bash
+pnpm plugin:test <plugin>
+pnpm plugin:test <plugin> --platform both --scope project
+pnpm plugin:test --all
+```
+
+`pnpm plugin:test` 会先编译 CLI，再运行已编译 runner。它会为目标插件准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。没有匹配测试时是 skipped/no-op，退出码为 0；单插件模式不会被其它插件的坏 manifest 或测试失败阻断。`--platform both` 会分 Codex/Claude 两轮复制独立可写 bundle。测试中的 `AW_PLUGIN_CONTEXT.sourceRoot` 指向原始源码根，适合读取源码 fixture；实际运行时入口和 helper 应从临时 bundle import。
 
 更细的能力矩阵、平台差异、命令结果填充和长 checklist 都在下方参考文档里，按场景加载即可。
 

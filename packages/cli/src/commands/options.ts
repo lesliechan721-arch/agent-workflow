@@ -19,6 +19,8 @@ export type RawCommandOptions = {
   cwd?: string;
   scope?: string;
   platform?: string;
+  scriptTimeout?: string | number;
+  scriptTimeoutMs?: string | number;
 };
 
 export type RawInstallCommandOptions = RawCommandOptions & {
@@ -37,6 +39,13 @@ export type RawStatusCommandOptions = {
   verbose?: boolean;
   json?: boolean;
 };
+
+export const SCRIPT_TIMEOUT_MIN_MS = 1000;
+export const SCRIPT_TIMEOUT_MAX_MS = 300000;
+export const SCRIPT_TIMEOUT_DEFAULT_MS = 30000;
+export const CONFIG_WRITE_DEFAULT_SCOPE: Scope = 'user';
+export type ConfigReadResolution = Scope | 'effective';
+export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
 
 function renderUnsupportedValue(value: unknown): string {
   return typeof value === 'string' ? value : String(value);
@@ -75,6 +84,43 @@ export function parseSkillTriggerPreference(
   );
 }
 
+export function parseScriptTimeoutMs(value: unknown): number {
+  const rendered = renderUnsupportedValue(value);
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : Number.NaN;
+
+  if (!Number.isInteger(parsed)) {
+    throw new Error(
+      `Unsupported script timeout "${rendered}". Expected an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS} milliseconds.`,
+    );
+  }
+  if (parsed < SCRIPT_TIMEOUT_MIN_MS || parsed > SCRIPT_TIMEOUT_MAX_MS) {
+    throw new Error(
+      `Unsupported script timeout "${rendered}". Expected a value between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS} milliseconds.`,
+    );
+  }
+
+  return parsed;
+}
+
+export function resolveScriptTimeoutMs(
+  raw: Pick<RawCommandOptions, 'scriptTimeout' | 'scriptTimeoutMs'>,
+): number | undefined {
+  const value = raw.scriptTimeoutMs ?? raw.scriptTimeout;
+  return value === undefined ? undefined : parseScriptTimeoutMs(value);
+}
+
+export function resolveConfigWriteScope(scope: unknown): Scope {
+  return scope === undefined ? CONFIG_WRITE_DEFAULT_SCOPE : parseScopeValue(scope);
+}
+
+export function resolveConfigReadResolution(scope: unknown): ConfigReadResolution {
+  return scope === undefined ? CONFIG_READ_DEFAULT_RESOLUTION : parseScopeValue(scope);
+}
+
 function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined): string {
   return rawCwd ?? defaultCwd ?? process.cwd();
 }
@@ -83,10 +129,12 @@ export function normalizeCommandOptions(
   raw: RawCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): CommandOptions {
+  const scriptTimeoutMs = resolveScriptTimeoutMs(raw);
   return {
     cwd: resolveCwd(raw.cwd, defaults.cwd),
     scope: parseScopeValue(raw.scope ?? defaults.defaultScope ?? 'user'),
     platform: parsePlatformValue(raw.platform ?? defaults.defaultPlatform ?? 'auto'),
+    ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
   };
 }
 

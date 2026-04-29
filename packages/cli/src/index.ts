@@ -10,6 +10,7 @@ import { installCommand } from './commands/install.js';
 import {
   createCliExecutionContext,
   emitCommandEvent,
+  validateCliConfigPromptResult,
   type CliExecutionContext,
   type CliExecutionContextInput,
   type CliIo,
@@ -24,6 +25,8 @@ import {
   createInteractiveUpgradePlan,
 } from './commands/interactive.js';
 import {
+  resolveConfigReadResolution,
+  resolveConfigWriteScope,
   normalizeCommandOptions,
   normalizeInstallCommandOptions,
   normalizeStatusCommandOptions,
@@ -38,6 +41,19 @@ import {
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
 import { resolveAwHome } from './utils/paths.js';
+import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
+import {
+  assertSafePluginConfigSegment,
+  coercePluginConfigValue,
+  coercePluginConfigUpdates,
+  patchPluginConfigStore,
+  readPluginConfigStore,
+  renderPluginConfigValueForDisplay,
+  resetPluginConfigStore,
+  resolveEffectivePluginConfig,
+  summarizeEffectivePluginConfig,
+} from './utils/plugin-config.js';
+import type { PluginManifestSource, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export { parseSkillTriggerPreference } from './commands/options.js';
@@ -208,6 +224,13 @@ interface RawDiagnosticsOptions {
   interactive?: boolean;
 }
 
+interface RawConfigOptions extends RawDiagnosticsOptions {
+  scope?: string;
+  json?: boolean;
+  valueJson?: boolean;
+  yes?: boolean;
+}
+
 function toCliDiagnosticsOptions(
   commandName: string,
   rawOptions: RawDiagnosticsOptions,
@@ -290,6 +313,149 @@ async function runActionWithContext<T>(
   }
 }
 
+async function loadConfigManifest(
+  pluginName: string,
+  context: CliExecutionContext,
+): Promise<PluginManifestSource> {
+  assertSafePluginConfigSegment(pluginName);
+  const { plugins } = await resolveCatalogPlugins([pluginName], context.env);
+  const manifest = plugins[0].manifest;
+  if (!manifest.config?.schema) {
+    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+  }
+  return manifest;
+}
+
+function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
+  writeLine(write, JSON.stringify(payload, null, 2));
+}
+
+function formatConfigIssues(issues: Array<{ key: string; type: string; message: string }>): string[] {
+  return issues.map((issue) => `${issue.key}: ${issue.type} - ${issue.message}`);
+}
+
+function writeConfigList(
+  write: (text: string) => void,
+  resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
+): void {
+  for (const [key, field] of Object.entries(resolved.schema)) {
+    const source = resolved.sources[key] ?? 'missing';
+    const configured = source === 'user' || source === 'project';
+    const required = field.required ? 'required' : 'optional';
+    const fromDefault = source === 'default' ? ', default' : '';
+    writeLine(write, `${key}: ${source}${configured ? ', configured' : ''}, ${required}${fromDefault}`);
+  }
+  if (resolved.issues.length > 0) {
+    writeLine(write, `配置存在问题：${formatConfigIssues(resolved.issues).join('；')}`);
+  }
+}
+
+function writeConfigGet(
+  write: (text: string) => void,
+  resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
+  key?: string,
+): void {
+  if (key) {
+    if (!resolved.schema[key]) {
+      throw new Error(`Unknown config key "${key}".`);
+    }
+    const value = resolved.redactedValues[key];
+    writeLine(write, value === undefined ? '' : renderPluginConfigValueForDisplay(value));
+  } else {
+    for (const [entryKey, value] of Object.entries(resolved.redactedValues)) {
+      writeLine(write, `${entryKey}=${renderPluginConfigValueForDisplay(value)}`);
+    }
+  }
+  if (resolved.issues.length > 0) {
+    writeLine(write, `配置存在问题：${formatConfigIssues(resolved.issues).join('；')}`);
+  }
+}
+
+async function resolveConfigForRead(options: {
+  pluginName: string;
+  manifest: PluginManifestSource;
+  scopeOrEffective: Scope | 'effective';
+  context: CliExecutionContext;
+}) {
+  const resolved = await resolveEffectivePluginConfig({
+    pluginName: options.pluginName,
+    manifest: options.manifest,
+    cwd: options.context.cwd,
+    env: options.context.env,
+  });
+
+  if (options.scopeOrEffective === 'effective') {
+    return resolved;
+  }
+
+  const scopedStore = resolved.stores[options.scopeOrEffective];
+  const scopedValues: Record<string, string | number | boolean> = {};
+  const scopedRedactedValues: Record<string, string | number | boolean | '[redacted]'> = {};
+  const scopedSources: Record<string, Scope | 'default' | 'missing'> = {};
+  const scopedIssues = [];
+  for (const [key, field] of Object.entries(resolved.schema)) {
+    scopedSources[key] = 'missing';
+    if (field.default !== undefined) {
+      try {
+        const coerced = await coercePluginConfigValue({
+          key,
+          field,
+          value: field.default,
+          projectRoot: resolved.projectRoot,
+        });
+        scopedValues[key] = coerced;
+        scopedRedactedValues[key] = field.sensitive ? '[redacted]' : coerced;
+        scopedSources[key] = 'default';
+      } catch (error) {
+        scopedIssues.push({
+          type: 'invalid-config' as const,
+          key,
+          source: 'default' as const,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (Object.hasOwn(scopedStore.values, key)) {
+      scopedSources[key] = options.scopeOrEffective;
+      try {
+        const coerced = await coercePluginConfigValue({
+          key,
+          field,
+          value: scopedStore.values[key],
+          projectRoot: resolved.projectRoot,
+        });
+        scopedValues[key] = coerced;
+        scopedRedactedValues[key] = field.sensitive ? '[redacted]' : coerced;
+      } catch (error) {
+        delete scopedValues[key];
+        delete scopedRedactedValues[key];
+        scopedIssues.push({
+          type: 'invalid-config' as const,
+          key,
+          source: options.scopeOrEffective,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (field.required && scopedValues[key] === undefined) {
+      scopedIssues.push({
+        type: 'missing-required' as const,
+        key,
+        source: scopedSources[key],
+        message: `Config "${key}" is required.`,
+      });
+    }
+  }
+
+  return {
+    ...resolved,
+    values: scopedValues,
+    redactedValues: scopedRedactedValues,
+    sources: scopedSources,
+    issues: scopedIssues,
+  };
+}
+
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
@@ -346,6 +512,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-i, --interactive', 'prompt for missing install choices')
     .option('--no-interactive', 'disable interactive prompts')
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -358,6 +525,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           skillTrigger?: string;
+          scriptTimeout?: string;
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('install', rawOptions);
@@ -416,6 +584,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-i, --interactive', 'prompt for missing uninstall choices')
     .option('--no-interactive', 'disable interactive prompts')
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -423,7 +592,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (
       plugins: string[],
-      rawOptions: { scope?: string; platform?: string } & RawDiagnosticsOptions,
+      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('uninstall', rawOptions);
       const receipt = await runActionWithContext(
@@ -481,6 +650,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-i, --interactive', 'prompt for missing upgrade choices')
     .option('--no-interactive', 'disable interactive prompts')
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -494,6 +664,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           skillTrigger?: string;
+          scriptTimeout?: string;
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('upgrade', rawOptions);
@@ -545,6 +716,353 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeWarnings(io.stderr, receipt.result.warnings);
       },
     );
+
+  const config = program
+    .command('config')
+    .description('Manage AW plugin configuration');
+
+  config
+    .command('list')
+    .argument('<plugin>')
+    .option('-s, --scope <scope>', 'read only project or user config')
+    .option('-j, --json', 'print config as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:list', rawOptions);
+      const resolved = await runActionWithContext(context, async () => {
+        const manifest = await loadConfigManifest(pluginName, context);
+        return resolveConfigForRead({
+          pluginName,
+          manifest,
+          scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
+          context,
+        });
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          ok: true,
+          command: 'config:list',
+          plugin: pluginName,
+          summary: summarizeEffectivePluginConfig(resolved),
+        });
+      } else {
+        writeConfigList(io.stdout, resolved);
+      }
+    });
+
+  config
+    .command('get')
+    .argument('<plugin>')
+    .argument('[key]')
+    .option('-s, --scope <scope>', 'read only project or user config')
+    .option('-j, --json', 'print config as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (pluginName: string, key: string | undefined, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:get', rawOptions);
+      const resolved = await runActionWithContext(context, async () => {
+        const manifest = await loadConfigManifest(pluginName, context);
+        const configForRead = await resolveConfigForRead({
+          pluginName,
+          manifest,
+          scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
+          context,
+        });
+        if (key && !configForRead.schema[key]) {
+          throw new Error(`Unknown config key "${key}".`);
+        }
+        return configForRead;
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          ok: true,
+          command: 'config:get',
+          plugin: pluginName,
+          key,
+          summary: summarizeEffectivePluginConfig(resolved),
+          value: key ? resolved.redactedValues[key] : resolved.redactedValues,
+          source: key ? resolved.sources[key] : resolved.sources,
+        });
+      } else {
+        writeConfigGet(io.stdout, resolved, key);
+      }
+    });
+
+  config
+    .command('set')
+    .argument('<plugin>')
+    .argument('<key>')
+    .argument('<value>')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('--value-json', 'parse value as a JSON literal', false)
+    .option('-j, --json', 'print receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      pluginName: string,
+      key: string,
+      rawValue: string,
+      rawOptions: RawConfigOptions,
+    ) => {
+      const context = createActionContext('config:set', rawOptions);
+      const receipt = await runActionWithContext(context, async () => {
+        const manifest = await loadConfigManifest(pluginName, context);
+        const scope = resolveConfigWriteScope(rawOptions.scope);
+        const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
+        const updates = await coercePluginConfigUpdates({
+          schema: manifest.config!.schema,
+          updates: { [key]: inputValue },
+          cwd: context.cwd,
+        });
+        await patchPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+          updates,
+        });
+        const effective = await resolveEffectivePluginConfig({
+          pluginName,
+          manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return {
+          ok: true,
+          command: 'config:set',
+          plugin: pluginName,
+          scope,
+          updatedKeys: [key],
+          effective: summarizeEffectivePluginConfig(effective),
+        };
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, receipt);
+      } else {
+        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key} (${receipt.scope})。`);
+      }
+    });
+
+  config
+    .command('configure')
+    .argument('<plugin>')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-i, --interactive', 'prompt for config values')
+    .option('--no-interactive', 'disable interactive prompts')
+    .option('-j, --json', 'print receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:configure', rawOptions);
+      const receipt = await runActionWithContext(context, async () => {
+        if (!context.interactive || !context.prompt.configurePlugin) {
+          throw new Error(
+            `Interactive config is not available. Run \`aw config set ${pluginName} <key> <value>\` for each required key.`,
+          );
+        }
+        const manifest = await loadConfigManifest(pluginName, context);
+        const effective = await resolveEffectivePluginConfig({
+          pluginName,
+          manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        const explicitScope = rawOptions.scope === undefined
+          ? undefined
+          : resolveConfigWriteScope(rawOptions.scope);
+        const allowedScopes: Scope[] = explicitScope ? [explicitScope] : ['user', 'project'];
+        const promptSchema = Object.fromEntries(Object.entries(manifest.config!.schema).map(([schemaKey, field]) => [
+          schemaKey,
+          {
+            type: field.type === 'enum' ? 'string' : field.type,
+            label: field.title ?? schemaKey,
+            description: field.description,
+            required: field.required,
+            sensitive: field.sensitive,
+            default: field.default,
+            enum: field.type === 'enum' ? field.values : undefined,
+            min: field.min,
+            max: field.max,
+          },
+        ]));
+        const promptResult = validateCliConfigPromptResult(
+          {
+            allowedScopes,
+            schema: promptSchema,
+          },
+          await context.prompt.configurePlugin({
+            pluginName,
+            schema: promptSchema,
+            initialScope: explicitScope ?? 'user',
+            allowedScopes,
+            currentValues: effective.values,
+            requiredKeys: effective.issues
+              .filter((issue) => issue.type === 'missing-required' || issue.type === 'invalid-config')
+              .map((issue) => issue.key),
+          }),
+        );
+        if (promptResult.cancelled) {
+          throw new Error(`Config setup for ${pluginName} was cancelled.`);
+        }
+        const scope = promptResult.selectedScope;
+        if (!allowedScopes.includes(scope)) {
+          throw new Error(`Unsupported config scope "${scope}".`);
+        }
+        const updates = await coercePluginConfigUpdates({
+          schema: manifest.config!.schema,
+          updates: promptResult.updates,
+          cwd: context.cwd,
+        });
+        await patchPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+          updates,
+        });
+        const nextEffective = await resolveEffectivePluginConfig({
+          pluginName,
+          manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return {
+          ok: true,
+          command: 'config:configure',
+          plugin: pluginName,
+          scope,
+          updatedKeys: promptResult.updatedKeys,
+          effective: summarizeEffectivePluginConfig(nextEffective),
+        };
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, receipt);
+      } else {
+        writeLine(io.stdout, `已更新 ${receipt.plugin} 配置 (${receipt.scope})。`);
+      }
+    });
+
+  config
+    .command('unset')
+    .argument('<plugin>')
+    .argument('<key>')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-j, --json', 'print receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (pluginName: string, key: string, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:unset', rawOptions);
+      const receipt = await runActionWithContext(context, async () => {
+        const manifest = await loadConfigManifest(pluginName, context);
+        if (!manifest.config!.schema[key]) {
+          throw new Error(`Unknown config key "${key}".`);
+        }
+        const scope = resolveConfigWriteScope(rawOptions.scope);
+        const store = await readPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        const existed = Object.hasOwn(store.values, key);
+        await patchPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+          updates: {},
+          removeKeys: [key],
+        });
+        const effective = await resolveEffectivePluginConfig({
+          pluginName,
+          manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return {
+          ok: true,
+          command: 'config:unset',
+          plugin: pluginName,
+          scope,
+          removedKey: key,
+          existed,
+          effective: summarizeEffectivePluginConfig(effective),
+        };
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, receipt);
+      } else {
+        writeLine(io.stdout, receipt.existed
+          ? `已删除 ${receipt.plugin}.${receipt.removedKey} (${receipt.scope})。`
+          : `${receipt.plugin}.${receipt.removedKey} (${receipt.scope}) 原本不存在。`);
+      }
+    });
+
+  config
+    .command('reset')
+    .argument('<plugin>')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-i, --interactive', 'prompt for confirmation')
+    .option('--no-interactive', 'disable interactive prompts')
+    .option('-y, --yes', 'confirm destructive reset', false)
+    .option('-j, --json', 'print receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:reset', rawOptions);
+      const receipt = await runActionWithContext(context, async () => {
+        assertSafePluginConfigSegment(pluginName);
+        const scope = resolveConfigWriteScope(rawOptions.scope);
+        const store = await readPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        if (store.exists && !rawOptions.yes) {
+          if (!context.interactive || !context.prompt.confirm) {
+            throw new Error(
+              `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope} --yes\` to delete this store.`,
+            );
+          }
+          const confirmed = await context.prompt.confirm({
+            message: `Delete ${scope} config for ${pluginName}?`,
+            defaultValue: false,
+          });
+          if (!confirmed) {
+            throw new Error(`Config reset for ${pluginName} was cancelled.`);
+          }
+        }
+        const reset = await resetPluginConfigStore({
+          pluginName,
+          scope,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return {
+          ok: true,
+          command: 'config:reset',
+          plugin: pluginName,
+          scope,
+          existed: reset.existed,
+          deleted: reset.deleted,
+        };
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, receipt);
+      } else {
+        writeLine(io.stdout, receipt.deleted
+          ? `已重置 ${receipt.plugin} 的 ${receipt.scope} 配置。`
+          : `${receipt.plugin} 没有可重置的 ${receipt.scope} 配置。`);
+      }
+    });
 
   program
     .command('status')

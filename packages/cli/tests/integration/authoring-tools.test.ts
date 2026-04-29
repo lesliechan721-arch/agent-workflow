@@ -284,6 +284,324 @@ describe('authoring tools', () => {
     expect(openaiYamlContent).not.toContain('short_description: "自动化插件集合"');
   });
 
+  it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
+    tempDirs.push(tempRoot);
+
+    const helperPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'assets',
+      'aw-config.mjs',
+    );
+    const contextPath = path.join(tempRoot, 'context.json');
+    await fs.writeJson(contextPath, {
+      plugin: { name: 'context-helper' },
+      config: {
+        values: {
+          apiKey: 'context-secret',
+          mode: 'strict',
+        },
+        sources: {
+          apiKey: 'user',
+          mode: 'project',
+        },
+        schema: {
+          apiKey: { type: 'string', required: true, sensitive: true },
+          mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' },
+        },
+      },
+      paths: {
+        configStores: {
+          user: path.join(tempRoot, 'missing-user.json'),
+          project: path.join(tempRoot, 'missing-project.json'),
+        },
+      },
+    });
+
+    const { stdout } = await execFileAsync(
+      'node',
+      [helperPath, 'json'],
+      {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          AW_PLUGIN_CONTEXT: contextPath,
+          AW_HOME: path.join(tempRoot, 'unused-aw-home'),
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload).toMatchObject({
+      pluginName: 'context-helper',
+      scope: 'effective',
+      values: {
+        apiKey: 'context-secret',
+        mode: 'strict',
+      },
+      sources: {
+        apiKey: 'user',
+        mode: 'project',
+      },
+    });
+  });
+
+  it('standard aw-config helper fallback reads adjacent bundle manifest and filters unknown store keys', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-fallback-'));
+    tempDirs.push(tempRoot);
+
+    const bundleRoot = path.join(tempRoot, 'bundle');
+    await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
+    await fs.ensureDir(path.join(bundleRoot, 'scripts'));
+    await fs.copyFile(
+      path.join(
+        repoRoot(),
+        '.agents',
+        'skills',
+        'create-agent-workflows-plugin',
+        'assets',
+        'aw-config.mjs',
+      ),
+      path.join(bundleRoot, 'scripts', 'aw-config.mjs'),
+    );
+    await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), {
+      name: 'config-demo',
+      version: '0.1.0',
+      description: 'Config helper fallback fixture.',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+      },
+      scripts: {
+        helpers: { config: './scripts/aw-config.mjs' },
+      },
+      config: {
+        schema: {
+          token: { type: 'string', sensitive: true, required: true },
+          mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' },
+          configFile: { type: 'file', default: './config.txt' },
+        },
+      },
+    }, { spaces: 2 });
+
+    const projectRoot = path.join(tempRoot, 'project');
+    const projectSubdir = path.join(projectRoot, 'nested');
+    const awHome = path.join(tempRoot, 'aw-home');
+    await fs.ensureDir(projectSubdir);
+    await fs.writeFile(path.join(projectRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, 'config.txt'), 'ok\n', 'utf8');
+    await fs.ensureDir(path.join(awHome, 'plugin-config', 'config-demo'));
+    await fs.writeJson(
+      path.join(awHome, 'plugin-config', 'config-demo', 'config.json'),
+      {
+        token: 'user-secret',
+        staleUserSecret: 'do-not-print-user',
+      },
+      { spaces: 2 },
+    );
+    await fs.ensureDir(
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo'),
+    );
+    await fs.writeJson(
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo', 'config.json'),
+      {
+        token: 'project-secret',
+        mode: 'strict',
+        staleProjectSecret: 'do-not-print-project',
+      },
+      { spaces: 2 },
+    );
+
+    const { stdout } = await execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: {
+          ...process.env,
+          AW_HOME: awHome,
+          AW_PLUGIN_CONTEXT: '',
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    expect(stdout).not.toContain('do-not-print-user');
+    expect(stdout).not.toContain('do-not-print-project');
+    const payload = JSON.parse(stdout);
+    const expectedConfigFile = await fs.realpath(path.join(projectRoot, 'config.txt'));
+    expect(payload.values).toMatchObject({
+      token: 'project-secret',
+      mode: 'strict',
+      configFile: expectedConfigFile,
+    });
+    expect(payload.sources).toMatchObject({
+      token: 'project',
+      mode: 'project',
+      configFile: 'default',
+    });
+    expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
+      expect.arrayContaining([
+        { scope: 'user', key: 'staleUserSecret' },
+        { scope: 'project', key: 'staleProjectSecret' },
+      ]),
+    );
+
+    await expect(
+      execFileAsync(
+        'node',
+        [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'get', 'token'],
+        {
+          cwd: projectSubdir,
+          env: {
+            ...process.env,
+            AW_HOME: awHome,
+            AW_PLUGIN_CONTEXT: '',
+          },
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).resolves.toMatchObject({
+      stdout: 'project-secret\n',
+    });
+  });
+
+  it('standard aw-config helper fails closed without bundle manifest or schema', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-fail-'));
+    tempDirs.push(tempRoot);
+    const bundleRoot = path.join(tempRoot, 'bundle');
+    const awHome = path.join(tempRoot, 'aw-home');
+    await fs.ensureDir(path.join(bundleRoot, 'scripts'));
+    await fs.copyFile(
+      path.join(
+        repoRoot(),
+        '.agents',
+        'skills',
+        'create-agent-workflows-plugin',
+        'assets',
+        'aw-config.mjs',
+      ),
+      path.join(bundleRoot, 'scripts', 'aw-config.mjs'),
+    );
+    await fs.ensureDir(path.join(awHome, 'plugin-config', 'missing-manifest'));
+    await fs.writeJson(
+      path.join(awHome, 'plugin-config', 'missing-manifest', 'config.json'),
+      {
+        token: 'store-secret-must-not-leak',
+      },
+      { spaces: 2 },
+    );
+
+    await expect(
+      execFileAsync(
+        'node',
+        [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+        {
+          cwd: tempRoot,
+          env: {
+            ...process.env,
+            AW_HOME: awHome,
+            AW_PLUGIN_CONTEXT: '',
+          },
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.not.stringContaining('store-secret-must-not-leak'),
+    });
+  });
+
+  it('scaffolds config helper, lifecycle, config schema, and plugin script tests on demand', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-scripts-'));
+    tempDirs.push(tempRoot);
+
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+
+    const initScriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'init_plugin.js',
+    );
+    const validateScriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+
+    await execFileAsync(
+      'node',
+      [
+        initScriptPath,
+        'script-ready',
+        '--description',
+        'Plugin with AW config helper and lifecycle scripts.',
+        '--no-skills',
+        '--with-config-api',
+        '--with-lifecycle',
+        '--repo-root',
+        tempRepo,
+      ],
+      {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    const pluginDir = path.join(tempRepo, 'plugins', 'script-ready');
+    const manifest = await fs.readJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'));
+    expect(manifest).toMatchObject({
+      scripts: {
+        lifecycle: {
+          install: './scripts/lifecycle.mjs',
+          upgrade: './scripts/lifecycle.mjs',
+          uninstall: './scripts/lifecycle.mjs',
+        },
+        helpers: {
+          config: './scripts/aw-config.mjs',
+        },
+        tests: {
+          node: ['./scripts/**/*.test.mjs'],
+        },
+      },
+      config: {
+        schema: {
+          apiKey: {
+            type: 'string',
+            required: true,
+            sensitive: true,
+          },
+        },
+      },
+    });
+    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'aw-config.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'lifecycle.mjs'))).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
+    ).resolves.toBe(true);
+    await expect(
+      execFileAsync('node', [validateScriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+  });
+
   it('scaffolds YAML-safe skill metadata when descriptions contain quotes and colons', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-yaml-'));
     tempDirs.push(tempRoot);
@@ -578,6 +896,132 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining(
         'skillTriggers.trigger-demo.allowInstallOverride must be a boolean',
       ),
+    });
+  });
+
+  it('validate_plugin.js rejects bad scripts/config authoring contracts without package-manager staging', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-scripts-authoring-'));
+    tempDirs.push(tempRoot);
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'script-contract-demo', {});
+    await fs.ensureDir(path.join(pluginDir, 'scripts', 'pkg'));
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'aw-config.txt'),
+      'not a node helper\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'aw-config.mjs'),
+      'import yaml from "yaml";\nconsole.log(yaml);\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'lifecycle.mjs'),
+      'console.log("ok");\n',
+      'utf8',
+    );
+    await fs.writeJson(path.join(pluginDir, 'scripts', 'pkg', 'package.json'), {
+      dependencies: {
+        yaml: '^2.0.0',
+        local: 'file:../local.tgz',
+      },
+    }, { spaces: 2 });
+
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      scripts: {
+        helpers: {
+          config: './scripts/aw-config.txt',
+        },
+        lifecycle: {
+          install: {
+            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
+          },
+        },
+        node: {
+          packageRoot: './scripts/pkg',
+        },
+      },
+      config: {
+        schema: {
+          badMin: {
+            type: 'string',
+            min: 1,
+          },
+        },
+      },
+    }, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('scripts.helpers.config must use a Node runnable extension'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      scripts: {
+        helpers: {
+          config: './scripts/aw-config.mjs',
+        },
+        lifecycle: {
+          install: {
+            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
+          },
+        },
+        node: {
+          packageRoot: './scripts/pkg',
+        },
+      },
+      config: {
+        schema: {
+          goodKey: {
+            type: 'string',
+          },
+        },
+      },
+    }, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('scripts.lifecycle.install must include an entry that resolves on win32'),
+    });
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('scripts.node.packageRoot is missing pnpm-lock.yaml'),
+    });
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('file:../local.tgz'),
     });
   });
 

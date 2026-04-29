@@ -87,6 +87,47 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
     agents: [],
   };
 
+  if (opts.withConfigApi) {
+    manifest.config = {
+      schema: {
+        apiKey: {
+          type: 'string',
+          required: true,
+          sensitive: true,
+        },
+        mode: {
+          type: 'enum',
+          values: ['standard', 'strict'],
+          default: 'standard',
+        },
+      },
+    };
+  }
+
+  if (opts.withConfigApi || opts.withLifecycle) {
+    manifest.scripts = {
+      ...(opts.withLifecycle
+        ? {
+            lifecycle: {
+              install: './scripts/lifecycle.mjs',
+              upgrade: './scripts/lifecycle.mjs',
+              uninstall: './scripts/lifecycle.mjs',
+            },
+          }
+        : {}),
+      ...(opts.withConfigApi
+        ? {
+            helpers: {
+              config: './scripts/aw-config.mjs',
+            },
+          }
+        : {}),
+      tests: {
+        node: ['./scripts/**/*.test.mjs'],
+      },
+    };
+  }
+
   return manifest;
 }
 
@@ -147,6 +188,93 @@ function renderAppJson() {
 `;
 }
 
+function renderLifecycleMjs() {
+  return `import { readFile } from 'node:fs/promises';
+
+async function readAwContext() {
+  const contextPath = process.env.AW_PLUGIN_CONTEXT;
+  if (!contextPath) {
+    throw new Error('AW_PLUGIN_CONTEXT is required for lifecycle scripts.');
+  }
+  return JSON.parse(await readFile(contextPath, 'utf8'));
+}
+
+const context = await readAwContext();
+const event = context.event ?? 'unknown';
+const pluginName = context.plugin?.name ?? context.pluginName ?? 'plugin';
+
+console.log(\`[\${pluginName}] lifecycle \${event} completed.\`);
+`;
+}
+
+function renderGeneratedScriptTest(pluginName, opts) {
+  const configTest = opts.withConfigApi
+    ? `
+test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-config-'));
+  const contextPath = join(tempDir, 'context.json');
+  await writeFile(contextPath, JSON.stringify({
+    plugin: { name: '${pluginName}' },
+    config: {
+      values: { apiKey: 'test-key', mode: 'strict' },
+      sources: { apiKey: 'user', mode: 'project' },
+      schema: {
+        apiKey: { type: 'string', sensitive: true, required: true },
+        mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' }
+      }
+    },
+    paths: {
+      configStores: {
+        user: join(tempDir, 'missing-user.json'),
+        project: join(tempDir, 'missing-project.json')
+      }
+    }
+  }), 'utf8');
+
+  const helperPath = join(dirname(fileURLToPath(import.meta.url)), 'aw-config.mjs');
+  const { stdout } = await execFileAsync(process.execPath, [helperPath, 'get', 'apiKey'], {
+    cwd: tempDir,
+    env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, AW_HOME: join(tempDir, 'unused-aw-home') }
+  });
+  assert.equal(stdout.trim(), 'test-key');
+});
+`
+    : '';
+  const lifecycleTest = opts.withLifecycle
+    ? `
+test('lifecycle script accepts AW_PLUGIN_CONTEXT', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-lifecycle-'));
+  const contextPath = join(tempDir, 'context.json');
+  await writeFile(contextPath, JSON.stringify({
+    event: 'install',
+    plugin: { name: '${pluginName}' },
+    config: { values: {}, sources: {}, schema: {} },
+    paths: { configStores: {} }
+  }), 'utf8');
+
+  const lifecyclePath = join(dirname(fileURLToPath(import.meta.url)), 'lifecycle.mjs');
+  const { stdout } = await execFileAsync(process.execPath, [lifecyclePath], {
+    cwd: tempDir,
+    env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath }
+  });
+  assert.match(stdout, /lifecycle install completed/);
+});
+`
+    : '';
+
+  return `import { execFile } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+const execFileAsync = promisify(execFile);
+${configTest}${lifecycleTest}`;
+}
+
 function printUsage() {
   console.log(`Usage:
   node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin_name> --description "..."
@@ -162,6 +290,8 @@ Options:
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
+  --with-config-api             Add AW config schema, standard config helper, and Node script test.
+  --with-lifecycle              Add Node lifecycle script sample and Node script test.
   -h, --help                    Show this help message.
 
 Note:
@@ -192,6 +322,8 @@ function parseArgs(argv) {
     repoRoot: '.',
     withMcp: false,
     withApps: false,
+    withConfigApi: false,
+    withLifecycle: false,
     noSkills: false,
   };
 
@@ -209,6 +341,14 @@ function parseArgs(argv) {
     }
     if (arg === '--with-apps') {
       options.withApps = true;
+      continue;
+    }
+    if (arg === '--with-config-api') {
+      options.withConfigApi = true;
+      continue;
+    }
+    if (arg === '--with-lifecycle') {
+      options.withLifecycle = true;
       continue;
     }
     if (arg === '--no-skills') {
@@ -293,7 +433,13 @@ function main() {
     args.description,
     displayName,
     shortDescription,
-    { withMcp: args.withMcp, withApps: args.withApps, noSkills: args.noSkills },
+    {
+      withMcp: args.withMcp,
+      withApps: args.withApps,
+      withConfigApi: args.withConfigApi,
+      withLifecycle: args.withLifecycle,
+      noSkills: args.noSkills,
+    },
   );
 
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -323,6 +469,25 @@ function main() {
     const appPath = path.join(pluginRoot, '.app.json');
     writeText(appPath, renderAppJson());
     createdPaths.push(appPath);
+  }
+  if (args.withConfigApi) {
+    const helperTemplatePath = path.join(__dirname, '..', 'assets', 'aw-config.mjs');
+    const helperPath = path.join(pluginRoot, 'scripts', 'aw-config.mjs');
+    writeText(helperPath, fs.readFileSync(helperTemplatePath, 'utf8'));
+    createdPaths.push(helperPath);
+  }
+  if (args.withLifecycle) {
+    const lifecyclePath = path.join(pluginRoot, 'scripts', 'lifecycle.mjs');
+    writeText(lifecyclePath, renderLifecycleMjs());
+    createdPaths.push(lifecyclePath);
+  }
+  if (args.withConfigApi || args.withLifecycle) {
+    const testPath = path.join(pluginRoot, 'scripts', 'generated-script.test.mjs');
+    writeText(testPath, renderGeneratedScriptTest(pluginName, {
+      withConfigApi: args.withConfigApi,
+      withLifecycle: args.withLifecycle,
+    }));
+    createdPaths.push(testPath);
   }
 
   console.log('[OK] Created plugin scaffold:');

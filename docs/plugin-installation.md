@@ -40,7 +40,7 @@ aw init [-f|--force]
 ### `aw install`
 
 ```bash
-aw install [插件名...] [-s project|user] [-p codex|claude|both|auto] [-t default|manual|auto] [-i]
+aw install [插件名...] [-s project|user] [-p codex|claude|both|auto] [-t default|manual|auto] [--script-timeout <ms>] [-i]
 ```
 
 | 选项 | 默认值 | 说明 |
@@ -48,6 +48,7 @@ aw install [插件名...] [-s project|user] [-p codex|claude|both|auto] [-t defa
 | `-s, --scope` | `user` | `user`：安装到用户全局目录（`~/.claude/` 或 `~/.codex/`）；`project`：安装到当前目录（`.claude/` 或 `.codex/`） |
 | `-p, --platform` | `auto` | `auto` 自动检测平台；双平台同时可用时，安装/卸载/升级需要能从当前 scope 的既有状态唯一推断目标平台，否则要显式指定 `claude`、`codex` 或 `both` |
 | `-t, --skill-trigger` | 见下文 | 安装时的 skill 触发偏好：`default`、`manual` 或 `auto` |
+| `--script-timeout` | 插件 manifest 或 `30000` | 覆盖 lifecycle 脚本超时，单位毫秒，合法范围 `1000..300000` |
 | `-i, --interactive` | 关闭 | 强制进入交互确认流程；非 TTY、CI 或 `--no-interactive` 下不会等待输入 |
 
 一次安装多个插件：
@@ -61,23 +62,47 @@ aw install git-commit another-plugin -p claude
 ### `aw uninstall`
 
 ```bash
-aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [-i]
+aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [--script-timeout <ms>] [-i]
 ```
 
-参数与 `install` 相同。卸载会清理所有由该插件生成的文件和配置项。
+参数与 `install` 相同。卸载会清理平台原生注册、repo-managed artifacts、tracking manifest 和 ledger 记录，但默认保留 AW 自管配置；需要删除配置时运行 `aw config reset <插件名>`。
 
 ---
 
 ### `aw upgrade`
 
 ```bash
-aw upgrade [插件名...] [-a|--all] [-s project|user] [-p codex|claude|both|auto] [-t default|manual|auto] [-i]
+aw upgrade [插件名...] [-a|--all] [-s project|user] [-p codex|claude|both|auto] [-t default|manual|auto] [--script-timeout <ms>] [-i]
 ```
 
 - 指定插件名，或用 `-a, --all` 升级当前 scope 下所有已管理的插件
 - 显式升级某个插件时可传 `-t, --skill-trigger` 调整 skill 触发偏好；`upgrade --all` 不接受这个参数，会按各 scope 的 ledger 记录恢复
 - 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
 - `upgrade --all` 只处理 `catalogCompatibility=current` 且 scope 已初始化的插件；缺失、能力变更、外部 marketplace 管理或 `installed.json` degraded 时需要显式处理
+
+---
+
+### `aw config`
+
+`aw config` 管理 AW 自管插件配置，独立于 Claude 原生 `userConfig`。插件只要在当前 catalog 中声明了 `config.schema`，就可以先配置后安装，也可以在未安装插件的另一层 scope 里预置覆盖值。
+
+```bash
+aw config list <插件名> [-s project|user] [-j]
+aw config get <插件名> [key] [-s project|user] [-j]
+aw config set <插件名> <key> <value> [-s project|user] [--value-json] [-j]
+aw config configure <插件名> [-s project|user] [-i] [--no-interactive] [-j]
+aw config unset <插件名> <key> [-s project|user] [-j]
+aw config reset <插件名> [-s project|user] [-i] [--no-interactive] [-y] [-j]
+```
+
+- `set` / `unset` / `reset` / `configure` 默认写 `user`；`get` / `list` 默认读取 effective config。
+- effective config 按 `manifest default < user store < project store` 合并，project 覆盖 user。
+- project config 在仓库或 workspace 内锚定 repo root；不在仓库内时退回 normalized command `cwd`。
+- `file` / `directory` 配置写入时会把相对路径按 AW project root 解析，并以 canonical absolute realpath 落盘；后续每次读取都会重新校验路径是否仍存在且类型正确。
+- `--value-json` 只影响 `set` 的输入值解析；`--json` 只影响输出格式。
+- `reset` 是 store 级删除。即使 current catalog 已经找不到插件，只要 store 存在，`aw config reset <插件名> -s <scope> --yes` 仍可清理残留配置。存在 store 且未传 `--yes` 时，CLI 会要求交互确认；非 TTY、`CI=true`、`--no-interactive` 或无 prompt 时不会静默删除。
+
+插件名会先经过 config store 路径段安全校验：只允许非空单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
 
 ---
 
@@ -94,6 +119,8 @@ aw upgrade -i
 交互式模式只从 CLI 提供的候选列表中选择插件，不接受手动输入任意插件名。安装候选来自当前 catalog；卸载候选来自 AW ledger、平台原生配置、tracking manifest 和 runtime evidence；升级候选会再结合当前 catalog 判断是否可升级。非 TTY、`CI=true`、`--no-interactive` 或没有可用 prompt 时不会等待输入，而是返回明确错误和可复制命令示例。
 
 在 `Codex + project scope` 下，交互式安装只会列出包含 repo-managed artifacts 的插件；纯 native-only 插件不会被当作项目级安装候选。
+
+如果插件声明了 required AW config，`install` / `upgrade` 会在写入平台状态前先解析 effective config。缺少必填项或 `file` / `directory` 路径失效时，TTY 且允许交互的命令会复用配置向导补问一次；非交互、`CI=true`、`--no-interactive` 或缺少 prompt 时会确定性失败，并提示可复制的 `aw config configure` / `aw config set` 命令。同一插件在 `--platform both` 或重复 target 中只会补问和写入一次配置。
 
 ---
 
@@ -128,10 +155,10 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 默认输出是日常状态面板，包含：
 
 - 状态摘要：每个插件的整体健康状态，例如可用、部分可用、需要处理、外部管理、未安装或未知
-- 明细：按 platform + scope 展示 native 注册、repo-managed artifacts、catalog 状态、skill trigger 和可见性摘要
+- 明细：按 platform + scope 展示 native 注册、repo-managed artifacts、catalog 状态、skill trigger、config/script health、`healthSource` 和可见性摘要
 - 下一步：给出最可能的修复或确认命令，例如 `aw status <plugin> --verbose`、`aw upgrade <plugin>` 或 `aw install <plugin>`
 
-`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、generated artifacts、session state 和 drift warnings。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会刷新 marketplace、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
 
 ---
 
@@ -179,6 +206,8 @@ Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到
 
 同时会在 `~/.aw/installed.json` 更新安装账本，在平台目录下写入 `.agent-workflows-manifest.json` 追踪清单（用于精确卸载/升级）。
 
+带 lifecycle/config 的插件还会在 `~/.aw/plugin-install-snapshots/` 下记录每个 platform + scope 的安装快照。后续 `uninstall` 和 `status` 会优先使用该快照解释 lifecycle/config 真值；即使本地 marketplace 已刷新到新版本，也不会把新 catalog 的 schema 或脚本误当成旧安装的运行时。
+
 ---
 
 ## 常用短选项
@@ -192,7 +221,7 @@ Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到
 | `-a` | `--all` | `upgrade` |
 | `-v` | `--verbose` | `install` / `uninstall` / `upgrade` / `status` |
 | `-D` | `--debug` | `install` / `uninstall` / `upgrade` / `status` |
-| `-j` | `--json` | `status` |
+| `-j` | `--json` | `config` / `status` |
 | `-f` | `--force` | `init` |
 
 ---

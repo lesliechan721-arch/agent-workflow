@@ -7,6 +7,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { applyCodexInstallLedger } from '../../src/adapters/codex.js';
 import { installCommand } from '../../src/commands/install.js';
+import {
+  CONFIG_READ_DEFAULT_RESOLUTION,
+  CONFIG_WRITE_DEFAULT_SCOPE,
+  normalizeInstallCommandOptions,
+  parseScriptTimeoutMs,
+  resolveConfigReadResolution,
+  resolveConfigWriteScope,
+} from '../../src/commands/options.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -216,5 +224,37 @@ describe('command option normalization', () => {
         { env: workspace.env, adapters: createAdapters(new RecordingAdapter('codex')) },
       ),
     ).rejects.toThrow('Unsupported platform "workspace".');
+  });
+
+  it('normalizes script timeout options for lifecycle command reuse', () => {
+    expect(parseScriptTimeoutMs('1000')).toBe(1000);
+    expect(parseScriptTimeoutMs(300000)).toBe(300000);
+    expect(normalizeInstallCommandOptions({
+      cwd: '/tmp/project',
+      scriptTimeout: '45000',
+    })).toMatchObject({
+      scriptTimeoutMs: 45000,
+    });
+    expect(normalizeInstallCommandOptions({
+      cwd: '/tmp/project',
+      scriptTimeout: '45000',
+      scriptTimeoutMs: 60000,
+    })).toMatchObject({
+      scriptTimeoutMs: 60000,
+    });
+
+    expect(() => parseScriptTimeoutMs('999')).toThrow('between 1000 and 300000');
+    expect(() => parseScriptTimeoutMs('300001')).toThrow('between 1000 and 300000');
+    expect(() => parseScriptTimeoutMs('1000.5')).toThrow('Expected an integer');
+  });
+
+  it('exposes config read/write default semantics for future config commands', () => {
+    expect(CONFIG_WRITE_DEFAULT_SCOPE).toBe('user');
+    expect(CONFIG_READ_DEFAULT_RESOLUTION).toBe('effective');
+    expect(resolveConfigWriteScope(undefined)).toBe('user');
+    expect(resolveConfigReadResolution(undefined)).toBe('effective');
+    expect(resolveConfigWriteScope('project')).toBe('project');
+    expect(resolveConfigReadResolution('user')).toBe('user');
+    expect(() => resolveConfigWriteScope('workspace')).toThrow('Unsupported scope "workspace".');
   });
 });

@@ -21,6 +21,8 @@
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
     "test:smoke:pack": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
+    "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
+    "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm build"
   },
   "dependencies": {

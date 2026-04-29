@@ -167,6 +167,27 @@ async function addNativeHookOnlyPlugin(repoRoot: string, pluginName = 'prompt-gu
   );
 }
 
+async function addConfigSchemaToGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.config = {
+    schema: {
+      token: {
+        type: 'string',
+        required: true,
+        sensitive: true,
+      },
+      retries: {
+        type: 'number',
+        min: 0,
+        max: 5,
+        default: 1,
+      },
+    },
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 function createCodexMarketplaceAddRunner(
   workspace: Awaited<ReturnType<typeof makeWorkspace>>,
   calls: NativeCliInvocation[] = [],
@@ -252,6 +273,119 @@ afterEach(async () => {
 });
 
 describe('cli entry integration', () => {
+  it('rejects schema-aware config commands for plugins without AW config schema', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'token', 'secret', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('does not declare an AW config schema');
+    await expect(fs.pathExists(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toBe(false);
+  });
+
+  it('supports aw config set/get/reset without leaking schema-less raw values', async () => {
+    const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    let capture = createCapturedIo();
+
+    let exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'token', 'super-secret', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'config:set',
+      plugin: 'git-commit',
+      scope: 'user',
+      updatedKeys: ['token'],
+      effective: {
+        values: {
+          token: '[redacted]',
+          retries: 1,
+        },
+      },
+    });
+    await expect(fs.readJson(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toMatchObject({
+      token: 'super-secret',
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'token', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      value: '[redacted]',
+      source: 'user',
+    });
+    expect(capture.readStdout()).not.toContain('super-secret');
+
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
+      {
+        token: 'old-secret',
+      },
+      { spaces: 2 },
+    );
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'missing-plugin', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('Unknown plugin "missing-plugin"');
+    expect(capture.readStderr()).not.toContain('old-secret');
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'reset', 'missing-plugin', '--yes', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'config:reset',
+      plugin: 'missing-plugin',
+      existed: true,
+      deleted: true,
+    });
+    await expect(fs.pathExists(
+      path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
+    )).resolves.toBe(false);
+  });
+
   it('rejects invalid --skill-trigger values at the source entry', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);

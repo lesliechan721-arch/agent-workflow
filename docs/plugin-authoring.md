@@ -8,6 +8,7 @@
 - 路径字段（`skills`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
+- `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -21,6 +22,40 @@
 - `.codex-plugin/plugin.json`：Codex 原生 plugin manifest，可包含 skills、MCP、apps 等平台能力
 
 根级 marketplace 也会生成两份镜像：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。CLI 读取时会校验两份 marketplace 内容一致；本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
+
+AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
+
+## AW Scripts
+
+`scripts.lifecycle` 支持 `install`、`upgrade`、`uninstall` 三个事件。生命周期脚本默认自动执行，失败会阻断对应命令；首版没有 `--no-scripts` 跳过开关。脚本可以是 Node 文件，也可以是受控 shell 文件，不能写内联 shell 命令字符串。Windows 需要提供 Node 入口，或提供 `.ps1` / `.cmd`；不要假设 Windows 环境有 `sh` / `bash`。
+
+生命周期条目可以用字符串简写，也可以按 OS selector 写结构化对象。selector 支持 `default`、`unix`、`windows`、`linux`、`darwin`、`win32`，解析时优先窄平台，再回退到宽平台和 `default`。路径必须是插件根内的 `./` 相对路径。
+
+Node 脚本默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时，必须声明 `scripts.node.packageRoot`，并在该目录提交 `package.json` 和 `pnpm-lock.yaml`；运行时依赖写入 `dependencies`，测试/构建依赖写入 `devDependencies`。首版只接受 registry-backed 依赖，不接受 `workspace:`、`file:`、`link:`、git/HTTP/tarball 等来源，也不支持 runtime dependency install scripts。`scripts.node.build` 是唯一会触发 manifest build 的入口，且只支持 Node 文件。
+
+`scripts.timeoutMs` 是插件默认脚本超时；用户可在 `aw install`、`aw upgrade`、`aw uninstall` 上用 `--script-timeout <ms>` 覆盖。有效范围是 `1000..300000` 毫秒。
+
+## AW Config
+
+`config.schema` 是 AW 自管配置的唯一 schema 真值，独立于 Claude 原生 `userConfig`。`aw config` 可以在插件未安装前写入配置，也可以为未安装的另一层 scope 预置覆盖值；`aw uninstall` 默认保留 AW config store，清理配置要显式运行 `aw config reset <plugin>`。
+
+配置分为 `user` 和 `project` 两层，读取 effective config 时按 `default < user < project` 合并。写命令 `set` / `unset` / `reset` / `configure` 默认写 `user`；读命令 `get` / `list` 默认读 effective config，传 `--scope user|project` 时只看单层 store。project config root 在 git repo 或 workspace 内锚定仓库根；不在仓库内时退回 normalized command `cwd`。
+
+`file` / `directory` 类型写入时，相对路径按 AW project root 解析，落盘为 canonical absolute realpath；每次读取 effective config 都会重新校验路径存在且类型正确。失效路径会进入 `invalid-config`，install/upgrade preflight、lifecycle context 和 helper 都会 fail closed。插件名作为 config store 路径段时只允许安全的单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
+
+`scripts.helpers.config` 必须显式声明标准配置 helper。CLI 执行 lifecycle 或 `pnpm plugin:test` 时会通过 `AW_PLUGIN_CONTEXT` 传入已经解析好的 `config.values`、`config.sources` 和 schema；helper 没有 context 时，只读取当前 bundle 邻近的 `.agents-plugin/plugin.json` 来解释 schema/default/redaction。这意味着 helper 的 bundle 视图可能和 `aw config get/list` 的 current catalog 视图短暂不同，这是预期行为。
+
+## Plugin Script Tests
+
+插件脚本测试是开发期包脚本：
+
+```bash
+pnpm plugin:test <plugin>
+pnpm plugin:test <plugin> --platform both --scope project
+pnpm plugin:test --all
+```
+
+它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，再在隔离 `AW_HOME`、受管临时 project root 和平台 home/temp 环境中运行 `scripts.tests.node` 匹配到的 Node 测试。测试进程的 `cwd` 是临时 project root；`AW_PLUGIN_CONTEXT.sourceRoot` 指向原始插件源码根，适合测试需要读取源码 fixture 的场景，但运行时 import 仍应命中临时 bundle。没有匹配测试时是 skipped/no-op，退出码为 0；`--platform both` 会为 Codex 和 Claude 分别复制独立可写 bundle。
 
 ## Hook Contract
 

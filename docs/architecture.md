@@ -2,11 +2,11 @@
 
 ## CLI Source Layout (`packages/cli/src`)
 
-- **`commands/`** — 编排 `init`、`install`、`uninstall`、`upgrade`、`status` 五个命令；`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管或可发现插件，`interactive.ts` 只在 CLI entry 层处理候选选择，`common.ts` 放平台推断、catalog/ledger 准备和共享状态格式化逻辑
+- **`commands/`** — 编排 `init`、`install`、`uninstall`、`upgrade`、`config`、`status`；`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管或可发现插件，`interactive.ts` 只在 CLI entry 层处理候选选择，`common.ts` 放平台推断、catalog/ledger 准备和共享状态格式化逻辑
 - **`adapters/`** — `claude.ts` / `codex.ts` 处理平台原生状态与命令调用；`helpers.ts` 放共享 adapter 逻辑；`types.ts` 放 adapter 层私有类型
 - **`generators/`** — `instructions.ts` / `permissions.ts` / `hooks.ts` / `agents.ts` 分别生成对应产物；`local-plugin.ts` 处理 repo-managed 文件生成；`shared.ts` 放跨生成器共享逻辑
 - **`output/`** — `reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
-- **`utils/`** — `manifest.ts` 解析 plugin manifest；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
+- **`utils/`** — `manifest.ts` 解析 plugin manifest；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据和安装账本；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验和 install/upgrade preflight；`plugin-scripts.ts` 管理安装快照、lifecycle target、context 和 runner；`plugin-script-contract.ts` 扫描 Node import contract；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
 - **`constants.ts`** — 全局常量：`GENERATED_FILE_PREFIX = 'aw-'`、`TRACKING_MANIFEST_FILE = '.agent-workflows-manifest.json'`、`DEFAULT_CLAUDE_HOOKS_PATH`、`CLAUDE_MARKETPLACE_PATH`、`CODEX_MARKETPLACE_PATH`
 - **`types.ts`** — 项目全局类型定义
 
@@ -37,6 +37,8 @@ npm Registry
   ~/.aw/
   ├── config.json
   ├── installed.json
+  ├── plugin-config/<plugin>/config.json
+  ├── plugin-install-snapshots/<...>/<plugin>/<digest>/bundle/**
   └── plugins/<name>/**
 ```
 
@@ -45,6 +47,7 @@ npm Registry
 - 仓库源码层是插件作者维护的唯一输入，不手写平台 runtime manifest。
 - `packages/cli/plugins-dist/` 是 `pnpm build` 产物，会随 npm 包发布，不手改。
 - `~/.aw/` 是本机 marketplace 镜像和安装账本，`aw init`、`aw install`、`aw upgrade` 会按需同步。
+- `plugin-config/` 和 `plugin-install-snapshots/` 是 AW 自管运行时状态。local marketplace refresh 会保留它们；它们不参与 bundle fingerprint，也不会被当作插件源码。
 
 排查问题时先确认问题发生在哪一层：源码 contract、bundle 生成、本机 runtime 镜像，还是平台配置。
 
@@ -61,15 +64,26 @@ npm Registry
 ## Runtime State
 
 - 执行型命令（`install`、`uninstall`、`upgrade`）默认使用 `scope=user`、`platform=auto`；`status` 的 `scope/platform` 是过滤条件，不在 CLI entry 层套用写入型默认值。
+- `aw config` 写命令默认写 `user` store；读命令默认读取 effective config，合并顺序为 manifest default < user store < project store。user store 位于 `<AW_HOME>/plugin-config/<plugin>/config.json`，project store 位于 `<AW project root>/.agent-workflows/plugin-config/<plugin>/config.json`。AW project root 在仓库或 workspace 内解析到 repo root，非仓库目录退回 normalized command `cwd`。
 - Claude Code：通过 `claude plugin marketplace add` / `claude plugin install` 接入本地 marketplace；项目或用户 scope 的 rules/permissions 由 CLI 生成并用 `.agent-workflows-manifest.json` 追踪。
 - Codex：需要原生 plugin 能力时先调用 `codex plugin marketplace add <canonical ~/.aw>` 注册 local marketplace，再由 AW 写入 `[plugins."<plugin>@aw"] enabled = true`；project scope 只影响当前仓库 `.codex/` 下的 repo-managed artifacts。Codex local source 注册不会产生 `.tmp/marketplaces/aw` 物化副本，status 也不应要求这个副本存在。
-- 两个平台共享 `~/.aw/installed.json`。它记录 scope、平台、能力快照和 `skillTriggerPreference`，用于重复安装、升级、卸载和 status drift 判断。
+- 两个平台共享 `~/.aw/installed.json`。它记录 scope、平台、能力快照、`skillTriggerPreference` 和 lifecycle/config 安装快照元数据，用于重复安装、升级、卸载、historical lifecycle 选择和 status drift 判断。
+
+## Plugin Scripts and Config
+
+`.agents-plugin/plugin.json` 中的 `scripts` / `config` 是 AW CLI contract，不会写入 Claude/Codex platform manifest。`pnpm build` 使用 staging 模式处理显式 `scripts.node.build`，build 后重新读取 staging manifest 作为 marketplace entry、bundle source manifest、platform manifest base、runtime 文件收集和 `pnpm plugin:test` 的真值。源码树不被修改。
+
+发布 bundle 只保留运行时需要的 lifecycle/helper 入口、这些 Node 入口的静态相对依赖闭包、`scripts.node.packageRoot` 的 `package.json` / `pnpm-lock.yaml` / production `node_modules`。测试文件、test-only helper、build 入口和 dev-only 模块不进入发布 runtime bundle。运行时 lifecycle 离线执行，不安装依赖，不回退到宿主或仓库根 `node_modules`。
+
+install/upgrade 会先按 schema 做 required config preflight；交互可用时调用同一套 prompt 补问配置，非交互时 fail fast。lifecycle 执行时机是：install/upgrade 在平台状态和 repo-managed artifacts 写完后、tracking/ledger 提交前执行；uninstall 在平台卸载和 artifact 清理前执行。失败会阻断命令并保留可重试状态。
+
+每个成功安装的 platform + scope + plugin 都有 scope-owned 安装快照。uninstall 和 status 优先用 ledger 中的 `lifecycleConfigSnapshot` 解释旧版本的 lifecycle/config 真值；只有快照缺失或损坏时才降级到 current catalog / historical fallback，并在诊断里标出。`healthSource` 只使用 `installSnapshot`、`currentCatalog`、`historical`、`none`，Codex `activeLocalBundle` 只作为 runtime evidence / drift 线索。
 
 ## Command Runtime
 
 CLI entry 和 direct command 共用 `CommandExecutionContext`。所有会影响外部世界的能力都从这里进入：`env`、adapter factory、native CLI runner、prompt、reporter、debug logger 和 diagnostics。新增 helper 时必须继续消费 context 里的 `env`，不能退回 `process.env`；测试也应该通过同一条 context 注入 fake runner、fake prompt 或 fake adapters。
 
-交互式逻辑只存在于 `commands/interactive.ts` 和 CLI action 之间。底层 `installCommand`、`uninstallCommand`、`upgradeCommand` 仍按确定性 options 执行，便于脚本化调用和单元测试。交互式选择使用带身份的候选项，身份包含 plugin、platform、scope、projectKey 和 executionCwd，不能只按插件名模糊 dispatch。
+交互式逻辑只存在于 `commands/interactive.ts`、config prompt 和 CLI action 之间。底层 `installCommand`、`uninstallCommand`、`upgradeCommand` 仍按确定性 options 执行，便于脚本化调用和单元测试。交互式选择使用带身份的候选项，身份包含 plugin、platform、scope、projectKey 和 executionCwd，不能只按插件名模糊 dispatch。config prompt 必须返回 selected scope、dirty updates 和 updatedKeys；命令层只 patch 本次显式更新的 key，不能把整份 effective config 复制到目标层。
 
 ## Output and Debug
 
@@ -84,3 +98,5 @@ debug log 记录 runId、argv、cwd、关键路径、native invocation、文件�
 historical placeholder 必须按 platform + scope 分格。Codex 只有 ledger coarse boolean（例如 `hasRepoManagedArtifacts: true`）时，不能恢复成 hook、instruction、permission 或 agent 等具体能力；只有 tracking artifact kind、hook identity 等明确证据存在时，才能恢复对应能力。
 
 `aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 明细 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
+
+config/script health 是 status matrix cell 的只读派生信息。status 可以读取 config store 和安装快照来展示 `configured`、`missing-required`、`invalid-config`、`no-schema` 与脚本声明状态，但不能创建 config 目录、执行 lifecycle、刷新 marketplace 或用 config store 反推插件已安装。

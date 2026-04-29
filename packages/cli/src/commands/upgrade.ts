@@ -33,6 +33,10 @@ import {
   normalizeUpgradeCommandOptions,
   type RawUpgradeCommandOptions,
 } from './options.js';
+import {
+  createPluginConfigSchemaIdentity,
+  preflightRequiredPluginConfigs,
+} from '../utils/plugin-config.js';
 import { uninstallTargetsOnPlatforms } from './uninstall.js';
 
 type UpgradeCommandRuntime = CommandExecutionContextInput & {
@@ -61,6 +65,27 @@ function mergeNativePlugins(
       }
     }
   }
+}
+
+async function preflightUpgradeConfigs(
+  targets: ResolvedPluginTarget[],
+  options: UpgradeCommandOptions,
+  runtime: UpgradeCommandRuntime,
+): Promise<void> {
+  const context = createCommandExecutionContext(runtime);
+  await preflightRequiredPluginConfigs({
+    targets: targets
+      .filter((target) => target.currentPlugin)
+      .map((target) => ({
+        pluginName: target.pluginName,
+        manifest: target.currentPlugin!.manifest,
+        schemaSourceIdentity: createPluginConfigSchemaIdentity(target.currentPlugin!.manifest),
+      })),
+    cwd: options.cwd,
+    defaultScope: options.scope,
+    context,
+    interactive: true,
+  });
 }
 
 async function resolveUpgradeAllPlatforms(
@@ -174,10 +199,12 @@ async function runExplicitUpgrade(
             cwd: options.cwd,
             platform,
             scope: options.scope,
+            scriptTimeoutMs: options.scriptTimeoutMs,
           },
           {
             ...context,
             adapters,
+            skipLifecycle: true,
           },
         );
         warnings.push(...uninstallResult.warnings);
@@ -190,11 +217,14 @@ async function runExplicitUpgrade(
           cwd: options.cwd,
           platform,
           scope: options.scope,
+          scriptTimeoutMs: options.scriptTimeoutMs,
         },
         {
           ...context,
           adapters,
           resolveInstallOptions: runtime.resolveInstallOptions,
+          operation: 'upgrade',
+          skipConfigPreflight: true,
         },
       );
       warnings.push(...installResult.warnings);
@@ -305,11 +335,14 @@ async function runUpgradeAll(
         cwd: options.cwd,
         platform,
         scope: options.scope,
+        scriptTimeoutMs: options.scriptTimeoutMs,
       },
       {
         ...context,
         adapters,
         resolveInstallOptions: runtime.resolveInstallOptions,
+        operation: 'upgrade',
+        skipConfigPreflight: true,
       },
     );
     warnings.push(...result.warnings);
@@ -423,6 +456,11 @@ export async function upgradeCommand(
         options.cwd,
         options.scope,
       );
+      await preflightUpgradeConfigs(targets, options, {
+        ...context,
+        adapters,
+        resolveInstallOptions,
+      });
       const result = await runUpgradeAll(platforms, options, {
         ...context,
         adapters,
@@ -506,6 +544,15 @@ export async function upgradeCommand(
       resolvedInstallOptionsByKey,
       options.cwd,
       options.scope,
+    );
+    await preflightUpgradeConfigs(
+      prepared.targets,
+      options,
+      {
+        ...context,
+        adapters,
+        resolveInstallOptions,
+      },
     );
     const result = await runExplicitUpgrade(
       prepared.targets,

@@ -1,3 +1,5 @@
+import fs from 'fs-extra';
+
 import { applyClaudeInstallLedger } from '../adapters/claude.js';
 import { applyCodexInstallLedger } from '../adapters/codex.js';
 import type {
@@ -5,7 +7,9 @@ import type {
   CommandOptions,
   InstallCommandOptions,
   InstalledLedger,
+  InstalledScopeRecord,
   LedgerStateReason,
+  LifecycleConfigSnapshotMetadata,
   NativePluginsByPlatform,
   PlatformAdapter,
   PlatformName,
@@ -28,6 +32,15 @@ import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
+import {
+  createLifecycleConfigSnapshot,
+  garbageCollectLifecycleConfigSnapshots,
+  runLifecycleScript,
+} from '../utils/plugin-scripts.js';
+import {
+  createPluginConfigSchemaIdentity,
+  preflightRequiredPluginConfigs,
+} from '../utils/plugin-config.js';
 import {
   buildSkillTriggerMaterializationSignature,
   commitMaterializedSkillTriggerPreference,
@@ -72,6 +85,8 @@ type InstallCommandRuntime = CommandExecutionContextInput & {
     platform: PlatformName,
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
+  operation?: 'install' | 'upgrade';
+  skipConfigPreflight?: boolean;
 };
 
 function resolveTrackingDir(
@@ -137,6 +152,49 @@ async function applyInstallLedger(
   return platform === 'claude'
     ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions)
     : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions);
+}
+
+async function setLifecycleConfigSnapshotOnLedger(
+  ledger: InstalledLedger,
+  platform: PlatformName,
+  target: ResolvedPluginTarget,
+  options: InstallCommandOptions,
+  snapshot: LifecycleConfigSnapshotMetadata,
+): Promise<InstalledLedger> {
+  const platformRecord = ledger.plugins[target.pluginName]?.platforms[platform];
+  if (!platformRecord) {
+    throw new Error(`缺少 ${platform}/${target.pluginName} 的 ledger platform record，无法写入 lifecycle config snapshot。`);
+  }
+
+  let scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined;
+  if (options.scope === 'user') {
+    scopeRecord = platformRecord.userScope as InstalledScopeRecord<Record<string, unknown>> | undefined;
+  } else {
+    const projectKey = platform === 'claude'
+      ? await resolveClaudeProjectKey(options.cwd)
+      : await resolveCodexProjectKey(options.cwd);
+    scopeRecord = platformRecord.projectScopes?.[projectKey] as InstalledScopeRecord<Record<string, unknown>> | undefined;
+  }
+
+  if (!scopeRecord) {
+    throw new Error(`缺少 ${platform}/${target.pluginName} (${options.scope}) 的 ledger scope record，无法写入 lifecycle config snapshot。`);
+  }
+
+  scopeRecord.lifecycleConfigSnapshot = snapshot;
+  return ledger;
+}
+
+function createPendingScopeRecord(
+  target: ResolvedPluginTarget,
+  snapshot: LifecycleConfigSnapshotMetadata,
+): InstalledScopeRecord<Record<string, unknown>> {
+  return {
+    managed: true,
+    updatedAt: new Date().toISOString(),
+    resolvedVersion: target.currentPlugin?.manifest.version ?? snapshot.pluginVersion,
+    capabilitySnapshot: {},
+    lifecycleConfigSnapshot: snapshot,
+  };
 }
 
 function mayWriteNativeState(platform: PlatformName, target: ResolvedPluginTarget): boolean {
@@ -216,6 +274,7 @@ export async function installTargetsOnPlatforms(
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
+  const operation = runtime.operation ?? 'install';
   const warnings: string[] = [];
   const nativePlugins: NativePluginsByPlatform = {};
   assertPluginsSupportPlatforms(
@@ -224,6 +283,22 @@ export async function installTargetsOnPlatforms(
       .filter((plugin): plugin is PluginMeta => Boolean(plugin)),
     platforms,
   );
+
+  if (!runtime.skipConfigPreflight) {
+    await preflightRequiredPluginConfigs({
+      targets: targets
+        .filter((target) => target.currentPlugin)
+        .map((target) => ({
+          pluginName: target.pluginName,
+          manifest: target.currentPlugin!.manifest,
+          schemaSourceIdentity: createPluginConfigSchemaIdentity(target.currentPlugin!.manifest),
+        })),
+      cwd: options.cwd,
+      defaultScope: options.scope,
+      context,
+      interactive: true,
+    });
+  }
 
   for (const platform of platforms) {
     for (const target of targets) {
@@ -255,8 +330,18 @@ export async function installTargetsOnPlatforms(
       let plannedRuntimeSignatureAfter: SkillTriggerSignatureResult | undefined;
       let writtenScopeIdentity: string | undefined;
       let generatedArtifacts: GeneratedArtifact[] = [];
+      let lifecycleConfigSnapshot: LifecycleConfigSnapshotMetadata | undefined;
+      let ledgerWritten = false;
 
       try {
+        lifecycleConfigSnapshot = await createLifecycleConfigSnapshot({
+          plugin: target.currentPlugin,
+          platform,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
+        });
+
         if (materializeSkillTriggers) {
           const [embeddedRoot, writtenScope] = await Promise.all([
             resolveEmbeddedPluginsRoot(),
@@ -351,6 +436,19 @@ export async function installTargetsOnPlatforms(
           },
         });
 
+        await runLifecycleScript({
+          event: operation,
+          pluginName: target.currentPlugin.manifest.name,
+          platform,
+          scope: options.scope,
+          cwd: options.cwd,
+          context,
+          currentPlugin: target.currentPlugin,
+          scopeRecord: createPendingScopeRecord(target, lifecycleConfigSnapshot),
+          artifacts: generatedArtifacts,
+          scriptTimeoutMs: options.scriptTimeoutMs,
+        });
+
         await writeTrackingManifest(
           trackingDir,
           generatedArtifacts.length > 0
@@ -386,6 +484,13 @@ export async function installTargetsOnPlatforms(
             resolvedInstallOptions,
           ),
         );
+        await setLifecycleConfigSnapshotOnLedger(
+          nextLedger,
+          platform,
+          target,
+          options,
+          lifecycleConfigSnapshot,
+        );
         const pendingConflictWarnings: string[] = [];
         if (
           materializeSkillTriggers &&
@@ -413,6 +518,7 @@ export async function installTargetsOnPlatforms(
           );
         }
         await writeInstalledLedger(nextLedger, env);
+        ledgerWritten = true;
         await emitCommandEvent(context, {
           type: 'ledger:written',
           data: {
@@ -423,6 +529,9 @@ export async function installTargetsOnPlatforms(
           },
         });
         warnings.push(...pendingConflictWarnings);
+        if (operation === 'upgrade') {
+          await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
+        }
       } catch (error) {
         await emitCommandEvent(context, {
           type: 'rollback:started',
@@ -468,6 +577,14 @@ export async function installTargetsOnPlatforms(
         if (trackingWritten) {
           try {
             await writeTrackingManifest(trackingDir, baselineTracking);
+          } catch {
+            // noop
+          }
+        }
+
+        if (lifecycleConfigSnapshot && !ledgerWritten) {
+          try {
+            await fs.remove(lifecycleConfigSnapshot.snapshotRoot);
           } catch {
             // noop
           }

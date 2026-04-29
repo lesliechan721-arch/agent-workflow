@@ -17,10 +17,17 @@ import type {
   PlatformAgentOverrides,
   PlatformName,
   PlatformPluginManifest,
+  PluginConfigSchema,
   PluginInterfaceMeta,
+  PluginLifecycleScriptEntry,
+  PluginLifecycleScriptSelector,
+  PluginLifecycleRuntimeOs,
+  PluginNodeBuildScript,
+  PluginNodeScriptsConfig,
   PluginManifestSource,
   PluginMarketplaceMeta,
   PluginMeta,
+  PluginScriptsConfig,
   SkillTriggerPolicy,
   TemplateVarByPlatform,
 } from '../types.js';
@@ -35,10 +42,20 @@ import {
   renderHookDefinitionGroup,
   resolvePlatformHookDefinitions,
 } from './hooks-contract.js';
+import {
+  isPluginLifecycleOsSelector,
+  isPluginScriptRunner,
+  PLUGIN_LIFECYCLE_EVENTS,
+  PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
+  PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
+  PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
+  resolveLifecycleScriptForOs,
+} from './plugin-script-contract.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
+const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -424,6 +441,502 @@ function normalizeBuildConfig(
   }
 
   return buildConfig;
+}
+
+function ensureBoolean(value: unknown, fieldName: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`Invalid ${fieldName}: expected a boolean.`);
+  }
+
+  return value;
+}
+
+function ensureFiniteNumber(value: unknown, fieldName: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a number.`);
+  }
+
+  return value;
+}
+
+function normalizeScriptTimeout(value: unknown, fieldName: string): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < PLUGIN_SCRIPT_TIMEOUT_MIN_MS ||
+    value > PLUGIN_SCRIPT_TIMEOUT_MAX_MS
+  ) {
+    throw new Error(
+      `Invalid ${fieldName}: expected an integer between ${PLUGIN_SCRIPT_TIMEOUT_MIN_MS} and ${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}.`,
+    );
+  }
+
+  return value;
+}
+
+function assertNodeRunnablePath(value: string, fieldName: string): void {
+  const extension = path.posix.extname(value).toLowerCase();
+  if (!NODE_RUNNABLE_EXTENSIONS.has(extension)) {
+    throw new Error(`Invalid ${fieldName}: expected a Node runnable file extension (.js, .mjs, or .cjs).`);
+  }
+}
+
+function assertNotInlineCommandLike(value: string, fieldName: string): void {
+  if (/\s|[;&|<>`]/.test(value) || value.includes('$(')) {
+    throw new Error(`Invalid ${fieldName}: inline command strings are not allowed.`);
+  }
+}
+
+function normalizePluginScriptPath(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): string {
+  const rawPath = ensureString(value, fieldName);
+  assertNotInlineCommandLike(rawPath, fieldName);
+  return normalizePluginRelativePath(pluginRoot, rawPath, fieldName);
+}
+
+function normalizeScriptEntry(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+  options: { requireNodeRunner?: boolean } = {},
+): PluginLifecycleScriptEntry {
+  const input = assertObject(value, fieldName);
+  if ('command' in input) {
+    throw new Error(`Invalid ${fieldName}: inline command strings are not allowed.`);
+  }
+  if ('timeoutMs' in input || 'timeout' in input) {
+    throw new Error(`Invalid ${fieldName}: per-event and per-selector timeouts are not supported.`);
+  }
+  assertAllowedKeys(input, fieldName, ['runner', 'path', 'args']);
+
+  const runner = ensureString(input.runner, `${fieldName}.runner`);
+  if (!isPluginScriptRunner(runner)) {
+    throw new Error(`Invalid ${fieldName}.runner: unsupported runner "${runner}".`);
+  }
+  if (options.requireNodeRunner && runner !== 'node') {
+    throw new Error(`Invalid ${fieldName}.runner: expected "node".`);
+  }
+
+  const scriptPath = normalizePluginScriptPath(pluginRoot, input.path, `${fieldName}.path`);
+
+  return {
+    runner,
+    path: scriptPath,
+    args:
+      input.args === undefined
+        ? undefined
+        : ensureStringArray(input.args, `${fieldName}.args`),
+  };
+}
+
+function normalizeLifecycleScriptDefinition(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): PluginLifecycleScriptSelector {
+  if (typeof value === 'string') {
+    return {
+      default: {
+        runner: 'auto',
+        path: normalizePluginScriptPath(pluginRoot, value, fieldName),
+      },
+    };
+  }
+
+  const input = assertObject(value, fieldName);
+  if ('runner' in input || 'path' in input || 'command' in input) {
+    throw new Error(`Invalid ${fieldName}: lifecycle scripts must be declared under OS selectors.`);
+  }
+  if ('timeoutMs' in input || 'timeout' in input) {
+    throw new Error(`Invalid ${fieldName}: per-event and per-selector timeouts are not supported.`);
+  }
+
+  for (const key of Object.keys(input)) {
+    if (!isPluginLifecycleOsSelector(key)) {
+      throw new Error(`Invalid ${fieldName}: unknown OS selector "${key}".`);
+    }
+  }
+
+  const output: PluginLifecycleScriptSelector = {};
+  for (const [selector, entry] of Object.entries(input)) {
+    output[selector as keyof PluginLifecycleScriptSelector] = normalizeScriptEntry(
+      pluginRoot,
+      entry,
+      `${fieldName}.${selector}`,
+    );
+  }
+
+  for (const osName of ['linux', 'darwin', 'win32'] as const satisfies readonly PluginLifecycleRuntimeOs[]) {
+    if (!resolveLifecycleScriptForOs(output, osName)) {
+      throw new Error(`Invalid ${fieldName}: no lifecycle entry resolves on ${osName}.`);
+    }
+  }
+
+  return output;
+}
+
+function normalizeLifecycleScripts(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginScriptsConfig['lifecycle']> {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, [...PLUGIN_LIFECYCLE_EVENTS]);
+
+  const output: NonNullable<PluginScriptsConfig['lifecycle']> = {};
+  for (const event of PLUGIN_LIFECYCLE_EVENTS) {
+    if (input[event] === undefined) {
+      continue;
+    }
+    output[event] = normalizeLifecycleScriptDefinition(
+      pluginRoot,
+      input[event],
+      `${fieldName}.${event}`,
+    );
+  }
+
+  return output;
+}
+
+function normalizeScriptHelpers(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginScriptsConfig['helpers']> {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['config']);
+
+  if (input.config === undefined) {
+    throw new Error(`Invalid ${fieldName}: expected explicit "config" helper declaration.`);
+  }
+
+  const config = normalizePluginScriptPath(pluginRoot, input.config, `${fieldName}.config`);
+  assertNodeRunnablePath(config, `${fieldName}.config`);
+
+  return { config };
+}
+
+function normalizeNodeBuildScript(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): PluginNodeBuildScript {
+  const entry = normalizeScriptEntry(pluginRoot, value, fieldName, {
+    requireNodeRunner: true,
+  });
+  assertNodeRunnablePath(entry.path, `${fieldName}.path`);
+  return {
+    runner: 'node',
+    path: entry.path,
+    args: entry.args,
+  };
+}
+
+function normalizePackageDependencyRecord(
+  value: unknown,
+  fieldName: string,
+): Record<string, string> {
+  if (value === undefined) {
+    return {};
+  }
+  const input = assertObject(value, fieldName);
+  const output: Record<string, string> = {};
+  for (const [name, specifier] of Object.entries(input)) {
+    output[ensureString(name, `${fieldName} key`)] = ensureString(
+      specifier,
+      `${fieldName}.${name}`,
+    );
+  }
+
+  return output;
+}
+
+function isNonRegistryDependencySpecifier(specifier: string): boolean {
+  const trimmed = specifier.trim();
+  return (
+    /^(?:workspace|file|link|portal):/i.test(trimmed) ||
+    /^(?:git\+|git:|ssh:)/i.test(trimmed) ||
+    /^https?:\/\//i.test(trimmed) ||
+    /(?:\.tgz|\.tar\.gz)(?:[#?].*)?$/i.test(trimmed) ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('~') ||
+    /^[\w.-]+\/[\w.-]+(?:#.*)?$/.test(trimmed)
+  );
+}
+
+function validatePackageDependencies(packageJson: Record<string, unknown>, fieldName: string): void {
+  if (packageJson.optionalDependencies !== undefined) {
+    throw new Error(`Invalid ${fieldName}.optionalDependencies: optionalDependencies are not supported.`);
+  }
+  if (packageJson.bundledDependencies !== undefined || packageJson.bundleDependencies !== undefined) {
+    throw new Error(`Invalid ${fieldName}.bundledDependencies: bundledDependencies are not supported.`);
+  }
+
+  for (const dependencyField of ['dependencies', 'devDependencies'] as const) {
+    const dependencies = normalizePackageDependencyRecord(
+      packageJson[dependencyField],
+      `${fieldName}.${dependencyField}`,
+    );
+    for (const [name, specifier] of Object.entries(dependencies)) {
+      if (isNonRegistryDependencySpecifier(specifier)) {
+        throw new Error(
+          `Invalid ${fieldName}.${dependencyField}.${name}: dependency specifier "${specifier}" is not registry-backed.`,
+        );
+      }
+    }
+  }
+}
+
+function validateNodePackageRoot(pluginRoot: string, packageRoot: string, fieldName: string): void {
+  const absolutePackageRoot = path.join(pluginRoot, stripDotSlash(packageRoot));
+  const stats = fs.statSync(absolutePackageRoot, { throwIfNoEntry: false });
+  if (!stats?.isDirectory()) {
+    throw new Error(`Invalid ${fieldName}: expected a package directory at "${packageRoot}".`);
+  }
+
+  const packageJsonPath = path.join(absolutePackageRoot, 'package.json');
+  const lockfilePath = path.join(absolutePackageRoot, 'pnpm-lock.yaml');
+  for (const lockfile of ['package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb']) {
+    if (fs.pathExistsSync(path.join(absolutePackageRoot, lockfile))) {
+      throw new Error(`Invalid ${fieldName}: only pnpm-lock.yaml is supported, found ${lockfile}.`);
+    }
+  }
+  if (!fs.pathExistsSync(packageJsonPath)) {
+    throw new Error(`Invalid ${fieldName}: missing package.json.`);
+  }
+  if (!fs.pathExistsSync(lockfilePath)) {
+    throw new Error(`Invalid ${fieldName}: missing pnpm-lock.yaml.`);
+  }
+
+  let packageJson: unknown;
+  try {
+    packageJson = fs.readJsonSync(packageJsonPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ${fieldName}.package.json: ${message}`);
+  }
+  validatePackageDependencies(
+    assertObject(packageJson, `${fieldName}.package.json`),
+    `${fieldName}.package.json`,
+  );
+}
+
+function normalizeNodeScripts(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): PluginNodeScriptsConfig {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['packageRoot', 'build']);
+
+  const output: PluginNodeScriptsConfig = {};
+  if (input.packageRoot !== undefined) {
+    output.packageRoot = normalizePluginRelativePath(
+      pluginRoot,
+      ensureString(input.packageRoot, `${fieldName}.packageRoot`),
+      `${fieldName}.packageRoot`,
+    );
+    validateNodePackageRoot(pluginRoot, output.packageRoot, `${fieldName}.packageRoot`);
+  }
+
+  if (input.build !== undefined) {
+    output.build = normalizeNodeBuildScript(pluginRoot, input.build, `${fieldName}.build`);
+  }
+
+  return output;
+}
+
+function normalizeScriptTests(
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginScriptsConfig['tests']> {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['node']);
+
+  return {
+    node:
+      input.node === undefined
+        ? undefined
+        : ensureStringArray(input.node, `${fieldName}.node`),
+  };
+}
+
+function normalizePluginScripts(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): PluginScriptsConfig {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['timeoutMs', 'lifecycle', 'helpers', 'node', 'tests']);
+
+  const output: PluginScriptsConfig = {
+    timeoutMs:
+      input.timeoutMs === undefined
+        ? PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS
+        : normalizeScriptTimeout(input.timeoutMs, `${fieldName}.timeoutMs`),
+  };
+
+  if (input.lifecycle !== undefined) {
+    output.lifecycle = normalizeLifecycleScripts(pluginRoot, input.lifecycle, `${fieldName}.lifecycle`);
+  }
+
+  if (input.helpers !== undefined) {
+    output.helpers = normalizeScriptHelpers(pluginRoot, input.helpers, `${fieldName}.helpers`);
+  }
+
+  if (input.node !== undefined) {
+    output.node = normalizeNodeScripts(pluginRoot, input.node, `${fieldName}.node`);
+  }
+
+  if (input.tests !== undefined) {
+    output.tests = normalizeScriptTests(input.tests, `${fieldName}.tests`);
+  }
+
+  return output;
+}
+
+function validateConfigKey(key: string, fieldName: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error(`Invalid ${fieldName}: config key "${key}" is not valid.`);
+  }
+}
+
+function validateConfigDefault(
+  type: string,
+  value: unknown,
+  values: string[] | undefined,
+  min: number | undefined,
+  max: number | undefined,
+  fieldName: string,
+): string | number | boolean {
+  if (type === 'string' || type === 'file' || type === 'directory') {
+    return ensureString(value, fieldName);
+  }
+  if (type === 'boolean') {
+    return ensureBoolean(value, fieldName);
+  }
+  if (type === 'number') {
+    const numberValue = ensureFiniteNumber(value, fieldName);
+    if (min !== undefined && numberValue < min) {
+      throw new Error(`Invalid ${fieldName}: default is smaller than min.`);
+    }
+    if (max !== undefined && numberValue > max) {
+      throw new Error(`Invalid ${fieldName}: default is greater than max.`);
+    }
+    return numberValue;
+  }
+  if (type === 'enum') {
+    const enumValue = ensureString(value, fieldName);
+    if (!values?.includes(enumValue)) {
+      throw new Error(`Invalid ${fieldName}: enum default must be one of values.`);
+    }
+    return enumValue;
+  }
+
+  throw new Error(`Invalid ${fieldName}: unsupported config type "${type}".`);
+}
+
+function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginConfigSchema {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['schema']);
+
+  const schemaInput = assertObject(input.schema, `${fieldName}.schema`);
+  const schema: PluginConfigSchema['schema'] = {};
+  const supportedTypes = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
+
+  for (const [key, rawField] of Object.entries(schemaInput)) {
+    validateConfigKey(key, `${fieldName}.schema`);
+    const schemaFieldName = `${fieldName}.schema.${key}`;
+    const configField = assertObject(rawField, schemaFieldName);
+    assertAllowedKeys(configField, schemaFieldName, [
+      'type',
+      'title',
+      'description',
+      'default',
+      'required',
+      'sensitive',
+      'values',
+      'min',
+      'max',
+    ]);
+
+    const type = ensureString(configField.type, `${schemaFieldName}.type`);
+    if (!supportedTypes.has(type)) {
+      throw new Error(`Invalid ${schemaFieldName}.type: expected string, number, boolean, enum, file, or directory.`);
+    }
+
+    const required =
+      configField.required === undefined
+        ? undefined
+        : ensureBoolean(configField.required, `${schemaFieldName}.required`);
+    const sensitive =
+      configField.sensitive === undefined
+        ? undefined
+        : ensureBoolean(configField.sensitive, `${schemaFieldName}.sensitive`);
+    const values =
+      configField.values === undefined
+        ? undefined
+        : ensureStringArray(configField.values, `${schemaFieldName}.values`);
+    if (type !== 'enum' && values !== undefined) {
+      throw new Error(`Invalid ${schemaFieldName}.values: values are only supported for enum config.`);
+    }
+    if (type === 'enum' && (!values || values.length === 0)) {
+      throw new Error(`Invalid ${schemaFieldName}.values: enum config requires at least one value.`);
+    }
+    if (values && new Set(values).size !== values.length) {
+      throw new Error(`Invalid ${schemaFieldName}.values: enum values must be unique.`);
+    }
+
+    const min =
+      configField.min === undefined
+        ? undefined
+        : ensureFiniteNumber(configField.min, `${schemaFieldName}.min`);
+    const max =
+      configField.max === undefined
+        ? undefined
+        : ensureFiniteNumber(configField.max, `${schemaFieldName}.max`);
+    if (type !== 'number' && (min !== undefined || max !== undefined)) {
+      throw new Error(`Invalid ${schemaFieldName}: min/max are only supported for number config.`);
+    }
+    if (min !== undefined && max !== undefined && min > max) {
+      throw new Error(`Invalid ${schemaFieldName}: min must be less than or equal to max.`);
+    }
+
+    schema[key] = {
+      type: type as PluginConfigSchema['schema'][string]['type'],
+      title:
+        configField.title === undefined
+          ? undefined
+          : ensureString(configField.title, `${schemaFieldName}.title`),
+      description:
+        configField.description === undefined
+          ? undefined
+          : ensureString(configField.description, `${schemaFieldName}.description`),
+      default:
+        configField.default === undefined
+          ? undefined
+          : validateConfigDefault(
+              type,
+              configField.default,
+              values,
+              min,
+              max,
+              `${schemaFieldName}.default`,
+            ),
+      required,
+      sensitive,
+      values,
+      min,
+      max,
+    };
+  }
+
+  return { schema };
 }
 
 function normalizePlatformAgentOverrides<T>(
@@ -827,6 +1340,8 @@ export function validatePluginManifest(
     'interface',
     'extensions',
     'buildConfig',
+    'scripts',
+    'config',
   ]);
 
   const manifest: PluginManifestSource = {
@@ -878,6 +1393,14 @@ export function validatePluginManifest(
 
   if (input.buildConfig !== undefined) {
     manifest.buildConfig = normalizeBuildConfig(pluginRoot, input.buildConfig, 'buildConfig');
+  }
+
+  if (input.scripts !== undefined) {
+    manifest.scripts = normalizePluginScripts(pluginRoot, input.scripts, 'scripts');
+  }
+
+  if (input.config !== undefined) {
+    manifest.config = normalizePluginConfigSchema(input.config, 'config');
   }
 
   return manifest;
@@ -1124,6 +1647,16 @@ export function createMarketplaceManifest(
 }
 
 export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSource {
+  const scripts = plugin.manifest.scripts
+    ? structuredClone(plugin.manifest.scripts)
+    : undefined;
+  if (scripts?.tests) {
+    delete scripts.tests;
+  }
+  if (scripts?.node?.build) {
+    delete scripts.node.build;
+  }
+
   return {
     ...plugin.manifest,
     skillTriggers: plugin.manifest.skillTriggers
@@ -1148,6 +1681,10 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
           agents: plugin.manifest.extensions.agents
             ?.map((entry) => structuredClone(entry)),
         }
+      : undefined,
+    scripts,
+    config: plugin.manifest.config
+      ? structuredClone(plugin.manifest.config)
       : undefined,
   };
 }

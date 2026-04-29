@@ -96,6 +96,13 @@ const MATCHERLESS_NATIVE_HOOK_EVENTS = {
   codex: new Set(['UserPromptSubmit', 'Stop']),
 };
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
+const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const SCRIPT_RUNNERS = new Set(['node', 'sh', 'bash', 'pwsh', 'powershell', 'cmd', 'auto']);
+const SCRIPT_OS_SELECTORS = new Set(['default', 'unix', 'windows', 'linux', 'darwin', 'win32']);
+const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
+const SCRIPT_TIMEOUT_MIN_MS = 1000;
+const SCRIPT_TIMEOUT_MAX_MS = 300000;
+const CONFIG_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
 let yamlParser = null;
 
 function error(msg) {
@@ -330,6 +337,8 @@ function validateManifestLightweight(manifest) {
     'interface',
     'extensions',
     'buildConfig',
+    'scripts',
+    'config',
   ]);
 
   for (const field of ['name', 'version', 'description', 'marketplace']) {
@@ -911,6 +920,524 @@ function validateSkillTriggers(pluginDir, manifest) {
   }
 }
 
+function isNodeRunnablePath(relativePath) {
+  return SCRIPT_NODE_EXTENSIONS.has(path.posix.extname(normalizeRelativePath(relativePath)));
+}
+
+function normalizePluginScriptPath(pluginDir, value, fieldName) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    error(`${fieldName} must be a non-empty string`);
+    return null;
+  }
+  if (/\s|[;&|<>`]/.test(value) || value.includes('$(')) {
+    error(`${fieldName} must be a file path, not an inline command`);
+    return null;
+  }
+  if (!value.startsWith('./')) {
+    error(`${fieldName} must start with "./"`);
+    return null;
+  }
+  if (path.isAbsolute(value) || path.win32.isAbsolute(value)) {
+    error(`${fieldName} must be relative to the plugin root`);
+    return null;
+  }
+
+  const relativePath = normalizeRelativePath(value);
+  if (relativePath === '.' || relativePath === '..' || relativePath.startsWith('../')) {
+    error(`${fieldName} must stay inside the plugin root`);
+    return null;
+  }
+
+  const absolutePath = path.resolve(pluginDir, relativePath);
+  const relativeFromRoot = path.relative(pluginDir, absolutePath);
+  if (relativeFromRoot.startsWith('..') || path.isAbsolute(relativeFromRoot)) {
+    error(`${fieldName} must stay inside the plugin root`);
+    return null;
+  }
+  return relativePath;
+}
+
+function validateDeclaredScriptFile(pluginDir, relativePath, fieldName) {
+  if (!relativePath) return;
+  const absolutePath = path.join(pluginDir, relativePath);
+  const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
+  if (!stats?.isFile()) {
+    error(`${fieldName} points to "${relativePath}" but the file does not exist`);
+  }
+}
+
+function validateScriptEntry(pluginDir, value, fieldName, options = {}) {
+  const entry = expectRecord(value, fieldName);
+  if (!entry) return null;
+  if ('command' in entry) {
+    error(`${fieldName}.command is not supported; declare runner/path instead`);
+  }
+  validateAllowedKeys(entry, fieldName, ['runner', 'path', 'args']);
+
+  const runner = validateManifestString(entry.runner, `${fieldName}.runner`);
+  if (runner && !SCRIPT_RUNNERS.has(runner)) {
+    error(`${fieldName}.runner has unsupported runner "${runner}"`);
+  }
+  if (options.requireNodeRunner && runner !== 'node') {
+    error(`${fieldName}.runner must be "node"`);
+  }
+
+  const relativePath = normalizePluginScriptPath(pluginDir, entry.path, `${fieldName}.path`);
+  validateDeclaredScriptFile(pluginDir, relativePath, `${fieldName}.path`);
+  if (options.requireNodePath && relativePath && !isNodeRunnablePath(relativePath)) {
+    error(`${fieldName}.path must use a Node runnable extension (.js, .mjs, or .cjs)`);
+  }
+
+  if (entry.args !== undefined) {
+    if (!Array.isArray(entry.args)) {
+      error(`${fieldName}.args must be an array of strings`);
+    } else {
+      entry.args.forEach((arg, index) => {
+        if (typeof arg !== 'string') {
+          error(`${fieldName}.args[${index}] must be a string`);
+        }
+      });
+    }
+  }
+
+  return runner && relativePath ? { runner, path: relativePath } : null;
+}
+
+function validateLifecycleDefinition(pluginDir, value, fieldName, runtimeEntries) {
+  if (typeof value === 'string') {
+    const relativePath = normalizePluginScriptPath(pluginDir, value, fieldName);
+    validateDeclaredScriptFile(pluginDir, relativePath, fieldName);
+    if (relativePath && isNodeRunnablePath(relativePath)) {
+      runtimeEntries.push({ path: relativePath, fieldName });
+    }
+    return { default: relativePath ? { runner: 'auto', path: relativePath } : null };
+  }
+
+  const selector = expectRecord(value, fieldName);
+  if (!selector) return {};
+  if ('runner' in selector || 'path' in selector || 'command' in selector) {
+    error(`${fieldName} must declare lifecycle scripts under OS selectors`);
+  }
+  for (const selectorName of Object.keys(selector)) {
+    if (!SCRIPT_OS_SELECTORS.has(selectorName)) {
+      error(`${fieldName} has unknown OS selector "${selectorName}"`);
+    }
+  }
+
+  const normalized = {};
+  for (const [selectorName, entryValue] of Object.entries(selector)) {
+    const entry = validateScriptEntry(
+      pluginDir,
+      entryValue,
+      `${fieldName}.${selectorName}`,
+    );
+    if (entry) {
+      normalized[selectorName] = entry;
+      if (entry.runner === 'node' || (entry.runner === 'auto' && isNodeRunnablePath(entry.path))) {
+        runtimeEntries.push({ path: entry.path, fieldName: `${fieldName}.${selectorName}.path` });
+      }
+    }
+  }
+
+  const orders = {
+    linux: ['linux', 'unix', 'default'],
+    darwin: ['darwin', 'unix', 'default'],
+    win32: ['win32', 'windows', 'default'],
+  };
+  for (const [osName, order] of Object.entries(orders)) {
+    if (!order.some((selectorName) => normalized[selectorName])) {
+      error(`${fieldName} must include an entry that resolves on ${osName}`);
+    }
+  }
+  return normalized;
+}
+
+function isNonRegistryDependencySpecifier(specifier) {
+  const trimmed = String(specifier).trim();
+  return (
+    /^(?:workspace|file|link|portal):/i.test(trimmed) ||
+    /^(?:git\+|git:|ssh:)/i.test(trimmed) ||
+    /^https?:\/\//i.test(trimmed) ||
+    /(?:\.tgz|\.tar\.gz)(?:[#?].*)?$/i.test(trimmed) ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('~') ||
+    /^[\w.-]+\/[\w.-]+(?:#.*)?$/.test(trimmed)
+  );
+}
+
+function readPackageDependencyNames(packageJson, fieldName, dependencyField) {
+  const rawDependencies = packageJson[dependencyField];
+  if (rawDependencies === undefined) return [];
+  const dependencies = expectRecord(rawDependencies, `${fieldName}.${dependencyField}`);
+  if (!dependencies) return [];
+  const names = [];
+  for (const [name, specifier] of Object.entries(dependencies)) {
+    if (typeof specifier !== 'string') {
+      error(`${fieldName}.${dependencyField}.${name} must be a string specifier`);
+      continue;
+    }
+    if (isNonRegistryDependencySpecifier(specifier)) {
+      error(
+        `${fieldName}.${dependencyField}.${name} uses non registry-backed specifier "${specifier}"`,
+      );
+    }
+    names.push(name);
+  }
+  return names;
+}
+
+function validatePackageRoot(pluginDir, packageRootValue, fieldName) {
+  const packageRoot = normalizePluginScriptPath(pluginDir, packageRootValue, fieldName);
+  if (!packageRoot) return null;
+  const absolutePackageRoot = path.join(pluginDir, packageRoot);
+  const stats = fs.statSync(absolutePackageRoot, { throwIfNoEntry: false });
+  if (!stats?.isDirectory()) {
+    error(`${fieldName} must point to a package directory`);
+    return { packageRoot, dependencies: [], devDependencies: [] };
+  }
+
+  for (const lockfile of ['package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb']) {
+    if (fs.existsSync(path.join(absolutePackageRoot, lockfile))) {
+      error(`${fieldName} only supports pnpm-lock.yaml, found ${lockfile}`);
+    }
+  }
+  const packageJsonPath = path.join(absolutePackageRoot, 'package.json');
+  const lockfilePath = path.join(absolutePackageRoot, 'pnpm-lock.yaml');
+  if (!fs.existsSync(packageJsonPath)) {
+    error(`${fieldName} is missing package.json`);
+  }
+  if (!fs.existsSync(lockfilePath)) {
+    error(`${fieldName} is missing pnpm-lock.yaml`);
+  }
+
+  let packageJson = {};
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    } catch (e) {
+      error(`${fieldName}/package.json is not valid JSON: ${e.message}`);
+      packageJson = {};
+    }
+  }
+  if (packageJson.optionalDependencies !== undefined) {
+    error(`${fieldName}/package.json optionalDependencies are not supported`);
+  }
+  if (packageJson.bundledDependencies !== undefined || packageJson.bundleDependencies !== undefined) {
+    error(`${fieldName}/package.json bundledDependencies are not supported`);
+  }
+
+  return {
+    packageRoot,
+    dependencies: readPackageDependencyNames(packageJson, fieldName, 'dependencies'),
+    devDependencies: readPackageDependencyNames(packageJson, fieldName, 'devDependencies'),
+  };
+}
+
+function scanImportSpecifiers(source) {
+  const references = [];
+  const patterns = [
+    /\bimport\s+(?:[^'"]*?\s+from\s*)?['"]([^'"]+)['"]/gs,
+    /\bexport\s+(?:[^'"]*?\s+from\s*)['"]([^'"]+)['"]/gs,
+    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/gs,
+    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gs,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      references.push(match[1]);
+    }
+  }
+  return references;
+}
+
+function isRelativeSpecifier(specifier) {
+  return specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
+}
+
+function packageNameFromSpecifier(specifier) {
+  if (specifier.startsWith('@')) {
+    const [scope, name] = specifier.split('/');
+    return `${scope}/${name ?? ''}`;
+  }
+  return specifier.split('/')[0];
+}
+
+function resolveRelativeJavaScriptImport(importer, specifier, pluginDir) {
+  const importerDir = path.posix.dirname(importer);
+  const normalized = path.posix.normalize(path.posix.join(importerDir, specifier));
+  if (normalized === '..' || normalized.startsWith('../') || path.posix.isAbsolute(normalized)) {
+    return { escaped: true, path: normalized };
+  }
+  const candidates = [
+    normalized,
+    `${normalized}.js`,
+    `${normalized}.mjs`,
+    `${normalized}.cjs`,
+    path.posix.join(normalized, 'index.js'),
+    path.posix.join(normalized, 'index.mjs'),
+    path.posix.join(normalized, 'index.cjs'),
+  ];
+  const found = candidates.find((candidate) => fs.existsSync(path.join(pluginDir, candidate)));
+  return found ? { escaped: false, path: found } : { escaped: false, path: null };
+}
+
+function pathIsUnderPackageRoot(relativePath, packageRoot) {
+  if (!packageRoot) return false;
+  return relativePath === packageRoot || relativePath.startsWith(`${packageRoot}/`);
+}
+
+function scanNodeImportContract(pluginDir, entryPaths, options) {
+  const queue = [...new Set(entryPaths.filter(Boolean).map(normalizeRelativePath))];
+  const visited = new Set();
+  const dependencies = new Set(options.packageMeta?.dependencies ?? []);
+  const devDependencies = new Set(options.packageMeta?.devDependencies ?? []);
+  const packageRoot = options.packageMeta?.packageRoot;
+
+  while (queue.length > 0) {
+    const relativePath = queue.shift();
+    if (!relativePath || visited.has(relativePath)) continue;
+    visited.add(relativePath);
+
+    const absolutePath = path.join(pluginDir, relativePath);
+    if (!fs.existsSync(absolutePath)) {
+      error(`${options.label}: missing Node import file "${relativePath}"`);
+      continue;
+    }
+
+    const source = fs.readFileSync(absolutePath, 'utf8');
+    for (const specifier of scanImportSpecifiers(source)) {
+      if (specifier.startsWith('node:')) continue;
+
+      if (isRelativeSpecifier(specifier)) {
+        const resolved = resolveRelativeJavaScriptImport(relativePath, specifier, pluginDir);
+        if (resolved.escaped) {
+          error(`${options.label}: relative import "${specifier}" from "${relativePath}" escapes the plugin root`);
+          continue;
+        }
+        if (!resolved.path) {
+          error(`${options.label}: unable to resolve relative import "${specifier}" from "${relativePath}"`);
+          continue;
+        }
+        queue.push(resolved.path);
+        continue;
+      }
+
+      if (specifier.startsWith('/') || specifier.includes(':')) {
+        error(`${options.label}: unsupported import specifier "${specifier}" from "${relativePath}"`);
+        continue;
+      }
+
+      const packageName = packageNameFromSpecifier(specifier);
+      if (!packageRoot) {
+        error(`${options.label}: bare import "${specifier}" from "${relativePath}" requires scripts.node.packageRoot`);
+        continue;
+      }
+      if (!pathIsUnderPackageRoot(relativePath, packageRoot)) {
+        error(`${options.label}: bare import "${specifier}" from "${relativePath}" is outside scripts.node.packageRoot`);
+        continue;
+      }
+      if (dependencies.has(packageName)) continue;
+      if (devDependencies.has(packageName)) {
+        if (!options.allowDevDependencies) {
+          error(`${options.label}: runtime import "${specifier}" from "${relativePath}" uses dev dependency "${packageName}"`);
+        }
+        continue;
+      }
+      error(`${options.label}: import "${specifier}" from "${relativePath}" is not declared in dependencies`);
+    }
+  }
+}
+
+function listFilesRecursive(rootDir) {
+  const output = [];
+  if (!fs.existsSync(rootDir)) return output;
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolutePath);
+      } else if (entry.isFile()) {
+        output.push(normalizeRelativePath(path.relative(rootDir, absolutePath)));
+      }
+    }
+  };
+  walk(rootDir);
+  return output;
+}
+
+function validateConfigSchemaLightweight(config) {
+  if (config === undefined) return;
+  const configRoot = expectRecord(config, 'config');
+  if (!configRoot) return;
+  validateAllowedKeys(configRoot, 'config', ['schema']);
+  const schema = expectRecord(configRoot.schema, 'config.schema');
+  if (!schema) return;
+  for (const [key, rawField] of Object.entries(schema)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
+      error(`config.schema has invalid key "${key}"`);
+    }
+    const fieldName = `config.schema.${key}`;
+    const field = expectRecord(rawField, fieldName);
+    if (!field) continue;
+    validateAllowedKeys(field, fieldName, [
+      'type',
+      'title',
+      'description',
+      'default',
+      'required',
+      'sensitive',
+      'values',
+      'min',
+      'max',
+    ]);
+    if (typeof field.type !== 'string' || !CONFIG_FIELD_TYPES.has(field.type)) {
+      error(`${fieldName}.type must be string, number, boolean, enum, file, or directory`);
+    }
+    if (field.required !== undefined && typeof field.required !== 'boolean') {
+      error(`${fieldName}.required must be a boolean`);
+    }
+    if (field.sensitive !== undefined && typeof field.sensitive !== 'boolean') {
+      error(`${fieldName}.sensitive must be a boolean`);
+    }
+    if (field.values !== undefined) {
+      if (field.type !== 'enum' || !Array.isArray(field.values) || field.values.length === 0) {
+        error(`${fieldName}.values is only supported for enum config and must be non-empty`);
+      }
+    } else if (field.type === 'enum') {
+      error(`${fieldName}.values is required for enum config`);
+    }
+    if (field.type !== 'number' && (field.min !== undefined || field.max !== undefined)) {
+      error(`${fieldName}.min/max are only supported for number config`);
+    }
+    if (field.min !== undefined && typeof field.min !== 'number') {
+      error(`${fieldName}.min must be a number`);
+    }
+    if (field.max !== undefined && typeof field.max !== 'number') {
+      error(`${fieldName}.max must be a number`);
+    }
+    if (typeof field.min === 'number' && typeof field.max === 'number' && field.min > field.max) {
+      error(`${fieldName}.min must be less than or equal to max`);
+    }
+  }
+}
+
+function validateScriptsLightweight(pluginDir, manifest) {
+  validateConfigSchemaLightweight(manifest.config);
+  if (manifest.scripts === undefined) return;
+
+  const scripts = expectRecord(manifest.scripts, 'scripts');
+  if (!scripts) return;
+  validateAllowedKeys(scripts, 'scripts', ['timeoutMs', 'lifecycle', 'helpers', 'node', 'tests']);
+  if (
+    scripts.timeoutMs !== undefined &&
+    (!Number.isInteger(scripts.timeoutMs) ||
+      scripts.timeoutMs < SCRIPT_TIMEOUT_MIN_MS ||
+      scripts.timeoutMs > SCRIPT_TIMEOUT_MAX_MS)
+  ) {
+    error(`scripts.timeoutMs must be an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS}`);
+  }
+
+  const runtimeNodeEntries = [];
+  let packageMeta = null;
+
+  if (scripts.helpers !== undefined) {
+    const helpers = expectRecord(scripts.helpers, 'scripts.helpers');
+    if (helpers) {
+      validateAllowedKeys(helpers, 'scripts.helpers', ['config']);
+      const helperPath = normalizePluginScriptPath(pluginDir, helpers.config, 'scripts.helpers.config');
+      validateDeclaredScriptFile(pluginDir, helperPath, 'scripts.helpers.config');
+      if (helperPath && !isNodeRunnablePath(helperPath)) {
+        error('scripts.helpers.config must use a Node runnable extension (.js, .mjs, or .cjs)');
+      }
+      if (helperPath) runtimeNodeEntries.push({ path: helperPath, fieldName: 'scripts.helpers.config' });
+    }
+  }
+
+  if (scripts.lifecycle !== undefined) {
+    const lifecycle = expectRecord(scripts.lifecycle, 'scripts.lifecycle');
+    if (lifecycle) {
+      validateAllowedKeys(lifecycle, 'scripts.lifecycle', [...SCRIPT_LIFECYCLE_EVENTS]);
+      for (const [eventName, definition] of Object.entries(lifecycle)) {
+        if (!SCRIPT_LIFECYCLE_EVENTS.has(eventName)) {
+          error(`scripts.lifecycle has unsupported event "${eventName}"`);
+          continue;
+        }
+        validateLifecycleDefinition(
+          pluginDir,
+          definition,
+          `scripts.lifecycle.${eventName}`,
+          runtimeNodeEntries,
+        );
+      }
+    }
+  }
+
+  if (scripts.node !== undefined) {
+    const node = expectRecord(scripts.node, 'scripts.node');
+    if (node) {
+      validateAllowedKeys(node, 'scripts.node', ['packageRoot', 'build']);
+      if (node.packageRoot !== undefined) {
+        packageMeta = validatePackageRoot(pluginDir, node.packageRoot, 'scripts.node.packageRoot');
+      }
+      if (node.build !== undefined) {
+        const buildEntry = validateScriptEntry(pluginDir, node.build, 'scripts.node.build', {
+          requireNodeRunner: true,
+          requireNodePath: true,
+        });
+        if (buildEntry) {
+          scanNodeImportContract(pluginDir, [buildEntry.path], {
+            label: 'scripts.node.build import contract',
+            packageMeta,
+            allowDevDependencies: true,
+          });
+        }
+      }
+    }
+  }
+
+  if (scripts.tests !== undefined) {
+    const tests = expectRecord(scripts.tests, 'scripts.tests');
+    if (tests) {
+      validateAllowedKeys(tests, 'scripts.tests', ['node']);
+      if (tests.node !== undefined) {
+        if (!Array.isArray(tests.node)) {
+          error('scripts.tests.node must be an array of glob strings');
+        } else {
+          const allFiles = listFilesRecursive(pluginDir);
+          const testEntries = [];
+          tests.node.forEach((pattern, index) => {
+            if (typeof pattern !== 'string' || pattern.trim() === '') {
+              error(`scripts.tests.node[${index}] must be a non-empty string`);
+              return;
+            }
+            for (const filePath of allFiles) {
+              if (matchesGlob(filePath, pattern)) {
+                testEntries.push(filePath);
+              }
+            }
+          });
+          scanNodeImportContract(pluginDir, testEntries, {
+            label: 'scripts.tests.node import contract',
+            packageMeta,
+            allowDevDependencies: true,
+          });
+        }
+      }
+    }
+  }
+
+  scanNodeImportContract(
+    pluginDir,
+    runtimeNodeEntries.map((entry) => entry.path),
+    {
+      label: 'runtime Node import contract',
+      packageMeta,
+      allowDevDependencies: false,
+    },
+  );
+}
+
 function validateMcpContent(pluginDir, manifest) {
   if (!manifest.mcpServers) return;
   if (isTemplateAsset(manifest, manifest.mcpServers)) return;
@@ -1247,6 +1774,7 @@ async function validatePluginDir(pluginDir) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateSkillTriggers(pluginDir, manifest);
+  validateScriptsLightweight(pluginDir, manifest);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   validateExtensionNameUniqueness(manifest);

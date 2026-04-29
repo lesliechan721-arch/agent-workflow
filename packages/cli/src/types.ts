@@ -74,6 +74,87 @@ export interface BuildConfig {
   manifestOverrides?: BuildConfigManifestOverrides;
 }
 
+export type PluginLifecycleEvent = 'install' | 'upgrade' | 'uninstall';
+export type PluginLifecycleOsSelector = 'default' | 'unix' | 'windows' | 'linux' | 'darwin' | 'win32';
+export type PluginLifecycleRuntimeOs = 'linux' | 'darwin' | 'win32';
+export type PluginLifecycleScriptRunner =
+  | 'node'
+  | 'sh'
+  | 'bash'
+  | 'pwsh'
+  | 'powershell'
+  | 'cmd'
+  | 'auto';
+
+export interface PluginLifecycleScriptEntry {
+  runner: PluginLifecycleScriptRunner;
+  path: string;
+  args?: string[];
+}
+
+export type PluginLifecycleScriptSelector = Partial<
+  Record<PluginLifecycleOsSelector, PluginLifecycleScriptEntry>
+>;
+
+export type PluginLifecycleScriptDefinition =
+  | string
+  | PluginLifecycleScriptSelector;
+
+export type PluginLifecycleScripts = Partial<
+  Record<PluginLifecycleEvent, PluginLifecycleScriptSelector>
+>;
+
+export interface PluginScriptHelpersConfig {
+  config: string;
+}
+
+export interface PluginNodeBuildScript {
+  runner: 'node';
+  path: string;
+  args?: string[];
+}
+
+export interface PluginNodeScriptsConfig {
+  packageRoot?: string;
+  build?: PluginNodeBuildScript;
+}
+
+export interface PluginScriptTestsConfig {
+  node?: string[];
+}
+
+export interface PluginScriptsConfig {
+  timeoutMs?: number;
+  lifecycle?: PluginLifecycleScripts;
+  helpers?: PluginScriptHelpersConfig;
+  node?: PluginNodeScriptsConfig;
+  tests?: PluginScriptTestsConfig;
+}
+
+export type PluginConfigFieldType =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'file'
+  | 'directory';
+
+export interface PluginConfigSchemaField {
+  type: PluginConfigFieldType;
+  title?: string;
+  description?: string;
+  default?: string | number | boolean;
+  required?: boolean;
+  sensitive?: boolean;
+  values?: string[];
+  min?: number;
+  max?: number;
+}
+
+export interface PluginConfigSchema {
+  schema: Record<string, PluginConfigSchemaField>;
+}
+
 export interface PlatformAgentOverrides<T> {
   claude?: Partial<T> | null;
   codex?: Partial<T> | null;
@@ -169,6 +250,8 @@ export interface PluginManifestSource {
   interface?: PluginInterfaceMeta;
   extensions?: PluginExtensions;
   buildConfig?: BuildConfig;
+  scripts?: PluginScriptsConfig;
+  config?: PluginConfigSchema;
 }
 
 export interface PluginMeta {
@@ -384,6 +467,7 @@ export interface CommandOptions {
   scope: Scope;
   platform: PlatformSelection;
   cwd: string;
+  scriptTimeoutMs?: number;
 }
 
 export interface InstallCommandOptions extends CommandOptions {
@@ -402,6 +486,14 @@ export interface StatusCommandOptions {
   verbose?: boolean;
   json?: boolean;
 }
+
+export type StatusHealthSource = 'installSnapshot' | 'currentCatalog' | 'historical' | 'none';
+export type StatusConfigHealth = 'configured' | 'missing-required' | 'invalid-config' | 'no-schema';
+export type StatusScriptHealth =
+  | 'declared'
+  | 'not_declared'
+  | 'missing-from-bundle'
+  | 'unsupported-on-current-os';
 
 export type ResolvedInstallOptionsSource = 'cli' | 'ledger' | 'default';
 export type ResolvedInstallOptionsLedgerTrust = 'available' | 'degraded';
@@ -487,6 +579,23 @@ export interface InstalledScopeInstallOptions {
   skillTriggerPreference?: SkillTriggerPreference;
 }
 
+export interface LifecycleConfigSnapshotMetadata {
+  snapshotRoot: string;
+  bundleRoot: string;
+  manifestPath: string;
+  pluginName: string;
+  pluginVersion: string;
+  sourceManifestDigest: string;
+  bundleFingerprint: string;
+  createdAt: string;
+  createdFrom: {
+    source: 'currentCatalog' | 'test' | 'unknown';
+    catalogRoot?: string;
+    catalogSource?: CatalogResolution['source'];
+    pluginRoot?: string;
+  };
+}
+
 export interface InstalledScopeRecord<TCapabilitySnapshot> {
   managed: boolean;
   updatedAt: string;
@@ -494,6 +603,7 @@ export interface InstalledScopeRecord<TCapabilitySnapshot> {
   capabilitySnapshot: TCapabilitySnapshot;
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerWriteOrder?: number;
+  lifecycleConfigSnapshot?: LifecycleConfigSnapshotMetadata;
 }
 
 export interface CodexSharedNativeRefs {

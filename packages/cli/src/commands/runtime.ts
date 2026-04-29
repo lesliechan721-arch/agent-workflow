@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { Writable } from 'node:stream';
 
 import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
@@ -22,6 +23,7 @@ import type { NativeCliInvocation, NativeCliResult, NativeCliRunner } from '../u
 import { NativeCliError, execFileNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type { PlatformAdapter, PlatformName } from '../types.js';
+import type { Scope } from '../types.js';
 
 export type {
   CommandEvent,
@@ -75,6 +77,40 @@ export interface CliPromptCandidate {
   compatiblePlatforms?: string[];
 }
 
+export type CliConfigPromptScope = Scope;
+export type CliConfigPromptValue = string | number | boolean;
+export type CliConfigPromptValueType = 'string' | 'number' | 'boolean' | 'file' | 'directory';
+
+export interface CliConfigPromptSchemaEntry {
+  type: CliConfigPromptValueType;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  default?: CliConfigPromptValue;
+  enum?: CliConfigPromptValue[];
+  min?: number;
+  max?: number;
+}
+
+export type CliConfigPromptSchema = Record<string, CliConfigPromptSchemaEntry>;
+
+export interface CliConfigPromptOptions {
+  pluginName: string;
+  schema: CliConfigPromptSchema;
+  initialScope: CliConfigPromptScope;
+  allowedScopes: CliConfigPromptScope[];
+  currentValues?: Record<string, CliConfigPromptValue | undefined>;
+  requiredKeys?: string[];
+}
+
+export interface CliConfigPromptResult {
+  selectedScope: CliConfigPromptScope;
+  updates: Record<string, CliConfigPromptValue>;
+  updatedKeys: string[];
+  cancelled?: boolean;
+}
+
 export interface CliPrompt {
   select?: (options: {
     message: string;
@@ -109,6 +145,7 @@ export interface CliPrompt {
     defaultValue?: 'default' | 'manual' | 'auto';
     allowSkip?: boolean;
   }) => Promise<'default' | 'manual' | 'auto' | 'skip' | string>;
+  configurePlugin?: (options: CliConfigPromptOptions) => Promise<CliConfigPromptResult>;
 }
 
 export type AdaptersFactory = (
@@ -143,6 +180,13 @@ export interface CliExecutionContext extends CommandExecutionContext {
 export interface CliExecutionContextInput extends CommandExecutionContextInput {
   cwd?: string;
   io?: Partial<CliIo>;
+  stdin?: NodeJS.ReadableStream;
+  promptOutputSink?: CliPromptOutputSink;
+}
+
+export interface CliPromptOutputSink {
+  write: (text: string) => unknown;
+  isTTY?: boolean;
 }
 
 function createDefaultIo(): CliIo {
@@ -196,6 +240,39 @@ export function createCommandDiagnostics(
   };
 }
 
+export function validateCliConfigPromptResult(
+  options: Pick<CliConfigPromptOptions, 'allowedScopes' | 'schema'>,
+  result: CliConfigPromptResult,
+): CliConfigPromptResult {
+  if (!options.allowedScopes.includes(result.selectedScope)) {
+    throw new Error(
+      `Unsupported config scope "${result.selectedScope}". Expected one of: ${options.allowedScopes.join(', ')}.`,
+    );
+  }
+
+  const schemaKeys = new Set(Object.keys(options.schema));
+  const updateKeys = Object.keys(result.updates);
+  for (const key of [...result.updatedKeys, ...updateKeys]) {
+    if (!schemaKeys.has(key)) {
+      throw new Error(`Unsupported config key "${key}".`);
+    }
+  }
+
+  const updatedKeySet = new Set(result.updatedKeys);
+  for (const key of updateKeys) {
+    if (!updatedKeySet.has(key)) {
+      throw new Error(`Config prompt result update "${key}" is missing from updatedKeys.`);
+    }
+  }
+  for (const key of result.updatedKeys) {
+    if (!Object.hasOwn(result.updates, key)) {
+      throw new Error(`Config prompt result updatedKeys contains "${key}" without an update value.`);
+    }
+  }
+
+  return result;
+}
+
 function createUnavailablePrompt(): CliPrompt {
   const unavailable = async (): Promise<never> => {
     throw new Error('Interactive prompt is not available in this runtime.');
@@ -209,6 +286,7 @@ function createUnavailablePrompt(): CliPrompt {
     selectPlugins: unavailable,
     selectUpgradeMode: unavailable,
     selectSkillTrigger: unavailable,
+    configurePlugin: unavailable,
   };
 }
 
@@ -252,11 +330,99 @@ function parseSelectionInput(
   return [...new Set(selected)];
 }
 
-function createReadlinePrompt(): CliPrompt {
-  async function ask(message: string): Promise<string> {
+function createPromptWritable(outputSink: CliPromptOutputSink): NodeJS.WritableStream {
+  const writable = new Writable({
+    write(chunk, _encoding, callback) {
+      outputSink.write(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+      callback();
+    },
+  }) as NodeJS.WritableStream & { isTTY?: boolean };
+  writable.isTTY = outputSink.isTTY;
+  return writable;
+}
+
+function shouldPromptConfigKey(
+  key: string,
+  definition: CliConfigPromptSchemaEntry,
+  options: CliConfigPromptOptions,
+): boolean {
+  const currentValue = options.currentValues?.[key];
+  return Boolean(
+    definition.required ||
+      options.requiredKeys?.includes(key) ||
+      currentValue === undefined,
+  );
+}
+
+function parsePromptedConfigValue(
+  key: string,
+  definition: CliConfigPromptSchemaEntry,
+  answer: string,
+): CliConfigPromptValue | undefined {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (definition.type === 'number') {
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`配置项 ${key} 需要数字。`);
+    }
+    return parsed;
+  }
+
+  if (definition.type === 'boolean') {
+    const normalized = trimmed.toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'n'].includes(normalized)) {
+      return false;
+    }
+    throw new Error(`配置项 ${key} 需要布尔值。`);
+  }
+
+  return answer;
+}
+
+export interface ReadlinePromptOptions {
+  input?: NodeJS.ReadableStream;
+  outputSink?: CliPromptOutputSink;
+}
+
+export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPrompt {
+  const input = options.input ?? process.stdin;
+  const outputSink = options.outputSink ?? process.stderr;
+  const output = createPromptWritable(outputSink);
+
+  async function ask(message: string, askOptions: { hidden?: boolean } = {}): Promise<string> {
+    if (askOptions.hidden) {
+      outputSink.write(message);
+      const mutedOutput = new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }) as NodeJS.WritableStream & { isTTY?: boolean };
+      mutedOutput.isTTY = outputSink.isTTY;
+      const rl = createInterface({
+        input,
+        output: mutedOutput,
+        terminal: Boolean((input as { isTTY?: boolean }).isTTY && outputSink.isTTY),
+      });
+      try {
+        const answer = await rl.question('');
+        outputSink.write('\n');
+        return answer;
+      } finally {
+        rl.close();
+      }
+    }
+
     const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
+      input,
+      output,
+      terminal: Boolean((input as { isTTY?: boolean }).isTTY && outputSink.isTTY),
     });
     try {
       return await rl.question(message);
@@ -306,17 +472,19 @@ function createReadlinePrompt(): CliPrompt {
     );
   };
 
+  const confirm: NonNullable<CliPrompt['confirm']> = async ({ message, defaultValue = true }) => {
+    const suffix = defaultValue ? 'Y/n' : 'y/N';
+    const answer = (await ask(`${message} [${suffix}] `)).trim().toLowerCase();
+    if (!answer) {
+      return defaultValue;
+    }
+    return answer === 'y' || answer === 'yes';
+  };
+
   return {
     select,
     multiSelect,
-    confirm: async ({ message, defaultValue = true }) => {
-      const suffix = defaultValue ? 'Y/n' : 'y/N';
-      const answer = (await ask(`${message} [${suffix}] `)).trim().toLowerCase();
-      if (!answer) {
-        return defaultValue;
-      }
-      return answer === 'y' || answer === 'yes';
-    },
+    confirm,
     selectPlatform: async ({ available, defaultValue, message }) =>
       select({
         message: message ?? '选择目标平台',
@@ -377,6 +545,66 @@ function createReadlinePrompt(): CliPrompt {
         ],
         defaultValue,
       }),
+    configurePlugin: async (configOptions) => {
+      const selectedScope = configOptions.allowedScopes.length > 1
+        ? await select({
+            message: `选择 ${configOptions.pluginName} 配置写入范围`,
+            choices: configOptions.allowedScopes.map((value) => ({ value, label: value })),
+            defaultValue: configOptions.initialScope,
+          }) as CliConfigPromptScope
+        : configOptions.initialScope;
+      const updates: Record<string, CliConfigPromptValue> = {};
+
+      for (const [key, definition] of Object.entries(configOptions.schema)) {
+        if (!shouldPromptConfigKey(key, definition, configOptions)) {
+          continue;
+        }
+
+        const label = definition.label ?? key;
+        if (definition.enum && definition.enum.length > 0) {
+          const selected = await select({
+            message: label,
+            choices: definition.enum.map((value) => ({
+              value: String(value),
+              label: String(value),
+            })),
+            defaultValue: configOptions.currentValues?.[key] === undefined
+              ? undefined
+              : String(configOptions.currentValues[key]),
+          });
+          updates[key] = selected;
+          continue;
+        }
+
+        if (definition.type === 'boolean') {
+          updates[key] = await (async () => {
+            const current = configOptions.currentValues?.[key];
+            return current === undefined
+              ? confirm({ message: label, defaultValue: Boolean(definition.default) })
+              : confirm({ message: label, defaultValue: Boolean(current) });
+          })();
+          continue;
+        }
+
+        const current = configOptions.currentValues?.[key];
+        const suffix = current === undefined || definition.sensitive ? '' : `（当前：${String(current)}）`;
+        const answer = await ask(`${label}${suffix}: `, {
+          hidden: definition.sensitive && definition.type === 'string',
+        });
+        const parsed = parsePromptedConfigValue(key, definition, answer);
+        if (parsed !== undefined) {
+          updates[key] = parsed;
+        }
+      }
+
+      const result: CliConfigPromptResult = {
+        selectedScope,
+        updates,
+        updatedKeys: Object.keys(updates),
+        cancelled: false,
+      };
+      return validateCliConfigPromptResult(configOptions, result);
+    },
   };
 }
 
@@ -560,7 +788,9 @@ export function createCliExecutionContext(
     ...createDefaultIo(),
     ...input.io,
   };
-  const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const stdin = input.stdin ?? process.stdin;
+  const promptOutputSink = input.promptOutputSink ?? process.stderr;
+  const isTty = Boolean((stdin as { isTTY?: boolean }).isTTY && promptOutputSink.isTTY);
   const isCi = isTruthy(env.CI);
   const hasInjectedPrompt = Boolean(input.prompt);
   const requestedInteractive = input.interactive ?? (hasInjectedPrompt ? true : isTty);
@@ -573,13 +803,16 @@ export function createCliExecutionContext(
       awHome: resolveAwHome(env),
       isTty,
       isCi,
+      promptOutputIsTty: Boolean(promptOutputSink.isTTY),
       interactiveRequested: requestedInteractive,
       interactiveEnabled: interactive,
     },
   }, env);
   const reporter = input.reporter ?? createIoReporter(io, diagnostics);
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
-  const prompt = input.prompt ?? (interactive ? createReadlinePrompt() : createUnavailablePrompt());
+  const prompt = input.prompt ?? (interactive
+    ? createReadlinePrompt({ input: stdin, outputSink: promptOutputSink })
+    : createUnavailablePrompt());
   const commandContext = createCommandExecutionContext({
     ...input,
     env,

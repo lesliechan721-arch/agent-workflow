@@ -61,6 +61,35 @@ function isInstalledScopeInstallOptions(value: unknown): boolean {
   );
 }
 
+function isLifecycleConfigSnapshotMetadata(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const createdFrom = value.createdFrom;
+  return (
+    typeof value.snapshotRoot === 'string' &&
+    typeof value.bundleRoot === 'string' &&
+    typeof value.manifestPath === 'string' &&
+    typeof value.pluginName === 'string' &&
+    typeof value.pluginVersion === 'string' &&
+    typeof value.sourceManifestDigest === 'string' &&
+    typeof value.bundleFingerprint === 'string' &&
+    typeof value.createdAt === 'string' &&
+    isRecord(createdFrom) &&
+    (
+      createdFrom.source === 'currentCatalog' ||
+      createdFrom.source === 'test' ||
+      createdFrom.source === 'unknown'
+    ) &&
+    (createdFrom.catalogRoot === undefined || typeof createdFrom.catalogRoot === 'string') &&
+    (createdFrom.catalogSource === undefined ||
+      createdFrom.catalogSource === 'local' ||
+      createdFrom.catalogSource === 'embedded') &&
+    (createdFrom.pluginRoot === undefined || typeof createdFrom.pluginRoot === 'string')
+  );
+}
+
 function isInstalledScopeRecord(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
@@ -76,6 +105,10 @@ function isInstalledScopeRecord(value: unknown): boolean {
   }
 
   if (value.installOptions !== undefined && !isInstalledScopeInstallOptions(value.installOptions)) {
+    return false;
+  }
+
+  if (value.lifecycleConfigSnapshot !== undefined && !isLifecycleConfigSnapshotMetadata(value.lifecycleConfigSnapshot)) {
     return false;
   }
 
@@ -289,6 +322,12 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
     if (entry.name === 'config.json' || entry.name === 'installed.json') {
       continue;
     }
+    if (entry.name === 'plugin-config') {
+      continue;
+    }
+    if (entry.name === 'plugin-install-snapshots') {
+      continue;
+    }
 
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
@@ -379,6 +418,30 @@ async function readPreservedLedger(
   };
 }
 
+async function preservePluginConfigDirectory(awHome: string, stagingDir: string): Promise<void> {
+  const sourceDir = path.join(awHome, 'plugin-config');
+  if (!(await fs.pathExists(sourceDir))) {
+    return;
+  }
+
+  await fs.copy(sourceDir, path.join(stagingDir, 'plugin-config'), {
+    overwrite: true,
+    errorOnExist: false,
+  });
+}
+
+async function preservePluginInstallSnapshotsDirectory(awHome: string, stagingDir: string): Promise<void> {
+  const sourceDir = path.join(awHome, 'plugin-install-snapshots');
+  if (!(await fs.pathExists(sourceDir))) {
+    return;
+  }
+
+  await fs.copy(sourceDir, path.join(stagingDir, 'plugin-install-snapshots'), {
+    overwrite: true,
+    errorOnExist: false,
+  });
+}
+
 async function replaceDirectoryAtomically(targetDir: string, stagingDir: string): Promise<void> {
   const parentDir = path.dirname(targetDir);
   const backupDir = path.join(parentDir, `.aw-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -443,6 +506,8 @@ export async function initializeLocalMarketplace(
   try {
     await copyBundleToStaging(embeddedRoot, stagingDir);
     const { ledger, ledgerFileExists } = await readPreservedLedger(awHome);
+    await preservePluginConfigDirectory(awHome, stagingDir);
+    await preservePluginInstallSnapshotsDirectory(awHome, stagingDir);
     const replay = await replaySkillTriggerPreferencesFromLedger({
       ledger,
       marketplaceRoot: stagingDir,

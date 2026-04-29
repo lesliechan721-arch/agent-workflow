@@ -1,11 +1,31 @@
+import crypto from 'node:crypto';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+
 import type {
   EnvironmentDetection,
+  InstalledLedger,
+  InstalledScopeRecord,
+  LifecycleConfigSnapshotMetadata,
   PlatformName,
   PluginStatusReport,
+  PluginManifestSource,
+  PluginMeta,
   Scope,
+  StatusConfigHealth,
+  StatusHealthSource,
+  StatusScriptHealth,
   StatusReport,
 } from '../types.js';
 import { detectEnvironment } from '../utils/detect.js';
+import { readInstalledLedger } from '../utils/local-marketplace.js';
+import { readPluginManifest } from '../utils/manifest.js';
+import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import {
+  calculatePluginBundleFingerprint,
+} from '../utils/plugin-scripts.js';
+import { resolveLifecycleScriptForOs } from '../utils/plugin-script-contract.js';
 import {
   createAdapters,
   formatStatusOutput,
@@ -42,6 +62,11 @@ export interface StatusMatrixCell {
   health: StatusHealth;
   report?: PluginStatusReport;
   evidenceSources: string[];
+  healthSource: StatusHealthSource;
+  config: StatusConfigHealth;
+  scripts: StatusScriptHealth;
+  configSources?: string[];
+  healthWarnings?: string[];
   disabledReason?: string;
   error?: string;
 }
@@ -49,8 +74,14 @@ export interface StatusMatrixCell {
 export interface StatusSummary {
   pluginName: string;
   health: StatusHealth;
-  cells: Array<Pick<StatusMatrixCell, 'platform' | 'scope' | 'health' | 'projectKey'>>;
+  cells: Array<Pick<StatusMatrixCell, 'platform' | 'scope' | 'health' | 'healthSource' | 'config' | 'scripts' | 'projectKey'>>;
   nextSteps: string[];
+}
+
+interface StatusHealthManifestSource {
+  healthSource: StatusHealthSource;
+  plugin?: PluginMeta;
+  warnings: string[];
 }
 
 export interface StatusMatrixReport {
@@ -68,6 +99,252 @@ export interface StatusMatrixReport {
 
 function statusErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function runtimeOs(): 'linux' | 'darwin' | 'win32' {
+  return process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+}
+
+function isInsidePath(childPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, childPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function stripDotSlash(value: string): string {
+  return value.startsWith('./') ? value.slice(2) : value;
+}
+
+async function fileDigest(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  hash.update(await fs.readFile(filePath));
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function getStatusScopeRecord(
+  ledger: InstalledLedger,
+  pluginName: string,
+  platform: PlatformName,
+  scope: Scope,
+  projectKey: string | undefined,
+): InstalledScopeRecord<Record<string, unknown>> | undefined {
+  const platformRecord = ledger.plugins[pluginName]?.platforms[platform];
+  if (!platformRecord) {
+    return undefined;
+  }
+
+  if (scope === 'user') {
+    return platformRecord.userScope as InstalledScopeRecord<Record<string, unknown>> | undefined;
+  }
+
+  return projectKey
+    ? platformRecord.projectScopes?.[projectKey] as InstalledScopeRecord<Record<string, unknown>> | undefined
+    : undefined;
+}
+
+async function loadSnapshotPlugin(
+  pluginName: string,
+  snapshot: LifecycleConfigSnapshotMetadata,
+): Promise<PluginMeta> {
+  if (snapshot.pluginName !== pluginName) {
+    throw new Error('snapshot belongs to another plugin');
+  }
+
+  const snapshotRoot = await fs.realpath(snapshot.snapshotRoot);
+  const bundleRoot = await fs.realpath(snapshot.bundleRoot);
+  const expectedBundleRoot = await fs.realpath(path.join(snapshotRoot, 'bundle'));
+  if (bundleRoot !== expectedBundleRoot || !isInsidePath(bundleRoot, snapshotRoot)) {
+    throw new Error('snapshot bundle root is outside snapshot root');
+  }
+
+  const manifestPath = await fs.realpath(snapshot.manifestPath);
+  if (!isInsidePath(manifestPath, bundleRoot)) {
+    throw new Error('snapshot manifest path is outside bundle root');
+  }
+  const digest = await fileDigest(manifestPath);
+  if (digest !== snapshot.sourceManifestDigest) {
+    throw new Error('snapshot manifest digest mismatch');
+  }
+  const fingerprint = await calculatePluginBundleFingerprint(bundleRoot);
+  if (fingerprint !== snapshot.bundleFingerprint) {
+    throw new Error('snapshot bundle fingerprint mismatch');
+  }
+
+  const plugin = await readPluginManifest(bundleRoot, { mode: 'bundle' });
+  if (
+    plugin.manifest.name !== snapshot.pluginName ||
+    plugin.manifest.version !== snapshot.pluginVersion ||
+    path.resolve(plugin.manifestPath) !== path.resolve(manifestPath)
+  ) {
+    throw new Error('snapshot manifest identity mismatch');
+  }
+  return plugin;
+}
+
+async function resolveStatusHealthManifest(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey?: string;
+  ledger: InstalledLedger;
+  currentPlugin?: PluginMeta;
+  hasHistoricalEvidence: boolean;
+}): Promise<StatusHealthManifestSource> {
+  const warnings: string[] = [];
+  const scopeRecord = getStatusScopeRecord(
+    options.ledger,
+    options.pluginName,
+    options.platform,
+    options.scope,
+    options.projectKey,
+  );
+
+  const snapshot = scopeRecord?.lifecycleConfigSnapshot;
+  if (snapshot) {
+    try {
+      return {
+        healthSource: 'installSnapshot',
+        plugin: await loadSnapshotPlugin(options.pluginName, snapshot),
+        warnings,
+      };
+    } catch (error) {
+      warnings.push(
+        `install snapshot unusable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (options.currentPlugin) {
+    return {
+      healthSource: 'currentCatalog',
+      plugin: options.currentPlugin,
+      warnings,
+    };
+  }
+
+  return {
+    healthSource: options.hasHistoricalEvidence ? 'historical' : 'none',
+    warnings,
+  };
+}
+
+async function pathExistsInsideBundle(bundleRoot: string, relativePath: string): Promise<boolean> {
+  const resolvedRoot = path.resolve(bundleRoot);
+  const absolutePath = path.resolve(resolvedRoot, stripDotSlash(relativePath));
+  if (!isInsidePath(absolutePath, resolvedRoot) || !(await fs.pathExists(absolutePath))) {
+    return false;
+  }
+  const [realRoot, realPath] = await Promise.all([
+    fs.realpath(resolvedRoot),
+    fs.realpath(absolutePath),
+  ]);
+  return isInsidePath(realPath, realRoot);
+}
+
+async function resolveScriptHealth(plugin: PluginMeta | undefined): Promise<StatusScriptHealth> {
+  const manifest = plugin?.manifest;
+  if (!plugin || !manifest) {
+    return 'not_declared';
+  }
+
+  const lifecycle = manifest.scripts?.lifecycle ?? {};
+  const helperPath = manifest.scripts?.helpers?.config;
+  if (Object.keys(lifecycle).length === 0 && !helperPath) {
+    return 'not_declared';
+  }
+
+  if (helperPath && !(await pathExistsInsideBundle(plugin.rootDir, helperPath))) {
+    return 'missing-from-bundle';
+  }
+
+  for (const selector of Object.values(lifecycle)) {
+    const entry = resolveLifecycleScriptForOs(selector, runtimeOs());
+    if (!entry) {
+      return 'unsupported-on-current-os';
+    }
+    if (!(await pathExistsInsideBundle(plugin.rootDir, entry.path))) {
+      return 'missing-from-bundle';
+    }
+  }
+
+  return 'declared';
+}
+
+function resolveConfigSourceSummary(
+  manifest: PluginManifestSource,
+  sources: Record<string, string>,
+): string[] {
+  const sourceSet = new Set<string>();
+  for (const key of Object.keys(manifest.config?.schema ?? {})) {
+    const source = sources[key];
+    if (source && source !== 'missing') {
+      sourceSet.add(source);
+    }
+  }
+  return [...sourceSet].sort();
+}
+
+async function resolveConfigHealth(options: {
+  plugin: PluginMeta | undefined;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{ config: StatusConfigHealth; configSources?: string[] }> {
+  if (!options.plugin?.manifest.config?.schema) {
+    return { config: 'no-schema' };
+  }
+
+  const effective = await resolveEffectivePluginConfig({
+    pluginName: options.plugin.manifest.name,
+    manifest: options.plugin.manifest,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  if (effective.issues.some((issue) => issue.type === 'invalid-config')) {
+    return {
+      config: 'invalid-config',
+      configSources: resolveConfigSourceSummary(options.plugin.manifest, effective.sources),
+    };
+  }
+  if (effective.issues.some((issue) => issue.type === 'missing-required')) {
+    return {
+      config: 'missing-required',
+      configSources: resolveConfigSourceSummary(options.plugin.manifest, effective.sources),
+    };
+  }
+  return {
+    config: 'configured',
+    configSources: resolveConfigSourceSummary(options.plugin.manifest, effective.sources),
+  };
+}
+
+async function resolveStatusRuntimeHealth(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey?: string;
+  ledger: InstalledLedger;
+  currentPlugin?: PluginMeta;
+  hasHistoricalEvidence: boolean;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  healthSource: StatusHealthSource;
+  config: StatusConfigHealth;
+  scripts: StatusScriptHealth;
+  configSources?: string[];
+  healthWarnings?: string[];
+}> {
+  const source = await resolveStatusHealthManifest(options);
+  const config = await resolveConfigHealth({
+    plugin: source.plugin,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  return {
+    healthSource: source.healthSource,
+    ...config,
+    scripts: await resolveScriptHealth(source.plugin),
+    ...(source.warnings.length > 0 ? { healthWarnings: source.warnings } : {}),
+  };
 }
 
 function platformLabel(platform: PlatformName): string {
@@ -268,6 +545,19 @@ function describeSkillTrigger(plugin: PluginStatusReport | undefined): string | 
   return `skill trigger：${parts.join('，')}`;
 }
 
+function describeRuntimeHealth(cell: StatusMatrixCell): string {
+  const source = {
+    installSnapshot: 'install snapshot',
+    currentCatalog: 'current catalog',
+    historical: 'historical evidence',
+    none: 'none',
+  }[cell.healthSource];
+  const sourceSummary = cell.configSources && cell.configSources.length > 0
+    ? `，配置来源 ${cell.configSources.join('/')}`
+    : '';
+  return `config=${cell.config}${sourceSummary}，scripts=${cell.scripts}，healthSource=${source}`;
+}
+
 function describeCell(cell: StatusMatrixCell): string {
   if (cell.error) {
     return `读取失败：${cell.error}`;
@@ -281,6 +571,7 @@ function describeCell(cell: StatusMatrixCell): string {
     describeNative(cell.report, cell.platform),
     describeCatalog(cell.report),
     `证据：${describeEvidence(cell)}`,
+    describeRuntimeHealth(cell),
     describeSkillTrigger(cell.report),
   ].filter(Boolean);
 
@@ -346,6 +637,9 @@ function createSummary(pluginName: string, cells: StatusMatrixCell[]): StatusSum
       platform: cell.platform,
       scope: cell.scope,
       health: cell.health,
+      healthSource: cell.healthSource,
+      config: cell.config,
+      scripts: cell.scripts,
       projectKey: cell.projectKey,
     })),
     nextSteps,
@@ -475,6 +769,7 @@ export async function statusCommand(
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const requestedPlugins = pluginNames.length > 0 ? pluginNames : undefined;
+  const ledger = await readInstalledLedger(env);
   const candidates = await buildCommandCandidates({
     command: 'status',
     cwd: options.cwd,
@@ -498,6 +793,9 @@ export async function statusCommand(
         executionCwd: candidate.executionCwd,
         health: 'unknown',
         evidenceSources: candidate.evidence.sources,
+        healthSource: 'none',
+        config: 'no-schema',
+        scripts: 'not_declared',
         disabledReason: candidate.disabledReason,
         error: candidate.evidence.readErrors.join('；'),
       });
@@ -516,10 +814,26 @@ export async function statusCommand(
       const hasEvidence =
         pluginStatus &&
         (hasHistoricalEvidence(pluginStatus) || hasRuntimeEvidence(pluginStatus));
+      const hasHistoricalHealthEvidence =
+        Boolean(hasEvidence) ||
+        candidate.evidence.sources.length > 0 ||
+        pluginHasAnyDiscoveryEvidence;
 
       if (requestedPlugins === undefined && !hasEvidence && !pluginHasAnyDiscoveryEvidence) {
         continue;
       }
+
+      const runtimeHealth = await resolveStatusRuntimeHealth({
+        pluginName: candidate.pluginName,
+        platform: candidate.platform,
+        scope: candidate.scope,
+        projectKey: candidate.projectKey,
+        ledger,
+        currentPlugin: candidate.target.currentPlugin,
+        hasHistoricalEvidence: hasHistoricalHealthEvidence,
+        cwd: candidate.executionCwd,
+        env,
+      });
 
       upsertReport(reportsByKey, candidate, status);
       cells.push({
@@ -532,6 +846,7 @@ export async function statusCommand(
         health: resolvePluginHealth(pluginStatus),
         report: pluginStatus,
         evidenceSources: candidate.evidence.sources,
+        ...runtimeHealth,
         disabledReason: candidate.disabledReason,
       });
     } catch (error) {
@@ -544,6 +859,9 @@ export async function statusCommand(
         executionCwd: candidate.executionCwd,
         health: 'unknown',
         evidenceSources: candidate.evidence.sources,
+        healthSource: 'none',
+        config: 'no-schema',
+        scripts: 'not_declared',
         disabledReason: candidate.disabledReason,
         error: statusErrorMessage(error),
       });

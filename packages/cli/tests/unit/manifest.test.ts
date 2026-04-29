@@ -6,9 +6,14 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createBundleSourceManifest,
   readMarketplaceSourceMeta,
   readPluginManifest,
 } from '../../src/utils/manifest.js';
+import {
+  resolveLifecycleScriptForOs,
+  scanNodeImportContract,
+} from '../../src/utils/plugin-script-contract.js';
 import {
   CLAUDE_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
@@ -30,6 +35,50 @@ async function makeTempRepo(): Promise<string> {
   tempDirs.push(tempDir);
   await fs.copy(fixturePath('repo-template'), tempDir);
   return tempDir;
+}
+
+async function readFixturePluginManifest(repoRoot: string): Promise<Record<string, unknown>> {
+  return fs.readJson(
+    path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+  );
+}
+
+async function writeFixturePluginManifest(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  await fs.writeJson(
+    path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+}
+
+async function writeScriptFixture(pluginRoot: string): Promise<void> {
+  await fs.ensureDir(path.join(pluginRoot, 'scripts'));
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "./shared.mjs";\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'shared.mjs'), 'export const ok = true;\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'uninstall.sh'), 'echo uninstall\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'uninstall.ps1'), 'Write-Output uninstall\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.cjs'), 'module.exports = {};\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'console.log("build");\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.test.mjs'), 'import "./shared.mjs";\n', 'utf8');
+  await fs.writeJson(
+    path.join(pluginRoot, 'scripts', 'package.json'),
+    {
+      name: 'git-commit-scripts',
+      version: '0.1.0',
+      type: 'module',
+      dependencies: {
+        chalk: '^5.0.0',
+      },
+      devDependencies: {
+        vitest: '^3.0.0',
+      },
+    },
+    { spaces: 2 },
+  );
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
 }
 
 afterEach(async () => {
@@ -189,6 +238,381 @@ describe('manifest utils', () => {
         },
       },
     });
+  });
+
+  it('accepts scripts and config manifest contracts and strips dev-only script fields from bundle manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeScriptFixture(pluginRoot);
+    manifest.scripts = {
+      timeoutMs: 45_000,
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+        uninstall: {
+          unix: { runner: 'sh', path: './scripts/uninstall.sh' },
+          windows: { runner: 'powershell', path: './scripts/uninstall.ps1' },
+        },
+      },
+      helpers: {
+        config: './scripts/aw-config.cjs',
+      },
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+          args: ['--release'],
+        },
+      },
+      tests: {
+        node: ['./scripts/*.test.mjs'],
+      },
+    };
+    manifest.config = {
+      schema: {
+        token: {
+          type: 'string',
+          title: 'API Token',
+          required: true,
+          sensitive: true,
+        },
+        mode: {
+          type: 'enum',
+          values: ['safe', 'fast'],
+          default: 'safe',
+        },
+        limit: {
+          type: 'number',
+          min: 1,
+          max: 10,
+          default: 3,
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    expect(plugin.manifest.scripts).toMatchObject({
+      timeoutMs: 45_000,
+      lifecycle: {
+        install: {
+          default: {
+            runner: 'auto',
+            path: './scripts/lifecycle.mjs',
+          },
+        },
+      },
+      helpers: {
+        config: './scripts/aw-config.cjs',
+      },
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+          args: ['--release'],
+        },
+      },
+      tests: {
+        node: ['./scripts/*.test.mjs'],
+      },
+    });
+    expect(plugin.manifest.config?.schema.mode).toMatchObject({
+      type: 'enum',
+      values: ['safe', 'fast'],
+      default: 'safe',
+    });
+
+    const bundleManifest = createBundleSourceManifest(plugin);
+    expect(bundleManifest.scripts?.tests).toBeUndefined();
+    expect(bundleManifest.scripts?.node?.build).toBeUndefined();
+    expect(bundleManifest.scripts?.node?.packageRoot).toBe('./scripts');
+    expect(bundleManifest.scripts?.helpers?.config).toBe('./scripts/aw-config.cjs');
+    expect(bundleManifest.config?.schema.token.sensitive).toBe(true);
+    expect(bundleManifest.config?.schema.token.title).toBe('API Token');
+  });
+
+  it('resolves lifecycle OS selectors with narrow, wide, and default priority', () => {
+    const selector = {
+      default: { runner: 'node', path: './scripts/default.mjs' },
+      unix: { runner: 'sh', path: './scripts/unix.sh' },
+      windows: { runner: 'powershell', path: './scripts/windows.ps1' },
+      linux: { runner: 'bash', path: './scripts/linux.sh' },
+      darwin: { runner: 'node', path: './scripts/darwin.mjs' },
+      win32: { runner: 'cmd', path: './scripts/windows.cmd' },
+    } as const;
+
+    expect(resolveLifecycleScriptForOs(selector, 'linux')?.path).toBe('./scripts/linux.sh');
+    expect(resolveLifecycleScriptForOs({ unix: selector.unix, default: selector.default }, 'linux')?.path).toBe('./scripts/unix.sh');
+    expect(resolveLifecycleScriptForOs({ default: selector.default }, 'linux')?.path).toBe('./scripts/default.mjs');
+    expect(resolveLifecycleScriptForOs(selector, 'darwin')?.path).toBe('./scripts/darwin.mjs');
+    expect(resolveLifecycleScriptForOs({ unix: selector.unix, default: selector.default }, 'darwin')?.path).toBe('./scripts/unix.sh');
+    expect(resolveLifecycleScriptForOs(selector, 'win32')?.path).toBe('./scripts/windows.cmd');
+    expect(resolveLifecycleScriptForOs({ windows: selector.windows, default: selector.default }, 'win32')?.path).toBe('./scripts/windows.ps1');
+  });
+
+  it('rejects unsafe lifecycle, helper, timeout, and node package script declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeScriptFixture(pluginRoot);
+
+    manifest.scripts = {
+      lifecycle: {
+        install: {
+          linux: { runner: 'deno', path: './scripts/lifecycle.mjs' },
+          darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
+          win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
+        },
+      },
+      helpers: {
+        config: './scripts/aw-config.cjs',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported runner "deno"');
+
+    manifest.scripts = {
+      lifecycle: {
+        install: {
+          unix: { runner: 'sh', path: './scripts/uninstall.sh' },
+        },
+      },
+      helpers: {
+        config: './scripts/aw-config.cjs',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('no lifecycle entry resolves on win32');
+
+    manifest.scripts = {
+      timeoutMs: 999,
+      helpers: {
+        config: './scripts/aw-config.cjs',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected an integer between 1000 and 300000');
+
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs --flag',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('inline command strings are not allowed');
+
+    manifest.scripts = {
+      helpers: {
+        config: './scripts/uninstall.sh',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('Node runnable file extension');
+
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'bash',
+          path: './scripts/build.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected "node"');
+
+    manifest.scripts = {
+      helpers: {
+        config: '/tmp/aw-config.mjs',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('absolute paths are not allowed');
+  });
+
+  it('rejects unsafe packageRoot metadata before staging install', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeScriptFixture(pluginRoot);
+
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+
+    await fs.remove(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'));
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('missing pnpm-lock.yaml');
+
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
+    await fs.writeJson(
+      path.join(pluginRoot, 'scripts', 'package.json'),
+      {
+        name: 'git-commit-scripts',
+        version: '0.1.0',
+        dependencies: {
+          local: 'file:../local.tgz',
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('not registry-backed');
+
+    await fs.writeJson(
+      path.join(pluginRoot, 'scripts', 'package.json'),
+      {
+        name: 'git-commit-scripts',
+        version: '0.1.0',
+        dependencies: {
+          shortcut: 'owner/repo',
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('not registry-backed');
+
+    await fs.writeJson(
+      path.join(pluginRoot, 'scripts', 'package.json'),
+      {
+        name: 'git-commit-scripts',
+        version: '0.1.0',
+        optionalDependencies: {
+          fsevents: '^2.0.0',
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('optionalDependencies are not supported');
+  });
+
+  it('rejects invalid config schema declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+
+    manifest.config = {
+      schema: {
+        'bad/key': {
+          type: 'string',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('config key "bad/key" is not valid');
+
+    manifest.config = {
+      schema: {
+        'bad-key': {
+          type: 'string',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('config key "bad-key" is not valid');
+
+    manifest.config = {
+      schema: {
+        mode: {
+          type: 'enum',
+          values: ['safe'],
+          default: 'fast',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('enum default must be one of values');
+
+    manifest.config = {
+      schema: {
+        limit: {
+          type: 'number',
+          min: 10,
+          max: 1,
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min must be less than or equal to max');
+
+    manifest.config = {
+      schema: {
+        text: {
+          type: 'string',
+          min: 1,
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min/max are only supported for number config');
+  });
+
+  it('scans Node import contracts for relative closures and undeclared bare specifiers', () => {
+    expect(
+      scanNodeImportContract({
+        entryFiles: ['./scripts/lifecycle.mjs'],
+        files: {
+          'scripts/lifecycle.mjs': [
+            'import "./shared.mjs";',
+            'export { value } from "./value.js";',
+            'const util = require("./util.cjs");',
+            'await import("./lazy.mjs");',
+          ].join('\n'),
+          'scripts/shared.mjs': 'export const shared = true;',
+          'scripts/value.js': 'export const value = 1;',
+          'scripts/util.cjs': 'module.exports = require("node:fs");',
+          'scripts/lazy.mjs': 'export default true;',
+        },
+      }),
+    ).toEqual({
+      files: [
+        'scripts/lazy.mjs',
+        'scripts/lifecycle.mjs',
+        'scripts/shared.mjs',
+        'scripts/util.cjs',
+        'scripts/value.js',
+      ],
+      bareSpecifiers: [],
+      errors: [],
+    });
+
+    expect(
+      scanNodeImportContract({
+        entryFiles: ['./scripts/lifecycle.mjs'],
+        dependencies: ['chalk'],
+        devDependencies: ['vitest'],
+        files: {
+          'scripts/lifecycle.mjs': [
+            'import chalk from "chalk";',
+            'import test from "vitest";',
+            'import "./escape.mjs";',
+          ].join('\n'),
+          'scripts/escape.mjs': 'import "../../outside.mjs";',
+          'outside.mjs': 'export {};',
+        },
+      }),
+    ).toMatchObject({
+      files: ['scripts/escape.mjs', 'scripts/lifecycle.mjs'],
+      bareSpecifiers: ['chalk', 'vitest'],
+      errors: [
+        'Runtime import "vitest" from "scripts/lifecycle.mjs" uses dev dependency "vitest".',
+        'Relative import "../../outside.mjs" from "scripts/escape.mjs" escapes the plugin root.',
+      ],
+    });
+
+    expect(
+      scanNodeImportContract({
+        entryFiles: ['./scripts/lifecycle.mjs'],
+        files: {
+          'scripts/lifecycle.mjs': 'import leftPad from "left-pad";',
+        },
+      }).errors,
+    ).toEqual([
+      'Runtime import "left-pad" from "scripts/lifecycle.mjs" is not declared in dependencies.',
+    ]);
   });
 
   it('rejects skillTriggers without skills or with unknown fields', async () => {

@@ -109,6 +109,98 @@ describe('installed ledger', () => {
     });
   });
 
+  it('accepts lifecycle config snapshot metadata on scope records', () => {
+    const ledger = validateInstalledLedger({
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+                updatedAt: '2026-04-25T00:00:00.000Z',
+                resolvedVersion: '0.1.0',
+                capabilitySnapshot: {
+                  requiresNativePlugin: true,
+                },
+                lifecycleConfigSnapshot: {
+                  snapshotRoot: '/aw/plugin-install-snapshots/codex/user/scope/git-commit/digest',
+                  bundleRoot: '/aw/plugin-install-snapshots/codex/user/scope/git-commit/digest/bundle',
+                  manifestPath: '/aw/plugin-install-snapshots/codex/user/scope/git-commit/digest/bundle/.agents-plugin/plugin.json',
+                  pluginName: 'git-commit',
+                  pluginVersion: '0.1.0',
+                  sourceManifestDigest: 'sha256:manifest',
+                  bundleFingerprint: 'sha256:bundle',
+                  createdAt: '2026-04-25T00:00:00.000Z',
+                  createdFrom: {
+                    source: 'currentCatalog',
+                    catalogRoot: '/aw',
+                    catalogSource: 'local',
+                    pluginRoot: '/aw/plugins/git-commit',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(ledger?.plugins['git-commit']?.platforms.codex?.userScope?.lifecycleConfigSnapshot).toMatchObject({
+      pluginName: 'git-commit',
+      sourceManifestDigest: 'sha256:manifest',
+    });
+  });
+
+  it('rejects malformed lifecycle config snapshot metadata', () => {
+    expect(
+      validateInstalledLedger({
+        version: 1,
+        ledgerState: {
+          status: 'available',
+          degradedAt: null,
+          reason: null,
+        },
+        plugins: {
+          'git-commit': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                  lifecycleConfigSnapshot: {
+                    snapshotRoot: '/aw/snapshot',
+                    bundleRoot: '/aw/snapshot/bundle',
+                    manifestPath: '/aw/snapshot/bundle/.agents-plugin/plugin.json',
+                    pluginName: 'git-commit',
+                    pluginVersion: '0.1.0',
+                    sourceManifestDigest: 'sha256:manifest',
+                    bundleFingerprint: 'sha256:bundle',
+                    createdAt: '2026-04-25T00:00:00.000Z',
+                    createdFrom: {
+                      source: 'remote',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
   it('rejects invalid skill trigger installOptions and write order values', () => {
     expect(
       validateInstalledLedger({

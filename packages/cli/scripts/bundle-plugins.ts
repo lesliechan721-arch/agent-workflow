@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 
-import { bundleLocalPlugin } from '../src/generators/local-plugin.js';
+import {
+  bundleLocalPlugin,
+  type PluginBundleBuildMode,
+  type PluginStagingRunner,
+} from '../src/generators/local-plugin.js';
 import { writeJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
@@ -15,6 +19,8 @@ import {
 export interface BundlePluginsOptions {
   repoRoot?: string;
   outputRoot?: string;
+  buildMode?: PluginBundleBuildMode;
+  stagingRunner?: PluginStagingRunner;
 }
 
 function resolveDefaultPaths(): { repoRoot: string; outputRoot: string } {
@@ -33,6 +39,7 @@ export async function bundlePlugins(
   const defaults = resolveDefaultPaths();
   const repoRoot = options.repoRoot ?? defaults.repoRoot;
   const outputRoot = options.outputRoot ?? defaults.outputRoot;
+  const buildMode = options.buildMode ?? 'build-free';
 
   await fs.remove(outputRoot);
   await fs.ensureDir(path.join(outputRoot, 'plugins'));
@@ -42,25 +49,31 @@ export async function bundlePlugins(
     discoverPlugins(repoRoot),
   ]);
 
+  const bundledPlugins = [];
   for (const plugin of plugins) {
-    await bundleLocalPlugin(
+    const result = await bundleLocalPlugin(
       plugin,
       path.join(outputRoot, 'plugins', plugin.manifest.name),
+      {
+        buildMode,
+        stagingRunner: options.stagingRunner,
+      },
     );
+    bundledPlugins.push(result.plugin);
   }
 
-  const marketplace = createMarketplaceManifest(sourceMeta, plugins);
+  const marketplace = createMarketplaceManifest(sourceMeta, bundledPlugins);
   await writeJsonFile(path.join(outputRoot, '.claude-plugin', 'marketplace.json'), marketplace);
   await writeJsonFile(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json'), marketplace);
 
   return {
     outputRoot,
-    pluginNames: plugins.map((plugin) => plugin.manifest.name),
+    pluginNames: bundledPlugins.map((plugin) => plugin.manifest.name),
   };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  bundlePlugins().catch((error: unknown) => {
+  bundlePlugins({ buildMode: 'staging' }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
     process.exitCode = 1;

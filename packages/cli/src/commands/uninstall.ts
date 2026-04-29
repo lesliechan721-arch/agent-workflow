@@ -12,6 +12,7 @@ import {
 import type {
   CommandOptions,
   InstalledLedger,
+  InstalledScopeRecord,
   LedgerStateReason,
   PlatformName,
   PluginStatusReport,
@@ -26,9 +27,15 @@ import {
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
 import {
+  garbageCollectLifecycleConfigSnapshots,
+  runLifecycleScript,
+} from '../utils/plugin-scripts.js';
+import {
   resolveAwHome,
   resolveClaudePaths,
+  resolveClaudeProjectKey,
   resolveCodexPaths,
+  resolveCodexProjectKey,
   resolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
 import {
@@ -63,7 +70,9 @@ import {
   type RawCommandOptions,
 } from './options.js';
 
-type UninstallCommandRuntime = CommandExecutionContextInput;
+type UninstallCommandRuntime = CommandExecutionContextInput & {
+  skipLifecycle?: boolean;
+};
 
 interface FileRollbackState {
   path: string;
@@ -147,6 +156,27 @@ async function applyUninstallLedger(
   return platform === 'claude'
     ? applyClaudeUninstallLedger(ledger, target.pluginName, options.scope, options.cwd)
     : applyCodexUninstallLedger(ledger, target.pluginName, options.scope, options.cwd);
+}
+
+async function getScopeRecordForUninstall(
+  ledger: InstalledLedger,
+  platform: PlatformName,
+  pluginName: string,
+  options: CommandOptions,
+): Promise<InstalledScopeRecord<Record<string, unknown>> | undefined> {
+  const platformRecord = ledger.plugins[pluginName]?.platforms[platform];
+  if (!platformRecord) {
+    return undefined;
+  }
+
+  if (options.scope === 'user') {
+    return platformRecord.userScope as InstalledScopeRecord<Record<string, unknown>> | undefined;
+  }
+
+  const projectKey = platform === 'claude'
+    ? await resolveClaudeProjectKey(options.cwd)
+    : await resolveCodexProjectKey(options.cwd);
+  return platformRecord.projectScopes?.[projectKey] as InstalledScopeRecord<Record<string, unknown>> | undefined;
 }
 
 function shouldRefuseHistoricalUninstall(
@@ -424,6 +454,25 @@ export async function uninstallTargetsOnPlatforms(
       let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
 
       try {
+        if (!runtime.skipLifecycle) {
+          await runLifecycleScript({
+            event: 'uninstall',
+            pluginName: target.pluginName,
+            platform,
+            scope: options.scope,
+            cwd: options.cwd,
+            context,
+            scopeRecord: await getScopeRecordForUninstall(
+              baselineLedger,
+              platform,
+              target.pluginName,
+              options,
+            ),
+            currentPlugin: target.currentPlugin,
+            scriptTimeoutMs: options.scriptTimeoutMs,
+          });
+        }
+
         await adapters[platform].uninstallPlugin(target.plugin, options.scope);
         nativeWritten = didUninstallWriteNativeState(platform, options.scope, pluginStatus);
 
@@ -454,6 +503,7 @@ export async function uninstallTargetsOnPlatforms(
             materializationRollbackHandle = rematerialization.materialization?.rollbackHandle;
           }
           await writeInstalledLedger(nextLedger, env);
+          await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
         }
       } catch (error) {
         if (materializationCommitted && materializationRollbackHandle) {

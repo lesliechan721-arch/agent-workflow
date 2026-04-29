@@ -1,4 +1,7 @@
+import { execFile } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 
@@ -10,16 +13,56 @@ import {
   createBundleSourceManifest,
   createPlatformManifestBase,
   normalizePluginRelativePath,
+  readPluginManifest,
 } from '../utils/manifest.js';
 import { writeJsonFile } from '../utils/json.js';
 import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import { scanNodeImportContract } from '../utils/plugin-script-contract.js';
 import type {
   AgentDefinition,
+  PluginLifecycleScriptEntry,
   PlatformName,
   PlatformPluginManifest,
   PluginMeta,
 } from '../types.js';
+
+const execFileAsync = promisify(execFile);
+const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const INSTALL_SCRIPT_NAMES = ['preinstall', 'install', 'postinstall', 'prepare'] as const;
+
+export type PluginBundleBuildMode = 'build-free' | 'staging' | 'prepared';
+
+export interface PluginStagingRunner {
+  installPackageRoot(packageRoot: string): Promise<void>;
+  runNodeBuild(options: {
+    pluginRoot: string;
+    scriptPath: string;
+    args: readonly string[];
+  }): Promise<void>;
+}
+
+export interface BundleLocalPluginOptions {
+  buildMode?: PluginBundleBuildMode;
+  stagingRunner?: PluginStagingRunner;
+}
+
+const defaultStagingRunner: PluginStagingRunner = {
+  async installPackageRoot(packageRoot) {
+    await execFileAsync('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], {
+      cwd: packageRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  },
+  async runNodeBuild({ pluginRoot, scriptPath, args }) {
+    await execFileAsync(process.execPath, [path.join(pluginRoot, stripDotSlash(scriptPath)), ...args], {
+      cwd: pluginRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  },
+};
 
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
@@ -49,6 +92,30 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
       const nestedFiles = await listFilesRecursively(entryPath);
+      files.push(
+        ...nestedFiles.map((nestedFile) => path.join(entry.name, nestedFile).split(path.sep).join('/')),
+      );
+      continue;
+    }
+
+    files.push(entry.name);
+  }
+
+  return files.sort();
+}
+
+async function listFilesRecursivelyIncludingManaged(rootDir: string): Promise<string[]> {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git') {
+      continue;
+    }
+
+    const entryPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      const nestedFiles = await listFilesRecursivelyIncludingManaged(entryPath);
       files.push(
         ...nestedFiles.map((nestedFile) => path.join(entry.name, nestedFile).split(path.sep).join('/')),
       );
@@ -123,6 +190,18 @@ async function copyFileWithTemplateSupport(
   await fs.writeFile(targetPath, renderTemplate(content, templateVars, platform), 'utf8');
 }
 
+async function copyBundleRootFile(
+  pluginRoot: string,
+  outputRoot: string,
+  relativePath: string,
+): Promise<void> {
+  const normalized = stripDotSlash(relativePath).split(path.sep).join('/');
+  const sourcePath = path.join(pluginRoot, normalized);
+  const targetPath = path.join(outputRoot, normalized);
+  await fs.ensureDir(path.dirname(targetPath));
+  await fs.copyFile(sourcePath, targetPath);
+}
+
 async function addDeclaredPathFiles(
   plugin: PluginMeta,
   platform: PlatformName,
@@ -179,151 +258,519 @@ async function addDeclaredLspServerFiles(
   return value;
 }
 
+function isNodeRuntimeEntry(entry: PluginLifecycleScriptEntry): boolean {
+  return entry.runner === 'node' || (
+    entry.runner === 'auto' &&
+    NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(entry.path).toLowerCase())
+  );
+}
+
+function addLifecycleRuntimeEntries(
+  plugin: PluginMeta,
+  rootFiles: Set<string>,
+  nodeEntries: Set<string>,
+): void {
+  const lifecycle = plugin.manifest.scripts?.lifecycle;
+  if (!lifecycle) {
+    return;
+  }
+
+  for (const selector of Object.values(lifecycle)) {
+    if (!selector) {
+      continue;
+    }
+    for (const entry of Object.values(selector)) {
+      if (!entry) {
+        continue;
+      }
+      const filePath = stripDotSlash(entry.path);
+      rootFiles.add(filePath);
+      if (isNodeRuntimeEntry(entry)) {
+        nodeEntries.add(filePath);
+      }
+    }
+  }
+}
+
+function addHelperRuntimeEntries(
+  plugin: PluginMeta,
+  rootFiles: Set<string>,
+  nodeEntries: Set<string>,
+): void {
+  const configHelper = plugin.manifest.scripts?.helpers?.config;
+  if (!configHelper) {
+    return;
+  }
+
+  const filePath = stripDotSlash(configHelper);
+  rootFiles.add(filePath);
+  nodeEntries.add(filePath);
+}
+
+async function readJsonObject(filePath: string, fieldName: string): Promise<Record<string, unknown>> {
+  const content = await fs.readJson(filePath);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    throw new Error(`Invalid ${fieldName}: expected a JSON object.`);
+  }
+
+  return content as Record<string, unknown>;
+}
+
+function readDependencyNames(packageJson: Record<string, unknown>, fieldName: string): string[] {
+  const dependencies = packageJson[fieldName];
+  if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+    return [];
+  }
+
+  return Object.keys(dependencies as Record<string, unknown>).sort();
+}
+
+async function readPackageRootDependencySets(
+  plugin: PluginMeta,
+): Promise<{ dependencies: string[]; devDependencies: string[] }> {
+  const packageRoot = plugin.manifest.scripts?.node?.packageRoot;
+  if (!packageRoot) {
+    return { dependencies: [], devDependencies: [] };
+  }
+
+  const packageJson = await readJsonObject(
+    path.join(plugin.rootDir, stripDotSlash(packageRoot), 'package.json'),
+    'scripts.node.packageRoot.package.json',
+  );
+
+  return {
+    dependencies: readDependencyNames(packageJson, 'dependencies'),
+    devDependencies: readDependencyNames(packageJson, 'devDependencies'),
+  };
+}
+
+async function collectRuntimeClosureFiles(
+  plugin: PluginMeta,
+  entryFiles: string[],
+): Promise<string[]> {
+  if (entryFiles.length === 0) {
+    return [];
+  }
+
+  const allFiles = await listFilesRecursivelyIncludingManaged(plugin.rootDir);
+  const jsFiles: Record<string, string> = {};
+  await Promise.all(
+    allFiles
+      .filter((filePath) => NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase()))
+      .map(async (filePath) => {
+        jsFiles[filePath] = await fs.readFile(path.join(plugin.rootDir, filePath), 'utf8');
+      }),
+  );
+
+  const { dependencies, devDependencies } = await readPackageRootDependencySets(plugin);
+  const scan = scanNodeImportContract({
+    files: jsFiles,
+    entryFiles,
+    dependencies,
+    devDependencies,
+  });
+  if (scan.errors.length > 0) {
+    throw new Error(`Invalid scripts.node runtime imports:\n${scan.errors.join('\n')}`);
+  }
+
+  return scan.files;
+}
+
+async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
+  const rootFiles = new Set<string>();
+  const nodeEntries = new Set<string>();
+  addLifecycleRuntimeEntries(plugin, rootFiles, nodeEntries);
+  addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
+
+  for (const filePath of await collectRuntimeClosureFiles(plugin, [...nodeEntries])) {
+    rootFiles.add(filePath);
+  }
+
+  return [...rootFiles].sort();
+}
+
+function packageRootPath(plugin: PluginMeta): string | undefined {
+  const packageRoot = plugin.manifest.scripts?.node?.packageRoot;
+  return packageRoot ? path.join(plugin.rootDir, stripDotSlash(packageRoot)) : undefined;
+}
+
+async function findInstalledPackageDir(
+  packageRoot: string,
+  importerDir: string,
+  packageName: string,
+): Promise<string | undefined> {
+  let current = importerDir;
+  const packageRootParent = path.dirname(packageRoot);
+
+  while (current.startsWith(packageRootParent)) {
+    const candidate = path.join(current, 'node_modules', ...packageName.split('/'));
+    const stats = await fs.stat(candidate).catch(() => null);
+    if (stats?.isDirectory()) {
+      return fs.realpath(candidate);
+    }
+
+    if (current === packageRoot) {
+      break;
+    }
+    current = path.dirname(current);
+  }
+
+  return undefined;
+}
+
+async function assertNoProductionInstallScripts(packageRoot: string): Promise<void> {
+  const rootPackageJson = await readJsonObject(
+    path.join(packageRoot, 'package.json'),
+    'scripts.node.packageRoot.package.json',
+  );
+  const queue = readDependencyNames(rootPackageJson, 'dependencies').map((dependencyName) => ({
+    packageName: dependencyName,
+    importerDir: packageRoot,
+  }));
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next) {
+      continue;
+    }
+
+    const dependencyDir = await findInstalledPackageDir(packageRoot, next.importerDir, next.packageName);
+    if (!dependencyDir) {
+      throw new Error(`Invalid scripts.node.packageRoot: missing production dependency "${next.packageName}" in node_modules.`);
+    }
+    if (visited.has(dependencyDir)) {
+      continue;
+    }
+    visited.add(dependencyDir);
+
+    const packageJsonPath = path.join(dependencyDir, 'package.json');
+    const packageJson = await readJsonObject(packageJsonPath, `${next.packageName} package.json`);
+    const scripts = packageJson.scripts;
+    if (scripts && typeof scripts === 'object' && !Array.isArray(scripts)) {
+      for (const scriptName of INSTALL_SCRIPT_NAMES) {
+        if (typeof (scripts as Record<string, unknown>)[scriptName] === 'string') {
+          throw new Error(
+            `Invalid scripts.node.packageRoot: production dependency "${next.packageName}" declares unsupported "${scriptName}" script.`,
+          );
+        }
+      }
+    }
+
+    for (const childDependency of readDependencyNames(packageJson, 'dependencies')) {
+      queue.push({
+        packageName: childDependency,
+        importerDir: dependencyDir,
+      });
+    }
+  }
+}
+
+function getTopLevelPackageName(relativePath: string): string | undefined {
+  const [first, second] = relativePath.split(path.sep);
+  if (!first) {
+    return undefined;
+  }
+  if (first.startsWith('@')) {
+    return second ? `${first}/${second}` : undefined;
+  }
+  return first;
+}
+
+async function copyProductionPackageRoot(plugin: PluginMeta, outputRoot: string): Promise<void> {
+  const declaredPackageRoot = plugin.manifest.scripts?.node?.packageRoot;
+  if (!declaredPackageRoot) {
+    return;
+  }
+
+  const sourcePackageRoot = path.join(plugin.rootDir, stripDotSlash(declaredPackageRoot));
+  const targetPackageRoot = path.join(outputRoot, stripDotSlash(declaredPackageRoot));
+  await fs.ensureDir(targetPackageRoot);
+  await fs.copyFile(
+    path.join(sourcePackageRoot, 'package.json'),
+    path.join(targetPackageRoot, 'package.json'),
+  );
+  await fs.copyFile(
+    path.join(sourcePackageRoot, 'pnpm-lock.yaml'),
+    path.join(targetPackageRoot, 'pnpm-lock.yaml'),
+  );
+
+  const sourceNodeModules = path.join(sourcePackageRoot, 'node_modules');
+  if (!(await fs.pathExists(sourceNodeModules))) {
+    throw new Error('Invalid scripts.node.packageRoot: missing production node_modules after staging install.');
+  }
+
+  const { dependencies, devDependencies } = await readPackageRootDependencySets(plugin);
+  const runtimeDependencies = new Set(dependencies);
+  const devOnlyDependencies = new Set(devDependencies.filter((dependency) => !runtimeDependencies.has(dependency)));
+  await fs.copy(sourceNodeModules, path.join(targetPackageRoot, 'node_modules'), {
+    dereference: true,
+    filter(source) {
+      const relativePath = path.relative(sourceNodeModules, source);
+      if (!relativePath) {
+        return true;
+      }
+      if (relativePath === '.bin' || relativePath.startsWith(`.bin${path.sep}`)) {
+        return false;
+      }
+      if (relativePath === '.pnpm' || relativePath.startsWith(`.pnpm${path.sep}`)) {
+        return true;
+      }
+
+      const packageName = getTopLevelPackageName(relativePath);
+      return !packageName || !devOnlyDependencies.has(packageName);
+    },
+  });
+}
+
+async function createStagedPlugin(
+  plugin: PluginMeta,
+  runner: PluginStagingRunner,
+): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-staging-'));
+  const stagingPluginRoot = path.join(stagingRoot, 'plugin');
+
+  try {
+    await fs.copy(plugin.rootDir, stagingPluginRoot, {
+      filter(source) {
+        return path.basename(source) !== 'node_modules';
+      },
+    });
+
+    const sourceBuild = plugin.manifest.scripts?.node?.build;
+    if (sourceBuild) {
+      const sourcePackageRoot = packageRootPath({
+        ...plugin,
+        rootDir: stagingPluginRoot,
+      });
+      if (sourcePackageRoot) {
+        await runner.installPackageRoot(sourcePackageRoot);
+      }
+      await runner.runNodeBuild({
+        pluginRoot: stagingPluginRoot,
+        scriptPath: sourceBuild.path,
+        args: sourceBuild.args ?? [],
+      });
+    }
+
+    const stagedPlugin = await readPluginManifest(stagingPluginRoot);
+    if (stagedPlugin.manifest.name !== plugin.manifest.name) {
+      throw new Error(
+        `Invalid scripts.node.build: build changed plugin name from "${plugin.manifest.name}" to "${stagedPlugin.manifest.name}".`,
+      );
+    }
+
+    const finalPackageRoot = packageRootPath(stagedPlugin);
+    if (finalPackageRoot) {
+      await runner.installPackageRoot(finalPackageRoot);
+      await assertNoProductionInstallScripts(finalPackageRoot);
+    }
+
+    return {
+      plugin: stagedPlugin,
+      cleanup: () => fs.remove(stagingRoot),
+    };
+  } catch (error) {
+    await fs.remove(stagingRoot);
+    throw error;
+  }
+}
+
+async function resolveBuildPlugin(
+  plugin: PluginMeta,
+  options: Required<Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'>>,
+): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  if (options.buildMode === 'prepared') {
+    return { plugin, cleanup: async () => {} };
+  }
+
+  if (options.buildMode === 'build-free') {
+    if (plugin.manifest.scripts?.node) {
+      throw new Error(
+        `Cannot bundle plugin "${plugin.manifest.name}" in build-free mode because scripts.node requires staging build mode.`,
+      );
+    }
+    return { plugin, cleanup: async () => {} };
+  }
+
+  return createStagedPlugin(plugin, options.stagingRunner);
+}
+
+export async function prepareLocalPluginBundleSource(
+  plugin: PluginMeta,
+  options: Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'> = {},
+): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  const buildOptions = {
+    buildMode: options.buildMode ?? 'staging',
+    stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+  };
+  return resolveBuildPlugin(plugin, buildOptions);
+}
+
 export interface LocalPluginBundleResult {
   outputRoot: string;
   claudeManifest: PlatformPluginManifest;
   codexManifest: PlatformPluginManifest;
+  plugin: PluginMeta;
 }
 
 export async function bundleLocalPlugin(
   plugin: PluginMeta,
   outputRoot: string,
+  options: BundleLocalPluginOptions = {},
 ): Promise<LocalPluginBundleResult> {
+  const buildOptions = {
+    buildMode: options.buildMode ?? 'build-free',
+    stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+  };
+  const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
+  plugin = buildPlugin.plugin;
+
   await fs.remove(outputRoot);
   await fs.ensureDir(outputRoot);
 
-  const claudeFiles = new Set<string>();
-  const codexFiles = new Set<string>();
-  const buildConfig = plugin.manifest.buildConfig;
-  const templatePatterns = buildConfig?.templates?.include ?? [];
-  const templateVars = buildConfig?.templates?.vars ?? {};
+  try {
+    const claudeFiles = new Set<string>();
+    const codexFiles = new Set<string>();
+    const buildConfig = plugin.manifest.buildConfig;
+    const templatePatterns = buildConfig?.templates?.include ?? [];
+    const templateVars = buildConfig?.templates?.vars ?? {};
 
-  const claudeManifest = createPlatformManifestBase(plugin);
-  const codexManifest = createPlatformManifestBase(plugin);
+    const claudeManifest = createPlatformManifestBase(plugin);
+    const codexManifest = createPlatformManifestBase(plugin);
 
-  claudeManifest.skills = await addDeclaredPathFiles(
-    plugin,
-    'claude',
-    plugin.manifest.skills,
-    claudeFiles,
-  );
-  codexManifest.skills = await addDeclaredPathFiles(
-    plugin,
-    'codex',
-    plugin.manifest.skills,
-    codexFiles,
-  );
+    claudeManifest.skills = await addDeclaredPathFiles(
+      plugin,
+      'claude',
+      plugin.manifest.skills,
+      claudeFiles,
+    );
+    codexManifest.skills = await addDeclaredPathFiles(
+      plugin,
+      'codex',
+      plugin.manifest.skills,
+      codexFiles,
+    );
 
-  claudeManifest.mcpServers = await addDeclaredPathFiles(
-    plugin,
-    'claude',
-    plugin.manifest.mcpServers,
-    claudeFiles,
-  );
-  codexManifest.mcpServers = await addDeclaredPathFiles(
-    plugin,
-    'codex',
-    plugin.manifest.mcpServers,
-    codexFiles,
-  );
-  codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
+    claudeManifest.mcpServers = await addDeclaredPathFiles(
+      plugin,
+      'claude',
+      plugin.manifest.mcpServers,
+      claudeFiles,
+    );
+    codexManifest.mcpServers = await addDeclaredPathFiles(
+      plugin,
+      'codex',
+      plugin.manifest.mcpServers,
+      codexFiles,
+    );
+    codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
 
-  const claudeOverrides = buildConfig?.manifestOverrides?.claude;
-  claudeManifest.commands = await addDeclaredPathFiles(
-    plugin,
-    'claude',
-    claudeOverrides?.commands,
-    claudeFiles,
-  );
-  claudeManifest.outputStyles = await addDeclaredPathFiles(
-    plugin,
-    'claude',
-    claudeOverrides?.outputStyles,
-    claudeFiles,
-  );
-  claudeManifest.lspServers = await addDeclaredLspServerFiles(plugin, claudeOverrides?.lspServers, claudeFiles);
-  claudeManifest.userConfig = claudeOverrides?.userConfig;
-  claudeManifest.channels = claudeOverrides?.channels;
+    const claudeOverrides = buildConfig?.manifestOverrides?.claude;
+    claudeManifest.commands = await addDeclaredPathFiles(
+      plugin,
+      'claude',
+      claudeOverrides?.commands,
+      claudeFiles,
+    );
+    claudeManifest.outputStyles = await addDeclaredPathFiles(
+      plugin,
+      'claude',
+      claudeOverrides?.outputStyles,
+      claudeFiles,
+    );
+    claudeManifest.lspServers = await addDeclaredLspServerFiles(plugin, claudeOverrides?.lspServers, claudeFiles);
+    claudeManifest.userConfig = claudeOverrides?.userConfig;
+    claudeManifest.channels = claudeOverrides?.channels;
 
-  const hooksArtifact = renderResolvedHooksArtifact(
-    resolvePlatformHookDefinitions(plugin.manifest, 'claude'),
-    'claude',
-  );
-  if (hooksArtifact) {
-    const hooksPath = path.join(outputRoot, 'claude', 'hooks', 'hooks.json');
-    await writeJsonFile(hooksPath, hooksArtifact.content);
-    claudeManifest.hooks = './claude/hooks/hooks.json';
-  }
+    const hooksArtifact = renderResolvedHooksArtifact(
+      resolvePlatformHookDefinitions(plugin.manifest, 'claude'),
+      'claude',
+    );
+    if (hooksArtifact) {
+      const hooksPath = path.join(outputRoot, 'claude', 'hooks', 'hooks.json');
+      await writeJsonFile(hooksPath, hooksArtifact.content);
+      claudeManifest.hooks = './claude/hooks/hooks.json';
+    }
 
-  const claudeAgents = resolvePlatformEntries<AgentDefinition>(
-    plugin.manifest.extensions?.agents,
-    'claude',
-  );
-  if (claudeAgents.length > 0) {
-    claudeManifest.agents = [];
-    for (const agent of claudeAgents) {
-      const generatedName = buildGeneratedName(plugin.manifest.name, agent.name);
-      const relativePath = `./claude/agents/${generatedName}.md`;
-      claudeManifest.agents.push(relativePath);
-      await writeTextFile(
-        path.join(outputRoot, stripDotSlash(relativePath)),
-        renderClaudeAgentContent(agent),
+    const claudeAgents = resolvePlatformEntries<AgentDefinition>(
+      plugin.manifest.extensions?.agents,
+      'claude',
+    );
+    if (claudeAgents.length > 0) {
+      claudeManifest.agents = [];
+      for (const agent of claudeAgents) {
+        const generatedName = buildGeneratedName(plugin.manifest.name, agent.name);
+        const relativePath = `./claude/agents/${generatedName}.md`;
+        claudeManifest.agents.push(relativePath);
+        await writeTextFile(
+          path.join(outputRoot, stripDotSlash(relativePath)),
+          renderClaudeAgentContent(agent),
+        );
+      }
+    }
+
+    const sourceFiles = await listFilesRecursively(plugin.rootDir);
+    if (buildConfig?.fileRules?.claude) {
+      for (const filePath of applyFileRules(
+        sourceFiles,
+        buildConfig.fileRules.claude.include,
+        buildConfig.fileRules.claude.exclude,
+      )) {
+        claudeFiles.add(filePath);
+      }
+    }
+    if (buildConfig?.fileRules?.codex) {
+      for (const filePath of applyFileRules(
+        sourceFiles,
+        buildConfig.fileRules.codex.include,
+        buildConfig.fileRules.codex.exclude,
+      )) {
+        codexFiles.add(filePath);
+      }
+    }
+
+    for (const filePath of claudeFiles) {
+      await copyFileWithTemplateSupport(
+        plugin.rootDir,
+        outputRoot,
+        filePath,
+        'claude',
+        templatePatterns,
+        templateVars,
       );
     }
-  }
 
-  const sourceFiles = await listFilesRecursively(plugin.rootDir);
-  if (buildConfig?.fileRules?.claude) {
-    for (const filePath of applyFileRules(
-      sourceFiles,
-      buildConfig.fileRules.claude.include,
-      buildConfig.fileRules.claude.exclude,
-    )) {
-      claudeFiles.add(filePath);
+    for (const filePath of codexFiles) {
+      await copyFileWithTemplateSupport(
+        plugin.rootDir,
+        outputRoot,
+        filePath,
+        'codex',
+        templatePatterns,
+        templateVars,
+      );
     }
-  }
-  if (buildConfig?.fileRules?.codex) {
-    for (const filePath of applyFileRules(
-      sourceFiles,
-      buildConfig.fileRules.codex.include,
-      buildConfig.fileRules.codex.exclude,
-    )) {
-      codexFiles.add(filePath);
+
+    for (const filePath of await collectAwRuntimeFiles(plugin)) {
+      await copyBundleRootFile(plugin.rootDir, outputRoot, filePath);
     }
-  }
+    await copyProductionPackageRoot(plugin, outputRoot);
 
-  for (const filePath of claudeFiles) {
-    await copyFileWithTemplateSupport(
-      plugin.rootDir,
-      outputRoot,
-      filePath,
-      'claude',
-      templatePatterns,
-      templateVars,
+    await writeJsonFile(
+      path.join(outputRoot, '.agents-plugin', 'plugin.json'),
+      createBundleSourceManifest(plugin),
     );
-  }
+    await writeJsonFile(path.join(outputRoot, '.claude-plugin', 'plugin.json'), claudeManifest);
+    await writeJsonFile(path.join(outputRoot, '.codex-plugin', 'plugin.json'), codexManifest);
 
-  for (const filePath of codexFiles) {
-    await copyFileWithTemplateSupport(
-      plugin.rootDir,
+    return {
       outputRoot,
-      filePath,
-      'codex',
-      templatePatterns,
-      templateVars,
-    );
+      claudeManifest,
+      codexManifest,
+      plugin,
+    };
+  } finally {
+    await buildPlugin.cleanup();
   }
-
-  await writeJsonFile(
-    path.join(outputRoot, '.agents-plugin', 'plugin.json'),
-    createBundleSourceManifest(plugin),
-  );
-  await writeJsonFile(path.join(outputRoot, '.claude-plugin', 'plugin.json'), claudeManifest);
-  await writeJsonFile(path.join(outputRoot, '.codex-plugin', 'plugin.json'), codexManifest);
-
-  return {
-    outputRoot,
-    claudeManifest,
-    codexManifest,
-  };
 }

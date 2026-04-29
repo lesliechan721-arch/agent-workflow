@@ -8,12 +8,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { generateAgentArtifacts } from '../../src/generators/agents.js';
 import { renderHooksArtifact, renderResolvedHooksArtifact } from '../../src/generators/hooks.js';
-import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
+import {
+  bundleLocalPlugin,
+  type PluginStagingRunner,
+} from '../../src/generators/local-plugin.js';
 import {
   generateCodexPermissionArtifacts,
   mergeClaudePermissions,
 } from '../../src/generators/permissions.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 
 const tempDirs: string[] = [];
 
@@ -31,6 +35,87 @@ async function makeTempRepo(): Promise<string> {
   tempDirs.push(tempDir);
   await fs.copy(fixturePath('repo-template'), tempDir);
   return tempDir;
+}
+
+async function readFixturePluginManifest(repoRoot: string): Promise<Record<string, unknown>> {
+  return fs.readJson(
+    path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+  );
+}
+
+async function writeFixturePluginManifest(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  await fs.writeJson(
+    path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+}
+
+async function writeNodePackageFixture(
+  pluginRoot: string,
+  options: {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  } = {},
+): Promise<void> {
+  await fs.ensureDir(path.join(pluginRoot, 'scripts'));
+  await fs.writeJson(
+    path.join(pluginRoot, 'scripts', 'package.json'),
+    {
+      name: 'git-commit-scripts',
+      version: '0.1.0',
+      type: 'module',
+      dependencies: options.dependencies ?? {},
+      devDependencies: options.devDependencies ?? {},
+    },
+    { spaces: 2 },
+  );
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
+}
+
+function createFakeStagingRunner(): PluginStagingRunner {
+  return {
+    async installPackageRoot(packageRoot) {
+      const packageJson = await fs.readJson(path.join(packageRoot, 'package.json'));
+      const dependencies = packageJson.dependencies ?? {};
+      await fs.ensureDir(path.join(packageRoot, 'node_modules'));
+      for (const dependencyName of Object.keys(dependencies)) {
+        const dependencyRoot = path.join(packageRoot, 'node_modules', ...dependencyName.split('/'));
+        await fs.ensureDir(dependencyRoot);
+        await fs.writeJson(
+          path.join(dependencyRoot, 'package.json'),
+          {
+            name: dependencyName,
+            version: '1.0.0',
+            main: 'index.js',
+            scripts: dependencyName === 'bad-install-script'
+              ? {
+                  postinstall: 'node postinstall.js',
+                }
+              : undefined,
+          },
+          { spaces: 2 },
+        );
+        await fs.writeFile(path.join(dependencyRoot, 'index.js'), 'module.exports = {};\n', 'utf8');
+      }
+    },
+    async runNodeBuild({ pluginRoot }) {
+      const buildOutputPath = path.join(pluginRoot, 'scripts', 'build-output.json');
+      if (!(await fs.pathExists(buildOutputPath))) {
+        return;
+      }
+
+      const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+      const [manifest, patch] = await Promise.all([
+        fs.readJson(manifestPath),
+        fs.readJson(buildOutputPath),
+      ]);
+      await fs.writeJson(manifestPath, { ...manifest, ...patch }, { spaces: 2 });
+    },
+  };
 }
 
 afterEach(async () => {
@@ -333,5 +418,224 @@ describe('local-plugin generator', () => {
         },
       ]),
     ).toThrow('shell control characters');
+  });
+
+  it('rejects scripts.node plugins in build-free mode with a deterministic error', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot);
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    await expect(
+      bundleLocalPlugin(plugin, path.join(repoRoot, 'out', 'git-commit')),
+    ).rejects.toThrow('build-free mode');
+  });
+
+  it('uses the staging manifest as the marketplace and bundle truth without modifying source', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'export {};\n', 'utf8');
+    await fs.writeJson(
+      path.join(pluginRoot, 'scripts', 'build-output.json'),
+      {
+        description: 'Built description',
+        version: '9.9.9',
+      },
+      { spaces: 2 },
+    );
+    manifest.description = 'Source description';
+    manifest.version = '0.1.0';
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out');
+    await bundlePlugins({
+      repoRoot,
+      outputRoot,
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner(),
+    });
+
+    await expect(
+      fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
+    ).resolves.toMatchObject({
+      plugins: [
+        {
+          name: 'git-commit',
+          description: 'Built description',
+        },
+      ],
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      description: 'Built description',
+      version: '9.9.9',
+      scripts: {
+        node: {
+          packageRoot: './scripts',
+        },
+      },
+    });
+    await expect(
+      fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      description: 'Source description',
+      version: '0.1.0',
+    });
+  });
+
+  it('rejects staging builds that change plugin name', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'export {};\n', 'utf8');
+    await fs.writeJson(path.join(pluginRoot, 'scripts', 'build-output.json'), { name: 'renamed' }, { spaces: 2 });
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    await expect(
+      bundlePlugins({
+        repoRoot,
+        outputRoot: path.join(repoRoot, 'out'),
+        buildMode: 'staging',
+        stagingRunner: createFakeStagingRunner(),
+      }),
+    ).rejects.toThrow('build changed plugin name');
+  });
+
+  it('copies lifecycle selectors, helper/runtime closure, and production package files into the bundle', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        chalk: '^5.0.0',
+      },
+      devDependencies: {
+        vitest: '^3.0.0',
+      },
+    });
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'linux.mjs'), 'import chalk from "chalk";\nimport "./shared.mjs";\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'darwin.mjs'), 'import "./shared.mjs";\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'windows.mjs'), 'import "./shared.mjs";\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.mjs'), 'import "./config-shared.mjs";\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'shared.mjs'), 'export const shared = true;\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'config-shared.mjs'), 'export const config = true;\n', 'utf8');
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.test.mjs'), 'throw new Error("test-only");\n', 'utf8');
+    manifest.scripts = {
+      lifecycle: {
+        install: {
+          linux: { runner: 'node', path: './scripts/linux.mjs' },
+          darwin: { runner: 'node', path: './scripts/darwin.mjs' },
+          win32: { runner: 'node', path: './scripts/windows.mjs' },
+        },
+      },
+      helpers: {
+        config: './scripts/aw-config.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+      tests: {
+        node: ['./scripts/*.test.mjs'],
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    await bundleLocalPlugin(plugin, outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner(),
+    });
+
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'linux.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'darwin.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'windows.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'shared.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'config-shared.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'package.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'pnpm-lock.yaml'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', 'chalk', 'package.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', 'vitest'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'lifecycle.test.mjs'))).resolves.toBe(false);
+    await expect(
+      fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      scripts: {
+        lifecycle: {
+          install: {
+            linux: { path: './scripts/linux.mjs' },
+            darwin: { path: './scripts/darwin.mjs' },
+            win32: { path: './scripts/windows.mjs' },
+          },
+        },
+        helpers: {
+          config: './scripts/aw-config.mjs',
+        },
+        node: {
+          packageRoot: './scripts',
+        },
+      },
+    });
+    const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
+    expect(bundleManifest.scripts.tests).toBeUndefined();
+    expect(bundleManifest.scripts.node.build).toBeUndefined();
+  });
+
+  it('rejects production dependency closure install scripts after final staging install', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'bad-install-script': '^1.0.0',
+      },
+    });
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import bad from "bad-install-script";\n', 'utf8');
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    await expect(
+      bundleLocalPlugin(plugin, path.join(repoRoot, 'out', 'git-commit'), {
+        buildMode: 'staging',
+        stagingRunner: createFakeStagingRunner(),
+      }),
+    ).rejects.toThrow('declares unsupported "postinstall" script');
   });
 });

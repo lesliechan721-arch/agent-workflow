@@ -315,6 +315,76 @@ describe('cli entry', () => {
     );
   });
 
+  it('passes --script-timeout to install, upgrade, and uninstall handlers', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const uninstallCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+    vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+    const runOptions = { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv };
+
+    expect(await runCli(
+      ['install', 'git-commit', '--script-timeout', '45000'],
+      { ...runOptions, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(await runCli(
+      ['upgrade', 'git-commit', '--script-timeout', '46000'],
+      { ...runOptions, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(await runCli(
+      ['uninstall', 'git-commit', '--script-timeout', '47000'],
+      { ...runOptions, io: createCapturedIo().io },
+    )).toBe(0);
+
+    expect(installCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({ scriptTimeoutMs: 45000 }),
+      expect.anything(),
+    );
+    expect(upgradeCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({ scriptTimeoutMs: 46000 }),
+      expect.anything(),
+    );
+    expect(uninstallCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({ scriptTimeoutMs: 47000 }),
+      expect.anything(),
+    );
+  });
+
+  it('rejects invalid --script-timeout values at the entry layer', async () => {
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--script-timeout', '999'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(readStderr()).toContain('Unsupported script timeout "999"');
+  });
+
   it('parses short options with the same raw values as long options', async () => {
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
