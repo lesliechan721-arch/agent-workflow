@@ -78,6 +78,21 @@ async function restrictGitCommitToCodex(repoRoot: string): Promise<void> {
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function addRequiredConfigSchemaToGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.config = {
+    schema: {
+      token: {
+        type: 'string',
+        required: true,
+        sensitive: true,
+      },
+    },
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 interface FakePluginState {
   scopeInitialized?: 'yes' | 'no' | 'unknown';
   currentCatalogAvailable?: boolean;
@@ -337,6 +352,117 @@ describe('upgrade command coverage', () => {
     expect(codex.extensionUninstallCalls).toEqual(['git-commit']);
     expect(codex.installCalls).toEqual(['git-commit']);
     expect(codex.extensionInstallCalls).toEqual(['git-commit']);
+  });
+
+  it('preflights missing required config during upgrade and honors the selected config scope', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addRequiredConfigSchemaToGitCommit,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.PATH = '';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    const installedLedger = createAvailableLedger();
+    installedLedger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-29T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [projectKey],
+          },
+          lastRequestedScope: 'project',
+          lastRequestedAt: '2026-04-29T00:00:00.000Z',
+        },
+      },
+    };
+    await writeInstalledLedger(installedLedger, process.env);
+
+    const configureCalls: Array<{
+      allowedScopes: string[];
+      initialScope: string;
+      requiredKeys?: string[];
+      currentValues?: Record<string, unknown>;
+    }> = [];
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          interactive: true,
+          prompt: {
+            configurePlugin: async (options) => {
+              configureCalls.push({
+                allowedScopes: options.allowedScopes,
+                initialScope: options.initialScope,
+                requiredKeys: options.requiredKeys,
+                currentValues: options.currentValues,
+              });
+              return {
+                selectedScope: 'user',
+                updates: { token: 'upgrade-secret' },
+                updatedKeys: ['token'],
+                cancelled: false,
+              };
+            },
+          },
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+    });
+
+    expect(codex.installCalls).toEqual(['git-commit']);
+    expect(configureCalls).toEqual([
+      {
+        allowedScopes: ['user', 'project'],
+        initialScope: 'project',
+        requiredKeys: ['token'],
+        currentValues: {},
+      },
+    ]);
+    await expect(fs.readJson(
+      path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toEqual({
+      token: 'upgrade-secret',
+    });
+    await expect(fs.pathExists(
+      path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toBe(false);
   });
 
   it('auto-infers the only managed platform for upgrade --all', async () => {

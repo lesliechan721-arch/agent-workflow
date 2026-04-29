@@ -392,6 +392,21 @@ async function addNativeHookOnlyPlugin(
   );
 }
 
+async function addRequiredConfigSchemaToGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.config = {
+    schema: {
+      token: {
+        type: 'string',
+        required: true,
+        sensitive: true,
+      },
+    },
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 async function addMixedHookPlugin(repoRoot: string): Promise<void> {
   const pluginRoot = path.join(repoRoot, 'plugins', 'mixed-guard');
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
@@ -805,6 +820,77 @@ describe('CLI integration', () => {
         expect.objectContaining({ key: 'token' }),
       ]),
     });
+  });
+
+  it('preflights missing required config during install and honors the selected config scope', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      addRequiredConfigSchemaToGitCommit,
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const states: Record<string, FakePluginState> = {};
+    const configureCalls: Array<{
+      allowedScopes: string[];
+      initialScope: string;
+      requiredKeys?: string[];
+      currentValues?: Record<string, unknown>;
+    }> = [];
+
+    const result = await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        interactive: true,
+        prompt: {
+          configurePlugin: async (options) => {
+            configureCalls.push({
+              allowedScopes: options.allowedScopes,
+              initialScope: options.initialScope,
+              requiredKeys: options.requiredKeys,
+              currentValues: options.currentValues,
+            });
+            return {
+              selectedScope: 'project',
+              updates: { token: 'install-secret' },
+              updatedKeys: ['token'],
+              cancelled: false,
+            };
+          },
+        },
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, states),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.plugins).toEqual(['git-commit']);
+    expect(states['git-commit']?.scopeInitialized).toBe('yes');
+    expect(configureCalls).toEqual([
+      {
+        allowedScopes: ['user', 'project'],
+        initialScope: 'user',
+        requiredKeys: ['token'],
+        currentValues: {},
+      },
+    ]);
+    await expect(fs.readJson(
+      path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toEqual({
+      token: 'install-secret',
+    });
+    await expect(fs.pathExists(
+      path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toBe(false);
   });
 
   it('reports unknown status targets as notInstalled instead of throwing', async () => {

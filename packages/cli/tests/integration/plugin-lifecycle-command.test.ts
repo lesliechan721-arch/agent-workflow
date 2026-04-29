@@ -356,4 +356,41 @@ describe('plugin lifecycle command integration', () => {
     });
     expect(result.output).not.toContain('secret-token');
   });
+
+  it('falls back to current catalog health and reports warnings when the install snapshot is unusable', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    await writeInstalledLedger(createAvailableLedger(), workspace.env);
+    const codex = new FakeAdapter('codex', workspace.repoRoot);
+
+    await installCommand(
+      ['git-commit'],
+      { cwd: workspace.repoRoot, scope: 'project', platform: 'codex' },
+      { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
+    );
+
+    const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
+    const ledger = await readInstalledLedger(workspace.env);
+    const scopeRecord = codexProjectScope(ledger, projectKey);
+    expect(scopeRecord?.lifecycleConfigSnapshot).toBeTruthy();
+    scopeRecord!.lifecycleConfigSnapshot!.sourceManifestDigest = 'sha256:corrupted';
+    await writeInstalledLedger(ledger, workspace.env);
+
+    const result = await statusCommand(
+      ['git-commit'],
+      { cwd: workspace.repoRoot, scope: 'project', platform: 'codex', json: true },
+      { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
+    );
+
+    const payload = JSON.parse(result.output);
+    expect(payload.cells[0]).toMatchObject({
+      healthSource: 'currentCatalog',
+      config: 'configured',
+      scripts: 'declared',
+      healthWarnings: [
+        expect.stringContaining('install snapshot unusable: snapshot manifest digest mismatch'),
+      ],
+    });
+    expect(result.output).not.toContain('secret-token');
+  });
 });
