@@ -6,6 +6,7 @@ import type {
   InstallCommandOptions,
   InstalledLedger,
   LedgerStateReason,
+  NativePluginsByPlatform,
   PlatformAdapter,
   PlatformName,
   PluginMeta,
@@ -146,6 +147,17 @@ function mayWriteNativeState(platform: PlatformName, target: ResolvedPluginTarge
   return Boolean(manifest?.skills || manifest?.mcpServers || manifest?.apps);
 }
 
+function recordNativePlugin(
+  nativePlugins: NativePluginsByPlatform,
+  platform: PlatformName,
+  pluginName: string,
+): void {
+  nativePlugins[platform] ??= [];
+  if (!nativePlugins[platform].includes(pluginName)) {
+    nativePlugins[platform].push(pluginName);
+  }
+}
+
 function shouldMaterializeSkillTriggers(target: ResolvedPluginTarget): boolean {
   return Boolean(target.embeddedPlugin?.manifest.skills);
 }
@@ -199,11 +211,12 @@ export async function installTargetsOnPlatforms(
   platforms: PlatformName[],
   options: InstallCommandOptions,
   runtime: InstallCommandRuntime = {},
-): Promise<{ warnings: string[] }> {
+): Promise<{ warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
+  const nativePlugins: NativePluginsByPlatform = {};
   assertPluginsSupportPlatforms(
     targets
       .map((target) => target.currentPlugin)
@@ -288,11 +301,54 @@ export async function installTargetsOnPlatforms(
           }
         }
 
+        const plannedNativeWrite = mayWriteNativeState(platform, target);
+        await emitCommandEvent(context, {
+          type: plannedNativeWrite ? 'native:plan' : 'native:skipped',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            reason: plannedNativeWrite ? 'plugin_requires_native_registration' : 'repo_managed_artifacts_only',
+          },
+        });
+
         await adapters[platform].installPlugin(target.currentPlugin, options.scope);
         nativeWritten = mayWriteNativeState(platform, target);
+        if (nativeWritten) {
+          recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
+          await emitCommandEvent(context, {
+            type: 'native:applied',
+            data: {
+              platform,
+              plugin: target.currentPlugin.manifest.name,
+              scope: options.scope,
+            },
+          });
+        }
 
+        await emitCommandEvent(context, {
+          type: 'artifacts:plan',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            trackingDir,
+          },
+        });
         generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope);
         artifactsWritten = generatedArtifacts.length > 0;
+        await emitCommandEvent(context, {
+          type: artifactsWritten ? 'artifacts:written' : 'artifacts:noop',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            artifacts: generatedArtifacts.map((artifact) => ({
+              kind: artifact.kind,
+              path: artifact.path,
+            })),
+          },
+        });
 
         await writeTrackingManifest(
           trackingDir,
@@ -308,6 +364,16 @@ export async function installTargetsOnPlatforms(
               ),
         );
         trackingWritten = true;
+        await emitCommandEvent(context, {
+          type: 'tracking:written',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            trackingDir,
+            artifactCount: generatedArtifacts.length,
+          },
+        });
 
         const nextLedger = preserveLedgerState(
           baselineLedger,
@@ -346,8 +412,30 @@ export async function installTargetsOnPlatforms(
           );
         }
         await writeInstalledLedger(nextLedger, env);
+        await emitCommandEvent(context, {
+          type: 'ledger:written',
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            ledgerState: nextLedger.ledgerState.status,
+          },
+        });
         warnings.push(...pendingConflictWarnings);
       } catch (error) {
+        await emitCommandEvent(context, {
+          type: 'rollback:started',
+          message: error instanceof Error ? error.message : String(error),
+          data: {
+            platform,
+            plugin: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            nativeWritten,
+            artifactsWritten,
+            trackingWritten,
+            materializationCommitted,
+          },
+        });
         generatedArtifacts = mergeGeneratedArtifacts(
           generatedArtifacts,
           getGeneratedArtifactsFromError(error),
@@ -393,6 +481,17 @@ export async function installTargetsOnPlatforms(
                 : 'operation_interrupted_after_artifact_write',
               env,
             );
+            await emitCommandEvent(context, {
+              type: 'ledger:degraded',
+              data: {
+                platform,
+                plugin: target.currentPlugin.manifest.name,
+                scope: options.scope,
+                reason: nativeWritten || materializationRollbackFailed
+                  ? 'operation_interrupted_after_native_write'
+                  : 'operation_interrupted_after_artifact_write',
+              },
+            });
           } catch (ledgerError) {
             const detail = ledgerError instanceof Error ? ledgerError.message : String(ledgerError);
             throw new Error(
@@ -434,14 +533,14 @@ export async function installTargetsOnPlatforms(
     }
   }
 
-  return { warnings };
+  return { warnings, nativePlugins };
 }
 
 export async function installCommand(
   pluginNames: string[],
   rawOptions: RawInstallCommandOptions,
   runtime: InstallCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
   const options = normalizeInstallCommandOptions(rawOptions);
   if (pluginNames.length === 0) {
     throw new Error('install 命令至少需要一个插件名。非交互模式下请运行 `aw install <插件名>`。');
@@ -522,6 +621,7 @@ export async function installCommand(
     return {
       platforms,
       plugins: prepared.targets.map((target) => target.pluginName),
+      nativePlugins: result.nativePlugins,
       warnings: [
         ...prepared.warnings,
         ...collectCommandWarnings(platforms, options.scope),

@@ -86,6 +86,10 @@ export function createFileDebugLogger(diagnostics: CommandDiagnostics): DebugLog
           platform: process.platform,
           arch: process.arch,
           logFile,
+          commandName: diagnostics.commandName,
+          runId: diagnostics.runId,
+          cliVersion: process.env.npm_package_version,
+          ...diagnostics.metadata,
         },
       },
     });
@@ -95,6 +99,9 @@ export function createFileDebugLogger(diagnostics: CommandDiagnostics): DebugLog
   return {
     logFile,
     log: async (event: CommandEvent) => {
+      if (initialized && !(await fs.pathExists(logFile))) {
+        initialized = false;
+      }
       await ensureInitialized();
       await appendJsonLine(logFile, {
         time: new Date().toISOString(),

@@ -134,6 +134,12 @@ function platformChoices(platforms: PlatformName[]): string[] {
   return choices;
 }
 
+function assertInteractiveAvailable(forcePrompt: boolean, context: CommandExecutionContext): void {
+  if (forcePrompt && !context.interactive) {
+    throw new Error('当前运行环境不可交互；请在 TTY 中运行，或移除 --interactive 并显式传入参数。');
+  }
+}
+
 async function promptScope(
   context: CommandExecutionContext,
   defaultValue: Scope,
@@ -481,6 +487,30 @@ async function resolveInstallPlatforms(options: {
   }
 
   if (options.requestedPlatform !== 'auto') {
+    if (options.forcePrompt && options.context.interactive) {
+      const compatible = options.targets.length === 0
+        ? availablePlatforms
+        : options.targets.reduce<PlatformName[]>(
+            (current, target) => intersectPlatforms(current, compatiblePlatformsForTarget(target)),
+            availablePlatforms,
+          );
+      if (compatible.length === 0) {
+        throw new Error('显式插件之间没有共同兼容的平台，请分开安装或重新选择插件。');
+      }
+
+      const choices = platformChoices(compatible);
+      const requestedPlatforms = platformSelectionToPlatforms(options.requestedPlatform);
+      const defaultSelection =
+        options.requestedPlatform === 'both' && choices.includes('both')
+          ? 'both'
+          : requestedPlatforms.find((platform) => choices.includes(platform)) ?? compatible[0];
+      const selected = await promptPlatform(options.context, choices, defaultSelection);
+      return {
+        platforms: platformSelectionToPlatforms(selected === 'both' ? 'both' : selected),
+        prompted: true,
+      };
+    }
+
     return {
       platforms: platformSelectionToPlatforms(options.requestedPlatform),
       prompted: false,
@@ -530,6 +560,8 @@ export async function createInteractiveInstallPlan(
   context: CommandExecutionContext,
   forcePrompt: boolean,
 ): Promise<InteractiveInstallPlan | null> {
+  assertInteractiveAvailable(forcePrompt, context);
+
   const missingPlugins = pluginNames.length === 0;
   if (missingPlugins && !context.interactive) {
     return null;
@@ -656,6 +688,25 @@ async function resolveInteractiveScopeAndPlatform(options: {
   prompted ||= scope !== options.options.scope;
 
   if (options.options.platform !== 'auto') {
+    if (options.forcePrompt && options.context.interactive) {
+      const availablePlatforms = await detectAvailablePlatforms(options.options.cwd, options.context.env);
+      const choices = platformChoices(availablePlatforms.length > 0 ? availablePlatforms : ['codex', 'claude']);
+      const selected = await promptPlatform(
+        options.context,
+        choices,
+        options.options.platform === 'both' && choices.includes('both')
+          ? 'both'
+          : choices.includes(options.options.platform)
+            ? options.options.platform
+            : choices[0],
+      );
+      return {
+        scope,
+        platformFilter: selected,
+        prompted: true,
+      };
+    }
+
     return {
       scope,
       platformFilter: options.options.platform as PlatformName | 'both',
@@ -717,6 +768,8 @@ export async function createInteractiveUninstallPlan(
   context: CommandExecutionContext,
   forcePrompt: boolean,
 ): Promise<InteractiveUninstallPlan | null> {
+  assertInteractiveAvailable(forcePrompt, context);
+
   const missingPlugins = pluginNames.length === 0;
   if (missingPlugins && !context.interactive) {
     return null;
@@ -769,6 +822,7 @@ export async function createInteractiveUpgradePlan(
   if (options.all) {
     return null;
   }
+  assertInteractiveAvailable(forcePrompt, context);
 
   const missingPlugins = pluginNames.length === 0;
   if (missingPlugins && !context.interactive) {

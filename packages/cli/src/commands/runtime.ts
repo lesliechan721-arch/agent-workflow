@@ -44,6 +44,7 @@ export interface CommandDiagnostics {
   runId: string;
   logFile?: string;
   logFileSource?: 'default' | 'explicit';
+  metadata?: Record<string, unknown>;
 }
 
 export interface CommandDiagnosticsInput {
@@ -53,6 +54,7 @@ export interface CommandDiagnosticsInput {
   logFileSource?: 'default' | 'explicit';
   commandName?: string;
   runId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface CliPromptChoice {
@@ -184,6 +186,7 @@ export function createCommandDiagnostics(
     debug,
     commandName,
     runId: input.runId ?? createRunId(),
+    metadata: input.metadata,
     ...(hasLogFile
       ? {
           logFile: input.logFile ?? defaultLogFile(commandName, env),
@@ -557,17 +560,30 @@ export function createCliExecutionContext(
     ...createDefaultIo(),
     ...input.io,
   };
-  const diagnostics = createCommandDiagnostics(input.diagnostics, env);
   const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const isCi = isTruthy(env.CI);
+  const hasInjectedPrompt = Boolean(input.prompt);
+  const requestedInteractive = input.interactive ?? (hasInjectedPrompt ? true : isTty);
+  const interactive = requestedInteractive && !isCi && (isTty || hasInjectedPrompt);
+  const diagnostics = createCommandDiagnostics({
+    ...input.diagnostics,
+    metadata: {
+      ...input.diagnostics?.metadata,
+      cwd,
+      awHome: resolveAwHome(env),
+      isTty,
+      isCi,
+      interactiveRequested: requestedInteractive,
+      interactiveEnabled: interactive,
+    },
+  }, env);
   const reporter = input.reporter ?? createIoReporter(io, diagnostics);
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
-  const requestedInteractive = input.interactive ?? (input.prompt ? true : isTty);
-  const prompt = input.prompt ?? createReadlinePrompt();
+  const prompt = input.prompt ?? (interactive ? createReadlinePrompt() : createUnavailablePrompt());
   const commandContext = createCommandExecutionContext({
     ...input,
     env,
-    interactive: requestedInteractive && !isCi,
+    interactive,
     prompt,
     reporter,
     debugLogger,

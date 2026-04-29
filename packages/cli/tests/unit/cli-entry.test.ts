@@ -98,6 +98,9 @@ describe('cli entry', () => {
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
+      nativePlugins: {
+        codex: ['git-commit'],
+      },
       warnings: ['当前 repo trust 状态未知，project scope 会话可见性无法确定。'],
     }));
     vi.doMock('../../src/commands/install.js', () => ({
@@ -135,6 +138,9 @@ describe('cli entry', () => {
     const upgradeCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['claude'],
+      nativePlugins: {
+        claude: ['git-commit'],
+      },
       warnings: [],
     }));
     vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));

@@ -3,6 +3,7 @@ export type PlatformSelection = PlatformName | 'auto' | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
+export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 
 export interface PluginInterfaceMeta {
   displayName?: string;

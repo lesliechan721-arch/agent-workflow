@@ -1,4 +1,5 @@
 import type {
+  NativePluginsByPlatform,
   PlatformName,
   ResolvedInstallOptions,
   UpgradeCommandOptions,
@@ -39,6 +40,27 @@ type UpgradeCommandRuntime = CommandExecutionContextInput & {
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
 };
+
+function mergeNativePlugins(
+  target: NativePluginsByPlatform,
+  source: NativePluginsByPlatform | undefined,
+): void {
+  if (!source) {
+    return;
+  }
+
+  for (const [platform, pluginNames] of Object.entries(source) as Array<[PlatformName, string[] | undefined]>) {
+    if (!pluginNames || pluginNames.length === 0) {
+      continue;
+    }
+    target[platform] ??= [];
+    for (const pluginName of pluginNames) {
+      if (!target[platform].includes(pluginName)) {
+        target[platform].push(pluginName);
+      }
+    }
+  }
+}
 
 async function resolveUpgradeAllPlatforms(
   requestedPlatform: UpgradeCommandOptions['platform'],
@@ -91,12 +113,13 @@ async function runExplicitUpgrade(
   platforms: PlatformName[],
   options: UpgradeCommandOptions,
   runtime: UpgradeCommandRuntime,
-): Promise<{ warnings: string[]; plugins: string[] }> {
+): Promise<{ warnings: string[]; plugins: string[]; nativePlugins: NativePluginsByPlatform }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
   const upgradedPlugins = new Set<string>();
+  const nativePlugins: NativePluginsByPlatform = {};
 
   for (const platform of platforms) {
     for (const target of targets) {
@@ -174,6 +197,7 @@ async function runExplicitUpgrade(
         },
       );
       warnings.push(...installResult.warnings);
+      mergeNativePlugins(nativePlugins, installResult.nativePlugins);
       upgradedPlugins.add(target.pluginName);
     }
   }
@@ -181,6 +205,7 @@ async function runExplicitUpgrade(
   return {
     warnings,
     plugins: [...upgradedPlugins],
+    nativePlugins,
   };
 }
 
@@ -189,7 +214,7 @@ async function runUpgradeAll(
   options: UpgradeCommandOptions,
   runtime: UpgradeCommandRuntime,
   preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
-): Promise<{ warnings: string[]; plugins: string[] }> {
+): Promise<{ warnings: string[]; plugins: string[]; nativePlugins: NativePluginsByPlatform }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
@@ -262,6 +287,7 @@ async function runUpgradeAll(
 
   const warnings: string[] = [];
   const upgradedPlugins = new Set<string>();
+  const nativePlugins: NativePluginsByPlatform = {};
   for (const platform of platforms) {
     const platformTargets = namesByPlatform[platform]
       .map((pluginName) => targetMap.get(pluginName))
@@ -286,6 +312,7 @@ async function runUpgradeAll(
       },
     );
     warnings.push(...result.warnings);
+    mergeNativePlugins(nativePlugins, result.nativePlugins);
     for (const target of platformTargets) {
       upgradedPlugins.add(target.pluginName);
     }
@@ -294,6 +321,7 @@ async function runUpgradeAll(
   return {
     warnings,
     plugins: [...upgradedPlugins],
+    nativePlugins,
   };
 }
 
@@ -301,7 +329,7 @@ export async function upgradeCommand(
   pluginNames: string[],
   rawOptions: RawUpgradeCommandOptions,
   runtime: UpgradeCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
   const options = normalizeUpgradeCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
@@ -403,6 +431,7 @@ export async function upgradeCommand(
       return {
         platforms,
         plugins: result.plugins,
+        nativePlugins: result.nativePlugins,
         warnings: [
           ...prepared.warnings,
           ...collectCommandWarnings(platforms, options.scope),
@@ -490,6 +519,7 @@ export async function upgradeCommand(
     return {
       platforms,
       plugins: result.plugins,
+      nativePlugins: result.nativePlugins,
       warnings: [
         ...prepared.warnings,
         ...collectCommandWarnings(platforms, options.scope),

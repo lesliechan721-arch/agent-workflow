@@ -93,6 +93,80 @@ async function makeWorkspace(): Promise<{
   };
 }
 
+async function makeWorkspaceWithMutator(
+  mutateRepo: (repoRoot: string) => Promise<void>,
+): Promise<{
+  repoRoot: string;
+  awHome: string;
+  codexHome: string;
+  claudeHome: string;
+  embeddedRoot: string;
+  env: NodeJS.ProcessEnv;
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-'));
+  tempDirs.push(root);
+
+  const repoRoot = path.join(root, 'repo');
+  await fs.copy(fixturePath('repo-template'), repoRoot);
+  await mutateRepo(repoRoot);
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  const awHome = path.join(root, 'aw-home');
+  const codexHome = path.join(root, 'codex-home');
+  const claudeHome = path.join(root, 'claude-home');
+
+  const env = {
+    ...process.env,
+    AW_HOME: awHome,
+    AW_CODEX_HOME: codexHome,
+    AW_CLAUDE_HOME: claudeHome,
+    AW_FORCE_CODEX_AVAILABLE: '1',
+    PATH: '',
+  } as NodeJS.ProcessEnv;
+
+  return {
+    repoRoot,
+    awHome,
+    codexHome,
+    claudeHome,
+    embeddedRoot,
+    env,
+  };
+}
+
+async function addNativeHookOnlyPlugin(repoRoot: string, pluginName = 'prompt-guard'): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: pluginName,
+      version: '0.1.0',
+      description: 'Codex native hook only test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX'],
+        },
+      },
+      extensions: {
+        nativeHooks: {
+          codex: [
+            {
+              event: 'UserPromptSubmit',
+              command: `echo ${pluginName} prompt`,
+            },
+          ],
+        },
+      },
+    },
+    { spaces: 2 },
+  );
+}
+
 function createCodexMarketplaceAddRunner(
   workspace: Awaited<ReturnType<typeof makeWorkspace>>,
   calls: NativeCliInvocation[] = [],
@@ -675,6 +749,155 @@ describe('cli entry integration', () => {
     expect(exitCode, capture.readStderr()).toBe(0);
     expect(selectedPlatforms).toEqual(['codex', 'claude', 'both']);
     expect(capture.readStdout()).toContain('已安装 git-commit：Codex / user scope。');
+  });
+
+  it('allows --interactive to reselect an explicit install platform', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const env = {
+      ...workspace.env,
+      AW_FORCE_CLAUDE_AVAILABLE: '1',
+    } as NodeJS.ProcessEnv;
+    const selectedPlatforms: string[] = [];
+    const nativeCalls: NativeCliInvocation[] = [];
+    const prompt = {
+      selectScope: async () => 'user',
+      selectPlatform: async ({ available, defaultValue }: { available: string[]; defaultValue?: string }) => {
+        selectedPlatforms.push(...available);
+        expect(defaultValue).toBe('codex');
+        return 'claude';
+      },
+      selectPlugins: async ({ candidates }: {
+        candidates: Array<{ id: string; pluginName: string; platform?: string; selectable: boolean }>;
+      }) => {
+        const candidate = candidates.find((entry) =>
+          entry.pluginName === 'git-commit' &&
+          entry.platform === 'claude' &&
+          entry.selectable
+        );
+        expect(candidate).toBeTruthy();
+        return [candidate!.id];
+      },
+    };
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      nativeCalls.push(invocation);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--scope', 'user', '--platform', 'codex', '--interactive'],
+      {
+        cwd: workspace.repoRoot,
+        env,
+        io: capture.io,
+        prompt,
+        nativeCliRunner,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(selectedPlatforms).toEqual(['codex', 'claude', 'both']);
+    expect(capture.readStdout()).toContain('已安装 git-commit：Claude Code / user scope。');
+    expect(nativeCalls.some((invocation) =>
+      invocation.command === 'claude' &&
+      invocation.args.join(' ') === 'plugin install git-commit@aw --scope user'
+    )).toBe(true);
+  });
+
+  it('does not enter a real prompt for --interactive in a non-TTY runtime', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false });
+    const capture = createCapturedIo();
+
+    try {
+      const exitCode = await runCli(
+        ['install', 'git-commit', '--interactive'],
+        {
+          cwd: workspace.repoRoot,
+          env: workspace.env,
+          io: capture.io,
+        },
+      );
+
+      expect(exitCode).toBe(1);
+      expect(capture.readStderr()).toContain('当前运行环境不可交互');
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, 'isTTY', stdinDescriptor);
+      } else {
+        Reflect.deleteProperty(process.stdin, 'isTTY');
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
+      } else {
+        Reflect.deleteProperty(process.stdout, 'isTTY');
+      }
+    }
+  });
+
+  it('does not print Codex native receipts for repo-managed-only plugins and records debug decisions', async () => {
+    const workspace = await makeWorkspaceWithMutator((repoRoot) =>
+      addNativeHookOnlyPlugin(repoRoot),
+    );
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const nativeCalls: NativeCliInvocation[] = [];
+    const logFile = path.join(workspace.awHome, 'repo-managed-debug.log');
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      [
+        'install',
+        'prompt-guard',
+        '--scope',
+        'project',
+        '--platform',
+        'codex',
+        '--debug',
+        '--log-file',
+        logFile,
+      ],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(nativeCalls).toEqual([]);
+    expect(capture.readStdout()).toContain('已安装 prompt-guard：Codex / project scope。');
+    expect(capture.readStdout()).not.toContain('已确认 Codex marketplace 注册');
+    expect(capture.readStdout()).not.toContain('已确认插件启用');
+
+    const logEntries = (await fs.readFile(logFile, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
+    expect(logEntries.find((entry) => entry.event.type === 'run:metadata')?.event.data).toMatchObject({
+      cwd: workspace.repoRoot,
+      awHome: workspace.awHome,
+      rawArgv: [
+        'install',
+        'prompt-guard',
+        '--scope',
+        'project',
+        '--platform',
+        'codex',
+        '--debug',
+        '--log-file',
+        logFile,
+      ],
+    });
+    expect(logEntries.some((entry) => entry.event.type === 'native:skipped')).toBe(true);
+    expect(logEntries.some((entry) => entry.event.type === 'artifacts:written')).toBe(true);
+    expect(logEntries.some((entry) => entry.event.type === 'tracking:written')).toBe(true);
+    expect(logEntries.some((entry) => entry.event.type === 'ledger:written')).toBe(true);
   });
 
   it('does not prompt when --no-interactive is passed', async () => {

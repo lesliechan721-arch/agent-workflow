@@ -33,6 +33,7 @@ import {
 import {
   CommandWarningError,
   isCommandWarningError,
+  type NativePluginsByPlatform,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
 import { resolveAwHome } from './utils/paths.js';
@@ -60,12 +61,28 @@ function writeWarnings(write: (text: string) => void, warnings: string[]): void 
 }
 
 function mergeCommandResults(
-  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[] }>,
-): { platforms: string[]; plugins: string[]; warnings: string[] } {
+  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins?: NativePluginsByPlatform }>,
+): { platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform } {
+  const nativePlugins: NativePluginsByPlatform = {};
+  for (const result of results) {
+    for (const [platform, pluginNames] of Object.entries(result.nativePlugins ?? {}) as Array<[keyof NativePluginsByPlatform, string[] | undefined]>) {
+      if (!pluginNames || pluginNames.length === 0) {
+        continue;
+      }
+      nativePlugins[platform] ??= [];
+      for (const pluginName of pluginNames) {
+        if (!nativePlugins[platform].includes(pluginName)) {
+          nativePlugins[platform].push(pluginName);
+        }
+      }
+    }
+  }
+
   return {
     platforms: [...new Set(results.flatMap((result) => result.platforms))],
     plugins: [...new Set(results.flatMap((result) => result.plugins))],
     warnings: results.flatMap((result) => result.warnings),
+    nativePlugins,
   };
 }
 
@@ -73,6 +90,7 @@ interface CliCommandResult {
   platforms: string[];
   plugins: string[];
   warnings: string[];
+  nativePlugins?: NativePluginsByPlatform;
 }
 
 interface CliCommandReceipt {
@@ -124,11 +142,12 @@ function writeCommandReceipt(
   if (action === 'install' || action === 'upgrade') {
     writeLine(write, `使用插件目录：AW marketplace。`);
     writeLine(write, `已同步本地 marketplace：${awHome}。`);
-    if (result.platforms.includes('codex')) {
+    const codexNativePlugins = result.nativePlugins?.codex ?? [];
+    if (codexNativePlugins.length > 0) {
       writeLine(write, `已确认 Codex marketplace 注册：${awHome}。`);
-      writeLine(write, `已确认插件启用：${result.plugins.map((plugin) => `${plugin}@aw`).join(', ')}。`);
+      writeLine(write, `已确认插件启用：${codexNativePlugins.map((plugin) => `${plugin}@aw`).join(', ')}。`);
     }
-    if (result.platforms.includes('claude')) {
+    if ((result.nativePlugins?.claude ?? []).length > 0) {
       writeLine(write, `已确认 Claude Code marketplace 和插件状态。`);
     }
   } else {
@@ -504,6 +523,13 @@ export async function runCli(
     const program = buildProgram({
       ...options,
       io,
+      diagnostics: {
+        ...options.diagnostics,
+        metadata: {
+          ...options.diagnostics?.metadata,
+          rawArgv: argv,
+        },
+      },
     });
     await program.parseAsync(['node', 'aw', ...argv]);
     return 0;
