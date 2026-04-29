@@ -107,7 +107,7 @@ describe('plugin lifecycle scripts', () => {
       scope: 'user',
       cwd,
       env,
-      values: { token: 'secret-token' },
+      values: { token: 'secret-token', legacyToken: 'legacy-secret' },
     });
     const target = await resolveLifecycleScriptTarget({
       event: 'install',
@@ -129,7 +129,8 @@ describe('plugin lifecycle scripts', () => {
     });
 
     const pluginRoot = await fs.realpath(plugin.rootDir);
-    await expect(fs.readJson(written.contextPath)).resolves.toMatchObject({
+    const contextJson = await fs.readJson(written.contextPath);
+    expect(contextJson).toMatchObject({
       event: 'install',
       plugin: {
         name: 'script-plugin',
@@ -160,6 +161,8 @@ describe('plugin lifecycle scripts', () => {
         },
       },
     });
+    expect(contextJson.config.stores).toBeUndefined();
+    expect(JSON.stringify(contextJson)).not.toContain('legacy-secret');
     if (process.platform !== 'win32') {
       expect((await fs.stat(written.contextPath)).mode & 0o777).toBe(0o600);
     }
@@ -257,6 +260,74 @@ describe('plugin lifecycle scripts', () => {
 
     await expect(fs.pathExists(contextPath)).resolves.toBe(false);
     expect(JSON.stringify(events)).not.toContain('secret-token');
+  });
+
+  it('redacts non-string sensitive config values from lifecycle output', async () => {
+    const root = await makeTempRoot('aw-plugin-scripts-');
+    const awHome = path.join(root, 'aw-home');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest();
+    manifest.config!.schema.pin = {
+      type: 'number',
+      sensitive: true,
+      default: 8675309,
+    };
+    manifest.config!.schema.enabled = {
+      type: 'boolean',
+      sensitive: true,
+      default: true,
+    };
+    const plugin = await writePlugin(root, manifest);
+    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: 'secret-token' },
+    });
+    const events: unknown[] = [];
+    const context = createCommandExecutionContext({
+      env,
+      reporter: {
+        event: (event) => events.push(event),
+        notice: () => {},
+      },
+      debugLogger: {
+        log: (event) => events.push(event),
+      },
+    });
+
+    await expect(runLifecycleScript({
+      event: 'install',
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      currentPlugin: plugin,
+      context,
+      runtimeOs: 'linux',
+      runner: {
+        async run() {
+          return {
+            exitCode: 7,
+            signal: null,
+            stdout: 'stdout pin=8675309 enabled=true token=secret-token\n',
+            stderr: 'stderr pin=8675309 enabled=true token=secret-token\n',
+            timedOut: false,
+          };
+        },
+      },
+    })).rejects.toThrow('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
+
+    const finishEvent = events.find((event) => (event as { type?: string }).type === 'lifecycle.finish') as {
+      data?: { stdout?: string; stderr?: string };
+    };
+    expect(finishEvent.data?.stdout).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
+    expect(finishEvent.data?.stderr).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
+    expect(finishEvent.data?.stdout).not.toContain('8675309');
+    expect(finishEvent.data?.stderr).not.toContain('enabled=true');
   });
 
   it('reports timeouts with redacted stderr summaries', async () => {

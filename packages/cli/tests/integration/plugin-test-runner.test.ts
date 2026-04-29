@@ -199,6 +199,16 @@ describe('plugin script test runner', () => {
           sensitive: true,
           default: 'super-secret-plugin-token',
         },
+        pin: {
+          type: 'number',
+          sensitive: true,
+          default: 8675309,
+        },
+        enabled: {
+          type: 'boolean',
+          sensitive: true,
+          default: true,
+        },
       },
     };
     manifest.scripts = {
@@ -216,8 +226,10 @@ describe('plugin script test runner', () => {
         'test("redacts config", async () => {',
         '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         '  const token = context.config.values.token;',
-        '  console.log(token);',
-        '  console.error(token);',
+        '  const pin = context.config.values.pin;',
+        '  const enabled = context.config.values.enabled;',
+        '  console.log(`token=${token} pin=${pin} enabled=${enabled}`);',
+        '  console.error(`token=${token} pin=${pin} enabled=${enabled}`);',
         '  assert.equal(token, "different-token");',
         '});',
       ].join('\n'),
@@ -233,7 +245,10 @@ describe('plugin script test runner', () => {
     });
 
     expect(exitCode).toBe(1);
-    expect(`${output.readStdout()}\n${output.readStderr()}`).not.toContain('super-secret-plugin-token');
-    expect(`${output.readStdout()}\n${output.readStderr()}`).toContain('[REDACTED]');
+    const combinedOutput = `${output.readStdout()}\n${output.readStderr()}`;
+    expect(combinedOutput).not.toContain('super-secret-plugin-token');
+    expect(combinedOutput).not.toContain('8675309');
+    expect(combinedOutput).not.toContain('enabled=true');
+    expect(combinedOutput).toContain('token=[REDACTED] pin=[REDACTED] enabled=[REDACTED]');
   });
 });

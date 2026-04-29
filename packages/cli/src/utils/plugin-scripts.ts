@@ -6,7 +6,6 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { CommandExecutionContext } from '../commands/runtime.js';
-import type { PluginConfigStore } from './plugin-config.js';
 import type {
   GeneratedArtifact,
   InstalledLedger,
@@ -94,7 +93,6 @@ export interface LifecycleScriptContext {
     values: Record<string, string | number | boolean>;
     sources: Record<string, string>;
     issues: unknown[];
-    stores?: Record<Scope, PluginConfigStore>;
   };
   script: {
     runner: PluginLifecycleScriptEntry['runner'];
@@ -689,7 +687,9 @@ export function collectSensitivePluginConfigValues(
   return Object.entries(schema)
     .filter(([, field]) => field.sensitive)
     .map(([key]) => values[key])
-    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    .filter((value) => value !== undefined)
+    .map((value) => String(value))
+    .filter((value) => value.length > 0);
 }
 
 export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
@@ -746,7 +746,6 @@ export async function writeLifecycleScriptContext(options: {
       values: effective.values,
       sources: effective.sources,
       issues: effective.issues,
-      stores: effective.stores,
     };
   }
 
