@@ -165,6 +165,63 @@ describe('cli entry', () => {
     expect(capture.readStdout()).toContain('已确认 Claude Code marketplace 和插件状态。');
   });
 
+  it('skips interactive existing-candidate planning for non-interactive explicit commands', async () => {
+    const uninstallCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const createInteractiveUninstallPlan = vi.fn(async () => {
+      throw new Error('unexpected uninstall planner call');
+    });
+    const createInteractiveUpgradePlan = vi.fn(async () => {
+      throw new Error('unexpected upgrade planner call');
+    });
+
+    vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+    vi.doMock('../../src/commands/interactive.js', () => ({
+      createInteractiveInstallPlan: vi.fn(async () => null),
+      createInteractiveUninstallPlan,
+      createInteractiveUpgradePlan,
+    }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    expect(await runCli(
+      ['uninstall', 'git-commit'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(await runCli(
+      ['upgrade', 'git-commit'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+
+    expect(createInteractiveUninstallPlan).not.toHaveBeenCalled();
+    expect(createInteractiveUpgradePlan).not.toHaveBeenCalled();
+    expect(uninstallCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        platform: 'auto',
+      }),
+      expect.anything(),
+    );
+    expect(upgradeCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        platform: 'auto',
+      }),
+      expect.anything(),
+    );
+  });
+
   it('passes upgrade --skill-trigger to upgradeCommand', async () => {
     const upgradeCommand = vi.fn(async () => ({
       plugins: ['git-commit'],

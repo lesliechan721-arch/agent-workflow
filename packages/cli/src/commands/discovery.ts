@@ -31,7 +31,6 @@ import {
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
-  getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
 import {
@@ -142,6 +141,10 @@ interface MutableEvidence extends DiscoveryEvidenceSummary {
   sources: DiscoveryEvidenceSource[];
   trackingKinds: HistoricalExtensionKind[];
   readErrors: string[];
+}
+
+interface DiscoveryReadError extends DiscoveryProjectIdentity {
+  message: string;
 }
 
 function platformScopeKey(
@@ -282,6 +285,19 @@ function addEvidenceSource(
   }
 }
 
+function addReadError(
+  evidence: MutableEvidence,
+  message: string,
+): void {
+  if (!evidence.readErrors.includes(message)) {
+    evidence.readErrors.push(message);
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function addTrackingEvidence(
   evidence: MutableEvidence,
   record: TrackingPluginRecord,
@@ -368,7 +384,7 @@ async function readTrackingManifestSafe(targetDir: string): Promise<{
   try {
     return { manifest: await readTrackingManifest(targetDir) };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: errorMessage(error) };
   }
 }
 
@@ -425,7 +441,9 @@ async function collectTrackingEvidence(
   context: DiscoveryContext,
   ledger: InstalledLedger,
   records: Map<string, DiscoveredPluginName>,
-): Promise<void> {
+): Promise<DiscoveryReadError[]> {
+  const readErrors: DiscoveryReadError[] = [];
+
   for (const platform of context.platforms) {
     for (const scope of context.scopes) {
       const identity = context.identities[platform][scope];
@@ -434,6 +452,12 @@ async function collectTrackingEvidence(
         : resolveClaudePaths(identity.executionCwd, scope, context.env);
       const tracking = await readTrackingManifestSafe(paths.trackingDir);
       if (!tracking.manifest) {
+        if (tracking.error) {
+          readErrors.push({
+            ...identity,
+            message: `tracking manifest (${paths.trackingDir}): ${tracking.error}`,
+          });
+        }
         continue;
       }
 
@@ -444,15 +468,17 @@ async function collectTrackingEvidence(
       }
     }
   }
+
+  return readErrors;
 }
 
 async function collectCodexNativeEvidence(
   context: DiscoveryContext,
   ledger: InstalledLedger,
   records: Map<string, DiscoveredPluginName>,
-): Promise<void> {
+): Promise<DiscoveryReadError[]> {
   if (!context.platforms.includes('codex') || !context.scopes.includes('user')) {
-    return;
+    return [];
   }
 
   const identity = context.identities.codex.user;
@@ -460,8 +486,11 @@ async function collectCodexNativeEvidence(
   let snapshot: Awaited<ReturnType<typeof readCodexConfigFile>>['snapshot'];
   try {
     snapshot = (await readCodexConfigFile(paths.configTomlPath)).snapshot;
-  } catch {
-    return;
+  } catch (error) {
+    return [{
+      ...identity,
+      message: `Codex config (${paths.configTomlPath}): ${errorMessage(error)}`,
+    }];
   }
 
   for (const [pluginRef, plugin] of Object.entries(snapshot.plugins).sort(([left], [right]) =>
@@ -477,28 +506,44 @@ async function collectCodexNativeEvidence(
       'codexNativeConfig',
     );
   }
+
+  return [];
 }
 
 async function collectClaudeRuntimeEvidence(
   context: DiscoveryContext,
   ledger: InstalledLedger,
   records: Map<string, DiscoveredPluginName>,
-): Promise<void> {
+): Promise<DiscoveryReadError[]> {
   if (!context.platforms.includes('claude')) {
-    return;
+    return [];
   }
+
+  const readErrors: DiscoveryReadError[] = [];
 
   for (const scope of context.scopes) {
     const identity = context.identities.claude[scope];
     const paths = resolveClaudePaths(identity.executionCwd, scope, context.env);
-    const [settings, installedPlugins] = await Promise.all([
-      readClaudeSettings(paths.settingsPath).catch(
-        () => ({} as Awaited<ReturnType<typeof readClaudeSettings>>),
-      ),
-      readClaudeInstalledPluginsState(paths.installedPluginsPath).catch(
-        () => ({ plugins: {} } as Awaited<ReturnType<typeof readClaudeInstalledPluginsState>>),
-      ),
-    ]);
+    let settings: Awaited<ReturnType<typeof readClaudeSettings>> = {};
+    let installedPlugins: Awaited<ReturnType<typeof readClaudeInstalledPluginsState>> = {
+      plugins: {},
+    };
+    try {
+      settings = await readClaudeSettings(paths.settingsPath);
+    } catch (error) {
+      readErrors.push({
+        ...identity,
+        message: `Claude settings (${paths.settingsPath}): ${errorMessage(error)}`,
+      });
+    }
+    try {
+      installedPlugins = await readClaudeInstalledPluginsState(paths.installedPluginsPath);
+    } catch (error) {
+      readErrors.push({
+        ...identity,
+        message: `Claude installed plugins (${paths.installedPluginsPath}): ${errorMessage(error)}`,
+      });
+    }
 
     for (const [pluginName, record] of Object.entries(settings.plugins?.installed ?? {}).sort(
       ([left], [right]) => left.localeCompare(right),
@@ -544,6 +589,40 @@ async function collectClaudeRuntimeEvidence(
         getOrCreateEvidence(discoveryRecord, identity, ledger),
         'claudeSettings',
       );
+    }
+  }
+
+  return readErrors;
+}
+
+function applyReadErrors(
+  context: DiscoveryContext,
+  ledger: InstalledLedger,
+  records: Map<string, DiscoveredPluginName>,
+  readErrors: DiscoveryReadError[],
+  requestedPluginNames: string[] | undefined,
+): void {
+  if (readErrors.length === 0) {
+    return;
+  }
+
+  const requested = new Set(requestedPluginNames ?? []);
+  for (const error of readErrors) {
+    if (
+      !context.platforms.includes(error.platform) ||
+      !context.scopes.includes(error.scope)
+    ) {
+      continue;
+    }
+
+    for (const record of records.values()) {
+      const hasEvidence = Object.keys(record.evidenceByPlatformScope).length > 0;
+      if (!hasEvidence && !requested.has(record.pluginName)) {
+        continue;
+      }
+
+      const evidence = getOrCreateEvidence(record, error, ledger);
+      addReadError(evidence, error.message);
     }
   }
 }
@@ -603,16 +682,19 @@ export async function discoverManagedPluginNames(
   const pluginNames = options.pluginNames ?? options.names;
 
   await collectLedgerEvidence(context, ledger, records);
-  await collectTrackingEvidence(context, ledger, records);
-  await collectCodexNativeEvidence(context, ledger, records);
-  await collectClaudeRuntimeEvidence(context, ledger, records);
-
-  if (options.includeCurrentCatalog !== false) {
-    await attachCurrentCatalog(context.env, records, pluginNames);
-  }
+  const readErrors = [
+    ...await collectTrackingEvidence(context, ledger, records),
+    ...await collectCodexNativeEvidence(context, ledger, records),
+    ...await collectClaudeRuntimeEvidence(context, ledger, records),
+  ];
 
   for (const pluginName of pluginNames ?? []) {
     getOrCreateDiscoveryRecord(records, pluginName);
+  }
+  applyReadErrors(context, ledger, records, readErrors, pluginNames);
+
+  if (options.includeCurrentCatalog !== false) {
+    await attachCurrentCatalog(context.env, records, pluginNames);
   }
 
   return filterDiscoveredRecords(records, pluginNames);
@@ -796,6 +878,9 @@ function resolveCandidateDisabledReason(
   }
 
   if (!evidenceHasActionableSource(evidence)) {
+    if (evidence.readErrors.length > 0) {
+      return '该 platform/scope 的受管状态读取失败，无法安全处理。';
+    }
     return '没有发现当前 platform/scope 格子的受管安装证据。';
   }
 

@@ -183,6 +183,34 @@ function toCliDiagnosticsOptions(
   };
 }
 
+function shouldCreateInteractiveInstallPlan(
+  pluginNames: string[],
+  options: { platform: string; requestedSkillTrigger?: unknown },
+  context: CliExecutionContext,
+  forcePrompt: boolean,
+): boolean {
+  if (forcePrompt) {
+    return true;
+  }
+  if (!context.interactive) {
+    return false;
+  }
+  if (pluginNames.length === 0 || options.platform === 'auto') {
+    return true;
+  }
+
+  return !options.requestedSkillTrigger &&
+    typeof context.prompt.selectSkillTrigger === 'function';
+}
+
+function shouldCreateInteractiveExistingPlan(
+  pluginNames: string[],
+  context: CliExecutionContext,
+  forcePrompt: boolean,
+): boolean {
+  return forcePrompt || (context.interactive && pluginNames.length === 0);
+}
+
 async function runActionWithContext<T>(
   context: CliExecutionContext,
   action: () => Promise<T>,
@@ -308,12 +336,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 options: commandOptions,
               },
             });
-            const plan = await createInteractiveInstallPlan(
+            const forcePrompt = rawOptions.interactive === true;
+            const plan = shouldCreateInteractiveInstallPlan(
               plugins ?? [],
               commandOptions,
               context,
-              rawOptions.interactive === true,
-            );
+              forcePrompt,
+            )
+              ? await createInteractiveInstallPlan(
+                  plugins ?? [],
+                  commandOptions,
+                  context,
+                  forcePrompt,
+                )
+              : null;
             if (!plan) {
               return {
                 result: await installCommand(plugins ?? [], commandOptions, context),
@@ -365,12 +401,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               options: commandOptions,
             },
           });
-          const plan = await createInteractiveUninstallPlan(
+          const forcePrompt = rawOptions.interactive === true;
+          const plan = shouldCreateInteractiveExistingPlan(
             plugins ?? [],
-            commandOptions,
             context,
-            rawOptions.interactive === true,
-          );
+            forcePrompt,
+          )
+            ? await createInteractiveUninstallPlan(
+                plugins ?? [],
+                commandOptions,
+                context,
+                forcePrompt,
+              )
+            : null;
           if (!plan) {
             return {
               result: await uninstallCommand(plugins ?? [], commandOptions, context),
@@ -429,12 +472,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 options: commandOptions,
               },
             });
-            const plan = await createInteractiveUpgradePlan(
+            const forcePrompt = rawOptions.interactive === true;
+            const plan = shouldCreateInteractiveExistingPlan(
               plugins ?? [],
-              commandOptions,
               context,
-              rawOptions.interactive === true,
-            );
+              forcePrompt,
+            )
+              ? await createInteractiveUpgradePlan(
+                  plugins ?? [],
+                  commandOptions,
+                  context,
+                  forcePrompt,
+                )
+              : null;
             if (!plan) {
               return {
                 result: await upgradeCommand(plugins ?? [], commandOptions, context),

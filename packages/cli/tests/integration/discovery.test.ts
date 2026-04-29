@@ -22,7 +22,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { upsertCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
-import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import { getTrackingManifestPath, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -280,5 +280,77 @@ describe('managed plugin discovery', () => {
     });
     expect(candidates[0].evidence.sources).toContain('codexNativeConfig');
     expect(candidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+  });
+
+  it('keeps requested status targets as unknown candidates when tracking cannot be read', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    await fs.outputFile(getTrackingManifestPath(codexPaths.trackingDir), '{broken json');
+
+    const statusCandidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['legacy-plugin'],
+      env,
+    });
+    const uninstallCandidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['legacy-plugin'],
+      env,
+    });
+
+    expect(statusCandidates).toHaveLength(1);
+    expect(statusCandidates[0].target.source).toBe('historical');
+    expect(statusCandidates[0].evidence.readErrors.join('\n')).toContain('tracking manifest');
+    expect(uninstallCandidates).toHaveLength(1);
+    expect(uninstallCandidates[0].selectable).toBe(false);
+    expect(uninstallCandidates[0].disabledReason).toContain('读取失败');
+  });
+
+  it('records Codex native config read failures on requested candidates', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    await fs.outputFile(codexPaths.configTomlPath, '[plugins."git-commit@aw"\nenabled = true\n');
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['git-commit'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].evidence.readErrors.join('\n')).toContain('Codex config');
+    expect(candidates[0].selectable).toBe(false);
+    expect(candidates[0].disabledReason).toContain('读取失败');
+  });
+
+  it('records Claude runtime read failures on requested candidates', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const claudePaths = resolveClaudePaths(repoRoot, 'user', env);
+    await fs.outputFile(claudePaths.settingsPath, '{broken json');
+    await fs.outputFile(claudePaths.installedPluginsPath, '{also broken');
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'claude',
+      pluginNames: ['git-commit'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].evidence.readErrors.join('\n')).toContain('Claude settings');
+    expect(candidates[0].evidence.readErrors.join('\n')).toContain('Claude installed plugins');
+    expect(candidates[0].selectable).toBe(false);
+    expect(candidates[0].disabledReason).toContain('读取失败');
   });
 });
