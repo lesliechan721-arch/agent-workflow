@@ -188,6 +188,17 @@ async function addConfigSchemaToGitCommit(repoRoot: string): Promise<void> {
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function addConfigSchemaWithFileToGitCommit(repoRoot: string): Promise<void> {
+  await addConfigSchemaToGitCommit(repoRoot);
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.config.schema.workspaceFile = {
+    type: 'file',
+    required: true,
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 function createCodexMarketplaceAddRunner(
   workspace: Awaited<ReturnType<typeof makeWorkspace>>,
   calls: NativeCliInvocation[] = [],
@@ -362,6 +373,20 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(1);
     expect(capture.readStderr()).toContain('Unknown plugin "missing-plugin"');
+    expect(capture.readStderr()).toContain('aw config reset missing-plugin -s user --yes');
+    expect(capture.readStderr()).not.toContain('old-secret');
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'list', 'missing-plugin', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('aw config reset missing-plugin -s user --yes');
     expect(capture.readStderr()).not.toContain('old-secret');
 
     capture = createCapturedIo();
@@ -384,6 +409,104 @@ describe('cli entry integration', () => {
     await expect(fs.pathExists(
       path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
     )).resolves.toBe(false);
+  });
+
+  it('scopes config get/list JSON diagnostics to the requested store', async () => {
+    const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+      {
+        token: 'user-secret',
+        legacyUser: 'keep-user',
+      },
+      { spaces: 2 },
+    );
+    await fs.outputJson(
+      path.join(workspace.repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
+      {
+        retries: 3,
+        legacyProject: 'keep-project',
+      },
+      { spaces: 2 },
+    );
+
+    let capture = createCapturedIo();
+    let exitCode = await runCli(
+      ['config', 'list', 'git-commit', '--scope', 'user', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    let payload = JSON.parse(capture.readStdout());
+    expect(payload.summary.ignoredUnknownKeys).toEqual([{ scope: 'user', key: 'legacyUser' }]);
+    expect(JSON.stringify(payload)).not.toContain('legacyProject');
+    expect(payload.summary.sources).toMatchObject({
+      token: 'user',
+      retries: 'default',
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'git-commit', '--scope', 'project', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    payload = JSON.parse(capture.readStdout());
+    expect(payload.summary.ignoredUnknownKeys).toEqual([{ scope: 'project', key: 'legacyProject' }]);
+    expect(JSON.stringify(payload)).not.toContain('legacyUser');
+    expect(payload.source).toMatchObject({
+      token: 'missing',
+      retries: 'project',
+    });
+  });
+
+  it('prints repair guidance for invalid config in get and list output', async () => {
+    const workspace = await makeWorkspaceWithMutator(addConfigSchemaWithFileToGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    await fs.outputJson(
+      path.join(workspace.repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
+      {
+        token: 'project-secret',
+        workspaceFile: path.join(workspace.repoRoot, 'missing.txt'),
+      },
+      { spaces: 2 },
+    );
+
+    let capture = createCapturedIo();
+    let exitCode = await runCli(
+      ['config', 'list', 'git-commit', '--scope', 'project'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(capture.readStdout()).toContain('workspaceFile: invalid-config');
+    expect(capture.readStdout()).toContain('aw config set git-commit workspaceFile <value> -s project');
+    expect(capture.readStdout()).toContain('aw config unset git-commit workspaceFile -s project');
+    expect(capture.readStdout()).toContain('aw config reset git-commit -s project');
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'workspaceFile', '--scope', 'project'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(capture.readStdout()).toContain('workspaceFile: invalid-config');
+    expect(capture.readStdout()).toContain('aw config set git-commit workspaceFile <value> -s project');
   });
 
   it('rejects invalid --skill-trigger values at the source entry', async () => {

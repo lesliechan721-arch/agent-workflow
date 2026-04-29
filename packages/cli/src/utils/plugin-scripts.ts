@@ -462,6 +462,10 @@ async function resolveCurrentPlugin(
   }
 }
 
+function createMissingLifecycleWarning(pluginName: string, event: PluginLifecycleEvent): string {
+  return `No executable ${event} lifecycle script was found for ${pluginName}; continuing cleanup without running a lifecycle script.`;
+}
+
 export async function resolveLifecycleScriptTarget(
   options: ResolveLifecycleScriptTargetOptions,
 ): Promise<LifecycleScriptTarget> {
@@ -486,13 +490,21 @@ export async function resolveLifecycleScriptTarget(
 
   const currentPlugin = await resolveCurrentPlugin(options.pluginName, options.currentPlugin, options.env ?? process.env);
   if (currentPlugin) {
-    return createTargetFromPlugin({
+    const target = await createTargetFromPlugin({
       event: options.event,
       plugin: currentPlugin,
       source: 'currentCatalog',
       runtimeOs: runtime,
       warnings,
     });
+    if (target.noOp && options.event === 'uninstall' && snapshot) {
+      target.warnings.push(createMissingLifecycleWarning(options.pluginName, options.event));
+    }
+    return target;
+  }
+
+  if (options.event === 'uninstall') {
+    warnings.push(createMissingLifecycleWarning(options.pluginName, options.event));
   }
 
   return {

@@ -52,6 +52,7 @@ import {
   resetPluginConfigStore,
   resolveEffectivePluginConfig,
   summarizeEffectivePluginConfig,
+  type PluginConfigIssue,
 } from './utils/plugin-config.js';
 import type { PluginManifestSource, Scope } from './types.js';
 
@@ -318,7 +319,20 @@ async function loadConfigManifest(
   context: CliExecutionContext,
 ): Promise<PluginManifestSource> {
   assertSafePluginConfigSegment(pluginName);
-  const { plugins } = await resolveCatalogPlugins([pluginName], context.env);
+  let plugins: Awaited<ReturnType<typeof resolveCatalogPlugins>>['plugins'];
+  try {
+    ({ plugins } = await resolveCatalogPlugins([pluginName], context.env));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === `Unknown plugin "${pluginName}".`) {
+      throw new Error(
+        `${message} Cannot read schema-aware config without a current catalog entry. ` +
+          `Use \`aw config reset ${pluginName} -s user --yes\` or ` +
+          `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+      );
+    }
+    throw error;
+  }
   const manifest = plugins[0].manifest;
   if (!manifest.config?.schema) {
     throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
@@ -330,12 +344,39 @@ function writeJsonReceipt(write: (text: string) => void, payload: unknown): void
   writeLine(write, JSON.stringify(payload, null, 2));
 }
 
-function formatConfigIssues(issues: Array<{ key: string; type: string; message: string }>): string[] {
-  return issues.map((issue) => `${issue.key}: ${issue.type} - ${issue.message}`);
+function formatConfigIssueRepairHint(
+  pluginName: string,
+  issue: PluginConfigIssue,
+): string {
+  const sourceScope = issue.source === 'user' || issue.source === 'project'
+    ? ` -s ${issue.source}`
+    : '';
+  const setCommand = `aw config set ${pluginName} ${issue.key} <value>${sourceScope}`;
+
+  if (issue.type === 'invalid-config' && sourceScope) {
+    return [
+      `可运行 \`${setCommand}\` 重新写入`,
+      `\`aw config unset ${pluginName} ${issue.key}${sourceScope}\` 删除该值`,
+      `或 \`aw config reset ${pluginName}${sourceScope}\` 清空这一层配置`,
+    ].join('，');
+  }
+
+  return `可运行 \`${setCommand}\` 写入有效值。`;
+}
+
+function formatConfigIssues(
+  pluginName: string,
+  issues: PluginConfigIssue[],
+): string[] {
+  return issues.map((issue) => [
+    `${issue.key}: ${issue.type} - ${issue.message}`,
+    `修复建议：${formatConfigIssueRepairHint(pluginName, issue)}`,
+  ].join('。'));
 }
 
 function writeConfigList(
   write: (text: string) => void,
+  pluginName: string,
   resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
 ): void {
   for (const [key, field] of Object.entries(resolved.schema)) {
@@ -346,12 +387,13 @@ function writeConfigList(
     writeLine(write, `${key}: ${source}${configured ? ', configured' : ''}, ${required}${fromDefault}`);
   }
   if (resolved.issues.length > 0) {
-    writeLine(write, `配置存在问题：${formatConfigIssues(resolved.issues).join('；')}`);
+    writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
   }
 }
 
 function writeConfigGet(
   write: (text: string) => void,
+  pluginName: string,
   resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
   key?: string,
 ): void {
@@ -367,7 +409,7 @@ function writeConfigGet(
     }
   }
   if (resolved.issues.length > 0) {
-    writeLine(write, `配置存在问题：${formatConfigIssues(resolved.issues).join('；')}`);
+    writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
   }
 }
 
@@ -453,6 +495,7 @@ async function resolveConfigForRead(options: {
     redactedValues: scopedRedactedValues,
     sources: scopedSources,
     issues: scopedIssues,
+    ignoredUnknownKeys: resolved.ignoredUnknownKeys.filter((entry) => entry.scope === options.scopeOrEffective),
   };
 }
 
@@ -748,7 +791,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           summary: summarizeEffectivePluginConfig(resolved),
         });
       } else {
-        writeConfigList(io.stdout, resolved);
+        writeConfigList(io.stdout, pluginName, resolved);
       }
     });
 
@@ -787,7 +830,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           source: key ? resolved.sources[key] : resolved.sources,
         });
       } else {
-        writeConfigGet(io.stdout, resolved, key);
+        writeConfigGet(io.stdout, pluginName, resolved, key);
       }
     });
 

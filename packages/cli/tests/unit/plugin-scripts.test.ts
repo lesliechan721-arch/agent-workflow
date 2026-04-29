@@ -556,6 +556,50 @@ describe('plugin lifecycle scripts', () => {
     expect(target.warnings.join('\n')).toContain('does not declare "uninstall" lifecycle script');
   });
 
+  it('warns and continues when historical uninstall has no executable lifecycle source', async () => {
+    const root = await makeTempRoot('aw-plugin-scripts-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+    const notices: unknown[] = [];
+    const events: unknown[] = [];
+    const context = createCommandExecutionContext({
+      env,
+      reporter: {
+        event: (event) => events.push(event),
+        notice: (notice) => notices.push(notice),
+      },
+      debugLogger: {
+        log: (event) => events.push(event),
+      },
+    });
+
+    const result = await runLifecycleScript({
+      event: 'uninstall',
+      pluginName: 'removed-script-plugin',
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      context,
+      runtimeOs: 'linux',
+    });
+
+    expect(result.executed).toBe(false);
+    expect(result.target.source).toBe('none');
+    expect(notices).toEqual([
+      expect.objectContaining({
+        level: 'warning',
+        message: expect.stringContaining('No executable uninstall lifecycle script was found'),
+      }),
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'lifecycle.noop',
+      }),
+    ]));
+  });
+
   it('garbage collects only unreferenced exact snapshot roots', async () => {
     const root = await makeTempRoot('aw-plugin-scripts-');
     const cwd = path.join(root, 'repo');
