@@ -411,6 +411,192 @@ describe('cli entry integration', () => {
     )).resolves.toBe(false);
   });
 
+  it('configures plugin config through a fake prompt with scoped patching and clean JSON stdout', async () => {
+    const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const projectConfigPath = path.join(
+      workspace.repoRoot,
+      '.agent-workflows',
+      'plugin-config',
+      'git-commit',
+      'config.json',
+    );
+    await fs.outputJson(
+      projectConfigPath,
+      {
+        token: 'keep-project-secret',
+        retries: 2,
+        legacyProject: 'keep-me',
+      },
+      { spaces: 2 },
+    );
+    const promptCalls: Array<{
+      allowedScopes: string[];
+      initialScope: string;
+      currentValues?: Record<string, unknown>;
+      requiredKeys?: string[];
+    }> = [];
+    const prompt = {
+      configurePlugin: async (options: {
+        allowedScopes: string[];
+        initialScope: string;
+        currentValues?: Record<string, unknown>;
+        requiredKeys?: string[];
+      }) => {
+        promptCalls.push({
+          allowedScopes: options.allowedScopes,
+          initialScope: options.initialScope,
+          currentValues: options.currentValues,
+          requiredKeys: options.requiredKeys,
+        });
+        return {
+          selectedScope: 'project' as const,
+          updates: { retries: 4 },
+          updatedKeys: ['retries'],
+          cancelled: false,
+        };
+      },
+    };
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['config', 'configure', 'git-commit', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(capture.readStderr()).toBe('');
+    expect(promptCalls).toEqual([
+      {
+        allowedScopes: ['user', 'project'],
+        initialScope: 'user',
+        currentValues: {
+          token: 'keep-project-secret',
+          retries: 2,
+        },
+        requiredKeys: [],
+      },
+    ]);
+    const payload = JSON.parse(capture.readStdout());
+    expect(capture.readStdout().trim()).toBe(JSON.stringify(payload, null, 2));
+    expect(payload).toMatchObject({
+      ok: true,
+      command: 'config:configure',
+      plugin: 'git-commit',
+      scope: 'project',
+      updatedKeys: ['retries'],
+      effective: {
+        values: {
+          token: '[redacted]',
+          retries: 4,
+        },
+      },
+    });
+    expect(capture.readStdout()).not.toContain('keep-project-secret');
+    await expect(fs.readJson(projectConfigPath)).resolves.toEqual({
+      token: 'keep-project-secret',
+      retries: 4,
+      legacyProject: 'keep-me',
+    });
+    await expect(fs.pathExists(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toBe(false);
+  });
+
+  it('guards config reset with interactive confirmation and allows non-interactive --yes', async () => {
+    const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const userConfigPath = path.join(
+      workspace.awHome,
+      'plugin-config',
+      'git-commit',
+      'config.json',
+    );
+    const projectConfigPath = path.join(
+      workspace.repoRoot,
+      '.agent-workflows',
+      'plugin-config',
+      'git-commit',
+      'config.json',
+    );
+    await fs.outputJson(userConfigPath, { token: 'user-secret' }, { spaces: 2 });
+
+    let confirmCalls = 0;
+    let capture = createCapturedIo();
+    let exitCode = await runCli(
+      ['config', 'reset', 'git-commit', '--scope', 'user'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt: {
+          confirm: async ({ defaultValue }: { defaultValue?: boolean }) => {
+            confirmCalls += 1;
+            expect(defaultValue).toBe(false);
+            return false;
+          },
+        },
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(confirmCalls).toBe(1);
+    expect(capture.readStderr()).toContain('Config reset for git-commit was cancelled.');
+    await expect(fs.pathExists(userConfigPath)).resolves.toBe(true);
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'reset', 'git-commit', '--scope', 'user'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt: {
+          confirm: async () => true,
+        },
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain('已重置 git-commit 的 user 配置。');
+    await expect(fs.pathExists(userConfigPath)).resolves.toBe(false);
+
+    await fs.outputJson(projectConfigPath, { token: 'project-secret' }, { spaces: 2 });
+    let promptCalled = false;
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'reset', 'git-commit', '--scope', 'project', '--yes', '--no-interactive', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt: {
+          confirm: async () => {
+            promptCalled = true;
+            return false;
+          },
+        },
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(promptCalled).toBe(false);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'config:reset',
+      plugin: 'git-commit',
+      scope: 'project',
+      existed: true,
+      deleted: true,
+    });
+    await expect(fs.pathExists(projectConfigPath)).resolves.toBe(false);
+  });
+
   it('scopes config get/list JSON diagnostics to the requested store', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);

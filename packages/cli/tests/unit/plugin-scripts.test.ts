@@ -470,6 +470,45 @@ describe('plugin lifecycle scripts', () => {
     });
     expect(defaults.AW_CODEX_HOME).toBe('/aw/isolated-codex-home');
     expect(defaults.AW_CLAUDE_HOME).toBe('/aw/isolated-claude-home');
+
+    const windowsAwHome = 'C:\\aw';
+    const windowsTempDir = 'C:\\isolated';
+    const windowsEnv = buildLifecycleSpawnEnv({
+      commandEnv: {
+        AW_HOME: windowsAwHome,
+        PATH: 'C:\\bin',
+        HOME: 'C:\\real-home',
+        TMPDIR: 'C:\\real-tmp',
+        USERPROFILE: 'C:\\real-user',
+        TEMP: 'C:\\real-temp',
+        TMP: 'C:\\real-tmp',
+        SystemRoot: 'C:\\Windows',
+        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      } as NodeJS.ProcessEnv,
+      contextPath: 'C:\\ctx.json',
+      tempDir: windowsTempDir,
+      plugin: { name: 'p', version: '1.0.0' },
+      event: 'test',
+      platform: 'claude',
+      scope: 'project',
+      bundleRoot: 'C:\\bundle',
+      runtimeOs: 'win32',
+    });
+    expect(windowsEnv).toMatchObject({
+      AW_HOME: windowsAwHome,
+      AW_CODEX_HOME: path.join(windowsAwHome, 'isolated-codex-home'),
+      AW_CLAUDE_HOME: path.join(windowsAwHome, 'isolated-claude-home'),
+      PATH: 'C:\\bin',
+      USERPROFILE: path.join(windowsTempDir, 'home'),
+      TEMP: path.join(windowsTempDir, 'tmp'),
+      TMP: path.join(windowsTempDir, 'tmp'),
+      SystemRoot: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      AW_PLUGIN_PLATFORM: 'claude',
+      AW_PLUGIN_SCOPE: 'project',
+    });
+    expect(windowsEnv.HOME).toBeUndefined();
+    expect(windowsEnv.TMPDIR).toBeUndefined();
   });
 
   it('fails before execution when no lifecycle entry resolves on the current OS', async () => {

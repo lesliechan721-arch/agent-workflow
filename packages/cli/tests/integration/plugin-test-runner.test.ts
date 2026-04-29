@@ -165,6 +165,85 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('bad-neighbor');
   });
 
+  it('passes scope and test-name through both platform runs with isolated homes and bundles', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.scripts = {
+      tests: {
+        node: ['./scripts/platform-isolation.test.mjs'],
+      },
+    };
+    await writeManifest(repoRoot, manifest);
+    await fs.outputFile(
+      path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'platform-isolation.test.mjs'),
+      [
+        'import test from "node:test";',
+        'import assert from "node:assert/strict";',
+        'import os from "node:os";',
+        'import path from "node:path";',
+        'import { access, readFile, writeFile } from "node:fs/promises";',
+        'async function exists(file) {',
+        '  try {',
+        '    await access(file);',
+        '    return true;',
+        '  } catch {',
+        '    return false;',
+        '  }',
+        '}',
+        'test("selected lifecycle view", async () => {',
+        '  const contextPath = process.env.AW_PLUGIN_CONTEXT;',
+        '  const context = JSON.parse(await readFile(contextPath, "utf8"));',
+        '  const testTempDir = path.dirname(contextPath);',
+        '  const marker = path.join(process.env.AW_PLUGIN_ROOT, "platform-marker.txt");',
+        '  assert.equal(context.scope, "project");',
+        '  assert.equal(process.env.AW_PLUGIN_SCOPE, "project");',
+        '  assert.equal(context.platform, process.env.AW_PLUGIN_PLATFORM);',
+        '  assert.equal(process.cwd(), context.cwd);',
+        '  assert.equal(os.homedir(), path.join(testTempDir, "home"));',
+        '  assert.equal(os.tmpdir(), path.join(testTempDir, "tmp"));',
+        '  if (process.env.AW_PLUGIN_PLATFORM === "codex") {',
+        '    assert.equal(await exists(marker), false);',
+        '    await writeFile(marker, "codex", "utf8");',
+        '  } else {',
+        '    assert.equal(process.env.AW_PLUGIN_PLATFORM, "claude");',
+        '    assert.equal(await exists(marker), false);',
+        '    await writeFile(marker, "claude", "utf8");',
+        '  }',
+        '});',
+        'test("excluded failing test", () => {',
+        '  assert.fail("test-name filtering did not apply");',
+        '});',
+      ].join('\n'),
+      'utf8',
+    );
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests([
+      'git-commit',
+      '--platform',
+      'both',
+      '--scope',
+      'project',
+      '--test-name',
+      'selected lifecycle view',
+    ], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: {
+        ...process.env,
+        PATH: process.env.PATH ?? '',
+        HOME: path.join(repoRoot, 'host-home'),
+        TMPDIR: path.join(repoRoot, 'host-tmp'),
+      } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStdout()).toContain('git-commit / claude: passed');
+    expect(output.readStderr()).toBe('');
+  });
+
   it('rejects undeclared bare package imports in tests without scripts.node', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
