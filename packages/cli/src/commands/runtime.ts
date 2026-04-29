@@ -354,6 +354,22 @@ function shouldPromptConfigKey(
   );
 }
 
+function formatConfigKeyChoiceLabel(
+  key: string,
+  definition: CliConfigPromptSchemaEntry,
+  options: CliConfigPromptOptions,
+): string {
+  const label = definition.label ?? key;
+  const currentValue = options.currentValues?.[key];
+  if (currentValue === undefined) {
+    return label;
+  }
+  if (definition.sensitive) {
+    return `${label}（当前：已配置）`;
+  }
+  return `${label}（当前：${String(currentValue)}）`;
+}
+
 function parsePromptedConfigValue(
   key: string,
   definition: CliConfigPromptSchemaEntry,
@@ -554,9 +570,40 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
           }) as CliConfigPromptScope
         : configOptions.initialScope;
       const updates: Record<string, CliConfigPromptValue> = {};
+      const keysToPrompt = new Set<string>();
+      const optionalConfiguredChoices: CliPromptChoice[] = [];
 
       for (const [key, definition] of Object.entries(configOptions.schema)) {
-        if (!shouldPromptConfigKey(key, definition, configOptions)) {
+        if (shouldPromptConfigKey(key, definition, configOptions)) {
+          keysToPrompt.add(key);
+          continue;
+        }
+
+        optionalConfiguredChoices.push({
+          value: key,
+          label: formatConfigKeyChoiceLabel(key, definition, configOptions),
+        });
+      }
+
+      if (optionalConfiguredChoices.length > 0) {
+        const body = optionalConfiguredChoices
+          .map((choice, index) => formatChoice(choice, index, new Set<string>()))
+          .join('\n');
+        const selectedKeys = parseSelectionInput(
+          await ask(
+            `选择要更新的 ${configOptions.pluginName} 配置项\n${body}\n选择编号，可用逗号分隔多个，直接回车跳过：`,
+          ),
+          optionalConfiguredChoices,
+          [],
+          true,
+        );
+        for (const key of selectedKeys) {
+          keysToPrompt.add(key);
+        }
+      }
+
+      for (const [key, definition] of Object.entries(configOptions.schema)) {
+        if (!keysToPrompt.has(key)) {
           continue;
         }
 

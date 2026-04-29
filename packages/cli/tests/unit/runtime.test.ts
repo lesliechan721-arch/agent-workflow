@@ -115,6 +115,58 @@ describe('command runtime', () => {
     expect(output.join('')).not.toContain('hunter2');
   });
 
+  it('allows the readline config prompt to edit an existing optional key', async () => {
+    const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
+    const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+    input.isTTY = true;
+    const output: string[] = [];
+    let selectedKey = false;
+    let answeredValue = false;
+    const prompt = createReadlinePrompt({
+      input,
+      outputSink: {
+        isTTY: true,
+        write: (text) => {
+          output.push(text);
+          if (!selectedKey && text.includes('直接回车跳过')) {
+            selectedKey = true;
+            queueMicrotask(() => input.write('1\n'));
+          } else if (!answeredValue && text.includes('Retries（当前：1）:')) {
+            answeredValue = true;
+            queueMicrotask(() => input.write('2\n'));
+          }
+        },
+      },
+    });
+
+    const result = await prompt.configurePlugin!({
+      pluginName: 'optional-plugin',
+      schema: {
+        retries: {
+          type: 'number',
+          label: 'Retries',
+        },
+      },
+      initialScope: 'user',
+      allowedScopes: ['user'],
+      currentValues: {
+        retries: 1,
+      },
+      requiredKeys: [],
+    });
+    input.end();
+
+    expect(result).toMatchObject({
+      selectedScope: 'user',
+      updates: {
+        retries: 2,
+      },
+      updatedKeys: ['retries'],
+      cancelled: false,
+    });
+    expect(output.join('')).toContain('Retries（当前：1）');
+  });
+
   it('passes the same native runner and env into default adapters', async () => {
     const CodexAdapter = vi.fn(function CodexAdapterMock() {
       return { name: 'codex' };

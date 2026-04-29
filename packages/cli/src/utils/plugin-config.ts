@@ -366,7 +366,7 @@ async function applyConfigLayer(options: {
   values: Record<string, PluginConfigValue>;
   redactedValues: Record<string, PluginConfigValue | '[redacted]'>;
   sources: Record<string, PluginConfigSource>;
-  issues: PluginConfigIssue[];
+  invalidIssues: Map<string, PluginConfigIssue>;
   schema: PluginConfigSchema['schema'];
   entries: Record<string, unknown>;
   source: PluginConfigSource;
@@ -387,11 +387,12 @@ async function applyConfigLayer(options: {
       options.values[key] = coerced;
       options.redactedValues[key] = redactValue(field, coerced);
       options.sources[key] = options.source;
+      options.invalidIssues.delete(key);
     } catch (error) {
       delete options.values[key];
       delete options.redactedValues[key];
       options.sources[key] = options.source;
-      options.issues.push({
+      options.invalidIssues.set(key, {
         type: 'invalid-config',
         key,
         source: options.source,
@@ -432,7 +433,7 @@ export async function resolveEffectivePluginConfig(options: {
   const values: Record<string, PluginConfigValue> = {};
   const redactedValues: Record<string, PluginConfigValue | '[redacted]'> = {};
   const sources: Record<string, PluginConfigSource> = {};
-  const issues: PluginConfigIssue[] = [];
+  const invalidIssues = new Map<string, PluginConfigIssue>();
   const ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[] = [];
   const schemaKeys = new Set(Object.keys(schema));
 
@@ -448,7 +449,7 @@ export async function resolveEffectivePluginConfig(options: {
       values,
       redactedValues,
       sources,
-      issues,
+      invalidIssues,
       schema: { [key]: field },
       entries: { [key]: field.default },
       source: 'default',
@@ -469,7 +470,7 @@ export async function resolveEffectivePluginConfig(options: {
       values,
       redactedValues,
       sources,
-      issues,
+      invalidIssues,
       schema,
       entries: store.values,
       source: sourceForScope(scope),
@@ -477,6 +478,7 @@ export async function resolveEffectivePluginConfig(options: {
     });
   }
 
+  const issues = [...invalidIssues.values()];
   for (const [key, field] of Object.entries(schema)) {
     if (field.required && values[key] === undefined) {
       issues.push({

@@ -578,6 +578,8 @@ async function runPreparedPluginTests(options: {
     await fs.ensureDir(projectRoot);
     await fs.ensureDir(awHome);
     await fs.ensureDir(tempDir);
+    await fs.ensureDir(path.join(tempDir, 'home'));
+    await fs.ensureDir(path.join(tempDir, 'tmp'));
     const canonicalProjectRoot = await fs.realpath(projectRoot);
     const copiedEntries = await copyTestsIntoBundle({
       baselineRoot: options.prepared.baselineRoot,

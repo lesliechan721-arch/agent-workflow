@@ -286,6 +286,50 @@ describe('plugin config store', () => {
     });
   });
 
+  it('drops lower-priority invalid config issues when a higher-priority layer provides a valid value', async () => {
+    const root = await makeTempRoot('aw-plugin-config-');
+    const repoRoot = path.join(root, 'repo');
+    const subdir = path.join(repoRoot, 'packages', 'app');
+    const validConfigFile = path.join(repoRoot, 'project-config.json');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(subdir);
+    await fs.outputFile(validConfigFile, '{}\n');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const manifest = createManifest();
+    manifest.config!.schema = {
+      configFile: { type: 'file', required: true },
+    };
+
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'user',
+      cwd: subdir,
+      env,
+      values: {
+        configFile: path.join(repoRoot, 'missing-config.json'),
+      },
+    });
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'project',
+      cwd: subdir,
+      env,
+      values: {
+        configFile: validConfigFile,
+      },
+    });
+
+    const effective = await resolveEffectivePluginConfig({
+      manifest,
+      cwd: subdir,
+      env,
+    });
+
+    await expect(fs.realpath(validConfigFile)).resolves.toBe(effective.values.configFile);
+    expect(effective.sources.configFile).toBe('project');
+    expect(effective.issues).toEqual([]);
+  });
+
   it('falls back project config root to normalized cwd outside repos and workspaces', async () => {
     const root = await makeTempRoot('aw-plugin-config-');
     const cwd = path.join(root, 'plain-dir');
