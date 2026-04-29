@@ -18,6 +18,8 @@ import type {
   GeneratedArtifactStatus,
   InstalledLedger,
   InstalledScopeRecord,
+  MarketplaceRootResolution,
+  MarketplaceSourceStatus,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
@@ -124,6 +126,85 @@ function isCodexMarketplaceRegistered(
     normalizeCodexMarketplaceSource(marketplace.source) === normalizeCodexMarketplaceSource(awHome) &&
     marketplace.sourcePointsToManifest !== true
   );
+}
+
+interface CodexMarketplaceHealth {
+  registered: boolean;
+  source?: string;
+  sourceType: MarketplaceSourceStatus;
+  rootResolution: MarketplaceRootResolution;
+  warning?: string;
+}
+
+function normalizeCodexMarketplaceSourceType(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+): MarketplaceSourceStatus {
+  if (!marketplace?.sourceType) {
+    return 'missing';
+  }
+
+  return marketplace.sourceType === 'local' ? 'local' : 'invalid';
+}
+
+function resolveCodexMarketplaceRootResolution(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+  awHome: string,
+  sourceType: MarketplaceSourceStatus,
+): MarketplaceRootResolution {
+  if (!marketplace?.source) {
+    return 'missing';
+  }
+  if (marketplace.sourcePointsToManifest) {
+    return 'unknown';
+  }
+  if (sourceType !== 'local') {
+    return 'installedCopy';
+  }
+  return normalizeCodexMarketplaceSource(marketplace.source) === normalizeCodexMarketplaceSource(awHome)
+    ? 'localSource'
+    : 'unknown';
+}
+
+function describeCodexMarketplaceWarning(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+  awHome: string,
+  sourceType: MarketplaceSourceStatus,
+): string | undefined {
+  if (!marketplace?.source) {
+    return 'Codex marketplace aw 未注册，无法加载 AW 原生插件。';
+  }
+  if (marketplace.sourcePointsToManifest) {
+    return `Codex marketplace source 指向旧 manifest 文件 ${marketplace.source}，需要重新注册本地 marketplace 根目录。`;
+  }
+  if (sourceType === 'missing') {
+    return 'Codex marketplace aw 缺少 source_type="local"，Codex 会按安装副本解析而不是当前 AW_HOME。';
+  }
+  if (sourceType === 'invalid') {
+    return `Codex marketplace aw 的 source_type=${marketplace.sourceType ?? 'missing'} 不受 AW 支持，应为 "local"。`;
+  }
+  if (normalizeCodexMarketplaceSource(marketplace.source) !== normalizeCodexMarketplaceSource(awHome)) {
+    return `Codex marketplace source 指向 ${marketplace.source}，未指向当前 AW_HOME ${awHome}。`;
+  }
+
+  return undefined;
+}
+
+function resolveCodexMarketplaceHealth(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+  awHome: string,
+): CodexMarketplaceHealth {
+  const sourceType = normalizeCodexMarketplaceSourceType(marketplace);
+  const rootResolution = resolveCodexMarketplaceRootResolution(marketplace, awHome, sourceType);
+  const registered = sourceType === 'local' && rootResolution === 'localSource';
+  return {
+    registered,
+    source: marketplace?.source,
+    sourceType,
+    rootResolution,
+    warning: registered
+      ? undefined
+      : describeCodexMarketplaceWarning(marketplace, awHome, sourceType),
+  };
 }
 
 function summarizeNativeCliOutput(error: NativeCliError): string {
@@ -929,7 +1010,7 @@ export class CodexAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot] =
+    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
       await Promise.all([
         readCodexConfigFile(userPaths.configTomlPath),
         readCodexConfigFile(scopePaths.configTomlPath),
@@ -939,6 +1020,7 @@ export class CodexAdapter implements PlatformAdapter {
         resolveCodexProjectKey(this.cwd),
         resolveRepoRoot(this.cwd),
         resolveEmbeddedPluginsRoot(),
+        resolveAwHomeCanonical(this.env),
       ]);
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
@@ -960,26 +1042,34 @@ export class CodexAdapter implements PlatformAdapter {
       scopeInitialized === 'yes' ||
       Boolean(trackingRecord) ||
       (scope === 'user' ? sharedNativeRefs.user : sharedNativeRefs.projects.includes(projectKey));
+    const nativePluginEnabled =
+      userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true;
     const platformNativeFallbackEvidence =
       scope === 'user' &&
-      userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true &&
+      nativePluginEnabled &&
       !currentScopeManagedEvidence;
     const currentCapabilities: CodexCapabilitySnapshot = {
       requiresNativePlugin: requiresNativePlugin(plugin),
       hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
     };
+    const installedCapabilitySnapshot = getInstalledScopeSnapshot(
+      ledger,
+      plugin.manifest.name,
+      scope,
+      projectKey,
+    );
+    const installedCapabilities = normalizeCodexCapabilitySnapshot(installedCapabilitySnapshot);
     const catalogCompatibility = resolveCodexCatalogCompatibility({
       currentManifestPresent: currentCatalogAvailable,
       currentScopeManagedEvidence,
       platformNativeFallbackEvidence,
       currentCapabilities,
-      installedCapabilitySnapshot: getInstalledScopeSnapshot(
-        ledger,
-        plugin.manifest.name,
-        scope,
-        projectKey,
-      ),
+      installedCapabilitySnapshot,
     });
+    const marketplaceHealth = resolveCodexMarketplaceHealth(
+      userConfig.snapshot.marketplaces[MARKETPLACE_NAME],
+      awHome,
+    );
 
     const projectLayerEvidence = await detectCodexProjectLayerEvidence(this.cwd, repoRoot);
     const projectLayerArtifactExists =
@@ -1110,6 +1200,15 @@ export class CodexAdapter implements PlatformAdapter {
     if (externalOwnership?.present) {
       driftWarnings.push(externalOwnership.details ?? '同名插件由外部 marketplace 管理。');
     }
+    if (
+      (currentCapabilities.requiresNativePlugin ||
+        installedCapabilities.requiresNativePlugin ||
+        nativePluginEnabled) &&
+      !marketplaceHealth.registered &&
+      marketplaceHealth.warning
+    ) {
+      driftWarnings.push(marketplaceHealth.warning);
+    }
     if (projectTrust === 'untrusted') {
       driftWarnings.push('当前 repo 处于 untrusted 状态，project scope 产物不会进入会话。');
     }
@@ -1134,23 +1233,15 @@ export class CodexAdapter implements PlatformAdapter {
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
       native: {
-        marketplaceRegistered:
-          Boolean(userConfig.snapshot.marketplaces[MARKETPLACE_NAME]) &&
-          !userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourcePointsToManifest,
-        marketplaceSource: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source,
-        marketplaceSourceType: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourceType,
-        marketplaceRootResolution:
-          userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.sourcePointsToManifest === true
-            ? 'manifest-file'
-            : userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source
-              ? 'local-source'
-              : 'missing',
+        marketplaceRegistered: marketplaceHealth.registered,
+        marketplaceSource: marketplaceHealth.source,
+        marketplaceSourceType: marketplaceHealth.sourceType,
+        marketplaceRootResolution: marketplaceHealth.rootResolution,
         pluginAvailable: currentCatalogAvailable,
-        pluginInstalled:
-          userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true,
-        declaredSource: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source,
-        details: userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source
-          ? `source=${userConfig.snapshot.marketplaces[MARKETPLACE_NAME]?.source}`
+        pluginInstalled: nativePluginEnabled,
+        declaredSource: marketplaceHealth.source,
+        details: marketplaceHealth.source
+          ? `source=${marketplaceHealth.source}`
           : undefined,
         sharedNativeRefs,
       },

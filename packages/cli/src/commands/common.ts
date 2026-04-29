@@ -899,6 +899,15 @@ export function formatStatusReports(reports: StatusReport[]): string {
       lines.push(
         `      marketplaceRegistered=${plugin.native.marketplaceRegistered ? 'yes' : 'no'} pluginAvailable=${plugin.native.pluginAvailable ? 'yes' : 'no'} pluginInstalled=${plugin.native.pluginInstalled ? 'yes' : 'no'} version=${plugin.native.version ?? '-'}`,
       );
+      if (plugin.native.marketplaceSource) {
+        lines.push(`      marketplaceSource=${plugin.native.marketplaceSource}`);
+      }
+      if (plugin.native.marketplaceSourceType) {
+        lines.push(`      marketplaceSourceType=${plugin.native.marketplaceSourceType}`);
+      }
+      if (plugin.native.marketplaceRootResolution) {
+        lines.push(`      marketplaceRootResolution=${plugin.native.marketplaceRootResolution}`);
+      }
       if (plugin.native.details) {
         lines.push(`      details=${plugin.native.details}`);
       }

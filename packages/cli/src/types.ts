@@ -266,11 +266,14 @@ export interface EnvironmentDetection {
   claude: PlatformDetection;
 }
 
+export type MarketplaceSourceStatus = 'local' | 'missing' | 'invalid';
+export type MarketplaceRootResolution = 'localSource' | 'installedCopy' | 'missing' | 'unknown';
+
 export interface NativePluginStatus {
   marketplaceRegistered: boolean;
   marketplaceSource?: string;
-  marketplaceSourceType?: string;
-  marketplaceRootResolution?: string;
+  marketplaceSourceType?: MarketplaceSourceStatus;
+  marketplaceRootResolution?: MarketplaceRootResolution;
   pluginAvailable: boolean;
   pluginInstalled: boolean;
   version?: string;

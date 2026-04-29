@@ -14,6 +14,7 @@ import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js
 import {
   readCodexConfigFile,
   upsertCodexMarketplaceFile,
+  upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
@@ -409,6 +410,35 @@ describe('CodexAdapter', () => {
     expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
       ['plugin', 'marketplace', 'add', await fs.realpath(env.AW_HOME!)],
     ]);
+  });
+
+  it('reports wrong local Codex marketplace directories as status drift', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    const wrongSource = path.join(env.AW_HOME!, 'old-copy');
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: wrongSource,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', {
+      enabled: true,
+    });
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const report = await adapter.status(plugin, 'user');
+
+    expect(report.plugins[0].native).toMatchObject({
+      marketplaceRegistered: false,
+      marketplaceSource: wrongSource,
+      marketplaceSourceType: 'local',
+      marketplaceRootResolution: 'unknown',
+      pluginInstalled: true,
+    });
+    expect(report.plugins[0].driftWarnings).toContain(
+      `Codex marketplace source 指向 ${wrongSource}，未指向当前 AW_HOME ${await fs.realpath(env.AW_HOME!)}。`,
+    );
   });
 
   it('does not call native marketplace add for instruction-only Codex plugins', async () => {

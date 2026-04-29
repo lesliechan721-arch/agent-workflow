@@ -231,11 +231,20 @@ function describeNative(plugin: PluginStatusReport | undefined, platform: Platfo
     if (plugin.native.marketplaceRegistered) {
       const source = plugin.native.marketplaceSource ?? plugin.native.declaredSource;
       return source
-        ? `Codex local marketplace 已注册到 ${source}`
-        : 'Codex local marketplace 已注册';
+        ? `Codex 已注册本地 marketplace：${source}`
+        : 'Codex 已注册本地 marketplace';
     }
-    if (plugin.native.marketplaceRootResolution === 'manifest-file') {
-      return 'Codex marketplace source 指向 manifest 文件，需要重新注册本地 marketplace 根目录';
+    if (plugin.native.marketplaceRootResolution === 'missing') {
+      return 'Codex marketplace aw 未注册，需要重新注册本地 marketplace';
+    }
+    if (plugin.native.marketplaceRootResolution === 'installedCopy') {
+      return 'Codex marketplace aw 不是 local source 注册，需要重新注册本地 marketplace';
+    }
+    if (plugin.native.marketplaceRootResolution === 'unknown') {
+      const source = plugin.native.marketplaceSource ?? plugin.native.declaredSource;
+      return source
+        ? `Codex marketplace source 未指向当前 AW marketplace：${source}`
+        : 'Codex marketplace source 无法确认，需要重新注册本地 marketplace';
     }
   }
 
@@ -302,8 +311,12 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
   if (cell.report?.ledgerStateStatus === 'degraded') {
     return `本机安装账本处于 degraded 状态；下一次 install/upgrade 请显式传 --skill-trigger default|manual|auto。`;
   }
-  if (cell.report?.native.marketplaceRootResolution === 'manifest-file') {
-    return `重新注册 Codex marketplace：codex plugin marketplace add <AW_HOME>`;
+  if (
+    cell.platform === 'codex' &&
+    cell.report?.native.marketplaceRegistered === false &&
+    cell.report.driftWarnings.some((warning) => warning.includes('Codex marketplace'))
+  ) {
+    return `重新注册 Codex marketplace：aw install ${cell.pluginName} --platform codex --scope ${cell.scope}`;
   }
   if (cell.report?.skillTriggerDrift === 'yes') {
     return `重新应用 skill trigger 偏好：aw upgrade ${cell.pluginName}${suffix} --skill-trigger ${cell.report.skillTriggerPreference ?? 'default'}`;

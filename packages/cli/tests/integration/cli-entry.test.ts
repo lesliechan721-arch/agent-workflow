@@ -202,6 +202,33 @@ function createDegradedLedger(): InstalledLedger {
   };
 }
 
+function createCodexUserManagedLedger(): InstalledLedger {
+  const ledger = createAvailableLedger();
+  ledger.plugins['git-commit'] = {
+    lastResolvedVersion: '0.1.0',
+    platforms: {
+      codex: {
+        userScope: {
+          managed: true,
+          updatedAt: '2026-04-29T00:00:00.000Z',
+          resolvedVersion: '0.1.0',
+          capabilitySnapshot: {
+            requiresNativePlugin: true,
+            hasRepoManagedArtifacts: true,
+          },
+        },
+        sharedNativeRefs: {
+          user: true,
+          projects: [],
+        },
+        lastRequestedScope: 'user',
+        lastRequestedAt: '2026-04-29T00:00:00.000Z',
+      },
+    },
+  };
+  return ledger;
+}
+
 async function readCodexAllowImplicitInvocation(awHome: string): Promise<boolean> {
   const openAiYamlPath = path.join(
     awHome,
@@ -1199,5 +1226,87 @@ describe('cli entry integration', () => {
       const parsed = JSON.parse(capture.readStdout()) as { reports?: unknown[] };
       expect(parsed.reports).toBeInstanceOf(Array);
     }
+  });
+
+  it('reports Codex marketplace source drift in status JSON and default next steps', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    let capture = createCapturedIo();
+    const nativeCalls: NativeCliInvocation[] = [];
+
+    expect(await runCli(
+      ['install', 'git-commit', '--scope', 'user', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+      },
+    )).toBe(0);
+
+    const wrongSource = path.join(workspace.awHome, 'old-copy');
+    await upsertCodexMarketplaceFile(
+      resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath,
+      'aw',
+      {
+        source: wrongSource,
+        sourceType: 'local',
+      },
+    );
+    await writeInstalledLedger(createCodexUserManagedLedger(), workspace.env);
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['status', 'git-commit', '--scope', 'user', '--platform', 'codex', '-j'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    ), capture.readStderr()).toBe(0);
+    const payload = JSON.parse(capture.readStdout()) as {
+      health: string;
+      summaries: Array<{ health: string; nextSteps: string[] }>;
+      cells: Array<{ health: string }>;
+      reports: Array<{
+        plugins: Array<{
+          native: {
+            marketplaceRegistered: boolean;
+            marketplaceSource?: string;
+            marketplaceSourceType?: string;
+            marketplaceRootResolution?: string;
+            pluginInstalled: boolean;
+          };
+        }>;
+      }>;
+    };
+
+    expect(payload.health).toBe('needsAttention');
+    expect(payload.summaries[0].health).toBe('needsAttention');
+    expect(payload.summaries[0].nextSteps).toContain(
+      '重新注册 Codex marketplace：aw install git-commit --platform codex --scope user',
+    );
+    expect(payload.cells[0].health).toBe('needsAttention');
+    expect(payload.reports[0].plugins[0].native).toMatchObject({
+      marketplaceRegistered: false,
+      marketplaceSource: wrongSource,
+      marketplaceSourceType: 'local',
+      marketplaceRootResolution: 'unknown',
+      pluginInstalled: true,
+    });
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['status', 'git-commit', '--scope', 'user', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    ), capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain('Codex marketplace source 指向');
+    expect(capture.readStdout()).toContain(
+      '重新注册 Codex marketplace：aw install git-commit --platform codex --scope user',
+    );
   });
 });
