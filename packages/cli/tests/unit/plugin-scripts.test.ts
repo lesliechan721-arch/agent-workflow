@@ -20,7 +20,10 @@ import {
 import {
   PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../../src/utils/plugin-script-contract.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
 
@@ -139,6 +142,22 @@ describe('plugin lifecycle scripts', () => {
       },
       script: {
         args: ['--flag'],
+      },
+      paths: {
+        configStores: {
+          user: resolvePluginConfigStorePath({
+            pluginName: plugin.manifest.name,
+            scope: 'user',
+            cwd,
+            env,
+          }),
+          project: resolvePluginConfigStorePath({
+            pluginName: plugin.manifest.name,
+            scope: 'project',
+            cwd,
+            env,
+          }),
+        },
       },
     });
     if (process.platform !== 'win32') {
@@ -301,7 +320,10 @@ describe('plugin lifecycle scripts', () => {
       entryPath: 'C:\\tmp\\x.ps1',
       cwd: 'C:\\tmp',
       env,
-    })).toMatchObject({ command: 'powershell', args: ['-NoProfile', '-File', 'C:\\tmp\\x.ps1', 'a'] });
+    })).toMatchObject({
+      command: 'powershell',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\tmp\\x.ps1', 'a'],
+    });
     const cmd = buildLifecycleScriptInvocation({
       entry: { runner: 'cmd', path: './x.cmd', args: ['has space', 'has"quote'] },
       entryPath: 'C:\\Program Files\\x.cmd',
@@ -485,6 +507,53 @@ describe('plugin lifecycle scripts', () => {
 
     expect(target.source).toBe('currentCatalog');
     expect(target.warnings.join('\n')).toContain('falling back to current catalog');
+  });
+
+  it('falls back to current catalog when the readable snapshot has no requested lifecycle', async () => {
+    const root = await makeTempRoot('aw-plugin-scripts-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const installedPlugin = await writePlugin(root);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+    const snapshot = await createLifecycleConfigSnapshot({
+      plugin: installedPlugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      env,
+    });
+
+    const currentManifest = createManifest();
+    currentManifest.scripts!.lifecycle!.uninstall = {
+      default: {
+        runner: 'node',
+        path: './scripts/install.mjs',
+      },
+    };
+    const currentPlugin = await writePlugin(root, currentManifest);
+
+    const target = await resolveLifecycleScriptTarget({
+      event: 'uninstall',
+      pluginName: installedPlugin.manifest.name,
+      platform: 'codex',
+      scopeRecord: {
+        managed: true,
+        updatedAt: '2026-04-29T00:00:00.000Z',
+        resolvedVersion: '0.1.0',
+        capabilitySnapshot: {},
+        lifecycleConfigSnapshot: snapshot,
+      } as InstalledScopeRecord<Record<string, unknown>>,
+      currentPlugin,
+      cwd,
+      env,
+      runtimeOs: 'linux',
+    });
+
+    expect(target.source).toBe('currentCatalog');
+    expect(target.noOp).toBe(false);
+    expect(target.entry?.path).toBe('./scripts/install.mjs');
+    expect(target.warnings.join('\n')).toContain('does not declare "uninstall" lifecycle script');
   });
 
   it('garbage collects only unreferenced exact snapshot roots', async () => {

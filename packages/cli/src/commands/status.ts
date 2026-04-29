@@ -21,7 +21,7 @@ import type {
 import { detectEnvironment } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { readPluginManifest } from '../utils/manifest.js';
-import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import { resolveEffectivePluginConfig, type PluginConfigIssue } from '../utils/plugin-config.js';
 import {
   calculatePluginBundleFingerprint,
 } from '../utils/plugin-scripts.js';
@@ -66,6 +66,7 @@ export interface StatusMatrixCell {
   config: StatusConfigHealth;
   scripts: StatusScriptHealth;
   configSources?: string[];
+  configIssues?: PluginConfigIssue[];
   healthWarnings?: string[];
   disabledReason?: string;
   error?: string;
@@ -74,7 +75,7 @@ export interface StatusMatrixCell {
 export interface StatusSummary {
   pluginName: string;
   health: StatusHealth;
-  cells: Array<Pick<StatusMatrixCell, 'platform' | 'scope' | 'health' | 'healthSource' | 'config' | 'scripts' | 'projectKey'>>;
+  cells: Array<Pick<StatusMatrixCell, 'platform' | 'scope' | 'health' | 'healthSource' | 'config' | 'scripts' | 'projectKey' | 'configIssues'>>;
   nextSteps: string[];
 }
 
@@ -287,7 +288,7 @@ async function resolveConfigHealth(options: {
   plugin: PluginMeta | undefined;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): Promise<{ config: StatusConfigHealth; configSources?: string[] }> {
+}): Promise<{ config: StatusConfigHealth; configSources?: string[]; configIssues?: PluginConfigIssue[] }> {
   if (!options.plugin?.manifest.config?.schema) {
     return { config: 'no-schema' };
   }
@@ -298,16 +299,26 @@ async function resolveConfigHealth(options: {
     cwd: options.cwd,
     env: options.env,
   });
+  const configIssues = effective.issues.length > 0
+    ? effective.issues.map((issue) => ({
+        type: issue.type,
+        key: issue.key,
+        ...(issue.source ? { source: issue.source } : {}),
+        message: issue.message,
+      }))
+    : undefined;
   if (effective.issues.some((issue) => issue.type === 'invalid-config')) {
     return {
       config: 'invalid-config',
       configSources: resolveConfigSourceSummary(options.plugin.manifest, effective.sources),
+      ...(configIssues ? { configIssues } : {}),
     };
   }
   if (effective.issues.some((issue) => issue.type === 'missing-required')) {
     return {
       config: 'missing-required',
       configSources: resolveConfigSourceSummary(options.plugin.manifest, effective.sources),
+      ...(configIssues ? { configIssues } : {}),
     };
   }
   return {
@@ -331,6 +342,7 @@ async function resolveStatusRuntimeHealth(options: {
   config: StatusConfigHealth;
   scripts: StatusScriptHealth;
   configSources?: string[];
+  configIssues?: PluginConfigIssue[];
   healthWarnings?: string[];
 }> {
   const source = await resolveStatusHealthManifest(options);
@@ -641,6 +653,7 @@ function createSummary(pluginName: string, cells: StatusMatrixCell[]): StatusSum
       config: cell.config,
       scripts: cell.scripts,
       projectKey: cell.projectKey,
+      ...(cell.configIssues ? { configIssues: cell.configIssues } : {}),
     })),
     nextSteps,
   };

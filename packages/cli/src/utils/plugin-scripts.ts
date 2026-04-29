@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { CommandExecutionContext } from '../commands/runtime.js';
+import type { PluginConfigStore } from './plugin-config.js';
 import type {
   GeneratedArtifact,
   InstalledLedger,
@@ -20,6 +21,7 @@ import type {
   Scope,
 } from '../types.js';
 import {
+  inferLifecycleScriptRunnerFromPath,
   PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
@@ -85,13 +87,14 @@ export interface LifecycleScriptContext {
     codexHome: string;
     claudeHome: string;
     manifestPath: string;
+    configStores?: Record<Scope, string>;
   };
   config: {
     schema?: NonNullable<PluginManifestSource['config']>['schema'];
     values: Record<string, string | number | boolean>;
     sources: Record<string, string>;
     issues: unknown[];
-    stores?: unknown;
+    stores?: Record<Scope, PluginConfigStore>;
   };
   script: {
     runner: PluginLifecycleScriptEntry['runner'];
@@ -430,6 +433,9 @@ async function createTargetFromSnapshot(options: {
   ) {
     throw new Error('snapshot manifest identity does not match ledger metadata');
   }
+  if (!plugin.manifest.scripts?.lifecycle?.[options.event]) {
+    throw new Error(`snapshot manifest does not declare "${options.event}" lifecycle script`);
+  }
 
   return createTargetFromPlugin({
     event: options.event,
@@ -505,21 +511,11 @@ function resolveAutoRunner(entry: PluginLifecycleScriptEntry): Exclude<PluginLif
     return entry.runner;
   }
 
-  const extension = path.extname(entry.path).toLowerCase();
-  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
-    return 'node';
+  const runner = inferLifecycleScriptRunnerFromPath(entry.path);
+  if (!runner) {
+    throw new Error(`Unable to infer lifecycle script runner from "${entry.path}".`);
   }
-  if (extension === '.sh') {
-    return 'sh';
-  }
-  if (extension === '.ps1') {
-    return 'powershell';
-  }
-  if (extension === '.cmd' || extension === '.bat') {
-    return 'cmd';
-  }
-
-  throw new Error(`Unable to infer lifecycle script runner from "${entry.path}".`);
+  return runner;
 }
 
 export function quoteCmdArgument(value: string): string {
@@ -585,7 +581,7 @@ export function buildLifecycleScriptInvocation(options: {
   if (runner === 'pwsh' || runner === 'powershell') {
     return {
       command: runner,
-      args: ['-NoProfile', '-File', options.entryPath, ...scriptArgs],
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', options.entryPath, ...scriptArgs],
       cwd: options.cwd,
       env: options.env,
     };
@@ -716,6 +712,7 @@ export async function writeLifecycleScriptContext(options: {
     sources: {},
     issues: [],
   };
+  let configStores: Record<Scope, string> | undefined;
   if (options.target.sourceManifest.config?.schema) {
     const effective = await resolveEffectivePluginConfig({
       pluginName: options.target.sourceManifest.name,
@@ -728,6 +725,10 @@ export async function writeLifecycleScriptContext(options: {
         `Invalid AW config for ${options.target.sourceManifest.name}: ${effective.issues.map((issue) => `${issue.key} (${issue.type})`).join(', ')}.`,
       );
     }
+    configStores = {
+      user: effective.stores.user.path,
+      project: effective.stores.project.path,
+    };
     config = {
       schema: options.target.sourceManifest.config.schema,
       values: effective.values,
@@ -752,6 +753,7 @@ export async function writeLifecycleScriptContext(options: {
       codexHome: lifecycleCodexHome(options.commandEnv),
       claudeHome: lifecycleClaudeHome(options.commandEnv),
       manifestPath: options.target.manifestPath,
+      ...(configStores ? { configStores } : {}),
     },
     config,
     script: {

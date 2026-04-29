@@ -739,6 +739,74 @@ describe('CLI integration', () => {
     expect(result.matrix.health).toBe('ready');
   });
 
+  it('keeps stable config issue details in status JSON', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(async (workspaceRoot) => {
+      const manifestPath = path.join(workspaceRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      manifest.config = {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+          },
+          workspaceDir: {
+            type: 'directory',
+            default: './missing-workspace-dir',
+          },
+        },
+      };
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    });
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const result = await statusCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              scopeInitialized: 'yes',
+              catalogCompatibility: 'current',
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    const payload = JSON.parse(result.output);
+    expect(payload.cells[0]).toMatchObject({
+      config: 'invalid-config',
+      configIssues: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'invalid-config',
+          key: 'workspaceDir',
+          source: 'default',
+        }),
+        expect.objectContaining({
+          type: 'missing-required',
+          key: 'token',
+          source: 'missing',
+        }),
+      ]),
+    });
+    expect(payload.summaries[0].cells[0]).toMatchObject({
+      configIssues: expect.arrayContaining([
+        expect.objectContaining({ key: 'workspaceDir' }),
+        expect.objectContaining({ key: 'token' }),
+      ]),
+    });
+  });
+
   it('reports unknown status targets as notInstalled instead of throwing', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;

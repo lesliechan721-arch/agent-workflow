@@ -297,6 +297,16 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
+    const userStorePath = path.join(tempRoot, 'user-config.json');
+    const projectStorePath = path.join(tempRoot, 'project-config.json');
+    await fs.writeJson(userStorePath, {
+      apiKey: 'user-store-secret',
+      mode: 'standard',
+      ignored: true,
+    });
+    await fs.writeJson(projectStorePath, {
+      mode: 'strict',
+    });
     await fs.writeJson(contextPath, {
       plugin: { name: 'context-helper' },
       config: {
@@ -315,8 +325,8 @@ describe('authoring tools', () => {
       },
       paths: {
         configStores: {
-          user: path.join(tempRoot, 'missing-user.json'),
-          project: path.join(tempRoot, 'missing-project.json'),
+          user: userStorePath,
+          project: projectStorePath,
         },
       },
     });
@@ -346,6 +356,32 @@ describe('authoring tools', () => {
       sources: {
         apiKey: 'user',
         mode: 'project',
+      },
+    });
+
+    const { stdout: scopedStdout } = await execFileAsync(
+      'node',
+      [helperPath, 'json', '--scope', 'user'],
+      {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          AW_PLUGIN_CONTEXT: contextPath,
+          AW_HOME: path.join(tempRoot, 'unused-aw-home'),
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    const scopedPayload = JSON.parse(scopedStdout);
+    expect(scopedPayload).toMatchObject({
+      pluginName: 'context-helper',
+      scope: 'user',
+      values: {
+        apiKey: 'user-store-secret',
+        mode: 'standard',
+      },
+      diagnostics: {
+        ignoredUnknownKeys: [{ scope: 'user', key: 'ignored' }],
       },
     });
   });
@@ -928,6 +964,11 @@ describe('authoring tools', () => {
       'console.log("ok");\n',
       'utf8',
     );
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'lifecycle.py'),
+      'print("ok")\n',
+      'utf8',
+    );
     await fs.writeJson(path.join(pluginDir, 'scripts', 'pkg', 'package.json'), {
       dependencies: {
         yaml: '^2.0.0',
@@ -970,6 +1011,42 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('scripts.helpers.config must use a Node runnable extension'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      scripts: {
+        helpers: {
+          config: './scripts/aw-config.mjs',
+        },
+        lifecycle: {
+          install: {
+            linux: { runner: 'auto', path: './scripts/lifecycle.py' },
+            darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
+            win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
+          },
+        },
+        node: {
+          packageRoot: './scripts/pkg',
+        },
+      },
+      config: {
+        schema: {
+          goodKey: {
+            type: 'string',
+          },
+        },
+      },
+    }, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('runner "auto"'),
     });
 
     await fs.writeJson(manifestPath, {

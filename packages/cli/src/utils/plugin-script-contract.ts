@@ -26,6 +26,16 @@ export const PLUGIN_SCRIPT_RUNNERS = [
   'auto',
 ] as const;
 
+export const PLUGIN_AUTO_RUNNER_EXTENSIONS = [
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.sh',
+  '.ps1',
+  '.cmd',
+  '.bat',
+] as const;
+
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
@@ -59,6 +69,26 @@ export function resolveLifecycleScriptForOs(
     if (entry) {
       return entry;
     }
+  }
+
+  return undefined;
+}
+
+export function inferLifecycleScriptRunnerFromPath(
+  scriptPath: string,
+): Exclude<PluginLifecycleScriptRunner, 'auto'> | undefined {
+  const extension = path.posix.extname(scriptPath).toLowerCase();
+  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
+    return 'node';
+  }
+  if (extension === '.sh') {
+    return 'sh';
+  }
+  if (extension === '.ps1') {
+    return 'powershell';
+  }
+  if (extension === '.cmd' || extension === '.bat') {
+    return 'cmd';
   }
 
   return undefined;
@@ -221,4 +251,3 @@ export function scanNodeImportContract(
     errors,
   };
 }
-

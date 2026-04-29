@@ -97,6 +97,7 @@ const MATCHERLESS_NATIVE_HOOK_EVENTS = {
 };
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const SCRIPT_AUTO_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.sh', '.ps1', '.cmd', '.bat']);
 const SCRIPT_RUNNERS = new Set(['node', 'sh', 'bash', 'pwsh', 'powershell', 'cmd', 'auto']);
 const SCRIPT_OS_SELECTORS = new Set(['default', 'unix', 'windows', 'linux', 'darwin', 'win32']);
 const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
@@ -924,6 +925,10 @@ function isNodeRunnablePath(relativePath) {
   return SCRIPT_NODE_EXTENSIONS.has(path.posix.extname(normalizeRelativePath(relativePath)));
 }
 
+function isAutoRunnablePath(relativePath) {
+  return SCRIPT_AUTO_EXTENSIONS.has(path.posix.extname(normalizeRelativePath(relativePath)).toLowerCase());
+}
+
 function normalizePluginScriptPath(pluginDir, value, fieldName) {
   if (typeof value !== 'string' || value.trim() === '') {
     error(`${fieldName} must be a non-empty string`);
@@ -984,6 +989,9 @@ function validateScriptEntry(pluginDir, value, fieldName, options = {}) {
 
   const relativePath = normalizePluginScriptPath(pluginDir, entry.path, `${fieldName}.path`);
   validateDeclaredScriptFile(pluginDir, relativePath, `${fieldName}.path`);
+  if (runner === 'auto' && relativePath && !isAutoRunnablePath(relativePath)) {
+    error(`${fieldName}.path uses runner "auto" but has no supported extension (${[...SCRIPT_AUTO_EXTENSIONS].join(', ')})`);
+  }
   if (options.requireNodePath && relativePath && !isNodeRunnablePath(relativePath)) {
     error(`${fieldName}.path must use a Node runnable extension (.js, .mjs, or .cjs)`);
   }
@@ -1007,6 +1015,9 @@ function validateLifecycleDefinition(pluginDir, value, fieldName, runtimeEntries
   if (typeof value === 'string') {
     const relativePath = normalizePluginScriptPath(pluginDir, value, fieldName);
     validateDeclaredScriptFile(pluginDir, relativePath, fieldName);
+    if (relativePath && !isAutoRunnablePath(relativePath)) {
+      error(`${fieldName} uses runner "auto" but has no supported extension (${[...SCRIPT_AUTO_EXTENSIONS].join(', ')})`);
+    }
     if (relativePath && isNodeRunnablePath(relativePath)) {
       runtimeEntries.push({ path: relativePath, fieldName });
     }

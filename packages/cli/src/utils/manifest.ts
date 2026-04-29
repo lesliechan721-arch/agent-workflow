@@ -43,8 +43,10 @@ import {
   resolvePlatformHookDefinitions,
 } from './hooks-contract.js';
 import {
+  inferLifecycleScriptRunnerFromPath,
   isPluginLifecycleOsSelector,
   isPluginScriptRunner,
+  PLUGIN_AUTO_RUNNER_EXTENSIONS,
   PLUGIN_LIFECYCLE_EVENTS,
   PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
@@ -481,6 +483,14 @@ function assertNodeRunnablePath(value: string, fieldName: string): void {
   }
 }
 
+function assertAutoRunnablePath(value: string, fieldName: string): void {
+  if (!inferLifecycleScriptRunnerFromPath(value)) {
+    throw new Error(
+      `Invalid ${fieldName}: runner "auto" requires one of these file extensions: ${PLUGIN_AUTO_RUNNER_EXTENSIONS.join(', ')}.`,
+    );
+  }
+}
+
 function assertNotInlineCommandLike(value: string, fieldName: string): void {
   if (/\s|[;&|<>`]/.test(value) || value.includes('$(')) {
     throw new Error(`Invalid ${fieldName}: inline command strings are not allowed.`);
@@ -521,6 +531,9 @@ function normalizeScriptEntry(
   }
 
   const scriptPath = normalizePluginScriptPath(pluginRoot, input.path, `${fieldName}.path`);
+  if (runner === 'auto') {
+    assertAutoRunnablePath(scriptPath, `${fieldName}.path`);
+  }
 
   return {
     runner,
@@ -538,10 +551,12 @@ function normalizeLifecycleScriptDefinition(
   fieldName: string,
 ): PluginLifecycleScriptSelector {
   if (typeof value === 'string') {
+    const scriptPath = normalizePluginScriptPath(pluginRoot, value, fieldName);
+    assertAutoRunnablePath(scriptPath, fieldName);
     return {
       default: {
         runner: 'auto',
-        path: normalizePluginScriptPath(pluginRoot, value, fieldName),
+        path: scriptPath,
       },
     };
   }

@@ -404,6 +404,18 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('inline command strings are not allowed');
 
     manifest.scripts = {
+      lifecycle: {
+        install: {
+          linux: { runner: 'auto', path: './scripts/lifecycle.py' },
+          darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
+          win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('runner "auto" requires');
+
+    manifest.scripts = {
       helpers: {
         config: './scripts/uninstall.sh',
       },
