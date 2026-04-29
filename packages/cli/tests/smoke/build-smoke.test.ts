@@ -257,7 +257,13 @@ describe('build smoke', () => {
       fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'yaml', 'package.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'chalk')),
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'fs-extra')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', '.pnpm', 'fs-extra@11.3.4')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', '.pnpm', 'universalify@2.0.1')),
     ).resolves.toBe(false);
 
     const runtime = (await import(

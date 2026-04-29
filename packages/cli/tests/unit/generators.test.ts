@@ -77,29 +77,55 @@ async function writeNodePackageFixture(
 }
 
 function createFakeStagingRunner(): PluginStagingRunner {
+  async function writeInstalledPackage(
+    packageRoot: string,
+    dependencyName: string,
+    options: { dependencies?: Record<string, string> } = {},
+  ): Promise<void> {
+    const storeName = `${dependencyName.replace('/', '+')}@1.0.0`;
+    const dependencyRoot = path.join(
+      packageRoot,
+      'node_modules',
+      '.pnpm',
+      storeName,
+      'node_modules',
+      ...dependencyName.split('/'),
+    );
+    await fs.ensureDir(dependencyRoot);
+    await fs.writeJson(
+      path.join(dependencyRoot, 'package.json'),
+      {
+        name: dependencyName,
+        version: '1.0.0',
+        main: 'index.js',
+        dependencies: options.dependencies,
+        scripts: dependencyName === 'bad-install-script'
+          ? {
+              postinstall: 'node postinstall.js',
+            }
+          : undefined,
+      },
+      { spaces: 2 },
+    );
+    await fs.writeFile(path.join(dependencyRoot, 'index.js'), 'module.exports = {};\n', 'utf8');
+
+    const topLevelPackage = path.join(packageRoot, 'node_modules', ...dependencyName.split('/'));
+    await fs.ensureDir(path.dirname(topLevelPackage));
+    await fs.remove(topLevelPackage);
+    const symlinkTarget = process.platform === 'win32'
+      ? dependencyRoot
+      : path.relative(path.dirname(topLevelPackage), dependencyRoot);
+    await fs.symlink(symlinkTarget, topLevelPackage, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+
   return {
     async installPackageRoot(packageRoot) {
       const packageJson = await fs.readJson(path.join(packageRoot, 'package.json'));
       const dependencies = packageJson.dependencies ?? {};
+      const devDependencies = packageJson.devDependencies ?? {};
       await fs.ensureDir(path.join(packageRoot, 'node_modules'));
-      for (const dependencyName of Object.keys(dependencies)) {
-        const dependencyRoot = path.join(packageRoot, 'node_modules', ...dependencyName.split('/'));
-        await fs.ensureDir(dependencyRoot);
-        await fs.writeJson(
-          path.join(dependencyRoot, 'package.json'),
-          {
-            name: dependencyName,
-            version: '1.0.0',
-            main: 'index.js',
-            scripts: dependencyName === 'bad-install-script'
-              ? {
-                  postinstall: 'node postinstall.js',
-                }
-              : undefined,
-          },
-          { spaces: 2 },
-        );
-        await fs.writeFile(path.join(dependencyRoot, 'index.js'), 'module.exports = {};\n', 'utf8');
+      for (const dependencyName of Object.keys({ ...dependencies, ...devDependencies })) {
+        await writeInstalledPackage(packageRoot, dependencyName);
       }
     },
     async runNodeBuild({ pluginRoot }) {
@@ -585,6 +611,12 @@ describe('local-plugin generator', () => {
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'pnpm-lock.yaml'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', 'chalk', 'package.json'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', 'vitest'))).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', '.pnpm', 'chalk@1.0.0', 'node_modules', 'chalk', 'package.json')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', '.pnpm', 'vitest@1.0.0')),
+    ).resolves.toBe(false);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'lifecycle.test.mjs'))).resolves.toBe(false);
     await expect(
       fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')),

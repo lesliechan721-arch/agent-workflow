@@ -418,16 +418,22 @@ async function findInstalledPackageDir(
   return undefined;
 }
 
-async function assertNoProductionInstallScripts(packageRoot: string): Promise<void> {
-  const rootPackageJson = await readJsonObject(
-    path.join(packageRoot, 'package.json'),
-    'scripts.node.packageRoot.package.json',
-  );
-  const queue = readDependencyNames(rootPackageJson, 'dependencies').map((dependencyName) => ({
+interface InstalledDependencyPackage {
+  packageName: string;
+  packageDir: string;
+  packageJson: Record<string, unknown>;
+}
+
+async function collectInstalledDependencyClosure(
+  packageRoot: string,
+  rootDependencies: string[],
+): Promise<InstalledDependencyPackage[]> {
+  const queue = rootDependencies.map((dependencyName) => ({
     packageName: dependencyName,
     importerDir: packageRoot,
   }));
   const visited = new Set<string>();
+  const packages: InstalledDependencyPackage[] = [];
 
   while (queue.length > 0) {
     const next = queue.shift();
@@ -444,18 +450,15 @@ async function assertNoProductionInstallScripts(packageRoot: string): Promise<vo
     }
     visited.add(dependencyDir);
 
-    const packageJsonPath = path.join(dependencyDir, 'package.json');
-    const packageJson = await readJsonObject(packageJsonPath, `${next.packageName} package.json`);
-    const scripts = packageJson.scripts;
-    if (scripts && typeof scripts === 'object' && !Array.isArray(scripts)) {
-      for (const scriptName of INSTALL_SCRIPT_NAMES) {
-        if (typeof (scripts as Record<string, unknown>)[scriptName] === 'string') {
-          throw new Error(
-            `Invalid scripts.node.packageRoot: production dependency "${next.packageName}" declares unsupported "${scriptName}" script.`,
-          );
-        }
-      }
-    }
+    const packageJson = await readJsonObject(
+      path.join(dependencyDir, 'package.json'),
+      `${next.packageName} package.json`,
+    );
+    packages.push({
+      packageName: next.packageName,
+      packageDir: dependencyDir,
+      packageJson,
+    });
 
     for (const childDependency of readDependencyNames(packageJson, 'dependencies')) {
       queue.push({
@@ -464,17 +467,91 @@ async function assertNoProductionInstallScripts(packageRoot: string): Promise<vo
       });
     }
   }
+
+  return packages;
 }
 
-function getTopLevelPackageName(relativePath: string): string | undefined {
-  const [first, second] = relativePath.split(path.sep);
-  if (!first) {
+async function readProductionDependencyClosure(packageRoot: string): Promise<InstalledDependencyPackage[]> {
+  const rootPackageJson = await readJsonObject(
+    path.join(packageRoot, 'package.json'),
+    'scripts.node.packageRoot.package.json',
+  );
+  return collectInstalledDependencyClosure(packageRoot, readDependencyNames(rootPackageJson, 'dependencies'));
+}
+
+async function assertNoProductionInstallScripts(packageRoot: string): Promise<void> {
+  for (const dependency of await readProductionDependencyClosure(packageRoot)) {
+    const scripts = dependency.packageJson.scripts;
+    if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) {
+      continue;
+    }
+    for (const scriptName of INSTALL_SCRIPT_NAMES) {
+      if (typeof (scripts as Record<string, unknown>)[scriptName] === 'string') {
+        throw new Error(
+          `Invalid scripts.node.packageRoot: production dependency "${dependency.packageName}" declares unsupported "${scriptName}" script.`,
+        );
+      }
+    }
+  }
+}
+
+function resolvePnpmPackageInstanceRoot(
+  sourceNodeModules: string,
+  packageDir: string,
+): { source: string; targetRelativePath: string } | undefined {
+  const relativePath = path.relative(sourceNodeModules, packageDir);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     return undefined;
   }
-  if (first.startsWith('@')) {
-    return second ? `${first}/${second}` : undefined;
+
+  const segments = relativePath.split(path.sep);
+  if (segments[0] !== '.pnpm' || !segments[1] || segments[2] !== 'node_modules') {
+    return undefined;
   }
-  return first;
+
+  return {
+    source: path.join(sourceNodeModules, '.pnpm', segments[1]),
+    targetRelativePath: path.join('.pnpm', segments[1]),
+  };
+}
+
+async function copyProductionDependencyClosure(
+  sourcePackageRoot: string,
+  targetPackageRoot: string,
+): Promise<void> {
+  const sourceNodeModules = path.join(sourcePackageRoot, 'node_modules');
+  const targetNodeModules = path.join(targetPackageRoot, 'node_modules');
+  const sourceNodeModulesReal = await fs.realpath(sourceNodeModules);
+  const productionDependencies = await readProductionDependencyClosure(sourcePackageRoot);
+  const copiedPnpmInstances = new Set<string>();
+
+  await fs.remove(targetNodeModules);
+  await fs.ensureDir(targetNodeModules);
+
+  for (const dependency of productionDependencies) {
+    const pnpmInstanceRoot = resolvePnpmPackageInstanceRoot(
+      sourceNodeModulesReal,
+      dependency.packageDir,
+    );
+    if (pnpmInstanceRoot && !copiedPnpmInstances.has(pnpmInstanceRoot.source)) {
+      copiedPnpmInstances.add(pnpmInstanceRoot.source);
+      await fs.copy(
+        pnpmInstanceRoot.source,
+        path.join(targetNodeModules, pnpmInstanceRoot.targetRelativePath),
+        { dereference: false },
+      );
+    }
+
+    const sourceTopLevelPackage = path.join(sourceNodeModules, ...dependency.packageName.split('/'));
+    const sourceTopLevelReal = await fs.realpath(sourceTopLevelPackage).catch(() => undefined);
+    if (sourceTopLevelReal !== dependency.packageDir) {
+      continue;
+    }
+
+    const targetTopLevelPackage = path.join(targetNodeModules, ...dependency.packageName.split('/'));
+    await fs.ensureDir(path.dirname(targetTopLevelPackage));
+    await fs.copy(sourceTopLevelPackage, targetTopLevelPackage, { dereference: false });
+  }
 }
 
 async function copyProductionPackageRoot(plugin: PluginMeta, outputRoot: string): Promise<void> {
@@ -500,27 +577,7 @@ async function copyProductionPackageRoot(plugin: PluginMeta, outputRoot: string)
     throw new Error('Invalid scripts.node.packageRoot: missing production node_modules after staging install.');
   }
 
-  const { dependencies, devDependencies } = await readPackageRootDependencySets(plugin);
-  const runtimeDependencies = new Set(dependencies);
-  const devOnlyDependencies = new Set(devDependencies.filter((dependency) => !runtimeDependencies.has(dependency)));
-  await fs.copy(sourceNodeModules, path.join(targetPackageRoot, 'node_modules'), {
-    dereference: true,
-    filter(source) {
-      const relativePath = path.relative(sourceNodeModules, source);
-      if (!relativePath) {
-        return true;
-      }
-      if (relativePath === '.bin' || relativePath.startsWith(`.bin${path.sep}`)) {
-        return false;
-      }
-      if (relativePath === '.pnpm' || relativePath.startsWith(`.pnpm${path.sep}`)) {
-        return true;
-      }
-
-      const packageName = getTopLevelPackageName(relativePath);
-      return !packageName || !devOnlyDependencies.has(packageName);
-    },
-  });
+  await copyProductionDependencyClosure(sourcePackageRoot, targetPackageRoot);
 }
 
 async function createStagedPlugin(

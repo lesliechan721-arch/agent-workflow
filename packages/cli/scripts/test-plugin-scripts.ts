@@ -361,7 +361,7 @@ async function readPackageDependencyNames(
   return { dependencies, devDependencies };
 }
 
-async function copyTestDependencyNodeModules(options: {
+async function copyTestPackageNodeModules(options: {
   baselineRoot: string;
   bundleRoot: string;
   manifest: PluginManifestSource;
@@ -372,21 +372,14 @@ async function copyTestDependencyNodeModules(options: {
   }
   const sourcePackageRoot = path.join(options.baselineRoot, stripDotSlash(packageRoot));
   const targetPackageRoot = path.join(options.bundleRoot, stripDotSlash(packageRoot));
-  const packageJson = await fs.readJson(path.join(sourcePackageRoot, 'package.json'));
-  const dependencies = new Set(Object.keys(packageJson.dependencies ?? {}));
-  const devDependencies = Object.keys(packageJson.devDependencies ?? {})
-    .filter((dependencyName) => !dependencies.has(dependencyName));
-  for (const dependencyName of devDependencies) {
-    const sourceDir = path.join(sourcePackageRoot, 'node_modules', ...dependencyName.split('/'));
-    if (!(await fs.pathExists(sourceDir))) {
-      continue;
-    }
-    await fs.copy(
-      sourceDir,
-      path.join(targetPackageRoot, 'node_modules', ...dependencyName.split('/')),
-      { dereference: true },
-    );
+  const sourceNodeModules = path.join(sourcePackageRoot, 'node_modules');
+  if (!(await fs.pathExists(sourceNodeModules))) {
+    return;
   }
+
+  const targetNodeModules = path.join(targetPackageRoot, 'node_modules');
+  await fs.remove(targetNodeModules);
+  await fs.copy(sourceNodeModules, targetNodeModules, { dereference: false });
 }
 
 async function assertTestImportContract(
@@ -573,7 +566,7 @@ async function runPreparedPluginTests(options: {
     const awHome = path.join(runRoot, 'aw-home');
     const tempDir = path.join(runRoot, 'tmp');
     await fs.copy(options.prepared.bundleRoot, bundleRoot);
-    await copyTestDependencyNodeModules({
+    await copyTestPackageNodeModules({
       baselineRoot: options.prepared.baselineRoot,
       bundleRoot,
       manifest: options.prepared.manifest,
