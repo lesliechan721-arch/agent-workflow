@@ -20,6 +20,7 @@ import {
   resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
+  type PreparedMarketplaceState,
   type ResolvedPluginTarget,
 } from './common.js';
 import { installTargetsOnPlatforms } from './install.js';
@@ -329,7 +330,7 @@ export async function upgradeCommand(
   pluginNames: string[],
   rawOptions: RawUpgradeCommandOptions,
   runtime: UpgradeCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; marketplace?: PreparedMarketplaceState }> {
   const options = normalizeUpgradeCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
@@ -432,6 +433,7 @@ export async function upgradeCommand(
         platforms,
         plugins: result.plugins,
         nativePlugins: result.nativePlugins,
+        marketplace: prepared.marketplace,
         warnings: [
           ...prepared.warnings,
           ...collectCommandWarnings(platforms, options.scope),
@@ -520,6 +522,7 @@ export async function upgradeCommand(
       platforms,
       plugins: result.plugins,
       nativePlugins: result.nativePlugins,
+      marketplace: prepared.marketplace,
       warnings: [
         ...prepared.warnings,
         ...collectCommandWarnings(platforms, options.scope),

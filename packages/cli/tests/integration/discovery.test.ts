@@ -3,12 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildCommandCandidates,
   discoverManagedPluginNames,
 } from '../../src/commands/discovery.js';
+import { statusCommand } from '../../src/commands/status.js';
 import type { InstalledLedger } from '../../src/types.js';
 import {
   createAvailableLedger,
@@ -310,6 +311,77 @@ describe('managed plugin discovery', () => {
     expect(uninstallCandidates).toHaveLength(1);
     expect(uninstallCandidates[0].selectable).toBe(false);
     expect(uninstallCandidates[0].disabledReason).toContain('读取失败');
+  });
+
+  it('keeps default status and interactive candidates unknown when tracking cannot be read', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    await fs.outputFile(getTrackingManifestPath(codexPaths.trackingDir), '{broken json');
+
+    const statusCandidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      env,
+    });
+    const statusCandidate = statusCandidates.find((candidate) =>
+      candidate.pluginName === 'git-commit' &&
+      candidate.platform === 'codex' &&
+      candidate.scope === 'user',
+    );
+
+    expect(statusCandidate?.evidence.readErrors.join('\n')).toContain('tracking manifest');
+
+    const uninstallCandidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      env,
+    });
+    const uninstallCandidate = uninstallCandidates.find((candidate) =>
+      candidate.pluginName === 'git-commit' &&
+      candidate.platform === 'codex' &&
+      candidate.scope === 'user',
+    );
+
+    expect(uninstallCandidate?.selectable).toBe(false);
+    expect(uninstallCandidate?.disabledReason).toContain('读取失败');
+
+    const codexStatus = vi.fn(async () => {
+      throw new Error('status should not run for unreadable discovery cells');
+    });
+    const result = await statusCommand(
+      [],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        adapters: {
+          codex: { status: codexStatus } as never,
+          claude: { status: vi.fn() } as never,
+        },
+        env,
+      },
+    );
+    const payload = JSON.parse(result.output) as {
+      cells: Array<{ pluginName: string; platform: string; scope: string; health: string; error?: string }>;
+    };
+    const gitCommitCell = payload.cells.find((cell) =>
+      cell.pluginName === 'git-commit' &&
+      cell.platform === 'codex' &&
+      cell.scope === 'user',
+    );
+
+    expect(gitCommitCell).toMatchObject({
+      health: 'unknown',
+    });
+    expect(gitCommitCell?.error).toContain('tracking manifest');
+    expect(codexStatus).not.toHaveBeenCalled();
   });
 
   it('records Codex native config read failures on requested candidates', async () => {

@@ -101,6 +101,14 @@ describe('cli entry', () => {
       nativePlugins: {
         codex: ['git-commit'],
       },
+      marketplace: {
+        rootDir: '/tmp/aw-home',
+        changed: false,
+        catalog: {
+          rootDir: '/tmp/aw-home',
+          source: 'local',
+        },
+      },
       warnings: ['当前 repo trust 状态未知，project scope 会话可见性无法确定。'],
     }));
     vi.doMock('../../src/commands/install.js', () => ({
@@ -121,7 +129,8 @@ describe('cli entry', () => {
 
     expect(exitCode).toBe(0);
     expect(readStdout()).toContain('已安装 git-commit：Codex / user scope。');
-    expect(readStdout()).toContain('使用插件目录：AW marketplace。');
+    expect(readStdout()).toContain('使用插件目录：本地 marketplace（/tmp/aw-home）。');
+    expect(readStdout()).toContain('已复用本地 marketplace：/tmp/aw-home。');
     expect(readStdout()).toContain('已确认 Codex marketplace 注册：/tmp/aw-home。');
     expect(readStdout()).toContain('已确认插件启用：git-commit@aw。');
     expect(readStdout()).toContain('完成。下一步：运行 aw status git-commit -p codex');
@@ -140,6 +149,14 @@ describe('cli entry', () => {
       platforms: ['claude'],
       nativePlugins: {
         claude: ['git-commit'],
+      },
+      marketplace: {
+        rootDir: '/tmp/aw-home',
+        changed: true,
+        catalog: {
+          rootDir: '/tmp/aw-home',
+          source: 'local',
+        },
       },
       warnings: [],
     }));
@@ -162,7 +179,41 @@ describe('cli entry', () => {
       { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
     expect(capture.readStdout()).toContain('已升级 git-commit：Claude Code / user scope。');
+    expect(capture.readStdout()).toContain('已同步本地 marketplace：/tmp/aw-home。');
     expect(capture.readStdout()).toContain('已确认 Claude Code marketplace 和插件状态。');
+  });
+
+  it('prints embedded catalog receipts only when the command returns that decision', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      marketplace: {
+        rootDir: '/tmp/aw-home',
+        changed: false,
+        catalog: {
+          rootDir: '/tmp/embedded-aw',
+          source: 'embedded',
+          reason: 'local marketplace is missing, stale, or unhealthy',
+        },
+      },
+      warnings: [],
+    }));
+    vi.doMock('../../src/commands/install.js', () => ({
+      installCommand,
+    }));
+
+    const { io, readStdout } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    expect(await runCli(
+      ['install', 'git-commit', '--platform', 'codex'],
+      { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io },
+    )).toBe(0);
+
+    expect(readStdout()).toContain(
+      '使用插件目录：embedded catalog（/tmp/embedded-aw，local marketplace is missing, stale, or unhealthy）。',
+    );
+    expect(readStdout()).toContain('已复用本地 marketplace：/tmp/aw-home。');
   });
 
   it('skips interactive existing-candidate planning for non-interactive explicit commands', async () => {

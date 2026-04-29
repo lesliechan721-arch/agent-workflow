@@ -475,6 +475,22 @@ export async function statusCommand(
   const cells: StatusMatrixCell[] = [];
 
   for (const candidate of candidates) {
+    if (candidate.evidence.readErrors.length > 0) {
+      cells.push({
+        pluginName: candidate.pluginName,
+        platform: candidate.platform,
+        scope: candidate.scope,
+        projectKey: candidate.projectKey,
+        projectRoot: candidate.projectRoot,
+        executionCwd: candidate.executionCwd,
+        health: 'unknown',
+        evidenceSources: candidate.evidence.sources,
+        disabledReason: candidate.disabledReason,
+        error: candidate.evidence.readErrors.join('；'),
+      });
+      continue;
+    }
+
     try {
       const status = await adapters[candidate.platform].status(
         candidate.target.plugin,

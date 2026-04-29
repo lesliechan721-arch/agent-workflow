@@ -617,7 +617,13 @@ function applyReadErrors(
 
     for (const record of records.values()) {
       const hasEvidence = Object.keys(record.evidenceByPlatformScope).length > 0;
-      if (!hasEvidence && !requested.has(record.pluginName)) {
+      const shouldPreserveDefaultCatalogUnknown =
+        requestedPluginNames === undefined && record.currentCatalog !== undefined;
+      if (
+        !hasEvidence &&
+        !requested.has(record.pluginName) &&
+        !shouldPreserveDefaultCatalogUnknown
+      ) {
         continue;
       }
 
@@ -691,11 +697,11 @@ export async function discoverManagedPluginNames(
   for (const pluginName of pluginNames ?? []) {
     getOrCreateDiscoveryRecord(records, pluginName);
   }
-  applyReadErrors(context, ledger, records, readErrors, pluginNames);
 
   if (options.includeCurrentCatalog !== false) {
     await attachCurrentCatalog(context.env, records, pluginNames);
   }
+  applyReadErrors(context, ledger, records, readErrors, pluginNames);
 
   return filterDiscoveredRecords(records, pluginNames);
 }
@@ -851,6 +857,10 @@ function evidenceHasActionableSource(evidence: DiscoveryEvidenceSummary): boolea
     source === 'claudeSettings' ||
     source === 'claudeInstalledPlugins',
   );
+}
+
+function evidenceHasReadErrors(evidence: DiscoveryEvidenceSummary): boolean {
+  return evidence.readErrors.length > 0;
 }
 
 function isCoarseCodexRepoOnlyEvidence(
@@ -1079,14 +1089,18 @@ export async function buildCommandCandidates(
       options.command === 'status' &&
       requestedNames === undefined &&
       !evidenceHasActionableSource(discovered.evidence) &&
-      !Object.values(discovered.evidenceByPlatformScope).some(evidenceHasActionableSource)
+      !evidenceHasReadErrors(discovered.evidence) &&
+      !Object.values(discovered.evidenceByPlatformScope).some((evidence) =>
+        evidenceHasActionableSource(evidence) || evidenceHasReadErrors(evidence),
+      )
     ) {
       continue;
     }
     if (
       options.command !== 'status' &&
       requestedNames === undefined &&
-      !evidenceHasActionableSource(discovered.evidence)
+      !evidenceHasActionableSource(discovered.evidence) &&
+      !evidenceHasReadErrors(discovered.evidence)
     ) {
       continue;
     }

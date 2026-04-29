@@ -54,6 +54,7 @@ import {
   resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
+  type PreparedMarketplaceState,
   type ResolvedPluginTarget,
 } from './common.js';
 import {
@@ -540,7 +541,7 @@ export async function installCommand(
   pluginNames: string[],
   rawOptions: RawInstallCommandOptions,
   runtime: InstallCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; marketplace?: PreparedMarketplaceState }> {
   const options = normalizeInstallCommandOptions(rawOptions);
   if (pluginNames.length === 0) {
     throw new Error('install 命令至少需要一个插件名。非交互模式下请运行 `aw install <插件名>`。');
@@ -622,6 +623,7 @@ export async function installCommand(
       platforms,
       plugins: prepared.targets.map((target) => target.pluginName),
       nativePlugins: result.nativePlugins,
+      marketplace: prepared.marketplace,
       warnings: [
         ...prepared.warnings,
         ...collectCommandWarnings(platforms, options.scope),

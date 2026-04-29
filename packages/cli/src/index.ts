@@ -31,6 +31,7 @@ import {
   parseSkillTriggerPreference,
 } from './commands/options.js';
 import {
+  type CatalogResolution,
   CommandWarningError,
   isCommandWarningError,
   type NativePluginsByPlatform,
@@ -60,9 +61,32 @@ function writeWarnings(write: (text: string) => void, warnings: string[]): void 
   }
 }
 
+interface CliMarketplaceReceipt {
+  rootDir: string;
+  changed: boolean;
+  catalog: CatalogResolution;
+}
+
+function mergeMarketplaceReceipts(
+  results: Array<{ marketplace?: CliMarketplaceReceipt }>,
+): CliMarketplaceReceipt | undefined {
+  const receipts = results
+    .map((result) => result.marketplace)
+    .filter((receipt): receipt is CliMarketplaceReceipt => Boolean(receipt));
+  if (receipts.length === 0) {
+    return undefined;
+  }
+
+  return {
+    rootDir: receipts[0].rootDir,
+    changed: receipts.some((receipt) => receipt.changed),
+    catalog: receipts.find((receipt) => receipt.catalog.source === 'local')?.catalog ?? receipts[0].catalog,
+  };
+}
+
 function mergeCommandResults(
-  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins?: NativePluginsByPlatform }>,
-): { platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform } {
+  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins?: NativePluginsByPlatform; marketplace?: CliMarketplaceReceipt }>,
+): { platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; marketplace?: CliMarketplaceReceipt } {
   const nativePlugins: NativePluginsByPlatform = {};
   for (const result of results) {
     for (const [platform, pluginNames] of Object.entries(result.nativePlugins ?? {}) as Array<[keyof NativePluginsByPlatform, string[] | undefined]>) {
@@ -83,6 +107,7 @@ function mergeCommandResults(
     plugins: [...new Set(results.flatMap((result) => result.plugins))],
     warnings: results.flatMap((result) => result.warnings),
     nativePlugins,
+    marketplace: mergeMarketplaceReceipts(results),
   };
 }
 
@@ -91,6 +116,7 @@ interface CliCommandResult {
   plugins: string[];
   warnings: string[];
   nativePlugins?: NativePluginsByPlatform;
+  marketplace?: CliMarketplaceReceipt;
 }
 
 interface CliCommandReceipt {
@@ -114,6 +140,14 @@ function formatPlatforms(platforms: string[]): string {
 
 function formatScopes(scopes: string[]): string {
   return formatList(scopes.map((scope) => `${scope} scope`));
+}
+
+function formatCatalogReceipt(catalog: CatalogResolution): string {
+  if (catalog.source === 'local') {
+    return `本地 marketplace（${catalog.rootDir}）`;
+  }
+
+  return `embedded catalog（${catalog.rootDir}${catalog.reason ? `，${catalog.reason}` : ''}）`;
 }
 
 function commandVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
@@ -140,8 +174,13 @@ function writeCommandReceipt(
   writeLine(write, `${commandVerb(action)} ${pluginList}：${platformList} / ${scopeList}。`);
 
   if (action === 'install' || action === 'upgrade') {
-    writeLine(write, `使用插件目录：AW marketplace。`);
-    writeLine(write, `已同步本地 marketplace：${awHome}。`);
+    if (result.marketplace) {
+      writeLine(write, `使用插件目录：${formatCatalogReceipt(result.marketplace.catalog)}。`);
+      writeLine(
+        write,
+        `${result.marketplace.changed ? '已同步' : '已复用'}本地 marketplace：${result.marketplace.rootDir}。`,
+      );
+    }
     const codexNativePlugins = result.nativePlugins?.codex ?? [];
     if (codexNativePlugins.length > 0) {
       writeLine(write, `已确认 Codex marketplace 注册：${awHome}。`);

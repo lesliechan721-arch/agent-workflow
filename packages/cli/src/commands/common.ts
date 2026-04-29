@@ -5,6 +5,7 @@ import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import type {
   AgentDefinition,
+  CatalogResolution,
   CommandAction,
   EnvironmentDetection,
   HookDefinition,
@@ -80,6 +81,13 @@ export interface PreparedPluginCommandContext {
   ledger: InstalledLedger;
   targets: ResolvedPluginTarget[];
   warnings: string[];
+  marketplace?: PreparedMarketplaceState;
+}
+
+export interface PreparedMarketplaceState {
+  rootDir: string;
+  changed: boolean;
+  catalog: CatalogResolution;
 }
 
 type HistoricalExtensionKind = 'instruction' | 'permission' | 'hook' | 'agent';
@@ -381,14 +389,15 @@ export async function preparePluginTargetsForCommand(
 ): Promise<PreparedPluginCommandContext> {
   const env = options.env ?? process.env;
   const warnings: string[] = [];
+  let ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>> | undefined;
   if (options.ensureLocalMarketplace) {
-    const ensured = await ensureLocalMarketplace(env);
-    warnings.push(...(ensured.warnings ?? []));
+    ensuredMarketplace = await ensureLocalMarketplace(env);
+    warnings.push(...(ensuredMarketplace.warnings ?? []));
   }
 
-  const [ledger, targets] = await Promise.all([
+  const [ledger, loadedTargets] = await Promise.all([
     readInstalledLedger(env),
-    loadPluginTargetsForCommand(cwd, scope, pluginNames, {
+    loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
       allowHistoricalFallback: options.allowHistoricalFallback,
       env,
     }),
@@ -396,8 +405,15 @@ export async function preparePluginTargetsForCommand(
 
   return {
     ledger,
-    targets,
+    targets: loadedTargets.targets,
     warnings: dedupeWarnings(warnings),
+    marketplace: ensuredMarketplace
+      ? {
+          rootDir: ensuredMarketplace.rootDir,
+          changed: ensuredMarketplace.changed,
+          catalog: loadedTargets.catalog,
+        }
+      : undefined,
   };
 }
 
@@ -406,17 +422,28 @@ export async function prepareCommandEnvironment(
     ensureLocalMarketplace?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
-): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings'>> {
+): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings' | 'marketplace'>> {
   const env = options.env ?? process.env;
   const warnings: string[] = [];
+  let ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>> | undefined;
   if (options.ensureLocalMarketplace) {
-    const ensured = await ensureLocalMarketplace(env);
-    warnings.push(...(ensured.warnings ?? []));
+    ensuredMarketplace = await ensureLocalMarketplace(env);
+    warnings.push(...(ensuredMarketplace.warnings ?? []));
   }
 
   return {
     ledger: await readInstalledLedger(env),
     warnings: dedupeWarnings(warnings),
+    marketplace: ensuredMarketplace
+      ? {
+          rootDir: ensuredMarketplace.rootDir,
+          changed: ensuredMarketplace.changed,
+          catalog: {
+            rootDir: ensuredMarketplace.rootDir,
+            source: 'local',
+          },
+        }
+      : undefined,
   };
 }
 
@@ -529,22 +556,22 @@ export async function createResolvedInstallOptionsResolver(
   };
 }
 
-export async function loadPluginTargetsForCommand(
+interface LoadedPluginTargetsForCommand {
+  catalog: CatalogResolution;
+  targets: ResolvedPluginTarget[];
+}
+
+async function loadPluginTargetsForCommandWithCatalog(
   cwd: string,
   scope: Scope,
   pluginNames?: string[],
   options: {
-    ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
-): Promise<ResolvedPluginTarget[]> {
+): Promise<LoadedPluginTargetsForCommand> {
   const env = options.env ?? process.env;
-  if (options.ensureLocalMarketplace) {
-    await ensureLocalMarketplace(env);
-  }
-
-  const [{ plugins: catalogPlugins }, embeddedRoot] = await Promise.all([
+  const [{ catalog, plugins: catalogPlugins }, embeddedRoot] = await Promise.all([
     resolveCatalogPlugins(undefined, env),
     resolveEmbeddedPluginsRoot(),
   ]);
@@ -557,13 +584,16 @@ export async function loadPluginTargetsForCommand(
     const embeddedPluginMap = new Map(
       embeddedPlugins.map((plugin) => [plugin.manifest.name, plugin]),
     );
-    return catalogPlugins.map((plugin) => ({
-      pluginName: plugin.manifest.name,
-      plugin,
-      currentPlugin: plugin,
-      embeddedPlugin: embeddedPluginMap.get(plugin.manifest.name),
-      source: 'currentCatalog' as const,
-    }));
+    return {
+      catalog,
+      targets: catalogPlugins.map((plugin) => ({
+        pluginName: plugin.manifest.name,
+        plugin,
+        currentPlugin: plugin,
+        embeddedPlugin: embeddedPluginMap.get(plugin.manifest.name),
+        source: 'currentCatalog' as const,
+      })),
+    };
   }
 
   const catalogMap = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, plugin]));
@@ -597,7 +627,31 @@ export async function loadPluginTargetsForCommand(
     });
   }
 
-  return targets;
+  return {
+    catalog,
+    targets,
+  };
+}
+
+export async function loadPluginTargetsForCommand(
+  cwd: string,
+  scope: Scope,
+  pluginNames?: string[],
+  options: {
+    ensureLocalMarketplace?: boolean;
+    allowHistoricalFallback?: boolean;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<ResolvedPluginTarget[]> {
+  const env = options.env ?? process.env;
+  if (options.ensureLocalMarketplace) {
+    await ensureLocalMarketplace(env);
+  }
+
+  return (await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
+    allowHistoricalFallback: options.allowHistoricalFallback,
+    env,
+  })).targets;
 }
 
 export function hasScopeManagedEvidence(plugin: PluginStatusReport): boolean {
