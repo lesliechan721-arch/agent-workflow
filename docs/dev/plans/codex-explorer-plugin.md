@@ -27,7 +27,9 @@
 - `packages/cli/src/adapters/codex.ts` 的 `installExtensions()` / `uninstallExtensions()` / `status()` 已经能处理 instructions、permissions、hooks、agents，但 agent 仍按单文件 artifact 处理，身份用 `buildGeneratedName(plugin, agent.name)` 推导。
 - `packages/cli/src/utils/codex-config.ts` 已经有 TOML AST 读写能力，适合扩展 `[agents.<roleKey>]` 的 upsert/remove 和 snapshot 解析。
 - `packages/cli/src/utils/plugin-config.ts` 和 `packages/cli/src/index.ts` 已经实现 `aw config` 读写、effective config 合并、schema 校验和交互式配置，但写入后不会刷新 generated artifact。
+- `aw config reset <plugin> --yes` 是 store 级清理能力；即使 current catalog 已经找不到插件，只要 raw store 存在，当前实现仍会删除残留配置，后续 refresh 接入不能破坏这条降级路径。
 - `packages/cli/src/utils/detect.ts` 目前用 `agents/*.toml` 文件 basename 判断 Codex role 名，不符合 Codex 上游“声明项 + role 文件最终 name”的解析规则。
+- current catalog 缺失时，`commands/discovery.ts` 会回退到 historical placeholder；当前 agent placeholder 只有通用 `historical-agent`，没有从 tracking 恢复真实 role 身份。
 - `skillTriggers`、`marketplace.policy.products`、本地 marketplace 重建和 status 矩阵已经存在，插件侧可以直接使用这些 contract。
 
 ## 设计边界
@@ -200,6 +202,12 @@ artifactRefresh?: {
 - 本次命令实际刷新了哪些 target。
 - 当前 project 是否存在命中 `codexRole` binding 的 project 覆盖；这些覆盖不会影响 user scope artifact，若用户希望覆盖进入 role 文件，需要安装或刷新 project scope artifact。
 
+historical fallback 也必须保留 role 身份：
+
+- discovery 在 current catalog 缺失时，要从 tracking 的 `GeneratedArtifact.agentRole` metadata 恢复至少 `roleKey`、registration path、role layer path 和 config source。
+- historical placeholder 不能再把 Codex role 退回成固定的 `historical-agent`。如果 tracking 只证明“有 agent artifact”但没有 `agentRole` metadata，可以继续使用保守 placeholder；如果 tracking 已记录 `agentRole.roleKey`，discovery candidate、status 和 JSON 输出都要暴露真实 `roleKey`。
+- 依赖 current manifest 或 source manifest 才能安全计算的字段，在 `source=historical` 下如果无法恢复，要标记为 `unavailable` 或给出 degraded 诊断，不能用假名或猜测值补齐。
+
 ### 3. Codex config TOML helper
 
 在 `packages/cli/src/utils/codex-config.ts` 增加：
@@ -299,6 +307,7 @@ status 需要新增诊断：
 - `lastRenderedConfigDigest` 是否等于该安装 scope 当前应使用的 render config digest。
 - 当前 project 是否有命中 `codexRole` binding 的 project 覆盖但只有 user scope artifact；这种情况下 project 覆盖不会进入全局 role 文件，status 应提示需要 project scope install/refresh 才会生效。
 - 最近一次 refresh 是否失败。
+- current catalog 缺失但 tracking 里仍有 `agentRole` metadata 时，status 继续按 `roleKey` 展示受管 role，并在 verbose/json 中标出 `source=historical`；无法安全计算的 manifest-derived 诊断标为 unavailable，而不是退回 generated filename 或 `historical-agent`。
 
 `detectCodexSessionState()` 目前按 `agentRoleNames` 做遮蔽判断，后续要改成最终 role 名集合，而不是文件 basename。
 
@@ -339,6 +348,13 @@ status 需要新增诊断：
 4. 对每个 target 按安装 scope 解析 role render config，并重渲染受管 Codex role artifact。
 5. 写入成功后更新 tracking refresh metadata。
 6. 如果刷新失败，优先回滚本次 config store 修改和已写 artifact；回滚失败或仍无法恢复时，写入 `lastArtifactRefresh.status = "failed"`，让 status 可见。
+
+`config reset` 还要保住现有 raw-store cleanup contract：
+
+- reset 先按当前实现完成安全插件名校验、确认提示和 raw store 删除；这一步不依赖 current catalog 或 manifest。
+- 只有 current manifest 可用时，才根据 `codexRole` binding 计算 refresh effect，并按上面的 target 规则刷新 artifact。
+- 如果 current manifest 不可用，reset 仍然成功删除 store，但跳过 refresh；普通输出给出确定性诊断，JSON receipt 暴露 `artifactRefresh: { skipped: true, reason: "manifest-unavailable" }` 或等价机器字段。
+- 如果 manifest 不可用但 tracking 显示仍有已安装 role artifact，status 后续负责以 historical source 展示可能 stale 的 role，不由 reset 命令猜测或重建 artifact。
 
 定位 target 的首版范围：
 
@@ -480,6 +496,10 @@ manifest 要点：
 - `aw status --json`、`aw status --json --verbose`：
   - 输出保持纯 JSON，不把 warning/debug 文本混入 stdout。
   - JSON 中暴露 roleKey、registration path、role layer path、config source、digest stale、refresh failed 等机器可读字段。
+- current catalog 缺失但 tracking 仍有 `agentRole` artifact：
+  - discovery 从 tracking metadata 恢复真实 `roleKey`，不退回 `historical-agent`。
+  - `aw status` / `aw status --json --verbose` 显示 `source=historical` 和 role identity；无法从 historical evidence 安全计算的 role-specific 诊断标为 unavailable。
+  - 交互式 `aw uninstall` / `aw upgrade` 候选仍能识别对应 plugin、platform、scope 和 roleKey。
 - `aw config set codex-explore explorerModel <value>`：
   - 自动刷新当前可定位 installed role layer。
   - 更新 tracking digest 和 refresh metadata。
@@ -488,6 +508,10 @@ manifest 要点：
   - 和 `set` 一样刷新当前可定位 installed role layer。
   - user scope 写入刷新 user artifact，并刷新当前 repo 内已安装的 project artifact。
   - project scope 写入只刷新当前 repo 的 project artifact，不刷新 user artifact。
+- current catalog 缺失时 `aw config reset codex-explore -s user --yes --json`：
+  - 仍能删除 raw config store。
+  - 不要求 manifest 存在，不尝试重渲染 artifact。
+  - JSON receipt 能说明 refresh 被跳过，且 stdout 保持纯 JSON。
 - refresh 失败：
   - 回滚 config store 和已写 artifact。
   - 回滚失败或无法完全恢复时写入 `lastArtifactRefresh.status = "failed"`，status 能诊断。
@@ -537,8 +561,9 @@ manifest 要点：
   - tracking 保存 roleKey 和 paths。
   - uninstall 清理注册项和 role layer。
   - status 增加 role-specific diagnostics。
+- 更新 discovery historical placeholder：current catalog 缺失时从 tracking 的 `agentRole` metadata 恢复 roleKey 和 paths；恢复不了的 role-specific 诊断显式标为 unavailable。
 - 更新 `GeneratedArtifactStatus` 和 status report 输出字段。
-- 补 install/uninstall/status 集成测试。
+- 补 install/uninstall/status 集成测试，包含 current catalog 缺失但 tracking 仍有 `agentRole` 的 historical status/discovery 回归。
 
 交付标准：不涉及 config refresh 时，Codex custom role 已经是 AW 一等受管 artifact。
 
@@ -546,9 +571,10 @@ manifest 要点：
 
 - 新增 refresh effect 推导和 config digest 工具。
 - 在 `aw config set/configure/unset/reset` 写命令后接入 refresh。
+- 保留 `config reset` current catalog 缺失时的 raw-store cleanup 降级路径；manifest 不可用时跳过 refresh 并输出稳定诊断。
 - 实现 refresh rollback 和 failed metadata 记录。
 - status 对比当前 digest 和 tracking digest。
-- 补 config refresh 集成测试。
+- 补 config refresh 集成测试，包含 current catalog 缺失时 `reset --yes` 仍成功清理 raw store 且不污染 JSON stdout。
 
 交付标准：改 `explorerModel`、`modelReasoningEffort`、`promptAppend` 或 `promptOverride` 后，当前可定位安装目标的 role layer 按 scope 对应配置真值自动更新；project scope 写入不改写 user artifact；失败能被 status 看见。
 
@@ -592,7 +618,9 @@ manifest 要点：
 - 安装不会覆盖任何非 AW 管理且最终 role 名为 `codex-explorer` 的自定义 role。
 - tracking/status/uninstall/upgrade/refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 命中 `codexRole` refresh keys 后自动刷新当前可定位 artifact；user artifact 使用 `default+user`，project artifact 使用 `default+user+project`。
+- `config reset` 在 current catalog 缺失时仍可删除 raw store，并清楚说明 refresh 被跳过。
 - status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale 和 refresh failed。
+- current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery 仍保留真实 `roleKey`，无法恢复的 role 诊断标为 unavailable。
 - status JSON 保持机器可读，包含 role 诊断字段且不会混入人类可读 warning。
 - upgrade、作者工具校验和 source manifest / bundle layout 都有测试覆盖。
 - uninstall 清理 AW 管理的注册项和 role layer，不影响用户手写文件。
