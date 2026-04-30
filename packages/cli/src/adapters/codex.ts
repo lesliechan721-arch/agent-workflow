@@ -106,6 +106,16 @@ import {
   type SkillTriggerPolicyEntry,
 } from '../utils/skill-trigger-preferences.js';
 import {
+  CODEX_REPO_MANAGED_ITEM_KIND_ORDER,
+  codexCapabilitySnapshotsEqual,
+  collectDeclaredCodexProjectSkillKeys,
+  getCodexProjectManagedKinds,
+  hasCodexProjectManagedArtifacts,
+  needsCodexProjectConfigAccess,
+  normalizeCodexCapabilitySnapshot,
+  requiresCodexNativePlugin,
+} from '../utils/codex-project-surface.js';
+import {
   NativeCliError,
   runNativeCli,
   type NativeCliInvocation,
@@ -113,9 +123,15 @@ import {
 } from '../utils/native-cli.js';
 import { detectCodexExternalOwnership } from './helpers.js';
 import {
-  needsCodexProjectConfigAccess,
   preflightCodexProjectStatusProjectConfig,
 } from '../commands/codex-project-safety.js';
+
+export {
+  getCodexProjectManagedKinds,
+  hasCodexProjectManagedArtifacts,
+  hasRepoManagedArtifacts,
+  requiresCodexNativePlugin,
+} from '../utils/codex-project-surface.js';
 
 const MARKETPLACE_NAME = 'aw';
 
@@ -291,118 +307,8 @@ function createEmptyCodexProjectLayerEvidence(): CodexProjectLayerEvidence {
   };
 }
 
-interface NormalizedCodexCapabilitySnapshot {
-  requiresNativePlugin: boolean;
-  hasRepoManagedArtifacts: boolean;
-  projectManagedKinds: CodexProjectManagedKind[];
-  hasManagedKindDetails: boolean;
-}
-
-const CODEX_PROJECT_MANAGED_KIND_ORDER: CodexProjectManagedKind[] = [
-  'skill',
-  'mcpServer',
-  'instruction',
-  'permission',
-  'hook',
-  'agent',
-];
-
-const CODEX_PROJECT_MANAGED_KIND_SET = new Set<CodexProjectManagedKind>(
-  CODEX_PROJECT_MANAGED_KIND_ORDER,
-);
-
-function normalizeCodexProjectManagedKinds(
-  values: CodexCapabilitySnapshot['projectManagedKinds'] | CodexCapabilitySnapshot['managedKinds'],
-): CodexProjectManagedKind[] {
-  const selected = new Set<CodexProjectManagedKind>();
-  for (const value of values ?? []) {
-    if (CODEX_PROJECT_MANAGED_KIND_SET.has(value)) {
-      selected.add(value);
-    }
-  }
-  return CODEX_PROJECT_MANAGED_KIND_ORDER.filter((kind) => selected.has(kind));
-}
-
-function normalizeCodexCapabilitySnapshot(
-  snapshot: CodexCapabilitySnapshot | undefined,
-): NormalizedCodexCapabilitySnapshot {
-  const rawManagedKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
-  const projectManagedKinds = normalizeCodexProjectManagedKinds(rawManagedKinds);
-  const hasManagedKindDetails = Array.isArray(rawManagedKinds);
-  return {
-    requiresNativePlugin: snapshot?.requiresNativePlugin === true,
-    hasRepoManagedArtifacts: hasManagedKindDetails
-      ? projectManagedKinds.length > 0
-      : snapshot?.hasRepoManagedArtifacts === true,
-    projectManagedKinds,
-    hasManagedKindDetails,
-  };
-}
-
-function codexCapabilitySnapshotsEqual(
-  installedSnapshot: CodexCapabilitySnapshot | undefined,
-  currentSnapshot: CodexCapabilitySnapshot | undefined,
-): boolean {
-  const installed = normalizeCodexCapabilitySnapshot(installedSnapshot);
-  const current = normalizeCodexCapabilitySnapshot(currentSnapshot);
-  if (installed.requiresNativePlugin !== current.requiresNativePlugin) {
-    return false;
-  }
-
-  if (installed.hasManagedKindDetails && current.hasManagedKindDetails) {
-    return JSON.stringify(installed.projectManagedKinds) === JSON.stringify(current.projectManagedKinds);
-  }
-
-  return installed.hasRepoManagedArtifacts === current.hasRepoManagedArtifacts;
-}
-
-export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boolean {
-  if (scope === 'project') {
-    return false;
-  }
-
-  return Boolean(
-    plugin.manifest.skills ||
-      plugin.manifest.slashCommands ||
-      plugin.manifest.mcpServers ||
-      plugin.manifest.apps,
-  );
-}
-
 export function requiresNativePlugin(plugin: PluginMeta): boolean {
   return requiresCodexNativePlugin(plugin, 'user');
-}
-
-export function getCodexProjectManagedKinds(plugin: PluginMeta): CodexProjectManagedKind[] {
-  const kinds = new Set<CodexProjectManagedKind>();
-  if (plugin.manifest.skills || plugin.manifest.slashCommands) {
-    kinds.add('skill');
-  }
-  if (plugin.manifest.mcpServers) {
-    kinds.add('mcpServer');
-  }
-  if (resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0) {
-    kinds.add('instruction');
-  }
-  if (resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex').length > 0) {
-    kinds.add('permission');
-  }
-  if (resolvePlatformHookDefinitions(plugin.manifest, 'codex').length > 0) {
-    kinds.add('hook');
-  }
-  if (resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex').length > 0) {
-    kinds.add('agent');
-  }
-
-  return CODEX_PROJECT_MANAGED_KIND_ORDER.filter((kind) => kinds.has(kind));
-}
-
-export function hasCodexProjectManagedArtifacts(plugin: PluginMeta): boolean {
-  return getCodexProjectManagedKinds(plugin).length > 0;
-}
-
-export function hasRepoManagedArtifacts(plugin: PluginMeta): boolean {
-  return hasCodexProjectManagedArtifacts(plugin);
 }
 
 export function resolveCodexCatalogCompatibility(options: {
@@ -444,23 +350,6 @@ function getRepoSkillsRoot(repoRoot: string): string {
 
 function getRepoSkillPath(repoRoot: string, skillName: string): string {
   return path.join(getRepoSkillsRoot(repoRoot), skillName);
-}
-
-async function listCodexBundleSkillKeys(plugin: PluginMeta): Promise<string[]> {
-  if (!plugin.rootDir) {
-    return [];
-  }
-
-  const skillsRoot = path.join(plugin.rootDir, 'codex', 'skills');
-  if (!(await fs.pathExists(skillsRoot))) {
-    return [];
-  }
-
-  const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
 }
 
 function readTrackedCodexSkillArtifacts(
@@ -1349,15 +1238,6 @@ async function collectGeneratedArtifacts(
   );
 }
 
-const CODEX_REPO_MANAGED_ITEM_KIND_ORDER: GeneratedArtifact['kind'][] = [
-  'skill',
-  'mcpServer',
-  'instruction',
-  'permission',
-  'hook',
-  'agent',
-];
-
 const CODEX_TRUST_GATED_PROJECT_KINDS = new Set<CodexProjectManagedKind>([
   'mcpServer',
   'instruction',
@@ -2143,7 +2023,9 @@ export class CodexAdapter implements PlatformAdapter {
 
       const trackedSkillKeys = new Set(trackedCodexSkillKeys(trackingRecord));
       const declaredSkillKeys = new Set(
-        currentCatalogAvailable ? await listCodexBundleSkillKeys(plugin) : trackedCodexSkillKeys(trackingRecord),
+        currentCatalogAvailable
+          ? await collectDeclaredCodexProjectSkillKeys(plugin)
+          : trackedCodexSkillKeys(trackingRecord),
       );
       let skillPoliciesByName = new Map<string, SkillTriggerPolicyEntry>();
       if (currentCatalogAvailable) {

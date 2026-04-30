@@ -1,7 +1,7 @@
 import {
   getCodexProjectManagedKinds,
   hasCodexProjectManagedArtifacts,
-} from '../adapters/codex.js';
+} from '../utils/codex-project-surface.js';
 import type {
   CodexProjectManagedKind,
   PlatformName,

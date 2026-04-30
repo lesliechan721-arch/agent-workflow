@@ -54,6 +54,11 @@ import {
   type RawUpgradeCommandOptions,
 } from './options.js';
 import {
+  listExecutablePlatformsForNativeAndCodexProject,
+  resolveEvidenceFirstAutoPlatform,
+  type PlatformEvidenceState,
+} from './platform-resolution.js';
+import {
   createPluginConfigSchemaIdentity,
   preflightRequiredPluginConfigs,
 } from '../utils/plugin-config.js';
@@ -82,6 +87,7 @@ import {
   readTrackingManifest,
 } from '../utils/tracking.js';
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
+import { codexCapabilitySnapshotHasRepoManagedArtifacts } from '../utils/codex-project-surface.js';
 
 type UpgradeCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
@@ -99,7 +105,7 @@ interface UpgradeAllTrackingEvidence {
 
 interface UpgradeAllCandidatePlatformState {
   pluginNames: string[];
-  evidenceState: 'yes' | 'no' | 'unknown';
+  evidenceState: PlatformEvidenceState;
 }
 
 interface UpgradeAllReadyTarget {
@@ -391,15 +397,6 @@ function mergeNativePlugins(
   }
 }
 
-function codexCapabilitySnapshotHasRepoManagedArtifacts(
-  snapshot: CodexCapabilitySnapshot | undefined,
-): boolean {
-  const managedKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
-  return Array.isArray(managedKinds)
-    ? managedKinds.length > 0
-    : snapshot?.hasRepoManagedArtifacts === true;
-}
-
 function resolveTrackingDir(
   cwd: string,
   platform: PlatformName,
@@ -519,13 +516,11 @@ async function resolveUpgradeAllPlatforms(
     scope === 'project'
       ? await listCodexProjectUpgradeAllNativeRunnerRequiredNames(cwd, preparedLedger)
       : [];
-  const codexProjectExecutableWithoutNative =
-    scope === 'project' &&
-    codexNativeRunnerRequiredNames.length === 0;
-  const availablePlatforms = (['codex', 'claude'] as const).filter((platform) =>
-    nativeAvailablePlatforms.includes(platform) ||
-      (platform === 'codex' && codexProjectExecutableWithoutNative),
-  );
+  const availablePlatforms = listExecutablePlatformsForNativeAndCodexProject({
+    nativeAvailablePlatforms,
+    codexProjectExecutableWithoutNative:
+      scope === 'project' && codexNativeRunnerRequiredNames.length === 0,
+  });
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
     if (!availablePlatforms.includes(requestedPlatform)) {
@@ -552,31 +547,19 @@ async function resolveUpgradeAllPlatforms(
   }
 
   if (requestedPlatform === 'auto' && scope === 'project') {
-    const unknownPlatforms = (['codex', 'claude'] as const).filter((platform) =>
-      candidateStateByPlatform[platform].evidenceState === 'unknown',
-    );
-    if (unknownPlatforms.length > 0) {
-      throw new Error(
-        '当前 scope 至少一侧平台 evidence = unknown，`upgrade --all --platform auto` 无法安全推断；请先修复 tracking / status 诊断，或显式传入 `--platform codex|claude|both`。',
-      );
-    }
-
-    const evidencedPlatforms = (['codex', 'claude'] as const).filter((platform) =>
-      candidateStateByPlatform[platform].evidenceState === 'yes',
-    );
-    if (evidencedPlatforms.length > 1) {
-      throw new Error(
-        '当前 scope 同时存在 Claude 与 Codex project 受管证据，`upgrade --all --platform auto` 无法唯一推断目标平台；请显式传入 `--platform codex|claude|both`。',
-      );
-    }
-    if (evidencedPlatforms.length === 1) {
-      const inferred = evidencedPlatforms[0];
-      if (!availablePlatforms.includes(inferred)) {
-        if (inferred === 'codex') {
-          throw createCodexUpgradeAllNativeRunnerRequiredError(scope, codexNativeRunnerRequiredNames);
-        }
-        throw new Error(`${inferred} 当前环境不可用。`);
-      }
+    const inferred = resolveEvidenceFirstAutoPlatform({
+      evidenceStateByPlatform: {
+        codex: candidateStateByPlatform.codex.evidenceState,
+        claude: candidateStateByPlatform.claude.evidenceState,
+      },
+      availablePlatforms,
+      unknownMessage: '当前 scope 至少一侧平台 evidence = unknown，`upgrade --all --platform auto` 无法安全推断；请先修复 tracking / status 诊断，或显式传入 `--platform codex|claude|both`。',
+      ambiguousMessage: '当前 scope 同时存在 Claude 与 Codex project 受管证据，`upgrade --all --platform auto` 无法唯一推断目标平台；请显式传入 `--platform codex|claude|both`。',
+      createUnavailableError: (platform) => platform === 'codex'
+        ? createCodexUpgradeAllNativeRunnerRequiredError(scope, codexNativeRunnerRequiredNames)
+        : new Error(`${platform} 当前环境不可用。`),
+    });
+    if (inferred) {
       return [inferred];
     }
   }

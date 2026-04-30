@@ -2,7 +2,7 @@ import chalk from 'chalk';
 
 import { CommandWarningError, isCommandWarningError } from '../types.js';
 import { ClaudeAdapter } from '../adapters/claude.js';
-import { CodexAdapter, requiresCodexNativePlugin } from '../adapters/codex.js';
+import { CodexAdapter } from '../adapters/codex.js';
 import type {
   AgentDefinition,
   CatalogResolution,
@@ -39,6 +39,10 @@ import {
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
 import { generatedArtifactKindRequiresArtifactKey } from '../utils/generated-artifacts.js';
+import {
+  normalizeCodexCapabilitySnapshot,
+  requiresCodexNativePlugin,
+} from '../utils/codex-project-surface.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import {
   getTrackingArtifactIntegrityErrors,
@@ -54,7 +58,12 @@ import {
   resolveCodexProjectKey,
 } from '../utils/paths.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
-import { getCodexProjectInstallability } from './codex-project-installability.js';
+import {
+  canExecuteCodexProjectWithoutNative,
+  listExecutablePlatformsForTargets,
+  resolveEvidenceFirstAutoPlatform,
+  type PlatformEvidenceStateByPlatform,
+} from './platform-resolution.js';
 
 export function createAdapters(
   cwd: string,
@@ -161,18 +170,6 @@ const HISTORICAL_EXTENSION_KIND_ORDER: HistoricalExtensionKind[] = [
   'hook',
   'agent',
 ];
-const HISTORICAL_CODEX_KIND_ORDER: CodexProjectManagedKind[] = [
-  'skill',
-  'mcpServer',
-  'instruction',
-  'permission',
-  'hook',
-  'agent',
-];
-const HISTORICAL_CODEX_KIND_SET = new Set<CodexProjectManagedKind>(
-  HISTORICAL_CODEX_KIND_ORDER,
-);
-
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
   codex: 'CODEX',
   claude: 'CLAUDE',
@@ -234,15 +231,7 @@ function isHistoricalExtensionKind(kind: HistoricalManagedKind): kind is Histori
 function getCodexSnapshotManagedKinds(
   snapshot: CodexCapabilitySnapshot | undefined,
 ): CodexProjectManagedKind[] {
-  const rawKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
-  const selected = new Set<CodexProjectManagedKind>();
-  for (const kind of rawKinds ?? []) {
-    if (HISTORICAL_CODEX_KIND_SET.has(kind)) {
-      selected.add(kind);
-    }
-  }
-
-  return HISTORICAL_CODEX_KIND_ORDER.filter((kind) => selected.has(kind));
+  return normalizeCodexCapabilitySnapshot(snapshot).projectManagedKinds;
 }
 
 function createHistoricalExtensionKinds(
@@ -940,48 +929,12 @@ export function hasHistoricalEvidence(plugin: PluginStatusReport): boolean {
   );
 }
 
-function canExecuteCodexProjectWithoutNative(
-  action: CommandAction,
-  scope: Scope,
-  plugins: PluginMeta[],
-): boolean {
-  if (scope !== 'project') {
-    return false;
-  }
-
-  if (action === 'uninstall') {
-    return true;
-  }
-
-  if (action !== 'install' && action !== 'upgrade') {
-    return false;
-  }
-
-  return plugins.length > 0 &&
-    plugins.every((plugin) => getCodexProjectInstallability(plugin).installable);
-}
-
-function listExecutablePlatformsForTargets(
-  detection: EnvironmentDetection,
-  action: CommandAction,
-  scope: Scope,
-  plugins: PluginMeta[],
-): PlatformName[] {
-  const nativeAvailablePlatforms = new Set(listDetectedPlatforms(detection));
-  const codexProjectExecutable = canExecuteCodexProjectWithoutNative(action, scope, plugins);
-
-  return (['codex', 'claude'] as const).filter((platform) =>
-    nativeAvailablePlatforms.has(platform) ||
-      (platform === 'codex' && codexProjectExecutable),
-  );
-}
-
 function createCodexNativeRunnerRequiredError(
   action: CommandAction,
   scope: Scope,
   plugins: PluginMeta[],
 ): Error {
-  if (canExecuteCodexProjectWithoutNative(action, scope, plugins)) {
+  if (canExecuteCodexProjectWithoutNative({ action, scope, plugins })) {
     return new Error('Codex project repo-managed target 不需要本机 Codex native runner，但平台解析未把它识别为可执行；请检查插件 manifest。');
   }
 
@@ -1000,7 +953,10 @@ function createBothPlatformsUnavailableError(
   scope: Scope,
   plugins: PluginMeta[],
 ): Error {
-  if (!detection.codex.available && !canExecuteCodexProjectWithoutNative(action, scope, plugins)) {
+  if (
+    !detection.codex.available &&
+    !canExecuteCodexProjectWithoutNative({ action, scope, plugins })
+  ) {
     return createCodexNativeRunnerRequiredError(action, scope, plugins);
   }
 
@@ -1011,8 +967,8 @@ async function getAutoPlatformState(
   adapters: Record<PlatformName, PlatformAdapter>,
   plugins: PluginMeta[],
   scope: Scope,
-): Promise<Record<PlatformName, 'yes' | 'no' | 'unknown'>> {
-  const states: Record<PlatformName, 'yes' | 'no' | 'unknown'> = {
+): Promise<PlatformEvidenceStateByPlatform> {
+  const states: PlatformEvidenceStateByPlatform = {
     codex: 'no',
     claude: 'no',
   };
@@ -1077,7 +1033,12 @@ export async function resolveTargetPlatforms(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PlatformName[]> {
   const detection = await detectEnvironment(cwd, env);
-  const executablePlatforms = listExecutablePlatformsForTargets(detection, action, scope, plugins);
+  const executablePlatforms = listExecutablePlatformsForTargets({
+    nativeAvailablePlatforms: listDetectedPlatforms(detection),
+    action,
+    scope,
+    plugins,
+  });
   const shouldEnforceProducts = action === 'install' || action === 'upgrade';
   const compatibleExecutablePlatforms = shouldEnforceProducts
     ? executablePlatforms.filter((platform) =>
@@ -1148,16 +1109,14 @@ export async function resolveTargetPlatforms(
   }
 
   const autoState = await getAutoPlatformState(adapters, plugins, scope);
-  const unknownPlatforms = compatibleExecutablePlatforms.filter((platform) => autoState[platform] === 'unknown');
-  if (unknownPlatforms.length > 0) {
-    throw new Error(
-      '当前 scope 存在多个可执行平台候选，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-    );
-  }
-
-  const initializedPlatforms = compatibleExecutablePlatforms.filter((platform) => autoState[platform] === 'yes');
-  if (initializedPlatforms.length === 1) {
-    return initializedPlatforms;
+  const inferred = resolveEvidenceFirstAutoPlatform({
+    evidenceStateByPlatform: autoState,
+    candidatePlatforms: compatibleExecutablePlatforms,
+    unknownMessage: '当前 scope 存在多个可执行平台候选，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+    ambiguousMessage: '当前 scope 存在多个可执行平台候选，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
+  });
+  if (inferred) {
+    return [inferred];
   }
 
   throw new Error(

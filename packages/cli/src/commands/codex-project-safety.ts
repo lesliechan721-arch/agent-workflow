@@ -10,11 +10,12 @@ import type {
   Scope,
   TrackingPluginRecord,
 } from '../types.js';
+import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
-  readCodexConfigFile,
-  readRenderedCodexMcpServersFile,
-} from '../utils/codex-config.js';
-import { resolvePlatformEntries } from '../utils/platform-entries.js';
+  collectDesiredCodexProjectRepoArtifacts,
+  needsCodexProjectConfigAccess,
+  type CodexProjectRepoArtifact,
+} from '../utils/codex-project-surface.js';
 import { resolveCodexPaths, resolveRepoRoot } from '../utils/paths.js';
 import {
   getTrackingArtifactIntegrityErrors,
@@ -23,19 +24,13 @@ import {
 } from '../utils/tracking.js';
 import type { ResolvedPluginTarget } from './common.js';
 
-const AW_MARKETPLACE_NAME = 'aw';
+export {
+  needsCodexProjectConfigAccess,
+  pluginDeclaresCodexProjectConfigBackedArtifacts,
+  trackingRecordTouchesCodexProjectConfig,
+} from '../utils/codex-project-surface.js';
 
-type CodexProjectRepoArtifact =
-  | {
-    kind: 'skill';
-    artifactKey: string;
-    path: string;
-  }
-  | {
-    kind: 'mcpServer';
-    artifactKey: string;
-    path: string;
-  };
+const AW_MARKETPLACE_NAME = 'aw';
 
 export class CodexProjectWriteSafetyError extends Error {
   readonly code:
@@ -65,10 +60,6 @@ export class CodexProjectStatusFatalError extends Error {
   }
 }
 
-function trimDotSlash(value: string): string {
-  return value.startsWith('./') ? value.slice(2) : value;
-}
-
 function relativeRepoPath(repoRoot: string, targetPath: string): string {
   const relative = path.relative(repoRoot, targetPath);
   return relative && !relative.startsWith('..') ? relative : targetPath;
@@ -91,113 +82,6 @@ export function isCodexProjectStatusFatalError(
   error: unknown,
 ): error is CodexProjectStatusFatalError {
   return error instanceof CodexProjectStatusFatalError;
-}
-
-export function pluginDeclaresCodexProjectConfigBackedArtifacts(
-  plugin: PluginMeta,
-): boolean {
-  return Boolean(
-    plugin.manifest.mcpServers ||
-      resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0,
-  );
-}
-
-export function trackingRecordTouchesCodexProjectConfig(
-  trackingRecord: TrackingPluginRecord | undefined,
-): boolean {
-  return Boolean(
-    trackingRecord?.artifacts.some((artifact) =>
-      artifact.kind === 'instruction' || artifact.kind === 'mcpServer',
-    ),
-  );
-}
-
-export function needsCodexProjectConfigAccess(
-  plugin: PluginMeta,
-  trackingRecord: TrackingPluginRecord | undefined,
-): boolean {
-  return pluginDeclaresCodexProjectConfigBackedArtifacts(plugin) ||
-    trackingRecordTouchesCodexProjectConfig(trackingRecord);
-}
-
-async function collectDeclaredSkillKeys(plugin: PluginMeta): Promise<string[]> {
-  const skillRoot = plugin.manifest.skills
-    ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.skills))
-    : undefined;
-  const codexSkillRoot = path.join(plugin.rootDir, 'codex', 'skills');
-  const slashCommandRoot = plugin.manifest.slashCommands
-    ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.slashCommands))
-    : undefined;
-  const keys = new Set<string>();
-
-  for (const root of [skillRoot, codexSkillRoot]) {
-    if (!root || !(await fs.pathExists(root))) {
-      continue;
-    }
-
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      if (await fs.pathExists(path.join(root, entry.name, 'SKILL.md'))) {
-        keys.add(entry.name);
-      }
-    }
-  }
-
-  if (slashCommandRoot && await fs.pathExists(slashCommandRoot)) {
-    const entries = await fs.readdir(slashCommandRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.md')) {
-        keys.add(path.basename(entry.name, '.md'));
-      }
-    }
-  }
-
-  return [...keys].sort();
-}
-
-async function collectDeclaredMcpServerKeys(plugin: PluginMeta): Promise<string[]> {
-  if (!plugin.manifest.mcpServers) {
-    return [];
-  }
-
-  const mcpPath = path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.mcpServers));
-  if (!(await fs.pathExists(mcpPath))) {
-    return [];
-  }
-
-  return Object.keys(await readRenderedCodexMcpServersFile(mcpPath)).sort();
-}
-
-async function collectDesiredCodexProjectRepoArtifacts(
-  plugin: PluginMeta,
-  repoRoot: string,
-): Promise<CodexProjectRepoArtifact[]> {
-  const [skillKeys, mcpServerKeys] = await Promise.all([
-    collectDeclaredSkillKeys(plugin),
-    collectDeclaredMcpServerKeys(plugin),
-  ]);
-  const artifacts: CodexProjectRepoArtifact[] = [];
-
-  for (const skillKey of skillKeys) {
-    artifacts.push({
-      kind: 'skill',
-      artifactKey: skillKey,
-      path: path.join(repoRoot, '.agents', 'skills', skillKey),
-    });
-  }
-
-  for (const serverKey of mcpServerKeys) {
-    artifacts.push({
-      kind: 'mcpServer',
-      artifactKey: serverKey,
-      path: path.join(repoRoot, '.codex', 'config.toml'),
-    });
-  }
-
-  return artifacts;
 }
 
 function findTrackedArtifactOwner(

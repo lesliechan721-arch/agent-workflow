@@ -6,7 +6,6 @@ import { applyClaudeInstallLedger } from '../adapters/claude.js';
 import {
   applyCodexInstallLedger,
   pruneCodexTrackedArtifacts,
-  requiresCodexNativePlugin,
 } from '../adapters/codex.js';
 import type {
   CommandOptions,
@@ -42,6 +41,7 @@ import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
+import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import {
   createLifecycleConfigSnapshot,
   garbageCollectLifecycleConfigSnapshots,

@@ -31,6 +31,11 @@ import {
   shouldOmitCodexProjectInstallCandidate,
 } from './codex-project-installability.js';
 import { parseSkillTriggerPreference } from './options.js';
+import {
+  listExecutablePlatformsForNativeAndCodexProject,
+  resolveEvidenceFirstAutoPlatform,
+  type PlatformEvidenceStateByPlatform,
+} from './platform-resolution.js';
 import type { CommandExecutionContext } from './runtime.js';
 
 export interface InteractiveDispatchGroup<TOptions extends CommandOptions | UpgradeCommandOptions> {
@@ -173,8 +178,12 @@ async function resolveInstallPromptPlatforms(options: {
   targets: ResolvedPluginTarget[];
   env: NodeJS.ProcessEnv;
 }): Promise<PlatformName[]> {
+  const nativeAvailablePlatforms = await detectAvailablePlatforms(options.cwd, options.env);
   const availablePlatforms = new Set(
-    await detectAvailablePlatforms(options.cwd, options.env),
+    listExecutablePlatformsForNativeAndCodexProject({
+      nativeAvailablePlatforms,
+      codexProjectExecutableWithoutNative: false,
+    }),
   );
 
   if (options.scope !== 'project' || availablePlatforms.has('codex')) {
@@ -830,9 +839,24 @@ async function resolveInteractiveExistingPlatform(options: {
       .map((candidate) => candidate.platform)
       .filter((platform) => promptablePlatforms.includes(platform)),
   )] as PlatformName[];
-  const hasEvidenceUnknown = currentScopeEvidenceCandidates.some((candidate) =>
-    candidate.evidence.readErrors.length > 0 && promptablePlatforms.includes(candidate.platform),
-  );
+  const evidenceStateByPlatform: PlatformEvidenceStateByPlatform = {
+    codex: 'no',
+    claude: 'no',
+  };
+  for (const platform of INTERACTIVE_PLATFORMS) {
+    if (!promptablePlatforms.includes(platform)) {
+      continue;
+    }
+
+    const platformEvidenceCandidates = currentScopeEvidenceCandidates.filter((candidate) =>
+      candidate.platform === platform,
+    );
+    if (platformEvidenceCandidates.some((candidate) => candidate.evidence.readErrors.length > 0)) {
+      evidenceStateByPlatform[platform] = 'unknown';
+    } else if (platformEvidenceCandidates.some(candidateHasActionableEvidence)) {
+      evidenceStateByPlatform[platform] = 'yes';
+    }
+  }
 
   if (options.requestedPlatform !== 'auto') {
     if (options.forcePrompt && options.context.interactive) {
@@ -863,20 +887,16 @@ async function resolveInteractiveExistingPlatform(options: {
     };
   }
 
-  if (options.scope === 'project' && evidencePlatforms.length > 0) {
-    if (hasEvidenceUnknown) {
-      throw new Error(
-        '当前 scope 至少一个平台的受管安装证据读取结果为 unknown，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-      );
-    }
-    if (evidencePlatforms.length > 1) {
-      throw new Error(
-        '当前 scope 同时存在 Claude Code 和 Codex 的受管安装证据，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-      );
-    }
-  }
-
-  const impliedPlatform = evidencePlatforms.length === 1 ? evidencePlatforms[0] : undefined;
+  const impliedPlatform = options.scope === 'project' && evidencePlatforms.length > 0
+    ? resolveEvidenceFirstAutoPlatform({
+        evidenceStateByPlatform,
+        candidatePlatforms: promptablePlatforms,
+        unknownMessage: '当前 scope 至少一个平台的受管安装证据读取结果为 unknown，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+        ambiguousMessage: '当前 scope 同时存在 Claude Code 和 Codex 的受管安装证据，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+      })
+    : evidencePlatforms.length === 1
+      ? evidencePlatforms[0]
+      : undefined;
   if (!options.context.interactive) {
     return {
       platformFilter: impliedPlatform,
