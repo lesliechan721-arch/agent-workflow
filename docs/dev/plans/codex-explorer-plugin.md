@@ -4,11 +4,17 @@
 
 本计划落实 `docs/dev/sepcs/codex-explorer-plugin-spec.md`。如果实现过程中发现本计划和 spec 不一致，先回到 spec 校准需求，再更新计划；不要让实现按过期计划继续推进。
 
-本轮计划同时处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 提到的三个缺口：
+本计划已保留前序 review 收口后的三个 contract：
 
 - `codexRole` 默认值真值必须和 spec 保持一致：默认值只来自 `config.schema[configKey].default`，不允许在 `codexRole` 里再写一份 `default`。
 - 同一个 `codexRole` 内的 config binding key 不能重复，作者工具和测试都要覆盖负例。
 - 插件真正交付给模型的 `SKILL.md` 和默认 explorer prompt 要有内容级回归测试，避免丢掉 `close_agent`、探索深度、`agent_type = "codex-explorer"` 和输出结构。
+
+本轮计划继续处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 新指出的三个缺口：
+
+- role 冲突检测必须作为 install preflight 执行，发生在 skill trigger materialization、Codex native marketplace / plugin enabled、artifact、tracking、ledger 和 lifecycle 写入之前。
+- user scope 配置写入命中 refresh key 时，如果当前 repo 也安装了 project scope role artifact，必须同时刷新 user artifact 和当前 repo 的 project artifact。
+- 阶段 6 的最终验收必须覆盖 tarball 内容，补跑 `pnpm test:smoke:pack`。
 
 ## 首版交付目标
 
@@ -178,7 +184,7 @@ promptAppend
 - 缺少 `name` 的自动发现文件可以用文件 basename 做诊断，但不能把它当成可覆盖依据。
 - 输出每个最终 role 的来源、table key、config path、role layer path 和是否 AW managed。
 
-安装前先解析目标 scope 同层最终 role 名集合。只要已有非 AW 管理 role 的最终名是 `codex-explorer`，安装就失败且不能写半成品。冲突包括：
+安装前先解析目标 scope 同层最终 role 名集合。这个检测必须作为 install command preflight 执行，位置在 skill trigger materialization、Codex native marketplace / plugin enabled、artifact、tracking、ledger 和 lifecycle 写入之前，不能只放在 `installExtensions()` 路径里。只要已有非 AW 管理 role 的最终名是 `codex-explorer`，安装就失败且不能写半成品；失败时不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。冲突包括：
 
 - `[agents.foo] config_file = "./agents/foo.toml"`，但文件里 `name = "codex-explorer"`。
 - 用户手写 `agents/*.toml` 直接声明 `name = "codex-explorer"`。
@@ -335,6 +341,7 @@ config digest 建议只纳入 refresh keys：
 
 修改范围：
 
+- `packages/cli/src/commands/install.ts`
 - `packages/cli/src/adapters/codex.ts`
 - `packages/cli/src/utils/tracking.ts`
 - status 输出相关类型和 reporter
@@ -343,7 +350,8 @@ config digest 建议只纳入 refresh keys：
 
 任务：
 
-- install 前先解析目标 scope 最终 role namespace，所有冲突检测通过后再写文件。
+- 在 install command 中新增 Codex role preflight，先解析目标 scope 最终 role namespace，所有冲突检测通过后再进入 skill trigger materialization、`installPlugin()`、artifact 生成、tracking、ledger 和 lifecycle。
+- preflight 失败必须保持完全只读，不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - install 写 role layer，再 upsert `[agents.<roleKey>]` 注册项，并把 role metadata 写进 tracking。
 - uninstall 对 `agentRole` artifact 同时清理 role layer 和注册项；注册项已 drift 时不误删用户文件。
 - upgrade 普通路径和 capabilityChanged/重装路径都按 `roleKey` 处理旧 artifact。
@@ -469,6 +477,7 @@ manifest 要点：
 退出标准：
 
 - 不涉及 config refresh 时，Codex custom role 已经是 AW 一等受管 artifact。
+- role 冲突会在任何 native/config/artifact/tracking/ledger 写入前失败，失败后没有半成品状态。
 - current catalog 缺失时，status/discovery/direct uninstall/direct upgrade 不退回 `historical-agent`。
 
 ### 阶段 4：config-triggered refresh
@@ -514,6 +523,7 @@ manifest 要点：
   - `pnpm test:integration`
   - `pnpm build`
   - `pnpm test:smoke:build`
+  - `pnpm test:smoke:pack`
 
 ## 测试矩阵
 
@@ -560,7 +570,7 @@ manifest 要点：
   - role layer 使用 `default+user+project`。
   - project config 覆盖进入 project artifact，不改写 user artifact。
 - `aw install codex-explore -p claude` 被 product policy 拦截。
-- 安装时存在非 AW 管理最终 role 名 `codex-explorer`，命令失败且不写半成品。
+- 安装时存在非 AW 管理最终 role 名 `codex-explorer`，命令在任何 native/config/artifact/tracking/ledger 写入前失败；断言不会留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - `aw uninstall codex-explore -p codex` 清理注册项和 role layer，不删除用户手写文件。
 - `aw upgrade codex-explore -p codex` 普通升级和 capabilityChanged/重装路径都按 `roleKey` 处理。
 - `aw status` 覆盖正常、role layer 缺失、注册项缺失、config_file drift、同名外部 role、project layer 遮蔽、digest stale、refresh failed。
@@ -570,6 +580,9 @@ manifest 要点：
   - status 展示 `source=historical` 和 role identity。
   - direct uninstall / direct upgrade 仍能恢复真实 roleKey。
 - `aw config set/configure/unset/reset` 命中 refresh key 后刷新当前可定位 role layer。
+- 同一 repo 已安装 user scope 和 project scope role artifact 后，执行命中 refresh key 的 `aw config set ... -s user`：
+  - user role layer 按 `default+user` 重渲染。
+  - 当前 repo 的 project role layer 也按 `default+user+project` 同步重渲染。
 - current catalog 缺失时 `aw config reset codex-explore -s user --yes --json` 仍能删除 raw config store，并说明 refresh skipped。
 - refresh 失败时回滚 config store 和已写 artifact；无法完全恢复时 status 能诊断 failed。
 - `promptOverride` / `promptAppend` 写入后，role layer 中安全前导仍在最前。
@@ -595,15 +608,21 @@ manifest 要点：
 - `pnpm build` 生成 `packages/cli/plugins-dist/codex-explore`。
 - `pnpm test:smoke:build` 覆盖 Codex-only marketplace entry、platform manifest、skill 文件和 role source manifest。
 - source manifest / bundle layout 断言：`codexRole` 保留在 `.agents-plugin/plugin.json`，不进入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json` 原生 manifest。
-- `pnpm pack:cli` tarball 包含新插件 runtime bundle。
+- `pnpm test:smoke:pack` 验收 `pnpm pack:cli` tarball 包含新插件 runtime bundle。
 
 ## Review 问题关闭标准
 
-`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 的三个 findings 按下面方式关闭：
+前序 review 的三个 findings 已按下面方式关闭：
 
 - 默认值真值不一致：更新 spec 示例，删除 `codexRole` 内的 `default`；计划和测试都声明默认值只来自 `config.schema`。
 - 重复 binding key 未落 contract：manifest 校验、作者工具和单测都把同一个 `codexRole` 内重复 binding key 作为非法输入。
 - skill/prompt 内容缺少回归：新增内容回归测试，直接断言 `SKILL.md`、`agents/openai.yaml` 和默认 explorer prompt 的关键句与输出结构。
+
+`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 当前三个 findings 按下面方式关闭：
+
+- role 冲突 preflight 位置不够早：install command 新增写入前 preflight，冲突失败时不写 native plugin enabled、tracking、ledger 或 artifact。
+- user 写入联动刷新 project artifact 缺测试：集成测试覆盖同一 repo 同时存在 user/project artifact 时，user scope 写入刷新两层 artifact，并分别使用 `default+user` 和 `default+user+project`。
+- 最终验收漏掉 tarball：阶段 6 执行清单加入 `pnpm test:smoke:pack`，smoke 矩阵明确由它验收 `pnpm pack:cli` tarball。
 
 ## 风险与回退
 
@@ -623,9 +642,11 @@ manifest 要点：
 - skill 默认允许隐式触发，并可通过安装触发偏好改为手动。
 - role 文件包含 `model = "gpt-5.4-mini"`、`model_reasoning_effort = "medium"` 和带安全前导的 `developer_instructions`。
 - 安装不会覆盖任何非 AW 管理且最终 role 名为 `codex-explorer` 的自定义 role。
+- role 冲突会在任何 native/config/artifact/tracking/ledger 写入前失败，不留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - tracking/status/uninstall/upgrade/refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 命中 `codexRole` refresh keys 后自动刷新当前可定位 artifact。
 - user artifact 使用 `default+user`，project artifact 使用 `default+user+project`。
+- 同一 repo 同时安装 user/project artifact 时，user scope 配置写入会同步刷新 user artifact 和当前 project artifact。
 - `config reset` 在 current catalog 缺失时仍可删除 raw store，并清楚说明 refresh 被跳过。
 - status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale 和 refresh failed。
 - current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery/direct uninstall/direct upgrade 仍保留真实 `roleKey`。
@@ -633,4 +654,4 @@ manifest 要点：
 - 作者工具能校验 `codexRole`、Codex-only policy、`agents/openai.yaml`、默认值真值和重复 binding key。
 - 内容回归能锁住 `close_agent`、探索深度、`agent_type = "codex-explorer"` 和默认 explorer prompt 输出结构。
 - uninstall 清理 AW 管理的注册项和 role layer，不影响用户手写文件。
-- 单元、集成和 smoke 测试覆盖 manifest、生成器、Codex adapter、config refresh 和插件 bundle。
+- 单元、集成和 smoke 测试覆盖 manifest、生成器、Codex adapter、config refresh、插件 bundle 和 tarball。
