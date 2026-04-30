@@ -6,11 +6,16 @@
 - 实现代码：`packages/cli/src/**`
 - 测试：`packages/cli/tests/**`
 
-审查时间：2026-04-30
+审查时间：2026-04-30（复核更新）
+
+本次复核背景：
+
+- 上一版报告里提到的两处可维护性简化点已经处理
+- 这轮重点确认抽象是否真正收口到共享模块、实现是否继续严格贴合计划文档，以及测试矩阵是否已经补齐到 build / pack 产物层
 
 ## Findings
 
-本轮未发现新的 blocking、major 或 medium finding。
+本轮复核未发现新的 blocking、major 或 medium finding。
 
 上一轮计划复审里唯一还没完全收口的点，是 `upgrade --all` 的稳定 `skipped[].code` 合同。这次已经真正落到实现和回归测试里了：
 
@@ -46,6 +51,7 @@
 - `pnpm test:unit`：37 个 test files，346 个测试，全部通过
 - `pnpm test:integration`：12 个 test files，170 个测试，全部通过
 - `pnpm test:smoke:build`：1 个 test file，5 个测试，全部通过
+- `pnpm test:smoke:pack`：1 个 test file，2 个测试，全部通过
 
 从覆盖面看，关键风险都已经被锁住了：
 
@@ -53,9 +59,12 @@
 - 写入前安全预检、project status、quoted MCP key、slashCommands manual-only、rollback：`packages/cli/tests/unit/codex-project-safety.test.ts:722-1260`
 - `upgrade --all` 的 10 个 stable skip code 和 auto 推断：`packages/cli/tests/integration/upgrade-command.test.ts:724-913`
 - capabilityChanged 显式升级恢复链、skill trigger 偏好恢复：`packages/cli/tests/integration/skill-trigger-command.test.ts`
-- build 产物层面的 public `slashCommands`、MCP、scripts 打包：`packages/cli/tests/smoke/build-smoke.test.ts`
+- build / pack 产物层面的 public `slashCommands`、MCP、scripts 打包：`packages/cli/tests/smoke/build-smoke.test.ts`、`packages/cli/tests/smoke/pack-smoke.test.ts`
 
-需要单独说明的一点是：我这次没有额外重跑 `pnpm test:smoke:pack`。这不影响我对“测试矩阵已经闭环”的判断，但如果要做发版前最终验收，还是建议把 pack smoke 一并过一遍。
+补充说明：
+
+- `pnpm test:smoke:pack` 过程中出现了 sourcemap 指向未随 tarball 一起分发源码路径的 warning，但测试本身通过，也不影响这次 repo-managed isolation 计划范围内的功能判断。
+- 如果后续想继续收紧发包产物整洁度，可以把 sourcemap warning 作为单独的非阻塞跟进项处理；它不构成这轮实现复审的 finding。
 
 ## 可简化点处理结果
 
@@ -66,9 +75,9 @@
 
 ## 结论
 
-这轮实现可以通过复审。
+这轮实现可以继续通过复审。
 
 - 实现代码质量：良好，边界清楚，关键合同都落到了独立模块
 - 是否严格按计划实现：是
-- 测试覆盖是否完整：按计划范围看，已经闭环；我这次实跑的 unit / integration / smoke:build 也都通过
+- 测试覆盖是否完整：按计划范围看，已经闭环；我这次实跑的 unit / integration / smoke:build / smoke:pack 都通过
 - 是否存在可以明显简化的地方：原报告里的两处可维护性简化点已经处理

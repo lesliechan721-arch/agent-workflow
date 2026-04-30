@@ -75,6 +75,8 @@ codex:
 
 构建结果中，Claude bundle 会得到 generated `claude/commands/<name>.md`，Codex bundle 会得到 generated `codex/skills/<name>/SKILL.md` 和 `agents/openai.yaml`。原始 `slash-commands/` 不作为 runtime 目录发布。
 
+完整字段和生成规则见 `.agents/skills/create-agent-workflows-plugin/references/slash-commands.md`。
+
 ## AW Scripts
 
 `scripts.lifecycle` 支持 `install`、`upgrade`、`uninstall` 三个事件。生命周期脚本默认自动执行，失败会阻断对应命令；首版没有 `--no-scripts` 跳过开关。脚本可以是 Node 文件，也可以是受控 shell 文件，不能写内联 shell 命令字符串。Windows 需要提供 Node 入口，或提供 `.ps1` / `.cmd`；不要假设 Windows 环境有 `sh` / `bash`。

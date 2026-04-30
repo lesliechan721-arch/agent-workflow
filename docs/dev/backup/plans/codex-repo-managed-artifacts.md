@@ -3,7 +3,7 @@
 > 历史文档
 > 适用背景：本文记录的是 Codex repo-managed artifacts 的独立探索稿，成稿时尚未完全并入 `embedded plugins root + ~/.aw` 的最终模型。
 > 失效说明：文中涉及 repo marketplace、源码树平台 manifest 和旧版 instructions 落点的表述不再代表当前推荐做法。
-> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
 
 ## 目的
 

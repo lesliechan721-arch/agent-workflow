@@ -1,6 +1,6 @@
 ---
 name: create-agent-workflows-plugin
-description: 当用户明确要在 `agent-workflows` 仓库新增或维护 `plugins/<name>/` 插件项目时使用；涵盖 manifest 编写、能力选择与配置、extensions、buildConfig、MCP/Apps 集成、Claude 专属能力和 bundle 校验。
+description: 当用户明确要在 `agent-workflows` 仓库新增或维护 `plugins/<name>/` 插件项目时使用；涵盖 manifest 编写、能力选择与配置、extensions、buildConfig、公共 slashCommands、MCP/Apps 集成、Claude 专属能力和 bundle 校验。
 disable-model-invocation: true
 ---
 
@@ -37,7 +37,7 @@ plugins/<name>/
 
 **先读**：`references/plugin-manifest-spec.md` → `references/extensions-spec.md`
 
-### 场景 C：混合型 / 公共 slashCommands + Claude 专属能力
+### 场景 C：混合型 / 公共 slashCommands / Claude 专属能力
 
 包含 skill + MCP + 公共 slashCommands + output styles 等多种能力，或需要 `buildConfig`。
 
@@ -54,7 +54,7 @@ plugins/<name>/
     └── *.md
 ```
 
-**先读**：场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md` + `references/claude-only-capabilities.md`
+**先读**：场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md` + `references/slash-commands.md` + `references/claude-only-capabilities.md`
 
 ### 场景 D：带 AW Config / Lifecycle / 脚本测试的插件
 
@@ -79,7 +79,8 @@ plugins/<name>/
 | Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
 | MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
-| Public Slash Commands + Claude 专属能力 | Claude/Codex | `slashCommands`、`slash-commands/`、`slash-commands/assets/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
+| Public Slash Commands | 双平台 | `slashCommands`、`slash-commands/`、`slash-commands/assets/` | `references/slash-commands.md` |
+| Claude 专属能力 | Claude | `output-styles/`、`buildConfig.manifestOverrides.claude` | `references/claude-only-capabilities.md` |
 | Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
 | AW Scripts / Config | 双平台 | `scripts` / `config` | `references/plugin-manifest-spec.md` |
 
@@ -165,7 +166,8 @@ pnpm plugin:test --all
 | `references/extensions-spec.md` | instructions / permissions / 公共 hooks / nativeHooks / agents + agentOverrides 机制 |
 | `references/build-config-spec.md` | templates 模板渲染 / fileRules 平台文件规则 / manifestOverrides 覆盖 |
 | `references/mcp-and-apps.md` | .mcp.json 和 .app.json 配置格式与平台行为 |
-| `references/claude-only-capabilities.md` | 公共 slashCommands、Claude 命令结果填充 / output-styles / lspServers / userConfig / channels |
+| `references/slash-commands.md` | 公共 slashCommands 源码格式、分平台 frontmatter、生成产物和限制 |
+| `references/claude-only-capabilities.md` | Claude 命令结果填充 / output-styles / lspServers / userConfig / channels |
 | `references/comprehensive-example.md` | 综合示例说明 + 构建产物预览 |
 | `references/.examples/code-review/` | 可直接读取的完整示例插件目录（隐藏父目录用于避免被 Codex 当作 repo skill） |
 

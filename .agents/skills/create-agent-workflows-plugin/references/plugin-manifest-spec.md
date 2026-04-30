@@ -126,6 +126,8 @@
 
 公共 `slashCommands` 是唯一的跨平台手动命令作者入口。旧顶层 `commands`、`buildConfig.manifestOverrides.claude.commands` 和面向 `commands/**` 的 fileRules 都已移除；validate / build 会直接失败，并提示改用 `slashCommands`。
 
+本节只记录 manifest 侧字段约束；命令文件格式、分平台 frontmatter、模板渲染和生成产物细节见 `references/slash-commands.md`。
+
 目录示例：
 
 ```text
@@ -360,9 +362,6 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "agents": []
   },
   "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["output-styles/**"], "exclude": [] }
-    },
     "manifestOverrides": {
       "claude": { "outputStyles": "./output-styles" }
     }

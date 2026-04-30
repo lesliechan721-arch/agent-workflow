@@ -3,7 +3,7 @@
 > 历史文档
 > 适用背景：本文记录的是项目最早一轮的初始化与源码树 marketplace 方案。
 > 失效说明：文中依赖 repo root marketplace、源码树 `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 以及命令阶段生成 runtime manifest 的做法已经失效。
-> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](./npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
+> 当前方案：请以 [docs/dev/plans/npm-plugin-marketplace-new.md](npm-plugin-marketplace-new.md) 和 [docs/dev/todos/npm-plugin-marketplace-new.md](../todos/npm-plugin-marketplace-new.md) 为准。
 
 ## 项目定位
 

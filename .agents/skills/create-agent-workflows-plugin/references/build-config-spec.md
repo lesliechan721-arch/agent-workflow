@@ -95,7 +95,7 @@ Codex bundle 中渲染为：
 
 ## fileRules
 
-控制哪些文件进入哪个平台的 bundle。默认行为是所有文件都进入两个平台；`fileRules` 用于按平台做差异化。
+`fileRules` 用来把没有被 manifest 路径字段声明的额外文件加入某个平台 bundle。`skills`、`slashCommands` 生成产物、`mcpServers`、`apps`、`outputStyles` 和字符串形式的 `lspServers` 等声明路径会由构建器按平台自动复制，不需要再用 `fileRules` 包一层。
 
 ### 字段
 
@@ -103,29 +103,31 @@ Codex bundle 中渲染为：
 |------|------|------|
 | `fileRules.claude` | object | Claude bundle 的文件规则 |
 | `fileRules.codex` | object | Codex bundle 的文件规则 |
-| `*.include` | string[] | 额外包含的文件 glob |
-| `*.exclude` | string[] | 排除的文件 glob |
+| `*.include` | string[] | 额外包含的源码文件 glob |
+| `*.exclude` | string[] | 从本组额外包含结果中排除的 glob |
 
 ### 行为
 
 - `include` 和 `exclude` 都是相对于插件根目录的 glob
 - `exclude` 优先于 `include`
-- 未声明 `fileRules` 的平台使用默认行为（所有文件）
+- 未声明 `fileRules` 时，只复制 manifest 声明的能力路径、生成产物和 AW runtime 脚本依赖闭包
+- `exclude` 只影响同一个 `fileRules` 规则组选出的额外文件，不会排除 manifest 已声明的能力路径
+- 原始 `slash-commands/` 源目录只作为生成输入，即使被 `fileRules` 命中也不会原样进入平台 bundle
 
 ### 典型用法
 
-只把 `output-styles/` 目录打包给 Claude；公共 `slashCommands` 只作为生成输入，不原样进入任何平台 bundle：
+按平台补充额外参考文件：
 
 ```json
 {
   "fileRules": {
     "claude": {
-      "include": ["output-styles/**"],
+      "include": ["references/claude-only/**"],
       "exclude": []
     },
     "codex": {
-      "include": [],
-      "exclude": ["output-styles/**"]
+      "include": ["references/codex-only/**"],
+      "exclude": []
     }
   }
 }
@@ -155,22 +157,24 @@ Codex bundle 中渲染为：
 
 ```json
 {
-  "manifestOverrides": {
-    "claude": {
-      "outputStyles": "./output-styles",
-      "lspServers": {
-        "typescript": {
-          "command": "typescript-language-server",
-          "args": ["--stdio"]
-        }
-      },
-      "userConfig": {
-        "apiKey": {
-          "type": "string",
-          "title": "API Key",
-          "description": "外部服务 API 密钥",
-          "required": true,
-          "sensitive": true
+  "buildConfig": {
+    "manifestOverrides": {
+      "claude": {
+        "outputStyles": "./output-styles",
+        "lspServers": {
+          "typescript": {
+            "command": "typescript-language-server",
+            "args": ["--stdio"]
+          }
+        },
+        "userConfig": {
+          "apiKey": {
+            "type": "string",
+            "title": "API Key",
+            "description": "外部服务 API 密钥",
+            "required": true,
+            "sensitive": true
+          }
         }
       }
     }
@@ -195,8 +199,8 @@ Codex bundle 中渲染为：
       }
     },
     "fileRules": {
-      "claude": { "include": ["output-styles/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["output-styles/**"] }
+      "claude": { "include": ["references/claude-only/**"], "exclude": [] },
+      "codex": { "include": ["references/codex-only/**"], "exclude": [] }
     },
     "manifestOverrides": {
       "claude": {
@@ -210,4 +214,5 @@ Codex bundle 中渲染为：
 这个配置实现：
 1. 所有 skill Markdown 文件按平台渲染模板变量
 2. `slash-commands/*.md` 先按平台渲染，再分别生成 Claude `commands/*.md` 和 Codex manual-only skills
-3. `output-styles/` 只进入 Claude bundle，Claude runtime manifest 中声明 `outputStyles` 路径
+3. 额外参考文件按平台进入对应 bundle；manifest 已声明的能力路径不依赖 `fileRules`
+4. `output-styles/` 只进入 Claude bundle，Claude runtime manifest 中声明 `outputStyles` 路径

@@ -3,7 +3,7 @@
     "review-service": {
       "url": "https://api.example.com/mcp/review",
       "headers": {
-        "Authorization": "Bearer ${user_config.reviewServiceApiKey}"
+        "Authorization": "Bearer ${REVIEW_SERVICE_API_KEY}"
       }
     }
   }

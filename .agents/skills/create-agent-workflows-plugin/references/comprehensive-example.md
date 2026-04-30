@@ -37,12 +37,11 @@ code-review/
 | Hooks | `extensions.hooks` — 公共 session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |
 | Native Hooks | `extensions.nativeHooks.codex` — Codex 原生 UserPromptSubmit，无 matcher |
 | Agents | `extensions.agents` — review-summarizer 报告生成器 |
-| MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${user_config.reviewServiceApiKey}` |
+| MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${REVIEW_SERVICE_API_KEY}` 环境变量 |
 | Public Slash Commands | `slash-commands/` — 一份公共源码同时生成 Claude `/review` / `/review-summary` 和 Codex manual-only skills |
 | Output Styles | `output-styles/` — Claude 专属审查报告格式 |
 | Template 渲染 | `buildConfig.templates` — SKILL.md 和 `slash-commands/*.md` 中按平台渲染 `{{platformName}}`、`{{#if supportsCommands}}` |
-| 平台文件规则 | `buildConfig.fileRules` — `output-styles/` 只打包给 Claude；`slash-commands/` 只作为生成输入，不原样进入 bundle |
-| User Config | `buildConfig.manifestOverrides.claude.userConfig` — API Key（sensitive）和最大文件数 |
+| User Config | `buildConfig.manifestOverrides.claude.userConfig` — Claude 原生用户配置示例（sensitive API Key 和最大文件数） |
 | agentOverrides | hooks 中的 before_tool 条目通过 `"codex": null` 排除 Codex 平台 |
 
 ## 构建产物预览
@@ -51,7 +50,7 @@ code-review/
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、userConfig
 
-**Codex bundle（build 时写入）**：skills（含显式 skill + slashCommands 生成的 manual-only skill）、.mcp.json（+ fileRules 选中的源码文件）
+**Codex bundle（build 时写入）**：skills（含显式 skill + slashCommands 生成的 manual-only skill）、.mcp.json（+ fileRules 额外选中的源码文件，如有）
 
 **两个平台 bundle 都不包含**：原始 `slash-commands/` 源目录
 

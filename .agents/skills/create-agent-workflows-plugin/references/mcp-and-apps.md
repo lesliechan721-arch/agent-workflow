@@ -107,6 +107,8 @@ MCP 配置中可以使用 `${ENV_VAR}` 语法引用环境变量：
 }
 ```
 
+`${user_config.KEY}` 是 Claude runtime 的原生占位符，不是公共 `.mcp.json` 合同。若同一 `.mcp.json` 同时给 Codex 使用，不要直接写 `${user_config.KEY}`；请使用环境变量占位符，或用 `buildConfig.templates` 按平台渲染不同配置。
+
 ### 完整示例
 
 ```json
