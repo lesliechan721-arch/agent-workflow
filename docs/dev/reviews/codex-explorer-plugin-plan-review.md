@@ -6,76 +6,153 @@
 本轮审查范围：
 
 - 基于当前仓库基线做执行计划 review，不是代码实现 review
-- 同时检查方案自洽性、在当前基线下的可落地性，以及测试计划是否覆盖修改面
+- 同时检查方案自洽性、与 spec 的一致性、在当前基线下的可落地性，以及测试计划是否覆盖修改面
+- 回查上一版 plan review 报告里的问题是否已经修复
 
 对照依据：
 
 - 计划文档：`docs/dev/plans/codex-explorer-plugin.md`
-- 当前约定：`docs/architecture.md`、`docs/plugin-installation.md`、`docs/testing.md`
+- 需求 spec：`docs/dev/sepcs/codex-explorer-plugin-spec.md`
+- 当前约定：`docs/architecture.md`、`docs/testing.md`
 - 当前实现：`packages/cli/src/**`、`packages/cli/tests/**`
+
+## 上轮报告问题回查
+
+上一轮报告里的两个遗留问题，这版计划都已经补上了。
+
+### 已修复 1. direct command 的 historical fallback 现在也保留真实 `roleKey`
+
+上轮指出，current catalog 缺失时不能只修 discovery；`commands/common.ts` 里的公共 historical fallback 也必须恢复真实 `roleKey`，否则按插件名直达的 `aw uninstall <plugin>` / `aw upgrade <plugin>` 仍会退回 `historical-agent`。
+
+这版计划已经把这条路径补齐：
+
+- contract 明确把按插件名直达入口纳入 historical 恢复范围，见 `docs/dev/plans/codex-explorer-plugin.md:206-211`
+- 集成测试补了 direct uninstall / upgrade 的 historical fallback 回归，见 `docs/dev/plans/codex-explorer-plugin.md:506-511`
+- 实施步骤也要求 discovery 和 `commands/common.ts` 共用同一套 historical 恢复逻辑，见 `docs/dev/plans/codex-explorer-plugin.md:573-576`
+
+这一项可以关闭。
+
+### 已修复 2. `agentOverrides.codex.name` 的绕行口已经封住
+
+上轮指出，当前基线里 `agentOverrides.codex.name` 会在 platform-resolved view 上直接改写 agent 身份，见 `packages/cli/src/utils/platform-entries.ts:3-19`；如果不显式禁止，它仍能绕过 `agent.name === roleKey`。
+
+这版计划已经把这层 contract 写实：
+
+- source contract 明确禁止声明 `codexRole` 的 agent 使用 `agentOverrides.codex.name`，见 `docs/dev/plans/codex-explorer-plugin.md:93`
+- 平台过滤语义也同步要求 Codex resolved agent 身份只能由 `roleKey` 决定，见 `docs/dev/plans/codex-explorer-plugin.md:104-109`
+- 文档、作者工具和单测都补了对应约束，见 `docs/dev/plans/codex-explorer-plugin.md:445-449`、`458-460`
+
+这一项也可以关闭。
 
 ## Findings
 
-### 1. [高] 计划把 user scope role 绑定到 effective config，但 current baseline 的 effective config 含 project 层，这会让全局 user artifact 没有稳定真值
+### 1. [中] 计划和 spec 对 `codexRole` 默认值真值仍然不一致
 
-计划要求 config 写入后“重新解析 effective config，重渲染受管 Codex role artifact”，并且在 project scope 配置变化时，还考虑刷新当前会话下可定位的 user target，见 `docs/dev/plans/codex-explorer-plugin.md:327-340`。同时，风险部分把这件事解释成“当前上下文已刷新，历史 project 可能仍旧过期”，见 `docs/dev/plans/codex-explorer-plugin.md:548-550`。
+计划现在已经明确收口为“默认值只来自 `config.schema`”，并拒绝 `codexRole.model.default` / `codexRole.modelReasoningEffort.default`：
 
-但当前基线里，effective config 的定义是固定的 `manifest default < user store < project store`，project 会覆盖 user，见 `docs/plugin-installation.md:98-100` 和 `docs/architecture.md:66-69`。而 Codex user scope artifact 的物理位置又是全局 `~/.codex`，project scope artifact 才写入仓库 `.codex`，见 `packages/cli/src/utils/plugin-config.ts:112-123` 与 `packages/cli/src/utils/paths.ts:125-145`。
+- `docs/dev/plans/codex-explorer-plugin.md:97-98`
+- `docs/dev/plans/codex-explorer-plugin.md:412-415`
+- `docs/dev/plans/codex-explorer-plugin.md:449-460`
 
-这两件事放在一起后，当前计划会出现一个没法靠“只刷新当前上下文”解决的矛盾：
+但当前 spec 里仍保留了旧写法，在 `codexRole` 示例中直接声明第二份 `default`：
 
-- 同一个 user scope role file 只有一份，位置在全局 `~/.codex/agents/...`
-- 但它如果按 effective config 渲染，就会在不同 repo 下看到不同的 project 覆盖值
-- 结果是同一份全局 artifact 会被 repo A 和 repo B 轮流改写，`lastRenderedConfigDigest` 也不再有稳定语义
+- `docs/dev/sepcs/codex-explorer-plugin-spec.md:395-420`
 
-这不是单纯的“还有些历史项目没扫描到”，而是“同一个 user artifact 不存在唯一正确内容”。按当前计划推进，status 里的 stale 判断、config-triggered refresh 和 install 时的配置解释都会变得不确定。
+这会让需求文档和执行计划出现两套 contract：
 
-建议先把 contract 收紧，再进入实现：
+- 按 spec 写 manifest，会和计划里的校验、作者工具和测试预期冲突
+- 按计划实现，又不再满足当前 spec 示例的字面要求
 
-- 方案 A：明确 `scope=user` 的 Codex role 只吃 `default + user store`，不吃 project store；只有 `scope=project` 安装才读取 project 覆盖
-- 方案 B：保留 effective config 语义，但把 `codex-explore` 限制为 project-scope repo-managed 插件，不支持 user scope role artifact
-- 方案 C：如果一定要保留 user scope 安装，也必须把“artifact 绑定哪一层 config”定义成独立规则，而不是直接复用通用 effective config
+这不是计划本身的设计错误，反而计划的收口方式更符合当前基线和上一轮 review 的结论；但在文档层面，它仍然是一个没有收干净的需求漂移。
 
-在这点没定清之前，阶段 4 的 refresh contract 和阶段 3/4 的 status digest 真值都还不能算落地。
+建议：
 
-### 2. [中] 测试计划没有覆盖到全部修改面，尤其缺少 refresh 写命令全路径、upgrade、authoring tools 和 status JSON contract
+- 把 spec 里的 `codexRole` 示例改成只绑定 `configKey`，不再声明 `default`
+- 同时在 spec 文本里明确“默认值唯一来自 `config.schema[configKey].default`”，避免实现和作者工具继续各自理解
 
-计划正文里要改的不只是 install/uninstall/status。它还明确要求：
+### 2. [中] spec 要求拒绝重复 binding key，但计划正文和测试还没把这条落成明确 contract
 
-- 给四个 `aw config` 写命令都接入 refresh，且失败时要回滚并写 refresh metadata，见 `docs/dev/plans/codex-explorer-plugin.md:320-344`
-- 更新作者工具 reference 和校验脚本，见 `docs/dev/plans/codex-explorer-plugin.md:414-423`
-- 让 tracking / status / uninstall / upgrade / refresh 都按 `roleKey` 工作，见 `docs/dev/plans/codex-explorer-plugin.md:554-566`
+spec 现在明确把“非法 Codex role config binding”列进作者校验范围，并举了“空 key、重复 key、字段类型不匹配”等例子，见：
 
-但测试计划本身只显式列了：
+- `docs/dev/sepcs/codex-explorer-plugin-spec.md:473-485`
+- `docs/dev/sepcs/codex-explorer-plugin-spec.md:518`
 
-- install / uninstall / status 的集成覆盖
-- 一个 `aw config set` 的正向 refresh 场景
-- 一个 unrelated key 不刷新场景
-- build / pack smoke
+但计划目前只写到了这些校验：
 
-见 `docs/dev/plans/codex-explorer-plugin.md:424-478`。
+- key 必须存在于 `config.schema`，见 `docs/dev/plans/codex-explorer-plugin.md:95`
+- 字段类型要匹配，见 `docs/dev/plans/codex-explorer-plugin.md:96`
+- model / reasoning 绑定 key 必须有 schema default，见 `docs/dev/plans/codex-explorer-plugin.md:97-98`
 
-这和仓库现有测试约定不一致。当前测试文档已经把这些面单独列成重点：
+对应的作者工具和测试计划也没有把“重复 binding key”单独列出来：
 
-- `upgrade-command.test.ts`、`skill-trigger-command.test.ts`、`authoring-tools.test.ts` 都是既有重点入口，见 `docs/testing.md:13-19`
-- status 改动需要锁住默认/verbose/JSON/debug 通道以及稳定机器字段，见 `docs/testing.md:39-47`
-- 改 plugin manifest contract、本地 marketplace 布局或作者工具时，需要同步 fixture、样例和相关测试，见 `docs/testing.md:59-64`
+- `docs/dev/plans/codex-explorer-plugin.md:449-460`
+- `docs/dev/plans/codex-explorer-plugin.md:533-534`
 
-按这个标准，当前计划至少还缺这些明确测试项：
+如果这条不补，下面这些形态理论上都可能滑过去：
 
-- `aw config configure/unset/reset` 命中 refresh key 的行为，而不只是 `config set`
-- refresh 失败后的 config store / artifact 回滚，以及 `lastArtifactRefresh.status = "failed"` 的 status 诊断
-- `aw upgrade codex-explore` 在普通升级和 capabilityChanged/重装路径下都继续按 `roleKey` 处理 artifact
-- `status --json`、`status --json --verbose` 等输出仍保持纯 JSON，并暴露新增 role 诊断字段
-- `authoring-tools.test.ts` 或等价用例，覆盖 `codexRole`、Codex-only 插件、`agents/openai.yaml` 必填和校验报错
-- source manifest / bundle layout 的约束测试，确认 `codexRole` 保留在 `.agents-plugin/plugin.json`，但不会漏进平台原生 manifest
+- `model.configKey` 和 `modelReasoningEffort.configKey` 指向同一个 schema key
+- `promptConfig.appendKey` 和 `promptConfig.overrideKey` 指向同一个 schema key
 
-这一项不一定阻塞方案方向，但如果不补进计划，实际实现很容易出现“功能做了、回归网没跟上”的情况。
+这会让一个配置值同时驱动两个不同 artifact 字段，渲染、refresh 诊断和用户心智都容易变得模糊。
+
+建议把这条补进计划：
+
+- source contract 明确要求同一个 `codexRole` 内各 binding key 不能重复
+- 作者工具和 unit test 补重复 key 负例
+
+### 3. [中] 测试矩阵还没有完整覆盖 spec 约束下的 skill / prompt 内容 contract
+
+这版计划已经把插件内容写得比较具体，和 spec 主要求基本一致，例如：
+
+- `SKILL.md` 必须要求主 agent 在使用完 explorer 后调用 `close_agent`，见 `docs/dev/plans/codex-explorer-plugin.md:424-433`
+- 委派 prompt 必须包含探索深度，且 role 工作流正文可以直接采用 spec 草案，见 `docs/dev/plans/codex-explorer-plugin.md:429-439`
+- 调用 `spawn_agent` 时只传 `agent_type = "codex-explorer"`，不传 model/reasoning override，见 `docs/dev/plans/codex-explorer-plugin.md:433`
+
+这些都对应 spec 的核心需求：
+
+- `close_agent` 约束，见 `docs/dev/sepcs/codex-explorer-plugin-spec.md:49-50`、`497-499`
+- `quick / medium / very thorough` 探索深度，见 `docs/dev/sepcs/codex-explorer-plugin-spec.md:76`、`191-199`、`282-289`
+- `agent_type = "codex-explorer"` 且不显式传模型，见 `docs/dev/sepcs/codex-explorer-plugin-spec.md:302-304`、`487-493`
+- 默认 role 输出结构，见 `docs/dev/sepcs/codex-explorer-plugin-spec.md:240-255`
+
+但测试计划目前主要覆盖的是：
+
+- trigger policy 行为，见 `docs/dev/plans/codex-explorer-plugin.md:529-531`
+- 作者工具知道要有 `agents/openai.yaml`，见 `docs/dev/plans/codex-explorer-plugin.md:532-534`
+- smoke 覆盖 skill 文件和 bundle 存在性，见 `docs/dev/plans/codex-explorer-plugin.md:538-541`
+
+还没有明确测试去锁住这些真正会交付给模型的内容：
+
+- `SKILL.md` 是否要求 `close_agent`
+- `SKILL.md` 是否要求探索深度，并保留 `quick / medium / very thorough`
+- `SKILL.md` 是否要求只传 `agent_type = "codex-explorer"`
+- 默认 explorer prompt 是否仍保留 spec 要求的输出结构
+
+如果这部分没有测试，后面即使基础设施全部正确，也可能在插件内容回归时把真正的 workflow 要求改丢，而现有测试仍然通过。
+
+建议补一层内容回归：
+
+- `authoring-tools.test.ts` 或插件 smoke 直接断言 `SKILL.md` / `agents/openai.yaml` 的关键语句
+- generator 或插件 fixture 测试断言默认 role prompt 仍包含规定的输出结构和探索深度说明
 
 ## 结论
 
-这份执行计划的主方向仍然是对的：它确实沿着现有 `manifest -> generator -> adapter -> tracking -> status -> config` 主链路扩展，没有绕开当前架构另起一套。
+这次回查后，上一轮 plan review 提出的两个阻塞点已经修复：
 
-但当前还有 1 个需要先收口的阻塞点：user scope role artifact 到底绑定哪一层配置真值。这个问题不先定清，后面的 refresh、digest stale 和 status 解释都会变成不稳定语义。
+- historical direct command fallback 已经纳入 `roleKey` 恢复范围
+- `agentOverrides.codex.name` 的身份绕行口已经被 contract、文档和测试一起封住
 
-除此之外，测试计划也还不够完整。建议在进入实现前，先把 config refresh 四个写命令、upgrade、authoring tools、status JSON 和 source-manifest contract 的测试补进计划，这样实现拆分时才不会漏掉关键回归面。
+从当前基线看，这份执行计划仍然是可落地的。需要扩展的点都落在现有主链路上：
+
+- manifest/type：`packages/cli/src/types.ts`、`packages/cli/src/utils/manifest.ts`
+- role 产物与 status：`packages/cli/src/generators/agents.ts`、`packages/cli/src/adapters/codex.ts`
+- tracking：`packages/cli/src/utils/tracking.ts`
+- config 写入接 refresh：`packages/cli/src/index.ts`
+
+但在进入实现前，建议再补齐 3 个中优先级缺口：
+
+- 让 spec 和计划在 `codexRole` 默认值真值上完全一致
+- 把“重复 binding key 非法”补成明确 contract 和测试
+- 给插件实际交付的 `SKILL.md` / 默认 role prompt 增加内容级回归测试
+
+补完这三处后，这版计划就更适合直接进入实现。

@@ -405,12 +405,10 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
   "codexRole": {
     "roleKey": "codex-explorer",
     "model": {
-      "configKey": "explorerModel",
-      "default": "gpt-5.4-mini"
+      "configKey": "explorerModel"
     },
     "modelReasoningEffort": {
-      "configKey": "modelReasoningEffort",
-      "default": "medium"
+      "configKey": "modelReasoningEffort"
     },
     "promptConfig": {
       "safetyPrefix": "builtin",
@@ -443,6 +441,8 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 
 这样 explorer role 注册项和 role 文件仍由 AW generator、tracking、status、uninstall 和 upgrade 管理，不通过 lifecycle 脚本绕开受管 artifact 主链路，也不要求每次 skill 触发都先读一次动态配置。`agentOverrides` 继续只表示平台字段 patch，不承担 config binding 语义。
 
+`codexRole` 只描述 role artifact 如何绑定配置 key，不保存默认值。默认值唯一来自 `config.schema[configKey].default`；`codexRole.model.default` 和 `codexRole.modelReasoningEffort.default` 都是非法字段。同一个 `codexRole` 内所有已声明 binding key 也必须唯一，避免一个配置值同时驱动两个不同 artifact 字段。
+
 ### 9. 配置变更何时生效
 
 决策：不新增命令；配置写入后从 `codexRole` 绑定推导是否自动刷新。
@@ -471,6 +471,8 @@ refresh target =
 ```
 
 如果某个用于生成 artifact 的 binding 缺少对应 key，例如 `configKey`、`appendKey` 或 `overrideKey`，或者指向的 key 不在 `config.schema` 中，manifest 校验应直接报错，而不是让它在刷新阶段静默失效。后续如果出现 Codex agent role 之外的第二类 generated artifact 消费者，再把这套推导抽象成通用 refresh effect contract；首版先让 `codexRole` 成为唯一真值，避免 binding 和 refresh 声明各说各话。
+
+同一个 `codexRole` 内不能重复使用 binding key。例如 `model.configKey` 不能和 `modelReasoningEffort.configKey` 指向同一个 schema key，`promptConfig.appendKey` 也不能和 `promptConfig.overrideKey` 指向同一个 schema key。
 
 刷新应重新解析 effective config，并只重渲染 AW 受管 artifact，不触碰用户手写 role 文件，也不执行 lifecycle 脚本。对于 Codex role，受影响 artifact 包括 `[agents.<roleKey>]` 注册项和 role layer 文件。
 
