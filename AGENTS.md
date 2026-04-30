@@ -8,6 +8,10 @@
 
 `pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`，真正发布的包是 `packages/cli`（`@yiliang/aw`）。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
+## Maintenance Principles
+
+- 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程，或任何会影响插件作者使用方式的能力时，必须同时检查 `.agents/skills/create-agent-workflows-plugin/`。如果插件作者技能、模板、示例或测试夹具不再准确，要在同一轮修改中更新，避免运行时能力和作者文档脱节。
+
 ## Build & Test Commands
 
 - `pnpm install` — 安装工作区依赖
