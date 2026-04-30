@@ -72,6 +72,45 @@
       }
     ]
   },
+  "scripts": {
+    "timeoutMs": 30000,
+    "lifecycle": {
+      "install": "./scripts/lifecycle.mjs",
+      "upgrade": "./scripts/lifecycle.mjs",
+      "uninstall": "./scripts/lifecycle.mjs"
+    },
+    "helpers": {
+      "config": "./scripts/aw-config.mjs"
+    },
+    "tests": {
+      "node": ["./scripts/**/*.test.mjs"]
+    }
+  },
+  "config": {
+    "schema": {
+      "reviewServiceApiKey": {
+        "type": "string",
+        "title": "审查服务 API Key",
+        "description": "外部代码审查服务的 API 密钥",
+        "required": true,
+        "sensitive": true
+      },
+      "reviewMode": {
+        "type": "enum",
+        "title": "审查模式",
+        "values": ["standard", "strict"],
+        "default": "standard"
+      },
+      "maxFilesPerReview": {
+        "type": "number",
+        "title": "单次审查最大文件数",
+        "description": "单次审查处理的最大文件数量",
+        "default": 20,
+        "min": 1,
+        "max": 100
+      }
+    }
+  },
   "buildConfig": {
     "templates": {
       "include": ["review-skills/**/*.md", "slash-commands/*.md"],
@@ -82,24 +121,7 @@
     },
     "manifestOverrides": {
       "claude": {
-        "outputStyles": "./output-styles",
-        "userConfig": {
-          "reviewServiceApiKey": {
-            "type": "string",
-            "title": "审查服务 API Key",
-            "description": "外部代码审查服务的 API 密钥",
-            "required": false,
-            "sensitive": true
-          },
-          "maxFilesPerReview": {
-            "type": "number",
-            "title": "单次审查最大文件数",
-            "description": "单次审查处理的最大文件数量",
-            "default": 20,
-            "min": 1,
-            "max": 100
-          }
-        }
+        "outputStyles": "./output-styles"
       }
     }
   }

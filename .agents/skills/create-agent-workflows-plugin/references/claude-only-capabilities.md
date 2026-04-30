@@ -190,6 +190,8 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 用户配置项声明，安装插件时提示用户填写。敏感值存入 keychain。
 
+如果配置需要同时被 Claude Code 和 Codex 使用，优先使用 AW `config.schema` 和 `aw config`，详见 `references/aw-scripts-config-lifecycle.md`。`userConfig` 只适合 Claude Code 原生能力专用的配置，例如只在 Claude runtime manifest、Claude-only MCP 替换或 Claude prompt 变量中消费的值。
+
 ### 配置项定义格式
 
 ```json
