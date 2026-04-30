@@ -11,7 +11,7 @@ TypeScript + ESM，2 空格缩进，NodeNext 导入风格，本地模块导入�
 - 涉及 plugin manifest、marketplace metadata 或 `buildConfig` 改动时，同时检查 `types.ts`、`utils/manifest.ts`、`generators/local-plugin.ts`、`utils/bundle-layout.ts`、`scripts/bundle-plugins.ts` 的 contract 是否仍一致
 - 涉及 install/upgrade 的 skill 触发偏好时，同时检查 `utils/skill-trigger-preferences.ts`、`commands/common.ts`、`commands/install.ts`、`commands/upgrade.ts` 和 ledger/status 输出
 - 涉及 Codex project scope 时，先判断目标是 native runtime 还是 repo-managed artifact；不要在项目级路径里隐式调用 native marketplace add，也不要把用户级 `[plugins]` 当作 project installed evidence
-- 涉及公共 slash command 时，只维护源码 `slashCommands`，不要恢复旧 `commands` 入口；Claude `commands` 和 Codex manual-only skill 都应从 `utils/slash-commands.ts` / `generators/local-plugin.ts` 生成
+- 涉及公共 slash command 时，只维护源码 `slashCommands`；Claude `commands` 和 Codex manual-only skill 都应从 `utils/slash-commands.ts` / `generators/local-plugin.ts` 生成
 - 涉及 hooks 时，优先使用 `utils/hooks-contract.ts` 的 normalize/render/validate helper，不在 adapter 或 generator 中复制事件名映射
 - 不手工维护 runtime bundle 内的生成清单，不把命令阶段产物回写到仓库 `plugins/` 源码目录
 - 生成文件统一以 `aw-` 前缀标识（`GENERATED_FILE_PREFIX`）

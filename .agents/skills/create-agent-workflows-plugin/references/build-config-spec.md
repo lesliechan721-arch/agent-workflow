@@ -146,7 +146,7 @@ Codex bundle 中渲染为：
 | `claude` | `outputStyles`、`lspServers`、`userConfig`、`channels` | 详见 `references/claude-only-capabilities.md` |
 | `codex` | — | 当前只允许空对象 `{}` |
 
-`manifestOverrides.claude.commands` 已移除。手动触发命令必须使用顶层公共 `slashCommands`，由 build 生成 Claude `commands/*.md` 和 Codex manual-only skills。`fileRules` 也不能再 include / exclude 旧 `commands/**` 源目录。
+手动触发命令必须使用顶层公共 `slashCommands`，由 build 生成 Claude `commands/*.md` 和 Codex manual-only skills。
 
 ### 路径 vs 对象
 

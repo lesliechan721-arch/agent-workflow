@@ -2,8 +2,6 @@
 
 公共 `slashCommands` 是源码层唯一的跨平台手动命令作者入口。插件作者维护一份 `slash-commands/*.md` 源文件；构建后 Claude 得到原生 `/command`，Codex 得到 manual-only generated skill。
 
-旧顶层 `commands`、`buildConfig.manifestOverrides.claude.commands` 和面向 `commands/**` 的 fileRules 都已移除；validate / build 会直接失败，并提示改用 `slashCommands`。
-
 ## 目录结构
 
 ```text

@@ -65,7 +65,7 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 `pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。`--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
 
-公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法示例生成 Claude `commands/*.md` 与 Codex manual-only skill；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法、顶层旧 `commands`、`manifestOverrides.claude.commands` 和 `commands/**` fileRules 都必须失败并提示改用 `slashCommands`。
+公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法示例生成 Claude `commands/*.md` 与 Codex manual-only skill；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败。
 
 `upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。10 个稳定 code（`scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`trackingIntegrityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
 

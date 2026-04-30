@@ -135,7 +135,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
-- 手动触发命令只使用公共 `slashCommands`；不要新建旧 `commands/` 目录，也不要写 `manifestOverrides.claude.commands`。
+- 手动触发命令只使用公共 `slashCommands`。
 - `slashCommands` 的 Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
