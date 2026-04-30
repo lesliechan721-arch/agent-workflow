@@ -55,7 +55,7 @@ developer_instructions = """..."""
 - 当前 config 值会进入 lifecycle context 和 helper，但不会自动驱动 `extensions.agents` 生成内容。
 - `aw config set` 只写 AW config store；当前没有“写配置后自动重渲染已安装 role artifact”的能力。
 - 如果要让“模型和提示词可配置”影响 role 文件，需要扩展 AW config 到 Codex role artifact 的受管路径。不能用 lifecycle 脚本绕开主链路，否则 tracking、status、uninstall、upgrade 和回滚都会留下缺口。
-- 自动刷新不能绑定到所有 `aw config` 写入。很多插件配置只给 lifecycle 或运行时脚本动态读取，不需要刷新 artifact。刷新应由插件 manifest 明确声明，只覆盖配置值会进入受管 artifact 的场景。
+- 自动刷新不能绑定到所有 `aw config` 写入。很多插件配置只给 lifecycle 或运行时脚本动态读取，不需要刷新 artifact。首版不新增独立的 `artifactRefresh` 真值；对 Codex role artifact，刷新影响范围从 `extensions.agents[].codexRole` 里的 config binding 推导，只覆盖配置值会进入受管 artifact 的场景。
 - 首版保留 config-driven artifact refresh，因此必须同步定义刷新状态真值：上次成功渲染使用的 effective config digest、最近一次刷新结果、刷新时间、作用 target，以及当前命令上下文以外是否仍可能存在过期安装目标。
 
 ## 参考实现启发
@@ -76,7 +76,7 @@ developer_instructions = """..."""
 - 支持在委派 prompt 里声明探索深度：`quick`、`medium` 或 `very thorough`，让 explorer 按任务成本和覆盖范围调节搜索。
 - 支持配置 explorer 默认模型和 reasoning effort，首版默认 `gpt-5.4-mini + medium`。
 - 支持配置 explorer 提示词，允许用户追加项目偏好，也允许高级用户替换工作流正文；不可覆写的只读安全前导必须始终保留。
-- 对声明会影响受管 artifact 的配置，`aw config set/configure/unset/reset` 写入成功后自动刷新当前可定位的已安装 artifact，不新增额外 apply/sync 命令。
+- 对通过 `codexRole` 绑定到受管 artifact 的配置，`aw config set/configure/unset/reset` 写入成功后自动刷新当前可定位的已安装 artifact，不新增额外 apply/sync 命令。
 - `aw status` 能基于同一份刷新元数据判断受管 role 是否缺失、被遮蔽、配置过期或最近一次刷新失败。
 - 插件只面向 Codex，不向 Claude Code 安装任何能力。
 
@@ -84,7 +84,7 @@ developer_instructions = """..."""
 
 - 不改变 Codex 上游 `spawn_agent` 工具的授权规则。
 - 不新增 `aw config apply` / `sync` 等配置刷新命令。
-- 不让所有插件的配置写入都触发 artifact 刷新；只有 manifest 明确声明 config 会影响 generated artifacts 时才刷新。
+- 不让所有插件的配置写入都触发 artifact 刷新；只有 config key 被 role/artifact contract 明确绑定到 generated artifacts 时才刷新。
 - 不要求纯脚本动态读取的配置进入刷新链路。
 - 不让插件自动改写用户现有手写 `.codex/agents/*.toml`，也不接管任何最终 role 名占用同一个 `roleKey` 的非 AW 管理角色。
 - 不复用或覆盖 Codex 内建 `explorer` role；首版不改变 Codex 全局 `explorer` 语义。
@@ -136,7 +136,7 @@ manifest 应声明：
 - `skillTriggers.<skill>.allowInstallOverride = true`，让用户可以在自动触发和手动触发之间切换
 - 扩展 `extensions.agents`，让 Codex role artifact 能声明稳定 `roleKey`，并写入 `model`、`model_reasoning_effort` 等 Codex-only 字段
 - `config.schema`，让终端用户可以通过 `aw config` 配置模型、reasoning effort、`promptAppend` 和 `promptOverride`
-- config effect 声明，标记这些配置 key 会影响 Codex agent artifact，配置写入后需要自动刷新当前可定位的已安装 role 注册项和 role 文件
+- `extensions.agents[].codexRole` 的 config binding，作为 Codex agent artifact 刷新 effect 的唯一真值；配置写入后据此自动刷新当前可定位的已安装 role 注册项和 role 文件
 
 ### Codex role 受管产物
 
@@ -445,51 +445,38 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 
 ### 9. 配置变更何时生效
 
-决策：不新增命令；配置写入后按插件声明自动刷新。
+决策：不新增命令；配置写入后从 `codexRole` 绑定推导是否自动刷新。
 
-`aw config set/configure/unset/reset` 写入成功后，AW 检查插件 manifest 是否声明“这些配置 key 会影响 generated artifacts”。只有满足下面条件时才刷新：
+`aw config set/configure/unset/reset` 写入成功后，AW 检查插件 manifest 里 Codex agent role 的 config binding 是否命中本次变更。只有满足下面条件时才刷新：
 
-- 当前写入的 key 命中了 manifest 声明的 refresh keys；`reset` 视为该层所有 refresh keys 都可能变化。
+- 当前写入的 key 命中了从 `codexRole` 推导出的 refresh keys；`reset` 视为该层所有由 `codexRole` 派生出的 refresh keys 都可能变化。
 - 插件在当前命令上下文能定位到已安装 target。
-- 受影响 target 的 platform / artifact kind 与声明匹配，例如 `codex` + `agent`。
+- 受影响 target 包含对应 Codex agent artifact，例如 `[agents.<roleKey>]` 注册项和 role layer 文件。
 
-未声明 refresh effect 的插件保持现有行为：配置写入只更新 AW config store，不刷新 artifact。这覆盖“配置由 lifecycle/helper/运行时脚本动态读取”的插件。
+没有把 config key 绑定到受管 artifact 的插件保持现有行为：配置写入只更新 AW config store，不刷新 artifact。这覆盖“配置由 lifecycle/helper/运行时脚本动态读取”的插件。
 
-建议 manifest 形态先用概念字段表达，最终字段名实现时再确定：
+首版不引入独立 `config.artifactRefresh` 或 `artifactRefresh.keys` 字段。刷新影响范围直接从同一个 `codexRole` block 推导：
 
-```json
-{
-  "config": {
-    "schema": {
-      "explorerModel": { "type": "string", "default": "gpt-5.4-mini" },
-      "modelReasoningEffort": {
-        "type": "enum",
-        "values": ["low", "medium", "high", "xhigh"],
-        "default": "medium"
-      },
-      "promptAppend": { "type": "string", "default": "" },
-      "promptOverride": { "type": "string", "default": "" }
-    },
-    "artifactRefresh": {
-      "keys": ["explorerModel", "modelReasoningEffort", "promptAppend", "promptOverride"],
-      "platforms": ["codex"],
-      "kinds": ["agent"],
-      "metadata": {
-        "digest": true,
-        "lastResult": true
-      }
-    }
-  }
-}
+```text
+refresh keys =
+- codexRole.model.configKey
+- codexRole.modelReasoningEffort.configKey
+- codexRole.promptConfig.appendKey
+- codexRole.promptConfig.overrideKey
+
+refresh target =
+- platform: codex
+- kind: agent
+- roleKey: codexRole.roleKey
 ```
 
-如果首版保留显式 `artifactRefresh` 声明，校验规则必须防止它变成第二份不一致的真值：同一 agent 的 `artifactRefresh.keys` 应覆盖并只覆盖 `codexRole` 绑定派生出的配置 key，例如 `model.configKey`、`modelReasoningEffort.configKey`、`promptConfig.appendKey` 和 `promptConfig.overrideKey`；`platforms` / `kinds` 也应与受影响的 Codex agent artifact 对齐。后续如果改为完全由 `codexRole` 绑定推导 refresh effect，可以移除这段显式声明，但首版不能让两边各说各话。
+如果某个用于生成 artifact 的 binding 缺少对应 key，例如 `configKey`、`appendKey` 或 `overrideKey`，或者指向的 key 不在 `config.schema` 中，manifest 校验应直接报错，而不是让它在刷新阶段静默失效。后续如果出现 Codex agent role 之外的第二类 generated artifact 消费者，再把这套推导抽象成通用 refresh effect contract；首版先让 `codexRole` 成为唯一真值，避免 binding 和 refresh 声明各说各话。
 
 刷新应重新解析 effective config，并只重渲染 AW 受管 artifact，不触碰用户手写 role 文件，也不执行 lifecycle 脚本。对于 Codex role，受影响 artifact 包括 `[agents.<roleKey>]` 注册项和 role layer 文件。
 
 首版必须定义刷新元数据的持久化真值。建议放在 scope-local tracking manifest 的插件记录下，最终字段名实现时再确定，但至少要表达：
 
-- `lastRenderedConfigDigest`：上一次成功渲染当前受管 artifact 使用的 effective config digest，只覆盖 manifest 声明会影响 artifact 的 key。
+- `lastRenderedConfigDigest`：上一次成功渲染当前受管 artifact 使用的 effective config digest，只覆盖从 `codexRole` 推导出的 refresh keys。
 - `lastArtifactRefresh`：最近一次 config-triggered refresh 的结果、时间、触发 key、platform/scope/kind、roleKey 和受影响路径。
 - `refreshReach`：本次命令上下文实际刷新了哪些 target；如果 user config 可能影响其它 project，但 AW 无法跨历史项目扫描，需要在 status 中说明其它 target 可能仍用旧 artifact。
 
@@ -523,12 +510,12 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 - 安装后生成 `[agents.codex-explorer]` 注册项和 explorer role 文件；注册项的 `config_file` 指向 AW 管理的 role layer。安装不得覆盖 Codex 内建 `explorer` role，也不得覆盖已有非 AW 管理且最终 role 名为 `codex-explorer` 的自定义 role，包括通过其它 `[agents.*]` key 或手写 `agents/*.toml` 文件声明出的同名角色。
 - role 文件包含 `model`、`model_reasoning_effort` 和 `developer_instructions`；`developer_instructions` 必须始终包含不可覆写的只读安全前导。
 - tracking 记录 `roleKey = "codex-explorer"`、注册项 path 和 role layer path；status、遮蔽判断、uninstall、upgrade、refresh 都按 `roleKey` 处理。
-- `aw config set/configure/unset/reset` 修改命中的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role 注册项和 role layer。
-- 未声明 `artifactRefresh` 或等价 effect 的插件，配置写入不会触发 artifact 刷新。
+- `aw config set/configure/unset/reset` 修改命中 `codexRole` binding 派生出的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role 注册项和 role layer。
+- 没有把 config key 绑定到受管 artifact 的插件，配置写入不会触发 artifact 刷新。
 - `aw status` 能报告 role 注册项和 role layer 是否存在、`config_file` 是否仍指向 AW 管理文件，目标 layer 是否存在非 AW 管理的同名最终 role，以及 `roleKey` 是否被更高优先级 config layer 遮蔽。
 - `aw status` 能基于刷新元数据报告受管 artifact 是否使用了过期 config digest，或者最近一次 config-triggered refresh 是否失败。
 - `aw uninstall` 能清理 AW 管理的 role 注册项和 role layer，不影响用户手写的 role 文件或非 AW 管理且最终 role 名相同的角色。
-- 插件作者校验脚本能发现缺失 `agents/openai.yaml`、非法 config schema、非法 Codex-only role 字段、非法 artifact refresh 声明，以及 `artifactRefresh` 与 `codexRole` 配置绑定不一致的问题。
+- 插件作者校验脚本能发现缺失 `agents/openai.yaml`、非法 config schema、非法 Codex-only role 字段、非法 Codex role config binding，例如 `configKey` 指向不存在的 schema key、空 key、重复 key 或字段类型不匹配。
 - 单元测试覆盖 manifest 解析、agent TOML 生成、`[agents.<roleKey>]` 注册、config-triggered artifact refresh、Codex adapter install/uninstall/status。
 
 ## 风险与约束
@@ -548,8 +535,8 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 
 1. 先扩展 agent role artifact contract：写 `[agents.<roleKey>]` 注册项、role layer 文件，并让 tracking/status/uninstall 全部按 `roleKey` 工作。
 2. 扩展 Codex role TOML 生成，让 role layer 能写 `model`、reasoning 字段和“安全前导 + 工作流正文 + append”的 `developer_instructions`。
-3. 扩展 config effect contract，让 manifest 能声明哪些 config key 会影响哪些 generated artifacts，并定义刷新元数据。
-4. 在 config 写命令后接入 conditional refresh：只对命中声明的插件刷新当前可定位的已安装 artifact，并补齐回滚和 status 诊断。
+3. 扩展 Codex role config binding contract，让 `codexRole` 能推导哪些 config key 会影响 Codex agent artifact，并定义刷新元数据。
+4. 在 config 写命令后接入 conditional refresh：只对命中 `codexRole` 派生 refresh keys 的插件刷新当前可定位的已安装 artifact，并补齐回滚和 status 诊断。
 5. 新增 Codex-only 插件源码、skill、默认 explorer prompt 和 config schema。
-6. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段和 artifact refresh 声明。
+6. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段、config binding 和刷新元数据。
 7. 跑 `pnpm build`、相关 unit/integration 测试和插件校验。
