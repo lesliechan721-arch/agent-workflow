@@ -21,6 +21,7 @@ import type {
 } from '../../src/types.js';
 import { upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import { attachGeneratedArtifactsToError } from '../../src/utils/generated-artifacts.js';
+import { readTrackingManifest } from '../../src/utils/tracking.js';
 import type {
   NativeCliInvocation,
   NativeCliRunner,
@@ -49,6 +50,7 @@ async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embe
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  await removeAppsFromGitCommit(repoRoot);
   if (await fs.pathExists(path.join(repoRoot, '.codex'))) {
     await fs.chmod(path.join(repoRoot, '.codex'), 0o700).catch(() => undefined);
   }
@@ -72,6 +74,7 @@ async function makeWorkspaceWithMutator(
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
   await mutateRepo(repoRoot);
+  await removeAppsFromGitCommit(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
 
@@ -81,6 +84,14 @@ async function makeWorkspaceWithMutator(
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
   };
+}
+
+async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  delete manifest.apps;
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', '.app.json'));
 }
 
 function createCodexMarketplaceAddRunner(
@@ -405,6 +416,74 @@ async function addRequiredConfigSchemaToGitCommit(repoRoot: string): Promise<voi
     },
   };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function addGitCommitReviewSkill(repoRoot: string): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+  await fs.copy(
+    path.join(pluginRoot, 'skills', 'commit'),
+    path.join(pluginRoot, 'skills', 'review'),
+  );
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.skillTriggers ??= {};
+  manifest.skillTriggers.review = { allowInstallOverride: true };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function addGitCommitReviewMcp(repoRoot: string): Promise<void> {
+  const mcpPath = path.join(repoRoot, 'plugins', 'git-commit', '.mcp.json');
+  const mcp = await fs.readJson(mcpPath);
+  mcp.mcpServers['git-commit-review'] = {
+    command: 'git',
+    args: ['log', '--oneline'],
+  };
+  await fs.writeJson(mcpPath, mcp, { spaces: 2 });
+}
+
+async function updateEmbeddedGitCommitManifest(
+  embeddedRoot: string,
+  update: (manifest: Record<string, unknown>) => void,
+): Promise<void> {
+  const manifestPath = path.join(embeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  update(manifest);
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function removeEmbeddedGitCommitReviewSkill(embeddedRoot: string): Promise<void> {
+  await updateEmbeddedGitCommitManifest(embeddedRoot, (manifest) => {
+    const skillTriggers = manifest.skillTriggers as Record<string, unknown> | undefined;
+    if (skillTriggers) {
+      delete skillTriggers.review;
+    }
+    manifest.version = '0.2.0';
+  });
+  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', 'skills', 'review'));
+  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'review'));
+}
+
+async function removeEmbeddedGitCommitReviewMcp(embeddedRoot: string): Promise<void> {
+  const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+  const visit = async (currentDir: string): Promise<void> => {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
+      if (entry.name !== '.mcp.json') {
+        continue;
+      }
+
+      const mcp = await fs.readJson(entryPath);
+      delete mcp.mcpServers['git-commit-review'];
+      await fs.writeJson(entryPath, mcp, { spaces: 2 });
+    }
+  };
+
+  await visit(pluginRoot);
 }
 
 async function addMixedHookPlugin(repoRoot: string): Promise<void> {
@@ -1144,7 +1223,7 @@ describe('CLI integration', () => {
         ['git-commit'],
         {
           cwd: repoRoot,
-          scope: 'project',
+          scope: 'user',
           platform: 'codex',
         },
         {
@@ -1248,15 +1327,88 @@ describe('CLI integration', () => {
       : [];
 
     await expect(fs.pathExists(path.join(projectCodexDir, 'hooks.json'))).resolves.toBe(false);
-    await expect(fs.readFile(path.join(projectCodexDir, 'config.toml'), 'utf8')).resolves.not.toContain('git-commit');
+    const codexConfigPath = path.join(projectCodexDir, 'config.toml');
+    if (await fs.pathExists(codexConfigPath)) {
+      await expect(fs.readFile(codexConfigPath, 'utf8')).resolves.not.toContain('git-commit');
+    }
     expect(rulesEntries).toEqual([]);
     expect(agentEntries).toEqual([]);
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
       ledgerState: {
         status: 'degraded',
-        reason: 'operation_interrupted_after_native_write',
+        reason: 'operation_interrupted_after_artifact_write',
       },
     });
+  });
+
+  it('prunes stale tracked Codex project skills and MCP servers after a current upgrade without touching foreign content', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => {
+        await addGitCommitReviewSkill(workspaceRepoRoot);
+        await addGitCommitReviewMcp(workspaceRepoRoot);
+      },
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+    );
+
+    const foreignSkillRoot = path.join(repoRoot, '.agents', 'skills', 'foreign-review');
+    await fs.outputFile(path.join(foreignSkillRoot, 'SKILL.md'), '# Foreign\n', 'utf8');
+    const projectCodexPaths = resolveCodexPaths(repoRoot, 'project', process.env);
+    const trackingBeforeUpgrade = await readTrackingManifest(projectCodexPaths.trackingDir);
+    expect(trackingBeforeUpgrade.plugins['git-commit']?.artifacts.some((artifact) =>
+      artifact.kind === 'skill' && artifact.artifactKey === 'review')).toBe(true);
+    expect(trackingBeforeUpgrade.plugins['git-commit']?.artifacts.some((artifact) =>
+      artifact.kind === 'mcpServer' && artifact.artifactKey === 'git-commit-review')).toBe(true);
+    await fs.appendFile(
+      projectCodexPaths.configTomlPath,
+      '\n[mcp_servers."foreign-review"]\ncommand = "node"\nargs = ["foreign.js"]\n',
+      'utf8',
+    );
+
+    await removeEmbeddedGitCommitReviewSkill(embeddedRoot);
+    await removeEmbeddedGitCommitReviewMcp(embeddedRoot);
+
+    await upgradeCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'default',
+      },
+    );
+
+    await expect(fs.pathExists(path.join(repoRoot, '.agents', 'skills', 'commit'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.agents', 'skills', 'review'))).resolves.toBe(false);
+    await expect(fs.pathExists(foreignSkillRoot)).resolves.toBe(true);
+
+    const configToml = await fs.readFile(projectCodexPaths.configTomlPath, 'utf8');
+    expect(configToml).toContain('[mcp_servers.git-commit]');
+    expect(configToml).not.toContain('[mcp_servers.git-commit-review]');
+    expect(configToml).toContain('[mcp_servers."foreign-review"]');
+
+    const trackingManifest = await readTrackingManifest(projectCodexPaths.trackingDir);
+    const trackingArtifacts = trackingManifest.plugins['git-commit']?.artifacts ?? [];
+    expect(trackingArtifacts.some((artifact) =>
+      artifact.kind === 'skill' && artifact.artifactKey === 'review')).toBe(false);
+    expect(trackingArtifacts.some((artifact) =>
+      artifact.kind === 'mcpServer' && artifact.artifactKey === 'git-commit-review')).toBe(false);
+    expect(trackingArtifacts.some((artifact) =>
+      artifact.kind === 'skill' && artifact.artifactKey === 'commit')).toBe(true);
+    expect(trackingArtifacts.some((artifact) =>
+      artifact.kind === 'mcpServer' && artifact.artifactKey === 'git-commit')).toBe(true);
   });
 
   it('rejects upgrade --all on degraded ledger and blocks auto platform inference when scopeInitialized is unknown', async () => {
@@ -1324,7 +1476,7 @@ describe('CLI integration', () => {
     ).rejects.toThrow('scopeInitialized = unknown');
   });
 
-  it('rejects upgrade --all when managed plugins are missing or capability-changed', async () => {
+  it('keeps capability-changed upgrade --all fatal but skips missing managed plugins', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -1353,6 +1505,9 @@ describe('CLI integration', () => {
               capabilitySnapshot: {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
+              },
+              installOptions: {
+                skillTriggerPreference: 'default',
               },
             },
           },
@@ -1411,7 +1566,17 @@ describe('CLI integration', () => {
           },
         },
       ),
-    ).rejects.toThrow('missing');
+    ).resolves.toMatchObject({
+      plugins: [],
+      skipped: [
+        {
+          platform: 'codex',
+          scope: 'project',
+          plugin: 'git-commit',
+          code: 'catalogNotCurrent',
+        },
+      ],
+    });
   });
 
   it('keeps Claude user ledger untouched when uninstalling only project scope', async () => {
@@ -2289,6 +2454,21 @@ describe('CLI integration', () => {
     );
 
     await expect(fs.pathExists(path.join(repoRoot, '.codex', 'config.toml'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'agents', 'aw-git-commit-commit-reviewer.toml'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(subdir, '.codex'))).resolves.toBe(false);
+
+    await upgradeCommand(
+      ['git-commit'],
+      {
+        cwd: subdir,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'default',
+      },
+    );
+
     await expect(fs.pathExists(path.join(repoRoot, '.codex', 'hooks.json'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(repoRoot, '.codex', 'agents', 'aw-git-commit-commit-reviewer.toml'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(repoRoot, '.codex', 'rules', 'aw-git-commit-git-ops.rules'))).resolves.toBe(true);

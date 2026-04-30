@@ -1,0 +1,21 @@
+{
+  "name": "apps-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin with only Codex apps; project scope must reject it.",
+  "apps": "./.app.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "apps"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Apps Only Fixture",
+    "shortDescription": "Only Codex apps",
+    "capabilities": ["Apps"]
+  }
+}

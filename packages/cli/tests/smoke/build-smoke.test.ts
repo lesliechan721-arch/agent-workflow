@@ -198,6 +198,60 @@ describe('build smoke', () => {
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
 
+  it('bundles public slashCommands through the compiled bundler without shipping raw source directories', async () => {
+    const root = repoRoot();
+    await execFileAsync('pnpm', ['build'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-smoke-slash-commands-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    await fs.copy(
+      fixturePath('codex-project-repo-managed', 'plugins', 'slashCommands-only'),
+      path.join(tempRepo, 'plugins', 'slash-commands-only'),
+    );
+
+    const { bundlePlugins } = (await import(
+      '../../dist/scripts/bundle-plugins.js'
+    )) as { bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown> };
+    await bundlePlugins({ repoRoot: tempRepo, outputRoot });
+
+    const pluginRoot = path.join(outputRoot, 'plugins', 'slash-commands-only');
+    await expect(
+      fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      slashCommands: './slash-commands',
+    });
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'claude', 'commands', 'review.md')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'agents', 'openai.yaml')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'assets', 'review-16.svg')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'slash-commands', 'review.md')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.readFile(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
+    ).resolves.not.toContain('$ARGUMENTS');
+
+    const { validateBundleLayout } = (await import(
+      '../../src/utils/bundle-layout.js'
+    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
+    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
+  });
+
   it('bundles scripts.node plugins through the compiled staging bundle path', async () => {
     const root = repoRoot();
     await execFileAsync('pnpm', ['build'], {

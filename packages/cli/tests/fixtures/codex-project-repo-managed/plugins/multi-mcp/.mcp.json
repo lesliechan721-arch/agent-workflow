@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "acme.tools v1": {
+      "command": "node",
+      "args": ["./servers/acme-tools.js", "--stdio", "--profile", "v1"],
+      "env": {
+        "ACME_MODE": "fixture",
+        "ACME_REGION": "us-east-1"
+      },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 45,
+      "tools": {
+        "deploy.check": {
+          "approval_mode": "manual"
+        },
+        "deploy.apply": {
+          "approval_mode": "never"
+        }
+      }
+    },
+    "sibling-server": {
+      "command": "node",
+      "args": ["./servers/sibling.js"],
+      "disabled": false,
+      "env": {
+        "SIBLING": "true"
+      }
+    },
+    "nested/object server": {
+      "type": "http",
+      "url": "https://example.invalid/mcp",
+      "http_headers": {
+        "X-Fixture": "multi-mcp",
+        "X-Trace": "quoted-key"
+      },
+      "metadata": {
+        "tier": "test",
+        "retries": 2,
+        "features": ["tools", "resources"]
+      }
+    }
+  }
+}

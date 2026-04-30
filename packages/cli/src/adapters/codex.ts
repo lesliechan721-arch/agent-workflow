@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -12,6 +13,7 @@ import { buildGeneratedName } from '../generators/shared.js';
 import type {
   CatalogCompatibility,
   CodexCapabilitySnapshot,
+  CodexProjectManagedKind,
   CodexSharedHookGroup,
   CodexSharedNativeRefs,
   GeneratedArtifact,
@@ -23,32 +25,41 @@ import type {
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
+  ProjectTrust,
+  RepoManagedProjectItemReport,
+  RepoManagedProjectItemState,
+  RepoManagedProjectKindSummary,
   ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
+  SkillTriggerPreference,
   StatusReport,
   TrackedHookGroupIdentity,
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
 import {
+  type CodexProjectLayerEvidence,
   detectCodexProjectLayerEvidence,
   detectCodexSessionState,
   detectEnvironment,
   resolveCodexProjectTrust,
 } from '../utils/detect.js';
 import {
+  applyCodexConfigTransactionFile,
+  type CodexMcpServerConfig,
   type CodexConfigSnapshot,
   readCodexConfigFile,
+  readRenderedCodexMcpServersFile,
   removeCodexMarketplaceFile,
   removeCodexPluginEnabledFile,
-  removeManagedDeveloperInstructionsFile,
+  resolveCodexMcpServerStatusSignal,
   upsertCodexPluginEnabledFile,
-  upsertManagedDeveloperInstructionsFile,
 } from '../utils/codex-config.js';
 import {
   ensureLocalMarketplace,
   readInstalledLedger,
+  resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
 } from '../utils/local-marketplace.js';
 import { writeJsonFile } from '../utils/json.js';
@@ -75,6 +86,7 @@ import {
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
 import {
+  getTrackingArtifactIntegrityErrors,
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
@@ -88,7 +100,10 @@ import {
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   getNextSkillTriggerWriteOrder,
+  patchCodexOpenAiYaml,
+  resolveSkillTriggerPolicies,
   resolveSkillTriggerStatusReportFields,
+  type SkillTriggerPolicyEntry,
 } from '../utils/skill-trigger-preferences.js';
 import {
   NativeCliError,
@@ -97,6 +112,10 @@ import {
   type NativeCliRunner,
 } from '../utils/native-cli.js';
 import { detectCodexExternalOwnership } from './helpers.js';
+import {
+  needsCodexProjectConfigAccess,
+  preflightCodexProjectStatusProjectConfig,
+} from '../commands/codex-project-safety.js';
 
 const MARKETPLACE_NAME = 'aw';
 
@@ -247,26 +266,143 @@ function createCodexMarketplaceVerificationError(
   );
 }
 
-function normalizeCodexCapabilitySnapshot(
-  snapshot: CodexCapabilitySnapshot | undefined,
-): Required<CodexCapabilitySnapshot> {
+function createEmptyCodexConfigSnapshot(): CodexConfigSnapshot {
   return {
-    requiresNativePlugin: snapshot?.requiresNativePlugin === true,
-    hasRepoManagedArtifacts: snapshot?.hasRepoManagedArtifacts === true,
+    marketplaces: {},
+    plugins: {},
+    projects: {},
+    mcpServers: {},
+    developerInstructions: {
+      defined: false,
+      managedBlocks: {},
+    },
   };
 }
 
+function createEmptyCodexProjectLayerEvidence(): CodexProjectLayerEvidence {
+  return {
+    currentLayerDeveloperInstructionsDefined: false,
+    ancestorDeveloperInstructionsDefined: false,
+    projectLayerDeveloperInstructionsDefined: false,
+    higherPriorityRulesPresent: false,
+    higherPriorityHooksPresent: false,
+    higherPriorityAgentRoleNames: [],
+    hasProjectLayerArtifacts: false,
+  };
+}
+
+interface NormalizedCodexCapabilitySnapshot {
+  requiresNativePlugin: boolean;
+  hasRepoManagedArtifacts: boolean;
+  projectManagedKinds: CodexProjectManagedKind[];
+  hasManagedKindDetails: boolean;
+}
+
+const CODEX_PROJECT_MANAGED_KIND_ORDER: CodexProjectManagedKind[] = [
+  'skill',
+  'mcpServer',
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+
+const CODEX_PROJECT_MANAGED_KIND_SET = new Set<CodexProjectManagedKind>(
+  CODEX_PROJECT_MANAGED_KIND_ORDER,
+);
+
+function normalizeCodexProjectManagedKinds(
+  values: CodexCapabilitySnapshot['projectManagedKinds'] | CodexCapabilitySnapshot['managedKinds'],
+): CodexProjectManagedKind[] {
+  const selected = new Set<CodexProjectManagedKind>();
+  for (const value of values ?? []) {
+    if (CODEX_PROJECT_MANAGED_KIND_SET.has(value)) {
+      selected.add(value);
+    }
+  }
+  return CODEX_PROJECT_MANAGED_KIND_ORDER.filter((kind) => selected.has(kind));
+}
+
+function normalizeCodexCapabilitySnapshot(
+  snapshot: CodexCapabilitySnapshot | undefined,
+): NormalizedCodexCapabilitySnapshot {
+  const rawManagedKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
+  const projectManagedKinds = normalizeCodexProjectManagedKinds(rawManagedKinds);
+  const hasManagedKindDetails = Array.isArray(rawManagedKinds);
+  return {
+    requiresNativePlugin: snapshot?.requiresNativePlugin === true,
+    hasRepoManagedArtifacts: hasManagedKindDetails
+      ? projectManagedKinds.length > 0
+      : snapshot?.hasRepoManagedArtifacts === true,
+    projectManagedKinds,
+    hasManagedKindDetails,
+  };
+}
+
+function codexCapabilitySnapshotsEqual(
+  installedSnapshot: CodexCapabilitySnapshot | undefined,
+  currentSnapshot: CodexCapabilitySnapshot | undefined,
+): boolean {
+  const installed = normalizeCodexCapabilitySnapshot(installedSnapshot);
+  const current = normalizeCodexCapabilitySnapshot(currentSnapshot);
+  if (installed.requiresNativePlugin !== current.requiresNativePlugin) {
+    return false;
+  }
+
+  if (installed.hasManagedKindDetails && current.hasManagedKindDetails) {
+    return JSON.stringify(installed.projectManagedKinds) === JSON.stringify(current.projectManagedKinds);
+  }
+
+  return installed.hasRepoManagedArtifacts === current.hasRepoManagedArtifacts;
+}
+
+export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boolean {
+  if (scope === 'project') {
+    return false;
+  }
+
+  return Boolean(
+    plugin.manifest.skills ||
+      plugin.manifest.slashCommands ||
+      plugin.manifest.mcpServers ||
+      plugin.manifest.apps,
+  );
+}
+
 export function requiresNativePlugin(plugin: PluginMeta): boolean {
-  return Boolean(plugin.manifest.skills || plugin.manifest.mcpServers || plugin.manifest.apps);
+  return requiresCodexNativePlugin(plugin, 'user');
+}
+
+export function getCodexProjectManagedKinds(plugin: PluginMeta): CodexProjectManagedKind[] {
+  const kinds = new Set<CodexProjectManagedKind>();
+  if (plugin.manifest.skills || plugin.manifest.slashCommands) {
+    kinds.add('skill');
+  }
+  if (plugin.manifest.mcpServers) {
+    kinds.add('mcpServer');
+  }
+  if (resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0) {
+    kinds.add('instruction');
+  }
+  if (resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex').length > 0) {
+    kinds.add('permission');
+  }
+  if (resolvePlatformHookDefinitions(plugin.manifest, 'codex').length > 0) {
+    kinds.add('hook');
+  }
+  if (resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex').length > 0) {
+    kinds.add('agent');
+  }
+
+  return CODEX_PROJECT_MANAGED_KIND_ORDER.filter((kind) => kinds.has(kind));
+}
+
+export function hasCodexProjectManagedArtifacts(plugin: PluginMeta): boolean {
+  return getCodexProjectManagedKinds(plugin).length > 0;
 }
 
 export function hasRepoManagedArtifacts(plugin: PluginMeta): boolean {
-  return Boolean(
-    resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0 ||
-      resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex').length > 0 ||
-      resolvePlatformHookDefinitions(plugin.manifest, 'codex').length > 0 ||
-      resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex').length > 0,
-  );
+  return hasCodexProjectManagedArtifacts(plugin);
 }
 
 export function resolveCodexCatalogCompatibility(options: {
@@ -286,9 +422,7 @@ export function resolveCodexCatalogCompatibility(options: {
     return undefined;
   }
 
-  const installed = normalizeCodexCapabilitySnapshot(options.installedCapabilitySnapshot);
-  const current = normalizeCodexCapabilitySnapshot(options.currentCapabilities);
-  return JSON.stringify(installed) === JSON.stringify(current)
+  return codexCapabilitySnapshotsEqual(options.installedCapabilitySnapshot, options.currentCapabilities)
     ? 'current'
     : 'capabilityChanged';
 }
@@ -302,6 +436,143 @@ async function writeTextArtifact(
   await fs.ensureDir(path.dirname(targetPath));
   await fs.writeFile(targetPath, content, 'utf8');
   return targetPath;
+}
+
+function getRepoSkillsRoot(repoRoot: string): string {
+  return path.join(repoRoot, '.agents', 'skills');
+}
+
+function getRepoSkillPath(repoRoot: string, skillName: string): string {
+  return path.join(getRepoSkillsRoot(repoRoot), skillName);
+}
+
+async function listCodexBundleSkillKeys(plugin: PluginMeta): Promise<string[]> {
+  if (!plugin.rootDir) {
+    return [];
+  }
+
+  const skillsRoot = path.join(plugin.rootDir, 'codex', 'skills');
+  if (!(await fs.pathExists(skillsRoot))) {
+    return [];
+  }
+
+  const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function readTrackedCodexSkillArtifacts(
+  record: TrackingPluginRecord | undefined,
+): GeneratedArtifact[] {
+  return (record?.artifacts ?? []).filter((artifact) => artifact.kind === 'skill');
+}
+
+function trackedCodexSkillKeys(
+  record: TrackingPluginRecord | undefined,
+): string[] {
+  return readTrackedCodexSkillArtifacts(record)
+    .map((artifact) => artifact.artifactKey)
+    .filter((artifactKey): artifactKey is string => Boolean(artifactKey))
+    .sort();
+}
+
+function findTrackedCodexSkillArtifact(
+  record: TrackingPluginRecord | undefined,
+  skillName: string,
+): GeneratedArtifact | undefined {
+  return readTrackedCodexSkillArtifacts(record).find((artifact) => artifact.artifactKey === skillName);
+}
+
+async function collectDirectoryFileContents(rootDir: string): Promise<Map<string, Buffer>> {
+  const snapshot = new Map<string, Buffer>();
+  if (!(await fs.pathExists(rootDir))) {
+    return snapshot;
+  }
+
+  const visit = async (currentDir: string): Promise<void> => {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      snapshot.set(path.relative(rootDir, entryPath), await fs.readFile(entryPath));
+    }
+  };
+
+  await visit(rootDir);
+  return snapshot;
+}
+
+async function compareCodexRepoSkillToPristine(options: {
+  embeddedRoot: string;
+  pluginName: string;
+  skillName: string;
+  actualSkillRoot: string;
+  preference: SkillTriggerPreference;
+  policy: SkillTriggerPolicyEntry;
+}): Promise<{ drifted: boolean; reason?: string }> {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-repo-skill-compare-'));
+  const expectedSkillRoot = path.join(
+    tempRoot,
+    options.pluginName,
+    'codex',
+    'skills',
+    options.skillName,
+  );
+  const pristineSkillRoot = path.join(
+    options.embeddedRoot,
+    'plugins',
+    options.pluginName,
+    'codex',
+    'skills',
+    options.skillName,
+  );
+
+  try {
+    await fs.copy(pristineSkillRoot, expectedSkillRoot, { overwrite: true });
+    if (options.preference !== 'default' && options.policy.allowInstallOverride) {
+      await patchCodexOpenAiYaml(
+        path.join(expectedSkillRoot, 'agents', 'openai.yaml'),
+        options.preference,
+      );
+    }
+
+    const [expectedFiles, actualFiles] = await Promise.all([
+      collectDirectoryFileContents(expectedSkillRoot),
+      collectDirectoryFileContents(options.actualSkillRoot),
+    ]);
+    const allPaths = [...new Set([
+      ...expectedFiles.keys(),
+      ...actualFiles.keys(),
+    ])].sort();
+
+    for (const relativePath of allPaths) {
+      const expected = expectedFiles.get(relativePath);
+      const actual = actualFiles.get(relativePath);
+      if (!expected) {
+        return { drifted: true, reason: `存在未受管文件 ${relativePath}` };
+      }
+      if (!actual) {
+        return { drifted: true, reason: `缺少文件 ${relativePath}` };
+      }
+      if (!expected.equals(actual)) {
+        return { drifted: true, reason: `文件内容已漂移 ${relativePath}` };
+      }
+    }
+
+    return { drifted: false };
+  } finally {
+    await fs.remove(tempRoot).catch(() => undefined);
+  }
 }
 
 function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
@@ -342,19 +613,14 @@ function upsertCodexScopeLedger(
     platforms: {},
   };
   pluginRecord.lastResolvedVersion = plugin.manifest.version;
-  pluginRecord.platforms.codex ??= {
-    projectScopes: {},
-    sharedNativeRefs: {
-      user: false,
-      projects: [],
-    },
-  };
+  pluginRecord.platforms.codex ??= {};
   pluginRecord.platforms.codex.lastRequestedScope = scope;
   pluginRecord.platforms.codex.lastRequestedAt = timestamp;
 
   const capabilitySnapshot: CodexCapabilitySnapshot = {
-    requiresNativePlugin: requiresNativePlugin(plugin),
-    hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
+    requiresNativePlugin: requiresCodexNativePlugin(plugin, scope),
+    hasRepoManagedArtifacts: hasCodexProjectManagedArtifacts(plugin),
+    projectManagedKinds: getCodexProjectManagedKinds(plugin),
   };
 
   const scopeRecord: InstalledScopeRecord<CodexCapabilitySnapshot> = {
@@ -363,7 +629,10 @@ function upsertCodexScopeLedger(
     resolvedVersion: plugin.manifest.version,
     capabilitySnapshot,
   };
-  if (resolvedInstallOptions) {
+  if (scope === 'project' && projectKey) {
+    scopeRecord.projectKey = projectKey;
+  }
+  if (resolvedInstallOptions?.applicability === 'overridable') {
     scopeRecord.installOptions = {
       skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
     };
@@ -383,15 +652,11 @@ function upsertCodexScopeLedger(
     pluginRecord.platforms.codex.projectScopes[projectKey] = scopeRecord;
   }
 
-  const sharedNativeRefs = normalizeSharedNativeRefs(pluginRecord.platforms.codex.sharedNativeRefs);
-  if (capabilitySnapshot.requiresNativePlugin) {
-    if (scope === 'user') {
-      sharedNativeRefs.user = true;
-    } else if (projectKey) {
-      sharedNativeRefs.projects = [...new Set([...sharedNativeRefs.projects, projectKey])].sort();
-    }
+  if (scope === 'user' && capabilitySnapshot.requiresNativePlugin) {
+    const sharedNativeRefs = normalizeSharedNativeRefs(pluginRecord.platforms.codex.sharedNativeRefs);
+    sharedNativeRefs.user = true;
+    pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
   }
-  pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
 
   nextLedger.plugins[plugin.manifest.name] = pluginRecord;
   return nextLedger;
@@ -435,10 +700,12 @@ function removeCodexScopeLedger(
   const sharedNativeRefs = normalizeSharedNativeRefs(pluginRecord.platforms.codex.sharedNativeRefs);
   if (scope === 'user') {
     sharedNativeRefs.user = false;
-  } else if (projectKey) {
-    sharedNativeRefs.projects = sharedNativeRefs.projects.filter((value) => value !== projectKey);
+    if (sharedNativeRefs.user || sharedNativeRefs.projects.length > 0) {
+      pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
+    } else {
+      delete pluginRecord.platforms.codex.sharedNativeRefs;
+    }
   }
-  pluginRecord.platforms.codex.sharedNativeRefs = sharedNativeRefs;
 
   const hasProjectScopes = Object.keys(pluginRecord.platforms.codex.projectScopes ?? {}).length > 0;
   const hasSharedRefs = sharedNativeRefs.user || sharedNativeRefs.projects.length > 0;
@@ -461,6 +728,29 @@ export async function applyCodexUninstallLedger(
 ): Promise<InstalledLedger> {
   const projectKey = scope === 'project' ? await resolveCodexProjectKey(cwd) : undefined;
   return removeCodexScopeLedger(ledger, pluginName, scope, projectKey);
+}
+
+export async function pruneCodexTrackedArtifacts(options: {
+  cwd: string;
+  scope: Scope;
+  env?: NodeJS.ProcessEnv;
+  pluginName: string;
+  artifacts: GeneratedArtifact[];
+}): Promise<void> {
+  const trackingRecord = options.artifacts.length > 0
+    ? {
+        name: options.pluginName,
+        generatedAt: new Date(0).toISOString(),
+        artifacts: [...options.artifacts],
+      } satisfies TrackingPluginRecord
+    : undefined;
+  await pruneTrackedCodexArtifacts({
+    cwd: options.cwd,
+    scope: options.scope,
+    env: options.env ?? process.env,
+    pluginName: options.pluginName,
+    trackingRecord,
+  });
 }
 
 function getInstalledScopeSnapshot(
@@ -521,6 +811,81 @@ function createTrackingRecordFromArtifacts(
     generatedAt: trackingRecord?.generatedAt ?? new Date(0).toISOString(),
     artifacts,
   };
+}
+
+async function pruneTrackedCodexArtifacts(options: {
+  cwd: string;
+  scope: Scope;
+  env: NodeJS.ProcessEnv;
+  pluginName: string;
+  trackingRecord: TrackingPluginRecord | undefined;
+  rollbackBaseline?: { path: string; content: string | null };
+}): Promise<void> {
+  const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
+  if (options.trackingRecord) {
+    for (const artifact of options.trackingRecord.artifacts) {
+      if (artifact.kind === 'permission' || artifact.kind === 'agent' || artifact.kind === 'skill') {
+        if (artifact.kind === 'skill' && !artifact.artifactKey) {
+          throw new Error(
+            `tracking manifest 中的 skill 缺少 artifactKey，不能对 ${artifact.path} 执行 path-only 删除。`,
+          );
+        }
+        await fs.remove(artifact.path);
+      }
+    }
+  }
+
+  if (options.rollbackBaseline) {
+    if (options.rollbackBaseline.content === null) {
+      await fs.remove(options.rollbackBaseline.path);
+    } else {
+      await fs.ensureDir(path.dirname(options.rollbackBaseline.path));
+      await fs.writeFile(options.rollbackBaseline.path, options.rollbackBaseline.content, 'utf8');
+    }
+  } else {
+    const trackedInstruction = options.trackingRecord?.artifacts.some((artifact) => artifact.kind === 'instruction');
+    const trackedMcpArtifacts = readTrackedCodexMcpArtifacts(options.trackingRecord);
+    if (trackedMcpArtifacts.some((artifact) => !artifact.artifactKey)) {
+      throw new Error(
+        `tracking manifest 中的 mcpServer 缺少 artifactKey，不能对 ${paths.configTomlPath} 执行 path-only 删除。`,
+      );
+    }
+
+    if (trackedInstruction || trackedMcpArtifacts.length > 0) {
+      await applyCodexConfigTransactionFile(paths.configTomlPath, {
+        ...(trackedInstruction
+          ? { removeManagedInstructionPluginName: options.pluginName }
+          : {}),
+        ...(trackedMcpArtifacts.length > 0
+          ? {
+              removeMcpServers: trackedMcpArtifacts
+                .map((artifact) => artifact.artifactKey)
+                .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
+            }
+          : {}),
+      });
+    }
+  }
+
+  const trackedHookGroups = readTrackedCodexHookGroups(options.trackingRecord);
+  if (trackedHookGroups && trackedHookGroups.length > 0) {
+    const parsedHooks = await readParsedCodexSharedHooksFile(paths.hooksPath);
+    const updatePlan = planCodexSharedHooksUpdate(parsedHooks, {
+      rerenderedIdentities: trackedHookGroups,
+    });
+    const preservedHistorical = new Set(updatePlan.preservedHistoricalAwRawGroups);
+    const preservedForeign = new Set(updatePlan.preservedForeignRawGroups);
+    const preservedRawGroups = parsedHooks.rawGroups.filter((group) =>
+      preservedHistorical.has(group) || preservedForeign.has(group),
+    );
+    await writeCodexSharedHookGroups(paths.hooksPath, preservedRawGroups);
+    return;
+  }
+
+  if (trackedHookGroups === null && hasTrackedCodexHookArtifact(options.trackingRecord)) {
+    const parsedHooks = await readParsedCodexSharedHooksFile(paths.hooksPath);
+    await writeCodexSharedHookGroups(paths.hooksPath, parsedHooks.rawGroups);
+  }
 }
 
 function hasTrackedCodexHookArtifact(
@@ -705,6 +1070,210 @@ async function syncCodexHooks(
   ]);
 }
 
+const CODEX_CONFIG_ROLLBACK_BASELINE = Symbol('codexConfigRollbackBaseline');
+
+type GeneratedArtifactWithCodexRollbackBaseline = GeneratedArtifact & {
+  [CODEX_CONFIG_ROLLBACK_BASELINE]?: {
+    path: string;
+    content: string | null;
+  };
+};
+
+function attachCodexConfigRollbackBaseline(
+  artifacts: GeneratedArtifact[],
+  baseline: { path: string; content: string | null },
+): void {
+  for (const artifact of artifacts) {
+    if (
+      artifact.kind !== 'instruction' &&
+      artifact.kind !== 'mcpServer'
+    ) {
+      continue;
+    }
+
+    Object.defineProperty(artifact, CODEX_CONFIG_ROLLBACK_BASELINE, {
+      value: baseline,
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  }
+}
+
+function getCodexConfigRollbackBaseline(
+  artifacts: GeneratedArtifact[],
+): { path: string; content: string | null } | undefined {
+  for (const artifact of artifacts) {
+    const baseline = (artifact as GeneratedArtifactWithCodexRollbackBaseline)[
+      CODEX_CONFIG_ROLLBACK_BASELINE
+    ];
+    if (baseline) {
+      return baseline;
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveRenderedCodexMcpServers(
+  plugin: PluginMeta,
+): Promise<Record<string, CodexMcpServerConfig>> {
+  if (!plugin.manifest.mcpServers) {
+    return {};
+  }
+
+  const sourceManifestPath = path.resolve(plugin.rootDir, plugin.manifest.mcpServers);
+  if (await fs.pathExists(sourceManifestPath)) {
+    return readRenderedCodexMcpServersFile(sourceManifestPath);
+  }
+
+  const codexBundlePath = path.resolve(
+    plugin.rootDir,
+    'codex',
+    plugin.manifest.mcpServers.startsWith('./')
+      ? plugin.manifest.mcpServers.slice(2)
+      : plugin.manifest.mcpServers,
+  );
+  return readRenderedCodexMcpServersFile(codexBundlePath);
+}
+
+function readTrackedCodexMcpArtifacts(
+  record: TrackingPluginRecord | undefined,
+): GeneratedArtifact[] {
+  return (record?.artifacts ?? []).filter((artifact) => artifact.kind === 'mcpServer');
+}
+
+function hasTrackedCodexMcpServer(
+  record: TrackingPluginRecord | undefined,
+  serverKey: string,
+): boolean {
+  return readTrackedCodexMcpArtifacts(record).some((artifact) => artifact.artifactKey === serverKey);
+}
+
+function findTrackedCodexMcpServerOwner(
+  trackingManifest: TrackingManifest,
+  pluginName: string,
+  serverKey: string,
+): string | undefined {
+  for (const [ownerPluginName, record] of Object.entries(trackingManifest.plugins)) {
+    if (ownerPluginName === pluginName) {
+      continue;
+    }
+
+    if (readTrackedCodexMcpArtifacts(record).some((artifact) => artifact.artifactKey === serverKey)) {
+      return ownerPluginName;
+    }
+  }
+
+  return undefined;
+}
+
+function trackedCodexMcpServerKeys(
+  record: TrackingPluginRecord | undefined,
+): string[] {
+  return readTrackedCodexMcpArtifacts(record)
+    .map((artifact) => artifact.artifactKey)
+    .filter((artifactKey): artifactKey is string => Boolean(artifactKey))
+    .sort();
+}
+
+function createCodexMcpConflictError(
+  pluginName: string,
+  serverKey: string,
+  ownerPluginName?: string,
+): Error {
+  const ownerDetail = ownerPluginName
+    ? `它已由 ${ownerPluginName} 的 tracking 记录为受管 MCP server。`
+    : '它已存在于 .codex/config.toml 中，但当前插件没有 tracking 证明归属。';
+  return new Error(
+    `${pluginName} 无法写入 MCP server "${serverKey}"：${ownerDetail}`,
+  );
+}
+
+function assertNoCodexMcpServerConflicts(options: {
+  pluginName: string;
+  trackingManifest: TrackingManifest;
+  trackingRecord: TrackingPluginRecord | undefined;
+  scopeConfig: { snapshot: CodexConfigSnapshot };
+  desiredServers: Record<string, CodexMcpServerConfig>;
+}): void {
+  for (const serverKey of Object.keys(options.desiredServers)) {
+    const ownerPluginName = findTrackedCodexMcpServerOwner(
+      options.trackingManifest,
+      options.pluginName,
+      serverKey,
+    );
+    if (ownerPluginName) {
+      throw createCodexMcpConflictError(options.pluginName, serverKey, ownerPluginName);
+    }
+
+    if (hasTrackedCodexMcpServer(options.trackingRecord, serverKey)) {
+      continue;
+    }
+
+    if (options.scopeConfig.snapshot.mcpServers[serverKey]) {
+      throw createCodexMcpConflictError(options.pluginName, serverKey);
+    }
+  }
+}
+
+type ResolvedCodexStatusMcpExpectation = {
+  declared: boolean;
+  expectedServers: Record<string, CodexMcpServerConfig | undefined>;
+  diagnostics: string[];
+};
+
+async function resolveCodexStatusMcpExpectation(
+  plugin: PluginMeta,
+  trackingRecord: TrackingPluginRecord | undefined,
+  currentCatalogAvailable: boolean,
+  env: NodeJS.ProcessEnv,
+): Promise<ResolvedCodexStatusMcpExpectation> {
+  if (currentCatalogAvailable) {
+    try {
+      const expectedServers = await resolveRenderedCodexMcpServers(plugin);
+      return {
+        declared: Object.keys(expectedServers).length > 0,
+        expectedServers,
+        diagnostics: [],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        declared: Boolean(plugin.manifest.mcpServers),
+        expectedServers: Object.fromEntries(
+          trackedCodexMcpServerKeys(trackingRecord).map((serverKey) => [serverKey, undefined]),
+        ),
+        diagnostics: [`Codex MCP 定义无法解析，已回退到 tracking server keys：${message}`],
+      };
+    }
+  }
+
+  const diagnostics: string[] = [];
+  const activeLocalBundle = await resolveActiveLocalBundle(plugin.manifest.name, env);
+  if (activeLocalBundle) {
+    try {
+      const activePlugin = await readPluginManifest(activeLocalBundle, { mode: 'bundle' });
+      const expectedServers = await resolveRenderedCodexMcpServers(activePlugin);
+      return {
+        declared: Object.keys(expectedServers).length > 0,
+        expectedServers,
+        diagnostics,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      diagnostics.push(`Codex activeLocalBundle 的 MCP 定义无法解析，已回退到 tracking server keys：${message}`);
+    }
+  }
+
+  const trackedKeys = trackedCodexMcpServerKeys(trackingRecord);
+  return {
+    declared: trackedKeys.length > 0,
+    expectedServers: Object.fromEntries(trackedKeys.map((serverKey) => [serverKey, undefined])),
+    diagnostics,
+  };
+}
+
 type ResolvedCodexStatusHookExpectation = {
   declared: boolean;
   expectedGroups: TrackedHookGroupIdentity[] | null;
@@ -775,8 +1344,178 @@ async function collectGeneratedArtifacts(
       path: artifact.path,
       exists: await fs.pathExists(artifact.path),
       kind: artifact.kind,
+      ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
     })),
   );
+}
+
+const CODEX_REPO_MANAGED_ITEM_KIND_ORDER: GeneratedArtifact['kind'][] = [
+  'skill',
+  'mcpServer',
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+
+const CODEX_TRUST_GATED_PROJECT_KINDS = new Set<CodexProjectManagedKind>([
+  'mcpServer',
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+]);
+
+function hasTrustGatedCodexProjectKinds(kinds: CodexProjectManagedKind[]): boolean {
+  return kinds.some((kind) => CODEX_TRUST_GATED_PROJECT_KINDS.has(kind));
+}
+
+function trackingRecordHasTrustGatedCodexArtifacts(
+  trackingRecord: TrackingPluginRecord | undefined,
+): boolean {
+  return (trackingRecord?.artifacts ?? []).some((artifact) =>
+    artifact.kind === 'mcpServer' ||
+      artifact.kind === 'instruction' ||
+      artifact.kind === 'permission' ||
+      artifact.kind === 'hook' ||
+      artifact.kind === 'agent',
+  );
+}
+
+function applyProjectTrustToItemState(
+  state: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted' | 'orphan' | 'absent' | 'unknown'>,
+  projectTrust: ProjectTrust,
+  gated: boolean,
+): RepoManagedProjectItemState {
+  if (!gated || state !== 'visible') {
+    return state;
+  }
+
+  if (projectTrust === 'untrusted') {
+    return 'blockedByProjectTrust';
+  }
+  if (projectTrust === 'unknown') {
+    return 'projectTrustUnknown';
+  }
+  return 'visible';
+}
+
+function itemDriftState(
+  state: RepoManagedProjectItemState,
+): 'yes' | 'no' | 'unknown' {
+  switch (state) {
+    case 'drifted':
+    case 'missing':
+    case 'orphan':
+      return 'yes';
+    case 'unknown':
+      return 'unknown';
+    default:
+      return 'no';
+  }
+}
+
+function createProjectItem(options: {
+  kind: GeneratedArtifact['kind'];
+  path: string;
+  tracked: boolean;
+  exists: boolean;
+  state: RepoManagedProjectItemState;
+  artifactKey?: string;
+  diagnostics?: string[];
+}): RepoManagedProjectItemReport {
+  return {
+    kind: options.kind,
+    path: options.path,
+    tracked: options.tracked,
+    exists: options.exists,
+    state: options.state,
+    drift: itemDriftState(options.state),
+    diagnostics: [...new Set(options.diagnostics ?? [])],
+    ...(options.artifactKey === undefined ? {} : { artifactKey: options.artifactKey }),
+  };
+}
+
+function sortRepoManagedItems(
+  items: RepoManagedProjectItemReport[],
+): RepoManagedProjectItemReport[] {
+  const order = new Map(CODEX_REPO_MANAGED_ITEM_KIND_ORDER.map((kind, index) => [kind, index]));
+  return [...items].sort((left, right) =>
+    (order.get(left.kind) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.kind) ?? Number.MAX_SAFE_INTEGER) ||
+    (left.artifactKey ?? '').localeCompare(right.artifactKey ?? '') ||
+    left.path.localeCompare(right.path)
+  );
+}
+
+function summarizeRepoManagedItems(
+  items: RepoManagedProjectItemReport[],
+  applicable: boolean,
+): RepoManagedProjectKindSummary {
+  const summary: RepoManagedProjectKindSummary = {
+    state: applicable ? 'absent' : 'not_applicable',
+    totalCount: items.length,
+    visibleCount: 0,
+    missingCount: 0,
+    driftedCount: 0,
+    orphanCount: 0,
+    blockedCount: 0,
+    projectTrustUnknownCount: 0,
+    unknownCount: 0,
+    absentCount: 0,
+  };
+
+  for (const item of items) {
+    switch (item.state) {
+      case 'visible':
+        summary.visibleCount += 1;
+        break;
+      case 'missing':
+        summary.missingCount += 1;
+        break;
+      case 'drifted':
+        summary.driftedCount += 1;
+        break;
+      case 'orphan':
+        summary.orphanCount += 1;
+        break;
+      case 'blockedByProjectTrust':
+        summary.blockedCount += 1;
+        break;
+      case 'projectTrustUnknown':
+        summary.projectTrustUnknownCount += 1;
+        break;
+      case 'unknown':
+        summary.unknownCount += 1;
+        break;
+      case 'absent':
+        summary.absentCount += 1;
+        break;
+    }
+  }
+
+  if (!applicable && items.length === 0) {
+    return summary;
+  }
+
+  if (summary.missingCount > 0) {
+    summary.state = 'missing';
+  } else if (summary.driftedCount > 0) {
+    summary.state = 'drifted';
+  } else if (summary.orphanCount > 0) {
+    summary.state = 'orphan';
+  } else if (summary.blockedCount > 0) {
+    summary.state = 'blockedByProjectTrust';
+  } else if (summary.projectTrustUnknownCount > 0) {
+    summary.state = 'projectTrustUnknown';
+  } else if (summary.unknownCount > 0) {
+    summary.state = 'unknown';
+  } else if (summary.visibleCount > 0) {
+    summary.state = 'visible';
+  } else {
+    summary.state = 'absent';
+  }
+
+  return summary;
 }
 
 export class CodexAdapter implements PlatformAdapter {
@@ -808,13 +1547,20 @@ export class CodexAdapter implements PlatformAdapter {
   }
 
   async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    if (scope === 'project' && !hasRepoManagedArtifacts(plugin)) {
-      throw new Error(
-        `${plugin.manifest.name} 不包含任何 repo-managed artifacts，Codex project scope 不支持纯 native-only 安装。`,
-      );
+    if (scope === 'project') {
+      if (plugin.manifest.apps) {
+        throw new Error(
+          `${plugin.manifest.name} 声明了 apps，Codex project scope 暂不支持 apps；请改用 --scope user 或拆分插件。`,
+        );
+      }
+      if (!hasCodexProjectManagedArtifacts(plugin)) {
+        throw new Error(
+          `${plugin.manifest.name} 不包含任何 repo-managed artifacts，Codex project scope 不支持纯 native-only 安装。`,
+        );
+      }
     }
 
-    if (!requiresNativePlugin(plugin)) {
+    if (!requiresCodexNativePlugin(plugin, scope)) {
       return;
     }
 
@@ -896,16 +1642,55 @@ export class CodexAdapter implements PlatformAdapter {
 
     try {
       const trackingManifest = await readTrackingManifest(paths.trackingDir);
+      const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
       const instructions = resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
-      if (instructions.length > 0) {
-        await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
+      const renderedMcpServers = await resolveRenderedCodexMcpServers(plugin);
+
+      if (instructions.length > 0 || Object.keys(renderedMcpServers).length > 0) {
+        const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
+        assertNoCodexMcpServerConflicts({
           pluginName: plugin.manifest.name,
-          value: renderCodexManagedInstructionBlock(
-            plugin.manifest.name,
-            instructions,
-          ),
+          trackingManifest,
+          trackingRecord,
+          scopeConfig,
+          desiredServers: renderedMcpServers,
         });
-        artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
+
+        const transaction = await applyCodexConfigTransactionFile(paths.configTomlPath, {
+          ...(instructions.length > 0
+            ? {
+                upsertManagedInstructionBlock: {
+                  pluginName: plugin.manifest.name,
+                  value: renderCodexManagedInstructionBlock(
+                    plugin.manifest.name,
+                    instructions,
+                  ),
+                },
+              }
+            : {}),
+          ...(Object.keys(renderedMcpServers).length > 0
+            ? { upsertMcpServers: renderedMcpServers }
+            : {}),
+        });
+
+        if (instructions.length > 0) {
+          artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
+        }
+        for (const serverKey of Object.keys(renderedMcpServers)) {
+          artifacts.push({
+            path: paths.configTomlPath,
+            kind: 'mcpServer',
+            platform: 'codex',
+            artifactKey: serverKey,
+          });
+        }
+
+        if (artifacts.some((artifact) => artifact.path === paths.configTomlPath)) {
+          attachCodexConfigRollbackBaseline(artifacts, {
+            path: paths.configTomlPath,
+            content: transaction.baselineContent,
+          });
+        }
       }
 
       for (const artifact of generateCodexPermissionArtifacts(
@@ -953,42 +1738,21 @@ export class CodexAdapter implements PlatformAdapter {
     scope: Scope,
     generatedArtifacts: GeneratedArtifact[] = [],
   ): Promise<void> {
-    const paths = resolveCodexPaths(this.cwd, scope, this.env);
-    const trackingManifest = await readTrackingManifest(paths.trackingDir);
+    const trackingManifest = await readTrackingManifest(resolveCodexPaths(this.cwd, scope, this.env).trackingDir);
     const trackingRecord = createTrackingRecordFromArtifacts(
       plugin.manifest.name,
       getTrackingRecord(trackingManifest, plugin.manifest.name),
       generatedArtifacts,
     );
-    if (trackingRecord) {
-      for (const artifact of trackingRecord.artifacts) {
-        if (artifact.kind === 'permission' || artifact.kind === 'agent') {
-          await fs.remove(artifact.path);
-        }
-      }
-    }
-
-    await removeManagedDeveloperInstructionsFile(paths.configTomlPath, plugin.manifest.name);
-
-    const trackedHookGroups = readTrackedCodexHookGroups(trackingRecord);
-    if (trackedHookGroups && trackedHookGroups.length > 0) {
-      const parsedHooks = await readParsedCodexSharedHooksFile(paths.hooksPath);
-      const updatePlan = planCodexSharedHooksUpdate(parsedHooks, {
-        rerenderedIdentities: trackedHookGroups,
-      });
-      const preservedHistorical = new Set(updatePlan.preservedHistoricalAwRawGroups);
-      const preservedForeign = new Set(updatePlan.preservedForeignRawGroups);
-      const preservedRawGroups = parsedHooks.rawGroups.filter((group) =>
-        preservedHistorical.has(group) || preservedForeign.has(group),
-      );
-      await writeCodexSharedHookGroups(paths.hooksPath, preservedRawGroups);
-      return;
-    }
-
-    if (trackedHookGroups === null && hasTrackedCodexHookArtifact(trackingRecord)) {
-      const parsedHooks = await readParsedCodexSharedHooksFile(paths.hooksPath);
-      await writeCodexSharedHookGroups(paths.hooksPath, parsedHooks.rawGroups);
-    }
+    const rollbackBaseline = getCodexConfigRollbackBaseline(generatedArtifacts);
+    await pruneTrackedCodexArtifacts({
+      cwd: this.cwd,
+      scope,
+      env: this.env,
+      pluginName: plugin.manifest.name,
+      trackingRecord,
+      rollbackBaseline,
+    });
   }
 
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
@@ -1010,10 +1774,8 @@ export class CodexAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [userConfig, scopeConfig, ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
+    const [ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
       await Promise.all([
-        readCodexConfigFile(userPaths.configTomlPath),
-        readCodexConfigFile(scopePaths.configTomlPath),
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
         resolveCurrentCatalog(this.env),
@@ -1024,33 +1786,106 @@ export class CodexAdapter implements PlatformAdapter {
       ]);
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(
+      trackingRecord?.artifacts ?? [],
+    );
+    if (scope === 'project') {
+      await preflightCodexProjectStatusProjectConfig({
+        plugin,
+        trackingRecord,
+        cwd: this.cwd,
+        env: this.env,
+      });
+    }
+
+    let userConfig = {
+      content: '',
+      snapshot: createEmptyCodexConfigSnapshot(),
+    };
+    let userConfigUnreadableDetail: string | undefined;
+    if (scope === 'project') {
+      try {
+        userConfig = await readCodexConfigFile(userPaths.configTomlPath);
+      } catch (error) {
+        userConfigUnreadableDetail = error instanceof Error ? error.message : String(error);
+      }
+    } else {
+      userConfig = await readCodexConfigFile(userPaths.configTomlPath);
+    }
+
+    const scopeConfig = scope === 'project' &&
+      !needsCodexProjectConfigAccess(plugin, trackingRecord)
+      ? {
+        content: '',
+        snapshot: createEmptyCodexConfigSnapshot(),
+      }
+      : await readCodexConfigFile(scopePaths.configTomlPath);
+
+    const trackingEvidenceUsable =
+      Boolean(trackingRecord) && trackingIntegrityErrors.length === 0;
+    const externalOwnership = userConfigUnreadableDetail
+      ? {
+        present: false,
+        checkState: 'unknown' as const,
+        details: `无法读取用户级 Codex 配置，无法可靠检查 external ownership：${userConfigUnreadableDetail}`,
+      }
+      : (() => {
+        const ownership = detectCodexExternalOwnership(
+          userConfig.snapshot.plugins,
+          plugin.manifest.name,
+          MARKETPLACE_NAME,
+        );
+        return ownership
+          ? { ...ownership, checkState: 'known' as const }
+          : { present: false, checkState: 'known' as const };
+      })();
     const currentMarketplace = await readMarketplaceManifest(this.cwd, 'codex', this.env);
     const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );
-    const scopeInitialized = resolveScopeInitialized(
+    const ledgerScopeInitialized = resolveScopeInitialized(
       ledger,
       plugin.manifest.name,
       'codex',
       scope,
       projectKey,
     );
+    const scopeInitialized: ScopeInitializedState =
+      scope === 'project'
+        ? resolveCodexProjectScopeInitialized({
+            ledger,
+            pluginName: plugin.manifest.name,
+            projectKey,
+            trackingArtifacts: trackingRecord?.artifacts,
+            trackingIdentityComplete: trackingEvidenceUsable,
+            externalOwnershipPresent: externalOwnership?.present,
+          })
+        : ledgerScopeInitialized;
     const sharedNativeRefs = normalizeSharedNativeRefs(
       ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
     );
+    const sharedNativeRefEvidence = scope === 'user' ? sharedNativeRefs.user : false;
     const currentScopeManagedEvidence =
       scopeInitialized === 'yes' ||
-      Boolean(trackingRecord) ||
-      (scope === 'user' ? sharedNativeRefs.user : sharedNativeRefs.projects.includes(projectKey));
+      trackingEvidenceUsable ||
+      sharedNativeRefEvidence;
     const nativePluginEnabled =
       userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true;
     const platformNativeFallbackEvidence =
       scope === 'user' &&
       nativePluginEnabled &&
       !currentScopeManagedEvidence;
+    const projectManagedKinds = getCodexProjectManagedKinds(plugin);
+    const hasTrustGatedProjectArtifacts =
+      scope === 'project' &&
+      (
+        hasTrustGatedCodexProjectKinds(projectManagedKinds) ||
+        trackingRecordHasTrustGatedCodexArtifacts(trackingRecord)
+      );
     const currentCapabilities: CodexCapabilitySnapshot = {
-      requiresNativePlugin: requiresNativePlugin(plugin),
-      hasRepoManagedArtifacts: hasRepoManagedArtifacts(plugin),
+      requiresNativePlugin: requiresCodexNativePlugin(plugin, scope),
+      hasRepoManagedArtifacts: hasCodexProjectManagedArtifacts(plugin),
+      projectManagedKinds,
     };
     const installedCapabilitySnapshot = getInstalledScopeSnapshot(
       ledger,
@@ -1071,21 +1906,29 @@ export class CodexAdapter implements PlatformAdapter {
       awHome,
     );
 
-    const projectLayerEvidence = await detectCodexProjectLayerEvidence(this.cwd, repoRoot);
-    const projectLayerArtifactExists =
-      scope === 'project' || projectLayerEvidence.hasProjectLayerArtifacts;
-    const projectTrust = resolveCodexProjectTrust({
-      applicable: scope === 'project' || projectLayerArtifactExists,
-      lookupKeys: [
-        path.resolve(this.cwd),
-        path.resolve(repoRoot),
-        projectKey,
-      ],
-      trustLevels: Object.fromEntries(
-        Object.entries(userConfig.snapshot.projects).map(([key, value]) => [key, value.trustLevel]),
-      ),
-      hasProjectLayerArtifacts: projectLayerArtifactExists,
-    });
+    const projectLayerEvidence = scope === 'project' &&
+      !needsCodexProjectConfigAccess(plugin, trackingRecord) &&
+      !hasTrustGatedProjectArtifacts
+      ? createEmptyCodexProjectLayerEvidence()
+      : await detectCodexProjectLayerEvidence(this.cwd, repoRoot);
+    const projectTrustApplicable =
+      scope === 'project'
+        ? hasTrustGatedProjectArtifacts || projectLayerEvidence.hasProjectLayerArtifacts
+        : projectLayerEvidence.hasProjectLayerArtifacts;
+    const projectTrust = userConfigUnreadableDetail
+      ? (projectTrustApplicable ? 'unknown' : 'not_applicable')
+      : resolveCodexProjectTrust({
+        applicable: projectTrustApplicable,
+        lookupKeys: [
+          path.resolve(this.cwd),
+          path.resolve(repoRoot),
+          projectKey,
+        ],
+        trustLevels: Object.fromEntries(
+          Object.entries(userConfig.snapshot.projects).map(([key, value]) => [key, value.trustLevel]),
+        ),
+        hasProjectLayerArtifacts: projectTrustApplicable,
+      });
 
     const codexInstructions = resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
     const codexPermissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex');
@@ -1095,10 +1938,37 @@ export class CodexAdapter implements PlatformAdapter {
       currentCatalogAvailable,
       this.env,
     );
+    const codexMcpExpectation = await resolveCodexStatusMcpExpectation(
+      plugin,
+      trackingRecord,
+      currentCatalogAvailable,
+      this.env,
+    );
     const codexAgents = resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex');
     const trackedAgentIds = codexAgents.map((agent) =>
       buildGeneratedName(plugin.manifest.name, agent.name),
     );
+    const trackedMcpKeys = new Set(trackedCodexMcpServerKeys(trackingRecord));
+    const expectedMcpKeys = new Set(Object.keys(codexMcpExpectation.expectedServers));
+    const actualMcpKeys = new Set(Object.keys(scopeConfig.snapshot.mcpServers));
+    const codexMcpSignals = [...new Set([
+      ...trackedMcpKeys,
+      ...expectedMcpKeys,
+      ...actualMcpKeys,
+    ])]
+      .filter((serverKey) =>
+        trackedMcpKeys.has(serverKey) ||
+        expectedMcpKeys.has(serverKey),
+      )
+      .sort()
+      .map((serverKey) =>
+        resolveCodexMcpServerStatusSignal({
+          key: serverKey,
+          tracked: trackedMcpKeys.has(serverKey),
+          actual: scopeConfig.snapshot.mcpServers[serverKey],
+          expected: codexMcpExpectation.expectedServers[serverKey],
+        }),
+      );
 
     const instructionManaged = Boolean(
       scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
@@ -1121,6 +1991,7 @@ export class CodexAdapter implements PlatformAdapter {
 
     const driftWarnings: string[] = [];
     driftWarnings.push(...codexHookExpectation.diagnostics);
+    driftWarnings.push(...codexMcpExpectation.diagnostics);
     if (hooksManaged) {
       if (codexHookExpectation.expectedGroups === null) {
         hooksManaged = false;
@@ -1136,6 +2007,18 @@ export class CodexAdapter implements PlatformAdapter {
           const message = error instanceof Error ? error.message : String(error);
           driftWarnings.push(`Codex hooks artifact 无法解析：${message}`);
         }
+      }
+    }
+
+    for (const signal of codexMcpSignals) {
+      if (signal.state === 'missing') {
+        driftWarnings.push(`Codex MCP server "${signal.key}" 缺失。`);
+      } else if (signal.state === 'drifted') {
+        driftWarnings.push(
+          `Codex MCP server "${signal.key}" 已漂移。${signal.reason ? ` ${signal.reason}` : ''}`.trim(),
+        );
+      } else if (signal.state === 'orphan') {
+        driftWarnings.push(`Codex MCP server "${signal.key}" 存在，但当前插件没有 tracking 证明归属。`);
       }
     }
 
@@ -1180,22 +2063,45 @@ export class CodexAdapter implements PlatformAdapter {
       projectTrust,
     });
 
-    const externalOwnership = detectCodexExternalOwnership(
-      userConfig.snapshot.plugins,
-      plugin.manifest.name,
-      MARKETPLACE_NAME,
-    );
+    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      scope,
+      projectKey,
+      ledger,
+      currentCatalog,
+      currentCatalogAvailable,
+      embeddedRoot,
+      ...(scope === 'project'
+        ? {
+            runtimeTarget: {
+              platform: 'codex' as const,
+              scope: 'project' as const,
+              kind: 'repoSkill' as const,
+              root: getRepoSkillsRoot(repoRoot),
+            },
+          }
+        : {}),
+    });
+
     const artifactsInitialized = generatedArtifacts.every((artifact) => artifact.exists) &&
       (
         !trackingRecord?.artifacts.some((artifact) => artifact.kind === 'instruction') ||
         instructionManaged
-      );
+      ) &&
+      codexMcpSignals.every((signal) => signal.state === 'visible');
 
     if (generatedArtifacts.some((artifact) => !artifact.exists)) {
       driftWarnings.push('tracking manifest 记录的 Codex 受管产物存在缺失。');
     }
+    for (const integrityError of trackingIntegrityErrors) {
+      driftWarnings.push(`Codex tracking identity 无法安全判定：${integrityError.message}`);
+    }
     if (platformNativeFallbackEvidence) {
       driftWarnings.push('平台真值仍在，但 CLI 账本或 tracking manifest 缺失。');
+    }
+    if (userConfigUnreadableDetail) {
+      driftWarnings.push(`无法读取用户级 Codex 配置，external ownership / project trust 只能按 unknown 处理：${userConfigUnreadableDetail}`);
     }
     if (externalOwnership?.present) {
       driftWarnings.push(externalOwnership.details ?? '同名插件由外部 marketplace 管理。');
@@ -1209,26 +2115,363 @@ export class CodexAdapter implements PlatformAdapter {
     ) {
       driftWarnings.push(marketplaceHealth.warning);
     }
-    if (projectTrust === 'untrusted') {
-      driftWarnings.push('当前 repo 处于 untrusted 状态，project scope 产物不会进入会话。');
-    }
-    if (projectTrust === 'unknown') {
-      driftWarnings.push('当前 repo trust 状态未知，project scope 会话可见性无法确定。');
-    }
     driftWarnings.push(...repoManagedSessionState.diagnostics);
-    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope,
-      projectKey,
-      ledger,
-      currentCatalog,
-      currentCatalogAvailable,
-      embeddedRoot,
-    });
     if (skillTriggerStatus) {
       driftWarnings.push(...skillTriggerStatus.warnings);
     }
+
+    let repoManagedSessionItems: RepoManagedProjectItemReport[] | undefined;
+    let repoManagedSkillsSummary: RepoManagedProjectKindSummary | undefined;
+    let repoManagedMcpSummary: RepoManagedProjectKindSummary | undefined;
+    if (scope === 'project') {
+      const items: RepoManagedProjectItemReport[] = [];
+
+      for (const integrityError of trackingIntegrityErrors) {
+        if (integrityError.kind !== 'skill' && integrityError.kind !== 'mcpServer') {
+          continue;
+        }
+
+        items.push(createProjectItem({
+          kind: integrityError.kind,
+          path: integrityError.path,
+          tracked: true,
+          exists: await fs.pathExists(integrityError.path),
+          state: 'unknown',
+          diagnostics: [integrityError.message],
+        }));
+      }
+
+      const trackedSkillKeys = new Set(trackedCodexSkillKeys(trackingRecord));
+      const declaredSkillKeys = new Set(
+        currentCatalogAvailable ? await listCodexBundleSkillKeys(plugin) : trackedCodexSkillKeys(trackingRecord),
+      );
+      let skillPoliciesByName = new Map<string, SkillTriggerPolicyEntry>();
+      if (currentCatalogAvailable) {
+        try {
+          const resolution = await resolveSkillTriggerPolicies({
+            embeddedRoot,
+            pluginName: plugin.manifest.name,
+            platform: 'codex',
+          });
+          skillPoliciesByName = new Map(
+            resolution.policies.map((policy) => [policy.skillName, policy]),
+          );
+        } catch {
+          // Skill trigger warnings already surface policy read failures.
+        }
+      }
+
+      for (const skillName of [...new Set([
+        ...trackedSkillKeys,
+        ...declaredSkillKeys,
+      ])].sort()) {
+        const trackedArtifact = findTrackedCodexSkillArtifact(trackingRecord, skillName);
+        const tracked = Boolean(trackedArtifact);
+        const skillPath = trackedArtifact?.path ?? getRepoSkillPath(repoRoot, skillName);
+        const exists = await fs.pathExists(skillPath);
+
+        let state: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted' | 'orphan' | 'absent' | 'unknown'>;
+        const diagnostics: string[] = [];
+
+        if (!tracked && exists) {
+          state = 'orphan';
+        } else if (tracked && !exists) {
+          state = 'missing';
+        } else if (!tracked) {
+          state = 'absent';
+        } else {
+          state = 'visible';
+          const policy = skillPoliciesByName.get(skillName);
+          const canCompare =
+            currentCatalogAvailable &&
+            Boolean(policy) &&
+            (
+              policy?.allowInstallOverride !== true ||
+              skillTriggerStatus?.skillTriggerApplicability === 'fixed' ||
+              typeof skillTriggerStatus?.skillTriggerPreference === 'string'
+            );
+          if (policy && canCompare) {
+            const comparison = await compareCodexRepoSkillToPristine({
+              embeddedRoot,
+              pluginName: plugin.manifest.name,
+              skillName,
+              actualSkillRoot: skillPath,
+              preference: skillTriggerStatus?.skillTriggerPreference ?? 'default',
+              policy,
+            });
+            if (comparison.drifted) {
+              state = 'drifted';
+              if (comparison.reason) {
+                diagnostics.push(comparison.reason);
+              }
+            }
+          }
+        }
+
+        items.push(createProjectItem({
+          kind: 'skill',
+          path: skillPath,
+          tracked,
+          exists,
+          state,
+          artifactKey: skillName,
+          diagnostics,
+        }));
+      }
+
+      const trackedMcpArtifacts = readTrackedCodexMcpArtifacts(trackingRecord);
+      const trackedMcpKeys = new Set(
+        trackedMcpArtifacts
+          .map((artifact) => artifact.artifactKey)
+          .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
+      );
+      const expectedMcpKeys = new Set(Object.keys(codexMcpExpectation.expectedServers));
+      for (const signal of codexMcpSignals) {
+        const trackedArtifact = trackedMcpArtifacts.find((artifact) => artifact.artifactKey === signal.key);
+        const baseState =
+          signal.state === 'visible' || signal.state === 'missing' || signal.state === 'drifted' || signal.state === 'orphan'
+            ? signal.state
+            : 'unknown';
+        const state = applyProjectTrustToItemState(
+          baseState,
+          projectTrust,
+          true,
+        );
+        items.push(createProjectItem({
+          kind: 'mcpServer',
+          path: trackedArtifact?.path ?? scopePaths.configTomlPath,
+          tracked: trackedMcpKeys.has(signal.key),
+          exists: signal.state !== 'missing',
+          state,
+          artifactKey: signal.key,
+          diagnostics: signal.reason ? [signal.reason] : [],
+        }));
+      }
+
+      const instructionArtifact = trackingRecord?.artifacts.find((artifact) => artifact.kind === 'instruction');
+      if (codexInstructions.length > 0 || instructionArtifact) {
+        const instructionBlock = scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name];
+        let instructionState: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted' | 'absent'>;
+        if (!instructionArtifact) {
+          instructionState = instructionBlock ? 'absent' : 'absent';
+        } else if (!instructionBlock) {
+          instructionState = 'missing';
+        } else {
+          instructionState = 'visible';
+          if (
+            currentCatalogAvailable &&
+            renderCodexManagedInstructionBlock(plugin.manifest.name, codexInstructions) !== instructionBlock.value
+          ) {
+            instructionState = 'drifted';
+          }
+        }
+
+        items.push(createProjectItem({
+          kind: 'instruction',
+          path: instructionArtifact?.path ?? scopePaths.configTomlPath,
+          tracked: Boolean(instructionArtifact),
+          exists: Boolean(instructionBlock),
+          state: applyProjectTrustToItemState(instructionState, projectTrust, true),
+        }));
+      }
+
+      const expectedPermissionContents = currentCatalogAvailable
+        ? new Map(
+            generateCodexPermissionArtifacts(plugin.manifest.name, codexPermissions).map((artifact) => [
+              path.join(scopePaths.configDir, artifact.relativePath),
+              artifact.content,
+            ]),
+          )
+        : new Map<string, string>();
+      const trackedPermissionArtifacts = (trackingRecord?.artifacts ?? [])
+        .filter((artifact) => artifact.kind === 'permission')
+        .sort((left, right) => left.path.localeCompare(right.path));
+      const emittedPermissionPaths = new Set<string>();
+      for (const artifact of trackedPermissionArtifacts) {
+        emittedPermissionPaths.add(artifact.path);
+        const exists = await fs.pathExists(artifact.path);
+        let state: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted'>;
+        if (!exists) {
+          state = 'missing';
+        } else if (expectedPermissionContents.has(artifact.path)) {
+          const content = await fs.readFile(artifact.path, 'utf8');
+          state = content === expectedPermissionContents.get(artifact.path) ? 'visible' : 'drifted';
+        } else {
+          state = 'visible';
+        }
+        items.push(createProjectItem({
+          kind: 'permission',
+          path: artifact.path,
+          tracked: true,
+          exists,
+          state: applyProjectTrustToItemState(state, projectTrust, true),
+        }));
+      }
+      if (currentCatalogAvailable) {
+        for (const expectedPath of [...expectedPermissionContents.keys()].sort()) {
+          if (emittedPermissionPaths.has(expectedPath)) {
+            continue;
+          }
+          items.push(createProjectItem({
+            kind: 'permission',
+            path: expectedPath,
+            tracked: false,
+            exists: await fs.pathExists(expectedPath),
+            state: 'absent',
+          }));
+        }
+      }
+
+      const hookArtifact = trackingRecord?.artifacts.find((artifact) => artifact.kind === 'hook');
+      if (codexHookExpectation.declared || hookArtifact) {
+        const hookExists = await fs.pathExists(scopePaths.hooksPath);
+        let hookState: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted' | 'absent' | 'unknown'>;
+        const diagnostics: string[] = [];
+        if (!hookArtifact) {
+          hookState = 'absent';
+        } else if (!hookExists) {
+          hookState = 'missing';
+        } else if (codexHookExpectation.expectedGroups === null) {
+          hookState = 'unknown';
+          diagnostics.push(...codexHookExpectation.diagnostics);
+        } else {
+          try {
+            const actualGroups = await readCodexHookGroups(scopePaths.hooksPath);
+            hookState = trackedHookGroupsContainAll(actualGroups, codexHookExpectation.expectedGroups)
+              ? 'visible'
+              : 'drifted';
+            if (hookState === 'drifted') {
+              diagnostics.push('hooks.json 中缺少或修改了当前插件声明的 hook handlers。');
+            }
+          } catch (error) {
+            hookState = 'unknown';
+            diagnostics.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        items.push(createProjectItem({
+          kind: 'hook',
+          path: hookArtifact?.path ?? scopePaths.hooksPath,
+          tracked: Boolean(hookArtifact),
+          exists: hookExists,
+          state: applyProjectTrustToItemState(hookState, projectTrust, true),
+          diagnostics,
+        }));
+      }
+
+      const expectedAgentContents = currentCatalogAvailable
+        ? new Map(
+            generateAgentArtifacts(
+              plugin.manifest.name,
+              codexAgents,
+              'codex',
+            ).map((artifact) => [
+              path.join(scopePaths.configDir, artifact.relativePath),
+              artifact.content,
+            ]),
+          )
+        : new Map<string, string>();
+      const trackedAgentArtifacts = (trackingRecord?.artifacts ?? [])
+        .filter((artifact) => artifact.kind === 'agent')
+        .sort((left, right) => left.path.localeCompare(right.path));
+      const emittedAgentPaths = new Set<string>();
+      for (const artifact of trackedAgentArtifacts) {
+        emittedAgentPaths.add(artifact.path);
+        const exists = await fs.pathExists(artifact.path);
+        let state: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted'>;
+        if (!exists) {
+          state = 'missing';
+        } else if (expectedAgentContents.has(artifact.path)) {
+          const content = await fs.readFile(artifact.path, 'utf8');
+          state = content === expectedAgentContents.get(artifact.path) ? 'visible' : 'drifted';
+        } else {
+          state = 'visible';
+        }
+        items.push(createProjectItem({
+          kind: 'agent',
+          path: artifact.path,
+          tracked: true,
+          exists,
+          state: applyProjectTrustToItemState(state, projectTrust, true),
+        }));
+      }
+      if (currentCatalogAvailable) {
+        for (const expectedPath of [...expectedAgentContents.keys()].sort()) {
+          if (emittedAgentPaths.has(expectedPath)) {
+            continue;
+          }
+          items.push(createProjectItem({
+            kind: 'agent',
+            path: expectedPath,
+            tracked: false,
+            exists: await fs.pathExists(expectedPath),
+            state: 'absent',
+          }));
+        }
+      }
+
+      repoManagedSessionItems = sortRepoManagedItems(items);
+      repoManagedSkillsSummary = summarizeRepoManagedItems(
+        repoManagedSessionItems.filter((item) => item.kind === 'skill'),
+        projectManagedKinds.includes('skill') ||
+          trackedSkillKeys.size > 0,
+      );
+      repoManagedMcpSummary = summarizeRepoManagedItems(
+        repoManagedSessionItems.filter((item) => item.kind === 'mcpServer'),
+        projectManagedKinds.includes('mcpServer') ||
+          trackedMcpKeys.size > 0 ||
+          expectedMcpKeys.size > 0,
+      );
+
+      if (repoManagedSessionItems.some((item) => item.state === 'blockedByProjectTrust')) {
+        driftWarnings.push('当前 repo 处于 untrusted 状态，部分 project scope 产物不会进入会话。');
+      }
+      if (repoManagedSessionItems.some((item) => item.state === 'projectTrustUnknown')) {
+        driftWarnings.push('当前 repo trust 状态未知，部分 project scope 会话可见性无法确定。');
+      }
+
+      for (const item of repoManagedSessionItems) {
+        const subject = item.kind === 'skill'
+          ? `Codex repo skill "${item.artifactKey ?? path.basename(item.path)}"`
+          : item.kind === 'mcpServer'
+            ? `Codex MCP server "${item.artifactKey ?? item.path}"`
+            : item.kind === 'instruction'
+              ? 'Codex developer instructions'
+              : item.kind === 'permission'
+                ? `Codex rules artifact ${item.path}`
+                : item.kind === 'hook'
+                  ? 'Codex hooks artifact'
+                  : `Codex agent artifact ${item.path}`;
+        if (item.state === 'missing') {
+          driftWarnings.push(`${subject} 缺失。`);
+        } else if (item.state === 'drifted') {
+          driftWarnings.push(
+            `${subject} 已漂移。${item.diagnostics[0] ? ` ${item.diagnostics[0]}` : ''}`.trim(),
+          );
+        } else if (item.state === 'orphan') {
+          driftWarnings.push(`${subject} 存在，但当前插件没有 tracking 证明归属。`);
+        } else if (item.state === 'unknown') {
+          driftWarnings.push(
+            `${subject} 状态无法可靠判定。${item.diagnostics[0] ? ` ${item.diagnostics[0]}` : ''}`.trim(),
+          );
+        }
+      }
+    }
+
+    const enrichedRepoManagedSessionState = scope === 'project'
+      ? {
+          ...repoManagedSessionState,
+          skills: repoManagedSkillsSummary ?? summarizeRepoManagedItems([], false),
+          mcpServers: repoManagedMcpSummary ?? summarizeRepoManagedItems([], false),
+          items: repoManagedSessionItems ?? [],
+          diagnostics: [
+            ...new Set([
+              ...repoManagedSessionState.diagnostics,
+              ...(repoManagedSessionItems ?? []).flatMap((item) => item.diagnostics),
+            ]),
+          ],
+        }
+      : repoManagedSessionState;
 
     const pluginStatus: PluginStatusReport = {
       pluginName: plugin.manifest.name,
@@ -1246,10 +2489,11 @@ export class CodexAdapter implements PlatformAdapter {
         sharedNativeRefs,
       },
       generatedArtifacts,
-      driftWarnings,
+      driftWarnings: [...new Set(driftWarnings)],
       ledgerStateStatus: ledger.ledgerState.status,
       ledgerStateReason: ledger.ledgerState.reason,
       scopeInitialized,
+      ...(scope === 'project' ? { projectManagedKinds } : {}),
       catalogCompatibility,
       externalOwnership,
       projectTrust,
@@ -1260,10 +2504,9 @@ export class CodexAdapter implements PlatformAdapter {
           : undefined,
       },
       scopeManagedEvidence: {
-        ledger: scopeInitialized === 'yes',
-        tracking: Boolean(trackingRecord),
-        sharedNativeRef:
-          scope === 'user' ? sharedNativeRefs.user : sharedNativeRefs.projects.includes(projectKey),
+        ledger: ledgerScopeInitialized === 'yes',
+        tracking: trackingEvidenceUsable,
+        sharedNativeRef: sharedNativeRefEvidence,
       },
       currentCatalog: {
         rootDir: currentCatalog.rootDir,
@@ -1272,9 +2515,10 @@ export class CodexAdapter implements PlatformAdapter {
         reason: currentCatalog.reason,
       },
       artifactsInitialized,
-      repoManagedSessionState,
+      repoManagedSessionState: enrichedRepoManagedSessionState,
       ...(skillTriggerStatus
         ? {
+            skillTriggerApplicability: skillTriggerStatus.skillTriggerApplicability,
             installOptions: skillTriggerStatus.installOptions,
             skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
             skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
@@ -1289,7 +2533,7 @@ export class CodexAdapter implements PlatformAdapter {
       scope,
       initialized:
         scopeInitialized === 'yes' ||
-        pluginStatus.native.pluginInstalled ||
+        (scope === 'user' && pluginStatus.native.pluginInstalled) ||
         generatedArtifacts.length > 0 ||
         platformNativeFallbackEvidence,
       scopeInitialized: scopeInitialized as ScopeInitializedState,

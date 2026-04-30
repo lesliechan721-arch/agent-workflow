@@ -10,9 +10,15 @@ import {
   CodexAdapter,
 } from '../../src/adapters/codex.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
+import {
+  createAvailableLedger,
+  initializeLocalMarketplace,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
 import {
   readCodexConfigFile,
+  removeCodexMcpServer,
+  upsertCodexMcpServer,
   upsertCodexMarketplaceFile,
   upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
@@ -24,9 +30,15 @@ import {
 } from '../../src/utils/native-cli.js';
 import {
   resolveCodexPaths,
+  resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
-import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import {
+  removeTrackingRecordFromManifest,
+  readTrackingManifest,
+  upsertTrackingRecord,
+  writeTrackingManifest,
+} from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -70,6 +82,16 @@ async function makeWorkspace(): Promise<{
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     },
   };
+}
+
+async function copyRepoManagedFixturePlugin(
+  repoRoot: string,
+  pluginDir: 'mcp-only' | 'instructions-mcp' | 'skills-only' | 'slashCommands-only',
+): Promise<void> {
+  await fs.copy(
+    fixturePath('codex-project-repo-managed', 'plugins', pluginDir),
+    path.join(repoRoot, 'plugins', pluginDir),
+  );
 }
 
 function createCodexMarketplaceAddRunner(
@@ -294,6 +316,294 @@ describe('CodexAdapter', () => {
         ],
       },
     });
+  });
+
+  it('writes structured MCP servers with quoted keys and tracking artifacts', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'mcp-only');
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'mcp-only'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await fs.outputFile(
+      paths.configTomlPath,
+      [
+        '# keep me',
+        '',
+        '[mcp_servers.external]',
+        'command = "external"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+
+    expect(artifacts.filter((artifact) => artifact.kind === 'mcpServer')).toEqual([
+      {
+        path: paths.configTomlPath,
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      },
+      {
+        path: paths.configTomlPath,
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'sibling-server',
+      },
+    ]);
+
+    const written = await fs.readFile(paths.configTomlPath, 'utf8');
+    expect(written).toContain('[mcp_servers."acme.tools v1"]');
+    expect(written).toContain('[mcp_servers."acme.tools v1".env]');
+    expect(written).toContain('[mcp_servers."acme.tools v1".tools."deploy.check"]');
+    expect(written).toContain('[mcp_servers.external]');
+    expect(written).toContain('# keep me');
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        mcpServers: {
+          'acme.tools v1': {
+            value: {
+              command: 'node',
+              args: ['./servers/acme-tools.js', '--stdio'],
+              env: {
+                ACME_MODE: 'fixture',
+                ACME_DEBUG: 'false',
+              },
+              startup_timeout_sec: 10,
+              tool_timeout_sec: 30,
+              tools: {
+                'deploy.check': {
+                  approval_mode: 'manual',
+                },
+              },
+            },
+          },
+          external: {
+            value: {
+              command: 'external',
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('refreshes tracked MCP servers and removes stale descendant tables', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'mcp-only');
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'mcp-only'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await fs.outputFile(
+      paths.configTomlPath,
+      [
+        '[mcp_servers."acme.tools v1"]',
+        'command = "old"',
+        '',
+        '[mcp_servers."acme.tools v1".env]',
+        'OLD = "1"',
+        '',
+        '[mcp_servers."acme.tools v1".tools.old]',
+        'approval_mode = "manual"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [
+      {
+        path: paths.configTomlPath,
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      },
+    ]);
+
+    await adapter.installExtensions(plugin, 'project');
+
+    const written = await fs.readFile(paths.configTomlPath, 'utf8');
+    expect(written).not.toContain('[mcp_servers."acme.tools v1".tools.old]');
+    expect(written).not.toContain('OLD = "1"');
+    expect(written).toContain('[mcp_servers."acme.tools v1".tools."deploy.check"]');
+  });
+
+  it('fails fast when an unmanaged MCP server with the same key already exists', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'mcp-only');
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'mcp-only'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await fs.outputFile(
+      paths.configTomlPath,
+      upsertCodexMcpServer('', 'acme.tools v1', {
+        command: 'foreign',
+      }),
+      'utf8',
+    );
+
+    await expect(adapter.installExtensions(plugin, 'project')).rejects.toThrow(
+      '当前插件没有 tracking 证明归属',
+    );
+  });
+
+  it('removes only tracked MCP servers and can restore the config baseline for rollback', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'instructions-mcp');
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'instructions-mcp'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const baseline = upsertCodexMcpServer(
+      [
+        '# baseline',
+        '',
+        'developer_instructions = "manual"',
+        '',
+      ].join('\n'),
+      'external',
+      {
+        command: 'keep',
+      },
+    );
+    await fs.outputFile(paths.configTomlPath, baseline, 'utf8');
+
+    const rollbackArtifacts = await adapter.installExtensions(plugin, 'project');
+    await adapter.uninstallExtensions(plugin, 'project', rollbackArtifacts);
+    await expect(fs.readFile(paths.configTomlPath, 'utf8')).resolves.toBe(baseline);
+
+    const trackedArtifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, trackedArtifacts);
+    await adapter.uninstallExtensions(plugin, 'project');
+
+    const finalConfig = await fs.readFile(paths.configTomlPath, 'utf8');
+    expect(finalConfig).toContain('[mcp_servers.external]');
+    expect(finalConfig).toContain('developer_instructions = "manual"');
+    expect(finalConfig).not.toContain('instructions-mcp-server');
+    expect(finalConfig).not.toContain('[[aw-managed:start plugin="instructions-mcp"');
+  });
+
+  it('reports MCP missing and drifted states through status warnings', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'mcp-only');
+    const refreshedEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(refreshedEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'mcp-only'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    const drifted = upsertCodexMcpServer(
+      removeCodexMcpServer(await fs.readFile(paths.configTomlPath, 'utf8'), 'sibling-server'),
+      'acme.tools v1',
+      {
+        command: 'node',
+        args: ['./servers/acme-tools.js', '--stdio'],
+        env: {
+          ACME_MODE: 'drifted',
+          ACME_DEBUG: 'false',
+        },
+        startup_timeout_sec: 10,
+        tool_timeout_sec: 30,
+      },
+    );
+    await fs.writeFile(paths.configTomlPath, drifted, 'utf8');
+
+    const report = await adapter.status(plugin, 'project');
+
+    expect(report.plugins[0]).toMatchObject({
+      artifactsInitialized: false,
+    });
+    expect(report.plugins[0].driftWarnings).toEqual(expect.arrayContaining([
+      'Codex MCP server "acme.tools v1" 已漂移。 current TOML subtree differs from rendered .mcp.json.',
+      'Codex MCP server "sibling-server" 缺失。',
+    ]));
+  });
+
+  it('reports repo skill missing, drifted, and orphan states through status warnings', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'skills-only');
+    const refreshedEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(refreshedEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
+    const plugin = await readPluginManifest(
+      path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only'),
+      { mode: 'bundle' },
+    );
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const skillPath = path.join(repoRoot, '.agents', 'skills', 'repo-check');
+
+    await fs.copy(
+      path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only', 'codex', 'skills', 'repo-check'),
+      skillPath,
+    );
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [{
+      path: skillPath,
+      kind: 'skill',
+      platform: 'codex',
+      artifactKey: 'repo-check',
+    }]);
+
+    const projectKey = await resolveCodexProjectKey(cwd);
+    const ledger = createAvailableLedger();
+    ledger.plugins[plugin.manifest.name] = {
+      lastResolvedVersion: plugin.manifest.version,
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-30T00:00:00.000Z',
+              resolvedVersion: plugin.manifest.version,
+              capabilitySnapshot: {
+                requiresNativePlugin: false,
+                hasRepoManagedArtifacts: true,
+                projectManagedKinds: ['skill'],
+              },
+              installOptions: {
+                skillTriggerPreference: 'default',
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, env);
+
+    let report = await adapter.status(plugin, 'project');
+    expect(
+      report.plugins[0].driftWarnings.some((warning) => warning.includes('Codex repo skill "repo-check"')),
+    ).toBe(false);
+
+    await fs.remove(skillPath);
+    report = await adapter.status(plugin, 'project');
+    expect(report.plugins[0].driftWarnings).toContain('Codex repo skill "repo-check" 缺失。');
+
+    await fs.copy(
+      path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only', 'codex', 'skills', 'repo-check'),
+      skillPath,
+    );
+    await fs.appendFile(path.join(skillPath, 'SKILL.md'), '\nDrifted body.\n', 'utf8');
+    report = await adapter.status(plugin, 'project');
+    expect(
+      report.plugins[0].driftWarnings.some((warning) => warning.includes('Codex repo skill "repo-check" 已漂移。')),
+    ).toBe(true);
+
+    const trackingManifest = await readTrackingManifest(paths.trackingDir);
+    await writeTrackingManifest(
+      paths.trackingDir,
+      removeTrackingRecordFromManifest(trackingManifest, plugin.manifest.name),
+    );
+    report = await adapter.status(plugin, 'project');
+    expect(report.plugins[0].driftWarnings).toContain(
+      'Codex repo skill "repo-check" 存在，但当前插件没有 tracking 证明归属。',
+    );
   });
 
   it('registers the Codex marketplace through native add using the canonical AW_HOME path', async () => {

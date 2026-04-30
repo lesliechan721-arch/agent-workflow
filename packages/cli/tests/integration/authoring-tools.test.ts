@@ -814,7 +814,8 @@ describe('authoring tools', () => {
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
-    expect(exampleDoc).toContain('`skillTriggers.review.allowInstallOverride`');
+    expect(exampleDoc).toContain('`skillTriggers.review-workflow.allowInstallOverride`');
+    expect(exampleDoc).toContain('`slash-commands/`');
   });
 
   it('validate_plugin.js validates skillTriggers authoring contract', async () => {
@@ -1265,6 +1266,50 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).resolves.toBeDefined();
+  });
+
+  it('validate_plugin.js validates public slashCommands source contracts', async () => {
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-authoring-'));
+    tempDirs.push(tempRoot);
+    const validPluginDir = path.join(tempRoot, 'slash-commands-only');
+    await fs.copy(
+      fixturePath(
+        'codex-project-repo-managed',
+        'plugins',
+        'slashCommands-only',
+      ),
+      validPluginDir,
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, validPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toBeDefined();
+
+    const invalidPluginDir = fixturePath(
+      'codex-project-repo-managed',
+      'negative',
+      'slashCommands-invalid-icon',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, invalidPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('codex.interface.icon_small'),
+    });
   });
 
   it('validate_plugin.js enforces Codex skill metadata and YAML shape', async () => {

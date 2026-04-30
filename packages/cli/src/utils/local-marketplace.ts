@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 
 import type {
   CodexSharedNativeRefs,
+  GeneratedArtifact,
   InstalledLedger,
   InstalledLedgerPluginPlatforms,
   LedgerStateReason,
@@ -112,6 +113,10 @@ function isInstalledScopeRecord(value: unknown): boolean {
     return false;
   }
 
+  if (value.projectKey !== undefined && typeof value.projectKey !== 'string') {
+    return false;
+  }
+
   return (
     value.skillTriggerWriteOrder === undefined ||
     (
@@ -204,6 +209,7 @@ export function validateInstalledLedger(rawValue: unknown): InstalledLedger | nu
     'rebuilt_from_missing_or_invalid',
     'operation_interrupted_after_native_write',
     'operation_interrupted_after_artifact_write',
+    'capability_changed_upgrade_restore_incomplete',
     null,
   ];
 
@@ -312,6 +318,41 @@ export function resolveScopeInitialized(
   }
 
   return scopeRecord.managed ? 'yes' : 'no';
+}
+
+export function resolveCodexProjectScopeInitialized(options: {
+  ledger: InstalledLedger | null;
+  pluginName: string;
+  projectKey?: string;
+  trackingArtifacts?: GeneratedArtifact[];
+  trackingIdentityComplete: boolean;
+  externalOwnershipPresent?: boolean;
+}): 'yes' | 'no' | 'unknown' {
+  const ledgerScopeInitialized = resolveScopeInitialized(
+    options.ledger,
+    options.pluginName,
+    'codex',
+    'project',
+    options.projectKey,
+  );
+  if (ledgerScopeInitialized === 'yes') {
+    return 'yes';
+  }
+
+  if (!options.projectKey) {
+    return 'unknown';
+  }
+
+  const trackedArtifacts = (options.trackingArtifacts ?? []).filter((artifact) => artifact.platform === 'codex');
+  if (trackedArtifacts.length > 0) {
+    return options.trackingIdentityComplete ? 'yes' : 'unknown';
+  }
+
+  if (options.externalOwnershipPresent === true) {
+    return 'no';
+  }
+
+  return ledgerScopeInitialized;
 }
 
 async function listFilesRecursively(rootDir: string): Promise<string[]> {

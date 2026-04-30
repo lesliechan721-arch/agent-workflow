@@ -207,6 +207,7 @@ describe('skill trigger preferences', () => {
     const policies = await resolveSkillTriggerPolicies({
       embeddedRoot,
       pluginName: 'git-commit',
+      platform: 'codex',
     });
     expect(policies.policies).toEqual([
       expect.objectContaining({
@@ -214,6 +215,7 @@ describe('skill trigger preferences', () => {
         allowInstallOverride: true,
       }),
     ]);
+    expect(policies.applicability).toBe('overridable');
 
     await materializeSkillTriggerPreference({
       pluginName: 'git-commit',
@@ -309,6 +311,91 @@ describe('skill trigger preferences', () => {
       mode: 'bestEffortReplay',
     });
     await expect(readFile(claudeSkillPath(marketplaceRoot))).resolves.toBe(CLAUDE_SKILL_AUTO_FALSE);
+  });
+
+  it('resolves skill trigger inventory per platform without cross-reading foreign skills', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-platform-scope-');
+    const pluginRoot = await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      pluginName: 'platform-scoped-plugin',
+      skillTriggers: {
+        'codex-only': {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        'codex-only': {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    await fs.remove(path.join(pluginRoot, 'claude', 'skills', 'codex-only'));
+    await fs.ensureDir(path.join(pluginRoot, 'claude', 'skills', 'claude-only'));
+    await fs.writeFile(
+      path.join(pluginRoot, 'claude', 'skills', 'claude-only', 'SKILL.md'),
+      CLAUDE_SKILL_AUTO_TRUE,
+      'utf8',
+    );
+
+    const codexPolicies = await resolveSkillTriggerPolicies({
+      embeddedRoot,
+      pluginName: 'platform-scoped-plugin',
+      platform: 'codex',
+    });
+    const claudePolicies = await resolveSkillTriggerPolicies({
+      embeddedRoot,
+      pluginName: 'platform-scoped-plugin',
+      platform: 'claude',
+    });
+
+    expect(codexPolicies.applicability).toBe('overridable');
+    expect(codexPolicies.policies.map((policy) => policy.skillName)).toEqual(['codex-only']);
+    expect(claudePolicies.applicability).toBe('fixed');
+    expect(claudePolicies.policies.map((policy) => policy.skillName)).toEqual(['claude-only']);
+  });
+
+  it('supports Codex project repoSkill materialization targets without touching shared runtime layout', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-repo-skill-embedded-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      pluginName: 'repo-skill-plugin',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const repoSkillsRoot = await makeTempDir('aw-skill-trigger-repo-skills-');
+
+    const result = await materializeSkillTriggerPreference({
+      pluginName: 'repo-skill-plugin',
+      platform: 'codex',
+      resolvedOptions: {
+        skillTriggerPreference: 'manual',
+      },
+      embeddedRoot,
+      target: {
+        platform: 'codex',
+        scope: 'project',
+        kind: 'repoSkill',
+        root: repoSkillsRoot,
+      },
+      mode: 'strictExplicit',
+    });
+
+    await expect(
+      readFile(path.join(repoSkillsRoot, 'commit', 'agents', 'openai.yaml')),
+    ).resolves.toContain('allow_implicit_invocation: false');
+    expect(result.rollbackHandle.operations).toHaveLength(1);
+    await commitMaterializedSkillTriggerPreference(result.rollbackHandle);
+    expect(result.rollbackHandle.committed).toBe(false);
   });
 
   it('keeps pristine skills and warns when manual or auto targets non-overridable skills', async () => {
@@ -626,6 +713,53 @@ user-invocable: "true"
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toContain('allow_implicit_invocation: true');
     await rollbackMaterializedSkillTriggerPreference(result.rollbackHandle);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(originalContent);
+  });
+
+  it('materializes Codex project repo skills into .agents/skills and reports tracking artifacts', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-embedded-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const repoRoot = await makeTempDir('aw-repo-skill-root-');
+    const repoSkillsRoot = path.join(repoRoot, '.agents', 'skills');
+
+    const result = await materializeSkillTriggerPreference({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      resolvedOptions: {
+        skillTriggerPreference: 'manual',
+      },
+      embeddedRoot,
+      target: {
+        platform: 'codex',
+        scope: 'project',
+        kind: 'repoSkill',
+        root: repoSkillsRoot,
+      },
+      mode: 'strictExplicit',
+    });
+
+    await expect(
+      readFile(path.join(repoSkillsRoot, 'commit', 'agents', 'openai.yaml')),
+    ).resolves.toContain('allow_implicit_invocation: false');
+    expect(result.generatedArtifacts).toEqual([{
+      path: path.join(repoSkillsRoot, 'commit'),
+      kind: 'skill',
+      platform: 'codex',
+      artifactKey: 'commit',
+    }]);
+    await expect(readFile(codexSkillPath(embeddedRoot))).resolves.toContain('allow_implicit_invocation: true');
   });
 
   it('cleans the previous subtree backup after a committed materialization is finalized', async () => {
@@ -1102,14 +1236,14 @@ user-invocable: true
       pluginName: 'git-commit',
       platform: 'codex',
     })).toMatchObject({
-      scopeIdentity: 'project:/repo-a',
-      preference: 'auto',
+      scopeIdentity: 'user',
+      preference: 'default',
     });
     expect(selectEffectiveSkillTriggerPreference({
       ledger,
       pluginName: 'git-commit',
       platform: 'codex',
-    })).toBe('auto');
+    })).toBe('default');
   });
 
   it('collects sibling conflict warnings based on runtime semantics and skips deterministic warnings for unknown or degraded signatures', async () => {
@@ -1174,7 +1308,7 @@ user-invocable: true
       }),
       embeddedRoot: changingRoot,
     });
-    expect(warnings.warnings[0]).toContain('project:/repo-project');
+    expect(warnings.warnings).toEqual([]);
     expect(warnings.diagnostics).toEqual([]);
 
     const equivalentRoot = await makeTempDir('aw-skill-trigger-conflict-equivalent-');

@@ -399,8 +399,8 @@
   - 对显式多插件名执行 `aw install <codex-only-plugin> <claude-only-plugin> -i` 时，runtime 在 dispatch 前识别整组插件没有共同兼容平台并返回可读错误；不会先进入 `installCommand()` 深层平台解析，也不会自动拆成两次安装。
   - 对显式多插件名执行 `aw install <codex-only-plugin> <both-plugin> -i` 时，平台 prompt 只能接受 `codex`；fake prompt 强行返回 `claude` 或 `both` 会被 runtime 拒绝，不会晚到 `installCommand()` 才失败。
   - 对无插件名执行 `aw install -i` 且用户先选择 `both` 时，catalog 列表只允许选择同时支持 Codex 和 Claude 的插件；单平台插件要么不出现，要么显示为禁用并带原因。
-  - 对无插件名执行 `aw install -i` 且用户选择 `scope=project`、`platform=codex` 时，当前 catalog 下的 `git-commit` 不能作为可安装候选；如果没有其它满足 `hasRepoManagedArtifacts(plugin)` 的 Codex 插件，prompt 返回明确空态或只展示禁用项和原因。
-  - 对显式插件名执行 `aw install git-commit -i --platform codex --scope project` 或等价交互路径时，runtime 在 dispatch 前返回可读业务错误，说明 `git-commit` 不包含 repo-managed artifacts；不能调用到 `installCommand()` / `CodexAdapter.installPlugin()` 后才失败。
+  - 对无插件名执行 `aw install -i` 且用户选择 `scope=project`、`platform=codex` 时，当前 catalog 下的纯 native-only Codex 插件不能作为可安装候选；如果没有其它满足 `hasRepoManagedArtifacts(plugin)` 的 Codex 插件，prompt 返回明确空态或只展示禁用项和原因。
+  - 对显式插件名执行 `aw install <native-only-plugin> -i --platform codex --scope project` 或等价交互路径时，runtime 在 dispatch 前返回可读业务错误，说明该插件不包含 repo-managed artifacts；不能调用到 `installCommand()` / `CodexAdapter.installPlugin()` 后才失败。
   - fixture 中加入一个同时包含 repo-managed artifacts 的 Codex 插件后，`scope=project`、`platform=codex` 的交互式 `install` 只允许选择满足该条件的插件；同一 catalog 里的纯 native-only 插件仍被隐藏或禁用。
   - degraded ledger 下重复执行 `aw install <plugin> -i` 且目标已受管时，会补问 `skill-trigger`，并把选择作为 `requestedSkillTrigger` 传入普通命令调用。
   - degraded ledger 下显式执行 `aw upgrade <plugin> -i` 时，会补问 `skill-trigger`，并把选择作为 `requestedSkillTrigger` 传入普通命令调用。
@@ -647,7 +647,7 @@
 - 交互式插件名来自候选列表：安装不能选择 catalog 之外的插件，卸载不能选择不可发现的目标，升级不能选择既不是受管安装记录、也不在本次可处理候选中的任意字符串。
 - 交互式 `install` 在 prompt 层约束 `marketplace.policy.products`：平台先锁定，catalog 候选按目标平台过滤或禁用；单平台插件不能被选择到不兼容平台或 `both`，不把兼容性错误留到命令深层才暴露。
 - 交互式 `install` 的显式多插件名路径不自动拆分命令；整组插件必须拥有共同兼容平台集合，且用户选择的平台必须完全落在该集合内。无共同集合或 fake prompt 返回不兼容平台时，runtime 在调用普通命令 API 前返回可读错误。
-- 交互式 `install` 在 prompt 层同时约束 `scope + platform + capability`：`Codex + project scope` 只允许选择包含 repo-managed artifacts 的插件。当前 catalog 下，`git-commit` 不能被当成 `codex + project` 的可安装候选；显式选择这组目标时会在调用普通命令 API 前早失败。
+- 交互式 `install` 在 prompt 层同时约束 `scope + platform + capability`：`Codex + project scope` 只允许选择包含 repo-managed artifacts 的插件。当前 catalog 下，纯 native-only Codex 插件不能被当成 `codex + project` 的可安装候选；显式选择这组目标时会在调用普通命令 API 前早失败。
 - degraded ledger 下需要显式 `skill-trigger` 的重复 `install` 和显式插件 `upgrade`，在 TTY 交互模式下会先补问 `skill-trigger` 再 dispatch；非交互、`CI=true` 或 `--no-interactive` 继续返回确定性错误。
 - current catalog 已删除但 ledger/tracking/native 仍有 AW 管理证据的插件，仍能出现在 `aw status` 摘要和交互式 `uninstall` 候选里。
 - historical placeholder 按 `platform + scope` 分格生成和消费；默认 `aw status <plugin>` 不会把 project-only 证据误报成 user scope，也不会把 user/project 的能力合成一份模糊状态。

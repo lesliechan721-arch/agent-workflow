@@ -1,0 +1,20 @@
+{
+  "name": "slash-commands-invalid-icon",
+  "version": "0.1.0",
+  "description": "Negative fixture for slashCommands icon path validation.",
+  "slashCommands": "./slash-commands",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "slash-commands", "negative"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Slash Commands Invalid Icon Fixture",
+    "shortDescription": "Invalid slash command icon path",
+    "capabilities": ["Slash Commands"]
+  }
+}

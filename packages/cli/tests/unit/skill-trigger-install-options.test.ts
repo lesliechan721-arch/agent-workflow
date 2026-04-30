@@ -15,14 +15,29 @@ import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../../src/utils
 
 const tempDirs: string[] = [];
 
-function createPlugin(pluginName: string): PluginMeta {
-  return {
-    rootDir: `/tmp/${pluginName}`,
-    manifestPath: `/tmp/${pluginName}/.agents-plugin/plugin.json`,
-    manifest: {
+async function createPlugin(
+  pluginName: string,
+  options: {
+    codexSkills?: string[];
+    claudeSkills?: string[];
+    skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
+  } = {},
+): Promise<PluginMeta> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), `aw-skill-trigger-plugin-${pluginName}-`));
+  tempDirs.push(rootDir);
+  const manifestPath = path.join(rootDir, '.agents-plugin', 'plugin.json');
+  await fs.ensureDir(path.dirname(manifestPath));
+  const codexSkills = options.codexSkills ?? ['commit'];
+  const claudeSkills = options.claudeSkills ?? ['commit'];
+
+  await fs.writeJson(
+    manifestPath,
+    {
       name: pluginName,
       version: '0.1.0',
       description: `${pluginName} plugin`,
+      ...(codexSkills.length > 0 || claudeSkills.length > 0 ? { skills: './skills' } : {}),
+      ...(options.skillTriggers ? { skillTriggers: options.skillTriggers } : {}),
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -32,11 +47,36 @@ function createPlugin(pluginName: string): PluginMeta {
         },
       },
     },
+    { spaces: 2 },
+  );
+
+  await Promise.all([
+    ...codexSkills.map(async (skillName) => {
+      await fs.outputFile(
+        path.join(rootDir, 'codex', 'skills', skillName, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      );
+    }),
+    ...claudeSkills.map(async (skillName) => {
+      await fs.outputFile(
+        path.join(rootDir, 'claude', 'skills', skillName, 'SKILL.md'),
+        `---\nname: ${skillName}\ndescription: ${skillName}\n---\n`,
+      );
+    }),
+  ]);
+
+  return {
+    rootDir,
+    manifestPath,
+    manifest: await fs.readJson(manifestPath),
   };
 }
 
-function createTarget(pluginName: string): ResolvedPluginTarget {
-  const plugin = createPlugin(pluginName);
+async function createTarget(
+  pluginName: string,
+  options?: Parameters<typeof createPlugin>[1],
+): Promise<ResolvedPluginTarget> {
+  const plugin = await createPlugin(pluginName, options);
   return {
     pluginName,
     plugin,
@@ -84,7 +124,13 @@ describe('skill trigger install options resolver', () => {
       },
     };
 
-    const target = createTarget('git-commit');
+    const target = await createTarget('git-commit', {
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+    });
     const repeatedInstall = await resolveInstallOptionsForTargets(
       'install',
       [target],
@@ -110,6 +156,7 @@ describe('skill trigger install options resolver', () => {
     expect(
       repeatedInstall.get(createResolvedInstallOptionsKey('codex', 'git-commit', 'user')),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'manual',
       skillTriggerSource: 'ledger',
       ledgerTrust: 'available',
@@ -117,6 +164,7 @@ describe('skill trigger install options resolver', () => {
     expect(
       explicitDefault.get(createResolvedInstallOptionsKey('codex', 'git-commit', 'user')),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'default',
       skillTriggerSource: 'cli',
       ledgerTrust: 'available',
@@ -188,7 +236,22 @@ describe('skill trigger install options resolver', () => {
 
     const resolved = await resolveInstallOptionsForTargets(
       'upgrade',
-      [createTarget('plugin-a'), createTarget('plugin-b')],
+      [
+        await createTarget('plugin-a', {
+          skillTriggers: {
+            commit: {
+              allowInstallOverride: true,
+            },
+          },
+        }),
+        await createTarget('plugin-b', {
+          skillTriggers: {
+            commit: {
+              allowInstallOverride: true,
+            },
+          },
+        }),
+      ],
       ['codex', 'claude'],
       {
         cwd,
@@ -202,6 +265,7 @@ describe('skill trigger install options resolver', () => {
         createResolvedInstallOptionsKey('codex', 'plugin-a', `project:${codexProjectKey}`),
       ),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'manual',
       skillTriggerSource: 'ledger',
       ledgerTrust: 'available',
@@ -211,6 +275,7 @@ describe('skill trigger install options resolver', () => {
         createResolvedInstallOptionsKey('claude', 'plugin-a', `project:${claudeProjectKey}`),
       ),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'auto',
       skillTriggerSource: 'ledger',
       ledgerTrust: 'available',
@@ -220,6 +285,7 @@ describe('skill trigger install options resolver', () => {
         createResolvedInstallOptionsKey('codex', 'plugin-b', `project:${codexProjectKey}`),
       ),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'auto',
       skillTriggerSource: 'ledger',
       ledgerTrust: 'available',
@@ -247,7 +313,13 @@ describe('skill trigger install options resolver', () => {
     await expect(
       resolveInstallOptionsForTargets(
         'install',
-        [createTarget('git-commit')],
+        [await createTarget('git-commit', {
+          skillTriggers: {
+            commit: {
+              allowInstallOverride: true,
+            },
+          },
+        })],
         ['codex'],
         {
           cwd: '/tmp/workspace',
@@ -260,7 +332,13 @@ describe('skill trigger install options resolver', () => {
     await expect(
       resolveInstallOptionsForTargets(
         'upgrade',
-        [createTarget('git-commit')],
+        [await createTarget('git-commit', {
+          skillTriggers: {
+            commit: {
+              allowInstallOverride: true,
+            },
+          },
+        })],
         ['codex'],
         {
           cwd: '/tmp/workspace',
@@ -274,7 +352,13 @@ describe('skill trigger install options resolver', () => {
   it('allows degraded-ledger new installs to default and explicit overrides to continue', async () => {
     const defaultInstall = await resolveInstallOptionsForTargets(
       'install',
-      [createTarget('git-commit')],
+      [await createTarget('git-commit', {
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
+      })],
       ['codex'],
       {
         cwd: '/tmp/workspace',
@@ -284,7 +368,13 @@ describe('skill trigger install options resolver', () => {
     );
     const explicitInstall = await resolveInstallOptionsForTargets(
       'install',
-      [createTarget('git-commit')],
+      [await createTarget('git-commit', {
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
+      })],
       ['codex'],
       {
         cwd: '/tmp/workspace',
@@ -297,6 +387,7 @@ describe('skill trigger install options resolver', () => {
     expect(
       defaultInstall.get(createResolvedInstallOptionsKey('codex', 'git-commit', 'user')),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'default',
       skillTriggerSource: 'default',
       ledgerTrust: 'degraded',
@@ -304,9 +395,158 @@ describe('skill trigger install options resolver', () => {
     expect(
       explicitInstall.get(createResolvedInstallOptionsKey('codex', 'git-commit', 'user')),
     ).toEqual({
+      applicability: 'overridable',
       skillTriggerPreference: 'auto',
       skillTriggerSource: 'cli',
       ledgerTrust: 'degraded',
+    });
+  });
+
+  it('returns none/fixed applicability without fabricating skill trigger preferences', async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-trigger-applicability-'));
+    tempDirs.push(cwd);
+
+    const noneResolved = await resolveInstallOptionsForTargets(
+      'install',
+      [await createTarget('mcp-only', {
+        codexSkills: [],
+        claudeSkills: [],
+      })],
+      ['codex'],
+      {
+        cwd,
+        scope: 'project',
+      },
+      createAvailableLedger(),
+    );
+    const fixedResolved = await resolveInstallOptionsForTargets(
+      'install',
+      [await createTarget('slash-commands-only', {
+        codexSkills: ['review'],
+        claudeSkills: [],
+      })],
+      ['codex'],
+      {
+        cwd,
+        scope: 'project',
+        requestedSkillTrigger: 'auto',
+      },
+      createAvailableLedger(),
+    );
+
+    expect(
+      noneResolved.get(createResolvedInstallOptionsKey('codex', 'mcp-only', `project:${await resolveCodexProjectKey(cwd)}`)),
+    ).toEqual({
+      applicability: 'none',
+      ledgerTrust: 'available',
+    });
+    expect(
+      fixedResolved.get(createResolvedInstallOptionsKey('codex', 'slash-commands-only', `project:${await resolveCodexProjectKey(cwd)}`)),
+    ).toEqual({
+      applicability: 'fixed',
+      ledgerTrust: 'available',
+    });
+  });
+
+  it('refuses tracking-only Codex project overridable installs without an explicit skill trigger, but allows fixed targets', async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-trigger-tracking-only-'));
+    tempDirs.push(cwd);
+    const projectKey = await resolveCodexProjectKey(cwd);
+    const trackingDir = path.join(cwd, '.codex');
+    await fs.ensureDir(trackingDir);
+    await fs.writeJson(
+      path.join(trackingDir, '.agent-workflows-manifest.json'),
+      {
+        version: 1,
+        plugins: {
+          'overridable-plugin': {
+            name: 'overridable-plugin',
+            generatedAt: '2026-04-28T00:00:00.000Z',
+            artifacts: [{
+              path: path.join(cwd, '.agents', 'skills', 'commit'),
+              kind: 'skill',
+              platform: 'codex',
+              artifactKey: 'commit',
+            }],
+          },
+          'fixed-plugin': {
+            name: 'fixed-plugin',
+            generatedAt: '2026-04-28T00:00:00.000Z',
+            artifacts: [{
+              path: path.join(cwd, '.agents', 'skills', 'review'),
+              kind: 'skill',
+              platform: 'codex',
+              artifactKey: 'review',
+            }],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    await expect(
+      resolveInstallOptionsForTargets(
+        'install',
+        [await createTarget('overridable-plugin', {
+          skillTriggers: {
+            commit: {
+              allowInstallOverride: true,
+            },
+          },
+        })],
+        ['codex'],
+        {
+          cwd,
+          scope: 'project',
+        },
+        createAvailableLedger(),
+      ),
+    ).rejects.toThrow('tracking 只能证明 repo artifact 归属');
+
+    const explicit = await resolveInstallOptionsForTargets(
+      'install',
+      [await createTarget('overridable-plugin', {
+        skillTriggers: {
+          commit: {
+            allowInstallOverride: true,
+          },
+        },
+      })],
+      ['codex'],
+      {
+        cwd,
+        scope: 'project',
+        requestedSkillTrigger: 'manual',
+      },
+      createAvailableLedger(),
+    );
+    expect(
+      explicit.get(createResolvedInstallOptionsKey('codex', 'overridable-plugin', `project:${projectKey}`)),
+    ).toEqual({
+      applicability: 'overridable',
+      skillTriggerPreference: 'manual',
+      skillTriggerSource: 'cli',
+      ledgerTrust: 'available',
+    });
+
+    const fixed = await resolveInstallOptionsForTargets(
+      'install',
+      [await createTarget('fixed-plugin', {
+        codexSkills: ['review'],
+        claudeSkills: [],
+      })],
+      ['codex'],
+      {
+        cwd,
+        scope: 'project',
+      },
+      createAvailableLedger(),
+    );
+    expect(
+      fixed.get(createResolvedInstallOptionsKey('codex', 'fixed-plugin', `project:${projectKey}`)),
+    ).toEqual({
+      applicability: 'fixed',
+      ledgerTrust: 'available',
     });
   });
 });

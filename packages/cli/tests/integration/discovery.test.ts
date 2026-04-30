@@ -169,6 +169,94 @@ describe('managed plugin discovery', () => {
     expect(candidates[0].target.plugin.manifest.extensions?.hooks).toHaveLength(1);
   });
 
+  it('builds historical Codex repo skill and MCP targets from tracking when the current catalog is missing', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexProjectKey = await resolveCodexProjectKey(repoRoot);
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    await upsertTrackingRecord(codexPaths.trackingDir, 'repo-history', [
+      {
+        path: path.join(repoRoot, '.agents', 'skills', 'commit'),
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'commit',
+      },
+      {
+        path: path.join(repoRoot, '.codex', 'config.toml'),
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      },
+    ]);
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['repo-history'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      pluginName: 'repo-history',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: codexProjectKey,
+      selectable: true,
+    });
+    expect(candidates[0].evidence.trackingKinds).toEqual(['skill', 'mcpServer']);
+    expect(candidates[0].target.source).toBe('historical');
+    expect(candidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+    expect(candidates[0].target.plugin.manifest.mcpServers).toBe('./historical-mcp.json');
+    expect(candidates[0].target.plugin.manifest.extensions).toBeUndefined();
+  });
+
+  it('marks historical Codex repo skill targets with missing artifactKey as non-selectable for uninstall', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexProjectKey = await resolveCodexProjectKey(repoRoot);
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    await fs.outputJson(
+      getTrackingManifestPath(codexPaths.trackingDir),
+      {
+        version: 1,
+        plugins: {
+          'repo-history-broken': {
+            name: 'repo-history-broken',
+            generatedAt: '2026-04-30T00:00:00.000Z',
+            artifacts: [
+              {
+                path: path.join(repoRoot, '.agents', 'skills', 'commit'),
+                kind: 'skill',
+                platform: 'codex',
+              },
+            ],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['repo-history-broken'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      pluginName: 'repo-history-broken',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: codexProjectKey,
+      selectable: false,
+    });
+    expect(candidates[0].disabledReason).toContain('缺少 artifactKey');
+  });
+
   it('keeps Claude project discovery scoped to the invocation directory realpath', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const subdir = path.join(repoRoot, 'packages', 'feature');

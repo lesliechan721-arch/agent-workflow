@@ -1,10 +1,10 @@
 ---
-name: review
-description: 当用户要求审查代码、检查代码质量或生成审查报告时，执行完整的代码审查工作流。
+name: review-workflow
+description: 当用户要求执行完整代码审查工作流时，串联检查步骤并生成结构化报告。
 user-invocable: true
 disable-model-invocation: true
 metadata:
-  short-description: 自动化代码审查工作流
+  short-description: 完整代码审查工作流
 ---
 
 # Code Review

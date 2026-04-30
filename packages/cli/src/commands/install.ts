@@ -1,10 +1,16 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import { applyClaudeInstallLedger } from '../adapters/claude.js';
-import { applyCodexInstallLedger } from '../adapters/codex.js';
+import {
+  applyCodexInstallLedger,
+  pruneCodexTrackedArtifacts,
+  requiresCodexNativePlugin,
+} from '../adapters/codex.js';
 import type {
-  GeneratedArtifact,
   CommandOptions,
+  GeneratedArtifact,
   InstallCommandOptions,
   InstalledLedger,
   InstalledScopeRecord,
@@ -15,8 +21,10 @@ import type {
   PlatformName,
   PluginMeta,
   ResolvedInstallOptions,
+  TrackingManifest,
 } from '../types.js';
 import {
+  getInstalledLedgerPath,
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
@@ -27,8 +35,10 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
   resolveEmbeddedPluginsRoot,
+  resolveRepoRoot,
 } from '../utils/paths.js';
 import {
+  getGeneratedArtifactIdentityKey,
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
@@ -52,18 +62,28 @@ import {
   type SkillTriggerSignatureResult,
 } from '../utils/skill-trigger-preferences.js';
 import {
+  getTrackingManifestPath,
   readTrackingManifest,
   removeTrackingRecordFromManifest,
   upsertTrackingRecordInManifest,
   writeTrackingManifest,
 } from '../utils/tracking.js';
 import {
+  captureArtifactRollbackState,
+  collectArtifactRollbackSurfaceHints as collectTrackedArtifactRollbackSurfaceHints,
+  disposeArtifactRollbackState,
+  rollbackArtifacts as restoreTrackedArtifactRollbackState,
+  type ArtifactRollbackState,
+} from './uninstall.js';
+import {
   collectCommandWarnings,
   createResolvedInstallOptionsResolver,
   createAdapters,
   assertPluginsSupportPlatforms,
   filterPostCommandDriftWarnings,
+  prepareCommandEnvironment,
   preparePluginTargetsForCommand,
+  requiresRuntimeWritableMarketplaceForTargets,
   resolveInstallOptionsForTargets,
   resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
@@ -79,6 +99,8 @@ import {
   normalizeInstallCommandOptions,
   type RawInstallCommandOptions,
 } from './options.js';
+import { assertCodexProjectInstallableTargets } from './codex-project-installability.js';
+import { preflightCodexProjectWriteSafety } from './codex-project-safety.js';
 
 type InstallCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
@@ -87,7 +109,17 @@ type InstallCommandRuntime = CommandExecutionContextInput & {
   ) => ResolvedInstallOptions;
   operation?: 'install' | 'upgrade';
   skipConfigPreflight?: boolean;
+  skipWriteSafetyPreflight?: boolean;
+  upgradeRollbackBaselines?: Map<string, UpgradeRollbackBaseline>;
 };
+
+export interface UpgradeRollbackBaseline {
+  artifactRollbackState?: ArtifactRollbackState;
+  trackingDir: string;
+  trackingManifest: TrackingManifest;
+  ledger: InstalledLedger;
+  degradedReasonOnRestoreFailure: LedgerStateReason;
+}
 
 function resolveTrackingDir(
   cwd: string,
@@ -98,6 +130,137 @@ function resolveTrackingDir(
   return platform === 'claude'
     ? resolveClaudePaths(cwd, scope, env).trackingDir
     : resolveCodexPaths(cwd, scope, env).trackingDir;
+}
+
+export function createUpgradeRollbackBaselineKey(
+  platform: PlatformName,
+  pluginName: string,
+): string {
+  return `${platform}:${pluginName}`;
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function appendRollbackIssue(
+  issues: string[],
+  surfaces: Set<string>,
+  summary: string,
+  error: unknown,
+  surfaceHints: readonly string[],
+): void {
+  issues.push(`${summary}：${normalizeErrorMessage(error)}`);
+  for (const surface of surfaceHints) {
+    surfaces.add(surface);
+  }
+}
+
+function createRollbackFailureError(
+  error: unknown,
+  issues: string[],
+  surfaces: Set<string>,
+): Error {
+  if (issues.length === 0) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  const baseMessage = normalizeErrorMessage(error);
+  const surfaceText = [...surfaces].join('、');
+  return new Error(
+    `${baseMessage}；回滚未完全完成，请人工检查 ${surfaceText}。${issues.join('；')}`,
+  );
+}
+
+function collectArtifactRollbackSurfaceHints(
+  platform: PlatformName,
+  cwd: string,
+  scope: CommandOptions['scope'],
+  env: NodeJS.ProcessEnv,
+  artifacts: GeneratedArtifact[],
+): string[] {
+  const hints = ['repo artifacts'];
+  if (platform !== 'codex') {
+    return hints;
+  }
+
+  const configTomlPath = resolveCodexPaths(cwd, scope, env).configTomlPath;
+  if (artifacts.some((artifact) => path.normalize(artifact.path) === path.normalize(configTomlPath))) {
+    hints.push(configTomlPath);
+  }
+
+  return hints;
+}
+
+function createArtifactIdentityRefusal(
+  artifacts: GeneratedArtifact[],
+  kind: 'previousArtifacts' | 'desiredArtifacts',
+): string | null {
+  const invalidArtifacts = artifacts.filter((artifact) =>
+    (artifact.kind === 'skill' || artifact.kind === 'mcpServer') &&
+    !artifact.artifactKey,
+  );
+  if (invalidArtifacts.length === 0) {
+    return null;
+  }
+
+  const details = invalidArtifacts
+    .map((artifact) => `${artifact.kind} ${artifact.path}`)
+    .join('；');
+  return `${kind} 中存在缺少 artifactKey 的受管产物（${details}），CLI 不能安全执行 stale prune；请先修复 tracking / artifact identity 后重试。`;
+}
+
+function diffGeneratedArtifacts(
+  previousArtifacts: GeneratedArtifact[],
+  desiredArtifacts: GeneratedArtifact[],
+): GeneratedArtifact[] {
+  const desiredKeys = new Set(desiredArtifacts.map((artifact) => getGeneratedArtifactIdentityKey(artifact)));
+  return previousArtifacts.filter((artifact) => !desiredKeys.has(getGeneratedArtifactIdentityKey(artifact)));
+}
+
+async function restoreUpgradeRollbackBaseline(
+  baseline: UpgradeRollbackBaseline,
+  platform: PlatformName,
+  target: ResolvedPluginTarget,
+  options: CommandOptions,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (baseline.artifactRollbackState) {
+    await restoreTrackedArtifactRollbackState(
+      platform,
+      target,
+      options.scope,
+      options.cwd,
+      env,
+      baseline.artifactRollbackState,
+    );
+  }
+
+  await writeTrackingManifest(baseline.trackingDir, baseline.trackingManifest);
+  await writeInstalledLedger(baseline.ledger, env);
+}
+
+function resolveInstallRollbackLedgerReason(
+  platform: PlatformName,
+  scope: InstallCommandOptions['scope'],
+  nativeWritten: boolean,
+  materializationRollbackFailed: boolean,
+  artifactsWritten: boolean,
+  trackingWriteAttempted: boolean,
+): LedgerStateReason | null {
+  if (nativeWritten) {
+    return 'operation_interrupted_after_native_write';
+  }
+
+  if (materializationRollbackFailed) {
+    return platform === 'codex' && scope === 'project'
+      ? 'operation_interrupted_after_artifact_write'
+      : 'operation_interrupted_after_native_write';
+  }
+
+  return artifactsWritten || trackingWriteAttempted
+    ? 'operation_interrupted_after_artifact_write'
+    : null;
 }
 
 function preserveLedgerState(
@@ -149,9 +312,13 @@ async function applyInstallLedger(
     throw new Error(`Unknown plugin "${target.pluginName}".`);
   }
 
+  const overridableInstallOptions = resolvedInstallOptions.applicability === 'overridable'
+    ? resolvedInstallOptions
+    : undefined;
+
   return platform === 'claude'
-    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions)
-    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, resolvedInstallOptions);
+    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, overridableInstallOptions)
+    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, overridableInstallOptions);
 }
 
 async function setLifecycleConfigSnapshotOnLedger(
@@ -197,13 +364,18 @@ function createPendingScopeRecord(
   };
 }
 
-function mayWriteNativeState(platform: PlatformName, target: ResolvedPluginTarget): boolean {
+function mayWriteNativeState(
+  platform: PlatformName,
+  target: ResolvedPluginTarget,
+  scope: InstallCommandOptions['scope'],
+): boolean {
   if (platform === 'claude') {
     return true;
   }
 
-  const manifest = target.currentPlugin?.manifest;
-  return Boolean(manifest?.skills || manifest?.mcpServers || manifest?.apps);
+  return target.currentPlugin
+    ? requiresCodexNativePlugin(target.currentPlugin, scope)
+    : false;
 }
 
 function recordNativePlugin(
@@ -217,25 +389,40 @@ function recordNativePlugin(
   }
 }
 
-function shouldMaterializeSkillTriggers(target: ResolvedPluginTarget): boolean {
-  return Boolean(target.embeddedPlugin?.manifest.skills);
-}
-
-function resolveDefaultInstallOptions(ledger: InstalledLedger): ResolvedInstallOptions {
-  return {
-    skillTriggerPreference: 'default',
-    skillTriggerSource: 'default',
-    ledgerTrust: ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
-  };
+function shouldMaterializeSkillTriggers(
+  platform: PlatformName,
+  _scope: InstallCommandOptions['scope'],
+  resolvedInstallOptions: ResolvedInstallOptions,
+): boolean {
+  return resolvedInstallOptions.applicability !== 'none';
 }
 
 function resolveMaterializationMode(
   resolvedInstallOptions: ResolvedInstallOptions,
 ): 'strictExplicit' | 'bestEffortReplay' {
-  return resolvedInstallOptions.skillTriggerSource === 'cli' &&
+  return resolvedInstallOptions.applicability === 'overridable' &&
+    resolvedInstallOptions.skillTriggerSource === 'cli' &&
     resolvedInstallOptions.skillTriggerPreference !== 'default'
     ? 'strictExplicit'
     : 'bestEffortReplay';
+}
+
+function shouldCollectSharedRuntimeConflictWarnings(
+  platform: PlatformName,
+  scope: InstallCommandOptions['scope'],
+  resolvedInstallOptions: ResolvedInstallOptions,
+): boolean {
+  return platform !== 'codex' || scope !== 'project'
+    ? resolvedInstallOptions.applicability === 'overridable'
+    : false;
+}
+
+function resolveMaterializationPreference(
+  resolvedInstallOptions: ResolvedInstallOptions,
+): 'default' | 'manual' | 'auto' {
+  return resolvedInstallOptions.applicability === 'overridable'
+    ? resolvedInstallOptions.skillTriggerPreference
+    : 'default';
 }
 
 async function resolveScopeIdentityForTarget(
@@ -250,6 +437,27 @@ async function resolveScopeIdentityForTarget(
     ? await resolveClaudeProjectKey(options.cwd)
     : await resolveCodexProjectKey(options.cwd);
   return `project:${projectKey}`;
+}
+
+async function preflightInstallConfigs(
+  targets: ResolvedPluginTarget[],
+  options: InstallCommandOptions,
+  runtime: InstallCommandRuntime,
+): Promise<void> {
+  const context = createCommandExecutionContext(runtime);
+  await preflightRequiredPluginConfigs({
+    targets: targets
+      .filter((target) => target.currentPlugin)
+      .map((target) => ({
+        pluginName: target.pluginName,
+        manifest: target.currentPlugin!.manifest,
+        schemaSourceIdentity: createPluginConfigSchemaIdentity(target.currentPlugin!.manifest),
+      })),
+    cwd: options.cwd,
+    defaultScope: options.scope,
+    context,
+    interactive: true,
+  });
 }
 
 async function rollbackArtifacts(
@@ -270,34 +478,35 @@ export async function installTargetsOnPlatforms(
   platforms: PlatformName[],
   options: InstallCommandOptions,
   runtime: InstallCommandRuntime = {},
-): Promise<{ warnings: string[]; nativePlugins: NativePluginsByPlatform }> {
+): Promise<{ warnings: string[]; nativePlugins: NativePluginsByPlatform; repoManagedArtifacts: GeneratedArtifact[] }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const operation = runtime.operation ?? 'install';
   const warnings: string[] = [];
   const nativePlugins: NativePluginsByPlatform = {};
+  let repoManagedArtifacts: GeneratedArtifact[] = [];
   assertPluginsSupportPlatforms(
     targets
       .map((target) => target.currentPlugin)
       .filter((plugin): plugin is PluginMeta => Boolean(plugin)),
     platforms,
   );
+  assertCodexProjectInstallableTargets(targets, platforms, options.scope);
+
+  if (!runtime.skipWriteSafetyPreflight) {
+    await preflightCodexProjectWriteSafety({
+      targets,
+      platforms,
+      cwd: options.cwd,
+      scope: options.scope,
+      env,
+      operation,
+    });
+  }
 
   if (!runtime.skipConfigPreflight) {
-    await preflightRequiredPluginConfigs({
-      targets: targets
-        .filter((target) => target.currentPlugin)
-        .map((target) => ({
-          pluginName: target.pluginName,
-          manifest: target.currentPlugin!.manifest,
-          schemaSourceIdentity: createPluginConfigSchemaIdentity(target.currentPlugin!.manifest),
-        })),
-      cwd: options.cwd,
-      defaultScope: options.scope,
-      context,
-      interactive: true,
-    });
+    await preflightInstallConfigs(targets, options, runtime);
   }
 
   for (const platform of platforms) {
@@ -308,21 +517,74 @@ export async function installTargetsOnPlatforms(
 
       const status = await adapters[platform].status(target.currentPlugin, options.scope);
       const pluginStatus = status.plugins[0];
-      if (pluginStatus?.externalOwnership?.present) {
+      if (
+        pluginStatus?.externalOwnership?.present &&
+        !(platform === 'codex' && options.scope === 'project')
+      ) {
         throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
       }
 
       const baselineLedger = await readInstalledLedger(env);
-      const resolvedInstallOptions =
-        runtime.resolveInstallOptions?.(platform, target) ??
-        resolveDefaultInstallOptions(baselineLedger);
+      const resolvedInstallOptions = runtime.resolveInstallOptions?.(platform, target) ?? (
+        await resolveInstallOptionsForTargets(
+          'install',
+          [target],
+          [platform],
+          {
+            cwd: options.cwd,
+            scope: options.scope,
+            requestedSkillTrigger: options.requestedSkillTrigger,
+            env,
+          },
+          baselineLedger,
+        )
+      ).values().next().value as ResolvedInstallOptions;
       const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
       const baselineTracking = await readTrackingManifest(trackingDir);
-      const materializeSkillTriggers = shouldMaterializeSkillTriggers(target);
+      const previousTrackedArtifacts =
+        baselineTracking.plugins[target.currentPlugin.manifest.name]?.artifacts ?? [];
+      const isCodexProjectUpgrade =
+        operation === 'upgrade' &&
+        platform === 'codex' &&
+        options.scope === 'project';
+      const upgradeRollbackBaselineKey = createUpgradeRollbackBaselineKey(
+        platform,
+        target.pluginName,
+      );
+      const hasProvidedUpgradeRollbackBaseline =
+        runtime.upgradeRollbackBaselines?.has(upgradeRollbackBaselineKey) === true;
+      const upgradeRollbackBaseline = isCodexProjectUpgrade
+        ? runtime.upgradeRollbackBaselines?.get(upgradeRollbackBaselineKey) ?? {
+            artifactRollbackState: pluginStatus && (
+              pluginStatus.scopeManagedEvidence?.ledger ||
+              pluginStatus.scopeManagedEvidence?.tracking ||
+              pluginStatus.scopeManagedEvidence?.sharedNativeRef
+            )
+              ? await captureArtifactRollbackState(
+                  platform,
+                  target,
+                  options.scope,
+                  options.cwd,
+                  env,
+                )
+              : undefined,
+            trackingDir,
+            trackingManifest: baselineTracking,
+            ledger: baselineLedger,
+            degradedReasonOnRestoreFailure: 'operation_interrupted_after_artifact_write',
+          }
+        : undefined;
+      const materializeSkillTriggers = shouldMaterializeSkillTriggers(
+        platform,
+        options.scope,
+        resolvedInstallOptions,
+      );
+      const materializationPreference = resolveMaterializationPreference(resolvedInstallOptions);
 
       let nativeWritten = false;
       let artifactsWritten = false;
       let trackingWritten = false;
+      let trackingWriteAttempted = false;
       let materializationCommitted = false;
       let materializationRollbackFailed = false;
       let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
@@ -330,8 +592,9 @@ export async function installTargetsOnPlatforms(
       let plannedRuntimeSignatureAfter: SkillTriggerSignatureResult | undefined;
       let writtenScopeIdentity: string | undefined;
       let generatedArtifacts: GeneratedArtifact[] = [];
+      let materializedArtifacts: GeneratedArtifact[] = [];
+      let trackedArtifacts: GeneratedArtifact[] = [];
       let lifecycleConfigSnapshot: LifecycleConfigSnapshotMetadata | undefined;
-      let ledgerWritten = false;
 
       try {
         lifecycleConfigSnapshot = await createLifecycleConfigSnapshot({
@@ -348,11 +611,20 @@ export async function installTargetsOnPlatforms(
             resolveScopeIdentityForTarget(platform, options),
           ]);
           const marketplaceRoot = resolveAwHome(env);
+          const materializationTarget = platform === 'codex' && options.scope === 'project'
+            ? {
+                platform: 'codex' as const,
+                scope: 'project' as const,
+                kind: 'repoSkill' as const,
+                root: path.join(await resolveRepoRoot(options.cwd), '.agents', 'skills'),
+              }
+            : undefined;
           writtenScopeIdentity = writtenScope;
 
           if (
             baselineLedger.ledgerState.status === 'available' &&
-            resolvedInstallOptions.ledgerTrust === 'available'
+            resolvedInstallOptions.ledgerTrust === 'available' &&
+            shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions)
           ) {
             runtimeSignatureBefore = await readCurrentSkillTriggerRuntimeSignature({
               pluginName: target.pluginName,
@@ -365,29 +637,35 @@ export async function installTargetsOnPlatforms(
           const materialization = await materializeSkillTriggerPreference({
             pluginName: target.pluginName,
             platform,
-            resolvedOptions: resolvedInstallOptions,
+            resolvedOptions: {
+              skillTriggerPreference: materializationPreference,
+            },
             embeddedRoot,
-            marketplaceRootOrStagingRoot: marketplaceRoot,
+            ...(materializationTarget
+              ? { target: materializationTarget }
+              : { marketplaceRootOrStagingRoot: marketplaceRoot }),
             mode: resolveMaterializationMode(resolvedInstallOptions),
           });
           materializationCommitted = materialization.committed;
           materializationRollbackHandle = materialization.rollbackHandle;
+          materializedArtifacts = materialization.generatedArtifacts;
           warnings.push(...materialization.warnings);
 
           if (
             baselineLedger.ledgerState.status === 'available' &&
-            resolvedInstallOptions.ledgerTrust === 'available'
+            resolvedInstallOptions.ledgerTrust === 'available' &&
+            shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions)
           ) {
             plannedRuntimeSignatureAfter = await buildSkillTriggerMaterializationSignature({
               pluginName: target.pluginName,
               platform,
-              preference: resolvedInstallOptions.skillTriggerPreference,
+              preference: materializationPreference,
               embeddedRoot,
             });
           }
         }
 
-        const plannedNativeWrite = mayWriteNativeState(platform, target);
+        const plannedNativeWrite = mayWriteNativeState(platform, target, options.scope);
         await emitCommandEvent(context, {
           type: plannedNativeWrite ? 'native:plan' : 'native:skipped',
           data: {
@@ -398,8 +676,10 @@ export async function installTargetsOnPlatforms(
           },
         });
 
-        await adapters[platform].installPlugin(target.currentPlugin, options.scope);
-        nativeWritten = mayWriteNativeState(platform, target);
+        if (plannedNativeWrite) {
+          await adapters[platform].installPlugin(target.currentPlugin, options.scope);
+        }
+        nativeWritten = plannedNativeWrite;
         if (nativeWritten) {
           recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
           await emitCommandEvent(context, {
@@ -422,14 +702,16 @@ export async function installTargetsOnPlatforms(
           },
         });
         generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope);
-        artifactsWritten = generatedArtifacts.length > 0;
+        trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
+        repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
+        artifactsWritten = trackedArtifacts.length > 0;
         await emitCommandEvent(context, {
           type: artifactsWritten ? 'artifacts:written' : 'artifacts:noop',
           data: {
             platform,
             plugin: target.currentPlugin.manifest.name,
             scope: options.scope,
-            artifacts: generatedArtifacts.map((artifact) => ({
+            artifacts: trackedArtifacts.map((artifact) => ({
               kind: artifact.kind,
               path: artifact.path,
             })),
@@ -445,17 +727,60 @@ export async function installTargetsOnPlatforms(
           context,
           currentPlugin: target.currentPlugin,
           scopeRecord: createPendingScopeRecord(target, lifecycleConfigSnapshot),
-          artifacts: generatedArtifacts,
+          artifacts: trackedArtifacts,
           scriptTimeoutMs: options.scriptTimeoutMs,
         });
 
+        if (isCodexProjectUpgrade) {
+          const previousIdentityRefusal = createArtifactIdentityRefusal(
+            previousTrackedArtifacts,
+            'previousArtifacts',
+          );
+          if (previousIdentityRefusal) {
+            throw new Error(previousIdentityRefusal);
+          }
+
+          const desiredIdentityRefusal = createArtifactIdentityRefusal(
+            trackedArtifacts,
+            'desiredArtifacts',
+          );
+          if (desiredIdentityRefusal) {
+            throw new Error(desiredIdentityRefusal);
+          }
+
+          const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts);
+          if (staleArtifacts.length > 0) {
+            await pruneCodexTrackedArtifacts({
+              cwd: options.cwd,
+              scope: options.scope,
+              env,
+              pluginName: target.currentPlugin.manifest.name,
+              artifacts: staleArtifacts,
+            });
+            await emitCommandEvent(context, {
+              type: 'artifacts:pruned',
+              data: {
+                platform,
+                plugin: target.currentPlugin.manifest.name,
+                scope: options.scope,
+                staleArtifacts: staleArtifacts.map((artifact) => ({
+                  kind: artifact.kind,
+                  path: artifact.path,
+                  ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+                })),
+              },
+            });
+          }
+        }
+
+        trackingWriteAttempted = true;
         await writeTrackingManifest(
           trackingDir,
-          generatedArtifacts.length > 0
+          trackedArtifacts.length > 0
             ? upsertTrackingRecordInManifest(
                 baselineTracking,
                 target.currentPlugin.manifest.name,
-                generatedArtifacts,
+                trackedArtifacts,
               )
             : removeTrackingRecordFromManifest(
                 baselineTracking,
@@ -470,7 +795,7 @@ export async function installTargetsOnPlatforms(
             plugin: target.currentPlugin.manifest.name,
             scope: options.scope,
             trackingDir,
-            artifactCount: generatedArtifacts.length,
+            artifactCount: trackedArtifacts.length,
           },
         });
 
@@ -497,6 +822,7 @@ export async function installTargetsOnPlatforms(
           baselineLedger.ledgerState.status === 'available' &&
           nextLedger.ledgerState.status === 'available' &&
           resolvedInstallOptions.ledgerTrust === 'available' &&
+          shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions) &&
           runtimeSignatureBefore &&
           plannedRuntimeSignatureAfter &&
           writtenScopeIdentity
@@ -518,7 +844,6 @@ export async function installTargetsOnPlatforms(
           );
         }
         await writeInstalledLedger(nextLedger, env);
-        ledgerWritten = true;
         await emitCommandEvent(context, {
           type: 'ledger:written',
           data: {
@@ -550,14 +875,33 @@ export async function installTargetsOnPlatforms(
           generatedArtifacts,
           getGeneratedArtifactsFromError(error),
         );
-        artifactsWritten = artifactsWritten || generatedArtifacts.length > 0;
+        trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
+        artifactsWritten = artifactsWritten || trackedArtifacts.length > 0;
+        const rollbackIssues: string[] = [];
+        const rollbackSurfaces = new Set<string>();
+        const trackingManifestPath = getTrackingManifestPath(trackingDir);
+        const installedLedgerPath = getInstalledLedgerPath(env);
+        const artifactSurfaceHints = collectArtifactRollbackSurfaceHints(
+          platform,
+          options.cwd,
+          options.scope,
+          env,
+          trackedArtifacts,
+        );
 
         if (materializationCommitted && materializationRollbackHandle) {
           try {
             await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
             materializationCommitted = false;
-          } catch {
+          } catch (rollbackError) {
             materializationRollbackFailed = true;
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              'repo-managed skill rollback 失败',
+              rollbackError,
+              artifactSurfaceHints,
+            );
           }
         }
 
@@ -569,56 +913,138 @@ export async function installTargetsOnPlatforms(
               options.scope,
               generatedArtifacts,
             );
-          } catch {
-            // noop
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              'repo artifacts 回滚失败',
+              rollbackError,
+              artifactSurfaceHints,
+            );
           }
         }
 
-        if (trackingWritten) {
+        if (trackingWriteAttempted) {
           try {
             await writeTrackingManifest(trackingDir, baselineTracking);
-          } catch {
-            // noop
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `tracking manifest 恢复失败 (${trackingManifestPath})`,
+              rollbackError,
+              [trackingManifestPath],
+            );
           }
         }
 
-        if (lifecycleConfigSnapshot && !ledgerWritten) {
+        if (lifecycleConfigSnapshot) {
           try {
             await fs.remove(lifecycleConfigSnapshot.snapshotRoot);
-          } catch {
-            // noop
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `install snapshot 清理失败 (${lifecycleConfigSnapshot.snapshotRoot})`,
+              rollbackError,
+              [lifecycleConfigSnapshot.snapshotRoot],
+            );
           }
         }
 
-        if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWritten) {
+        let upgradeBaselineRestoreFailed = false;
+        const shouldAttemptUpgradeBaselineRestore = Boolean(
+          upgradeRollbackBaseline &&
+          (
+            hasProvidedUpgradeRollbackBaseline ||
+            nativeWritten ||
+            artifactsWritten ||
+            trackingWriteAttempted ||
+            materializationCommitted
+          ),
+        );
+        if (shouldAttemptUpgradeBaselineRestore && upgradeRollbackBaseline) {
+          const upgradeArtifactSurfaceHints = collectTrackedArtifactRollbackSurfaceHints(
+            platform,
+            options.cwd,
+            options.scope,
+            env,
+            previousTrackedArtifacts,
+            upgradeRollbackBaseline.artifactRollbackState,
+          );
+          let baselineRestored = false;
           try {
-            await writeDegradedLedger(
-              baselineLedger,
-              nativeWritten || materializationRollbackFailed
-                ? 'operation_interrupted_after_native_write'
-                : 'operation_interrupted_after_artifact_write',
+            await restoreUpgradeRollbackBaseline(
+              upgradeRollbackBaseline,
+              platform,
+              target,
+              options,
               env,
             );
+            baselineRestored = true;
+          } catch (restoreError) {
+            upgradeBaselineRestoreFailed = true;
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              '旧安装 baseline 恢复失败',
+              restoreError,
+              [
+                ...upgradeArtifactSurfaceHints,
+                trackingManifestPath,
+                installedLedgerPath,
+              ],
+            );
+          } finally {
+            if (upgradeRollbackBaseline.artifactRollbackState) {
+              await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
+                .catch(() => undefined);
+            }
+          }
+
+          if (baselineRestored) {
+            throw new Error(`${normalizeErrorMessage(error)}；upgrade 未完成，已恢复旧安装。`);
+          }
+        } else if (upgradeRollbackBaseline?.artifactRollbackState) {
+          await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
+            .catch(() => undefined);
+        }
+
+        const degradedReason = upgradeRollbackBaseline && upgradeBaselineRestoreFailed
+          ? upgradeRollbackBaseline.degradedReasonOnRestoreFailure
+          : resolveInstallRollbackLedgerReason(
+              platform,
+              options.scope,
+              nativeWritten,
+              materializationRollbackFailed,
+              artifactsWritten,
+              trackingWriteAttempted,
+            );
+
+        if (degradedReason) {
+          try {
+            await writeDegradedLedger(baselineLedger, degradedReason, env);
             await emitCommandEvent(context, {
               type: 'ledger:degraded',
               data: {
                 platform,
                 plugin: target.currentPlugin.manifest.name,
                 scope: options.scope,
-                reason: nativeWritten || materializationRollbackFailed
-                  ? 'operation_interrupted_after_native_write'
-                  : 'operation_interrupted_after_artifact_write',
+                reason: degradedReason,
               },
             });
-          } catch (ledgerError) {
-            const detail = ledgerError instanceof Error ? ledgerError.message : String(ledgerError);
-            throw new Error(
-              `${error instanceof Error ? error.message : String(error)}；此外，无法把 installed.json 标记为 degraded：${detail}`,
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `installed.json degraded 写入失败 (${installedLedgerPath})`,
+              rollbackError,
+              [installedLedgerPath],
             );
           }
         }
 
-        throw error;
+        throw createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
       }
 
       if (materializationRollbackHandle) {
@@ -648,17 +1074,22 @@ export async function installTargetsOnPlatforms(
           },
         });
       }
+
+      if (upgradeRollbackBaseline?.artifactRollbackState) {
+        await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
+          .catch(() => undefined);
+      }
     }
   }
 
-  return { warnings, nativePlugins };
+  return { warnings, nativePlugins, repoManagedArtifacts };
 }
 
 export async function installCommand(
   pluginNames: string[],
   rawOptions: RawInstallCommandOptions,
   runtime: InstallCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; marketplace?: PreparedMarketplaceState }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; repoManagedArtifacts: GeneratedArtifact[]; marketplace?: PreparedMarketplaceState }> {
   const options = normalizeInstallCommandOptions(rawOptions);
   if (pluginNames.length === 0) {
     throw new Error('install 命令至少需要一个插件名。非交互模式下请运行 `aw install <插件名>`。');
@@ -671,7 +1102,7 @@ export async function installCommand(
     options.scope,
     pluginNames,
     {
-      ensureLocalMarketplace: true,
+      catalogMode: 'readOnly',
       allowHistoricalFallback: false,
       env,
     },
@@ -687,6 +1118,7 @@ export async function installCommand(
       warnings: prepared.warnings,
     },
   });
+  let commandWarnings = prepared.warnings;
   try {
     const adapters = createAdapters(options.cwd, context);
     const platforms = await resolveTargetPlatforms(
@@ -706,20 +1138,51 @@ export async function installCommand(
         scope: options.scope,
       },
     });
+    assertCodexProjectInstallableTargets(prepared.targets, platforms, options.scope);
+    await preflightCodexProjectWriteSafety({
+      targets: prepared.targets,
+      platforms,
+      cwd: options.cwd,
+      scope: options.scope,
+      env,
+      operation: 'install',
+    });
+    await preflightInstallConfigs(prepared.targets, options, context);
+    const runtimeWritableMarketplace = requiresRuntimeWritableMarketplaceForTargets(
+      platforms,
+      prepared.targets,
+      options.scope,
+    );
+    const preparedForExecution = await prepareCommandEnvironment({
+      catalogMode: runtimeWritableMarketplace ? 'runtimeWritable' : 'readOnly',
+      env,
+    });
+    commandWarnings = [
+      ...prepared.warnings,
+      ...preparedForExecution.warnings,
+    ];
     const resolvedInstallOptionsByKey = await resolveInstallOptionsForTargets(
       'install',
       prepared.targets,
       platforms,
-      options,
-      prepared.ledger,
+      {
+        ...options,
+        env,
+      },
+      preparedForExecution.ledger,
     );
     await emitCommandEvent(context, {
       type: 'skill-trigger:resolved',
       data: {
         entries: [...resolvedInstallOptionsByKey.entries()].map(([key, value]) => ({
           key,
-          preference: value.skillTriggerPreference,
-          source: value.skillTriggerSource,
+          applicability: value.applicability,
+          ...(value.applicability === 'overridable'
+            ? {
+                preference: value.skillTriggerPreference,
+                source: value.skillTriggerSource,
+              }
+            : {}),
           ledgerTrust: value.ledgerTrust,
         })),
       },
@@ -734,20 +1197,23 @@ export async function installCommand(
       ...context,
       adapters,
       resolveInstallOptions,
+      skipConfigPreflight: true,
+      skipWriteSafetyPreflight: true,
     });
 
     return {
       platforms,
       plugins: prepared.targets.map((target) => target.pluginName),
       nativePlugins: result.nativePlugins,
-      marketplace: prepared.marketplace,
+      repoManagedArtifacts: result.repoManagedArtifacts,
+      marketplace: preparedForExecution.marketplace,
       warnings: [
-        ...prepared.warnings,
+        ...commandWarnings,
         ...collectCommandWarnings(platforms, options.scope),
         ...result.warnings,
       ],
     };
   } catch (error) {
-    throw wrapCommandErrorWithWarnings(error, prepared.warnings);
+    throw wrapCommandErrorWithWarnings(error, commandWarnings);
   }
 }

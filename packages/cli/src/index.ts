@@ -36,8 +36,10 @@ import {
 import {
   type CatalogResolution,
   CommandWarningError,
+  type GeneratedArtifact,
   isCommandWarningError,
   type NativePluginsByPlatform,
+  type SkippedUpgradeTarget,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
 import { resolveAwHome } from './utils/paths.js';
@@ -81,6 +83,7 @@ function writeWarnings(write: (text: string) => void, warnings: string[]): void 
 interface CliMarketplaceReceipt {
   rootDir: string;
   changed: boolean;
+  mode?: 'readOnly' | 'runtimeWritable';
   catalog: CatalogResolution;
 }
 
@@ -97,14 +100,35 @@ function mergeMarketplaceReceipts(
   return {
     rootDir: receipts[0].rootDir,
     changed: receipts.some((receipt) => receipt.changed),
+    mode: receipts.some((receipt) => receipt.mode === 'runtimeWritable')
+      ? 'runtimeWritable'
+      : receipts[0].mode,
     catalog: receipts.find((receipt) => receipt.catalog.source === 'local')?.catalog ?? receipts[0].catalog,
   };
 }
 
 function mergeCommandResults(
-  results: Array<{ platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins?: NativePluginsByPlatform; marketplace?: CliMarketplaceReceipt }>,
-): { platforms: string[]; plugins: string[]; warnings: string[]; nativePlugins: NativePluginsByPlatform; marketplace?: CliMarketplaceReceipt } {
+  results: Array<{
+    platforms: string[];
+    plugins: string[];
+    warnings: string[];
+    skipped?: SkippedUpgradeTarget[];
+    nativePlugins?: NativePluginsByPlatform;
+    repoManagedArtifacts?: GeneratedArtifact[];
+    marketplace?: CliMarketplaceReceipt;
+  }>,
+): {
+  platforms: string[];
+  plugins: string[];
+  warnings: string[];
+  skipped: SkippedUpgradeTarget[];
+  nativePlugins: NativePluginsByPlatform;
+  repoManagedArtifacts: GeneratedArtifact[];
+  marketplace?: CliMarketplaceReceipt;
+} {
   const nativePlugins: NativePluginsByPlatform = {};
+  const repoManagedArtifacts: GeneratedArtifact[] = [];
+  const repoManagedArtifactKeys = new Set<string>();
   for (const result of results) {
     for (const [platform, pluginNames] of Object.entries(result.nativePlugins ?? {}) as Array<[keyof NativePluginsByPlatform, string[] | undefined]>) {
       if (!pluginNames || pluginNames.length === 0) {
@@ -117,13 +141,28 @@ function mergeCommandResults(
         }
       }
     }
+    for (const artifact of result.repoManagedArtifacts ?? []) {
+      const key = [
+        artifact.platform,
+        artifact.kind,
+        artifact.path,
+        artifact.artifactKey ?? '',
+      ].join('\0');
+      if (repoManagedArtifactKeys.has(key)) {
+        continue;
+      }
+      repoManagedArtifactKeys.add(key);
+      repoManagedArtifacts.push(artifact);
+    }
   }
 
   return {
     platforms: [...new Set(results.flatMap((result) => result.platforms))],
     plugins: [...new Set(results.flatMap((result) => result.plugins))],
     warnings: results.flatMap((result) => result.warnings),
+    skipped: results.flatMap((result) => result.skipped ?? []),
     nativePlugins,
+    repoManagedArtifacts,
     marketplace: mergeMarketplaceReceipts(results),
   };
 }
@@ -132,7 +171,9 @@ interface CliCommandResult {
   platforms: string[];
   plugins: string[];
   warnings: string[];
+  skipped?: SkippedUpgradeTarget[];
   nativePlugins?: NativePluginsByPlatform;
+  repoManagedArtifacts?: GeneratedArtifact[];
   marketplace?: CliMarketplaceReceipt;
 }
 
@@ -159,12 +200,60 @@ function formatScopes(scopes: string[]): string {
   return formatList(scopes.map((scope) => `${scope} scope`));
 }
 
-function formatCatalogReceipt(catalog: CatalogResolution): string {
+function formatCatalogReceipt(
+  catalog: CatalogResolution,
+  mode: CliMarketplaceReceipt['mode'] = 'runtimeWritable',
+): string {
   if (catalog.source === 'local') {
-    return `本地 marketplace（${catalog.rootDir}）`;
+    return mode === 'readOnly'
+      ? `本地插件目录（${catalog.rootDir}）`
+      : `本地 marketplace（${catalog.rootDir}）`;
   }
 
   return `embedded catalog（${catalog.rootDir}${catalog.reason ? `，${catalog.reason}` : ''}）`;
+}
+
+function formatCodexProjectArtifactSurfaces(
+  artifacts: GeneratedArtifact[] | undefined,
+): string | undefined {
+  const surfaces = new Set<string>();
+  for (const artifact of artifacts ?? []) {
+    if (artifact.platform !== 'codex') {
+      continue;
+    }
+    switch (artifact.kind) {
+      case 'skill':
+        surfaces.add('.agents/skills');
+        break;
+      case 'mcpServer':
+      case 'instruction':
+        surfaces.add('.codex/config.toml');
+        break;
+      case 'permission':
+        surfaces.add('.codex/rules');
+        break;
+      case 'hook':
+        surfaces.add('.codex/hooks.json');
+        break;
+      case 'agent':
+        surfaces.add('.codex/agents');
+        break;
+    }
+  }
+
+  if (surfaces.size === 0) {
+    return undefined;
+  }
+  surfaces.add('.codex/.agent-workflows-manifest.json');
+  return [...surfaces].join('、');
+}
+
+function repoManagedReceiptVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
+  return action === 'install'
+    ? '已写入'
+    : action === 'uninstall'
+      ? '已清理'
+      : '已刷新';
 }
 
 function commandVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
@@ -187,16 +276,26 @@ function writeCommandReceipt(
   const pluginList = formatList(result.plugins);
   const platformList = formatPlatforms(result.platforms);
   const scopeList = formatScopes(scopes);
+  const skipped = result.skipped ?? [];
 
-  writeLine(write, `${commandVerb(action)} ${pluginList}：${platformList} / ${scopeList}。`);
+  if (action === 'upgrade' && result.plugins.length === 0 && skipped.length > 0) {
+    writeLine(
+      write,
+      `未升级任何插件，已跳过 ${skipped.length} 个目标：${formatPlatforms(result.platforms)} / ${scopeList}。`,
+    );
+  } else {
+    writeLine(write, `${commandVerb(action)} ${pluginList}：${platformList} / ${scopeList}。`);
+  }
 
   if (action === 'install' || action === 'upgrade') {
     if (result.marketplace) {
-      writeLine(write, `使用插件目录：${formatCatalogReceipt(result.marketplace.catalog)}。`);
-      writeLine(
-        write,
-        `${result.marketplace.changed ? '已同步' : '已复用'}本地 marketplace：${result.marketplace.rootDir}。`,
-      );
+      writeLine(write, `使用插件目录：${formatCatalogReceipt(result.marketplace.catalog, result.marketplace.mode)}。`);
+      if (result.marketplace.catalog.source === 'local' && result.marketplace.mode !== 'readOnly') {
+        writeLine(
+          write,
+          `${result.marketplace.changed ? '已同步' : '已复用'}本地 marketplace：${result.marketplace.rootDir}。`,
+        );
+      }
     }
     const codexNativePlugins = result.nativePlugins?.codex ?? [];
     if (codexNativePlugins.length > 0) {
@@ -206,16 +305,45 @@ function writeCommandReceipt(
     if ((result.nativePlugins?.claude ?? []).length > 0) {
       writeLine(write, `已确认 Claude Code marketplace 和插件状态。`);
     }
+    const codexProjectArtifacts = formatCodexProjectArtifactSurfaces(result.repoManagedArtifacts);
+    if (codexProjectArtifacts) {
+      writeLine(write, `${repoManagedReceiptVerb(action)} Codex project repo-managed artifacts：${codexProjectArtifacts}。`);
+    }
   } else {
-    writeLine(write, '已清理匹配的受管状态和生成产物。');
+    const codexProjectArtifacts = formatCodexProjectArtifactSurfaces(result.repoManagedArtifacts);
+    if (codexProjectArtifacts) {
+      writeLine(write, `${repoManagedReceiptVerb(action)} Codex project repo-managed artifacts：${codexProjectArtifacts}。`);
+    } else {
+      writeLine(write, '已清理匹配的受管状态和生成产物。');
+    }
   }
 
   const platformFlag = result.platforms.length === 1 ? ` -p ${result.platforms[0]}` : '';
   const statusTarget = firstPlugin ? ` ${firstPlugin}` : '';
+  if (action === 'upgrade' && skipped.length > 0) {
+    writeLine(write, `已跳过 ${skipped.length} 个目标：`);
+    for (const entry of skipped) {
+      writeLine(
+        write,
+        `- ${PLATFORM_LABELS[entry.platform] ?? entry.platform} / ${entry.scope} scope / ${entry.plugin} [${entry.code}] ${entry.reason}`,
+      );
+    }
+  }
   writeLine(
     write,
     `完成。下一步：运行 aw status${statusTarget}${platformFlag} 查看${commandNoun(action)}后的状态。`,
   );
+}
+
+function resolveCommandReceiptExitCode(
+  action: 'install' | 'uninstall' | 'upgrade',
+  result: CliCommandResult,
+): number {
+  if (action === 'upgrade' && result.plugins.length === 0 && (result.skipped?.length ?? 0) > 0) {
+    return 1;
+  }
+
+  return 0;
 }
 
 interface RawDiagnosticsOptions {
@@ -502,6 +630,7 @@ async function resolveConfigForRead(options: {
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
+  const commandExitState = { exitCode: 0 };
   const io = {
     ...createDefaultIo(),
     ...options.io,
@@ -619,6 +748,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         );
         writeCommandReceipt(io.stdout, 'install', receipt, context);
         writeWarnings(io.stderr, receipt.result.warnings);
+        commandExitState.exitCode = resolveCommandReceiptExitCode('install', receipt.result);
       },
     );
 
@@ -684,6 +814,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       );
       writeCommandReceipt(io.stdout, 'uninstall', receipt, context);
       writeWarnings(io.stderr, receipt.result.warnings);
+      commandExitState.exitCode = resolveCommandReceiptExitCode('uninstall', receipt.result);
     });
 
   program
@@ -757,6 +888,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         );
         writeCommandReceipt(io.stdout, 'upgrade', receipt, context);
         writeWarnings(io.stderr, receipt.result.warnings);
+        commandExitState.exitCode = resolveCommandReceiptExitCode('upgrade', receipt.result);
       },
     );
 
@@ -1139,6 +1271,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeLine(io.stdout, result.output);
     });
 
+  Object.assign(program, { __awCommandExitState: commandExitState });
   return program;
 }
 
@@ -1182,7 +1315,9 @@ export async function runCli(
       },
     });
     await program.parseAsync(['node', 'aw', ...argv]);
-    return 0;
+    return (program as Command & {
+      __awCommandExitState?: { exitCode: number };
+    }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
     return handleCliError(error, io.stderr);
   }

@@ -19,6 +19,7 @@ import type {
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import {
   calculateBundleFingerprint,
   createAvailableLedger,
@@ -54,6 +55,7 @@ async function makeWorkspace(
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  await removeAppsFromGitCommit(repoRoot);
   await customizeRepo?.(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
@@ -67,6 +69,14 @@ async function makeWorkspace(
   };
 }
 
+async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  delete manifest.apps;
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', '.app.json'));
+}
+
 function codexOpenAiYamlPath(awHome: string, pluginName = 'git-commit'): string {
   return path.join(
     awHome,
@@ -75,6 +85,17 @@ function codexOpenAiYamlPath(awHome: string, pluginName = 'git-commit'): string 
     'codex',
     'skills',
     'commit',
+    'agents',
+    'openai.yaml',
+  );
+}
+
+function repoSkillOpenAiYamlPath(repoRoot: string, skillName = 'commit'): string {
+  return path.join(
+    repoRoot,
+    '.agents',
+    'skills',
+    skillName,
     'agents',
     'openai.yaml',
   );
@@ -97,6 +118,16 @@ async function readCodexAllowImplicitInvocation(
   pluginName = 'git-commit',
 ): Promise<boolean> {
   const parsed = YAML.parse(await fs.readFile(codexOpenAiYamlPath(awHome, pluginName), 'utf8')) as {
+    policy?: { allow_implicit_invocation?: boolean };
+  };
+  return parsed.policy?.allow_implicit_invocation === true;
+}
+
+async function readRepoSkillAllowImplicitInvocation(
+  repoRoot: string,
+  skillName = 'commit',
+): Promise<boolean> {
+  const parsed = YAML.parse(await fs.readFile(repoSkillOpenAiYamlPath(repoRoot, skillName), 'utf8')) as {
     policy?: { allow_implicit_invocation?: boolean };
   };
   return parsed.policy?.allow_implicit_invocation === true;
@@ -169,6 +200,40 @@ async function updateEmbeddedManifest(
   const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
   update(manifest);
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function addLifecycleRecorder(repoRoot: string, pluginName = 'git-commit'): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.scripts = {
+    lifecycle: {
+      install: './scripts/lifecycle.mjs',
+      upgrade: './scripts/lifecycle.mjs',
+      uninstall: './scripts/lifecycle.mjs',
+    },
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.outputFile(
+    path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
+    [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'fs.appendFileSync(path.join(context.paths.awHome, "lifecycle.log"), `${context.event}\\n`);',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
+async function removeEmbeddedMcpFromGitCommit(
+  embeddedRoot: string,
+): Promise<void> {
+  await updateEmbeddedManifest(embeddedRoot, 'git-commit', (manifest) => {
+    delete manifest.mcpServers;
+    manifest.version = '0.2.0';
+  });
+  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', '.mcp.json'));
 }
 
 async function cloneFixturePlugin(repoRoot: string, sourceName: string, targetName: string): Promise<void> {
@@ -396,6 +461,7 @@ afterEach(async () => {
   delete process.env.AW_CLAUDE_HOME;
   delete process.env.AW_FORCE_CODEX_AVAILABLE;
   delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
+  delete process.env.AW_TEST_LIFECYCLE_LOG;
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -612,6 +678,76 @@ describe('skill trigger command integration', () => {
     expect(codex.installCalls).toEqual([]);
   });
 
+  it('restores the old Codex project install when a capabilityChanged upgrade fails after internal uninstall, without running uninstall lifecycle', async () => {
+    const workspace = await makeWorkspace(async (repoRoot) => {
+      await addLifecycleRecorder(repoRoot);
+    });
+    configureWorkspaceEnv(workspace);
+    const lifecycleLogPath = path.join(workspace.awHome, 'lifecycle.log');
+
+    await initCommand({ force: true, env: process.env });
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      {
+        env: process.env,
+      },
+    );
+
+    const trackingPath = path.join(workspace.repoRoot, '.codex', '.agent-workflows-manifest.json');
+    const configPath = path.join(workspace.repoRoot, '.codex', 'config.toml');
+    const trackingBefore = await fs.readJson(trackingPath);
+    const ledgerBefore = await readInstalledLedger(process.env);
+    const configBefore = await fs.readFile(configPath, 'utf8');
+    expect(await readRepoSkillAllowImplicitInvocation(workspace.repoRoot)).toBe(false);
+
+    await removeEmbeddedMcpFromGitCommit(workspace.embeddedRoot);
+
+    const writeInstalledLedgerImpl = localMarketplaceModule.writeInstalledLedger;
+    let ledgerWriteCount = 0;
+    vi.spyOn(localMarketplaceModule, 'writeInstalledLedger')
+      .mockImplementation(async (ledger, env) => {
+        ledgerWriteCount += 1;
+        if (ledgerWriteCount === 2) {
+          throw new Error('ledger boom');
+        }
+        return writeInstalledLedgerImpl(ledger, env);
+      });
+
+    await expect(
+      upgradeCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+          requestedSkillTrigger: 'manual',
+        },
+        {
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('已恢复旧安装');
+
+    expect(await readRepoSkillAllowImplicitInvocation(workspace.repoRoot)).toBe(false);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(configBefore);
+    await expect(fs.readJson(trackingPath)).resolves.toEqual(trackingBefore);
+    await expect(readInstalledLedger(process.env)).resolves.toEqual(ledgerBefore);
+
+    const lifecycleEvents = (await fs.readFile(lifecycleLogPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    expect(lifecycleEvents).toContain('install');
+    expect(lifecycleEvents).toContain('upgrade');
+    expect(lifecycleEvents).not.toContain('uninstall');
+  });
+
   it('rejects upgrade --all --skill-trigger and degraded upgrade --all', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -783,7 +919,7 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(nonOverridable.awHome)).toBe(true);
-    expect(result.warnings.join('\n')).toContain('未声明 allowInstallOverride');
+    expect(result.warnings.join('\n')).not.toContain('allowInstallOverride');
 
     const tampered = await makeWorkspace();
     configureWorkspaceEnv(tampered);
@@ -1032,9 +1168,8 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(projectResult.warnings.join('\n')).toContain('sibling scope');
-    expect(projectResult.warnings.join('\n')).toContain('user (manual)');
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
 
     let ledger = await readInstalledLedger(process.env);
     const userOrder = ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder;
@@ -1098,8 +1233,8 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(repeatResult.warnings.join('\n')).toContain('user (default)');
-    expect(await readCodexAllowImplicitInvocation(equivalent.awHome)).toBe(false);
+    expect(repeatResult.warnings.join('\n')).not.toContain('sibling scope');
+    expect(await readCodexAllowImplicitInvocation(equivalent.awHome)).toBe(true);
   });
 
   it('does not warn for Claude default-auto sibling scopes when frontmatter relies on platform defaults', async () => {
@@ -1177,7 +1312,36 @@ describe('skill trigger command integration', () => {
     );
 
     expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+  });
+
+  it('materializes Codex project skills into repo-local .agents/skills without touching ~/.aw runtime skills', async () => {
+    const workspace = await makeWorkspace();
+    configureWorkspaceEnv(workspace);
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+          requestedSkillTrigger: 'manual',
+        },
+        {
+          adapters: createAdapters(),
+          env: process.env,
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+    });
+
+    await expect(fs.pathExists(path.join(workspace.repoRoot, '.agents', 'skills', 'commit', 'SKILL.md'))).resolves.toBe(true);
+    await expect(readRepoSkillAllowImplicitInvocation(workspace.repoRoot, 'commit')).resolves.toBe(false);
+    await expect(fs.pathExists(codexOpenAiYamlPath(workspace.awHome))).resolves.toBe(false);
   });
 
   it('reports sibling drift when an explicit upgrade changes semantics after a bundle change', async () => {
@@ -1248,8 +1412,8 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(result.warnings.join('\n')).toContain('user (auto)');
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    expect(result.warnings.join('\n')).not.toContain('user (auto)');
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
   });
 
   it('does not trust degraded sibling records when explicit install continues', async () => {
@@ -1295,6 +1459,68 @@ describe('skill trigger command integration', () => {
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(result.warnings.join('\n')).not.toContain('sibling scope');
     expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('degraded');
+  });
+
+  it('refuses tracking-only Codex project repeated installs without --skill-trigger, and explicit overrides do not touch ~/.aw', async () => {
+    const workspace = await makeWorkspace();
+    configureWorkspaceEnv(workspace);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+    await fs.outputJson(
+      path.join(workspace.repoRoot, '.codex', '.agent-workflows-manifest.json'),
+      {
+        version: 1,
+        plugins: {
+          'git-commit': {
+            name: 'git-commit',
+            generatedAt: '2026-04-28T00:00:00.000Z',
+            artifacts: [{
+              path: path.join(workspace.repoRoot, '.agents', 'skills', 'commit'),
+              kind: 'skill',
+              platform: 'codex',
+              artifactKey: 'commit',
+            }],
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: createAdapters(),
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('tracking 只能证明 repo artifact 归属');
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+          requestedSkillTrigger: 'manual',
+        },
+        {
+          adapters: createAdapters(),
+          env: process.env,
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+    });
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
   });
 
   it('fails strict explicit malformed skills before native install', async () => {
@@ -1435,6 +1661,45 @@ describe('skill trigger command integration', () => {
     });
   });
 
+  it('marks the ledger degraded with artifact-write semantics when project repo skill rollback fails', async () => {
+    const workspace = await makeWorkspace();
+    configureWorkspaceEnv(workspace);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    const originalMove = fs.move.bind(fs);
+    vi.spyOn(fs, 'move').mockImplementation(async (...args: Parameters<typeof fs.move>) => {
+      if (String(args[0]).includes('-backup-')) {
+        throw new Error('rollback move failed');
+      }
+      await originalMove(...args);
+    });
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+          requestedSkillTrigger: 'manual',
+        },
+        {
+          adapters: createAdapters({
+            'git-commit': {
+              failExtensions: 'extension install failed',
+            },
+          }),
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('extension install failed');
+    expect((await readInstalledLedger(process.env)).ledgerState).toMatchObject({
+      status: 'degraded',
+      reason: 'operation_interrupted_after_artifact_write',
+    });
+  });
+
   it('replays ledger preferences during init refresh and degraded preparation warnings stay visible', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
@@ -1517,7 +1782,7 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
 
     await uninstallCommand(
@@ -2181,7 +2446,7 @@ describe('skill trigger command integration', () => {
     );
 
     expect(result.output).toContain('currentCatalog=source:local,available:no');
-    expect(result.output).toContain('skillTriggerLedger=manual');
+    expect(result.output).toContain('skillTriggerApplicability=none');
     expect(result.output).toContain('skillTriggerRuntime=unknown');
     expect(result.output).toContain('skillTriggerDrift=unknown');
   });

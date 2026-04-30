@@ -2,9 +2,10 @@
   "name": "code-review",
   "version": "0.2.0",
   "description": "自动化代码审查插件：集成外部审查服务，提供结构化审查流程和报告。",
-  "skills": "./skills",
+  "skills": "./review-skills",
+  "slashCommands": "./slash-commands",
   "skillTriggers": {
-    "review": {
+    "review-workflow": {
       "allowInstallOverride": true
     }
   },
@@ -15,8 +16,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {
@@ -74,19 +74,18 @@
   },
   "buildConfig": {
     "templates": {
-      "include": ["skills/**/*.md"],
+      "include": ["review-skills/**/*.md", "slash-commands/*.md"],
       "vars": {
         "platformName": { "claude": "Claude Code", "codex": "Codex" },
         "supportsCommands": { "claude": true, "codex": false }
       }
     },
     "fileRules": {
-      "claude": { "include": ["commands/**", "output-styles/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["commands/**", "output-styles/**"] }
+      "claude": { "include": ["output-styles/**"], "exclude": [] },
+      "codex": { "include": [], "exclude": ["output-styles/**"] }
     },
     "manifestOverrides": {
       "claude": {
-        "commands": "./commands",
         "outputStyles": "./output-styles",
         "userConfig": {
           "reviewServiceApiKey": {

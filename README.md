@@ -1,6 +1,6 @@
 # Agent Workflows
 
-Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；CLI 会把仓库内插件打包成本机 marketplace，并安装到对应 agent 平台。
+Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；CLI 会把仓库内插件打包成 embedded bundle / 本机 marketplace，并按平台和 scope 安装到对应位置。
 
 ## 快速使用
 
@@ -17,13 +17,16 @@ aw status
 aw install
 ```
 
-`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。常用短选项示例：
+`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 是 repo-managed：不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest。
+
+常用短选项示例：
 
 ```bash
 aw install git-commit -p codex -s user
+aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来显式初始化 `~/.aw`，安装和升级命令也会在需要时自动同步本地 marketplace。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
+`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本地 marketplace。纯 Codex project repo-managed 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex marketplace。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
 
 ## 当前插件
 

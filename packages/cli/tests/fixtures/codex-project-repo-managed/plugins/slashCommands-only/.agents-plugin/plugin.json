@@ -1,0 +1,35 @@
+{
+  "name": "slash-commands-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin with only public slashCommands.",
+  "slashCommands": "./slash-commands",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "slash-commands"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Slash Commands Only Fixture",
+    "shortDescription": "Public slash commands only",
+    "capabilities": ["Slash Commands"]
+  },
+  "buildConfig": {
+    "templates": {
+      "include": ["slash-commands/*.md"],
+      "vars": {
+        "reviewIntro": {
+          "claude": "Claude command rendering may include argument placeholders and command output fill.",
+          "codex": "Codex skill rendering must be a plain manual workflow without Claude-only placeholders."
+        },
+        "claudeCommandSyntax": {
+          "claude": true,
+          "codex": false
+        }
+      }
+    }
+  }
+}

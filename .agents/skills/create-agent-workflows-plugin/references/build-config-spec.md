@@ -114,18 +114,18 @@ Codex bundle 中渲染为：
 
 ### 典型用法
 
-只把 `commands/` 目录打包给 Claude（因为 Codex 不支持 commands）：
+只把 `output-styles/` 目录打包给 Claude；公共 `slashCommands` 只作为生成输入，不原样进入任何平台 bundle：
 
 ```json
 {
   "fileRules": {
     "claude": {
-      "include": ["commands/**"],
+      "include": ["output-styles/**"],
       "exclude": []
     },
     "codex": {
       "include": [],
-      "exclude": ["commands/**"]
+      "exclude": ["output-styles/**"]
     }
   }
 }
@@ -141,12 +141,14 @@ Codex bundle 中渲染为：
 
 | 平台 | 允许的键 | 说明 |
 |------|---------|------|
-| `claude` | `commands`、`outputStyles`、`lspServers`、`userConfig`、`channels` | 详见 `references/claude-only-capabilities.md` |
+| `claude` | `outputStyles`、`lspServers`、`userConfig`、`channels` | 详见 `references/claude-only-capabilities.md` |
 | `codex` | — | 当前只允许空对象 `{}` |
+
+`manifestOverrides.claude.commands` 已移除。手动触发命令必须使用顶层公共 `slashCommands`，由 build 生成 Claude `commands/*.md` 和 Codex manual-only skills。`fileRules` 也不能再 include / exclude 旧 `commands/**` 源目录。
 
 ### 路径 vs 对象
 
-- `commands`、`outputStyles` 和字符串形式的 `lspServers`：必须是插件内 `./` 相对路径
+- `outputStyles` 和字符串形式的 `lspServers`：必须是插件内 `./` 相对路径
 - 对象形式的 `lspServers`、`userConfig`、`channels`：原样进入 Claude runtime manifest
 
 ### 示例
@@ -155,7 +157,6 @@ Codex bundle 中渲染为：
 {
   "manifestOverrides": {
     "claude": {
-      "commands": "./commands",
       "outputStyles": "./output-styles",
       "lspServers": {
         "typescript": {
@@ -187,19 +188,18 @@ Codex bundle 中渲染为：
 {
   "buildConfig": {
     "templates": {
-      "include": ["skills/**/*.md"],
+      "include": ["skills/**/*.md", "slash-commands/*.md"],
       "vars": {
         "platformName": { "claude": "Claude Code", "codex": "Codex" },
         "supportsCommands": { "claude": true, "codex": false }
       }
     },
     "fileRules": {
-      "claude": { "include": ["commands/**", "output-styles/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["commands/**", "output-styles/**"] }
+      "claude": { "include": ["output-styles/**"], "exclude": [] },
+      "codex": { "include": [], "exclude": ["output-styles/**"] }
     },
     "manifestOverrides": {
       "claude": {
-        "commands": "./commands",
         "outputStyles": "./output-styles"
       }
     }
@@ -209,5 +209,5 @@ Codex bundle 中渲染为：
 
 这个配置实现：
 1. 所有 skill Markdown 文件按平台渲染模板变量
-2. `commands/` 和 `output-styles/` 只进入 Claude bundle
-3. Claude runtime manifest 中声明 commands 和 outputStyles 路径
+2. `slash-commands/*.md` 先按平台渲染，再分别生成 Claude `commands/*.md` 和 Codex manual-only skills
+3. `output-styles/` 只进入 Claude bundle，Claude runtime manifest 中声明 `outputStyles` 路径

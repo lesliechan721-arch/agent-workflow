@@ -1,0 +1,495 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
+
+import { detectCodexExternalOwnership } from '../adapters/helpers.js';
+import type {
+  GeneratedArtifact,
+  PlatformName,
+  PluginMeta,
+  Scope,
+  TrackingPluginRecord,
+} from '../types.js';
+import {
+  readCodexConfigFile,
+  readRenderedCodexMcpServersFile,
+} from '../utils/codex-config.js';
+import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import { resolveCodexPaths, resolveRepoRoot } from '../utils/paths.js';
+import {
+  getTrackingArtifactIntegrityErrors,
+  readTrackingManifest,
+  getTrackingRecord,
+} from '../utils/tracking.js';
+import type { ResolvedPluginTarget } from './common.js';
+
+const AW_MARKETPLACE_NAME = 'aw';
+
+type CodexProjectRepoArtifact =
+  | {
+    kind: 'skill';
+    artifactKey: string;
+    path: string;
+  }
+  | {
+    kind: 'mcpServer';
+    artifactKey: string;
+    path: string;
+  };
+
+export class CodexProjectWriteSafetyError extends Error {
+  readonly code:
+    | 'codexProjectUserConfigUnreadable'
+    | 'externalOwnershipPresent'
+    | 'projectConfigUnreadable'
+    | 'trackingIntegrityError'
+    | 'unmanagedRepoArtifactConflict'
+    | 'catalogNotCurrent';
+
+  constructor(
+    code: CodexProjectWriteSafetyError['code'],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CodexProjectWriteSafetyError';
+    this.code = code;
+  }
+}
+
+export class CodexProjectStatusFatalError extends Error {
+  readonly code = 'projectConfigUnreadable';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexProjectStatusFatalError';
+  }
+}
+
+function trimDotSlash(value: string): string {
+  return value.startsWith('./') ? value.slice(2) : value;
+}
+
+function relativeRepoPath(repoRoot: string, targetPath: string): string {
+  const relative = path.relative(repoRoot, targetPath);
+  return relative && !relative.startsWith('..') ? relative : targetPath;
+}
+
+function codexProjectPlatformsSelected(
+  platforms: PlatformName[],
+  scope: Scope,
+): boolean {
+  return scope === 'project' && platforms.includes('codex');
+}
+
+export function isCodexProjectWriteSafetyError(
+  error: unknown,
+): error is CodexProjectWriteSafetyError {
+  return error instanceof CodexProjectWriteSafetyError;
+}
+
+export function isCodexProjectStatusFatalError(
+  error: unknown,
+): error is CodexProjectStatusFatalError {
+  return error instanceof CodexProjectStatusFatalError;
+}
+
+export function pluginDeclaresCodexProjectConfigBackedArtifacts(
+  plugin: PluginMeta,
+): boolean {
+  return Boolean(
+    plugin.manifest.mcpServers ||
+      resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0,
+  );
+}
+
+export function trackingRecordTouchesCodexProjectConfig(
+  trackingRecord: TrackingPluginRecord | undefined,
+): boolean {
+  return Boolean(
+    trackingRecord?.artifacts.some((artifact) =>
+      artifact.kind === 'instruction' || artifact.kind === 'mcpServer',
+    ),
+  );
+}
+
+export function needsCodexProjectConfigAccess(
+  plugin: PluginMeta,
+  trackingRecord: TrackingPluginRecord | undefined,
+): boolean {
+  return pluginDeclaresCodexProjectConfigBackedArtifacts(plugin) ||
+    trackingRecordTouchesCodexProjectConfig(trackingRecord);
+}
+
+async function collectDeclaredSkillKeys(plugin: PluginMeta): Promise<string[]> {
+  const skillRoot = plugin.manifest.skills
+    ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.skills))
+    : undefined;
+  const codexSkillRoot = path.join(plugin.rootDir, 'codex', 'skills');
+  const slashCommandRoot = plugin.manifest.slashCommands
+    ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.slashCommands))
+    : undefined;
+  const keys = new Set<string>();
+
+  for (const root of [skillRoot, codexSkillRoot]) {
+    if (!root || !(await fs.pathExists(root))) {
+      continue;
+    }
+
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      if (await fs.pathExists(path.join(root, entry.name, 'SKILL.md'))) {
+        keys.add(entry.name);
+      }
+    }
+  }
+
+  if (slashCommandRoot && await fs.pathExists(slashCommandRoot)) {
+    const entries = await fs.readdir(slashCommandRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        keys.add(path.basename(entry.name, '.md'));
+      }
+    }
+  }
+
+  return [...keys].sort();
+}
+
+async function collectDeclaredMcpServerKeys(plugin: PluginMeta): Promise<string[]> {
+  if (!plugin.manifest.mcpServers) {
+    return [];
+  }
+
+  const mcpPath = path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.mcpServers));
+  if (!(await fs.pathExists(mcpPath))) {
+    return [];
+  }
+
+  return Object.keys(await readRenderedCodexMcpServersFile(mcpPath)).sort();
+}
+
+async function collectDesiredCodexProjectRepoArtifacts(
+  plugin: PluginMeta,
+  repoRoot: string,
+): Promise<CodexProjectRepoArtifact[]> {
+  const [skillKeys, mcpServerKeys] = await Promise.all([
+    collectDeclaredSkillKeys(plugin),
+    collectDeclaredMcpServerKeys(plugin),
+  ]);
+  const artifacts: CodexProjectRepoArtifact[] = [];
+
+  for (const skillKey of skillKeys) {
+    artifacts.push({
+      kind: 'skill',
+      artifactKey: skillKey,
+      path: path.join(repoRoot, '.agents', 'skills', skillKey),
+    });
+  }
+
+  for (const serverKey of mcpServerKeys) {
+    artifacts.push({
+      kind: 'mcpServer',
+      artifactKey: serverKey,
+      path: path.join(repoRoot, '.codex', 'config.toml'),
+    });
+  }
+
+  return artifacts;
+}
+
+function findTrackedArtifactOwner(
+  trackingRecord: TrackingPluginRecord | undefined,
+  desiredArtifact: CodexProjectRepoArtifact,
+): GeneratedArtifact | undefined {
+  return trackingRecord?.artifacts.find((artifact) =>
+    artifact.kind === desiredArtifact.kind &&
+      artifact.artifactKey === desiredArtifact.artifactKey,
+  );
+}
+
+function findConflictingPluginOwner(
+  manifest: Awaited<ReturnType<typeof readTrackingManifest>>,
+  pluginName: string,
+  desiredArtifact: CodexProjectRepoArtifact,
+): string | undefined {
+  for (const [ownerPluginName, record] of Object.entries(manifest.plugins)) {
+    if (ownerPluginName === pluginName) {
+      continue;
+    }
+
+    const conflict = record.artifacts.some((artifact) =>
+      artifact.kind === desiredArtifact.kind &&
+        artifact.artifactKey === desiredArtifact.artifactKey,
+    );
+    if (conflict) {
+      return ownerPluginName;
+    }
+  }
+
+  return undefined;
+}
+
+function createTrackingIntegrityError(
+  pluginName: string,
+  trackingDir: string,
+  errors: ReturnType<typeof getTrackingArtifactIntegrityErrors>,
+): CodexProjectWriteSafetyError {
+  return new CodexProjectWriteSafetyError(
+    'trackingIntegrityError',
+    `${pluginName} 的 Codex project tracking identity 已损坏（${trackingDir}）：${errors.map((error) => error.message).join('；')}。`,
+  );
+}
+
+function createUserConfigUnreadableError(
+  configPath: string,
+  error: unknown,
+): CodexProjectWriteSafetyError {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new CodexProjectWriteSafetyError(
+    'codexProjectUserConfigUnreadable',
+    `无法完成 Codex project 写入前安全预检：用户级 Codex 配置 ${configPath} 无法解析，无法可靠检查 external ownership。${detail}`,
+  );
+}
+
+function createProjectConfigUnreadableError(
+  configPath: string,
+  pluginName: string,
+  error: unknown,
+): CodexProjectWriteSafetyError {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new CodexProjectWriteSafetyError(
+    'projectConfigUnreadable',
+    `无法完成 Codex project 写入前安全预检：项目级 Codex 配置 ${configPath} 无法解析，而 ${pluginName} 需要读取或改写该文件。${detail}`,
+  );
+}
+
+function createStatusProjectConfigUnreadableError(
+  configPath: string,
+  pluginName: string,
+  error: unknown,
+): CodexProjectStatusFatalError {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new CodexProjectStatusFatalError(
+    `无法读取 ${pluginName} 的 Codex project 状态：项目级 Codex 配置 ${configPath} 无法解析，而当前目标需要读取该文件。${detail}`,
+  );
+}
+
+function createExternalOwnershipPresentError(
+  detail: string,
+): CodexProjectWriteSafetyError {
+  return new CodexProjectWriteSafetyError(
+    'externalOwnershipPresent',
+    detail,
+  );
+}
+
+function createRepoArtifactConflictError(
+  repoRoot: string,
+  pluginName: string,
+  desiredArtifact: CodexProjectRepoArtifact,
+  ownerPluginName?: string,
+): CodexProjectWriteSafetyError {
+  const subject = desiredArtifact.kind === 'skill'
+    ? `repo skill "${desiredArtifact.artifactKey}"`
+    : `MCP server "${desiredArtifact.artifactKey}"`;
+  const location = desiredArtifact.kind === 'skill'
+    ? relativeRepoPath(repoRoot, desiredArtifact.path)
+    : '.codex/config.toml';
+  const ownerDetail = ownerPluginName
+    ? `它已由 ${ownerPluginName} 的 tracking 记录为受管产物。`
+    : '它当前存在，但没有 AW tracking 能证明归属。';
+
+  return new CodexProjectWriteSafetyError(
+    'unmanagedRepoArtifactConflict',
+    `无法完成 Codex project 写入前安全预检：${subject} 在 ${location} 上存在冲突。${ownerDetail}`,
+  );
+}
+
+async function readProjectTrackingManifest(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<Awaited<ReturnType<typeof readTrackingManifest>>> {
+  const trackingDir = resolveCodexPaths(cwd, 'project', env).trackingDir;
+  try {
+    return await readTrackingManifest(trackingDir);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CodexProjectWriteSafetyError(
+      'trackingIntegrityError',
+      `无法读取 Codex project tracking manifest（${trackingDir}）：${detail}`,
+    );
+  }
+}
+
+async function ensureProjectConfigReadable(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  mode: 'write' | 'status',
+): Promise<Awaited<ReturnType<typeof readCodexConfigFile>>> {
+  const configTomlPath = resolveCodexPaths(cwd, 'project', env).configTomlPath;
+
+  try {
+    return await readCodexConfigFile(configTomlPath);
+  } catch (error) {
+    if (mode === 'status') {
+      throw createStatusProjectConfigUnreadableError(configTomlPath, pluginName, error);
+    }
+    throw createProjectConfigUnreadableError(configTomlPath, pluginName, error);
+  }
+}
+
+async function assertNoCodexProjectRepoArtifactConflicts(options: {
+  repoRoot: string;
+  pluginName: string;
+  desiredArtifacts: CodexProjectRepoArtifact[];
+  trackingManifest: Awaited<ReturnType<typeof readTrackingManifest>>;
+  trackingRecord: TrackingPluginRecord | undefined;
+  projectConfigSnapshot?: Awaited<ReturnType<typeof readCodexConfigFile>>['snapshot'];
+}): Promise<void> {
+  const projectMcpServerKeys = options.projectConfigSnapshot === undefined
+    ? new Set<string>()
+    : new Set(Object.keys(options.projectConfigSnapshot.mcpServers));
+
+  for (const desiredArtifact of options.desiredArtifacts) {
+    const conflictingPlugin = findConflictingPluginOwner(
+      options.trackingManifest,
+      options.pluginName,
+      desiredArtifact,
+    );
+    if (conflictingPlugin) {
+      throw createRepoArtifactConflictError(
+        options.repoRoot,
+        options.pluginName,
+        desiredArtifact,
+        conflictingPlugin,
+      );
+    }
+
+    if (findTrackedArtifactOwner(options.trackingRecord, desiredArtifact)) {
+      continue;
+    }
+
+    if (desiredArtifact.kind === 'skill') {
+      if (await fs.pathExists(desiredArtifact.path)) {
+        throw createRepoArtifactConflictError(
+          options.repoRoot,
+          options.pluginName,
+          desiredArtifact,
+        );
+      }
+      continue;
+    }
+
+    if (projectMcpServerKeys.has(desiredArtifact.artifactKey)) {
+      throw createRepoArtifactConflictError(
+        options.repoRoot,
+        options.pluginName,
+        desiredArtifact,
+      );
+    }
+  }
+}
+
+export async function preflightCodexProjectWriteSafety(options: {
+  targets: ResolvedPluginTarget[];
+  platforms: PlatformName[];
+  cwd: string;
+  scope: Scope;
+  env?: NodeJS.ProcessEnv;
+  operation: 'install' | 'upgrade';
+}): Promise<void> {
+  if (!codexProjectPlatformsSelected(options.platforms, options.scope)) {
+    return;
+  }
+
+  const env = options.env ?? process.env;
+  const repoRoot = await resolveRepoRoot(options.cwd);
+  const userConfigPath = resolveCodexPaths(options.cwd, 'user', env).configTomlPath;
+  const trackingManifest = await readProjectTrackingManifest(options.cwd, env);
+
+  let userConfig: Awaited<ReturnType<typeof readCodexConfigFile>>;
+  try {
+    userConfig = await readCodexConfigFile(userConfigPath);
+  } catch (error) {
+    throw createUserConfigUnreadableError(userConfigPath, error);
+  }
+
+  let projectConfigSnapshot: Awaited<ReturnType<typeof readCodexConfigFile>>['snapshot'] | undefined;
+
+  for (const target of options.targets) {
+    const plugin = target.currentPlugin ?? target.plugin;
+    if (options.operation === 'upgrade' && !target.currentPlugin) {
+      throw new CodexProjectWriteSafetyError(
+        'catalogNotCurrent',
+        `${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`,
+      );
+    }
+
+    const externalOwnership = detectCodexExternalOwnership(
+      userConfig.snapshot.plugins,
+      plugin.manifest.name,
+      AW_MARKETPLACE_NAME,
+    );
+    if (externalOwnership?.present) {
+      throw createExternalOwnershipPresentError(
+        externalOwnership.details ?? '同名插件已由外部 marketplace 管理。',
+      );
+    }
+
+    const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
+    const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(
+      trackingRecord?.artifacts ?? [],
+    );
+    if (trackingIntegrityErrors.length > 0) {
+      throw createTrackingIntegrityError(
+        target.pluginName,
+        resolveCodexPaths(options.cwd, 'project', env).trackingDir,
+        trackingIntegrityErrors,
+      );
+    }
+
+    const needsProjectConfig = needsCodexProjectConfigAccess(plugin, trackingRecord);
+    if (needsProjectConfig && projectConfigSnapshot === undefined) {
+      projectConfigSnapshot = (
+        await ensureProjectConfigReadable(
+          options.cwd,
+          env,
+          target.pluginName,
+          'write',
+        )
+      ).snapshot;
+    }
+
+    const desiredArtifacts = await collectDesiredCodexProjectRepoArtifacts(plugin, repoRoot);
+    await assertNoCodexProjectRepoArtifactConflicts({
+      repoRoot,
+      pluginName: target.pluginName,
+      desiredArtifacts,
+      trackingManifest,
+      trackingRecord,
+      projectConfigSnapshot,
+    });
+  }
+}
+
+export async function preflightCodexProjectStatusProjectConfig(options: {
+  plugin: PluginMeta;
+  trackingRecord: TrackingPluginRecord | undefined;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  if (!needsCodexProjectConfigAccess(options.plugin, options.trackingRecord)) {
+    return;
+  }
+
+  await ensureProjectConfigReadable(
+    options.cwd,
+    options.env ?? process.env,
+    options.plugin.manifest.name,
+    'status',
+  );
+}

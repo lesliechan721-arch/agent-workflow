@@ -5,7 +5,8 @@
 插件源码 manifest 以 `plugins/<name>/.agents-plugin/plugin.json` 为唯一真值，`plugins/marketplace-source.json` 汇总 marketplace 元数据。
 
 - `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明派生能力，不新增顶层 `claude` block
-- 路径字段（`skills`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
+- 路径字段（`skills`、`slashCommands`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
+- 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`，旧顶层 `commands`、`manifestOverrides.claude.commands` 和 `commands/**` fileRules 都会被拒绝
 - `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
@@ -18,12 +19,61 @@
 
 `pnpm build` 会把每个源码插件打包到 `packages/cli/plugins-dist/plugins/<name>/`，并生成两份 platform manifest：
 
-- `.claude-plugin/plugin.json`：Claude Code 原生 plugin manifest，可包含 skills、MCP、commands、output styles、hooks、agents 等平台能力
+- `.claude-plugin/plugin.json`：Claude Code 原生 plugin manifest，可包含 skills、MCP、generated commands、output styles、hooks、agents 等平台能力
 - `.codex-plugin/plugin.json`：Codex 原生 plugin manifest，可包含 skills、MCP、apps 等平台能力
 
 根级 marketplace 也会生成两份镜像：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。CLI 读取时会校验两份 marketplace 内容一致；本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
 
 AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
+
+## Public Slash Commands
+
+`slashCommands` 用一份 Markdown 源码同时生成 Claude 原生 slash command 和 Codex manual-only skill。源码目录通常写成 `"slashCommands": "./slash-commands"`。
+
+```text
+plugins/<name>/
+└── slash-commands/
+    ├── review.md
+    └── assets/
+        ├── review-16.svg
+        └── review-64.svg
+```
+
+命令名来自根目录直属 `*.md` 文件名，必须是小写短横线格式，最长 64 字符。首版不支持子目录命名空间；`assets/` 是唯一允许的子目录，里面的 Markdown 不会生成命令。
+
+每个命令文件必须有 YAML frontmatter。顶层只允许 `description`、`claude`、`codex`：
+
+```markdown
+---
+description: 执行代码审查
+claude:
+  allowed-tools:
+    - Bash
+    - Read
+  argument-hint: "[file-path]"
+codex:
+  description: 在 Codex 中手动执行代码审查工作流。
+  interface:
+    display_name: "Review Command"
+    short_description: "手动代码审查命令"
+    icon_small: ./assets/review-16.svg
+    icon_large: ./assets/review-64.svg
+    brand_color: "#2563EB"
+---
+
+对当前改动执行代码审查。
+```
+
+字段约定：
+
+- 顶层 `description` 必填，作为两平台默认描述。
+- Claude-only 字段只能放在 `claude` block：`description`、`allowed-tools`、`model`、`argument-hint`、`shell`。`allowed-tools` 可写字符串或字符串数组；`shell` 只接受 `bash` 或 `powershell`。
+- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
+- Codex 图标资源只能写 `./assets/...`，源文件必须位于 `slash-commands/assets/`，不能用绝对路径、`../`、反斜杠或其它目录。build 只复制被 frontmatter 引用的资源到对应 generated skill 的 `assets/`。
+- Codex 生成 skill 的 `policy.allow_implicit_invocation` 固定为 `false`。作者不能在 `codex.policy` 覆盖它；这类 skill 只能由用户显式 `$command-name` 或结构化 skill mention 调用。
+- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
+
+构建结果中，Claude bundle 会得到 generated `claude/commands/<name>.md`，Codex bundle 会得到 generated `codex/skills/<name>/SKILL.md` 和 `agents/openai.yaml`。原始 `slash-commands/` 不作为 runtime 目录发布。
 
 ## AW Scripts
 
@@ -85,13 +135,15 @@ pnpm plugin:test --all
 }
 ```
 
-`allowInstallOverride: true` 表示 `aw install --skill-trigger manual|auto|default` 可以改写本地 marketplace 里的运行时 skill 文件；默认值仍由源码中的 `SKILL.md` 和 `agents/openai.yaml` 决定。`allowInstallOverride: false` 或省略 `skillTriggers` 都会保持保守策略，不允许安装命令覆盖该 skill。
+`allowInstallOverride: true` 表示 `aw install --skill-trigger manual|auto|default` 可以改写运行时 skill 文件；默认值仍由源码中的 `SKILL.md` 和 `agents/openai.yaml` 决定。Codex project scope 只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，不改共享 `~/.aw` runtime。`allowInstallOverride: false` 或省略 `skillTriggers` 都会保持保守策略，不允许安装命令覆盖该 skill。
 
 详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 
 ## Scope Semantics
 
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
-- **Codex**：native plugin enabled 仍仅 user scope；`project` scope 只代表当前仓库 `.codex/` 下的 repo-managed artifacts，不代表 native plugin 已在 project 级别启用
+- **Codex user scope**：使用 native plugin / marketplace 平面，注册 `~/.codex/config.toml [marketplaces.aw]` 并启用用户级 `[plugins."<plugin>@aw"]`
+- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.codex/.agent-workflows-manifest.json`
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
-- **共享 runtime**：`~/.aw` 对同一用户共享。若同一插件在多个 scope 使用不同 `--skill-trigger` 偏好，后安装的一侧可能改变共享 runtime，CLI 会通过 warning 和 `aw status` 提示 drift。
+- **共享 runtime**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 可能因不同 scope 的 `--skill-trigger` 偏好出现 sibling drift；Codex project scope 不参与共享 runtime 选举，只改当前仓库 repo skill。
+- **Tracking identity**：tracking manifest 中的 `GeneratedArtifact.path` 必须是绝对路径；`kind: "skill"` 和 `kind: "mcpServer"` 必须写 `artifactKey`。MCP `artifactKey` 使用 rendered `.mcp.json` 的原始 server key，包含点号、空格或 Unicode 时仍按 TOML quoted key 写入 `.codex/config.toml`，例如 `[mcp_servers."acme.tools v1"]`。

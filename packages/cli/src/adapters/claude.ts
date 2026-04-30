@@ -280,7 +280,7 @@ function upsertClaudeScopeLedger(
       managedExtensions: getClaudeManagedExtensions(plugin),
     } satisfies ClaudeCapabilitySnapshot,
   };
-  if (resolvedInstallOptions) {
+  if (resolvedInstallOptions?.applicability === 'overridable') {
     scopeRecord.installOptions = {
       skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
     };
@@ -377,6 +377,7 @@ async function collectGeneratedArtifacts(
       path: artifact.path,
       exists: await fs.pathExists(artifact.path),
       kind: artifact.kind,
+      ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
     })),
   );
 }
@@ -753,6 +754,7 @@ export class ClaudeAdapter implements PlatformAdapter {
       },
       ...(skillTriggerStatus
         ? {
+            skillTriggerApplicability: skillTriggerStatus.skillTriggerApplicability,
             installOptions: skillTriggerStatus.installOptions,
             skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
             skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,

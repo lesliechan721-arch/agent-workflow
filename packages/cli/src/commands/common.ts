@@ -2,12 +2,15 @@ import chalk from 'chalk';
 
 import { CommandWarningError, isCommandWarningError } from '../types.js';
 import { ClaudeAdapter } from '../adapters/claude.js';
-import { CodexAdapter } from '../adapters/codex.js';
+import { CodexAdapter, requiresCodexNativePlugin } from '../adapters/codex.js';
 import type {
   AgentDefinition,
   CatalogResolution,
   CommandAction,
+  CodexCapabilitySnapshot,
+  CodexProjectManagedKind,
   EnvironmentDetection,
+  GeneratedArtifact,
   HookDefinition,
   InstallCommandOptions,
   InstalledLedger,
@@ -35,8 +38,14 @@ import {
   ensureLocalMarketplace,
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
+import { generatedArtifactKindRequiresArtifactKey } from '../utils/generated-artifacts.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
-import { getTrackingRecord, readTrackingManifest } from '../utils/tracking.js';
+import {
+  getTrackingArtifactIntegrityErrors,
+  getTrackingRecord,
+  readTrackingManifest,
+} from '../utils/tracking.js';
+import { resolveSkillTriggerApplicabilityForPlugin } from '../utils/skill-trigger-preferences.js';
 import {
   resolveEmbeddedPluginsRoot,
   resolveClaudePaths,
@@ -44,7 +53,8 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
 } from '../utils/paths.js';
-import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
+import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import { getCodexProjectInstallability } from './codex-project-installability.js';
 
 export function createAdapters(
   cwd: string,
@@ -86,12 +96,82 @@ export interface PreparedPluginCommandContext {
 
 export interface PreparedMarketplaceState {
   rootDir: string;
+  source: CatalogResolution['source'];
   changed: boolean;
+  mode: CatalogPreparationMode;
   catalog: CatalogResolution;
 }
 
-type HistoricalExtensionKind = 'instruction' | 'permission' | 'hook' | 'agent';
-type HistoricalExtensionKindsByPlatform = Record<PlatformName, Set<HistoricalExtensionKind>>;
+export type CatalogPreparationMode = 'readOnly' | 'runtimeWritable';
+
+interface PreparedCatalogState {
+  catalog: CatalogResolution;
+  marketplace: PreparedMarketplaceState;
+  warnings: string[];
+}
+
+function resolveCatalogPreparationMode(options: {
+  catalogMode?: CatalogPreparationMode;
+  ensureLocalMarketplace?: boolean;
+}): CatalogPreparationMode {
+  if (options.catalogMode) {
+    return options.catalogMode;
+  }
+
+  return options.ensureLocalMarketplace ? 'runtimeWritable' : 'readOnly';
+}
+
+function createReadOnlyMarketplaceState(catalog: CatalogResolution): PreparedMarketplaceState {
+  return {
+    rootDir: catalog.rootDir,
+    source: catalog.source,
+    changed: false,
+    mode: 'readOnly',
+    catalog,
+  };
+}
+
+function createRuntimeWritableMarketplaceState(
+  ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>>,
+): PreparedMarketplaceState {
+  return {
+    rootDir: ensuredMarketplace.rootDir,
+    source: 'local',
+    changed: ensuredMarketplace.changed,
+    mode: 'runtimeWritable',
+    catalog: {
+      rootDir: ensuredMarketplace.rootDir,
+      source: 'local',
+    },
+  };
+}
+
+type HistoricalManagedKind = GeneratedArtifact['kind'];
+type HistoricalExtensionKind = Extract<
+  HistoricalManagedKind,
+  'instruction' | 'permission' | 'hook' | 'agent'
+>;
+type HistoricalManagedKindsByPlatform = Record<PlatformName, Set<HistoricalManagedKind>>;
+
+const HISTORICAL_SKILLS_PATH = './historical-skills';
+const HISTORICAL_MCP_SERVERS_PATH = './historical-mcp.json';
+const HISTORICAL_EXTENSION_KIND_ORDER: HistoricalExtensionKind[] = [
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+const HISTORICAL_CODEX_KIND_ORDER: CodexProjectManagedKind[] = [
+  'skill',
+  'mcpServer',
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+const HISTORICAL_CODEX_KIND_SET = new Set<CodexProjectManagedKind>(
+  HISTORICAL_CODEX_KIND_ORDER,
+);
 
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
   codex: 'CODEX',
@@ -147,8 +227,26 @@ export function assertPluginsSupportPlatforms(
   throw new Error(`插件不支持目标平台：${details}`);
 }
 
+function isHistoricalExtensionKind(kind: HistoricalManagedKind): kind is HistoricalExtensionKind {
+  return HISTORICAL_EXTENSION_KIND_ORDER.includes(kind as HistoricalExtensionKind);
+}
+
+function getCodexSnapshotManagedKinds(
+  snapshot: CodexCapabilitySnapshot | undefined,
+): CodexProjectManagedKind[] {
+  const rawKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
+  const selected = new Set<CodexProjectManagedKind>();
+  for (const kind of rawKinds ?? []) {
+    if (HISTORICAL_CODEX_KIND_SET.has(kind)) {
+      selected.add(kind);
+    }
+  }
+
+  return HISTORICAL_CODEX_KIND_ORDER.filter((kind) => selected.has(kind));
+}
+
 function createHistoricalExtensionKinds(
-  kindsByPlatform: HistoricalExtensionKindsByPlatform,
+  kindsByPlatform: HistoricalManagedKindsByPlatform,
 ): PluginMeta['manifest']['extensions'] | undefined {
   const hasKind = (kind: HistoricalExtensionKind): boolean =>
     kindsByPlatform.claude.has(kind) || kindsByPlatform.codex.has(kind);
@@ -157,7 +255,9 @@ function createHistoricalExtensionKinds(
     codex: kindsByPlatform.codex.has(kind) ? undefined : null,
   });
 
-  if (!Object.values(kindsByPlatform).some((kinds) => kinds.size > 0)) {
+  if (!Object.values(kindsByPlatform).some((kinds) =>
+    [...kinds].some((kind) => isHistoricalExtensionKind(kind)),
+  )) {
     return undefined;
   }
 
@@ -211,7 +311,7 @@ async function createHistoricalPluginMeta(
     resolveCodexProjectKey(cwd),
   ]);
 
-  const trackedKindsByPlatform: HistoricalExtensionKindsByPlatform = {
+  const trackedKindsByPlatform: HistoricalManagedKindsByPlatform = {
     claude: new Set(),
     codex: new Set(),
   };
@@ -245,6 +345,15 @@ async function createHistoricalPluginMeta(
     scope === 'user'
       ? pluginRecord?.platforms.codex?.userScope
       : pluginRecord?.platforms.codex?.projectScopes?.[codexProjectKey];
+  for (const kind of getCodexSnapshotManagedKinds(codexScopeRecord?.capabilitySnapshot)) {
+    trackedKindsByPlatform.codex.add(kind);
+  }
+
+  const codexHistoricalKinds = trackedKindsByPlatform.codex;
+  const codexRequiresNativePlugin =
+    codexScopeRecord?.capabilitySnapshot.requiresNativePlugin === true;
+  const hasCodexNativeManifestPlaceholder =
+    codexHistoricalKinds.has('skill') || codexHistoricalKinds.has('mcpServer');
 
   return {
     rootDir: '',
@@ -253,7 +362,14 @@ async function createHistoricalPluginMeta(
       name: pluginName,
       version: pluginRecord?.lastResolvedVersion ?? '0.0.0',
       description: 'Historical managed plugin placeholder.',
-      skills: codexScopeRecord?.capabilitySnapshot.requiresNativePlugin ? './historical-skills' : undefined,
+      skills:
+        codexHistoricalKinds.has('skill') ||
+        (codexRequiresNativePlugin && !hasCodexNativeManifestPlaceholder)
+          ? HISTORICAL_SKILLS_PATH
+          : undefined,
+      mcpServers: codexHistoricalKinds.has('mcpServer')
+        ? HISTORICAL_MCP_SERVERS_PATH
+        : undefined,
       marketplace: {
         category: 'historical',
         strict: true,
@@ -364,7 +480,7 @@ export function createResolvedInstallOptionsKey(
 
 function resolveLedgerBackedPreference(
   scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined,
-): Pick<ResolvedInstallOptions, 'skillTriggerPreference' | 'skillTriggerSource'> {
+): Pick<Extract<ResolvedInstallOptions, { applicability: 'overridable' }>, 'skillTriggerPreference' | 'skillTriggerSource'> {
   const ledgerPreference = scopeRecord?.installOptions?.skillTriggerPreference;
   return ledgerPreference
     ? {
@@ -377,74 +493,127 @@ function resolveLedgerBackedPreference(
       };
 }
 
+function hasRecoverableLedgerSkillTriggerPreference(
+  scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined,
+): boolean {
+  return scopeRecord?.managed === true && typeof scopeRecord.installOptions?.skillTriggerPreference === 'string';
+}
+
+async function hasTrackingManagedEvidenceForTarget(
+  cwd: string,
+  scope: Scope,
+  platform: PlatformName,
+  pluginName: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const trackingDir = platform === 'claude'
+    ? resolveClaudePaths(cwd, scope, env).trackingDir
+    : resolveCodexPaths(cwd, scope, env).trackingDir;
+  const manifest = await readTrackingManifest(trackingDir);
+  return Boolean(getTrackingRecord(manifest, pluginName));
+}
+
+async function prepareCatalogState(
+  mode: CatalogPreparationMode,
+  env: NodeJS.ProcessEnv,
+  ledger?: InstalledLedger,
+): Promise<PreparedCatalogState> {
+  if (mode === 'runtimeWritable') {
+    const ensuredMarketplace = await ensureLocalMarketplace(env);
+    return {
+      catalog: {
+        rootDir: ensuredMarketplace.rootDir,
+        source: 'local',
+      },
+      marketplace: createRuntimeWritableMarketplaceState(ensuredMarketplace),
+      warnings: ensuredMarketplace.warnings ?? [],
+    };
+  }
+
+  const [currentCatalog, embeddedRoot] = await Promise.all([
+    resolveCurrentCatalog(env),
+    resolveEmbeddedPluginsRoot(),
+  ]);
+  const catalog =
+    ledger?.ledgerState.status === 'degraded' && currentCatalog.source === 'local'
+      ? {
+          rootDir: embeddedRoot,
+          source: 'embedded' as const,
+          reason: 'installed.json 处于 degraded 状态，read-only catalog 回退到 embedded bundle。',
+        }
+      : currentCatalog;
+
+  return {
+    catalog,
+    marketplace: createReadOnlyMarketplaceState(catalog),
+    warnings: [],
+  };
+}
+
 export async function preparePluginTargetsForCommand(
   cwd: string,
   scope: Scope,
   pluginNames: string[] | undefined,
   options: {
+    catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<PreparedPluginCommandContext> {
   const env = options.env ?? process.env;
-  const warnings: string[] = [];
-  let ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>> | undefined;
-  if (options.ensureLocalMarketplace) {
-    ensuredMarketplace = await ensureLocalMarketplace(env);
-    warnings.push(...(ensuredMarketplace.warnings ?? []));
-  }
-
-  const [ledger, loadedTargets] = await Promise.all([
-    readInstalledLedger(env),
-    loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
-      allowHistoricalFallback: options.allowHistoricalFallback,
-      env,
-    }),
-  ]);
+  const catalogMode = resolveCatalogPreparationMode(options);
+  const ledger = await readInstalledLedger(env);
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
+  const loadedTargets = await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
+    catalog: catalogState.catalog,
+    allowHistoricalFallback: options.allowHistoricalFallback,
+    env,
+  });
 
   return {
     ledger,
     targets: loadedTargets.targets,
-    warnings: dedupeWarnings(warnings),
-    marketplace: ensuredMarketplace
-      ? {
-          rootDir: ensuredMarketplace.rootDir,
-          changed: ensuredMarketplace.changed,
-          catalog: loadedTargets.catalog,
-        }
-      : undefined,
+    warnings: dedupeWarnings(catalogState.warnings),
+    marketplace: catalogState.marketplace,
   };
 }
 
 export async function prepareCommandEnvironment(
   options: {
+    catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings' | 'marketplace'>> {
   const env = options.env ?? process.env;
-  const warnings: string[] = [];
-  let ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>> | undefined;
-  if (options.ensureLocalMarketplace) {
-    ensuredMarketplace = await ensureLocalMarketplace(env);
-    warnings.push(...(ensuredMarketplace.warnings ?? []));
-  }
+  const catalogMode = resolveCatalogPreparationMode(options);
+  const ledger = await readInstalledLedger(env);
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
 
   return {
-    ledger: await readInstalledLedger(env),
-    warnings: dedupeWarnings(warnings),
-    marketplace: ensuredMarketplace
-      ? {
-          rootDir: ensuredMarketplace.rootDir,
-          changed: ensuredMarketplace.changed,
-          catalog: {
-            rootDir: ensuredMarketplace.rootDir,
-            source: 'local',
-          },
-        }
-      : undefined,
+    ledger,
+    warnings: dedupeWarnings(catalogState.warnings),
+    marketplace: catalogState.marketplace,
   };
+}
+
+export function requiresRuntimeWritableMarketplaceForTargets(
+  platforms: PlatformName[],
+  targets: ResolvedPluginTarget[],
+  scope: Scope,
+): boolean {
+  return platforms.some((platform) => {
+    if (platform === 'claude') {
+      return true;
+    }
+
+    return targets.some((target) =>
+      target.currentPlugin
+        ? requiresCodexNativePlugin(target.currentPlugin, scope)
+        : requiresCodexNativePlugin(target.plugin, scope),
+    );
+  });
 }
 
 export async function listManagedPluginNamesForPreparedLedger(
@@ -465,12 +634,15 @@ export async function resolveInstallOptionsForTargets(
   mode: 'install' | 'upgrade' | 'upgrade-all',
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
-  options: Pick<InstallCommandOptions | UpgradeCommandOptions, 'cwd' | 'scope' | 'requestedSkillTrigger'>,
+  options: Pick<InstallCommandOptions | UpgradeCommandOptions, 'cwd' | 'scope' | 'requestedSkillTrigger'> & {
+    env?: NodeJS.ProcessEnv;
+  },
   ledger: InstalledLedger,
 ): Promise<Map<string, ResolvedInstallOptions>> {
   const scopeKeys = await resolveScopeKeys(options.cwd, options.scope);
   const resolved = new Map<string, ResolvedInstallOptions>();
   const requestedPreference = options.requestedSkillTrigger;
+  const env = options.env ?? process.env;
   const ledgerTrust: ResolvedInstallOptions['ledgerTrust'] =
     ledger.ledgerState.status === 'available' ? 'available' : 'degraded';
 
@@ -478,6 +650,11 @@ export async function resolveInstallOptionsForTargets(
     const scopeIdentity = getScopeIdentity(platform, options.scope, scopeKeys);
 
     for (const target of targets) {
+      const skillTriggerPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
+      const applicability = await resolveSkillTriggerApplicabilityForPlugin(
+        skillTriggerPlugin,
+        platform,
+      );
       const scopeRecord = getInstalledScopeRecordForTarget(
         ledger,
         target.pluginName,
@@ -486,17 +663,54 @@ export async function resolveInstallOptionsForTargets(
         scopeKeys,
       );
       const isManagedTarget = scopeRecord?.managed === true;
+      const trackingManagedEvidence = platform === 'codex' && options.scope === 'project'
+        ? await hasTrackingManagedEvidenceForTarget(
+            options.cwd,
+            options.scope,
+            platform,
+            target.pluginName,
+            env,
+          )
+        : false;
 
       let nextOptions: ResolvedInstallOptions;
-      if (requestedPreference) {
+      if (applicability === 'none' || applicability === 'fixed') {
         nextOptions = {
+          applicability,
+          ledgerTrust,
+        };
+      } else if (requestedPreference) {
+        nextOptions = {
+          applicability: 'overridable',
           skillTriggerPreference: requestedPreference,
           skillTriggerSource: 'cli',
           ledgerTrust,
         };
+      } else if (platform === 'codex' && options.scope === 'project') {
+        if (ledger.ledgerState.status === 'available' && hasRecoverableLedgerSkillTriggerPreference(scopeRecord)) {
+          nextOptions = {
+            applicability: 'overridable',
+            skillTriggerPreference: scopeRecord!.installOptions!.skillTriggerPreference!,
+            skillTriggerSource: 'ledger',
+            ledgerTrust,
+          };
+        } else if (isManagedTarget || trackingManagedEvidence) {
+          const message = ledger.ledgerState.status === 'available'
+            ? `${target.pluginName} 在 ${platform} (${options.scope}) 的 skill trigger 偏好无法从当前 scope ledger 安全恢复；tracking 只能证明 repo artifact 归属，请显式传入 \`--skill-trigger default|manual|auto\`。`
+            : `${target.pluginName} 在 ${platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`;
+          throw new CommandWarningError(message);
+        } else {
+          nextOptions = {
+            applicability: 'overridable',
+            skillTriggerPreference: 'default',
+            skillTriggerSource: 'default',
+            ledgerTrust,
+          };
+        }
       } else if (mode === 'install') {
         if (ledger.ledgerState.status === 'available') {
           nextOptions = {
+            applicability: 'overridable',
             ...resolveLedgerBackedPreference(scopeRecord),
             ledgerTrust,
           };
@@ -506,6 +720,7 @@ export async function resolveInstallOptionsForTargets(
           );
         } else {
           nextOptions = {
+            applicability: 'overridable',
             skillTriggerPreference: 'default',
             skillTriggerSource: 'default',
             ledgerTrust,
@@ -514,6 +729,7 @@ export async function resolveInstallOptionsForTargets(
       } else {
         if (ledger.ledgerState.status === 'available') {
           nextOptions = {
+            applicability: 'overridable',
             ...resolveLedgerBackedPreference(scopeRecord),
             ledgerTrust,
           };
@@ -566,15 +782,19 @@ async function loadPluginTargetsForCommandWithCatalog(
   scope: Scope,
   pluginNames?: string[],
   options: {
+    catalog?: CatalogResolution;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<LoadedPluginTargetsForCommand> {
   const env = options.env ?? process.env;
-  const [{ catalog, plugins: catalogPlugins }, embeddedRoot] = await Promise.all([
-    resolveCatalogPlugins(undefined, env),
+  const [catalog, embeddedRoot] = await Promise.all([
+    options.catalog
+      ? Promise.resolve(options.catalog)
+      : resolveCurrentCatalog(env),
     resolveEmbeddedPluginsRoot(),
   ]);
+  const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined);
   const embeddedPlugins = await resolvePluginsFromCatalog(embeddedRoot, undefined);
   if (!pluginNames || pluginNames.length === 0) {
     if (catalogPlugins.length === 0) {
@@ -638,17 +858,21 @@ export async function loadPluginTargetsForCommand(
   scope: Scope,
   pluginNames?: string[],
   options: {
+    catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<ResolvedPluginTarget[]> {
   const env = options.env ?? process.env;
-  if (options.ensureLocalMarketplace) {
-    await ensureLocalMarketplace(env);
-  }
+  const catalogMode = resolveCatalogPreparationMode(options);
+  const ledger = catalogMode === 'readOnly'
+    ? await readInstalledLedger(env)
+    : undefined;
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
 
   return (await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
+    catalog: catalogState.catalog,
     allowHistoricalFallback: options.allowHistoricalFallback,
     env,
   })).targets;
@@ -662,13 +886,125 @@ export function hasScopeManagedEvidence(plugin: PluginStatusReport): boolean {
   );
 }
 
+export function getGeneratedArtifactIdentityRefusal(
+  plugin: PluginStatusReport,
+): string | null {
+  const invalidArtifacts = plugin.generatedArtifacts.filter((artifact) =>
+    generatedArtifactKindRequiresArtifactKey(artifact.kind) && !artifact.artifactKey,
+  );
+  if (invalidArtifacts.length === 0) {
+    return null;
+  }
+
+  const details = invalidArtifacts
+    .map((artifact) => `${artifact.kind} ${artifact.path}`)
+    .join('；');
+  return `tracking manifest 中存在缺少 artifactKey 的受管产物（${details}），CLI 不能安全执行 path-only 清理；请先修复 tracking manifest 后重试。`;
+}
+
+export async function getTrackingArtifactIdentityRefusal(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  platform: PlatformName;
+  scope: Scope;
+  pluginName: string;
+}): Promise<string | null> {
+  const trackingDir = options.platform === 'claude'
+    ? resolveClaudePaths(options.cwd, options.scope, options.env).trackingDir
+    : resolveCodexPaths(options.cwd, options.scope, options.env).trackingDir;
+
+  try {
+    const manifest = await readTrackingManifest(trackingDir);
+    const record = getTrackingRecord(manifest, options.pluginName);
+    const integrityErrors = getTrackingArtifactIntegrityErrors(record?.artifacts ?? []);
+    if (integrityErrors.length === 0) {
+      return null;
+    }
+
+    const details = integrityErrors
+      .map((error) => `${error.kind} ${error.path}`)
+      .join('；');
+    return `tracking manifest 中存在缺少 artifactKey 的受管产物（${details}），CLI 不能安全执行 path-only 清理；请先修复 tracking manifest 后重试。`;
+  } catch {
+    return null;
+  }
+}
+
 export function hasHistoricalEvidence(plugin: PluginStatusReport): boolean {
   return (
     hasScopeManagedEvidence(plugin) ||
+    plugin.generatedArtifacts.length > 0 ||
     plugin.platformRuntimeEvidence?.present === true ||
     plugin.platformNativeFallbackEvidence?.present === true ||
     plugin.externalOwnership?.present === true
   );
+}
+
+function canExecuteCodexProjectWithoutNative(
+  action: CommandAction,
+  scope: Scope,
+  plugins: PluginMeta[],
+): boolean {
+  if (scope !== 'project') {
+    return false;
+  }
+
+  if (action === 'uninstall') {
+    return true;
+  }
+
+  if (action !== 'install' && action !== 'upgrade') {
+    return false;
+  }
+
+  return plugins.length > 0 &&
+    plugins.every((plugin) => getCodexProjectInstallability(plugin).installable);
+}
+
+function listExecutablePlatformsForTargets(
+  detection: EnvironmentDetection,
+  action: CommandAction,
+  scope: Scope,
+  plugins: PluginMeta[],
+): PlatformName[] {
+  const nativeAvailablePlatforms = new Set(listDetectedPlatforms(detection));
+  const codexProjectExecutable = canExecuteCodexProjectWithoutNative(action, scope, plugins);
+
+  return (['codex', 'claude'] as const).filter((platform) =>
+    nativeAvailablePlatforms.has(platform) ||
+      (platform === 'codex' && codexProjectExecutable),
+  );
+}
+
+function createCodexNativeRunnerRequiredError(
+  action: CommandAction,
+  scope: Scope,
+  plugins: PluginMeta[],
+): Error {
+  if (canExecuteCodexProjectWithoutNative(action, scope, plugins)) {
+    return new Error('Codex project repo-managed target 不需要本机 Codex native runner，但平台解析未把它识别为可执行；请检查插件 manifest。');
+  }
+
+  const reason = scope === 'project'
+    ? '当前 Codex project target 不是纯 repo-managed 可执行目标（可能包含 native-only 或 apps 能力），需要本机 Codex native runner。'
+    : 'Codex user scope 需要本机 Codex native runner。';
+
+  return new Error(
+    `${reason} PATH 中没有检测到可用 \`codex\`；请安装 Codex CLI 或设置 AW_FORCE_CODEX_AVAILABLE=1 后重试。`,
+  );
+}
+
+function createBothPlatformsUnavailableError(
+  detection: EnvironmentDetection,
+  action: CommandAction,
+  scope: Scope,
+  plugins: PluginMeta[],
+): Error {
+  if (!detection.codex.available && !canExecuteCodexProjectWithoutNative(action, scope, plugins)) {
+    return createCodexNativeRunnerRequiredError(action, scope, plugins);
+  }
+
+  return new Error('`--platform both` 只在 Codex target 和 Claude Code 都可执行时可用。');
 }
 
 async function getAutoPlatformState(
@@ -686,7 +1022,13 @@ async function getAutoPlatformState(
     let hasUnknown = false;
     for (const plugin of plugins) {
       const status = await adapters[platform].status(plugin, scope);
-      const pluginScopeState = status.plugins[0]?.scopeInitialized ?? status.scopeInitialized ?? 'unknown';
+      const pluginStatus = status.plugins[0];
+      if (pluginStatus && hasScopeManagedEvidence(pluginStatus)) {
+        hasYes = true;
+        continue;
+      }
+
+      const pluginScopeState = pluginStatus?.scopeInitialized ?? status.scopeInitialized ?? 'unknown';
       if (pluginScopeState === 'unknown') {
         hasUnknown = true;
       } else if (pluginScopeState === 'yes') {
@@ -735,16 +1077,19 @@ export async function resolveTargetPlatforms(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PlatformName[]> {
   const detection = await detectEnvironment(cwd, env);
-  const availablePlatforms = listDetectedPlatforms(detection);
+  const executablePlatforms = listExecutablePlatformsForTargets(detection, action, scope, plugins);
   const shouldEnforceProducts = action === 'install' || action === 'upgrade';
-  const compatibleAvailablePlatforms = shouldEnforceProducts
-    ? availablePlatforms.filter((platform) =>
+  const compatibleExecutablePlatforms = shouldEnforceProducts
+    ? executablePlatforms.filter((platform) =>
         plugins.every((plugin) => pluginSupportsPlatform(plugin, platform)),
       )
-    : availablePlatforms;
+    : executablePlatforms;
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
-    if (!availablePlatforms.includes(requestedPlatform)) {
+    if (!executablePlatforms.includes(requestedPlatform)) {
+      if (requestedPlatform === 'codex') {
+        throw createCodexNativeRunnerRequiredError(action, scope, plugins);
+      }
       throw new Error(`${requestedPlatform} 当前环境不可用。`);
     }
     if (shouldEnforceProducts) {
@@ -754,8 +1099,8 @@ export async function resolveTargetPlatforms(
   }
 
   if (requestedPlatform === 'both') {
-    if (availablePlatforms.length !== 2) {
-      throw new Error('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
+    if (executablePlatforms.length !== 2) {
+      throw createBothPlatformsUnavailableError(detection, action, scope, plugins);
     }
     if (shouldEnforceProducts) {
       assertPluginsSupportPlatforms(plugins, ['codex', 'claude']);
@@ -763,19 +1108,21 @@ export async function resolveTargetPlatforms(
     return ['codex', 'claude'];
   }
 
-  if (availablePlatforms.length === 0) {
-    throw new Error('当前环境没有检测到可用平台。');
+  if (executablePlatforms.length === 0) {
+    throw new Error(
+      '当前环境没有检测到可执行平台；Codex project repo-managed target 不需要本机 Codex，Codex user/native-only target 仍需要对应 native runner。',
+    );
   }
 
-  if (compatibleAvailablePlatforms.length === 0) {
-    assertPluginsSupportPlatforms(plugins, availablePlatforms);
+  if (compatibleExecutablePlatforms.length === 0) {
+    assertPluginsSupportPlatforms(plugins, executablePlatforms);
     throw new Error('当前环境没有和插件 marketplace.policy.products 匹配的可用平台。');
   }
 
-  if (compatibleAvailablePlatforms.length === 1) {
-    if (action === 'upgrade' && compatibleAvailablePlatforms.length !== availablePlatforms.length) {
-      const excludedPlatforms = availablePlatforms.filter(
-        (platform) => !compatibleAvailablePlatforms.includes(platform),
+  if (compatibleExecutablePlatforms.length === 1) {
+    if (action === 'upgrade' && compatibleExecutablePlatforms.length !== executablePlatforms.length) {
+      const excludedPlatforms = executablePlatforms.filter(
+        (platform) => !compatibleExecutablePlatforms.includes(platform),
       );
       const blockingReasons = await collectManagedTargetsOnExcludedPlatforms(
         adapters,
@@ -786,35 +1133,35 @@ export async function resolveTargetPlatforms(
 
       if (blockingReasons.length > 0) {
         throw new Error(
-          '`--platform auto` 经过 marketplace.policy.products 过滤后只剩一个可用平台，但以下插件仍在被排除的平台上保留受管安装：\n' +
+          '`--platform auto` 经过 marketplace.policy.products 过滤后只剩一个可执行平台，但以下插件仍在被排除的平台上保留受管安装：\n' +
           blockingReasons.map((reason) => `- ${reason}`).join('\n') +
           '\n请显式传入 `--platform codex|claude|both`，或先卸载不再受支持的平台安装。',
         );
       }
     }
 
-    return compatibleAvailablePlatforms;
+    return compatibleExecutablePlatforms;
   }
 
   if (action === 'status') {
-    return compatibleAvailablePlatforms;
+    return compatibleExecutablePlatforms;
   }
 
   const autoState = await getAutoPlatformState(adapters, plugins, scope);
-  const unknownPlatforms = compatibleAvailablePlatforms.filter((platform) => autoState[platform] === 'unknown');
+  const unknownPlatforms = compatibleExecutablePlatforms.filter((platform) => autoState[platform] === 'unknown');
   if (unknownPlatforms.length > 0) {
     throw new Error(
-      '当前环境同时检测到双平台，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+      '当前 scope 存在多个可执行平台候选，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
     );
   }
 
-  const initializedPlatforms = compatibleAvailablePlatforms.filter((platform) => autoState[platform] === 'yes');
+  const initializedPlatforms = compatibleExecutablePlatforms.filter((platform) => autoState[platform] === 'yes');
   if (initializedPlatforms.length === 1) {
     return initializedPlatforms;
   }
 
   throw new Error(
-    '当前环境同时检测到双平台，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
+    '当前 scope 存在多个可执行平台候选，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
   );
 }
 
@@ -833,15 +1180,9 @@ export function formatDetectedPlatforms(detection: EnvironmentDetection): string
 }
 
 export function collectCommandWarnings(
-  platforms: PlatformName[],
-  scope: Scope,
+  _platforms: PlatformName[],
+  _scope: Scope,
 ): string[] {
-  if (scope === 'project' && platforms.includes('codex')) {
-    return [
-      'Codex 原生 plugin / marketplace 注册仅支持 user scope，已回退到 `~/.codex/config.toml`；`--scope project` 只影响 `.codex/` 自定义扩展。',
-    ];
-  }
-
   return [];
 }
 
@@ -920,7 +1261,11 @@ export function formatStatusReports(reports: StatusReport[]): string {
       if (plugin.native.activeLocalBundlePath) {
         lines.push(`      activeLocalBundlePath=${plugin.native.activeLocalBundlePath}`);
       }
-      if (plugin.externalOwnership?.present) {
+      if (plugin.externalOwnership?.checkState === 'unknown') {
+        lines.push(
+          `      externalOwnership=unknown${plugin.externalOwnership.details ? ` (${plugin.externalOwnership.details})` : ''}`,
+        );
+      } else if (plugin.externalOwnership?.present) {
         lines.push(
           `      externalOwnership=${plugin.externalOwnership.marketplace ?? '-'}${plugin.externalOwnership.details ? ` (${plugin.externalOwnership.details})` : ''}`,
         );
@@ -938,6 +1283,9 @@ export function formatStatusReports(reports: StatusReport[]): string {
 
       lines.push('    initialization:');
       lines.push(`      scopeInitialized=${plugin.scopeInitialized ?? '-'}`);
+      if (plugin.projectManagedKinds) {
+        lines.push(`      projectManagedKinds=${plugin.projectManagedKinds.join(',') || '-'}`);
+      }
       if (plugin.ledgerStateStatus) {
         lines.push(
           `      ledgerState=${plugin.ledgerStateStatus}${plugin.ledgerStateReason ? ` (${plugin.ledgerStateReason})` : ''}`,
@@ -950,6 +1298,9 @@ export function formatStatusReports(reports: StatusReport[]): string {
         lines.push(
           `      managedEvidence=ledger:${plugin.scopeManagedEvidence.ledger ? 'yes' : 'no'},tracking:${plugin.scopeManagedEvidence.tracking ? 'yes' : 'no'},sharedNativeRef:${plugin.scopeManagedEvidence.sharedNativeRef ? 'yes' : 'no'}`,
         );
+      }
+      if (plugin.skillTriggerApplicability) {
+        lines.push(`      skillTriggerApplicability=${plugin.skillTriggerApplicability}`);
       }
       if (plugin.skillTriggerPreference) {
         lines.push(`      skillTriggerLedger=${plugin.skillTriggerPreference}`);
@@ -978,7 +1329,7 @@ export function formatStatusReports(reports: StatusReport[]): string {
       } else {
         for (const artifact of plugin.generatedArtifacts) {
           lines.push(
-            `      ${artifact.kind}=${artifact.exists ? 'present' : 'missing'} path=${artifact.path}`,
+            `      ${artifact.kind}=${artifact.exists ? 'present' : 'missing'} path=${artifact.path}${artifact.artifactKey ? ` artifactKey=${artifact.artifactKey}` : ''}`,
           );
         }
       }
@@ -991,6 +1342,23 @@ export function formatStatusReports(reports: StatusReport[]): string {
         lines.push(
           `      instructions=${plugin.repoManagedSessionState.instructions} rules=${plugin.repoManagedSessionState.rules} hooks=${plugin.repoManagedSessionState.hooks} agents=${plugin.repoManagedSessionState.agents}`,
         );
+        if (plugin.repoManagedSessionState.skills) {
+          lines.push(
+            `      skills=${plugin.repoManagedSessionState.skills.state} total=${plugin.repoManagedSessionState.skills.totalCount} visible=${plugin.repoManagedSessionState.skills.visibleCount} missing=${plugin.repoManagedSessionState.skills.missingCount} drifted=${plugin.repoManagedSessionState.skills.driftedCount} orphan=${plugin.repoManagedSessionState.skills.orphanCount} blocked=${plugin.repoManagedSessionState.skills.blockedCount} trustUnknown=${plugin.repoManagedSessionState.skills.projectTrustUnknownCount} unknown=${plugin.repoManagedSessionState.skills.unknownCount} absent=${plugin.repoManagedSessionState.skills.absentCount}`,
+          );
+        }
+        if (plugin.repoManagedSessionState.mcpServers) {
+          lines.push(
+            `      mcpServers=${plugin.repoManagedSessionState.mcpServers.state} total=${plugin.repoManagedSessionState.mcpServers.totalCount} visible=${plugin.repoManagedSessionState.mcpServers.visibleCount} missing=${plugin.repoManagedSessionState.mcpServers.missingCount} drifted=${plugin.repoManagedSessionState.mcpServers.driftedCount} orphan=${plugin.repoManagedSessionState.mcpServers.orphanCount} blocked=${plugin.repoManagedSessionState.mcpServers.blockedCount} trustUnknown=${plugin.repoManagedSessionState.mcpServers.projectTrustUnknownCount} unknown=${plugin.repoManagedSessionState.mcpServers.unknownCount} absent=${plugin.repoManagedSessionState.mcpServers.absentCount}`,
+          );
+        }
+        if (plugin.repoManagedSessionState.items?.length) {
+          for (const item of plugin.repoManagedSessionState.items) {
+            lines.push(
+              `      item kind=${item.kind} state=${item.state} drift=${item.drift} tracked=${item.tracked ? 'yes' : 'no'} exists=${item.exists ? 'yes' : 'no'} path=${item.path}${item.artifactKey ? ` artifactKey=${item.artifactKey}` : ''}${item.diagnostics.length > 0 ? ` diagnostics=${item.diagnostics.join(' | ')}` : ''}`,
+            );
+          }
+        }
       } else {
         lines.push('      not_applicable');
       }

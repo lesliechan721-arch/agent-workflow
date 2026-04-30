@@ -3,6 +3,7 @@ export type PlatformSelection = PlatformName | 'auto' | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
+export type SkillTriggerApplicability = 'none' | 'fixed' | 'overridable';
 export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 
 export interface PluginInterfaceMeta {
@@ -243,6 +244,7 @@ export interface PluginManifestSource {
   version: string;
   description: string;
   skills?: string;
+  slashCommands?: string;
   skillTriggers?: Record<string, SkillTriggerPolicy>;
   mcpServers?: string;
   apps?: string;
@@ -321,8 +323,9 @@ export interface CodexSharedHookGroup {
 
 export interface GeneratedArtifact {
   path: string;
-  kind: 'instruction' | 'permission' | 'hook' | 'agent';
+  kind: 'instruction' | 'permission' | 'hook' | 'agent' | 'skill' | 'mcpServer';
   platform: PlatformName;
+  artifactKey?: string;
   hookGroups?: TrackedHookGroupIdentity[];
 }
 
@@ -371,11 +374,22 @@ export interface GeneratedArtifactStatus {
   path: string;
   exists: boolean;
   kind: GeneratedArtifact['kind'];
+  artifactKey?: string;
 }
 
 export type ScopeInitializedState = 'yes' | 'no' | 'unknown';
 export type CatalogCompatibility = 'current' | 'missing' | 'capabilityChanged';
 export type ProjectTrust = 'trusted' | 'untrusted' | 'unknown' | 'not_applicable';
+export type RepoManagedProjectItemState =
+  | 'visible'
+  | 'missing'
+  | 'drifted'
+  | 'orphan'
+  | 'blockedByProjectTrust'
+  | 'projectTrustUnknown'
+  | 'absent'
+  | 'unknown';
+export type RepoManagedProjectSummaryState = RepoManagedProjectItemState | 'not_applicable';
 export type InstructionsSessionState =
   | 'visible'
   | 'shadowedByProjectDeveloperInstructions'
@@ -404,6 +418,7 @@ export interface PlatformNativeFallbackEvidence {
 
 export interface ExternalOwnershipStatus {
   present: boolean;
+  checkState?: 'known' | 'unknown';
   marketplace?: string;
   owner?: string;
   details?: string;
@@ -415,11 +430,38 @@ export interface ScopeManagedEvidence {
   sharedNativeRef: boolean;
 }
 
+export interface RepoManagedProjectKindSummary {
+  state: RepoManagedProjectSummaryState;
+  totalCount: number;
+  visibleCount: number;
+  missingCount: number;
+  driftedCount: number;
+  orphanCount: number;
+  blockedCount: number;
+  projectTrustUnknownCount: number;
+  unknownCount: number;
+  absentCount: number;
+}
+
+export interface RepoManagedProjectItemReport {
+  kind: GeneratedArtifact['kind'];
+  path: string;
+  artifactKey?: string;
+  tracked: boolean;
+  exists: boolean;
+  state: RepoManagedProjectItemState;
+  drift: 'yes' | 'no' | 'unknown';
+  diagnostics: string[];
+}
+
 export interface RepoManagedSessionStateReport {
   instructions: InstructionsSessionState;
   rules: RepoManagedSessionVisibility;
   hooks: RepoManagedSessionVisibility;
   agents: RepoManagedSessionVisibility;
+  skills?: RepoManagedProjectKindSummary;
+  mcpServers?: RepoManagedProjectKindSummary;
+  items?: RepoManagedProjectItemReport[];
   diagnostics: string[];
 }
 
@@ -436,6 +478,7 @@ export interface PluginStatusReport {
   generatedArtifacts: GeneratedArtifactStatus[];
   driftWarnings: string[];
   installOptions?: InstalledScopeInstallOptions;
+  skillTriggerApplicability?: SkillTriggerApplicability;
   skillTriggerPreference?: SkillTriggerPreference;
   skillTriggerRuntimeMatches?: SkillTriggerPreference[];
   skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
@@ -443,6 +486,7 @@ export interface PluginStatusReport {
   ledgerStateStatus?: LedgerStateStatus;
   ledgerStateReason?: LedgerStateReason | null;
   scopeInitialized?: ScopeInitializedState;
+  projectManagedKinds?: CodexProjectManagedKind[];
   catalogCompatibility?: CatalogCompatibility;
   externalOwnership?: ExternalOwnershipStatus;
   projectTrust?: ProjectTrust;
@@ -479,6 +523,42 @@ export interface UpgradeCommandOptions extends CommandOptions {
   requestedSkillTrigger?: SkillTriggerPreference;
 }
 
+export type SkippedUpgradeCode =
+  | 'scopeNotInitialized'
+  | 'codexProjectUserConfigUnreadable'
+  | 'externalOwnershipUnknown'
+  | 'externalOwnershipPresent'
+  | 'trackingIntegrityError'
+  | 'installOptionsUnavailable'
+  | 'catalogNotCurrent'
+  | 'catalogNotProjectInstallable'
+  | 'projectConfigUnreadable'
+  | 'unmanagedRepoArtifactConflict';
+
+export interface SkippedUpgradeTarget {
+  platform: PlatformName;
+  scope: Scope;
+  plugin: string;
+  reason: string;
+  code: SkippedUpgradeCode;
+}
+
+export interface UpgradeCommandResult {
+  platforms: string[];
+  plugins: string[];
+  warnings: string[];
+  skipped: SkippedUpgradeTarget[];
+  nativePlugins: NativePluginsByPlatform;
+  repoManagedArtifacts: GeneratedArtifact[];
+  marketplace?: {
+    rootDir: string;
+    source: CatalogResolution['source'];
+    changed: boolean;
+    mode?: 'readOnly' | 'runtimeWritable';
+    catalog: CatalogResolution;
+  };
+}
+
 export interface StatusCommandOptions {
   cwd: string;
   scope?: Scope;
@@ -498,11 +578,29 @@ export type StatusScriptHealth =
 export type ResolvedInstallOptionsSource = 'cli' | 'ledger' | 'default';
 export type ResolvedInstallOptionsLedgerTrust = 'available' | 'degraded';
 
-export interface ResolvedInstallOptions {
-  skillTriggerPreference: SkillTriggerPreference;
-  skillTriggerSource: ResolvedInstallOptionsSource;
+export interface ResolvedInstallOptionsBase {
+  applicability: SkillTriggerApplicability;
   ledgerTrust: ResolvedInstallOptionsLedgerTrust;
 }
+
+export interface ResolvedInstallOptionsNone extends ResolvedInstallOptionsBase {
+  applicability: 'none';
+}
+
+export interface ResolvedInstallOptionsFixed extends ResolvedInstallOptionsBase {
+  applicability: 'fixed';
+}
+
+export interface ResolvedInstallOptionsOverridable extends ResolvedInstallOptionsBase {
+  applicability: 'overridable';
+  skillTriggerPreference: SkillTriggerPreference;
+  skillTriggerSource: ResolvedInstallOptionsSource;
+}
+
+export type ResolvedInstallOptions =
+  | ResolvedInstallOptionsNone
+  | ResolvedInstallOptionsFixed
+  | ResolvedInstallOptionsOverridable;
 
 export class CommandWarningError extends Error {
   readonly warnings: string[];
@@ -558,7 +656,8 @@ export type LedgerStateStatus = 'available' | 'degraded';
 export type LedgerStateReason =
   | 'rebuilt_from_missing_or_invalid'
   | 'operation_interrupted_after_native_write'
-  | 'operation_interrupted_after_artifact_write';
+  | 'operation_interrupted_after_artifact_write'
+  | 'capability_changed_upgrade_restore_incomplete';
 
 export interface LedgerState {
   status: LedgerStateStatus;
@@ -570,9 +669,19 @@ export interface ClaudeCapabilitySnapshot {
   managedExtensions?: string[];
 }
 
+export type CodexProjectManagedKind =
+  | 'skill'
+  | 'mcpServer'
+  | 'instruction'
+  | 'permission'
+  | 'hook'
+  | 'agent';
+
 export interface CodexCapabilitySnapshot {
   requiresNativePlugin?: boolean;
   hasRepoManagedArtifacts?: boolean;
+  projectManagedKinds?: CodexProjectManagedKind[];
+  managedKinds?: CodexProjectManagedKind[];
 }
 
 export interface InstalledScopeInstallOptions {
@@ -601,6 +710,7 @@ export interface InstalledScopeRecord<TCapabilitySnapshot> {
   updatedAt: string;
   resolvedVersion: string;
   capabilitySnapshot: TCapabilitySnapshot;
+  projectKey?: string;
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerWriteOrder?: number;
   lifecycleConfigSnapshot?: LifecycleConfigSnapshotMetadata;

@@ -1,6 +1,0 @@
-interface:
-  display_name: "Code Review"
-  short_description: "自动化代码审查工作流"
-  default_prompt: "Use $review to run a code review on the current changes."
-policy:
-  allow_implicit_invocation: false

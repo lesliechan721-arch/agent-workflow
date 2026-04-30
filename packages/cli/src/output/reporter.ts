@@ -60,12 +60,18 @@ function translateDegradedReplay(message: string): string | null {
 }
 
 function translateTrustWarning(message: string): string | null {
-  if (message === '当前 repo trust 状态未知，project scope 会话可见性无法确定。') {
-    return 'Codex 已写入 project scope 文件，但当前仓库尚未确认 trusted；在 Codex 信任该仓库前，这些 project 配置可能不会进入会话。';
+  if (
+    message === '当前 repo trust 状态未知，project scope 会话可见性无法确定。' ||
+    message === '当前 repo trust 状态未知，部分 project scope 会话可见性无法确定。'
+  ) {
+    return 'Codex 已写入 repo-managed project artifacts；其中受 trust gating 影响的配置在当前仓库被 Codex 信任前，可能不会进入会话。';
   }
 
-  if (message === '当前 repo 处于 untrusted 状态，project scope 产物不会进入会话。') {
-    return 'Codex 已写入 project scope 文件，但当前仓库未被信任；在 Codex 信任该仓库前，这些 project 配置不会进入会话。';
+  if (
+    message === '当前 repo 处于 untrusted 状态，project scope 产物不会进入会话。' ||
+    message === '当前 repo 处于 untrusted 状态，部分 project scope 产物不会进入会话。'
+  ) {
+    return 'Codex 已写入 repo-managed project artifacts；其中受 trust gating 影响的配置在当前仓库被 Codex 信任前不会进入会话。';
   }
 
   return null;

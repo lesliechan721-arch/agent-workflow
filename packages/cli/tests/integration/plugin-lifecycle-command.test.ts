@@ -39,6 +39,7 @@ async function addLifecycleScripts(repoRoot: string): Promise<void> {
   const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
+  delete manifest.apps;
   manifest.scripts = {
     timeoutMs: 31000,
     lifecycle: {
@@ -58,6 +59,7 @@ async function addLifecycleScripts(repoRoot: string): Promise<void> {
     },
   };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(pluginRoot, '.app.json'));
   await fs.outputFile(
     path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
     [
@@ -257,7 +259,7 @@ describe('plugin lifecycle command integration', () => {
     expect(events).toMatchObject([{
       event: 'install',
       source: 'installSnapshot',
-      artifactCount: 1,
+      artifactCount: 2,
       configToken: 'secret-token',
     }]);
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);

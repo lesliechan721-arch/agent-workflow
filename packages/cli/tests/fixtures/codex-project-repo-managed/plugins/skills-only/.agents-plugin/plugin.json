@@ -1,0 +1,26 @@
+{
+  "name": "skills-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin with only Codex project repo skill artifacts.",
+  "skills": "./skills",
+  "skillTriggers": {
+    "repo-check": {
+      "allowInstallOverride": true
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "skills"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Skills Only Fixture",
+    "shortDescription": "Only repo-managed skills",
+    "capabilities": ["Skills"]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "native-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin without Codex project repo-managed artifacts.",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "native"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Native Only Fixture",
+    "shortDescription": "No project-managed Codex artifact",
+    "capabilities": ["Native"]
+  }
+}

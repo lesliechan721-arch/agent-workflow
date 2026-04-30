@@ -224,7 +224,19 @@ aw install <plugin> --skill-trigger default
 
 `allowInstallOverride` 只是覆盖许可，不代表默认策略。省略 `skillTriggers` 或写 `allowInstallOverride: false` 时，CLI 会保留该 skill 的默认触发配置，并在用户显式传入 `manual|auto` 时提示 warning。
 
-本地 `~/.aw` 是共享 marketplace。同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；不同 project/scope 选择不同偏好时，最近成功写入的受管记录会成为当前共享策略，其他 scope 可能在 `aw status` 中看到 drift。
+本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；不同 project/scope 选择不同偏好时，最近成功写入的受管记录会成为当前共享策略，其他 scope 可能在 `aw status` 中看到 drift。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
+
+### `skillTriggerApplicability`
+
+CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 ledger 偏好：
+
+| 值 | 含义 |
+|----|------|
+| `none` | 目标没有 skill trigger 面，例如 mcp-only 或 extensions-only |
+| `fixed` | 有 skill artifact，但运行时固定；公共 `slashCommands` 生成的 Codex manual-only skill 属于这一类 |
+| `overridable` | 至少一个 skill 允许 `--skill-trigger` 覆盖 |
+
+只有 `overridable` 需要从 ledger 恢复 `skillTriggerPreference`。tracking-only evidence 不能反推出旧偏好；若 target 是 `overridable` 且缺少可恢复 install options，显式 install / upgrade 必须要求用户传 `--skill-trigger default|manual|auto`，`upgrade --all` 会把它记为 `installOptionsUnavailable`。
 
 ---
 
@@ -232,7 +244,7 @@ aw install <plugin> --skill-trigger default
 
 - 自动触发不符合预期 → 先检查 `description` 是否足够具体，再看 `allow_implicit_invocation`。
 - 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用。
-- 不要把 Claude slash command 当作双端公共协议。
+- 不要把 Claude slash command 当作双端公共协议；手动触发命令请用公共 `slashCommands`，Codex 侧会生成 fixed/manual-only skill。
 - `disable-model-invocation: true` 不等于 Claude 不能手动调用（用户仍可调用）。
 
 ## 多 Skill 插件

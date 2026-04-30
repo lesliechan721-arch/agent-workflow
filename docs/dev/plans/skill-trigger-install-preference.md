@@ -323,7 +323,7 @@ skillTriggerWriteOrder?: number;
   - 只有 baseline ledger 为 `available` 时，卸载后的共享 marketplace 才按剩余 sibling record 重新选举并重物化。baseline ledger 为 `degraded` 时，首版不能用旧 sibling record 做重选；若卸载流程仍允许继续，应跳过 sibling re-election，保留 degraded 状态，并输出 skill trigger 重选已跳过的 warning，后续 `status` 继续输出 `unknown`。
   - 如果重物化提交后失败，先回滚 marketplace skills 快照；回滚失败或前面已经写过 adapter native state 时，把 ledger 标记为 `operation_interrupted_after_native_write`。
   - 如果重物化在提交前失败，不应改写 `~/.aw`；但如果 native state、artifacts 或 tracking 已经发生变化，仍按现有 degraded 规则处理。
-  - available ledger 下，Codex project scope 卸载虽然不会删除共享 user native plugin state，也必须触发本地 marketplace 偏好重选，因为该 project scope 的 ledger 偏好可能正是当前 `~/.aw` 的胜者。
+  - Codex project scope 已由 repo-managed isolation 计划改为只影响当前仓库 `.agents/skills`，不参与共享 `~/.aw` skill trigger winner 选举；project 卸载不触发本地 marketplace 偏好重选。
 - `initializeLocalMarketplace()`：
   - 读取并保留旧 `installed.json`。
   - 如果旧 `~/.aw` 仍能读取目标平台 skill 子树，在替换前捕获 available ledger 下各 `plugin/platform` 的旧 runtime 语义，用于判断本次 rebuild / bundle refresh 是否造成 sibling drift。

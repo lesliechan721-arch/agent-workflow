@@ -1,0 +1,52 @@
+{
+  "name": "extensions-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin with only Codex project repo-managed extensions.",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "extensions"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Extensions Only Fixture",
+    "shortDescription": "Only repo-managed extensions",
+    "capabilities": ["Extensions"]
+  },
+  "extensions": {
+    "instructions": [
+      {
+        "name": "fixture-policy",
+        "title": "Fixture Policy",
+        "content": "Use this managed instruction only for Codex project repo-managed fixture assertions.",
+        "paths": ["src/**"]
+      }
+    ],
+    "permissions": [
+      {
+        "name": "fixture-permissions",
+        "allow": ["git status", "git diff"],
+        "ask": ["git commit"]
+      }
+    ],
+    "hooks": [
+      {
+        "event": "before_tool",
+        "matcher": "Bash",
+        "command": "echo extensions-only hook"
+      }
+    ],
+    "agents": [
+      {
+        "name": "fixture-reviewer",
+        "description": "Reviews fixture repository changes.",
+        "prompt": "Review the fixture repository changes and report drift.",
+        "tools": ["shell"]
+      }
+    ]
+  }
+}

@@ -1,26 +1,26 @@
 # Claude 专属能力
 
-以下能力只进入 Claude runtime manifest，通过 `buildConfig.manifestOverrides.claude` 声明，并配合 `buildConfig.fileRules` 控制文件打包。Codex 平台不支持这些能力。
+以下能力只进入 Claude runtime manifest，通过 `buildConfig.manifestOverrides.claude` 声明，并配合 `buildConfig.fileRules` 控制文件打包。Codex 平台不支持这些能力。公共 `slashCommands` 会额外生成 Claude `commands/*.md`，但源码层不再手写 `commands/` 目录；旧顶层 `commands`、`manifestOverrides.claude.commands` 和 `commands/**` fileRules 都会被 validate / build 拒绝。
 
 ## 使用模式
 
 Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
-1. **fileRules**：把能力文件（如 `commands/`）打包进 Claude bundle
+1. **fileRules**：把能力文件（如 `output-styles/`）打包进 Claude bundle
 2. **manifestOverrides**：在 Claude runtime manifest 中声明对应字段
 
-此外，`commands/*.md` 和 `output-styles/*.md` 等文本文件支持模板渲染（`{{var}}`、`{{#if}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置，详见 `references/build-config-spec.md`。
+此外，公共 `slashCommands/*.md` 和 `output-styles/*.md` 等文本文件支持模板渲染（`{{var}}`、`{{#if}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置，详见 `references/build-config-spec.md`。
 
 ```json
 {
   "buildConfig": {
     "fileRules": {
-      "claude": { "include": ["commands/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["commands/**"] }
+      "claude": { "include": ["output-styles/**"], "exclude": [] },
+      "codex": { "include": [], "exclude": ["output-styles/**"] }
     },
     "manifestOverrides": {
       "claude": {
-        "commands": "./commands"
+        "outputStyles": "./output-styles"
       }
     }
   }
@@ -31,13 +31,13 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 ## 命令结果填充（Claude Code 专属）
 
-**此能力为 Claude Code 运行时专属，Codex 不支持。** Claude Code 在加载 `commands` 和 `skills` 的 Markdown prompt 文件时，可执行嵌入的 shell 命令并将输出内联到最终 prompt。
+**此能力为 Claude Code 运行时专属，Codex 不支持。** Claude Code 在加载 generated `commands` 和 `skills` 的 Markdown prompt 文件时，可执行嵌入的 shell 命令并将输出内联到最终 prompt。
 
 ### 支持范围
 
 | 扩展类型 | 支持 | 说明 |
 |----------|:----:|------|
-| `commands/*.md` | ✓ | 用户触发斜杠命令时执行 |
+| generated `commands/*.md` | ✓ | 用户触发斜杠命令时执行 |
 | `skills/*/SKILL.md` | ✓ | skill 被触发加载时执行 |
 | `skills/*/references/*.md` | ✓ | 随 skill 加载时执行 |
 | `extensions.agents` | ✗ | 仅支持 `${CLAUDE_PLUGIN_ROOT}` 和 `${user_config.X}` 变量替换 |
@@ -71,40 +71,41 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 `allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
 
-`commands` 和 `skills` 的 frontmatter 均支持这两个字段。
+公共 `slashCommands` 的 `claude` frontmatter block，以及 `skills` 的 frontmatter，均支持这两个字段。
 
 ---
 
-## commands/
+## 公共 slashCommands → Claude commands
 
-Claude Code 的自定义斜杠命令（slash commands）。用户通过 `/command-name` 触发。
+源码层使用公共 `slashCommands` 目录维护一份命令 Markdown；构建后 Claude bundle 会生成原生 `commands/*.md`。用户最终仍通过 `/command-name` 触发。
 
 ### 目录结构
 
 ```text
 plugins/<name>/
-└── commands/
+└── slash-commands/
     ├── review.md
     ├── deploy.md
-    └── debug/
-        ├── start.md
-        └── stop.md
+    └── assets/
+        └── review-16.svg
 ```
 
-命令文件是 Markdown 格式，文件名即命令名。支持子目录做命令命名空间（如 `debug/start` → `/debug:start`）。
+命令文件是 Markdown 格式，文件名即命令名。首版不支持子目录命名空间；`assets/` 目录只放图标等资源，里面的 Markdown 不生成命令。
 
 ### 命令文件格式
 
 ```markdown
 ---
 description: 执行代码审查
-allowed-tools:
-  - Bash
-  - Read
-  - Write
-model: inherit
-argument-hint: "[file-path]"
-disable-model-invocation: false
+claude:
+  allowed-tools:
+    - Bash
+    - Read
+    - Write
+  model: inherit
+  argument-hint: "[file-path]"
+codex:
+  description: 在 Codex 中手动执行代码审查工作流。
 ---
 
 对 $ARGUMENTS 指定的文件执行代码审查。
@@ -118,14 +119,22 @@ disable-model-invocation: false
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `description` | string | 命令描述，显示在命令列表中 |
-| `allowed-tools` | `string` \| `string[]` | 命令执行期间允许使用的工具 |
-| `model` | string | 指定模型（`inherit` 继承当前模型） |
-| `argument-hint` | string | 参数提示（如 `[file]`、`[branch]`） |
-| `disable-model-invocation` | boolean | 禁止模型自动调用此命令 |
-| `shell` | string | shell 插值使用的解释器（默认 `bash`，可选 `powershell`） |
+| 顶层 `description` | string | 公共描述，Claude/Codex 默认共用 |
+| `claude.description` | string | Claude 命令描述覆盖 |
+| `claude.allowed-tools` | `string` \| `string[]` | 命令执行期间允许使用的工具 |
+| `claude.model` | string | 指定模型（`inherit` 继承当前模型） |
+| `claude.argument-hint` | string | 参数提示（如 `[file]`、`[branch]`） |
+| `claude.shell` | string | shell 插值使用的解释器（默认 `bash`，可选 `powershell`） |
+| `codex.description` | string | Codex generated skill 的描述覆盖 |
+| `codex.interface.display_name` | string | Codex generated skill 展示名 |
+| `codex.interface.short_description` | string | Codex generated skill 简短描述 |
+| `codex.interface.icon_small` / `icon_large` | string | 只能写 `./assets/...`，源文件位于 `slash-commands/assets/` |
+| `codex.interface.brand_color` | string | `#RRGGBB` |
+| `codex.interface.default_prompt` | string | Codex skill 默认提示 |
 
-命令文件里的 `allowed-tools` 同样兼容单个字符串；多条规则建议写成数组。
+构建时，Claude generated command 会固定写入 `disable-model-invocation: true`。命令文件里的 `allowed-tools` 同样兼容单个字符串；多条规则建议写成数组。
+
+Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此它只能由用户显式 `$command-name` 或结构化 skill mention 调用。作者不能在 `codex.policy` 覆盖这个策略。Codex 渲染结果不能包含 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 语法；需要平台差异时，用 `buildConfig.templates` 包住 Claude-only 段落。
 
 ### 动态参数
 
@@ -134,18 +143,13 @@ disable-model-invocation: false
 
 命令文件正文支持命令结果填充语法（`` !`command` `` 和 `` ```! ``），详见上方 § 命令结果填充。
 
+这些动态参数和命令结果填充只允许出现在 Claude 渲染结果中。Codex 侧请改写成自然语言步骤，例如“先询问用户参数”或“使用工具读取当前 diff”。
+
 ### manifest 声明
 
 ```json
 {
-  "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["commands/**"], "exclude": [] }
-    },
-    "manifestOverrides": {
-      "claude": { "commands": "./commands" }
-    }
-  }
+  "slashCommands": "./slash-commands"
 }
 ```
 

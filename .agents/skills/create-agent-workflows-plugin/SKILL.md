@@ -37,9 +37,9 @@ plugins/<name>/
 
 **先读**：`references/plugin-manifest-spec.md` → `references/extensions-spec.md`
 
-### 场景 C：混合型 / Claude 专属能力
+### 场景 C：混合型 / 公共 slashCommands + Claude 专属能力
 
-包含 skill + MCP + commands 等多种能力，或需要 `buildConfig`。
+包含 skill + MCP + 公共 slashCommands + output styles 等多种能力，或需要 `buildConfig`。
 
 ```text
 plugins/<name>/
@@ -48,7 +48,7 @@ plugins/<name>/
 │   ├── SKILL.md
 │   └── agents/openai.yaml          # 面向 Codex 时必需；Claude-only skill 可省略
 ├── .mcp.json
-├── commands/
+├── slash-commands/
 │   └── *.md
 └── output-styles/
     └── *.md
@@ -79,7 +79,7 @@ plugins/<name>/
 | Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
 | MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
-| Claude 专属能力 | Claude | `commands/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
+| Public Slash Commands + Claude 专属能力 | Claude/Codex | `slashCommands`、`slash-commands/`、`slash-commands/assets/`、`output-styles/`、`manifestOverrides.claude` | `references/claude-only-capabilities.md` |
 | Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
 | AW Scripts / Config | 双平台 | `scripts` / `config` | `references/plugin-manifest-spec.md` |
 
@@ -95,6 +95,7 @@ plugins/<name>/
    - Skills → 编写 `SKILL.md`；面向 Codex 的 skill 同时提供 `agents/openai.yaml`，配置触发策略
    - Extensions → 在 manifest 的 `extensions` 中声明
    - MCP/Apps → 创建 `.mcp.json` / `.app.json`
+   - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
@@ -133,6 +134,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
+- 手动触发命令只使用公共 `slashCommands`；不要新建旧 `commands/` 目录，也不要写 `manifestOverrides.claude.commands`。
+- `slashCommands` 的 Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
 - 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
@@ -162,10 +165,10 @@ pnpm plugin:test --all
 | `references/extensions-spec.md` | instructions / permissions / 公共 hooks / nativeHooks / agents + agentOverrides 机制 |
 | `references/build-config-spec.md` | templates 模板渲染 / fileRules 平台文件规则 / manifestOverrides 覆盖 |
 | `references/mcp-and-apps.md` | .mcp.json 和 .app.json 配置格式与平台行为 |
-| `references/claude-only-capabilities.md` | commands（含命令结果填充）/ output-styles / lspServers / userConfig / channels |
+| `references/claude-only-capabilities.md` | 公共 slashCommands、Claude 命令结果填充 / output-styles / lspServers / userConfig / channels |
 | `references/comprehensive-example.md` | 综合示例说明 + 构建产物预览 |
 | `references/.examples/code-review/` | 可直接读取的完整示例插件目录（隐藏父目录用于避免被 Codex 当作 repo skill） |
 
 ## 现有样例
 
-- `references/.examples/code-review/`：覆盖 skills、extensions、MCP、commands、output-styles、buildConfig 的完整示例插件目录。这里故意把样例放在隐藏父目录下，避免 Codex 递归扫描到示例里的 `SKILL.md` 并把它当成当前仓库的真实 skill
+- `references/.examples/code-review/`：覆盖 skills、slashCommands、extensions、MCP、output-styles、buildConfig 的完整示例插件目录。这里故意把样例放在隐藏父目录下，避免 Codex 递归扫描到示例里的 `SKILL.md` 并把它当成当前仓库的真实 skill

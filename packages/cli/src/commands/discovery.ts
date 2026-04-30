@@ -6,6 +6,7 @@ import type {
   CatalogResolution,
   ClaudeCapabilitySnapshot,
   CodexCapabilitySnapshot,
+  CodexProjectManagedKind,
   GeneratedArtifact,
   InstalledLedger,
   InstalledLedgerPluginRecord,
@@ -31,8 +32,10 @@ import {
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
+  getTrackingArtifactIntegrityErrors,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import type { TrackingArtifactIntegrityError } from '../utils/tracking.js';
 import {
   readClaudeInstalledPluginsState,
   readClaudeSettings,
@@ -41,7 +44,32 @@ import { pluginSupportsPlatform, type ResolvedPluginTarget } from './common.js';
 
 const MARKETPLACE_NAME = 'aw';
 
-type HistoricalExtensionKind = GeneratedArtifact['kind'];
+type HistoricalManagedKind = GeneratedArtifact['kind'];
+type HistoricalExtensionKind = Extract<
+  HistoricalManagedKind,
+  'instruction' | 'permission' | 'hook' | 'agent'
+>;
+type HistoricalCodexKind = CodexProjectManagedKind;
+
+const HISTORICAL_SKILLS_PATH = './historical-skills';
+const HISTORICAL_MCP_SERVERS_PATH = './historical-mcp.json';
+const HISTORICAL_EXTENSION_KIND_ORDER: HistoricalExtensionKind[] = [
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+const HISTORICAL_CODEX_KIND_ORDER: HistoricalCodexKind[] = [
+  'skill',
+  'mcpServer',
+  'instruction',
+  'permission',
+  'hook',
+  'agent',
+];
+const HISTORICAL_CODEX_KIND_SET = new Set<HistoricalCodexKind>(
+  HISTORICAL_CODEX_KIND_ORDER,
+);
 type DiscoveryEvidenceSource =
   | 'ledger'
   | 'tracking'
@@ -60,13 +88,15 @@ export interface DiscoveryProjectIdentity {
 
 export interface DiscoveryEvidenceSummary extends DiscoveryProjectIdentity {
   sources: DiscoveryEvidenceSource[];
-  trackingKinds: HistoricalExtensionKind[];
+  trackingKinds: HistoricalManagedKind[];
+  trackingIntegrityErrors: TrackingArtifactIntegrityError[];
   trackingHasHookIdentities: boolean;
   ledgerManaged: boolean;
   ledgerStateStatus: InstalledLedger['ledgerState']['status'];
   ledgerStateReason: InstalledLedger['ledgerState']['reason'];
   codexRequiresNativePlugin?: boolean;
   codexHasRepoManagedArtifacts?: boolean;
+  codexManagedKinds?: HistoricalCodexKind[];
   claudeManagedExtensions?: string[];
   readErrors: string[];
 }
@@ -139,7 +169,8 @@ interface DiscoveryContext {
 
 interface MutableEvidence extends DiscoveryEvidenceSummary {
   sources: DiscoveryEvidenceSource[];
-  trackingKinds: HistoricalExtensionKind[];
+  trackingKinds: HistoricalManagedKind[];
+  trackingIntegrityErrors: TrackingArtifactIntegrityError[];
   readErrors: string[];
 }
 
@@ -236,6 +267,7 @@ function createEmptyEvidence(
     ...identity,
     sources: [],
     trackingKinds: [],
+    trackingIntegrityErrors: [],
     trackingHasHookIdentities: false,
     ledgerManaged: false,
     ledgerStateStatus: ledger.ledgerState.status,
@@ -303,6 +335,17 @@ function addTrackingEvidence(
   record: TrackingPluginRecord,
 ): void {
   addEvidenceSource(evidence, 'tracking');
+  const platformArtifacts = record.artifacts.filter((artifact) => artifact.platform === evidence.platform);
+  for (const integrityError of getTrackingArtifactIntegrityErrors(platformArtifacts)) {
+    if (!evidence.trackingIntegrityErrors.some((existing) =>
+      existing.code === integrityError.code &&
+        existing.kind === integrityError.kind &&
+        existing.platform === integrityError.platform &&
+        existing.path === integrityError.path,
+    )) {
+      evidence.trackingIntegrityErrors.push(integrityError);
+    }
+  }
   for (const artifact of record.artifacts) {
     if (artifact.platform !== evidence.platform) {
       continue;
@@ -358,6 +401,20 @@ function isClaudeSnapshot(
   return platform === 'claude' && snapshot !== undefined;
 }
 
+function getCodexSnapshotManagedKinds(
+  snapshot: CodexCapabilitySnapshot | undefined,
+): HistoricalCodexKind[] {
+  const rawKinds = snapshot?.projectManagedKinds ?? snapshot?.managedKinds;
+  const selected = new Set<HistoricalCodexKind>();
+  for (const kind of rawKinds ?? []) {
+    if (HISTORICAL_CODEX_KIND_SET.has(kind)) {
+      selected.add(kind);
+    }
+  }
+
+  return HISTORICAL_CODEX_KIND_ORDER.filter((kind) => selected.has(kind));
+}
+
 function addLedgerEvidence(
   evidence: MutableEvidence,
   scopeRecord: InstalledScopeRecord<ClaudeCapabilitySnapshot | CodexCapabilitySnapshot>,
@@ -369,6 +426,7 @@ function addLedgerEvidence(
       scopeRecord.capabilitySnapshot.requiresNativePlugin === true;
     evidence.codexHasRepoManagedArtifacts =
       scopeRecord.capabilitySnapshot.hasRepoManagedArtifacts === true;
+    evidence.codexManagedKinds = getCodexSnapshotManagedKinds(scopeRecord.capabilitySnapshot);
   }
   if (isClaudeSnapshot(evidence.platform, scopeRecord.capabilitySnapshot)) {
     evidence.claudeManagedExtensions = [
@@ -423,15 +481,6 @@ async function collectLedgerEvidence(
           getOrCreateEvidence(discoveryRecord, identity, ledger),
           'codexSharedNativeRef',
         );
-      }
-      if (context.scopes.includes('project')) {
-        const identity = context.identities.codex.project;
-        if (identity.projectKey && refs?.projects.includes(identity.projectKey)) {
-          addEvidenceSource(
-            getOrCreateEvidence(discoveryRecord, identity, ledger),
-            'codexSharedNativeRef',
-          );
-        }
       }
     }
   }
@@ -763,8 +812,13 @@ function addHistoricalKind(
   }
 }
 
-function createHistoricalExtensions(evidence: DiscoveryEvidenceSummary): PluginExtensions | undefined {
-  const kinds = new Set<HistoricalExtensionKind>(evidence.trackingKinds);
+function collectHistoricalKinds(evidence: DiscoveryEvidenceSummary): Set<HistoricalManagedKind> {
+  const kinds = new Set<HistoricalManagedKind>(evidence.trackingKinds);
+  if (evidence.platform === 'codex') {
+    for (const kind of evidence.codexManagedKinds ?? []) {
+      kinds.add(kind);
+    }
+  }
   if (evidence.platform === 'claude') {
     for (const extension of evidence.claudeManagedExtensions ?? []) {
       if (extension === 'instructions') {
@@ -779,12 +833,20 @@ function createHistoricalExtensions(evidence: DiscoveryEvidenceSummary): PluginE
     }
   }
 
-  if (kinds.size === 0) {
+  return kinds;
+}
+
+function createHistoricalExtensions(
+  evidence: DiscoveryEvidenceSummary,
+  kinds: Set<HistoricalManagedKind>,
+): PluginExtensions | undefined {
+  const extensionKinds = HISTORICAL_EXTENSION_KIND_ORDER.filter((kind) => kinds.has(kind));
+  if (extensionKinds.length === 0) {
     return undefined;
   }
 
   const extensions: PluginExtensions = {};
-  for (const kind of [...kinds].sort()) {
+  for (const kind of extensionKinds) {
     addHistoricalKind(extensions, evidence.platform, kind);
   }
   return extensions;
@@ -794,6 +856,7 @@ function createHistoricalPluginMeta(
   record: DiscoveredPluginName,
   evidence: DiscoveryEvidenceSummary,
 ): PluginMeta {
+  const historicalKinds = collectHistoricalKinds(evidence);
   const requiresNativePlugin =
     evidence.platform === 'codex' &&
     (
@@ -801,6 +864,8 @@ function createHistoricalPluginMeta(
       evidence.sources.includes('codexNativeConfig') ||
       evidence.sources.includes('codexSharedNativeRef')
     );
+  const hasCodexNativeManifestPlaceholder =
+    historicalKinds.has('skill') || historicalKinds.has('mcpServer');
 
   return {
     rootDir: '',
@@ -809,7 +874,18 @@ function createHistoricalPluginMeta(
       name: record.pluginName,
       version: record.ledgerRecord?.lastResolvedVersion ?? '0.0.0',
       description: 'Historical managed plugin placeholder.',
-      skills: requiresNativePlugin ? './historical-skills' : undefined,
+      skills:
+        evidence.platform === 'codex' &&
+        (
+          historicalKinds.has('skill') ||
+          (requiresNativePlugin && !hasCodexNativeManifestPlaceholder)
+        )
+          ? HISTORICAL_SKILLS_PATH
+          : undefined,
+      mcpServers:
+        evidence.platform === 'codex' && historicalKinds.has('mcpServer')
+          ? HISTORICAL_MCP_SERVERS_PATH
+          : undefined,
       marketplace: {
         category: 'historical',
         strict: true,
@@ -819,7 +895,7 @@ function createHistoricalPluginMeta(
           products: [platformProduct(evidence.platform)],
         },
       },
-      extensions: createHistoricalExtensions(evidence),
+      extensions: createHistoricalExtensions(evidence, historicalKinds),
     },
   };
 }
@@ -896,6 +972,10 @@ function resolveCandidateDisabledReason(
 
   if (isCoarseCodexRepoOnlyEvidence(target, evidence)) {
     return '只有 Codex 历史账本中的粗粒度 repo-managed 标记，无法安全恢复具体受管能力。';
+  }
+
+  if (evidence.trackingIntegrityErrors.length > 0) {
+    return 'tracking manifest 中的 skill/mcpServer 缺少 artifactKey，无法安全清理。';
   }
 
   if (command === 'upgrade' && !target.currentPlugin) {

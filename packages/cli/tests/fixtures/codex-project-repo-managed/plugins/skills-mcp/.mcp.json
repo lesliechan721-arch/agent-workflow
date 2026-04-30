@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "skills-mcp-server": {
+      "command": "node",
+      "args": ["./servers/skills-mcp.js"],
+      "env": {
+        "FIXTURE_KIND": "skills-mcp"
+      }
+    }
+  }
+}

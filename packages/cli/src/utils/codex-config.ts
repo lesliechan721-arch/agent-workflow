@@ -19,6 +19,32 @@ interface CodexTomlDocument {
   newline: string;
 }
 
+export type CodexMcpTomlValue =
+  | string
+  | boolean
+  | number
+  | CodexMcpTomlValue[]
+  | { [key: string]: CodexMcpTomlValue };
+
+export interface CodexMcpServerConfig {
+  [key: string]: CodexMcpTomlValue;
+}
+
+export interface CodexMcpServerSnapshot {
+  key: string;
+  value?: CodexMcpServerConfig;
+  parseError?: string;
+}
+
+export type CodexMcpServerState = 'visible' | 'missing' | 'drifted' | 'orphan';
+
+export interface CodexMcpServerStatusSignal {
+  key: string;
+  tracked: boolean;
+  state: CodexMcpServerState;
+  reason?: string;
+}
+
 interface ManagedInstructionTextSegment {
   type: 'text';
   value: string;
@@ -77,7 +103,22 @@ export interface CodexConfigSnapshot {
   marketplaces: Record<string, CodexMarketplaceSnapshot>;
   plugins: Record<string, CodexPluginSnapshot>;
   projects: Record<string, CodexProjectSnapshot>;
+  mcpServers: Record<string, CodexMcpServerSnapshot>;
   developerInstructions: CodexDeveloperInstructionsSnapshot;
+}
+
+export interface CodexConfigTransaction {
+  upsertManagedInstructionBlock?: CodexManagedInstructionBlock;
+  removeManagedInstructionPluginName?: string;
+  upsertMcpServers?: Record<string, CodexMcpServerConfig>;
+  removeMcpServers?: string[];
+}
+
+export interface CodexConfigTransactionResult {
+  baselineContent: string | null;
+  content: string;
+  snapshot: CodexConfigSnapshot;
+  wrote: boolean;
 }
 
 function detectNewline(content: string): string {
@@ -105,6 +146,22 @@ function keySegments(key: AST.TOMLKey): string[] {
   return key.keys.map((segment) =>
     segment.type === 'TOMLBare' ? segment.name : segment.value,
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteTomlNumber(value: number): boolean {
+  return Number.isFinite(value);
+}
+
+function renderTomlKeySegment(segment: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(segment) ? segment : JSON.stringify(segment);
+}
+
+function renderTomlPath(segments: string[]): string {
+  return segments.map((segment) => renderTomlKeySegment(segment)).join('.');
 }
 
 function isTopLevelKeyValue(
@@ -178,6 +235,256 @@ function renderTableHeader(sectionType: string, sectionName: string): string {
     ? sectionName
     : JSON.stringify(sectionName);
   return `[${sectionType}.${renderedName}]`;
+}
+
+function renderCodexMcpTomlValue(value: CodexMcpTomlValue): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (typeof value === 'number') {
+    if (!isFiniteTomlNumber(value)) {
+      throw new Error('MCP value numbers must be finite.');
+    }
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => renderCodexMcpTomlValue(entry)).join(', ')}]`;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return '{}';
+  }
+  return `{ ${entries
+    .map(([key, entryValue]) => `${renderTomlKeySegment(key)} = ${renderCodexMcpTomlValue(entryValue)}`)
+    .join(', ')} }`;
+}
+
+function normalizeCodexMcpTomlValue(
+  value: unknown,
+  fieldPath: string,
+): CodexMcpTomlValue {
+  if (value === null) {
+    throw new Error(`Invalid ${fieldPath}: null cannot be represented in TOML.`);
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!isFiniteTomlNumber(value)) {
+      throw new Error(`Invalid ${fieldPath}: number must be finite.`);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) =>
+      normalizeCodexMcpTomlValue(entry, `${fieldPath}[${index}]`),
+    );
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Invalid ${fieldPath}: expected a TOML-compatible JSON value.`);
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entryValue]) => [
+      key,
+      normalizeCodexMcpTomlValue(entryValue, `${fieldPath}.${key}`),
+    ]),
+  );
+}
+
+function renderCodexMcpServerContent(
+  serverName: string,
+  config: CodexMcpServerConfig,
+  newline: string,
+): string {
+  const tables: string[] = [];
+
+  const visitTable = (tablePath: string[], tableValue: CodexMcpServerConfig): void => {
+    const scalarLines: string[] = [];
+    const childObjects: Array<[string, CodexMcpServerConfig]> = [];
+
+    for (const [key, value] of Object.entries(tableValue)) {
+      if (isRecord(value)) {
+        childObjects.push([key, value as CodexMcpServerConfig]);
+        continue;
+      }
+
+      scalarLines.push(`${renderTomlKeySegment(key)} = ${renderCodexMcpTomlValue(value)}`);
+    }
+
+    tables.push(
+      [
+        `[${renderTomlPath(tablePath)}]`,
+        ...scalarLines,
+      ].join(newline),
+    );
+
+    for (const [childKey, childValue] of childObjects) {
+      visitTable([...tablePath, childKey], childValue);
+    }
+  };
+
+  visitTable(['mcp_servers', serverName], config);
+  return `${tables.join(`${newline}${newline}`)}${newline}`;
+}
+
+function findTopLevelTablesWithPrefix(
+  document: CodexTomlDocument,
+  keyPrefix: string[],
+): AST.TOMLTable[] {
+  return document.topLevel.body.filter(
+    (entry): entry is AST.TOMLTable =>
+      entry.type === 'TOMLTable' &&
+      keyPrefix.every((segment, index) => keySegments(entry.key)[index] === segment),
+  );
+}
+
+function readCodexMcpTomlValue(
+  node: AST.TOMLKeyValue['value'],
+  fieldPath: string,
+): CodexMcpTomlValue {
+  if (node.type === 'TOMLValue') {
+    if (
+      node.kind === 'string' ||
+      node.kind === 'boolean' ||
+      node.kind === 'integer' ||
+      node.kind === 'float'
+    ) {
+      return normalizeCodexMcpTomlValue(node.value, fieldPath);
+    }
+    throw new Error(`Unsupported TOML value kind at ${fieldPath}: ${node.kind}.`);
+  }
+
+  if (node.type === 'TOMLArray') {
+    return node.elements.map((entry, index) =>
+      readCodexMcpTomlValue(entry, `${fieldPath}[${index}]`),
+    );
+  }
+
+  if (node.type === 'TOMLInlineTable') {
+    const value: CodexMcpServerConfig = {};
+    for (const entry of node.body) {
+      assignCodexMcpObjectValue(
+        value,
+        keySegments(entry.key),
+        readCodexMcpTomlValue(entry.value, `${fieldPath}.${keySegments(entry.key).join('.')}`),
+        fieldPath,
+      );
+    }
+    return value;
+  }
+
+  const unsupportedNodeType = (node as { type?: string }).type ?? 'unknown';
+  throw new Error(`Unsupported TOML MCP value node at ${fieldPath}: ${unsupportedNodeType}.`);
+}
+
+function ensureCodexMcpObjectPath(
+  root: CodexMcpServerConfig,
+  segments: string[],
+  fieldPath: string,
+): CodexMcpServerConfig {
+  let current = root;
+  for (const segment of segments) {
+    const existing = current[segment];
+    if (existing === undefined) {
+      current[segment] = {};
+      current = current[segment] as CodexMcpServerConfig;
+      continue;
+    }
+    if (!isRecord(existing)) {
+      throw new Error(`Cannot treat ${fieldPath} as a table because it is already a scalar value.`);
+    }
+    current = existing as CodexMcpServerConfig;
+  }
+  return current;
+}
+
+function assignCodexMcpObjectValue(
+  root: CodexMcpServerConfig,
+  keyPath: string[],
+  value: CodexMcpTomlValue,
+  fieldPath: string,
+): void {
+  const parent = ensureCodexMcpObjectPath(root, keyPath.slice(0, -1), fieldPath);
+  const leafKey = keyPath.at(-1);
+  if (!leafKey) {
+    throw new Error(`Invalid empty MCP key path at ${fieldPath}.`);
+  }
+
+  const existing = parent[leafKey];
+  if (existing !== undefined && isRecord(existing)) {
+    throw new Error(`Cannot overwrite nested MCP table at ${fieldPath} with a scalar value.`);
+  }
+  parent[leafKey] = value;
+}
+
+function buildCodexMcpServerSnapshot(
+  serverName: string,
+  tables: AST.TOMLTable[],
+): CodexMcpServerSnapshot {
+  try {
+    const value: CodexMcpServerConfig = {};
+
+    for (const table of tables) {
+      const tablePath = keySegments(table.key).slice(2);
+      const tableTarget = ensureCodexMcpObjectPath(
+        value,
+        tablePath,
+        `mcpServers.${serverName}${tablePath.length > 0 ? `.${tablePath.join('.')}` : ''}`,
+      );
+
+      for (const entry of table.body) {
+        assignCodexMcpObjectValue(
+          tableTarget,
+          keySegments(entry.key),
+          readCodexMcpTomlValue(
+            entry.value,
+            `mcpServers.${serverName}.${[...tablePath, ...keySegments(entry.key)].join('.')}`,
+          ),
+          `mcpServers.${serverName}.${[...tablePath, ...keySegments(entry.key)].join('.')}`,
+        );
+      }
+    }
+
+    return {
+      key: serverName,
+      value,
+    };
+  } catch (error) {
+    return {
+      key: serverName,
+      parseError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function collectCodexMcpServerSnapshots(
+  document: CodexTomlDocument,
+): Record<string, CodexMcpServerSnapshot> {
+  const groupedTables = new Map<string, AST.TOMLTable[]>();
+
+  for (const table of findTopLevelTablesWithPrefix(document, ['mcp_servers'])) {
+    const segments = keySegments(table.key);
+    if (segments.length < 2) {
+      continue;
+    }
+
+    const serverName = segments[1];
+    const tables = groupedTables.get(serverName) ?? [];
+    tables.push(table);
+    groupedTables.set(serverName, tables);
+  }
+
+  return Object.fromEntries(
+    [...groupedTables.entries()].map(([serverName, tables]) => [
+      serverName,
+      buildCodexMcpServerSnapshot(serverName, tables),
+    ]),
+  );
 }
 
 function lineStart(content: string, index: number): number {
@@ -262,6 +569,23 @@ function buildSectionInsertText(
       : `${document.newline}${document.newline}`;
 
   return `${prefix}${sectionText}${document.newline}`;
+}
+
+function buildMcpServerInsertText(
+  document: CodexTomlDocument,
+  tableText: string,
+): string {
+  if (document.content.length === 0) {
+    return tableText;
+  }
+
+  const prefix = document.content.endsWith(`${document.newline}${document.newline}`)
+    ? ''
+    : document.content.endsWith(document.newline)
+      ? document.newline
+      : `${document.newline}${document.newline}`;
+
+  return `${prefix}${tableText}`;
 }
 
 function upsertSectionEntries(
@@ -615,6 +939,7 @@ export function parseCodexConfig(content: string): CodexConfigSnapshot {
   const marketplaces: Record<string, CodexMarketplaceSnapshot> = {};
   const plugins: Record<string, CodexPluginSnapshot> = {};
   const projects: Record<string, CodexProjectSnapshot> = {};
+  const mcpServers = collectCodexMcpServerSnapshots(document);
 
   for (const entry of document.topLevel.body) {
     if (entry.type !== 'TOMLTable') {
@@ -694,6 +1019,7 @@ export function parseCodexConfig(content: string): CodexConfigSnapshot {
     marketplaces,
     plugins,
     projects,
+    mcpServers,
     developerInstructions: {
       defined: developerInstructionsValue !== undefined,
       value: developerInstructionsValue,
@@ -734,6 +1060,200 @@ export function removeCodexPluginEnabled(
   name: string,
 ): string {
   return removeSection(content, 'plugins', name);
+}
+
+export function normalizeRenderedCodexMcpServers(
+  value: unknown,
+  fieldName = 'mcpServers',
+): Record<string, CodexMcpServerConfig> {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid ${fieldName}: expected top-level "mcpServers" object.`);
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([serverName, serverConfig]) => {
+      if (!isRecord(serverConfig)) {
+        throw new Error(`Invalid ${fieldName}.${serverName}: expected a server config object.`);
+      }
+
+      return [
+        serverName,
+        normalizeCodexMcpTomlValue(
+          serverConfig,
+          `${fieldName}.${serverName}`,
+        ) as CodexMcpServerConfig,
+      ];
+    }),
+  );
+}
+
+export function parseRenderedCodexMcpFileContent(
+  content: unknown,
+  fieldName = 'mcp file',
+): Record<string, CodexMcpServerConfig> {
+  if (!isRecord(content)) {
+    throw new Error(`Invalid ${fieldName}: expected a JSON object.`);
+  }
+
+  return normalizeRenderedCodexMcpServers(content.mcpServers, `${fieldName}.mcpServers`);
+}
+
+export function upsertCodexMcpServer(
+  content: string,
+  serverName: string,
+  config: CodexMcpServerConfig,
+): string {
+  const normalizedConfig = normalizeCodexMcpTomlValue(
+    config,
+    `mcpServers.${serverName}`,
+  ) as CodexMcpServerConfig;
+  const document = parseTomlDocument(content);
+  const matchingTables = findTopLevelTablesWithPrefix(document, ['mcp_servers', serverName]);
+  const renderedContent = renderCodexMcpServerContent(
+    serverName,
+    normalizedConfig,
+    document.newline,
+  );
+
+  if (matchingTables.length === 0) {
+    return applyPatches(document.content, [
+      {
+        start: document.content.length,
+        end: document.content.length,
+        text: buildMcpServerInsertText(document, renderedContent),
+      },
+    ]);
+  }
+
+  const patches: Array<{ start: number; end: number; text: string }> = [];
+  const [firstStart, firstEnd] = expandNodeRemovalRange(
+    document.content,
+    matchingTables[0].range[0],
+    matchingTables[0].range[1],
+  );
+  patches.push({
+    start: firstStart,
+    end: firstEnd,
+    text: renderedContent,
+  });
+
+  for (const table of matchingTables.slice(1)) {
+    const [start, end] = expandNodeRemovalRange(
+      document.content,
+      table.range[0],
+      table.range[1],
+    );
+    patches.push({ start, end, text: '' });
+  }
+
+  return applyPatches(document.content, patches);
+}
+
+export function removeCodexMcpServer(
+  content: string,
+  serverName: string,
+): string {
+  const document = parseTomlDocument(content);
+  const matchingTables = findTopLevelTablesWithPrefix(document, ['mcp_servers', serverName]);
+  if (matchingTables.length === 0) {
+    return ensureTerminalNewline(content);
+  }
+
+  return applyPatches(
+    document.content,
+    matchingTables.map((table) => {
+      const [start, end] = expandNodeRemovalRange(
+        document.content,
+        table.range[0],
+        table.range[1],
+      );
+      return { start, end, text: '' };
+    }),
+  );
+}
+
+function stableCodexMcpValue(value: CodexMcpTomlValue): string {
+  if (Array.isArray(value)) {
+    return JSON.stringify(value.map((entry) => JSON.parse(stableCodexMcpValue(entry))));
+  }
+  if (isRecord(value)) {
+    return JSON.stringify(
+      Object.fromEntries(
+        Object.keys(value)
+          .sort()
+          .map((key) => [
+            key,
+            JSON.parse(stableCodexMcpValue(value[key] as CodexMcpTomlValue)),
+          ]),
+      ),
+    );
+  }
+
+  return JSON.stringify(value);
+}
+
+export function resolveCodexMcpServerStatusSignal(options: {
+  key: string;
+  tracked: boolean;
+  actual: CodexMcpServerSnapshot | undefined;
+  expected?: CodexMcpServerConfig;
+}): CodexMcpServerStatusSignal {
+  if (!options.tracked && options.actual) {
+    return {
+      key: options.key,
+      tracked: false,
+      state: 'orphan',
+      reason: 'server exists in .codex/config.toml but current plugin has no tracking ownership for it.',
+    };
+  }
+
+  if (!options.actual) {
+    return {
+      key: options.key,
+      tracked: options.tracked,
+      state: 'missing',
+      reason: 'server is missing from .codex/config.toml.',
+    };
+  }
+
+  if (options.actual.parseError) {
+    return {
+      key: options.key,
+      tracked: options.tracked,
+      state: 'drifted',
+      reason: options.actual.parseError,
+    };
+  }
+
+  if (options.expected === undefined) {
+    return {
+      key: options.key,
+      tracked: options.tracked,
+      state: 'visible',
+    };
+  }
+
+  if (!options.actual.value) {
+    return {
+      key: options.key,
+      tracked: options.tracked,
+      state: 'drifted',
+      reason: 'server exists but cannot be normalized to a comparable JSON subtree.',
+    };
+  }
+
+  return stableCodexMcpValue(options.actual.value) === stableCodexMcpValue(options.expected)
+    ? {
+        key: options.key,
+        tracked: options.tracked,
+        state: 'visible',
+      }
+    : {
+        key: options.key,
+        tracked: options.tracked,
+        state: 'drifted',
+        reason: 'current TOML subtree differs from rendered .mcp.json.',
+      };
 }
 
 export function upsertManagedDeveloperInstructions(
@@ -821,12 +1341,75 @@ export async function readCodexConfigFile(
   };
 }
 
+export async function readRenderedCodexMcpServersFile(
+  mcpPath: string,
+): Promise<Record<string, CodexMcpServerConfig>> {
+  const content = await fs.readJson(mcpPath) as unknown;
+  return parseRenderedCodexMcpFileContent(content, mcpPath);
+}
+
+export function applyCodexConfigTransaction(
+  content: string,
+  transaction: CodexConfigTransaction,
+): string {
+  let next = content;
+
+  for (const serverName of [...new Set(transaction.removeMcpServers ?? [])]) {
+    next = removeCodexMcpServer(next, serverName);
+  }
+
+  for (const [serverName, serverConfig] of Object.entries(transaction.upsertMcpServers ?? {})) {
+    next = upsertCodexMcpServer(next, serverName, serverConfig);
+  }
+
+  if (transaction.removeManagedInstructionPluginName) {
+    next = removeManagedDeveloperInstructions(
+      next,
+      transaction.removeManagedInstructionPluginName,
+    );
+  }
+
+  if (transaction.upsertManagedInstructionBlock) {
+    next = upsertManagedDeveloperInstructions(
+      next,
+      transaction.upsertManagedInstructionBlock,
+    );
+  }
+
+  return next;
+}
+
 async function writeCodexConfigFile(
   configPath: string,
   content: string,
 ): Promise<void> {
   await fs.ensureDir(path.dirname(configPath));
   await fs.writeFile(configPath, content, 'utf8');
+}
+
+export async function applyCodexConfigTransactionFile(
+  configPath: string,
+  transaction: CodexConfigTransaction,
+): Promise<CodexConfigTransactionResult> {
+  const baselineExists = await fs.pathExists(configPath);
+  const baselineContent = baselineExists
+    ? await fs.readFile(configPath, 'utf8')
+    : null;
+  const baselineText = baselineContent ?? '';
+  const nextContent = applyCodexConfigTransaction(baselineText, transaction);
+  const baselineWithTerminalNewline = ensureTerminalNewline(baselineText);
+  const wrote = nextContent !== baselineWithTerminalNewline;
+
+  if (wrote) {
+    await writeCodexConfigFile(configPath, nextContent);
+  }
+
+  return {
+    baselineContent,
+    content: nextContent,
+    snapshot: parseCodexConfig(nextContent),
+    wrote,
+  };
 }
 
 export async function upsertCodexMarketplaceFile(

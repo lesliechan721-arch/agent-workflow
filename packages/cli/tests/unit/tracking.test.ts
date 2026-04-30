@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   getTrackingManifestPath,
+  getTrackingArtifactIntegrityErrors,
   getTrackingRecord,
   hasTrackingArtifacts,
   readTrackingManifest,
@@ -91,5 +92,58 @@ describe('tracking utils', () => {
       version: 1,
       plugins: {},
     });
+  });
+
+  it('marks skill and MCP tracking artifacts without artifactKey as integrity errors', () => {
+    const errors = getTrackingArtifactIntegrityErrors([
+      {
+        path: '/repo/.agents/skills/commit',
+        kind: 'skill',
+        platform: 'codex',
+      },
+      {
+        path: '/repo/.codex/config.toml',
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      },
+      {
+        path: '/repo/.codex/config.toml',
+        kind: 'mcpServer',
+        platform: 'codex',
+      },
+    ]);
+
+    expect(errors).toEqual([
+      {
+        code: 'missingArtifactKey',
+        kind: 'skill',
+        platform: 'codex',
+        path: '/repo/.agents/skills/commit',
+        message: 'Tracking artifact kind "skill" requires artifactKey: /repo/.agents/skills/commit',
+      },
+      {
+        code: 'missingArtifactKey',
+        kind: 'mcpServer',
+        platform: 'codex',
+        path: '/repo/.codex/config.toml',
+        message: 'Tracking artifact kind "mcpServer" requires artifactKey: /repo/.codex/config.toml',
+      },
+    ]);
+  });
+
+  it('rejects new tracking writes whose artifact paths are not absolute', async () => {
+    const targetDir = await makeTrackingDir();
+
+    await expect(
+      upsertTrackingRecord(targetDir, 'git-commit', [
+        {
+          path: './relative-skill',
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: 'commit',
+        },
+      ]),
+    ).rejects.toThrow('Tracking artifact path must be absolute');
   });
 });

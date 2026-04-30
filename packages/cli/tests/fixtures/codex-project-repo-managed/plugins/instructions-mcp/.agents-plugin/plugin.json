@@ -1,0 +1,31 @@
+{
+  "name": "instructions-mcp",
+  "version": "0.1.0",
+  "description": "Fixture plugin combining managed instructions and MCP servers.",
+  "mcpServers": "./.mcp.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "instructions", "mcp"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Instructions MCP Fixture",
+    "shortDescription": "Instructions plus MCP",
+    "capabilities": ["Instructions", "MCP"]
+  },
+  "extensions": {
+    "instructions": [
+      {
+        "name": "mcp-policy",
+        "title": "MCP Policy",
+        "content": "When this fixture is installed, treat the sibling MCP server as managed project configuration.",
+        "paths": ["**/*"]
+      }
+    ]
+  }
+}

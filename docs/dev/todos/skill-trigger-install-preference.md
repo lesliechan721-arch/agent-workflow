@@ -311,7 +311,7 @@
 - [x] historical target 或当前 catalog 缺失插件首版 no-op，保留现有 uninstall 清理能力。
 - [x] uninstall 中如果重物化提交后失败，先回滚 marketplace skills 快照。
 - [x] 回滚失败或 native state 已写入后失败时，把 ledger 标记为 `operation_interrupted_after_native_write`。
-- [x] Codex project scope 卸载也触发本地 marketplace 偏好重选。
+- [x] Codex project scope 已由 repo-managed isolation 计划改为不触发本地 marketplace 偏好重选。
 
 ### 自动化测试
 

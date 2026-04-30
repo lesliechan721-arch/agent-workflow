@@ -135,7 +135,89 @@ describe('cli entry', () => {
     expect(readStdout()).toContain('已确认插件启用：git-commit@aw。');
     expect(readStdout()).toContain('完成。下一步：运行 aw status git-commit -p codex');
     expect(readStderr()).not.toContain('Warning:');
-    expect(readStderr()).toContain('注意：Codex 已写入 project scope 文件');
+    expect(readStderr()).toContain('注意：Codex 已写入 repo-managed project artifacts');
+  });
+
+  it('prints repo-managed Codex project receipts without native marketplace success lines', async () => {
+    const repoManagedArtifacts = [
+      {
+        platform: 'codex',
+        kind: 'skill',
+        path: '/tmp/workspace/.agents/skills/repo-check',
+        artifactKey: 'repo-check',
+      },
+      {
+        platform: 'codex',
+        kind: 'mcpServer',
+        path: '/tmp/workspace/.codex/config.toml',
+        artifactKey: 'acme.tools v1',
+      },
+    ];
+    const installCommand = vi.fn(async () => ({
+      plugins: ['skills-mcp'],
+      platforms: ['codex'],
+      nativePlugins: {},
+      repoManagedArtifacts,
+      marketplace: {
+        rootDir: '/tmp/embedded-aw',
+        changed: false,
+        mode: 'readOnly',
+        catalog: {
+          rootDir: '/tmp/embedded-aw',
+          source: 'embedded',
+        },
+      },
+      warnings: [],
+    }));
+    const uninstallCommand = vi.fn(async () => ({
+      plugins: ['skills-mcp'],
+      platforms: ['codex'],
+      repoManagedArtifacts,
+      warnings: [],
+    }));
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: ['skills-mcp'],
+      platforms: ['codex'],
+      skipped: [],
+      nativePlugins: {},
+      repoManagedArtifacts,
+      marketplace: {
+        rootDir: '/tmp/embedded-aw',
+        changed: false,
+        mode: 'readOnly',
+        catalog: {
+          rootDir: '/tmp/embedded-aw',
+          source: 'embedded',
+        },
+      },
+      warnings: [],
+    }));
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
+    vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    for (const [args, verb] of [
+      [['install', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已写入'],
+      [['upgrade', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已刷新'],
+      [['uninstall', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已清理'],
+    ] as const) {
+      const capture = createCapturedIo();
+      expect(await runCli(args, {
+        cwd: '/tmp/workspace',
+        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        io: capture.io,
+      })).toBe(0);
+      const stdout = capture.readStdout();
+      expect(stdout).toContain(
+        `${verb} Codex project repo-managed artifacts：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。`,
+      );
+      expect(stdout).not.toContain('已确认 Codex marketplace 注册');
+      expect(stdout).not.toContain('已确认插件启用');
+      expect(stdout).not.toContain('已复用本地 marketplace');
+      expect(stdout).not.toContain('已同步本地 marketplace');
+    }
   });
 
   it('prints readable uninstall and upgrade receipts', async () => {
@@ -183,6 +265,93 @@ describe('cli entry', () => {
     expect(capture.readStdout()).toContain('已确认 Claude Code marketplace 和插件状态。');
   });
 
+  it.each([
+    'scopeNotInitialized',
+    'codexProjectUserConfigUnreadable',
+    'externalOwnershipUnknown',
+    'externalOwnershipPresent',
+    'trackingIntegrityError',
+    'installOptionsUnavailable',
+    'catalogNotCurrent',
+    'catalogNotProjectInstallable',
+    'projectConfigUnreadable',
+    'unmanagedRepoArtifactConflict',
+  ])('prints skipped upgrade receipts and exits 1 when every target is skipped (%s)', async (code) => {
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: [],
+      platforms: ['codex'],
+      skipped: [{
+        platform: 'codex',
+        scope: 'project',
+        plugin: 'git-commit',
+        code,
+        reason: `${code} reason`,
+      }],
+      warnings: [],
+      nativePlugins: {},
+    }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+    const capture = createCapturedIo();
+    const exitCode = await runCli(
+      ['upgrade', '--all', '--platform', 'codex', '--scope', 'project'],
+      {
+        cwd: '/tmp/workspace',
+        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStdout()).toContain('未升级任何插件，已跳过 1 个目标');
+    expect(capture.readStdout()).toContain('Codex / project scope / git-commit');
+    expect(capture.readStdout()).toContain(`[${code}] ${code} reason`);
+  });
+
+  it('prints succeeded + skipped upgrade receipts and keeps exit 0', async () => {
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex', 'claude'],
+      skipped: [{
+        platform: 'codex',
+        scope: 'project',
+        plugin: 'git-commit',
+        code: 'externalOwnershipUnknown',
+        reason: 'externalOwnershipUnknown reason',
+      }],
+      warnings: [],
+      nativePlugins: {
+        claude: ['git-commit'],
+      },
+      marketplace: {
+        rootDir: '/tmp/aw-home',
+        changed: false,
+        catalog: {
+          rootDir: '/tmp/aw-home',
+          source: 'local',
+        },
+      },
+    }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+    const capture = createCapturedIo();
+    const exitCode = await runCli(
+      ['upgrade', '--all', '--platform', 'both', '--scope', 'project'],
+      {
+        cwd: '/tmp/workspace',
+        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(capture.readStdout()).toContain('已升级 git-commit：Codex, Claude Code / project scope。');
+    expect(capture.readStdout()).toContain('已跳过 1 个目标：');
+    expect(capture.readStdout()).toContain('[externalOwnershipUnknown] externalOwnershipUnknown reason');
+  });
+
   it('prints embedded catalog receipts only when the command returns that decision', async () => {
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -210,10 +379,11 @@ describe('cli entry', () => {
       { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io },
     )).toBe(0);
 
-    expect(readStdout()).toContain(
+    const stdout = readStdout();
+    expect(stdout).toContain(
       '使用插件目录：embedded catalog（/tmp/embedded-aw，local marketplace is missing, stale, or unhealthy）。',
     );
-    expect(readStdout()).toContain('已复用本地 marketplace：/tmp/aw-home。');
+    expect(stdout).not.toContain('已复用本地 marketplace：/tmp/aw-home。');
   });
 
   it('skips interactive existing-candidate planning for non-interactive explicit commands', async () => {

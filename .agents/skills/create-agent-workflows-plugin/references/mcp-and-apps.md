@@ -38,7 +38,7 @@ plugins/<name>/
 }
 ```
 
-顶层必须有 `mcpServers` 键，值是服务器名称到配置的映射。
+顶层必须有 `mcpServers` 键，值是服务器名称到配置的映射。服务器 key 使用 JSON 中的原始属性名作为身份，允许包含点号、空格、斜杠、大小写或 Unicode。
 
 ### 服务器类型
 
@@ -112,6 +112,13 @@ MCP 配置中可以使用 `${ENV_VAR}` 语法引用环境变量：
 ```json
 {
   "mcpServers": {
+    "acme.tools v1": {
+      "command": "node",
+      "args": ["./scripts/acme-mcp.js"],
+      "env": {
+        "ACME_TOKEN": "${ACME_TOKEN}"
+      }
+    },
     "local-db": {
       "command": "node",
       "args": ["./scripts/mcp-db-server.js"],
@@ -189,8 +196,10 @@ plugins/<name>/
 
 ### Codex
 
-- `.mcp.json` 中的 MCP 配置用于 skill 依赖解析和服务器自动启动
-- `.app.json` 用于 Codex 应用集成
+- Codex user scope 通过 native plugin runtime 加载 `.mcp.json`
+- Codex project scope 会把 rendered `.mcp.json` 中的每个 `mcpServers.<key>` 写入当前仓库 `.codex/config.toml [mcp_servers.*]`，并按同一个原始 key 记录 tracking `artifactKey`
+- 需要 TOML quoted key 的 server 会写成 `[mcp_servers."acme.tools v1"]`；这是单个 server key，不是 `[mcp_servers.acme.tools]` 的嵌套路径
+- `.app.json` 用于 Codex 应用集成，但 Codex project scope 首版不支持 apps；只要 manifest 声明 `apps`，project install/upgrade 会 fail fast，请改用 `--scope user` 或拆分插件
 - Codex 支持 `streamable_http` 和 `stdio` 两种传输方式
 
 ## 注意事项
@@ -198,5 +207,6 @@ plugins/<name>/
 - `.mcp.json` 和 `.app.json` 是独立的 JSON 文件，不嵌入 `plugin.json`
 - 文件存在时必须在 manifest 中声明对应字段，反之亦然
 - 路径字段只能是单个字符串，不能是数组或对象
+- Codex project scope 写入 MCP 时会完整透传 string / boolean / number / array / object；`null` 因 TOML 无等价表示会在写入前失败
 - 脚手架脚本支持 `--with-mcp` 和 `--with-apps` 标志；`--with-apps` 会生成带示例 connector id 的最小文件，作者需要替换成真实 id
 - `.mcp.json` 和 `.app.json` 作为模板化 JSON 原生资产走同一套规则：命中 `buildConfig.templates` 时源码层不强制 raw JSON 可解析，最终渲染产物必须分别满足 `mcpServers` 对象和 `apps.*.id` 非空字符串。详见 `references/build-config-spec.md`
