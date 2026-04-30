@@ -4,9 +4,17 @@ function parseArgs(argv) {
   const args = [...argv];
   let kind = 'any';
 
+  while (args[0] === '--') {
+    args.shift();
+  }
+
   if (args[0] === '--kind') {
     kind = args[1] ?? '';
     args.splice(0, 2);
+  }
+
+  while (args[0] === '--') {
+    args.shift();
   }
 
   const version = args[0];
