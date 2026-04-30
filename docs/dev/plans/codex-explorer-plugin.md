@@ -63,12 +63,10 @@
   "codexRole": {
     "roleKey": "codex-explorer",
     "model": {
-      "configKey": "explorerModel",
-      "default": "gpt-5.4-mini"
+      "configKey": "explorerModel"
     },
     "modelReasoningEffort": {
-      "configKey": "modelReasoningEffort",
-      "default": "medium"
+      "configKey": "modelReasoningEffort"
     },
     "promptConfig": {
       "safetyPrefix": "...不可覆写只读安全前导...",
@@ -83,7 +81,6 @@
 
 - `CodexAgentRoleDefinition.roleKey: string`
 - `CodexRoleConfigBinding<T>.configKey: string`
-- `CodexRoleConfigBinding<T>.default: T`
 - `CodexRolePromptConfig.safetyPrefix: string`
 - `CodexRolePromptConfig.appendKey?: string`
 - `CodexRolePromptConfig.overrideKey?: string`
@@ -92,10 +89,13 @@
 
 - `codexRole` 只允许出现在 `extensions.agents[]`，不写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json` 原生 manifest。
 - `roleKey` 必须是稳定、非空、单段 key。首版建议允许 `/^[A-Za-z][A-Za-z0-9_-]*$/`。
-- 如果 Codex role 文件写 `name`，值必须等于 `roleKey`。生成器可选择始终写 `name = "<roleKey>"`，便于 status 解释。
+- 同一插件内 `codexRole.roleKey` 必须唯一。
+- 声明 `codexRole` 的 agent 必须满足 `agent.name === codexRole.roleKey`。role layer 的 generated name 也按 `roleKey` 推导，即 `buildGeneratedName(pluginName, roleKey)`；不能再让逻辑身份使用 `roleKey`、文件身份使用另一个 `agent.name`。
+- 生成器必须始终写 `name = "<roleKey>"`，便于 status 解释。
 - `model.configKey`、`modelReasoningEffort.configKey`、`promptConfig.appendKey`、`promptConfig.overrideKey` 必须指向 `config.schema` 中存在的 key。
 - `model` 和 `modelReasoningEffort` 绑定的 schema 类型必须是 `string` 或 `enum`；`promptAppend` / `promptOverride` 必须是 `string`。
-- `model.default`、`modelReasoningEffort.default` 必须能通过对应 schema 校验。
+- `codexRole.model` 和 `codexRole.modelReasoningEffort` 不允许携带 `default` 字段。默认值唯一来自 `config.schema[configKey].default`；role 渲染、config digest、status stale 判断和 `aw config` effective summary 都必须读取同一套由 schema default、user store 和 project store 合成出的渲染配置。
+- `model` 和 `modelReasoningEffort` 绑定的 schema key 必须声明 default，且 default 必须能通过对应 schema 校验。
 - `promptConfig.safetyPrefix` 必须是非空字符串；即使 `promptOverride` 为空，也要始终写入 role layer。
 - 如果插件声明 `codexRole`，但 `marketplace.policy.products` 没有限制到 Codex，manifest 校验应给出清晰错误或至少在作者校验里报错。首版插件本身必须写 `["CODEX"]`。
 
@@ -134,7 +134,7 @@ developer_instructions = """
 文件规则：
 
 - `config_file` 使用相对 `.codex/config.toml` 的路径。
-- role layer path 继续使用 AW generated name，建议为 `agents/aw-codex-explore-codex-explorer.toml`。
+- role layer path 继续使用 AW generated name，并且 item name 固定取 `roleKey`，建议为 `agents/aw-codex-explore-codex-explorer.toml`。
 - 注册项和 role layer 的 `description` 保持一致。
 - `developer_instructions` 按 `safetyPrefix + workflowBody + promptAppend` 合成；有 `promptOverride` 时只替换 `workflowBody`。
 - TOML 字符串渲染复用或扩展 `generators/agents.ts` 的安全渲染逻辑。
@@ -329,7 +329,7 @@ status 需要新增诊断：
 
 没有命中 refresh keys 的 config 写入保持现状，只更新 config store。
 
-配置刷新不能直接复用通用 effective config 作为所有 artifact 的真值。`scope=user` 的 Codex role artifact 是全局文件，必须只绑定 `default+user`；`scope=project` 的 Codex role artifact 是当前 repo 文件，才读取当前 project 覆盖。这样同一份 user artifact 在不同 repo 下不会被轮流改写，tracking digest 也有稳定含义。
+配置刷新不能直接复用通用 effective config 作为所有 artifact 的真值。`scope=user` 的 Codex role artifact 是全局文件，必须只绑定 `default+user`；`scope=project` 的 Codex role artifact 是当前 repo 文件，才读取当前 project 覆盖。这里的 default 只指 `config.schema` default，不存在 `codexRole` 自己的 default。这样同一份 user artifact 在不同 repo 下不会被轮流改写，tracking digest 也有稳定含义。
 
 ### 2. Config 命令接入点
 
@@ -407,7 +407,7 @@ manifest 要点：
 - `marketplace.policy.products = ["CODEX"]`
 - `skills = "./skills"`
 - `skillTriggers.codex-explore.allowInstallOverride = true`
-- `extensions.agents[]` 声明 `codexRole.roleKey = "codex-explorer"`
+- `extensions.agents[]` 声明 `name = "codex-explorer"` 且 `codexRole.roleKey = "codex-explorer"`；`codexRole` 只绑定 config key，不声明 default。
 - `config.schema` 声明：
   - `explorerModel`：string 或 enum，默认 `gpt-5.4-mini`
   - `modelReasoningEffort`：enum，默认 `medium`
@@ -440,11 +440,11 @@ manifest 要点：
 
 需要更新：
 
-- `docs/plugin-authoring.md`：新增 `extensions.agents[].codexRole`、roleKey、config binding、prompt 合成、安全前导不可覆写规则。
+- `docs/plugin-authoring.md`：新增 `extensions.agents[].codexRole`、roleKey 唯一性、`agent.name === roleKey`、config binding、默认值唯一来自 `config.schema`、prompt 合成和安全前导不可覆写规则。
 - `docs/plugin-installation.md`：说明 Codex role artifact、config 写入自动刷新、status 诊断和卸载行为。
 - `docs/architecture.md`：补充 Codex custom role 受管产物模型和 tracking/status 关系。
 - `.agents/skills/create-agent-workflows-plugin/references/*`：让脚手架/校验文档知道 `codexRole`、Codex-only 插件和 `agents/openai.yaml` 要求。
-- `.agents/skills/create-agent-workflows-plugin` 的校验脚本：检查缺失 `agents/openai.yaml`、非法 config schema、非法 `codexRole` binding、空 `roleKey`、schema key 不存在、字段类型不匹配等。
+- `.agents/skills/create-agent-workflows-plugin` 的校验脚本：检查缺失 `agents/openai.yaml`、非法 config schema、非法 `codexRole` binding、空/重复 `roleKey`、`agent.name !== roleKey`、`codexRole` default 字段、schema key 不存在、字段类型不匹配、model / reasoning schema default 缺失等。
 
 ## 测试计划
 
@@ -452,12 +452,16 @@ manifest 要点：
 
 - manifest normalize：
   - 接受合法 `codexRole`。
-  - 拒绝未知字段、空 roleKey、非法 roleKey、缺失 config schema key、字段类型不匹配。
+  - 接受同一插件内多个不同 `roleKey` 的 Codex role。
+  - 拒绝未知字段、空 roleKey、非法 roleKey、重复 roleKey、`agent.name !== roleKey`、缺失 config schema key、字段类型不匹配。
+  - 拒绝 `codexRole.model.default` / `codexRole.modelReasoningEffort.default`，并拒绝 model / reasoning 绑定 key 缺失 schema default。
   - `agentOverrides.claude = null` 不影响 Codex `codexRole`。
 - generator：
   - 生成 `[agents.<roleKey>]` 注册数据和 role layer。
+  - role layer path 使用 `buildGeneratedName(pluginName, roleKey)` 推导。
   - role file 写入 `name = roleKey`、`model`、`model_reasoning_effort`、`developer_instructions`。
   - prompt 合成始终保留安全前导，override 只替换正文，append 追加在末尾。
+  - model / reasoning 默认值只从 `config.schema` default 读取，不从 `codexRole` 读取第二份默认值。
   - config digest 只包含 refresh keys，并把 user scope 的 `default+user` 与 project scope 的 `default+user+project` 区分开。
 - codex config helper：
   - upsert/remove `[agents.<roleKey>]` 保留其它 TOML。
@@ -522,7 +526,7 @@ manifest 要点：
   - `--skill-trigger manual` 能把 Codex `allow_implicit_invocation` 改成 false。
 - authoring tools：
   - `authoring-tools.test.ts` 或等价用例覆盖 `codexRole`、Codex-only 插件、`agents/openai.yaml` 必填。
-  - 校验非法 roleKey、缺失 schema key、字段类型不匹配和 Codex-only policy 缺失时给清晰错误。
+  - 校验非法 roleKey、重复 roleKey、`agent.name !== roleKey`、`codexRole` default 字段、缺失 schema key、字段类型不匹配、model / reasoning schema default 缺失和 Codex-only policy 缺失时给清晰错误。
 
 ### Smoke
 
@@ -536,11 +540,11 @@ manifest 要点：
 ### 阶段 1：类型和 manifest contract
 
 - 更新 `packages/cli/src/types.ts`，新增 `CodexAgentRoleDefinition`、config binding、prompt config、agent artifact role metadata、refresh metadata 类型。
-- 更新 `packages/cli/src/utils/manifest.ts`，校验 `extensions.agents[].codexRole`。
+- 更新 `packages/cli/src/utils/manifest.ts`，校验 `extensions.agents[].codexRole`，拒绝重复 `roleKey`、`agent.name !== roleKey` 和 `codexRole` 内的 default 字段。
 - 更新 bundle source manifest 保留逻辑，确保 `codexRole` 留在 `.agents-plugin/plugin.json`，但不进入平台原生 manifest。
 - 补 manifest 单测。
 
-交付标准：合法 spec 形态能被 build/manifest normalizer 接受，非法 binding 有明确错误。
+交付标准：合法 spec 形态能被 build/manifest normalizer 接受，非法 binding、重复 role 身份和默认值双真值都有明确错误。
 
 ### 阶段 2：Codex role TOML 和 namespace 基础设施
 
