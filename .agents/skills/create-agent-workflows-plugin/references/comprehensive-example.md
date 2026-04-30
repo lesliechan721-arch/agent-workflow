@@ -10,9 +10,9 @@ code-review/
 │   └── plugin.json              # 完整 manifest：skills + slashCommands + MCP + extensions + buildConfig + scripts/config
 ├── review-skills/
 │   └── review-workflow/
-│       ├── SKILL.md             # 审查工作流（含模板变量 {{platformName}}）
+│       ├── SKILL.md             # 轻量审查工作流（含模板变量 {{platformName}}）
 │       ├── agents/
-│       │   └── openai.yaml      # Codex 平台元数据（保守手动触发）
+│       │   └── openai.yaml      # Codex 平台元数据
 │       └── references/
 │           └── review-rules.md  # 审查规则参考文档
 ├── scripts/
@@ -21,8 +21,7 @@ code-review/
 │   └── lifecycle.test.mjs       # pnpm plugin:test 的 Node 测试
 ├── .mcp.json                    # MCP 服务器（远程审查服务，引用环境变量）
 ├── slash-commands/
-│   ├── review.md                # 公共 /review 源码（Claude 命令 + Codex manual-only skill）
-│   ├── review-summary.md        # 公共 /review-summary 源码
+│   ├── review.md                # 公共 /review 源码，启动 review-workflow
 │   └── assets/
 │       ├── review-16.svg
 │       └── review-64.svg
@@ -34,15 +33,15 @@ code-review/
 
 | 能力 | 在示例中的体现 |
 |------|--------------|
-| Skills | `review-skills/review-workflow/` — 含 SKILL.md、openai.yaml、references |
-| Skill Triggers | `skillTriggers.review-workflow.allowInstallOverride` — 允许显式 skill 在安装时选择 `manual` / `auto` / `default` |
+| Skills | `review-skills/review-workflow/` — 源码 skill 承载实际工作流 |
+| Skill Triggers | `skillTriggers.review-workflow.allowInstallOverride` — 允许源码 skill 在安装时选择 `manual` / `auto` / `default` |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
 | Hooks | `extensions.hooks` — 公共 session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |
 | Native Hooks | `extensions.nativeHooks.codex` — Codex 原生 UserPromptSubmit，无 matcher |
 | Agents | `extensions.agents` — review-summarizer 报告生成器 |
 | MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${REVIEW_SERVICE_API_KEY}` 环境变量 |
-| Public Slash Commands | `slash-commands/` — 一份公共源码同时生成 Claude `/review` / `/review-summary` 和 Codex manual-only skills |
+| Public Slash Commands | `slash-commands/review.md` — 一份公共源码同时生成 Claude `/review` 和 Codex manual-only 入口 skill |
 | Output Styles | `output-styles/` — Claude 专属审查报告格式 |
 | Template 渲染 | `buildConfig.templates` — SKILL.md 和 `slash-commands/*.md` 中按平台渲染 `{{platformName}}`、`{{#if supportsCommands}}` |
 | AW Config | `config.schema` — 跨 Claude/Codex 共享 `reviewServiceApiKey`、`reviewMode` 和 `maxFilesPerReview` |
@@ -59,7 +58,7 @@ code-review/
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 
-**Codex bundle（build 时写入）**：skills（含显式 skill + slashCommands 生成的 manual-only skill）、.mcp.json、AW scripts/config bundle metadata（+ fileRules 额外选中的源码文件，如有）
+**Codex bundle（build 时写入）**：源码 skill（`review-workflow`）和 slashCommands 生成的 manual-only 入口 skill（`review`）、.mcp.json、AW scripts/config bundle metadata（+ fileRules 额外选中的源码文件，如有）
 
 **两个平台 bundle 都不包含**：原始 `slash-commands/` 源目录
 
@@ -71,4 +70,4 @@ code-review/
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 ledger 里的安装快照，避免当前 marketplace 已刷新时误用新版脚本。`aw uninstall` 默认保留 AW config，清理残留配置需要显式运行 `aw config reset code-review -s user|project --yes`。
 
-**Codex 安装时生成的 repo-managed artifacts**（project scope）：`.agents/skills/review-workflow`、公共 `slashCommands` 生成的 `.agents/skills/review` / `.agents/skills/review-summary` manual-only skills、`.codex/config.toml` 中的 instructions managed blocks 和 `mcp_servers`、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（包含目标平台生效的公共 hooks 与 `nativeHooks.codex`）、agents .toml，以及 `.codex/.agent-workflows-manifest.json` tracking。MCP server 的 tracking `artifactKey` 使用 `.mcp.json` 中的原始 key；若 key 需要 quoted TOML，写入后仍按同一个 key 识别。
+**Codex 安装时生成的 repo-managed artifacts**（project scope）：源码 skill `.agents/skills/review-workflow`、公共 `slashCommands` 生成的 `.agents/skills/review` manual-only 入口 skill、`.codex/config.toml` 中的 instructions managed blocks 和 `mcp_servers`、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（包含目标平台生效的公共 hooks 与 `nativeHooks.codex`）、agents .toml，以及 `.codex/.agent-workflows-manifest.json` tracking。MCP server 的 tracking `artifactKey` 使用 `.mcp.json` 中的原始 key；若 key 需要 quoted TOML，写入后仍按同一个 key 识别。

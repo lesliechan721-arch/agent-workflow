@@ -333,7 +333,7 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
   "description": "自动化代码审查插件。",
   "skills": "./skills",
   "skillTriggers": {
-    "review": {
+    "review-workflow": {
       "allowInstallOverride": true
     }
   },

@@ -76,6 +76,8 @@ codex:
 
 Claude-only 字段不能放在顶层。Codex block 只允许 `description` 和 `interface`；`codex.policy` 不可配置，因为 generated skill 固定 manual-only。
 
+复杂、可复用的流程仍应放在源码 `skills/` 中。公共 `slashCommands` 更适合做显式快捷入口，例如 `/review` 只启动 `review-workflow`，而不是把完整审查规则复制到命令正文里。
+
 ## 平台生成行为
 
 构建后：

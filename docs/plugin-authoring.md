@@ -71,6 +71,7 @@ codex:
 - Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
 - Codex 图标资源只能写 `./assets/...`，源文件必须位于 `slash-commands/assets/`，不能用绝对路径、`../`、反斜杠或其它目录。build 只复制被 frontmatter 引用的资源到对应 generated skill 的 `assets/`。
 - Codex 生成 skill 的 `policy.allow_implicit_invocation` 固定为 `false`。作者不能在 `codex.policy` 覆盖它；这类 skill 只能由用户显式 `$command-name` 或结构化 skill mention 调用。
+- 复杂、可复用的流程仍应放在源码 `skills/` 中；公共 `slashCommands` 适合作为手动快捷入口，不应替代实际 skill 工作流。
 - Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
 
 构建结果中，Claude bundle 会得到 generated `claude/commands/<name>.md`，Codex bundle 会得到 generated `codex/skills/<name>/SKILL.md` 和 `agents/openai.yaml`。原始 `slash-commands/` 不作为 runtime 目录发布。
