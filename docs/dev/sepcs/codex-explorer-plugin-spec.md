@@ -5,7 +5,7 @@
 Codex 已经有子代理能力和 agent role 文件，但默认工具说明对 `spawn_agent` 很保守：只有用户明确要求子代理、委派或并行 agent 工作时才鼓励使用。单纯要求“深入分析”“充分探索”“详细阅读代码”并不天然等同于授权 spawn。因此，一个插件如果想提升探索效率，需要同时解决两件事：
 
 1. 给主 agent 一个明确、可触发的探索工作流，让它知道什么时候可以把代码库问题拆给 explorer。
-2. 给 explorer agent 一个可配置的只读 role，使它能用合适的模型、推理强度和提示词读取代码，并把关键结论压缩反馈给主 agent。
+2. 给 explorer agent 一个可配置、面向只读探索的 role，使它能用合适的模型、推理强度和提示词读取代码，并把关键结论压缩反馈给主 agent。
 
 首版采用“默认自动触发，安装时可覆盖为手动触发”的策略。用户选择安装自动触发版时，视为在插件层授权该 skill 在匹配的代码探索场景中使用 explorer 子代理；如果自动触发效果不好，可以改成手动触发安装，再通过 `$codex-explore` 明确进入探索工作流。
 
@@ -33,6 +33,7 @@ developer_instructions = """..."""
 - 上游 Codex role 文件实际按 `ConfigToml` 解析，除 `name`、`description`、`nickname_candidates` 之外，还可以带 `model`、`model_reasoning_effort`、`model_reasoning_summary`、`model_verbosity` 等配置。
 - 这意味着 Codex 本身可以表达“explorer 默认用某个模型和推理强度”，但 AW 现有 `AgentDefinition` 类型没有字段把这些配置写进 `.codex/agents/*.toml`。
 - 本插件需要扩展 `AgentDefinition` / generator，让 Codex role artifact 能写入模型、推理强度和由配置合成后的 `developer_instructions`。
+- 当前不假设 Codex role 文件能表达工具 allowlist / denylist。首版的“只读”主要靠 role 提示词、skill 工作流和主 agent 派发约束实现；如果上游 Codex 后续支持 role 级工具限制，再把该能力纳入受管 artifact contract。
 
 ### AW config 能力
 
@@ -42,6 +43,14 @@ developer_instructions = """..."""
 - 如果要让“模型和提示词可配置”影响 role 文件，需要扩展 AW config 到 Codex role artifact 的受管路径。不能用 lifecycle 脚本绕开主链路，否则 tracking、status、uninstall、upgrade 和回滚都会留下缺口。
 - 自动刷新不能绑定到所有 `aw config` 写入。很多插件配置只给 lifecycle 或运行时脚本动态读取，不需要刷新 artifact。刷新应由插件 manifest 明确声明，只覆盖配置值会进入受管 artifact 的场景。
 
+## 参考实现启发
+
+参考 Claude Code 内置 `Explore` agent 后，首版设计做三点收敛：
+
+- explorer 角色保持轻量。默认提示词只强调只读、快速搜索、清晰回报，不把实现计划、权限扩展或复杂协作塞进 explorer。
+- 主 agent 必须知道“何时不用 explorer”。已知具体文件、单个符号、少量文件内搜索时，本地读取更直接；explorer 只服务边界不清、跨模块或可并行的探索问题。
+- 并行数量默认保守。通常 1 个 explorer 足够；多 agent 只用于互不重叠的问题，并且每个任务都要带范围和探索深度。
+
 ## 目标
 
 新增一个 Codex 独享插件，暂定功能目标如下：
@@ -49,6 +58,7 @@ developer_instructions = """..."""
 - 提供一个探索 skill，指导主 agent 在代码库探索阶段拆分问题、并行派发 explorer、只读取 explorer 汇总出的关键细节。
 - 提供一个 Codex explorer agent role，让主 agent 可以通过 `spawn_agent(agent_type=...)` 使用专门的探索提示词。
 - skill 默认允许隐式触发，并支持安装时覆盖为手动触发。
+- 支持在委派 prompt 里声明探索深度：`quick`、`medium` 或 `very thorough`，让 explorer 按任务成本和覆盖范围调节搜索。
 - 支持配置 explorer 默认模型和 reasoning effort，首版默认 `gpt-5.4-mini + medium`。
 - 支持配置 explorer 提示词，允许用户追加项目偏好，也允许高级用户完全替换默认提示词。
 - 对声明会影响受管 artifact 的配置，`aw config set/configure/unset/reset` 写入成功后自动刷新当前可定位的已安装 artifact，不新增额外 apply/sync 命令。
@@ -62,6 +72,7 @@ developer_instructions = """..."""
 - 不要求纯脚本动态读取的配置进入刷新链路。
 - 不让插件自动改写用户现有手写 `.codex/agents/*.toml`。
 - 不让 explorer 直接修改代码；首版定位为只读探索和汇总。
+- 不在首版扩展 role 级工具权限、MCP、hook 或 permission mode。模型、reasoning 和提示词配置先走最小闭环，避免把探索插件变成权限扩展面。
 - 不引入 MCP server，除非后续确认需要结构化代码索引能力。
 - 不把大段源码搬回主 agent；explorer 输出应以结论、文件路径、必要行号和少量摘录为主。
 
@@ -75,11 +86,12 @@ $codex-explore 充分探索当前需求的实现边界
 
 skill 触发后，主 agent 应：
 
-1. 快速拆出 2 到 4 个互不重复的探索问题。
-2. 对不阻塞当前下一步的问题，使用 explorer role 并行启动子代理。
-3. 给每个 explorer 明确范围、输出格式和禁止写文件要求。
-4. 主 agent 在等待期间继续做本地不重叠探索。
-5. 汇总 explorer 返回的关键结论，只在必要时补读少量文件验证。
+1. 先判断是否真的需要 explorer；已知单个文件、单个符号或 2 到 3 个文件内的小搜索，优先本地完成。
+2. 有必要时拆出互不重复的探索问题，默认 1 个 explorer；范围不清或跨模块时用 2 到 3 个，极复杂场景最多 4 个。
+3. 对不阻塞当前下一步的问题，使用 explorer role 并行启动子代理。
+4. 给每个 explorer 明确范围、探索深度、输出格式和禁止写文件要求。
+5. 主 agent 在等待期间继续做本地不重叠探索。
+6. 汇总 explorer 返回的关键结论，只在必要时补读少量文件验证。
 
 自动触发安装被视为用户在插件层授权该 workflow 在匹配场景中使用 explorer 子代理。这个授权只覆盖探索 workflow 本身，不改变 Codex 上游 `spawn_agent` 工具的全局规则；如果未来上游规则更严格，skill 应退化为显式触发或先询问用户。
 
@@ -112,13 +124,14 @@ manifest 应声明：
 
 `allowInstallOverride` 必须开启。用户如果觉得自动触发过强，可以用手动模式安装，之后只有 `$codex-explore ...` 会触发该 workflow。
 
-自动模式仍要保持克制：主 agent 只把边界清晰、互不重复、不会阻塞自己下一步工作的探索问题派给 explorer；不能把普通实现任务或需要立即决策的问题都外包给子代理。
+自动模式仍要保持克制：主 agent 只把边界清晰、互不重复、不会阻塞自己下一步工作的探索问题派给 explorer；不能把普通实现任务或需要立即决策的问题都外包给子代理。默认只启动 1 个 explorer；只有当范围不清、涉及多个模块或需要比较既有模式时，才并行启动多个 explorer。
 
 ### Explorer 输出约束
 
 explorer role 的默认提示词应要求：
 
 - 只读探索，不写文件，不运行破坏性命令。
+- 按主 agent 指定的探索深度调整范围：`quick` 用于快速定位，`medium` 用于常规相关代码梳理，`very thorough` 用于跨模块或命名不确定的综合搜索。
 - 优先用 `rg`、`rg --files`、`sed`、`git show` 等轻量读取。
 - 回答具体问题，不泛泛总结整个仓库。
 - 输出必须包含：
@@ -138,6 +151,14 @@ explorer role 的默认提示词应要求：
 你只能做只读探索。不要创建、编辑、移动、删除、格式化或回退文件。不要运行破坏性命令。不要安装依赖。优先使用轻量读取命令，例如 `rg`、`rg --files`、`sed`、`git show`、`git diff`、`ls`，以及读取 package metadata。
 
 严格待在主 agent 给定的范围内。除非任务明确要求，不要泛泛总结整个仓库。如果问题过大，请收窄到最小有用答案，并说明你没有覆盖哪些范围。
+
+主 agent 可能会给出探索深度：
+
+- `quick`：快速定位最可能相关的文件、符号或调用点，避免展开无关路径。
+- `medium`：常规深度，覆盖相关模块、关键调用链和最可能的测试或 fixture。
+- `very thorough`：更全面地搜索多种命名、相邻模块、历史相似实现和测试覆盖，但仍不要做无边界的全仓库总结。
+
+如果主 agent 没有指定探索深度，默认按 `medium` 处理。
 
 工作方式：
 
@@ -187,14 +208,22 @@ explorer role 的默认提示词应要求：
 - 找出某个小范围最相关的测试或 fixture。
 - 围绕一个具体契约比较两个模块或 adapter。
 
-如果结果会阻塞你马上要做的下一步、问题太模糊不适合委派，或用户只是在要求一个很小的直接改动，就把工作留在本地完成。
+如果结果会阻塞你马上要做的下一步、问题太模糊不适合委派，或用户只是在要求一个很小的直接改动，就把工作留在本地完成。已知单个文件、单个符号或 2 到 3 个文件内的小搜索，直接用本地工具读取通常更快。
+
+## 探索深度
+
+给每个 explorer 指定探索深度：
+
+- `quick`：快速定位最可能相关的文件、符号或调用点。
+- `medium`：常规深度，覆盖相关模块、关键调用链和最可能的测试或 fixture。
+- `very thorough`：用于跨模块、命名不确定或风险较高的问题，需要搜索多种命名、相邻模块和类似实现。
 
 ## 工作流
 
 1. 先快速读取足够的本地上下文，避免给 explorer 派发模糊任务。
-2. 有必要时，把探索拆成 2 到 4 个互相独立的问题。
+2. 有必要时，把探索拆成互相独立的问题。默认启动 1 个 explorer；范围不清或跨模块时用 2 到 3 个，极复杂场景最多 4 个。
 3. 只为互不重叠的问题启动 explorer 子代理。
-4. 给每个 explorer 明确范围、具体问题、期望输出结构，并提醒它保持只读。
+4. 给每个 explorer 明确范围、具体问题、探索深度、期望输出结构，并提醒它保持只读。
 5. explorer 运行时，继续做本地且不重叠的调查。
 6. 汇总 explorer 的结论后，只针对风险最高的说法补读少量代码验证。
 
@@ -209,6 +238,8 @@ explorer role 的默认提示词应要求：
 你正在为主 agent 探索一个边界清晰的问题。
 
 问题：Codex agent role TOML 在哪里生成和跟踪？
+
+探索深度：medium
 
 范围：
 - 只读 CLI 源码和测试中与 Codex adapters、generated artifacts、agent generators 相关的部分。
@@ -226,6 +257,7 @@ explorer role 的默认提示词应要求：
 
 - 不要把普通实现工作交给 explorer。
 - 不要要求 explorer 写文件、跑 formatter、安装依赖或提交 commit。
+- 首版不要假设 explorer role 已有工具级硬隔离；只读边界来自 role 提示词和你的委派要求。关键结论仍需要用最少必要证据验证。
 - 不要在 explorer prompt 里粘贴大段代码。
 - 如果你还有有价值的本地调查可以做，不要原地等待。
 - 如果 explorer 返回宽泛或缺少证据的说法，把它当作线索，并用最少必要证据验证。
@@ -257,19 +289,27 @@ explorer role 的默认提示词应要求：
 
 这些配置不是运行时脚本动态读取，而是进入受管 Codex role artifact。这样主 agent 常规情况下只需要 `spawn_agent(agent_type=...)`，不需要先额外调用脚本读取配置。
 
-### 4. 模型 slug 和默认 reasoning effort
+### 4. 并行数量和探索深度
+
+决策：默认 1 个 explorer；范围不清或跨模块时 2 到 3 个，极复杂场景最多 4 个。
+
+原因：Claude `Explore` 的实践更偏向“少量、明确、快速”的搜索代理，而不是把探索天然拆成很多子任务。首版应优先降低上下文噪音和调度成本。
+
+委派 prompt 必须写明探索深度：`quick`、`medium` 或 `very thorough`。如果主 agent 没写，explorer role 按 `medium` 处理。
+
+### 5. 模型 slug 和默认 reasoning effort
 
 决策：默认使用 `model = "gpt-5.4-mini"`，`model_reasoning_effort = "medium"`。
 
 这个默认值服务于两个目标：降低主 agent 的上下文压力，并让只读探索更快完成。模型 slug 的可用性取决于账号和 Codex 版本，因此必须通过用户配置允许覆盖。
 
-### 5. 提示词配置是追加还是替换
+### 6. 提示词配置是追加还是替换
 
 决策：同时支持 `promptAppend` 和 `promptOverride`。
 
 默认路径是“基础提示词 + `promptAppend`”。当用户配置 `promptOverride` 时，完全替换插件默认提示词。文档需要明确风险：override 可能破坏只读约束和输出格式，适合高级用户或团队统一维护的提示词。
 
-### 6. 如何把模型配置写入 Codex role 文件
+### 7. 如何把模型配置写入 Codex role 文件
 
 方案比较：
 
@@ -318,7 +358,7 @@ explorer role 的默认提示词应要求：
 
 这样 explorer role 文件仍由 AW generator、tracking、status、uninstall 和 upgrade 管理，不通过 lifecycle 脚本绕开受管 artifact 主链路，也不要求每次 skill 触发都先读一次动态配置。
 
-### 7. 配置变更何时生效
+### 8. 配置变更何时生效
 
 决策：不新增命令；配置写入后按插件声明自动刷新。
 
@@ -358,7 +398,7 @@ explorer role 的默认提示词应要求：
 
 作用范围需要明确：AW 只刷新当前命令上下文能定位的安装目标，例如 user scope 和当前 project scope；不跨所有历史项目扫描。未安装插件时，配置只保存，后续 install/upgrade 时按最新 effective config 生成 artifact。
 
-### 8. 主 agent 是否应显式传 `model`
+### 9. 主 agent 是否应显式传 `model`
 
 决策：默认依赖 role 文件，不显式传模型。
 
@@ -371,6 +411,7 @@ explorer role 的默认提示词应要求：
 - `pnpm build` 能生成 Codex-only marketplace entry。
 - `aw install <plugin> -p codex -s user` 成功，`aw install <plugin> -p claude` 被 product policy 拦截。
 - Codex 能看到 `$codex-explore`，且 skill 默认允许隐式触发；用户可以安装或覆盖为手动触发模式。
+- skill 指令包含保守派发策略：默认 1 个 explorer、复杂时 2 到 3 个、极复杂最多 4 个，并要求每个委派任务写明探索深度。
 - 安装后生成 explorer role 文件，role 文件包含 `model`、`model_reasoning_effort` 和 `developer_instructions`。
 - `aw config set/configure/unset/reset` 修改命中的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role artifact。
 - 未声明 `artifactRefresh` 或等价 effect 的插件，配置写入不会触发 artifact 刷新。
@@ -383,6 +424,7 @@ explorer role 的默认提示词应要求：
 ## 风险与约束
 
 - Codex 的 spawn 工具说明明确限制子代理授权。本插件把“安装自动触发版”定义为插件层授权信号，但这不改变上游工具规则；如果 Codex 未来收紧规则，需要退化为手动触发或首次询问。
+- 首版 explorer 的只读边界不是工具级硬隔离。如果 Codex role 不能限制工具，必须在 role prompt、skill 委派模板和主 agent 验证步骤里反复压住边界；后续如上游支持工具 allowlist / denylist，应优先把它纳入 role artifact。
 - 模型 slug 不是 AW 能静态保证的能力；如果用户配置了当前账号不可用的模型，失败会发生在 Codex spawn 阶段。
 - 配置刷新只保证磁盘上的 AW 受管 artifact 更新。当前 Codex 会话是否热加载更新后的 role，取决于 Codex runtime；如果上游不热加载，需要提示用户新会话生效或手动重启 Codex。
 - user config 可能影响多个 project 的 effective config，但 AW 不应跨所有历史项目扫描。配置写入后只能刷新当前命令上下文能定位的 target，其他项目需要在对应项目里再次写配置、升级、安装或运行未来的修复命令。
