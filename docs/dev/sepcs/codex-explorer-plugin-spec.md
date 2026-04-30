@@ -16,13 +16,13 @@ Codex 已经有子代理能力和 agent role 文件，但默认工具说明对 `
 ### AW 插件模型
 
 - 源码真值是 `plugins/<name>/.agents-plugin/plugin.json`，运行时 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json` 由 `pnpm build` 生成。
-- Codex 原生插件 manifest 当前只承载 `skills`、`mcpServers`、`apps`。`extensions.agents` 不是 Codex 原生插件 manifest 字段，而是 AW 安装时生成 `.codex/agents/*.toml`。
+- Codex 原生插件 manifest 当前只承载 `skills`、`mcpServers`、`apps`。`extensions.agents` 不是 Codex 原生插件 manifest 字段，而是 AW 安装时生成 Codex config layer 产物。
 - `marketplace.policy.products` 可以把插件限制到 `["CODEX"]`，安装时会拦截 Claude。
 - Codex native plugin enabled 仍是 user scope；project scope 只写当前 repo 的 `.codex/` 受管产物。
 
-### Codex agent role 文件
+### Codex agent role contract
 
-- 当前 AW 的 `extensions.agents` 会生成：
+- 当前 AW 的 `extensions.agents` 只会生成 role layer 文件：
 
 ```toml
 name = "..."
@@ -30,9 +30,15 @@ description = "..."
 developer_instructions = """..."""
 ```
 
-- 上游 Codex role 文件实际按 `ConfigToml` 解析，除 `name`、`description`、`nickname_candidates` 之外，还可以带 `model`、`model_reasoning_effort`、`model_reasoning_summary`、`model_verbosity` 等配置。
-- 这意味着 Codex 本身可以表达“explorer 默认用某个模型和推理强度”，但 AW 现有 `AgentDefinition` 类型没有字段把这些配置写进 `.codex/agents/*.toml`。
-- 本插件需要扩展 `AgentDefinition` / generator，让 Codex role artifact 能写入模型、推理强度和由配置合成后的 `developer_instructions`。
+- 上游 Codex 支持两类自定义 role 加载方式：在 config layer 的 `agents/` 目录发现 role 文件，或在 `config.toml` 里声明 `[agents.<roleKey>] config_file = "./agents/<file>.toml"`。显式声明能给 AW 一个稳定的注册点，也方便 status、遮蔽判断、卸载和配置刷新统一按 `roleKey` 处理。
+- 本需求必须先补齐 AW 的 Codex custom role 基础 contract。Codex agent 受管产物不能只是一份 `.codex/agents/*.toml`，而应由同一个逻辑 role 关联：
+  - `.codex/config.toml` 中 AW 管理的 `[agents.<roleKey>]` 注册项，至少包含 `description` 和 `config_file`。
+  - `.codex/agents/<generated-file>.toml` 中的 role layer 内容。
+  - tracking/status/uninstall 使用的稳定 `roleKey`，不能只用文件 basename 或展示名推断身份。
+- role layer 文件实际按 `ConfigToml` 解析，除 `name`、`description`、`nickname_candidates` 之外，还可以带 `model`、`model_reasoning_effort`、`model_reasoning_summary`、`model_verbosity` 等配置。
+- 这意味着 Codex 本身可以表达“explorer 默认用某个模型和推理强度”，但 AW 现有 `AgentDefinition` 类型没有字段把这些配置写进 role layer，也没有把 `[agents.<roleKey>]` 注册项纳入受管 artifact contract。
+- 本插件需要扩展 `AgentDefinition` / generator / adapter，让 Codex role artifact 能注册 `roleKey`，写入模型、推理强度和由配置合成后的 `developer_instructions`。
+- role 文件中的 `name` 如果存在，必须等于 `roleKey`；也可以由生成器省略 `name`，让上游使用 `[agents.<roleKey>]` 作为 role 名。不能允许 role 文件把注册 key 悄悄改成另一个名字。
 - 当前不假设 Codex role 文件能表达工具 allowlist / denylist。首版的“只读”主要靠 role 提示词、skill 工作流和主 agent 派发约束实现；如果上游 Codex 后续支持 role 级工具限制，再把该能力纳入受管 artifact contract。
 
 ### AW config 能力
@@ -42,6 +48,7 @@ developer_instructions = """..."""
 - `aw config set` 只写 AW config store；当前没有“写配置后自动重渲染已安装 role artifact”的能力。
 - 如果要让“模型和提示词可配置”影响 role 文件，需要扩展 AW config 到 Codex role artifact 的受管路径。不能用 lifecycle 脚本绕开主链路，否则 tracking、status、uninstall、upgrade 和回滚都会留下缺口。
 - 自动刷新不能绑定到所有 `aw config` 写入。很多插件配置只给 lifecycle 或运行时脚本动态读取，不需要刷新 artifact。刷新应由插件 manifest 明确声明，只覆盖配置值会进入受管 artifact 的场景。
+- 首版保留 config-driven artifact refresh，因此必须同步定义刷新状态真值：上次成功渲染使用的 effective config digest、最近一次刷新结果、刷新时间、作用 target，以及当前命令上下文以外是否仍可能存在过期安装目标。
 
 ## 参考实现启发
 
@@ -56,12 +63,13 @@ developer_instructions = """..."""
 新增一个 Codex 独享插件，暂定功能目标如下：
 
 - 提供一个探索 skill，指导主 agent 在代码库探索阶段拆分问题、并行派发 explorer、只读取 explorer 汇总出的关键细节。
-- 提供一个 Codex explorer agent role，让主 agent 可以通过 `spawn_agent(agent_type=...)` 使用专门的探索提示词。
+- 提供一个 Codex explorer agent role，让主 agent 可以通过稳定 `roleKey` 调用 `spawn_agent(agent_type=...)` 使用专门的探索提示词。
 - skill 默认允许隐式触发，并支持安装时覆盖为手动触发。
 - 支持在委派 prompt 里声明探索深度：`quick`、`medium` 或 `very thorough`，让 explorer 按任务成本和覆盖范围调节搜索。
 - 支持配置 explorer 默认模型和 reasoning effort，首版默认 `gpt-5.4-mini + medium`。
-- 支持配置 explorer 提示词，允许用户追加项目偏好，也允许高级用户完全替换默认提示词。
+- 支持配置 explorer 提示词，允许用户追加项目偏好，也允许高级用户替换工作流正文；不可覆写的只读安全前导必须始终保留。
 - 对声明会影响受管 artifact 的配置，`aw config set/configure/unset/reset` 写入成功后自动刷新当前可定位的已安装 artifact，不新增额外 apply/sync 命令。
+- `aw status` 能基于同一份刷新元数据判断受管 role 是否缺失、被遮蔽、配置过期或最近一次刷新失败。
 - 插件只面向 Codex，不向 Claude Code 安装任何能力。
 
 ## 非目标
@@ -70,7 +78,8 @@ developer_instructions = """..."""
 - 不新增 `aw config apply` / `sync` 等配置刷新命令。
 - 不让所有插件的配置写入都触发 artifact 刷新；只有 manifest 明确声明 config 会影响 generated artifacts 时才刷新。
 - 不要求纯脚本动态读取的配置进入刷新链路。
-- 不让插件自动改写用户现有手写 `.codex/agents/*.toml`。
+- 不让插件自动改写用户现有手写 `.codex/agents/*.toml`，也不接管已有非 AW 管理的 `[agents.<roleKey>]` 注册项。
+- 不允许 `promptOverride` 完全替换只读安全前导；override 只替换工作流正文。
 - 不让 explorer 直接修改代码；首版定位为只读探索和汇总。
 - 不在首版扩展 role 级工具权限、MCP、hook 或 permission mode。模型、reasoning 和提示词配置先走最小闭环，避免把探索插件变成权限扩展面。
 - 不引入 MCP server，除非后续确认需要结构化代码索引能力。
@@ -114,9 +123,42 @@ manifest 应声明：
 - `marketplace.policy.products = ["CODEX"]`
 - `skills = "./skills"`
 - `skillTriggers.<skill>.allowInstallOverride = true`，让用户可以在自动触发和手动触发之间切换
-- 扩展 `extensions.agents`，让 Codex role artifact 能写入 `model`、`model_reasoning_effort` 等 Codex-only 字段
+- 扩展 `extensions.agents`，让 Codex role artifact 能声明稳定 `roleKey`，并写入 `model`、`model_reasoning_effort` 等 Codex-only 字段
 - `config.schema`，让终端用户可以通过 `aw config` 配置模型、reasoning effort、`promptAppend` 和 `promptOverride`
-- config effect 声明，标记这些配置 key 会影响 Codex agent artifact，配置写入后需要自动刷新当前可定位的已安装 role 文件
+- config effect 声明，标记这些配置 key 会影响 Codex agent artifact，配置写入后需要自动刷新当前可定位的已安装 role 注册项和 role 文件
+
+### Codex role 受管产物
+
+`codex-explore` 的 explorer role 使用 `roleKey = "explorer"`。这会覆盖 Codex 内置 `explorer` role 的展示和配置，属于本插件的有意行为，因为 skill 默认委派示例和主路径都使用 `spawn_agent(agent_type="explorer")`。实现必须把这个行为写进 authoring 文档和 status 诊断，避免用户以为它只是新增了一个互不相关的 role。
+
+安装到 Codex scope 后，AW 应生成并跟踪同一个逻辑 role 的两类产物：
+
+```toml
+# .codex/config.toml
+[agents.explorer]
+description = "Read-only codebase exploration role for Codex Explore."
+config_file = "./agents/aw-codex-explore-explorer.toml"
+```
+
+```toml
+# .codex/agents/aw-codex-explore-explorer.toml
+name = "explorer"
+description = "Read-only codebase exploration role for Codex Explore."
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+developer_instructions = """
+...
+"""
+```
+
+要求：
+
+- `config_file` 使用相对 `.codex/config.toml` 的路径。
+- role 文件里的 `name` 必须等于 `roleKey`；如果生成器选择省略 `name`，上游会使用 `[agents.<roleKey>]` 作为 role 名。
+- role 文件里的 `description` 如果存在，必须和注册项里的 description 保持一致，避免上游用文件 metadata 覆盖注册 metadata 后让 status 难以解释。
+- tracking 中的 agent artifact 必须记录 `roleKey`、注册项所在 config path 和 role layer path。status、遮蔽判断、uninstall、upgrade、refresh 都按 `roleKey` 处理，不按文件 basename 处理。
+- 如果目标 scope 已经存在非 AW 管理的 `[agents.explorer]` 注册项，安装不能静默覆盖；应报错并提示用户先移除或改用手动方案。用户手写的其它 role 文件不受影响。
+- `aw uninstall` 必须同时清理 AW 管理的 `[agents.explorer]` 注册项和 role layer 文件；如果发现注册项已被用户改成指向其它文件，不应删除对方文件。
 
 ### Skill 默认策略
 
@@ -141,9 +183,21 @@ explorer role 的默认提示词应要求：
   - 建议主 agent 下一步要读或验证的最少内容
 - 避免粘贴长代码，必要摘录保持很短。
 
+### Explorer developer_instructions 合成规则
+
+最终写入 role layer 的 `developer_instructions` 必须由三段合成：
+
+1. 不可覆写的只读安全前导，由插件源码固定提供，要求 explorer 只读、不写文件、不运行破坏性命令，并压住输出格式和摘录长度。
+2. 工作流正文。默认使用插件内置 explorer prompt；如果配置了 `promptOverride`，只替换这一段。
+3. `promptAppend`，追加团队或项目偏好。
+
+如果 `promptOverride` 或 `promptAppend` 试图放宽只读边界，以安全前导为准。AW 不需要理解自然语言语义，但生成器必须保证安全前导始终排在最前面，且不会被配置清空。
+
+安全前导至少要表达这些不可配置约束：只读探索；禁止创建、编辑、移动、删除、格式化或回退文件；禁止运行破坏性命令或安装依赖；输出必须围绕主 agent 的具体问题，并使用结论、证据、不确定点和下一步建议的结构。
+
 ### Explorer 默认 role 提示词草案
 
-下面内容作为 explorer role 的默认 `developer_instructions` 基线。实现时可直接放入插件源码里的 agent prompt；`promptAppend` 追加在末尾，`promptOverride` 配置存在时整体替换此内容。
+下面内容作为 explorer role 的默认工作流正文。实现时可直接放入插件源码里的 agent prompt；`promptAppend` 追加在末尾，`promptOverride` 配置存在时只替换工作流正文，不替换只读安全前导。
 
 ```text
 你是 Codex Explore agent。你的任务是为主 agent 回答一个边界清晰的代码库探索问题。
@@ -185,7 +239,7 @@ explorer role 的默认提示词应要求：
 除非主 agent 明确要求，不要输出宽泛实现计划。不要返回大段代码摘录。
 ```
 
-默认 role 提示词使用中文。若用户或主 agent 明确要求英文输出，可通过 `promptAppend` 或 `promptOverride` 调整。
+默认 role 提示词使用中文。若用户或主 agent 明确要求英文输出，可通过 `promptAppend` 或 `promptOverride` 调整工作流正文；只读安全前导仍必须存在。
 
 ### Skill 内容草案
 
@@ -229,7 +283,7 @@ explorer role 的默认提示词应要求：
 
 默认 explorer role：
 
-- `agent_type`: `explorer`
+- `agent_type`: `explorer`，对应受管 `roleKey = "explorer"`
 - 模型和 reasoning 默认值来自已安装的 role artifact。除非用户或当前任务明确需要，不要传 `model` 或 reasoning override。
 
 委派任务示例：
@@ -237,7 +291,7 @@ explorer role 的默认提示词应要求：
 ```text
 你正在为主 agent 探索一个边界清晰的问题。
 
-问题：Codex agent role TOML 在哪里生成和跟踪？
+问题：Codex agent role 的注册项和 TOML 文件在哪里生成和跟踪？
 
 探索深度：medium
 
@@ -281,15 +335,23 @@ explorer role 的默认提示词应要求：
 
 默认安装启用 `allow_implicit_invocation: true`。如果实际体验里自动触发过于积极，用户可以重新安装或通过触发策略覆盖改成手动模式，只保留 `$codex-explore` 显式触发。
 
-### 3. “可配置模型和提示词”的含义
+### 3. Codex role 基础 contract
+
+决策：首版必须先修 AW 的 Codex custom role 基础 contract，再落 `codex-explore` 插件。
+
+Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用 `roleKey = "explorer"`，并由 AW 同时管理 `.codex/config.toml` 中的 `[agents.explorer]` 注册项和 `.codex/agents/aw-codex-explore-explorer.toml` role layer 文件。
+
+这个 contract 属于本需求范围内必须完成的基础设施工作。只扩展 role TOML 生成器、但不注册 role、不按 `roleKey` 做 tracking/status/uninstall 的实现不满足首版要求。
+
+### 4. “可配置模型和提示词”的含义
 
 决策：插件内置安全默认值，同时允许终端用户覆盖。
 
-插件源码提供默认模型、默认 reasoning effort 和默认 explorer 提示词。终端用户可以通过 `aw config` 调整 `explorerModel`、`modelReasoningEffort`、`promptAppend` 和 `promptOverride`。
+插件源码提供默认模型、默认 reasoning effort、不可覆写的只读安全前导和默认 explorer 工作流正文。终端用户可以通过 `aw config` 调整 `explorerModel`、`modelReasoningEffort`、`promptAppend` 和 `promptOverride`。
 
-这些配置不是运行时脚本动态读取，而是进入受管 Codex role artifact。这样主 agent 常规情况下只需要 `spawn_agent(agent_type=...)`，不需要先额外调用脚本读取配置。
+这些配置不是运行时脚本动态读取，而是进入受管 Codex role artifact。这样主 agent 常规情况下只需要 `spawn_agent(agent_type="explorer")`，不需要先额外调用脚本读取配置。
 
-### 4. 并行数量和探索深度
+### 5. 并行数量和探索深度
 
 决策：默认 1 个 explorer；范围不清或跨模块时 2 到 3 个，极复杂场景最多 4 个。
 
@@ -297,23 +359,23 @@ explorer role 的默认提示词应要求：
 
 委派 prompt 必须写明探索深度：`quick`、`medium` 或 `very thorough`。如果主 agent 没写，explorer role 按 `medium` 处理。
 
-### 5. 模型 slug 和默认 reasoning effort
+### 6. 模型 slug 和默认 reasoning effort
 
 决策：默认使用 `model = "gpt-5.4-mini"`，`model_reasoning_effort = "medium"`。
 
 这个默认值服务于两个目标：降低主 agent 的上下文压力，并让只读探索更快完成。模型 slug 的可用性取决于账号和 Codex 版本，因此必须通过用户配置允许覆盖。
 
-### 6. 提示词配置是追加还是替换
+### 7. 提示词配置是追加还是替换
 
 决策：同时支持 `promptAppend` 和 `promptOverride`。
 
-默认路径是“基础提示词 + `promptAppend`”。当用户配置 `promptOverride` 时，完全替换插件默认提示词。文档需要明确风险：override 可能破坏只读约束和输出格式，适合高级用户或团队统一维护的提示词。
+默认路径是“安全前导 + 默认工作流正文 + `promptAppend`”。当用户配置 `promptOverride` 时，只替换默认工作流正文，安全前导仍然由生成器拼在最前面。文档需要明确风险：override 可能破坏输出结构和探索质量，适合高级用户或团队统一维护的提示词；但它不能移除只读边界。
 
-### 7. 如何把模型配置写入 Codex role 文件
+### 8. 如何把模型配置写入 Codex role 文件
 
 方案比较：
 
-1. 扩展 `extensions.agents` schema，新增 Codex-only role config 字段，例如：
+1. 在 `extensions.agents[]` 中新增 Codex-only sibling block，例如 `codexRole`，专门描述 role 注册、Codex-only 配置字段和 config binding：
 
 ```json
 {
@@ -321,44 +383,50 @@ explorer role 的默认提示词应要求：
   "description": "...",
   "prompt": "...",
   "agentOverrides": {
-    "claude": null,
-    "codex": {
-      "model": {
-        "configKey": "explorerModel",
-        "default": "gpt-5.4-mini"
-      },
-      "modelReasoningEffort": {
-        "configKey": "modelReasoningEffort",
-        "default": "medium"
-      },
-      "promptConfig": {
-        "appendKey": "promptAppend",
-        "overrideKey": "promptOverride"
-      }
+    "claude": null
+  },
+  "codexRole": {
+    "roleKey": "explorer",
+    "model": {
+      "configKey": "explorerModel",
+      "default": "gpt-5.4-mini"
+    },
+    "modelReasoningEffort": {
+      "configKey": "modelReasoningEffort",
+      "default": "medium"
+    },
+    "promptConfig": {
+      "safetyPrefix": "builtin",
+      "appendKey": "promptAppend",
+      "overrideKey": "promptOverride"
     }
   }
 }
 ```
 
-优点：artifact 仍由 AW generator/tracking/status 管理，最符合当前架构。缺点：要改 manifest 类型、校验、生成器、文档和测试。
+优点：artifact 仍由 AW generator/tracking/status 管理，且不污染 `agentOverrides` 现有语义。缺点：要改 manifest 类型、校验、生成器、adapter、文档和测试。
 
-2. 新增专门的 Codex role 扩展块，例如 `extensions.codexAgentRoles`。
+2. 复用 `agentOverrides.codex` 放 `model.configKey`、`promptConfig.overrideKey` 等绑定描述。
 
-优点：语义直接，不污染双平台 `agents`。缺点：引入新的 manifest contract，工作量更大。
+优点：字段位置看起来接近现有 agent extension。缺点：`agentOverrides` 当前语义是平台字段 patch，不是“生成时去哪里取配置”的 binding；复用它会污染 parser、类型系统和 `resolvePlatformEntries()`。
 
-3. 插件 lifecycle 根据 AW config 写 `.codex/agents/*.toml`。
+3. 新增专门的 Codex role 扩展块，例如 `extensions.codexAgentRoles`。
+
+优点：语义直接。缺点：会把共享 agent 定义拆成另一套顶层 contract，插件作者需要在两个位置理解同一类能力。
+
+4. 插件 lifecycle 根据 AW config 写 `.codex/config.toml` 和 `.codex/agents/*.toml`。
 
 优点：不需要扩展 manifest parser。缺点：产物不在现有 `GeneratedArtifact` tracking 主链路里，status、uninstall、upgrade、回滚都容易出现边界问题。
 
-4. 新增动态脚本，让 skill 指导主 agent 每次读取最新配置，再把配置传给 `spawn_agent`。
+5. 新增动态脚本，让 skill 指导主 agent 每次读取最新配置，再把配置传给 `spawn_agent`。
 
 优点：不用改基础设施。缺点：每次触发多一次工具调用，依赖模型记得调用和正确传参，`promptOverride` 很难真正替代 role 的 developer instructions，status/tracking 也看不到运行时实际使用了什么配置。
 
-决策：选方案 1，扩展 `extensions.agents` schema，新增 Codex-only role config 字段。
+决策：选方案 1，在 `extensions.agents[]` 中新增 Codex-only sibling block。
 
-这样 explorer role 文件仍由 AW generator、tracking、status、uninstall 和 upgrade 管理，不通过 lifecycle 脚本绕开受管 artifact 主链路，也不要求每次 skill 触发都先读一次动态配置。
+这样 explorer role 注册项和 role 文件仍由 AW generator、tracking、status、uninstall 和 upgrade 管理，不通过 lifecycle 脚本绕开受管 artifact 主链路，也不要求每次 skill 触发都先读一次动态配置。`agentOverrides` 继续只表示平台字段 patch，不承担 config binding 语义。
 
-### 8. 配置变更何时生效
+### 9. 配置变更何时生效
 
 决策：不新增命令；配置写入后按插件声明自动刷新。
 
@@ -388,17 +456,29 @@ explorer role 的默认提示词应要求：
     "artifactRefresh": {
       "keys": ["explorerModel", "modelReasoningEffort", "promptAppend", "promptOverride"],
       "platforms": ["codex"],
-      "kinds": ["agent"]
+      "kinds": ["agent"],
+      "metadata": {
+        "digest": true,
+        "lastResult": true
+      }
     }
   }
 }
 ```
 
-刷新应重新解析 effective config，并只重渲染 AW 受管 artifact，不触碰用户手写 role 文件，也不执行 lifecycle 脚本。刷新和 config 写入应尽量保持命令级一致性：如果 artifact 刷新失败，优先回滚本次 config store 修改和已经写出的 artifact；如果回滚也失败，ledger/status 必须能报告 degraded 或 stale，并给出可恢复路径。
+刷新应重新解析 effective config，并只重渲染 AW 受管 artifact，不触碰用户手写 role 文件，也不执行 lifecycle 脚本。对于 Codex role，受影响 artifact 包括 `[agents.<roleKey>]` 注册项和 role layer 文件。
+
+首版必须定义刷新元数据的持久化真值。建议放在 scope-local tracking manifest 的插件记录下，最终字段名实现时再确定，但至少要表达：
+
+- `lastRenderedConfigDigest`：上一次成功渲染当前受管 artifact 使用的 effective config digest，只覆盖 manifest 声明会影响 artifact 的 key。
+- `lastArtifactRefresh`：最近一次 config-triggered refresh 的结果、时间、触发 key、platform/scope/kind、roleKey 和受影响路径。
+- `refreshReach`：本次命令上下文实际刷新了哪些 target；如果 user config 可能影响其它 project，但 AW 无法跨历史项目扫描，需要在 status 中说明其它 target 可能仍用旧 artifact。
+
+刷新和 config 写入应尽量保持命令级一致性：如果 artifact 刷新失败，优先回滚本次 config store 修改和已经写出的 artifact；如果回滚也失败，必须把 `lastArtifactRefresh.status = "failed"` 或等价状态写入元数据，让 `aw status` 能给出 degraded/stale 诊断和可恢复路径。
 
 作用范围需要明确：AW 只刷新当前命令上下文能定位的安装目标，例如 user scope 和当前 project scope；不跨所有历史项目扫描。未安装插件时，配置只保存，后续 install/upgrade 时按最新 effective config 生成 artifact。
 
-### 9. 主 agent 是否应显式传 `model`
+### 10. 主 agent 是否应显式传 `model`
 
 决策：默认依赖 role 文件，不显式传模型。
 
@@ -412,32 +492,36 @@ explorer role 的默认提示词应要求：
 - `aw install <plugin> -p codex -s user` 成功，`aw install <plugin> -p claude` 被 product policy 拦截。
 - Codex 能看到 `$codex-explore`，且 skill 默认允许隐式触发；用户可以安装或覆盖为手动触发模式。
 - skill 指令包含保守派发策略：默认 1 个 explorer、复杂时 2 到 3 个、极复杂最多 4 个，并要求每个委派任务写明探索深度。
-- 安装后生成 explorer role 文件，role 文件包含 `model`、`model_reasoning_effort` 和 `developer_instructions`。
-- `aw config set/configure/unset/reset` 修改命中的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role artifact。
+- 安装后生成 `[agents.explorer]` 注册项和 explorer role 文件；注册项的 `config_file` 指向 AW 管理的 role layer。
+- role 文件包含 `model`、`model_reasoning_effort` 和 `developer_instructions`；`developer_instructions` 必须始终包含不可覆写的只读安全前导。
+- tracking 记录 `roleKey = "explorer"`、注册项 path 和 role layer path；status、遮蔽判断、uninstall、upgrade、refresh 都按 `roleKey` 处理。
+- `aw config set/configure/unset/reset` 修改命中的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role 注册项和 role layer。
 - 未声明 `artifactRefresh` 或等价 effect 的插件，配置写入不会触发 artifact 刷新。
-- `aw status` 能报告 role artifact 是否存在、是否被更高优先级 `.codex/agents` 同名角色遮蔽。
-- `aw status` 能报告受管 artifact 是否使用了过期 config digest，或者最近一次 config-triggered refresh 是否失败。
-- `aw uninstall` 能清理 role artifact，不影响用户手写的 role 文件。
+- `aw status` 能报告 role 注册项和 role layer 是否存在、`config_file` 是否仍指向 AW 管理文件，以及 `roleKey` 是否被更高优先级 config layer 遮蔽。
+- `aw status` 能基于刷新元数据报告受管 artifact 是否使用了过期 config digest，或者最近一次 config-triggered refresh 是否失败。
+- `aw uninstall` 能清理 role 注册项和 role layer，不影响用户手写的 role 文件或非 AW 管理的同名注册项。
 - 插件作者校验脚本能发现缺失 `agents/openai.yaml`、非法 config schema、非法 Codex-only role 字段、非法 artifact refresh 声明。
-- 单元测试覆盖 manifest 解析、agent TOML 生成、config-triggered artifact refresh、Codex adapter install/uninstall/status。
+- 单元测试覆盖 manifest 解析、agent TOML 生成、`[agents.<roleKey>]` 注册、config-triggered artifact refresh、Codex adapter install/uninstall/status。
 
 ## 风险与约束
 
 - Codex 的 spawn 工具说明明确限制子代理授权。本插件把“安装自动触发版”定义为插件层授权信号，但这不改变上游工具规则；如果 Codex 未来收紧规则，需要退化为手动触发或首次询问。
 - 首版 explorer 的只读边界不是工具级硬隔离。如果 Codex role 不能限制工具，必须在 role prompt、skill 委派模板和主 agent 验证步骤里反复压住边界；后续如上游支持工具 allowlist / denylist，应优先把它纳入 role artifact。
+- `promptOverride` 只替换工作流正文，不能替换安全前导；但自然语言仍不是硬隔离，主 agent 仍要把 explorer 的输出当作线索并做最少必要验证。
 - 模型 slug 不是 AW 能静态保证的能力；如果用户配置了当前账号不可用的模型，失败会发生在 Codex spawn 阶段。
 - 配置刷新只保证磁盘上的 AW 受管 artifact 更新。当前 Codex 会话是否热加载更新后的 role，取决于 Codex runtime；如果上游不热加载，需要提示用户新会话生效或手动重启 Codex。
 - user config 可能影响多个 project 的 effective config，但 AW 不应跨所有历史项目扫描。配置写入后只能刷新当前命令上下文能定位的 target，其他项目需要在对应项目里再次写配置、升级、安装或运行未来的修复命令。
-- user scope role 可能被 project scope 同名 role 遮蔽；status 需要继续沿用现有 `repoManagedSessionState.agents` 诊断。
-- 如果后续改选 lifecycle 写 role 文件，必须补齐 tracking/status/uninstall，否则会留下受管产物残留。
+- user scope role 可能被 project scope 同名 role 遮蔽；status 需要继续沿用现有 `repoManagedSessionState.agents` 诊断，但遮蔽判断必须按 `roleKey` 而不是文件名。
+- 如果后续改选 lifecycle 写 role 注册项或 role 文件，必须补齐 tracking/status/uninstall，否则会留下受管产物残留。
 
 ## 后续实现拆分建议
 
 按当前决策进入实现时，可拆成：
 
-1. 先扩展 agent role artifact contract，让 Codex role TOML 能写 `model` 和 reasoning 相关字段。
-2. 扩展 config effect contract，让 manifest 能声明哪些 config key 会影响哪些 generated artifacts。
-3. 在 config 写命令后接入 conditional refresh：只对命中声明的插件刷新当前可定位的已安装 artifact，并补齐回滚和 status 诊断。
-4. 新增 Codex-only 插件源码、skill、默认 explorer prompt 和 config schema。
-5. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段和 artifact refresh 声明。
-6. 跑 `pnpm build`、相关 unit/integration 测试和插件校验。
+1. 先扩展 agent role artifact contract：写 `[agents.<roleKey>]` 注册项、role layer 文件，并让 tracking/status/uninstall 全部按 `roleKey` 工作。
+2. 扩展 Codex role TOML 生成，让 role layer 能写 `model`、reasoning 字段和“安全前导 + 工作流正文 + append”的 `developer_instructions`。
+3. 扩展 config effect contract，让 manifest 能声明哪些 config key 会影响哪些 generated artifacts，并定义刷新元数据。
+4. 在 config 写命令后接入 conditional refresh：只对命中声明的插件刷新当前可定位的已安装 artifact，并补齐回滚和 status 诊断。
+5. 新增 Codex-only 插件源码、skill、默认 explorer prompt 和 config schema。
+6. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段和 artifact refresh 声明。
+7. 跑 `pnpm build`、相关 unit/integration 测试和插件校验。
