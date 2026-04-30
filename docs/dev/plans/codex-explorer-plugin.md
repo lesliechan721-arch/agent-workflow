@@ -10,11 +10,10 @@
 - 同一个 `codexRole` 内的 config binding key 不能重复，作者工具和测试都要覆盖负例。
 - 插件真正交付给模型的 `SKILL.md` 和默认 explorer prompt 要有内容级回归测试，避免丢掉 `close_agent`、探索深度、`agent_type = "codex-explorer"` 和输出结构。
 
-本轮计划继续处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 新指出的三个缺口：
+本轮计划继续处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 新指出的两个缺口：
 
-- role 冲突检测必须作为 install preflight 执行，发生在 skill trigger materialization、Codex native marketplace / plugin enabled、artifact、tracking、ledger 和 lifecycle 写入之前。
-- user scope 配置写入命中 refresh key 时，如果当前 repo 也安装了 project scope role artifact，必须同时刷新 user artifact 和当前 repo 的 project artifact。
-- 阶段 6 的最终验收必须覆盖 tarball 内容，补跑 `pnpm test:smoke:pack`。
+- config-triggered refresh metadata 必须记录 `refreshReach`，说明本次命令实际刷新了 user / 当前 project 中哪些 target，并明确其它历史 project scope 没有被扫描、可能仍是旧 artifact。
+- 空白或仅空格的 `promptOverride` 必须通过通用 config schema 能力声明为非法，`aw config set/configure` 在写入阶段直接拒绝，不能靠插件名或具体 key 做特判。
 
 ## 首版交付目标
 
@@ -38,6 +37,8 @@
 - 不让所有插件配置写入都触发 artifact refresh；refresh keys 只从 `extensions.agents[].codexRole` 推导。
 - user scope role artifact 使用 `config.schema default + user store`，不读取 project store；project scope artifact 才使用 `config.schema default + user store + 当前 project store`。
 - `promptOverride` 只能替换默认工作流正文，不能替换不可覆写的只读安全前导。
+- config schema 必须能区分“空”和“未设置”：显式写入 `""` 或纯空白字符串是一个配置值，只有字段允许空值时才合法；`unset/reset` 删除 key 才表示未设置。
+- `promptOverride` 用通用 schema 声明不允许空值；`aw config set/configure` 必须失败且不写 config store，`unset/reset` 清除后按未设置处理并回退默认 workflow body。
 - explorer 首版只靠 role prompt、skill workflow 和主 agent 派发要求保持只读，不声明工具级 allowlist / denylist。
 - explorer 是一次性只读探索 agent；skill 必须要求主 agent 读取并整合结果后调用 `close_agent`。
 
@@ -97,7 +98,21 @@ developer_instructions = """
 - `explorerModel`：string 或 enum，默认 `gpt-5.4-mini`。
 - `modelReasoningEffort`：enum，默认 `medium`。
 - `promptAppend`：string，默认空字符串。
-- `promptOverride`：string，可选。
+- `promptOverride`：string，可选，`allowEmpty: false`；显式写入时 `trim()` 后必须非空。
+
+AW config schema 需要新增通用空值约束：
+
+- `allowEmpty?: boolean` 只对 `string` 类型生效，默认 `true`，保持既有插件兼容。
+- `allowEmpty: false` 表示显式写入的字符串经 `trim()` 后必须非空。
+- 未设置不是空值：如果 key 不存在且 schema 没有 default，effective config 中不应凭空补 `""`；如果 key 不存在但有 default，则使用 default。
+- `allowEmpty: false` 的字段不能声明空字符串或纯空白 default。
+- `promptAppend` 保持 `allowEmpty: true`，因为空字符串是合法的“无追加内容”；`promptOverride` 使用 `allowEmpty: false`，因为空字符串不能表达“替换成空 workflow”。
+
+分层边界必须清楚：
+
+- config schema / config store / `aw config set/configure` 只认识通用字段约束，例如 `type`、`required`、`values`、`min`、`max`、`allowEmpty`；不能识别 `codex-explore`、`promptOverride`、`codexRole` 或任何插件专属语义。
+- `codexRole` manifest 校验可以要求 `promptConfig.overrideKey` 指向一个不允许空值的 string schema 字段；它只检查 schema 是否表达了所需约束，不参与 config 写入时的具体值判断。
+- 插件 manifest 通过把自己的 `promptOverride` 字段声明为 `allowEmpty: false` 来复用通用能力；以后其它插件的任意 string 配置也可以使用同一能力。
 
 `codexRole` 只声明这些配置 key 如何绑定到 artifact 字段，不保存默认值：
 
@@ -151,7 +166,8 @@ promptAppend
 - `safetyPrefix` 是插件固定提供的只读安全前导，必须始终排在最前面。
 - `promptOverride` 只替换默认 workflow body，不能影响安全前导。
 - `promptAppend` 追加团队或项目偏好，空白值忽略。
-- `promptOverride` 不允许生成只有安全前导的弱工作流；建议在校验或配置写入阶段拒绝空 override。
+- `promptOverride` 不允许生成只有安全前导的弱工作流；它的非空约束来自 config schema 的 `allowEmpty: false`，不是 Codex role 或插件名特判。
+- `aw config unset/reset` 清除 `promptOverride` 后按未设置处理，渲染时使用默认 workflow body。
 - 生成器不需要理解自然语言语义，但必须用结构保证安全前导不会被配置清空或覆盖。
 
 安全前导至少表达：
@@ -207,6 +223,23 @@ interface GeneratedArtifact {
     roleLayerPath: string;
     configFile: string;
     configSource: 'default+user' | 'default+user+project';
+    lastRenderedConfigDigest?: string;
+    lastArtifactRefresh?: {
+      status: 'succeeded' | 'failed' | 'skipped';
+      updatedAt: string;
+      triggerKeys: string[];
+      refreshReach: {
+        commandScope: 'user' | 'project';
+        refreshedTargets: Array<{
+          scope: 'user' | 'project';
+          projectKey?: string;
+          configSource: 'default+user' | 'default+user+project';
+          paths: string[];
+        }>;
+        scannedHistoricalProjects: false;
+        historicalProjectsMayBeStale: boolean;
+      };
+    };
   };
 }
 ```
@@ -219,6 +252,7 @@ tracking 中还要保存：
 - artifact 渲染使用的 config source
 - 上次成功渲染的 config digest
 - 最近一次 config-triggered refresh 结果
+- `refreshReach`：本次命令实际刷新到哪些 target、是否扫描历史 project、是否存在未刷新的历史 project scope 可能仍 stale
 
 status 至少要诊断：
 
@@ -231,6 +265,7 @@ status 至少要诊断：
 - user scope 安装是否被更高优先级 project layer 遮蔽。
 - 当前 role artifact 是否使用安装 scope 对应的最新 config digest。
 - 最近一次 refresh 是否失败。
+- 最近一次 `refreshReach` 是否显示 user scope 写入只刷新了 user 和当前 repo，未扫描其它历史 project；如果 tracking / ledger 中存在未纳入本次 refresh 的历史 project scope，status 要给出稳定提示，说明这些 project artifact 可能仍使用旧配置。
 - 当前 project 是否存在命中 binding 的 project 覆盖，但只有 user scope artifact；这种覆盖不会进入全局 role 文件。
 
 current catalog 缺失时，historical fallback 必须从 tracking 的 `agentRole` metadata 恢复真实 `roleKey`、registration path、role layer path 和 config source。discovery、status、交互式 uninstall/upgrade 候选，以及按插件名直达的 `aw uninstall codex-explore` / `aw upgrade codex-explore` 都要使用同一套恢复逻辑。恢复不了的 manifest-derived 诊断标为 `unavailable`，不能退回假名或 `historical-agent`。
@@ -266,6 +301,8 @@ refresh target =
 - current manifest 不可用时，`config reset` 仍然要删除 raw config store，但跳过 artifact refresh，并在 JSON receipt 中给出稳定机器字段，例如 `artifactRefresh.skipped = true` 和 `reason = "manifest-unavailable"`。
 - 没有命中 refresh keys 的配置写入保持现状，不刷新 artifact。
 - 不扫描所有历史 project。
+- 每次 config-triggered refresh 都必须写入 `lastArtifactRefresh.refreshReach`。user scope 写入只能记录 user target 和当前 repo project target；不能把其它历史 project 标成已刷新。
+- 判断“其它历史 project 可能 stale”时只能使用 tracking / ledger 中已知的 project scope 记录，不进入历史 project 文件系统扫描；只要存在未纳入 `refreshedTargets` 的 project scope，就把 `historicalProjectsMayBeStale` 置为 `true`。
 
 刷新写入策略：
 
@@ -303,6 +340,11 @@ config digest 建议只纳入 refresh keys：
 任务：
 
 - 新增 `CodexAgentRoleDefinition`、config binding、prompt config、agent role artifact metadata、refresh metadata 类型。
+- 扩展 `PluginConfigSchemaField`，为 `string` 字段新增 `allowEmpty?: boolean`，并在 manifest normalize / config coercion / prompt schema 中保留该语义。
+- 校验 config schema：
+  - `allowEmpty` 只能用于 `string` 字段，默认 `true`。
+  - `allowEmpty: false` 的字段不能声明空字符串或纯空白 `default`。
+  - `aw config set/configure` 对 `allowEmpty: false` 字段写入空字符串或纯空白值时必须报错，且不能写 store。
 - 校验 `extensions.agents[].codexRole`：
   - `roleKey` 非空、单段、同插件内唯一。
   - `agent.name === codexRole.roleKey`。
@@ -311,6 +353,7 @@ config digest 建议只纳入 refresh keys：
   - 同一个 `codexRole` 内所有已声明 binding key 不重复。
   - model / reasoning binding schema 类型是 `string` 或 `enum`，且声明 default。
   - prompt append / override schema 类型是 `string`。
+  - 如果声明 `promptConfig.overrideKey`，对应 schema 必须是 `type: "string"` 且 `allowEmpty: false`，这样所有插件都通过同一套 config schema 表达“override 不允许为空”。
   - `codexRole.model.default` 和 `codexRole.modelReasoningEffort.default` 非法。
   - `promptConfig.safetyPrefix` 非空。
   - Codex-only 插件缺少 `marketplace.policy.products = ["CODEX"]` 时给清晰错误或作者校验错误。
@@ -370,9 +413,10 @@ config digest 建议只纳入 refresh keys：
 任务：
 
 - 从 manifest 收集 Codex role refresh effects。
+- 在 `set/configure` 写入前执行通用 config schema 校验；命中 `allowEmpty: false` 的字段如果为空字符串或 `trim()` 后为空，必须失败，且不能留下 config store 或 artifact 变更。
 - 在 `set/configure/unset/reset` 写入后判断 changed keys 是否命中 refresh keys。
 - 按安装 scope 解析 role render config：user 用 `default+user`，project 用 `default+user+project`。
-- 实现 artifact refresh、回滚、refresh metadata 写入和 status stale 对比。
+- 实现 artifact refresh、回滚、`refreshReach` metadata 写入和 status stale 对比。
 - 保住 `config reset` 在 current catalog 缺失时仍能清理 raw store 的降级路径。
 
 ### 插件内容
@@ -433,9 +477,10 @@ manifest 要点：
 
 - 文档说明 `extensions.agents[].codexRole`、roleKey 唯一性、`agent.name === roleKey`、禁止 `agentOverrides.codex.name`。
 - 文档说明 config binding、默认值唯一来自 `config.schema`、重复 binding key 非法。
-- 文档说明 prompt 合成、安全前导不可覆写和 `promptOverride` 风险。
+- 文档说明 config schema 的 `allowEmpty`、空值和未设置的区别。
+- 文档说明 prompt 合成、安全前导不可覆写，以及 `promptOverride` 通过 `allowEmpty: false` 在配置写入阶段拒绝空值。
 - 安装文档说明 Codex role artifact、config 写入自动刷新、status 诊断和卸载行为。
-- 作者工具校验缺失 `agents/openai.yaml`、Codex-only policy 缺失、非法 roleKey、重复 roleKey、重复 binding key、schema key 不存在、字段类型不匹配、model/reasoning schema default 缺失、`codexRole` default 字段等。
+- 作者工具校验缺失 `agents/openai.yaml`、Codex-only policy 缺失、非法 roleKey、重复 roleKey、重复 binding key、schema key 不存在、字段类型不匹配、model/reasoning schema default 缺失、`codexRole` default 字段、`allowEmpty` 用法，以及 `promptOverride` 没有声明 `allowEmpty: false` 等。
 
 ## 阶段计划
 
@@ -491,6 +536,8 @@ manifest 要点：
 
 - 修改 `explorerModel`、`modelReasoningEffort`、`promptAppend` 或 `promptOverride` 后，当前可定位安装目标自动刷新。
 - user artifact 不读取 project store；project scope 写入不改写 user artifact。
+- user scope 写入后的 `refreshReach` 能区分已刷新的 user / 当前 project target 和未扫描的历史 project target，status 能稳定提示其它历史 project artifact 可能 stale。
+- `allowEmpty: false` 的通用 schema 校验生效；空白或仅空格的 `promptOverride` 在 `set/configure` 阶段被拒绝，不写 config store，也不触发 artifact refresh。
 - current catalog 缺失时 `config reset` 仍能删除 raw store 且 JSON stdout 纯净。
 
 ### 阶段 5：新增 `codex-explore` 插件
@@ -530,6 +577,9 @@ manifest 要点：
 ### Unit
 
 - manifest normalize：
+  - 接受 `string` 字段的 `allowEmpty`，并保持默认 `allowEmpty: true` 的兼容行为。
+  - 拒绝非 `string` 字段声明 `allowEmpty`。
+  - 拒绝 `allowEmpty: false` 搭配空字符串或纯空白 default。
   - 接受合法 `codexRole`。
   - 接受同一插件内多个不同 `roleKey`。
   - 拒绝未知字段、空 roleKey、非法 roleKey、重复 roleKey。
@@ -538,12 +588,18 @@ manifest 要点：
   - 拒绝缺失 schema key、字段类型不匹配、model/reasoning schema default 缺失。
   - 拒绝 `codexRole.model.default` 和 `codexRole.modelReasoningEffort.default`。
   - 拒绝同一个 `codexRole` 内重复 binding key。
+  - 拒绝 `promptConfig.overrideKey` 指向没有声明 `allowEmpty: false` 的 schema 字段。
   - `agentOverrides.claude = null` 不影响 Codex `codexRole`。
+- config coercion：
+  - `allowEmpty` 未声明的 `string` 字段保持接受空字符串。
+  - `allowEmpty: false` 的 `string` 字段拒绝空字符串和纯空白字符串。
+  - `unset/reset` 删除 key 后按未设置处理，不等同于写入空字符串。
 - generator：
   - 生成 `[agents.<roleKey>]` 注册数据和 role layer。
   - role layer path 使用 `buildGeneratedName(pluginName, roleKey)`。
   - role file 写入 `name`、`description`、`model`、`model_reasoning_effort`、`developer_instructions`。
   - prompt 合成始终保留安全前导，override 只替换正文，append 追加末尾。
+  - 未设置的 `promptOverride` 回退默认 workflow body；显式空白值在 config schema 校验阶段被拒绝，不能渲染成只有安全前导的 role prompt。
   - model/reasoning 默认值只从 `config.schema` default 读取。
   - config digest 只包含 refresh keys，并区分 `default+user` 和 `default+user+project`。
 - codex config helper：
@@ -559,6 +615,7 @@ manifest 要点：
   - unrelated config key 不触发 refresh。
   - `reset` 按可能变化处理。
   - project config 变化不触发 user artifact 重渲染。
+  - user scope refresh 的 `refreshReach` 记录 user / 当前 project target，并把未纳入的历史 project scope 标为可能 stale。
 
 ### Integration
 
@@ -583,9 +640,14 @@ manifest 要点：
 - 同一 repo 已安装 user scope 和 project scope role artifact 后，执行命中 refresh key 的 `aw config set ... -s user`：
   - user role layer 按 `default+user` 重渲染。
   - 当前 repo 的 project role layer 也按 `default+user+project` 同步重渲染。
+- 两个 repo 都安装 project scope role artifact 后，在 repo A 执行命中 refresh key 的 `aw config set ... -s user`：
+  - `refreshReach.refreshedTargets` 只包含 user target 和 repo A project target。
+  - repo A 的 `aw status` 能提示 repo B 这类历史 project target 未扫描，可能仍使用旧 artifact。
 - current catalog 缺失时 `aw config reset codex-explore -s user --yes --json` 仍能删除 raw config store，并说明 refresh skipped。
 - refresh 失败时回滚 config store 和已写 artifact；无法完全恢复时 status 能诊断 failed。
 - `promptOverride` / `promptAppend` 写入后，role layer 中安全前导仍在最前。
+- `aw config set/configure` 写入空白或仅空格的 `promptOverride` 时失败；断言 config store、role layer 和 tracking refresh metadata 都没有变化。
+- 任意插件的 `string` config 字段只要声明 `allowEmpty: false`，`aw config set/configure` 写入空白或仅空格值都失败；断言这是通用 config schema 行为，不依赖插件名或具体 key。
 - skill trigger 默认自动触发，安装覆盖为 manual 后 Codex `allow_implicit_invocation` 为 false。
 
 ### 内容回归
@@ -618,18 +680,18 @@ manifest 要点：
 - 重复 binding key 未落 contract：manifest 校验、作者工具和单测都把同一个 `codexRole` 内重复 binding key 作为非法输入。
 - skill/prompt 内容缺少回归：新增内容回归测试，直接断言 `SKILL.md`、`agents/openai.yaml` 和默认 explorer prompt 的关键句与输出结构。
 
-`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 当前三个 findings 按下面方式关闭：
+`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 当前两个 findings 按下面方式关闭：
 
-- role 冲突 preflight 位置不够早：install command 新增写入前 preflight，冲突失败时不写 native plugin enabled、tracking、ledger 或 artifact。
-- user 写入联动刷新 project artifact 缺测试：集成测试覆盖同一 repo 同时存在 user/project artifact 时，user scope 写入刷新两层 artifact，并分别使用 `default+user` 和 `default+user+project`。
-- 最终验收漏掉 tarball：阶段 6 执行清单加入 `pnpm test:smoke:pack`，smoke 矩阵明确由它验收 `pnpm pack:cli` tarball。
+- refresh metadata 缺少 `refreshReach`：tracking 保存 `refreshReach`，status 暴露历史 project 未扫描 / 可能 stale 的稳定诊断，集成测试覆盖两个 repo 的 user scope 写入场景。
+- 空白 `promptOverride` 语义未定：新增通用 `allowEmpty` schema 能力，`promptOverride` 通过 `allowEmpty: false` 声明非空约束，`aw config set/configure` 只按 schema 拒绝空字符串或纯空白值，并用 unit / integration 测试锁住不写 store、不刷新 artifact 的行为。
 
 ## 风险与回退
 
 - config refresh 最容易留下半完成状态。实现前先准备 config store、tracking 和 artifact 内容快照，失败时尽量回滚；无法回滚时写 failed metadata。
 - 最终 role 名解析要容忍用户手写 TOML 损坏。安装时解析失败应 fail fast；status 可以 degraded warning。
 - user scope artifact 不读取 project store，会带来产品解释成本。status 要明确提示 project 覆盖不会影响全局 role 文件，需要 project scope install/refresh 才生效。
-- 只读安全前导无法靠自然语言语义校验 `promptOverride`。生成器必须通过合成顺序保证安全前导永远排在最前。
+- user scope 配置写入不会扫描所有历史 project。tracking 必须写实记录 `refreshReach`，status 要提醒未纳入本次 refresh 的历史 project artifact 可能 stale。
+- 只读安全前导无法靠自然语言语义校验 `promptOverride`。配置写入阶段只能通过通用 schema 约束拒绝空白值，生成器也必须通过合成顺序保证安全前导永远排在最前。
 - 模型 slug 可用性不是 AW 能静态保证的能力。用户配置不可用模型时，失败可能发生在 Codex spawn 阶段。
 - 当前 Codex 会话是否热加载 role artifact 取决于 Codex runtime。文档要说明必要时需要新会话生效。
 - 旧式 Codex agent 单文件 artifact 要保持兼容；没有 `codexRole` 的插件不应被迫迁移。
@@ -645,10 +707,11 @@ manifest 要点：
 - role 冲突会在任何 native/config/artifact/tracking/ledger 写入前失败，不留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - tracking/status/uninstall/upgrade/refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 命中 `codexRole` refresh keys 后自动刷新当前可定位 artifact。
+- `aw config set/configure` 写入空白或仅空格的 `promptOverride` 会失败，不写 config store，也不触发 artifact refresh。
 - user artifact 使用 `default+user`，project artifact 使用 `default+user+project`。
 - 同一 repo 同时安装 user/project artifact 时，user scope 配置写入会同步刷新 user artifact 和当前 project artifact。
 - `config reset` 在 current catalog 缺失时仍可删除 raw store，并清楚说明 refresh 被跳过。
-- status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale 和 refresh failed。
+- status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale、refresh failed，以及 `refreshReach` 显示的历史 project 可能 stale。
 - current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery/direct uninstall/direct upgrade 仍保留真实 `roleKey`。
 - status JSON 保持机器可读，包含 role 诊断字段且不混入人类可读 warning。
 - 作者工具能校验 `codexRole`、Codex-only policy、`agents/openai.yaml`、默认值真值和重复 binding key。

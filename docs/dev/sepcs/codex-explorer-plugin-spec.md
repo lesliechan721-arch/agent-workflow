@@ -52,6 +52,9 @@ developer_instructions = """..."""
 ### AW config 能力
 
 - 插件可以声明 `config.schema`，通过 `aw config` 管理 user/project 两层配置。
+- `config.schema` 需要能表达通用字符串空值约束。新增 `allowEmpty?: boolean`，只对 `string` 字段生效，默认 `true` 以保持兼容；`allowEmpty: false` 表示显式写入的字符串经 `trim()` 后必须非空。
+- config 基础设施必须区分“空”和“未设置”：显式写入 `""` 或纯空白字符串是一个配置值，是否允许由 schema 决定；`unset/reset` 删除 key 才表示未设置。未设置字段按 schema default 或 optional 语义解析，不能被当作写入空字符串。
+- `allowEmpty` 是通用 AW config schema 能力，`aw config set/configure` 只能按 schema 约束校验值，不能识别具体插件名、具体 key、`codexRole` 或 Codex explorer 的业务语义。
 - 当前 config 值会进入 lifecycle context 和 helper，但不会自动驱动 `extensions.agents` 生成内容。
 - `aw config set` 只写 AW config store；当前没有“写配置后自动重渲染已安装 role artifact”的能力。
 - 如果要让“模型和提示词可配置”影响 role 文件，需要扩展 AW config 到 Codex role artifact 的受管路径。不能用 lifecycle 脚本绕开主链路，否则 tracking、status、uninstall、upgrade 和回滚都会留下缺口。
@@ -136,6 +139,7 @@ manifest 应声明：
 - `skillTriggers.<skill>.allowInstallOverride = true`，让用户可以在自动触发和手动触发之间切换
 - 扩展 `extensions.agents`，让 Codex role artifact 能声明稳定 `roleKey`，并写入 `model`、`model_reasoning_effort` 等 Codex-only 字段
 - `config.schema`，让终端用户可以通过 `aw config` 配置模型、reasoning effort、`promptAppend` 和 `promptOverride`
+- `promptAppend` 允许空字符串，用来表达“没有追加内容”；`promptOverride` 必须声明为可选 string 且 `allowEmpty: false`，用通用 config schema 拒绝空白 override
 - `extensions.agents[].codexRole` 的 config binding，作为 Codex agent artifact 刷新 effect 的唯一真值；配置写入后据此自动刷新当前可定位的已安装 role 注册项和 role 文件
 
 ### Codex role 受管产物
@@ -207,6 +211,8 @@ explorer role 的默认提示词应要求：
 3. `promptAppend`，追加团队或项目偏好。
 
 如果 `promptOverride` 或 `promptAppend` 试图放宽只读边界，以安全前导为准。AW 不需要理解自然语言语义，但生成器必须保证安全前导始终排在最前面，且不会被配置清空。
+
+`promptOverride` 的空值语义必须由 config schema 表达，而不是由 Codex role 生成器或具体插件特判。显式写入空字符串或纯空白字符串时，`allowEmpty: false` 使 `aw config set/configure` 在写 store 前失败；`aw config unset/reset` 删除该 key 后才表示未设置，渲染时回退默认工作流正文。
 
 安全前导至少要表达这些不可配置约束：只读探索；禁止创建、编辑、移动、删除、格式化或回退文件；禁止运行破坏性命令或安装依赖；输出必须围绕主 agent 的具体问题，并使用结论、证据、不确定点和下一步建议的结构。
 
@@ -388,6 +394,8 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 
 默认路径是“安全前导 + 默认工作流正文 + `promptAppend`”。当用户配置 `promptOverride` 时，只替换默认工作流正文，安全前导仍然由生成器拼在最前面。文档需要明确风险：override 可能破坏输出结构和探索质量，适合高级用户或团队统一维护的提示词；但它不能移除只读边界。
 
+`promptOverride` 不能用空字符串或纯空白字符串表达“替换成空正文”。插件必须在 `config.schema` 中把该字段声明为可选 string 且 `allowEmpty: false`。这是一条通用 config schema 约束的使用方式：config 写入流程只根据 schema 拒绝空值，不因字段名叫 `promptOverride` 或插件名叫 `codex-explore` 而走特殊分支。用户要取消 override，应使用 `aw config unset` 或 `aw config reset` 删除该配置，让渲染回退默认工作流正文。
+
 ### 8. 如何把模型配置写入 Codex role 文件
 
 方案比较：
@@ -443,6 +451,8 @@ Codex explorer role 的受管身份是 `roleKey`。`codex-explore` 首版使用�
 
 `codexRole` 只描述 role artifact 如何绑定配置 key，不保存默认值。默认值唯一来自 `config.schema[configKey].default`；`codexRole.model.default` 和 `codexRole.modelReasoningEffort.default` 都是非法字段。同一个 `codexRole` 内所有已声明 binding key 也必须唯一，避免一个配置值同时驱动两个不同 artifact 字段。
 
+如果 `codexRole.promptConfig.overrideKey` 存在，它必须指向 `config.schema` 中一个 `type = "string"` 且 `allowEmpty = false` 的字段。`codexRole` 校验只检查 schema 是否声明了这个通用约束，不参与 `aw config set/configure` 的具体值校验。
+
 ### 9. 配置变更何时生效
 
 决策：不新增命令；配置写入后从 `codexRole` 绑定推导是否自动刷新。
@@ -473,6 +483,8 @@ refresh target =
 如果某个用于生成 artifact 的 binding 缺少对应 key，例如 `configKey`、`appendKey` 或 `overrideKey`，或者指向的 key 不在 `config.schema` 中，manifest 校验应直接报错，而不是让它在刷新阶段静默失效。后续如果出现 Codex agent role 之外的第二类 generated artifact 消费者，再把这套推导抽象成通用 refresh effect contract；首版先让 `codexRole` 成为唯一真值，避免 binding 和 refresh 声明各说各话。
 
 同一个 `codexRole` 内不能重复使用 binding key。例如 `model.configKey` 不能和 `modelReasoningEffort.configKey` 指向同一个 schema key，`promptConfig.appendKey` 也不能和 `promptConfig.overrideKey` 指向同一个 schema key。
+
+配置写入前必须先执行通用 schema 校验。对于任何插件，只要 string 字段声明 `allowEmpty: false`，`aw config set/configure` 写入空字符串或纯空白字符串都应失败，且失败不能写 config store，也不能触发 artifact refresh。`unset/reset` 删除 key 后按未设置处理。
 
 刷新应重新解析 effective config，并只重渲染 AW 受管 artifact，不触碰用户手写 role 文件，也不执行 lifecycle 脚本。对于 Codex role，受影响 artifact 包括 `[agents.<roleKey>]` 注册项和 role layer 文件。
 
@@ -513,11 +525,12 @@ refresh target =
 - role 文件包含 `model`、`model_reasoning_effort` 和 `developer_instructions`；`developer_instructions` 必须始终包含不可覆写的只读安全前导。
 - tracking 记录 `roleKey = "codex-explorer"`、注册项 path 和 role layer path；status、遮蔽判断、uninstall、upgrade、refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 修改命中 `codexRole` binding 派生出的 refresh key 后，不需要额外命令即可把最新 effective config 重渲染进当前可定位的已安装 role 注册项和 role layer。
+- `aw config set/configure` 对所有声明 `allowEmpty: false` 的 string 字段都拒绝空字符串或纯空白值；本插件的 `promptOverride` 通过该通用能力避免生成只有安全前导的弱工作流。`unset/reset` 删除 `promptOverride` 后回退默认工作流正文。
 - 没有把 config key 绑定到受管 artifact 的插件，配置写入不会触发 artifact 刷新。
 - `aw status` 能报告 role 注册项和 role layer 是否存在、`config_file` 是否仍指向 AW 管理文件，目标 layer 是否存在非 AW 管理的同名最终 role，以及 `roleKey` 是否被更高优先级 config layer 遮蔽。
 - `aw status` 能基于刷新元数据报告受管 artifact 是否使用了过期 config digest，或者最近一次 config-triggered refresh 是否失败。
 - `aw uninstall` 能清理 AW 管理的 role 注册项和 role layer，不影响用户手写的 role 文件或非 AW 管理且最终 role 名相同的角色。
-- 插件作者校验脚本能发现缺失 `agents/openai.yaml`、非法 config schema、非法 Codex-only role 字段、非法 Codex role config binding，例如 `configKey` 指向不存在的 schema key、空 key、重复 key 或字段类型不匹配。
+- 插件作者校验脚本能发现缺失 `agents/openai.yaml`、非法 config schema、非法 Codex-only role 字段、非法 Codex role config binding，例如 `configKey` 指向不存在的 schema key、空 key、重复 key、字段类型不匹配，或 `promptConfig.overrideKey` 指向未声明 `allowEmpty: false` 的 string 字段。
 - 单元测试覆盖 manifest 解析、agent TOML 生成、`[agents.<roleKey>]` 注册、config-triggered artifact refresh、Codex adapter install/uninstall/status。
 
 ## 风险与约束
@@ -525,6 +538,7 @@ refresh target =
 - Codex 的 spawn 工具说明明确限制子代理授权。本插件把“安装自动触发版”定义为插件层授权信号，但这不改变上游工具规则；如果 Codex 未来收紧规则，需要退化为手动触发或首次询问。
 - 首版 explorer 的只读边界不是工具级硬隔离。如果 Codex role 不能限制工具，必须在 role prompt、skill 委派模板和主 agent 验证步骤里反复压住边界；后续如上游支持工具 allowlist / denylist，应优先把它纳入 role artifact。
 - `promptOverride` 只替换工作流正文，不能替换安全前导；但自然语言仍不是硬隔离，主 agent 仍要把 explorer 的输出当作线索并做最少必要验证。
+- 空白 `promptOverride` 的拒绝必须通过通用 config schema 完成。基础设施不能硬编码 `codex-explore` 或 `promptOverride`，否则会把插件业务语义混进配置管线。
 - 模型 slug 不是 AW 能静态保证的能力；如果用户配置了当前账号不可用的模型，失败会发生在 Codex spawn 阶段。
 - 配置刷新只保证磁盘上的 AW 受管 artifact 更新。当前 Codex 会话是否热加载更新后的 role，取决于 Codex runtime；如果上游不热加载，需要提示用户新会话生效或手动重启 Codex。
 - user config 可能影响多个 project 的 effective config，但 AW 不应跨所有历史项目扫描。配置写入后只能刷新当前命令上下文能定位的 target，其他项目需要在对应项目里再次写配置、升级、安装或运行未来的修复命令。
@@ -540,5 +554,5 @@ refresh target =
 3. 扩展 Codex role config binding contract，让 `codexRole` 能推导哪些 config key 会影响 Codex agent artifact，并定义刷新元数据。
 4. 在 config 写命令后接入 conditional refresh：只对命中 `codexRole` 派生 refresh keys 的插件刷新当前可定位的已安装 artifact，并补齐回滚和 status 诊断。
 5. 新增 Codex-only 插件源码、skill、默认 explorer prompt 和 config schema。
-6. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段、config binding 和刷新元数据。
+6. 补齐 authoring 文档、脚手架或校验脚本的 Codex role 字段、config binding、`allowEmpty` schema 约束和刷新元数据。
 7. 跑 `pnpm build`、相关 unit/integration 测试和插件校验。
