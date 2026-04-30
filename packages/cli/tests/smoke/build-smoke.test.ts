@@ -65,6 +65,9 @@ describe('build smoke', () => {
 
   it('starts the real dist entry and reads the bundled plugins-dist', async () => {
     const root = repoRoot();
+    const packageJson = await fs.readJson(path.join(root, 'packages', 'cli', 'package.json')) as {
+      version: string;
+    };
     await execFileAsync('pnpm', ['build'], {
       cwd: root,
       env: process.env,
@@ -79,6 +82,16 @@ describe('build smoke', () => {
       }),
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('Usage: aw'),
+    });
+
+    await expect(
+      execFileAsync('node', ['packages/cli/dist/index.js', '--version'], {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      stdout: `${packageJson.version}\n`,
     });
 
     await expect(

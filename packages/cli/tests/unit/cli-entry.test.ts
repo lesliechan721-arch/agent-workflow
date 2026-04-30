@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +28,17 @@ function createCapturedIo() {
   };
 }
 
+async function readCliPackageVersion(): Promise<string> {
+  const packageJsonPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'package.json',
+  );
+  const packageJson = await fs.readJson(packageJsonPath) as { version: string };
+  return packageJson.version;
+}
+
 afterEach(async () => {
   vi.resetModules();
   vi.clearAllMocks();
@@ -35,6 +47,25 @@ afterEach(async () => {
 });
 
 describe('cli entry', () => {
+  it.each([
+    ['--version'],
+    ['-V'],
+  ])('prints the current CLI version for %s', async (flag) => {
+    const expectedVersion = await readCliPackageVersion();
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli([flag], {
+      cwd: '/tmp/workspace',
+      env: {} as NodeJS.ProcessEnv,
+      io,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(readStdout()).toBe(`${expectedVersion}\n`);
+    expect(readStderr()).toBe('');
+  });
+
   it('rejects invalid --skill-trigger values at the entry layer', async () => {
     const { io, readStderr } = createCapturedIo();
     const { runCli } = await import('../../src/index.js');

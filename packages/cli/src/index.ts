@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,7 +43,7 @@ import {
   type SkippedUpgradeTarget,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
-import { resolveAwHome } from './utils/paths.js';
+import { resolveAwHome, resolveCliPackageRoot } from './utils/paths.js';
 import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
@@ -78,6 +79,17 @@ function writeWarnings(write: (text: string) => void, warnings: string[]): void 
   for (const warning of formatWarnings(warnings)) {
     writeLine(write, warning);
   }
+}
+
+function resolveCliVersion(): string {
+  const packageJsonPath = path.join(resolveCliPackageRoot(), 'package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== 'string' || packageJson.version.trim().length === 0) {
+    throw new Error('Unable to resolve @yiliang/aw version from package.json.');
+  }
+  return packageJson.version;
 }
 
 interface CliMarketplaceReceipt {
@@ -653,6 +665,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .name('aw')
     .description('Agent workflow marketplace installer')
+    .version(resolveCliVersion(), '-V, --version', 'output the current aw cli version')
     .exitOverride()
     .configureOutput({
       writeOut: (text) => io.stdout(text),
