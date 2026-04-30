@@ -90,7 +90,7 @@
 - `codexRole` 只允许出现在 `extensions.agents[]`，不写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json` 原生 manifest。
 - `roleKey` 必须是稳定、非空、单段 key。首版建议允许 `/^[A-Za-z][A-Za-z0-9_-]*$/`。
 - 同一插件内 `codexRole.roleKey` 必须唯一。
-- 声明 `codexRole` 的 agent 必须满足 `agent.name === codexRole.roleKey`。role layer 的 generated name 也按 `roleKey` 推导，即 `buildGeneratedName(pluginName, roleKey)`；不能再让逻辑身份使用 `roleKey`、文件身份使用另一个 `agent.name`。
+- 声明 `codexRole` 的 agent 必须满足 `agent.name === codexRole.roleKey`。这类 agent 不允许声明 `agentOverrides.codex.name`，即使覆盖后的值仍等于 `roleKey` 也要拒绝，避免 source identity 和 Codex resolved identity 出现两套命名入口。role layer 的 generated name 也按 `roleKey` 推导，即 `buildGeneratedName(pluginName, roleKey)`；不能再让逻辑身份使用 `roleKey`、文件身份使用另一个 `agent.name`。
 - 生成器必须始终写 `name = "<roleKey>"`，便于 status 解释。
 - `model.configKey`、`modelReasoningEffort.configKey`、`promptConfig.appendKey`、`promptConfig.overrideKey` 必须指向 `config.schema` 中存在的 key。
 - `model` 和 `modelReasoningEffort` 绑定的 schema 类型必须是 `string` 或 `enum`；`promptAppend` / `promptOverride` 必须是 `string`。
@@ -105,6 +105,7 @@
 
 - `agentOverrides.claude = null` 时，Claude 不生成该 agent。
 - Codex 侧拿到 platform-resolved agent 后，再读取同一 entry 上的 `codexRole`。
+- 声明 `codexRole` 的 agent 可以继续用 `agentOverrides.codex` 覆盖 prompt、description、tools 等平台字段，但不能覆盖 `name`；Codex resolved agent 的身份必须由 `roleKey` 唯一决定。
 - 没有 `codexRole` 的 Codex agent 继续走旧的单文件 role 生成路径，避免破坏已有插件。
 
 ## Codex Role Artifact Contract
@@ -204,8 +205,9 @@ artifactRefresh?: {
 
 historical fallback 也必须保留 role 身份：
 
-- discovery 在 current catalog 缺失时，要从 tracking 的 `GeneratedArtifact.agentRole` metadata 恢复至少 `roleKey`、registration path、role layer path 和 config source。
-- historical placeholder 不能再把 Codex role 退回成固定的 `historical-agent`。如果 tracking 只证明“有 agent artifact”但没有 `agentRole` metadata，可以继续使用保守 placeholder；如果 tracking 已记录 `agentRole.roleKey`，discovery candidate、status 和 JSON 输出都要暴露真实 `roleKey`。
+- discovery 和按插件名直达的命令入口都要在 current catalog 缺失时，从 tracking 的 `GeneratedArtifact.agentRole` metadata 恢复至少 `roleKey`、registration path、role layer path 和 config source。按插件名直达包括 `loadPluginTargetsForCommand()` 走 `commands/common.ts` historical fallback 后执行的 `aw uninstall <plugin>` / `aw upgrade <plugin>`。
+- historical placeholder 不能再把 Codex role 退回成固定的 `historical-agent`。如果 tracking 只证明“有 agent artifact”但没有 `agentRole` metadata，可以继续使用保守 placeholder；如果 tracking 已记录 `agentRole.roleKey`，discovery candidate、direct command target、status 和 JSON 输出都要暴露真实 `roleKey`。
+- 优先把 discovery 和 direct command 使用的 historical manifest 组装收口到共享 helper，避免 `commands/discovery.ts` 和 `commands/common.ts` 分别维护两套 placeholder 恢复逻辑。
 - 依赖 current manifest 或 source manifest 才能安全计算的字段，在 `source=historical` 下如果无法恢复，要标记为 `unavailable` 或给出 degraded 诊断，不能用假名或猜测值补齐。
 
 ### 3. Codex config TOML helper
@@ -440,11 +442,11 @@ manifest 要点：
 
 需要更新：
 
-- `docs/plugin-authoring.md`：新增 `extensions.agents[].codexRole`、roleKey 唯一性、`agent.name === roleKey`、config binding、默认值唯一来自 `config.schema`、prompt 合成和安全前导不可覆写规则。
+- `docs/plugin-authoring.md`：新增 `extensions.agents[].codexRole`、roleKey 唯一性、`agent.name === roleKey`、禁止 `agentOverrides.codex.name`、config binding、默认值唯一来自 `config.schema`、prompt 合成和安全前导不可覆写规则。
 - `docs/plugin-installation.md`：说明 Codex role artifact、config 写入自动刷新、status 诊断和卸载行为。
 - `docs/architecture.md`：补充 Codex custom role 受管产物模型和 tracking/status 关系。
 - `.agents/skills/create-agent-workflows-plugin/references/*`：让脚手架/校验文档知道 `codexRole`、Codex-only 插件和 `agents/openai.yaml` 要求。
-- `.agents/skills/create-agent-workflows-plugin` 的校验脚本：检查缺失 `agents/openai.yaml`、非法 config schema、非法 `codexRole` binding、空/重复 `roleKey`、`agent.name !== roleKey`、`codexRole` default 字段、schema key 不存在、字段类型不匹配、model / reasoning schema default 缺失等。
+- `.agents/skills/create-agent-workflows-plugin` 的校验脚本：检查缺失 `agents/openai.yaml`、非法 config schema、非法 `codexRole` binding、空/重复 `roleKey`、`agent.name !== roleKey`、`agentOverrides.codex.name`、`codexRole` default 字段、schema key 不存在、字段类型不匹配、model / reasoning schema default 缺失等。
 
 ## 测试计划
 
@@ -453,7 +455,8 @@ manifest 要点：
 - manifest normalize：
   - 接受合法 `codexRole`。
   - 接受同一插件内多个不同 `roleKey` 的 Codex role。
-  - 拒绝未知字段、空 roleKey、非法 roleKey、重复 roleKey、`agent.name !== roleKey`、缺失 config schema key、字段类型不匹配。
+  - 拒绝未知字段、空 roleKey、非法 roleKey、重复 roleKey、`agent.name !== roleKey`、`agentOverrides.codex.name`、缺失 config schema key、字段类型不匹配。
+  - 即使 source `agent.name === roleKey`，只要声明了 `agentOverrides.codex.name`，也要明确报错。
   - 拒绝 `codexRole.model.default` / `codexRole.modelReasoningEffort.default`，并拒绝 model / reasoning 绑定 key 缺失 schema default。
   - `agentOverrides.claude = null` 不影响 Codex `codexRole`。
 - generator：
@@ -504,6 +507,8 @@ manifest 要点：
   - discovery 从 tracking metadata 恢复真实 `roleKey`，不退回 `historical-agent`。
   - `aw status` / `aw status --json --verbose` 显示 `source=historical` 和 role identity；无法从 historical evidence 安全计算的 role-specific 诊断标为 unavailable。
   - 交互式 `aw uninstall` / `aw upgrade` 候选仍能识别对应 plugin、platform、scope 和 roleKey。
+  - 按插件名直达执行 `aw uninstall codex-explore -p codex` 时，`commands/common.ts` 的 historical fallback 也能恢复真实 `roleKey`。
+  - 按插件名直达执行 `aw upgrade codex-explore -p codex` 时，`commands/common.ts` 的 historical fallback 也能恢复真实 `roleKey`，不会退回 `historical-agent`。
 - `aw config set codex-explore explorerModel <value>`：
   - 自动刷新当前可定位 installed role layer。
   - 更新 tracking digest 和 refresh metadata。
@@ -565,9 +570,9 @@ manifest 要点：
   - tracking 保存 roleKey 和 paths。
   - uninstall 清理注册项和 role layer。
   - status 增加 role-specific diagnostics。
-- 更新 discovery historical placeholder：current catalog 缺失时从 tracking 的 `agentRole` metadata 恢复 roleKey 和 paths；恢复不了的 role-specific 诊断显式标为 unavailable。
+- 更新 historical placeholder 组装：current catalog 缺失时，从 tracking 的 `agentRole` metadata 恢复 roleKey 和 paths；恢复不了的 role-specific 诊断显式标为 unavailable。discovery 和 `commands/common.ts` 的 direct command historical fallback 要复用同一套恢复逻辑。
 - 更新 `GeneratedArtifactStatus` 和 status report 输出字段。
-- 补 install/uninstall/status 集成测试，包含 current catalog 缺失但 tracking 仍有 `agentRole` 的 historical status/discovery 回归。
+- 补 install/uninstall/status 集成测试，包含 current catalog 缺失但 tracking 仍有 `agentRole` 的 historical status/discovery 回归，以及按插件名直达的 uninstall / upgrade historical fallback 回归。
 
 交付标准：不涉及 config refresh 时，Codex custom role 已经是 AW 一等受管 artifact。
 
