@@ -485,16 +485,21 @@ manifest 要点：
 - `docs/plugin-authoring.md`
 - `docs/plugin-installation.md`
 - `docs/architecture.md`
+- `docs/coding-conventions.md`
+- `.claude/skills/create-agent-workflows-plugin`，这是指向 `.agents/skills/create-agent-workflows-plugin` 的符号链接，计划里按同一份作者技能处理
+- `.agents/skills/create-agent-workflows-plugin/SKILL.md`
 - `.agents/skills/create-agent-workflows-plugin/references/*`
 - `.agents/skills/create-agent-workflows-plugin` 校验脚本
 
 任务：
 
+- 作者技能入口要新增 Codex 自定义 role / config-driven artifact 场景，指向对应 reference，并明确这类插件通常应限制到 `marketplace.policy.products = ["CODEX"]`。
 - 文档说明 `extensions.agents[].codexRole`、roleKey 唯一性、`agent.name === roleKey`、禁止 `agentOverrides.codex.name`。
 - 文档说明 config binding、默认值唯一来自 `config.schema`、重复 binding key 非法。
 - 文档说明 config schema 的 `allowEmpty`、空值和未设置的区别。
 - 文档说明 prompt 合成、安全前导不可覆写，以及 `promptOverride` 通过 `allowEmpty: false` 在配置写入阶段拒绝空值。
 - 安装文档说明 Codex role artifact、config 写入自动刷新、status 诊断和卸载行为。
+- 架构和编码约定文档要补充 Codex role 注册项、role layer、tracking metadata、config-triggered refresh 和 status/historical fallback 的边界，避免后续实现把逻辑散到命令层或 lifecycle 脚本里。
 - 作者工具校验缺失 `agents/openai.yaml`、Codex-only policy 缺失、非法 roleKey、重复 roleKey、重复 binding key、schema key 不存在、字段类型不匹配、model/reasoning schema default 缺失、`codexRole` default 字段、`allowEmpty` 用法，以及 `promptOverride` 没有声明 `allowEmpty: false` 等。
 
 ## 阶段计划
@@ -574,7 +579,7 @@ manifest 要点：
 
 交付：
 
-- 公开文档和作者工具 reference。
+- 公开文档、作者工具入口和 reference；`.claude/skills/create-agent-workflows-plugin` 与 `.agents/skills/create-agent-workflows-plugin` 是同一份技能，验收时按两个入口都能读到最新内容处理。
 - 作者工具校验脚本。
 - 单元、集成、smoke 和内容回归测试。
 
@@ -739,6 +744,7 @@ manifest 要点：
 - status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale、refresh failed，以及 `refreshReach` 显示的历史 project 可能 stale。
 - current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery/direct uninstall/direct upgrade 仍保留真实 `roleKey`。
 - status JSON 保持机器可读，包含 role 诊断字段且不混入人类可读 warning。
+- `.claude/skills/create-agent-workflows-plugin` 和 `.agents/skills/create-agent-workflows-plugin` 的作者技能说明同步覆盖 `codexRole`、config binding、`allowEmpty`、prompt 合成和 config refresh。
 - 作者工具能校验 `codexRole`、Codex-only policy、`agents/openai.yaml`、默认值真值和重复 binding key。
 - 内容回归能锁住 `close_agent`、探索深度、`agent_type = "codex-explorer"` 和默认 explorer prompt 输出结构。
 - uninstall 清理 AW 管理的注册项和 role layer，不影响用户手写文件。
