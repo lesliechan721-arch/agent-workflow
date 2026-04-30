@@ -26,7 +26,8 @@ Embedded Runtime Bundle（npm 包内）
   ├── .agents/plugins/marketplace.json
   └── plugins/<name>/{.agents-plugin,.claude-plugin,.codex-plugin,...}
 
-          ↓ pnpm publish:cli（先执行 `pnpm pack:cli` 验收，再按 `packages/cli/package.json` 的 `publishConfig.registry` 发布）
+          ↓ make pack / make local-install（生成并验证 `.release/tarballs/*.tgz`）
+          ↓ make beta-release VERSION=x.y.z-beta.n / make release VERSION=x.y.z
 
 npm Registry
   @yiliang/aw
@@ -53,9 +54,11 @@ npm Registry
 
 ## Key Paths
 
-- `package.json` — repo root 统一入口，包含 `build`、`test`、`pack:cli`、`publish:cli`
+- `Makefile` — 本地开发安装、测试版发布和正式版发布的统一入口
+- `package.json` — repo root 统一脚本入口，包含 `build`、`test`、`release:*`、`publish:cli`
+- `scripts/release/*.mjs` — 版本同步、tarball 打包、本地 `npm install -g` 和发布编排脚本
 - `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 `plugins-dist`
-- `packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/` — 产物目录，不手改
+- `packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/tarballs/` — 产物目录，不手改
 - `plugins/git-commit/` — 真实样例插件，演示标准插件结构
 - `.agents/skills/create-agent-workflows-plugin/` — 插件作者工具（含 `SKILL.md`、`agents/openai.yaml`、脚手架/校验脚本和 `references/` 下的作者参考文档）
 - `docs/plugin-installation.md` — CLI 使用、scope/platform 行为和排障入口

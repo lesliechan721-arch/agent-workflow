@@ -37,19 +37,55 @@ aw install git-commit -p codex -s project
 ## 开发
 
 ```bash
-pnpm install
-pnpm build
-pnpm test
+make install
+make build
+make test
 ```
 
 常用命令：
 
-- `pnpm build`：编译 `@yiliang/aw`，并生成 `packages/cli/plugins-dist`
-- `pnpm test:unit`：运行单元测试
-- `pnpm test:integration`：运行 CLI 编排和 adapter 集成测试
-- `pnpm test:smoke:build`：验证真实 build 产物
-- `pnpm pack:cli`：打包 `@yiliang/aw`
-- `pnpm publish:cli`：先执行 `pnpm pack:cli` 验收 tarball，再发布到 `packages/cli/package.json` 的 `publishConfig.registry`
+- `make build`：编译 `@yiliang/aw`，并生成 `packages/cli/plugins-dist`
+- `make test`：运行单元测试和集成测试
+- `make verify-local`：校验本地开发发包链路（`test` + `smoke build`）
+- `make pack`：输出本地 tarball 到 `.release/tarballs/`
+- `make local-install`：打包并执行本地 `npm install -g`，验证最终安装链路
+- `make beta-release VERSION=0.2.0-beta.0`：同步测试版版本号并发布 `beta` tag
+- `make release VERSION=0.2.0`：同步正式版版本号，跑完整校验后发布 `latest`
+
+如果更习惯直接调用脚本，也可以使用：
+
+- `pnpm run release:local`：本地开发安装流程
+- `pnpm run release:publish:beta`：发布当前已经写入的测试版版本
+- `pnpm publish:cli`：发布当前已经写入的正式版版本，兼容旧入口
+
+## 本地开发与发版流程
+
+推荐按下面三条路径区分使用：
+
+### 1. 本地开发验证
+
+```bash
+make local-install
+aw init --force
+```
+
+这条链路会先跑常规测试，再生成 tarball，并用 `npm install -g` 安装本地包。安装完成后，如果需要刷新 `~/.aw` 里的本机 marketplace，再执行一次 `aw init --force`。
+
+### 2. 测试版发布
+
+```bash
+make beta-release VERSION=0.2.0-beta.0
+```
+
+这条链路会同步根目录和 `packages/cli/package.json` 的版本号，跑完整发布校验，并以 `beta` dist-tag 发布，适合灰度验证和联调。
+
+### 3. 正式版发布
+
+```bash
+make release VERSION=0.2.0
+```
+
+正式版要求稳定 semver，不允许带 prerelease 后缀。流程会同步版本号、执行完整校验、重新打 tarball，并按 `packages/cli/package.json` 的 `publishConfig.registry` 发布到 `latest`。
 
 ## 仓库结构
 
@@ -71,4 +107,4 @@ pnpm test
 
 ## 生成物原则
 
-插件源码层以 `plugins/<name>/.agents-plugin/plugin.json` 为真值。`packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/` 和本机 `~/.aw/` 都是生成或运行时目录，不手工维护。
+插件源码层以 `plugins/<name>/.agents-plugin/plugin.json` 为真值。`packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/` 和本机 `~/.aw/` 都是生成或运行时目录，不手工维护。

@@ -19,8 +19,11 @@
 - `pnpm test:smoke` — 验证真实 build/pack 产物（不进入常规 `pnpm test`）
 - `pnpm test:smoke:build` — 只校验 `pnpm build` 产物
 - `pnpm test:smoke:pack` — 只校验 `pnpm pack:cli` 的 tarball 内容
-- `pnpm pack:cli` — 打包 `@yiliang/aw`，发包前验收
-- `pnpm publish:cli` — 先执行 `pnpm pack:cli` 验收 tarball，再发布到 `packages/cli/package.json` 的 `publishConfig.registry`
+- `pnpm run release:pack` / `make pack` — 生成 `.release/tarballs/` 下的本地 tarball
+- `pnpm run release:local` / `make local-install` — 跑本地开发验证链路，并执行本地 `npm install -g`
+- `make beta-release VERSION=x.y.z-beta.n` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布测试版 `beta` dist-tag
+- `make release VERSION=x.y.z` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布正式版 `latest`
+- `pnpm publish:cli` — 兼容旧入口；不改版本号，只发布当前已经写入的稳定版本到 `packages/cli/package.json` 的 `publishConfig.registry`
 
 ## References
 
