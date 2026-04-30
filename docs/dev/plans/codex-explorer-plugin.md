@@ -10,10 +10,11 @@
 - 同一个 `codexRole` 内的 config binding key 不能重复，作者工具和测试都要覆盖负例。
 - 插件真正交付给模型的 `SKILL.md` 和默认 explorer prompt 要有内容级回归测试，避免丢掉 `close_agent`、探索深度、`agent_type = "codex-explorer"` 和输出结构。
 
-本轮计划继续处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 新指出的两个缺口：
+本轮计划继续处理 `docs/dev/reviews/codex-explorer-plugin-plan-review.md` 指出的缺口：
 
 - config-triggered refresh metadata 必须记录 `refreshReach`，说明本次命令实际刷新了 user / 当前 project 中哪些 target，并明确其它历史 project scope 没有被扫描、可能仍是旧 artifact。
 - 空白或仅空格的 `promptOverride` 必须通过通用 config schema 能力声明为非法，`aw config set/configure` 在写入阶段直接拒绝，不能靠插件名或具体 key 做特判。
+- 本次核对确认 `allowEmpty` 还需要落到 `config configure` 的 prompt/runtime 语义：选中字段后，空白输入是显式字符串值，不再被当作“跳过”；跳过只发生在字段选择阶段。
 
 ## 首版交付目标
 
@@ -39,6 +40,7 @@
 - `promptOverride` 只能替换默认工作流正文，不能替换不可覆写的只读安全前导。
 - config schema 必须能区分“空”和“未设置”：显式写入 `""` 或纯空白字符串是一个配置值，只有字段允许空值时才合法；`unset/reset` 删除 key 才表示未设置。
 - `promptOverride` 用通用 schema 声明不允许空值；`aw config set/configure` 必须失败且不写 config store，`unset/reset` 清除后按未设置处理并回退默认 workflow body。
+- `aw config configure` 的交互语义必须和上面一致：未选中字段表示跳过；已经进入输入的 string 字段必须把空白输入作为显式写入值传给 config schema 校验；删除当前值不走 `configure`，只通过 `aw config unset/reset` 表达。
 - explorer 首版只靠 role prompt、skill workflow 和主 agent 派发要求保持只读，不声明工具级 allowlist / denylist。
 - explorer 是一次性只读探索 agent；skill 必须要求主 agent 读取并整合结果后调用 `close_agent`。
 
@@ -107,6 +109,14 @@ AW config schema 需要新增通用空值约束：
 - 未设置不是空值：如果 key 不存在且 schema 没有 default，effective config 中不应凭空补 `""`；如果 key 不存在但有 default，则使用 default。
 - `allowEmpty: false` 的字段不能声明空字符串或纯空白 default。
 - `promptAppend` 保持 `allowEmpty: true`，因为空字符串是合法的“无追加内容”；`promptOverride` 使用 `allowEmpty: false`，因为空字符串不能表达“替换成空 workflow”。
+
+`aw config configure` 的 string 字段交互必须保留三种状态：
+
+- 跳过：只在字段选择阶段发生。可选字段没有被选中时，不进入输入，不出现在 `updates` / `updatedKeys`，也不改写 config store。
+- 显式空值：字段已被选中并进入输入后，直接回车写入 `""`；输入纯空白时写入原始空白字符串。随后由 config schema 判断该值是否合法。
+- 删除当前值：`configure` 首版不提供删除动作；用户必须使用 `aw config unset` 或 `aw config reset`。计划和文档都不能把空白输入描述成删除。
+
+因此 prompt runtime 不能再把被选中 string 字段的空白输入转换成 `undefined`。`allowEmpty: false` 的字段会在 `coercePluginConfigUpdates()` 阶段失败；`allowEmpty: true` 的字段可以通过 `configure` 显式写入 `""`。
 
 分层边界必须清楚：
 
@@ -406,13 +416,18 @@ config digest 建议只纳入 refresh keys：
 修改范围：
 
 - 新增 `packages/cli/src/utils/artifact-refresh.ts`
+- `packages/cli/src/commands/runtime.ts`
 - `packages/cli/src/index.ts`
+- `packages/cli/src/utils/plugin-config.ts`
 - config 命令 JSON receipt / reporter
 - status stale 判断
 
 任务：
 
 - 从 manifest 收集 Codex role refresh effects。
+- 扩展 `CliConfigPromptSchemaEntry`，把 string 字段的 `allowEmpty` 从 manifest prompt schema 传到 runtime；`index.ts` 的 `config configure` 和 `preflightRequiredPluginConfigs()` 的 `toPromptSchema()` 都必须保留这个字段。
+- 调整 `configurePlugin` 的 string 输入解析：字段未选中才是跳过；字段已选中时，空白输入必须进入 `updates` / `updatedKeys`，不能被 `parsePromptedConfigValue()` 吞成 `undefined`。
+- `configure` 不负责删除当前值；删除只由 `unset/reset` 表达，避免把“空值”和“未设置”重新混在一起。
 - 在 `set/configure` 写入前执行通用 config schema 校验；命中 `allowEmpty: false` 的字段如果为空字符串或 `trim()` 后为空，必须失败，且不能留下 config store 或 artifact 变更。
 - 在 `set/configure/unset/reset` 写入后判断 changed keys 是否命中 refresh keys。
 - 按安装 scope 解析 role render config：user 用 `default+user`，project 用 `default+user+project`。
@@ -538,6 +553,7 @@ manifest 要点：
 - user artifact 不读取 project store；project scope 写入不改写 user artifact。
 - user scope 写入后的 `refreshReach` 能区分已刷新的 user / 当前 project target 和未扫描的历史 project target，status 能稳定提示其它历史 project artifact 可能 stale。
 - `allowEmpty: false` 的通用 schema 校验生效；空白或仅空格的 `promptOverride` 在 `set/configure` 阶段被拒绝，不写 config store，也不触发 artifact refresh。
+- `configure` 中选中的 string 字段直接回车会进入 schema 校验：`allowEmpty: false` 失败，`allowEmpty: true` 可写入 `""`；跳过只能通过不选择该字段完成。
 - current catalog 缺失时 `config reset` 仍能删除 raw store 且 JSON stdout 纯净。
 
 ### 阶段 5：新增 `codex-explore` 插件
@@ -594,6 +610,12 @@ manifest 要点：
   - `allowEmpty` 未声明的 `string` 字段保持接受空字符串。
   - `allowEmpty: false` 的 `string` 字段拒绝空字符串和纯空白字符串。
   - `unset/reset` 删除 key 后按未设置处理，不等同于写入空字符串。
+- config prompt runtime：
+  - `CliConfigPromptSchemaEntry` 保留 `allowEmpty`，`config configure` 和 required-config preflight 都要把 manifest schema 中的值传入 prompt runtime。
+  - 可选 string 字段未被选择时保持跳过，不出现在 `updates` / `updatedKeys`。
+  - 已选中的 string 字段直接回车时，`updates[key]` 是 `""`；输入纯空白时，`updates[key]` 保留原始空白字符串。
+  - `allowEmpty: false` 的字段经 `configure` 输入空字符串或纯空白字符串后，必须在写入前校验失败，不写 config store。
+  - `allowEmpty: true` 的字段经 `configure` 可显式写入 `""`，这不是 unset/reset。
 - generator：
   - 生成 `[agents.<roleKey>]` 注册数据和 role layer。
   - role layer path 使用 `buildGeneratedName(pluginName, roleKey)`。
@@ -648,6 +670,7 @@ manifest 要点：
 - `promptOverride` / `promptAppend` 写入后，role layer 中安全前导仍在最前。
 - `aw config set/configure` 写入空白或仅空格的 `promptOverride` 时失败；断言 config store、role layer 和 tracking refresh metadata 都没有变化。
 - 任意插件的 `string` config 字段只要声明 `allowEmpty: false`，`aw config set/configure` 写入空白或仅空格值都失败；断言这是通用 config schema 行为，不依赖插件名或具体 key。
+- 任意插件的 `string` config 字段保持默认 `allowEmpty: true` 时，`aw config configure` 选中字段并直接回车可以写入 `""`；不选择字段才表示跳过。
 - skill trigger 默认自动触发，安装覆盖为 manual 后 Codex `allow_implicit_invocation` 为 false。
 
 ### 内容回归
@@ -680,10 +703,11 @@ manifest 要点：
 - 重复 binding key 未落 contract：manifest 校验、作者工具和单测都把同一个 `codexRole` 内重复 binding key 作为非法输入。
 - skill/prompt 内容缺少回归：新增内容回归测试，直接断言 `SKILL.md`、`agents/openai.yaml` 和默认 explorer prompt 的关键句与输出结构。
 
-`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 当前两个 findings 按下面方式关闭：
+`docs/dev/reviews/codex-explorer-plugin-plan-review.md` 相关 findings 按下面方式关闭：
 
 - refresh metadata 缺少 `refreshReach`：tracking 保存 `refreshReach`，status 暴露历史 project 未扫描 / 可能 stale 的稳定诊断，集成测试覆盖两个 repo 的 user scope 写入场景。
 - 空白 `promptOverride` 语义未定：新增通用 `allowEmpty` schema 能力，`promptOverride` 通过 `allowEmpty: false` 声明非空约束，`aw config set/configure` 只按 schema 拒绝空字符串或纯空白值，并用 unit / integration 测试锁住不写 store、不刷新 artifact 的行为。
+- `allowEmpty` 未落到 `config configure` prompt/runtime：把 `packages/cli/src/commands/runtime.ts` 和 prompt schema 转换纳入修改面，明确未选中字段才是跳过；选中 string 字段后的空白输入是显式写入值，删除当前值只走 `unset/reset`。测试覆盖 `allowEmpty: false` 失败和 `allowEmpty: true` 写入 `""` 两条路径。
 
 ## 风险与回退
 
@@ -708,6 +732,7 @@ manifest 要点：
 - tracking/status/uninstall/upgrade/refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 命中 `codexRole` refresh keys 后自动刷新当前可定位 artifact。
 - `aw config set/configure` 写入空白或仅空格的 `promptOverride` 会失败，不写 config store，也不触发 artifact refresh。
+- `aw config configure` 选中 string 字段后，空白输入不会被静默跳过；它会作为显式值进入 schema 校验，只有字段允许空值时才能写入。
 - user artifact 使用 `default+user`，project artifact 使用 `default+user+project`。
 - 同一 repo 同时安装 user/project artifact 时，user scope 配置写入会同步刷新 user artifact 和当前 project artifact。
 - `config reset` 在 current catalog 缺失时仍可删除 raw store，并清楚说明 refresh 被跳过。
