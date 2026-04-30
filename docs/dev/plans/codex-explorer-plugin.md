@@ -15,6 +15,8 @@
 - config-triggered refresh metadata 必须记录 `refreshReach`，说明本次命令实际刷新了 user / 当前 project 中哪些 target，并明确其它历史 project scope 没有被扫描、可能仍是旧 artifact。
 - 空白或仅空格的 `promptOverride` 必须通过通用 config schema 能力声明为非法，`aw config set/configure` 在写入阶段直接拒绝，不能靠插件名或具体 key 做特判。
 - 本次核对确认 `allowEmpty` 还需要落到 `config configure` 的 prompt/runtime 语义：选中字段后，空白输入是显式字符串值，不再被当作“跳过”；跳过只发生在字段选择阶段。
+- 本次核对确认 role 冲突 preflight 必须早于 required-config preflight；冲突时命令保持完全只读，不能写 AW config store，也不能调用 config prompt 或留下安装产物。
+- 本次核对确认测试矩阵还要覆盖 historical fallback 的交互式 uninstall/upgrade 候选，以及 install/upgrade required-config preflight 中的 `allowEmpty` 透传和空值校验。
 
 ## 首版交付目标
 
@@ -210,7 +212,7 @@ promptAppend
 - 缺少 `name` 的自动发现文件可以用文件 basename 做诊断，但不能把它当成可覆盖依据。
 - 输出每个最终 role 的来源、table key、config path、role layer path 和是否 AW managed。
 
-安装前先解析目标 scope 同层最终 role 名集合。这个检测必须作为 install command preflight 执行，位置在 skill trigger materialization、Codex native marketplace / plugin enabled、artifact、tracking、ledger 和 lifecycle 写入之前，不能只放在 `installExtensions()` 路径里。只要已有非 AW 管理 role 的最终名是 `codex-explorer`，安装就失败且不能写半成品；失败时不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。冲突包括：
+安装前先解析目标 scope 同层最终 role 名集合。这个检测必须作为 install command 最早的 preflight 执行，早于 required-config preflight、skill trigger materialization、Codex native marketplace / plugin enabled、artifact、tracking、ledger 和 lifecycle 写入，不能只放在 `installExtensions()` 路径里。只要已有非 AW 管理 role 的最终名是 `codex-explorer`，安装就失败且命令保持完全只读；失败时不能调用 config prompt，不能写 AW config store，也不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。冲突包括：
 
 - `[agents.foo] config_file = "./agents/foo.toml"`，但文件里 `name = "codex-explorer"`。
 - 用户手写 `agents/*.toml` 直接声明 `name = "codex-explorer"`。
@@ -403,8 +405,8 @@ config digest 建议只纳入 refresh keys：
 
 任务：
 
-- 在 install command 中新增 Codex role preflight，先解析目标 scope 最终 role namespace，所有冲突检测通过后再进入 skill trigger materialization、`installPlugin()`、artifact 生成、tracking、ledger 和 lifecycle。
-- preflight 失败必须保持完全只读，不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
+- 在 install command 中新增 Codex role preflight，先解析目标 scope 最终 role namespace，所有冲突检测通过后再进入 required-config preflight、skill trigger materialization、`installPlugin()`、artifact 生成、tracking、ledger 和 lifecycle。
+- preflight 失败必须保持完全只读，不能调用 config prompt，不能写 AW config store，也不能留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - install 写 role layer，再 upsert `[agents.<roleKey>]` 注册项，并把 role metadata 写进 tracking。
 - uninstall 对 `agentRole` artifact 同时清理 role layer 和注册项；注册项已 drift 时不误删用户文件。
 - upgrade 普通路径和 capabilityChanged/重装路径都按 `roleKey` 处理旧 artifact。
@@ -542,8 +544,8 @@ manifest 要点：
 退出标准：
 
 - 不涉及 config refresh 时，Codex custom role 已经是 AW 一等受管 artifact。
-- role 冲突会在任何 native/config/artifact/tracking/ledger 写入前失败，失败后没有半成品状态。
-- current catalog 缺失时，status/discovery/direct uninstall/direct upgrade 不退回 `historical-agent`。
+- role 冲突会在 required-config preflight 之前失败，在任何 config/native/artifact/tracking/ledger 写入前失败，失败后没有半成品状态。
+- current catalog 缺失时，status/discovery/交互式 uninstall/upgrade 候选/direct uninstall/direct upgrade 不退回 `historical-agent`。
 
 ### 阶段 4：config-triggered refresh
 
@@ -654,7 +656,7 @@ manifest 要点：
   - role layer 使用 `default+user+project`。
   - project config 覆盖进入 project artifact，不改写 user artifact。
 - `aw install codex-explore -p claude` 被 product policy 拦截。
-- 安装时存在非 AW 管理最终 role 名 `codex-explorer`，命令在任何 native/config/artifact/tracking/ledger 写入前失败；断言不会留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
+- 安装时存在非 AW 管理最终 role 名 `codex-explorer`，命令在 required-config preflight 之前失败；断言 fake prompt 不会被调用，不会写 AW config store，也不会留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - `aw uninstall codex-explore -p codex` 清理注册项和 role layer，不删除用户手写文件。
 - `aw upgrade codex-explore -p codex` 普通升级和 capabilityChanged/重装路径都按 `roleKey` 处理。
 - `aw status` 覆盖正常、role layer 缺失、注册项缺失、config_file drift、同名外部 role、project layer 遮蔽、digest stale、refresh failed。
@@ -662,6 +664,7 @@ manifest 要点：
 - current catalog 缺失但 tracking 仍有 `agentRole`：
   - discovery 恢复真实 roleKey。
   - status 展示 `source=historical` 和 role identity。
+  - 交互式 uninstall / upgrade 候选恢复真实 roleKey，选择候选后仍按恢复出的 role identity 执行。
   - direct uninstall / direct upgrade 仍能恢复真实 roleKey。
 - `aw config set/configure/unset/reset` 命中 refresh key 后刷新当前可定位 role layer。
 - 同一 repo 已安装 user scope 和 project scope role artifact 后，执行命中 refresh key 的 `aw config set ... -s user`：
@@ -676,6 +679,7 @@ manifest 要点：
 - `aw config set/configure` 写入空白或仅空格的 `promptOverride` 时失败；断言 config store、role layer 和 tracking refresh metadata 都没有变化。
 - 任意插件的 `string` config 字段只要声明 `allowEmpty: false`，`aw config set/configure` 写入空白或仅空格值都失败；断言这是通用 config schema 行为，不依赖插件名或具体 key。
 - 任意插件的 `string` config 字段保持默认 `allowEmpty: true` 时，`aw config configure` 选中字段并直接回车可以写入 `""`；不选择字段才表示跳过。
+- install / upgrade required-config preflight 通过 fake prompt 传递 `allowEmpty`：`allowEmpty: false` 的必填 string 字段输入空白时报错且不写 config store，`allowEmpty: true` 的必填 string 字段选中后直接回车会显式写入 `""`。
 - skill trigger 默认自动触发，安装覆盖为 manual 后 Codex `allow_implicit_invocation` 为 false。
 
 ### 内容回归
@@ -713,6 +717,8 @@ manifest 要点：
 - refresh metadata 缺少 `refreshReach`：tracking 保存 `refreshReach`，status 暴露历史 project 未扫描 / 可能 stale 的稳定诊断，集成测试覆盖两个 repo 的 user scope 写入场景。
 - 空白 `promptOverride` 语义未定：新增通用 `allowEmpty` schema 能力，`promptOverride` 通过 `allowEmpty: false` 声明非空约束，`aw config set/configure` 只按 schema 拒绝空字符串或纯空白值，并用 unit / integration 测试锁住不写 store、不刷新 artifact 的行为。
 - `allowEmpty` 未落到 `config configure` prompt/runtime：把 `packages/cli/src/commands/runtime.ts` 和 prompt schema 转换纳入修改面，明确未选中字段才是跳过；选中 string 字段后的空白输入是显式写入值，删除当前值只走 `unset/reset`。测试覆盖 `allowEmpty: false` 失败和 `allowEmpty: true` 写入 `""` 两条路径。
+- role 冲突 preflight 写入边界不自洽：采用完全只读口径，把冲突检测前移到 required-config preflight 之前；失败时 fake prompt 不会被调用，AW config store、native plugin enabled、artifact、tracking、ledger 和 lifecycle 都不会被改动。
+- 测试矩阵缺少新增链路：historical fallback 增补交互式 uninstall/upgrade 候选回归；install/upgrade required-config preflight 增补 `allowEmpty` fake prompt 回归，锁住 `allowEmpty: false` 空白失败和 `allowEmpty: true` 显式写入 `""`。
 
 ## 风险与回退
 
@@ -733,16 +739,17 @@ manifest 要点：
 - skill 默认允许隐式触发，并可通过安装触发偏好改为手动。
 - role 文件包含 `model = "gpt-5.4-mini"`、`model_reasoning_effort = "medium"` 和带安全前导的 `developer_instructions`。
 - 安装不会覆盖任何非 AW 管理且最终 role 名为 `codex-explorer` 的自定义 role。
-- role 冲突会在任何 native/config/artifact/tracking/ledger 写入前失败，不留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
+- role 冲突会在 required-config preflight 之前、任何 config/native/artifact/tracking/ledger 写入前失败，不调用 config prompt，也不留下 native plugin enabled、tracking 记录、degraded ledger 或 repo-managed artifact。
 - tracking/status/uninstall/upgrade/refresh 都按 `roleKey` 处理。
 - `aw config set/configure/unset/reset` 命中 `codexRole` refresh keys 后自动刷新当前可定位 artifact。
 - `aw config set/configure` 写入空白或仅空格的 `promptOverride` 会失败，不写 config store，也不触发 artifact refresh。
 - `aw config configure` 选中 string 字段后，空白输入不会被静默跳过；它会作为显式值进入 schema 校验，只有字段允许空值时才能写入。
+- install / upgrade required-config preflight 使用同一套 prompt runtime 和 schema 校验，`allowEmpty` 的空值语义与 `config configure` 保持一致。
 - user artifact 使用 `default+user`，project artifact 使用 `default+user+project`。
 - 同一 repo 同时安装 user/project artifact 时，user scope 配置写入会同步刷新 user artifact 和当前 project artifact。
 - `config reset` 在 current catalog 缺失时仍可删除 raw store，并清楚说明 refresh 被跳过。
 - status 能报告 role 缺失、注册项 drift、role 遮蔽、config stale、refresh failed，以及 `refreshReach` 显示的历史 project 可能 stale。
-- current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery/direct uninstall/direct upgrade 仍保留真实 `roleKey`。
+- current catalog 缺失但 tracking 仍有 `agentRole` 时，status/discovery/交互式 uninstall/upgrade 候选/direct uninstall/direct upgrade 仍保留真实 `roleKey`。
 - status JSON 保持机器可读，包含 role 诊断字段且不混入人类可读 warning。
 - `.claude/skills/create-agent-workflows-plugin` 和 `.agents/skills/create-agent-workflows-plugin` 的作者技能说明同步覆盖 `codexRole`、config binding、`allowEmpty`、prompt 合成和 config refresh。
 - 作者工具能校验 `codexRole`、Codex-only policy、`agents/openai.yaml`、默认值真值和重复 binding key。
