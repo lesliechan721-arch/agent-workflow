@@ -2,9 +2,10 @@
   "name": "code-review",
   "version": "0.2.0",
   "description": "自动化代码审查插件：集成外部审查服务，提供结构化审查流程和报告。",
-  "skills": "./skills",
+  "skills": "./review-skills",
+  "slashCommands": "./slash-commands",
   "skillTriggers": {
-    "review": {
+    "review-workflow": {
       "allowInstallOverride": true
     }
   },
@@ -15,8 +16,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {
@@ -72,39 +72,56 @@
       }
     ]
   },
+  "scripts": {
+    "timeoutMs": 30000,
+    "lifecycle": {
+      "install": "./scripts/lifecycle.mjs",
+      "upgrade": "./scripts/lifecycle.mjs",
+      "uninstall": "./scripts/lifecycle.mjs"
+    },
+    "helpers": {
+      "config": "./scripts/aw-config.mjs"
+    },
+    "tests": {
+      "node": ["./scripts/**/*.test.mjs"]
+    }
+  },
+  "config": {
+    "schema": {
+      "reviewServiceApiKey": {
+        "type": "string",
+        "title": "审查服务 API Key",
+        "description": "外部代码审查服务的 API 密钥",
+        "required": true,
+        "sensitive": true
+      },
+      "reviewMode": {
+        "type": "enum",
+        "title": "审查模式",
+        "values": ["standard", "strict"],
+        "default": "standard"
+      },
+      "maxFilesPerReview": {
+        "type": "number",
+        "title": "单次审查最大文件数",
+        "description": "单次审查处理的最大文件数量",
+        "default": 20,
+        "min": 1,
+        "max": 100
+      }
+    }
+  },
   "buildConfig": {
     "templates": {
-      "include": ["skills/**/*.md"],
+      "include": ["review-skills/**/*.md", "slash-commands/*.md"],
       "vars": {
         "platformName": { "claude": "Claude Code", "codex": "Codex" },
         "supportsCommands": { "claude": true, "codex": false }
       }
     },
-    "fileRules": {
-      "claude": { "include": ["commands/**", "output-styles/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["commands/**", "output-styles/**"] }
-    },
     "manifestOverrides": {
       "claude": {
-        "commands": "./commands",
-        "outputStyles": "./output-styles",
-        "userConfig": {
-          "reviewServiceApiKey": {
-            "type": "string",
-            "title": "审查服务 API Key",
-            "description": "外部代码审查服务的 API 密钥",
-            "required": false,
-            "sensitive": true
-          },
-          "maxFilesPerReview": {
-            "type": "number",
-            "title": "单次审查最大文件数",
-            "description": "单次审查处理的最大文件数量",
-            "default": 20,
-            "min": 1,
-            "max": 100
-          }
-        }
+        "outputStyles": "./output-styles"
       }
     }
   }

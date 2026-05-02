@@ -1,0 +1,8 @@
+{
+  "apps": {
+    "apps-only": {
+      "id": "apps-only",
+      "name": "Apps Only Fixture"
+    }
+  }
+}

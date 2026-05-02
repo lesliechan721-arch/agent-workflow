@@ -1,0 +1,92 @@
+{
+  "pluginRoot": "plugins",
+  "fixtures": [
+    {
+      "name": "skills-only",
+      "pluginName": "skills-only",
+      "path": "plugins/skills-only",
+      "projectManagedKinds": ["skill"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "overridable"
+    },
+    {
+      "name": "mcp-only",
+      "pluginName": "mcp-only",
+      "path": "plugins/mcp-only",
+      "projectManagedKinds": ["mcpServer"],
+      "projectInstallability": "allowed",
+      "mcpServers": ["acme.tools v1", "sibling-server"],
+      "skillTriggerApplicability": "none"
+    },
+    {
+      "name": "slashCommands-only",
+      "pluginName": "slash-commands-only",
+      "path": "plugins/slashCommands-only",
+      "projectManagedKinds": ["skill"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "fixed"
+    },
+    {
+      "name": "extensions-only",
+      "pluginName": "extensions-only",
+      "path": "plugins/extensions-only",
+      "projectManagedKinds": ["instruction", "permission", "hook", "agent"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "none"
+    },
+    {
+      "name": "skills+MCP",
+      "pluginName": "skills-mcp",
+      "path": "plugins/skills-mcp",
+      "projectManagedKinds": ["skill", "mcpServer"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "overridable"
+    },
+    {
+      "name": "instructions+MCP",
+      "pluginName": "instructions-mcp",
+      "path": "plugins/instructions-mcp",
+      "projectManagedKinds": ["instruction", "mcpServer"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "none"
+    },
+    {
+      "name": "multi-MCP",
+      "pluginName": "multi-mcp",
+      "path": "plugins/multi-mcp",
+      "projectManagedKinds": ["mcpServer"],
+      "projectInstallability": "allowed",
+      "mcpServers": ["acme.tools v1", "sibling-server", "nested/object server"],
+      "skillTriggerApplicability": "none"
+    },
+    {
+      "name": "apps-only",
+      "pluginName": "apps-only",
+      "path": "plugins/apps-only",
+      "projectManagedKinds": [],
+      "projectInstallability": "rejected-apps"
+    },
+    {
+      "name": "apps-mixed",
+      "pluginName": "apps-mixed",
+      "path": "plugins/apps-mixed",
+      "projectManagedKinds": ["skill"],
+      "projectInstallability": "rejected-apps"
+    },
+    {
+      "name": "native-only",
+      "pluginName": "native-only",
+      "path": "plugins/native-only",
+      "projectManagedKinds": [],
+      "projectInstallability": "rejected-no-project-managed-kind"
+    }
+  ],
+  "negativeFixtures": [
+    {
+      "name": "slashCommands-invalid-icon",
+      "pluginName": "slash-commands-invalid-icon",
+      "path": "negative/slashCommands-invalid-icon",
+      "expectedError": "codex.interface.icon_small must use ./assets/..."
+    }
+  ]
+}

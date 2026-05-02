@@ -1,0 +1,21 @@
+{
+  "name": "multi-mcp",
+  "version": "0.1.0",
+  "description": "Fixture plugin with multiple structured MCP servers.",
+  "mcpServers": "./.mcp.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "mcp", "multi"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Multi MCP Fixture",
+    "shortDescription": "Multiple MCP servers",
+    "capabilities": ["MCP"]
+  }
+}

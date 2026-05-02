@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review Workflow"
+  short_description: "完整代码审查工作流"
+  default_prompt: "Use $review-workflow to run a structured code review on the current changes."
+policy:
+  allow_implicit_invocation: false

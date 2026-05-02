@@ -1,0 +1,9 @@
+{
+  "owner": {
+    "name": "Agent Workflows Fixtures",
+    "url": "https://github.com/LeslieChan/agent-workflows"
+  },
+  "interface": {
+    "displayName": "Codex Project Repo-Managed Fixtures"
+  }
+}

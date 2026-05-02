@@ -19,6 +19,12 @@ import { writeJsonFile } from '../utils/json.js';
 import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import { scanNodeImportContract } from '../utils/plugin-script-contract.js';
+import {
+  renderClaudeSlashCommand,
+  renderCodexSlashCommandOpenAiYaml,
+  renderCodexSlashCommandSkillMarkdown,
+  resolveSlashCommands,
+} from '../utils/slash-commands.js';
 import type {
   AgentDefinition,
   PluginLifecycleScriptEntry,
@@ -198,6 +204,25 @@ async function copyBundleRootFile(
   const normalized = stripDotSlash(relativePath).split(path.sep).join('/');
   const sourcePath = path.join(pluginRoot, normalized);
   const targetPath = path.join(outputRoot, normalized);
+  await fs.ensureDir(path.dirname(targetPath));
+  await fs.copyFile(sourcePath, targetPath);
+}
+
+async function copySlashCommandAsset(
+  pluginRoot: string,
+  outputRoot: string,
+  skillName: string,
+  sourceRelativePath: string,
+  generatedRelativePath: string,
+): Promise<void> {
+  const sourcePath = path.join(pluginRoot, sourceRelativePath);
+  const targetPath = path.join(
+    outputRoot,
+    'codex',
+    'skills',
+    skillName,
+    stripDotSlash(generatedRelativePath),
+  );
   await fs.ensureDir(path.dirname(targetPath));
   await fs.copyFile(sourcePath, targetPath);
 }
@@ -692,6 +717,7 @@ export async function bundleLocalPlugin(
     const buildConfig = plugin.manifest.buildConfig;
     const templatePatterns = buildConfig?.templates?.include ?? [];
     const templateVars = buildConfig?.templates?.vars ?? {};
+    const resolvedSlashCommands = await resolveSlashCommands(plugin.rootDir, plugin.manifest);
 
     const claudeManifest = createPlatformManifestBase(plugin);
     const codexManifest = createPlatformManifestBase(plugin);
@@ -724,12 +750,6 @@ export async function bundleLocalPlugin(
     codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
 
     const claudeOverrides = buildConfig?.manifestOverrides?.claude;
-    claudeManifest.commands = await addDeclaredPathFiles(
-      plugin,
-      'claude',
-      claudeOverrides?.commands,
-      claudeFiles,
-    );
     claudeManifest.outputStyles = await addDeclaredPathFiles(
       plugin,
       'claude',
@@ -774,6 +794,18 @@ export async function bundleLocalPlugin(
         buildConfig.fileRules.claude.include,
         buildConfig.fileRules.claude.exclude,
       )) {
+        if (
+          resolvedSlashCommands &&
+          filePath === stripDotSlash(resolvedSlashCommands.rootRelativePath)
+        ) {
+          continue;
+        }
+        if (
+          resolvedSlashCommands &&
+          filePath.startsWith(`${stripDotSlash(resolvedSlashCommands.rootRelativePath)}/`)
+        ) {
+          continue;
+        }
         claudeFiles.add(filePath);
       }
     }
@@ -783,6 +815,18 @@ export async function bundleLocalPlugin(
         buildConfig.fileRules.codex.include,
         buildConfig.fileRules.codex.exclude,
       )) {
+        if (
+          resolvedSlashCommands &&
+          filePath === stripDotSlash(resolvedSlashCommands.rootRelativePath)
+        ) {
+          continue;
+        }
+        if (
+          resolvedSlashCommands &&
+          filePath.startsWith(`${stripDotSlash(resolvedSlashCommands.rootRelativePath)}/`)
+        ) {
+          continue;
+        }
         codexFiles.add(filePath);
       }
     }
@@ -807,6 +851,36 @@ export async function bundleLocalPlugin(
         templatePatterns,
         templateVars,
       );
+    }
+
+    if (resolvedSlashCommands) {
+      claudeManifest.commands = './claude/commands';
+      codexManifest.skills ??= './codex/skills';
+
+      for (const command of resolvedSlashCommands.commands) {
+        await writeTextFile(
+          path.join(outputRoot, 'claude', 'commands', `${command.name}.md`),
+          renderClaudeSlashCommand(command),
+        );
+        await writeTextFile(
+          path.join(outputRoot, 'codex', 'skills', command.name, 'SKILL.md'),
+          renderCodexSlashCommandSkillMarkdown(command),
+        );
+        await writeTextFile(
+          path.join(outputRoot, 'codex', 'skills', command.name, 'agents', 'openai.yaml'),
+          renderCodexSlashCommandOpenAiYaml(command),
+        );
+
+        for (const asset of command.codex.assets) {
+          await copySlashCommandAsset(
+            plugin.rootDir,
+            outputRoot,
+            command.name,
+            asset.sourceRelativePath,
+            asset.generatedRelativePath,
+          );
+        }
+      }
     }
 
     for (const filePath of await collectAwRuntimeFiles(plugin)) {

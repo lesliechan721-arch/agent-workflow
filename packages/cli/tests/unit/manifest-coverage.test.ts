@@ -57,6 +57,7 @@ describe('manifest coverage', () => {
       version: '1.2.3',
       description: 'demo plugin',
       skills: './skills',
+      slashCommands: './slash-commands',
       skillTriggers: {
         commit: {
           allowInstallOverride: true,
@@ -157,12 +158,11 @@ describe('manifest coverage', () => {
           },
           codex: {
             include: ['skills/**'],
-            exclude: ['commands/**'],
+            exclude: ['output-styles/**'],
           },
         },
         manifestOverrides: {
           claude: {
-            commands: './commands',
             outputStyles: './output-styles',
             lspServers: {
               name: 'inline-lsp',
@@ -183,6 +183,7 @@ describe('manifest coverage', () => {
 
     expect(manifest).toMatchObject({
       skills: './skills',
+      slashCommands: './slash-commands',
       skillTriggers: {
         commit: {
           allowInstallOverride: true,
@@ -212,12 +213,11 @@ describe('manifest coverage', () => {
         },
         fileRules: {
           codex: {
-            exclude: ['commands/**'],
+            exclude: ['output-styles/**'],
           },
         },
         manifestOverrides: {
           claude: {
-            commands: './commands',
             outputStyles: './output-styles',
             lspServers: {
               name: 'inline-lsp',

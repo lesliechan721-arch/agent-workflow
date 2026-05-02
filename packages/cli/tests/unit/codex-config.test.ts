@@ -5,9 +5,13 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  parseRenderedCodexMcpFileContent,
   getAwManagedSentinelPrefix,
   parseCodexConfig,
+  removeCodexMcpServer,
   removeManagedDeveloperInstructions,
+  resolveCodexMcpServerStatusSignal,
+  upsertCodexMcpServer,
   upsertCodexMarketplace,
   upsertCodexPluginEnabled,
   upsertManagedDeveloperInstructions,
@@ -105,5 +109,188 @@ describe('codex-config', () => {
         value: `${getAwManagedSentinelPrefix()} bad`,
       }),
     ).toThrow('[[aw-managed:');
+  });
+
+  it('writes quoted-key MCP servers and preserves sibling content', () => {
+    const input = [
+      '# user comment',
+      'title = "workspace"',
+      '',
+      '[mcp_servers.search]',
+      'command = "search"',
+      '',
+      '[plugins."other@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n');
+
+    const next = upsertCodexMcpServer(input, 'acme.tools v1', {
+      command: 'node',
+      args: ['./servers/acme-tools.js', '--stdio'],
+      env: {
+        ACME_MODE: 'fixture',
+      },
+      startup_timeout_sec: 10,
+      tools: {
+        'deploy.check': {
+          approval_mode: 'manual',
+        },
+      },
+    });
+
+    expect(next).toContain('[mcp_servers."acme.tools v1"]');
+    expect(next).toContain('[mcp_servers."acme.tools v1".env]');
+    expect(next).toContain('[mcp_servers."acme.tools v1".tools."deploy.check"]');
+    expect(next).toContain('[mcp_servers.search]');
+    expect(next).toContain('# user comment');
+    expect(parseCodexConfig(next).mcpServers['acme.tools v1']?.value).toEqual({
+      command: 'node',
+      args: ['./servers/acme-tools.js', '--stdio'],
+      env: {
+        ACME_MODE: 'fixture',
+      },
+      startup_timeout_sec: 10,
+      tools: {
+        'deploy.check': {
+          approval_mode: 'manual',
+        },
+      },
+    });
+  });
+
+  it('replaces an MCP server subtree and removes stale descendant tables', () => {
+    const input = [
+      '[mcp_servers."acme.tools v1"]',
+      'command = "old"',
+      '',
+      '[mcp_servers."acme.tools v1".env]',
+      'OLD = "1"',
+      '',
+      '[mcp_servers."acme.tools v1".tools.old]',
+      'approval_mode = "manual"',
+      '',
+    ].join('\n');
+
+    const next = upsertCodexMcpServer(input, 'acme.tools v1', {
+      command: 'new',
+      disabled: false,
+    });
+
+    expect(next).toContain('command = "new"');
+    expect(next).toContain('disabled = false');
+    expect(next).not.toContain('[mcp_servers."acme.tools v1".env]');
+    expect(next).not.toContain('[mcp_servers."acme.tools v1".tools.old]');
+    expect(parseCodexConfig(next).mcpServers['acme.tools v1']?.value).toEqual({
+      command: 'new',
+      disabled: false,
+    });
+  });
+
+  it('removes an MCP server subtree without touching siblings', () => {
+    const input = [
+      '[mcp_servers."acme.tools v1"]',
+      'command = "node"',
+      '',
+      '[mcp_servers."acme.tools v1".env]',
+      'A = "1"',
+      '',
+      '[mcp_servers.sibling]',
+      'command = "keep"',
+      '',
+    ].join('\n');
+
+    const next = removeCodexMcpServer(input, 'acme.tools v1');
+
+    expect(next).not.toContain('acme.tools v1');
+    expect(next).toContain('[mcp_servers.sibling]');
+    expect(parseCodexConfig(next).mcpServers).toEqual({
+      sibling: {
+        key: 'sibling',
+        value: {
+          command: 'keep',
+        },
+      },
+    });
+  });
+
+  it('rejects rendered MCP values that include null or non-object servers', () => {
+    expect(() =>
+      parseRenderedCodexMcpFileContent({
+        mcpServers: {
+          broken: {
+            env: {
+              TOKEN: null,
+            },
+          },
+        },
+      }, 'fixture.mcp'),
+    ).toThrow('null cannot be represented in TOML');
+
+    expect(() =>
+      parseRenderedCodexMcpFileContent({
+        mcpServers: {
+          broken: 'nope',
+        },
+      }, 'fixture.mcp'),
+    ).toThrow('expected a server config object');
+  });
+
+  it('compares MCP status signals with quoted-key identity semantics', () => {
+    const actual = parseCodexConfig(
+      upsertCodexMcpServer('', 'acme.tools v1', {
+        command: 'node',
+        disabled: false,
+      }),
+    ).mcpServers['acme.tools v1'];
+
+    expect(
+      resolveCodexMcpServerStatusSignal({
+        key: 'acme.tools v1',
+        tracked: true,
+        actual,
+        expected: {
+          command: 'node',
+          disabled: false,
+        },
+      }),
+    ).toMatchObject({
+      state: 'visible',
+      tracked: true,
+    });
+
+    expect(
+      resolveCodexMcpServerStatusSignal({
+        key: 'acme.tools v1',
+        tracked: true,
+        actual: undefined,
+      }),
+    ).toMatchObject({
+      state: 'missing',
+    });
+
+    expect(
+      resolveCodexMcpServerStatusSignal({
+        key: 'acme.tools v1',
+        tracked: true,
+        actual,
+        expected: {
+          command: 'node',
+          disabled: true,
+        },
+      }),
+    ).toMatchObject({
+      state: 'drifted',
+    });
+
+    expect(
+      resolveCodexMcpServerStatusSignal({
+        key: 'acme.tools v1',
+        tracked: false,
+        actual,
+      }),
+    ).toMatchObject({
+      state: 'orphan',
+      tracked: false,
+    });
   });
 });

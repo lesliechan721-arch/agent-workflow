@@ -1,0 +1,27 @@
+{
+  "name": "skills-mcp",
+  "version": "0.1.0",
+  "description": "Fixture plugin combining repo skills and MCP servers.",
+  "skills": "./skills",
+  "skillTriggers": {
+    "repo-check": {
+      "allowInstallOverride": true
+    }
+  },
+  "mcpServers": "./.mcp.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "skills", "mcp"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Skills MCP Fixture",
+    "shortDescription": "Skills plus MCP",
+    "capabilities": ["Skills", "MCP"]
+  }
+}

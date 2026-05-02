@@ -10,6 +10,7 @@ import type {
   LifecycleConfigSnapshotMetadata,
   PlatformName,
   PluginStatusReport,
+  RepoManagedProjectItemReport,
   PluginManifestSource,
   PluginMeta,
   Scope,
@@ -41,6 +42,7 @@ import {
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
 } from './options.js';
+import { isCodexProjectStatusFatalError } from './codex-project-safety.js';
 
 type StatusCommandRuntime = CommandExecutionContextInput;
 
@@ -415,12 +417,52 @@ function hasMissingArtifacts(plugin: PluginStatusReport): boolean {
   );
 }
 
+function getRepoManagedProjectItems(plugin: PluginStatusReport): RepoManagedProjectItemReport[] {
+  return plugin.repoManagedSessionState?.items ?? [];
+}
+
+function hasRepoManagedActionableItems(plugin: PluginStatusReport): boolean {
+  return getRepoManagedProjectItems(plugin).some((item) =>
+    item.state === 'missing' ||
+      item.state === 'drifted' ||
+      item.state === 'orphan' ||
+      item.state === 'blockedByProjectTrust',
+  );
+}
+
+function hasRepoManagedUnknownItems(plugin: PluginStatusReport): boolean {
+  return getRepoManagedProjectItems(plugin).some((item) =>
+    item.state === 'unknown' || item.state === 'projectTrustUnknown',
+  );
+}
+
+function hasManagedRepoEvidence(plugin: PluginStatusReport): boolean {
+  return hasScopeManagedEvidence(plugin) || getRepoManagedProjectItems(plugin).some((item) => item.tracked);
+}
+
+function isReadySkillsOnlyProjectStatus(plugin: PluginStatusReport): boolean {
+  return Array.isArray(plugin.projectManagedKinds) &&
+    plugin.projectManagedKinds.length > 0 &&
+    plugin.projectManagedKinds.every((kind) => kind === 'skill') &&
+    getRepoManagedProjectItems(plugin).length > 0 &&
+    getRepoManagedProjectItems(plugin).every((item) => item.kind === 'skill' && item.state === 'visible') &&
+    plugin.skillTriggerDrift === 'no' &&
+    plugin.externalOwnership?.checkState !== 'unknown';
+}
+
 function resolvePluginHealth(plugin: PluginStatusReport | undefined): StatusHealth {
   if (!plugin) {
     return 'unknown';
   }
 
+  if (plugin.externalOwnership?.checkState === 'unknown') {
+    return 'unknown';
+  }
+
   if (plugin.externalOwnership?.present) {
+    if (hasRuntimeEvidence(plugin) || hasManagedRepoEvidence(plugin)) {
+      return 'needsAttention';
+    }
     return 'external';
   }
 
@@ -428,22 +470,28 @@ function resolvePluginHealth(plugin: PluginStatusReport | undefined): StatusHeal
     return plugin.scopeInitialized === 'unknown' ? 'unknown' : 'notInstalled';
   }
 
+  if (plugin.scopeInitialized === 'unknown') {
+    return 'unknown';
+  }
+
+  if (hasRepoManagedActionableItems(plugin)) {
+    return 'needsAttention';
+  }
+
   if (
-    plugin.ledgerStateStatus === 'degraded' ||
+    (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
     plugin.catalogCompatibility === 'missing' ||
     plugin.catalogCompatibility === 'capabilityChanged' ||
     plugin.skillTriggerDrift === 'yes' ||
-    plugin.skillTriggerDrift === 'unknown' ||
     hasMissingArtifacts(plugin) ||
-    plugin.driftWarnings.length > 0 ||
     plugin.currentCatalog?.available === false
   ) {
     return 'needsAttention';
   }
 
   if (
-    plugin.scopeInitialized === 'unknown' ||
-    plugin.repoManagedSessionState?.diagnostics.length
+    hasRepoManagedUnknownItems(plugin) ||
+    plugin.skillTriggerDrift === 'unknown'
   ) {
     return 'unknown';
   }
@@ -511,12 +559,22 @@ function describeCatalog(plugin: PluginStatusReport | undefined): string | undef
   return `当前 catalog 中找不到插件目录（来自 ${plugin.currentCatalog.source}${plugin.currentCatalog.reason ? `，${plugin.currentCatalog.reason}` : ''}）`;
 }
 
-function describeNative(plugin: PluginStatusReport | undefined, platform: PlatformName): string | undefined {
+function describeNative(
+  plugin: PluginStatusReport | undefined,
+  platform: PlatformName,
+  scope: Scope,
+): string | undefined {
   if (!plugin) {
     return undefined;
   }
 
   if (platform === 'codex') {
+    if (scope === 'project' && hasManagedRepoEvidence(plugin)) {
+      if (plugin.native.pluginInstalled) {
+        return '附加诊断：用户级 Codex native plugin 也存在';
+      }
+      return undefined;
+    }
     if (plugin.native.marketplaceRegistered) {
       const source = plugin.native.marketplaceSource ?? plugin.native.declaredSource;
       return source
@@ -557,6 +615,44 @@ function describeSkillTrigger(plugin: PluginStatusReport | undefined): string | 
   return `skill trigger：${parts.join('，')}`;
 }
 
+function formatRepoManagedItemLabel(
+  item: RepoManagedProjectItemReport,
+): string {
+  if (item.kind === 'skill') {
+    return `skill ${item.artifactKey ?? item.path}`;
+  }
+  if (item.kind === 'mcpServer') {
+    return `mcp ${item.artifactKey ?? item.path}`;
+  }
+  return item.kind;
+}
+
+function describeRepoManagedState(plugin: PluginStatusReport | undefined): string | undefined {
+  if (!plugin?.repoManagedSessionState) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  if (plugin.repoManagedSessionState.skills) {
+    parts.push(`skills=${plugin.repoManagedSessionState.skills.state}`);
+  }
+  if (plugin.repoManagedSessionState.mcpServers) {
+    parts.push(`mcpServers=${plugin.repoManagedSessionState.mcpServers.state}`);
+  }
+
+  const notableItems = (plugin.repoManagedSessionState.items ?? [])
+    .filter((item) => item.state !== 'visible' && item.state !== 'absent')
+    .slice(0, 4)
+    .map((item) => `${formatRepoManagedItemLabel(item)}=${item.state}`);
+  parts.push(...notableItems);
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  return `repo-managed：${parts.join('，')}`;
+}
+
 function describeRuntimeHealth(cell: StatusMatrixCell): string {
   const source = {
     installSnapshot: 'install snapshot',
@@ -580,9 +676,10 @@ function describeCell(cell: StatusMatrixCell): string {
   }
 
   const descriptions = [
-    describeNative(cell.report, cell.platform),
-    describeCatalog(cell.report),
     `证据：${describeEvidence(cell)}`,
+    describeRepoManagedState(cell.report),
+    describeNative(cell.report, cell.platform, cell.scope),
+    describeCatalog(cell.report),
     describeRuntimeHealth(cell),
     describeSkillTrigger(cell.report),
   ].filter(Boolean);
@@ -602,8 +699,29 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
   if (cell.health === 'external') {
     return `检查 ${cell.pluginName} 的外部 marketplace 占用后，再决定是否迁移到 AW 管理。`;
   }
+  if (cell.report?.externalOwnership?.present && hasRuntimeEvidence(cell.report)) {
+    return `先解除 ${cell.pluginName} 的同名外部 native 插件冲突，再重新检查当前 repo-managed 状态。`;
+  }
   if (cell.error) {
     return `重新运行 aw status ${cell.pluginName}${suffix} --verbose 查看读取失败细节。`;
+  }
+  const unknownItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
+    item.state === 'unknown' || item.state === 'projectTrustUnknown',
+  );
+  if (unknownItem) {
+    return `先修复 ${formatRepoManagedItemLabel(unknownItem)} 的不可判定状态，再重新运行 aw status ${cell.pluginName}${suffix}。`;
+  }
+  const blockedItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
+    item.state === 'blockedByProjectTrust',
+  );
+  if (blockedItem) {
+    return `先让 Codex 信任当前仓库，再重新检查 ${formatRepoManagedItemLabel(blockedItem)} 的 project scope 状态。`;
+  }
+  const orphanItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
+    item.state === 'orphan',
+  );
+  if (orphanItem) {
+    return `先处理未受管的 ${formatRepoManagedItemLabel(orphanItem)}，再决定是重新受管还是手动保留。`;
   }
   if (cell.report?.catalogCompatibility === 'missing') {
     return `当前插件目录缺失；如需清理历史状态，运行 aw uninstall ${cell.pluginName}${suffix}`;
@@ -611,7 +729,14 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
   if (cell.report?.catalogCompatibility === 'capabilityChanged') {
     return `插件能力声明已变化，运行 aw upgrade ${cell.pluginName}${suffix}`;
   }
-  if (cell.report?.ledgerStateStatus === 'degraded') {
+  if (
+    cell.report?.ledgerStateStatus === 'degraded' &&
+    cell.report.skillTriggerApplicability === 'overridable' &&
+    (
+      cell.report.skillTriggerDrift === 'unknown' ||
+      !cell.report.skillTriggerPreference
+    )
+  ) {
     return `本机安装账本处于 degraded 状态；下一次 install/upgrade 请显式传 --skill-trigger default|manual|auto。`;
   }
   if (
@@ -622,7 +747,9 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
     return `重新注册 Codex marketplace：aw install ${cell.pluginName} --platform codex --scope ${cell.scope}`;
   }
   if (cell.report?.skillTriggerDrift === 'yes') {
-    return `重新应用 skill trigger 偏好：aw upgrade ${cell.pluginName}${suffix} --skill-trigger ${cell.report.skillTriggerPreference ?? 'default'}`;
+    return cell.report.skillTriggerApplicability === 'overridable'
+      ? `重新应用 skill trigger 偏好：aw upgrade ${cell.pluginName}${suffix} --skill-trigger ${cell.report.skillTriggerPreference ?? 'default'}`
+      : `刷新当前 skill runtime：aw upgrade ${cell.pluginName}${suffix}`;
   }
 
   return undefined;
@@ -863,6 +990,10 @@ export async function statusCommand(
         disabledReason: candidate.disabledReason,
       });
     } catch (error) {
+      if (isCodexProjectStatusFatalError(error)) {
+        throw error;
+      }
+
       cells.push({
         pluginName: candidate.pluginName,
         platform: candidate.platform,

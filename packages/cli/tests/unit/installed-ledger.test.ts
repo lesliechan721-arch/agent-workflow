@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   normalizeSharedNativeRefs,
+  resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
   validateInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
@@ -106,6 +107,52 @@ describe('installed ledger', () => {
         skillTriggerPreference: 'manual',
       },
       skillTriggerWriteOrder: 3,
+    });
+  });
+
+  it('accepts Codex project managed scope snapshots without shared native refs', () => {
+    const ledger = validateInstalledLedger({
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'slash-review': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              projectScopes: {
+                '/repo': {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  projectKey: '/repo',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                    projectManagedKinds: ['skill'],
+                  },
+                  installOptions: {
+                    skillTriggerPreference: 'manual',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(ledger?.plugins['slash-review']?.platforms.codex?.sharedNativeRefs).toBeUndefined();
+    expect(ledger?.plugins['slash-review']?.platforms.codex?.projectScopes?.['/repo']).toMatchObject({
+      managed: true,
+      projectKey: '/repo',
+      capabilitySnapshot: {
+        requiresNativePlugin: false,
+        projectManagedKinds: ['skill'],
+      },
     });
   });
 
@@ -317,6 +364,171 @@ describe('installed ledger', () => {
 
     expect(resolveScopeInitialized(availableLedger, 'git-commit', 'codex', 'user')).toBe('no');
     expect(resolveScopeInitialized(degradedLedger, 'git-commit', 'codex', 'user')).toBe('unknown');
+  });
+
+  it('derives Codex project scopeInitialized from managed ledger records only', () => {
+    const availableLedger: InstalledLedger = {
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              projectScopes: {
+                '/repo/managed': {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  projectKey: '/repo/managed',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                    projectManagedKinds: ['skill'],
+                  },
+                },
+                '/repo/unmanaged': {
+                  managed: false,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  projectKey: '/repo/unmanaged',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                    projectManagedKinds: ['skill'],
+                  },
+                },
+              },
+              sharedNativeRefs: {
+                user: false,
+                projects: ['/repo/legacy-native-ref'],
+              },
+            },
+          },
+        },
+      },
+    };
+    const degradedLedger: InstalledLedger = {
+      version: 1,
+      ledgerState: {
+        status: 'degraded',
+        degradedAt: '2026-04-25T00:00:00.000Z',
+        reason: 'rebuilt_from_missing_or_invalid',
+      },
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              sharedNativeRefs: {
+                user: false,
+                projects: ['/repo/legacy-native-ref'],
+              },
+            },
+          },
+        },
+      },
+    };
+
+    expect(resolveScopeInitialized(availableLedger, 'git-commit', 'codex', 'project', '/repo/managed')).toBe('yes');
+    expect(resolveScopeInitialized(availableLedger, 'git-commit', 'codex', 'project', '/repo/unmanaged')).toBe('no');
+    expect(resolveScopeInitialized(availableLedger, 'git-commit', 'codex', 'project', '/repo/legacy-native-ref')).toBe('no');
+    expect(resolveScopeInitialized(degradedLedger, 'git-commit', 'codex', 'project', '/repo/legacy-native-ref')).toBe('unknown');
+  });
+
+  it('derives Codex project scopeInitialized from ledger, tracking, and external-only evidence', () => {
+    const availableLedger: InstalledLedger = {
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              projectScopes: {
+                '/repo/managed': {
+                  managed: true,
+                  updatedAt: '2026-04-25T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  projectKey: '/repo/managed',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    hasRepoManagedArtifacts: true,
+                    projectManagedKinds: ['skill'],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const degradedLedger: InstalledLedger = {
+      version: 1,
+      ledgerState: {
+        status: 'degraded',
+        degradedAt: '2026-04-25T00:00:00.000Z',
+        reason: 'rebuilt_from_missing_or_invalid',
+      },
+      plugins: {},
+    };
+
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: availableLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/managed',
+      trackingIdentityComplete: false,
+    })).toBe('yes');
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: availableLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/tracking-only',
+      trackingArtifacts: [{
+        path: '/repo/.agents/skills/commit',
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'commit',
+      }],
+      trackingIdentityComplete: true,
+    })).toBe('yes');
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: availableLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/external-only',
+      trackingIdentityComplete: false,
+      externalOwnershipPresent: true,
+    })).toBe('no');
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: availableLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/unmanaged',
+      trackingIdentityComplete: false,
+    })).toBe('no');
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: degradedLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/degraded',
+      trackingIdentityComplete: false,
+    })).toBe('unknown');
+    expect(resolveCodexProjectScopeInitialized({
+      ledger: availableLedger,
+      pluginName: 'git-commit',
+      projectKey: '/repo/broken-tracking',
+      trackingArtifacts: [{
+        path: '/repo/.agents/skills/commit',
+        kind: 'skill',
+        platform: 'codex',
+      }],
+      trackingIdentityComplete: false,
+    })).toBe('unknown');
   });
 
   it('normalizes sharedNativeRefs to a stable structure', () => {

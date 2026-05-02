@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -11,6 +12,7 @@ import {
 } from '../adapters/helpers.js';
 import type {
   CommandOptions,
+  GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
   LedgerStateReason,
@@ -18,11 +20,7 @@ import type {
   PluginStatusReport,
 } from '../types.js';
 import {
-  readCodexConfigFile,
-  removeManagedDeveloperInstructionsFile,
-  upsertManagedDeveloperInstructionsFile,
-} from '../utils/codex-config.js';
-import {
+  getInstalledLedgerPath,
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
@@ -44,7 +42,9 @@ import {
   rollbackMaterializedSkillTriggerPreference,
   type SkillTriggerMaterializationRollbackHandle,
 } from '../utils/skill-trigger-preferences.js';
+import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
 import {
+  getTrackingManifestPath,
   getTrackingRecord,
   readTrackingManifest,
   removeTrackingRecordFromManifest,
@@ -54,6 +54,8 @@ import {
   collectCommandWarnings,
   createAdapters,
   filterPostCommandDriftWarnings,
+  getGeneratedArtifactIdentityRefusal,
+  getTrackingArtifactIdentityRefusal,
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
   loadPluginTargetsForCommand,
@@ -72,12 +74,29 @@ import {
 
 type UninstallCommandRuntime = CommandExecutionContextInput & {
   skipLifecycle?: boolean;
+  skipLifecycleSnapshotGc?: boolean;
 };
 
 interface FileRollbackState {
   path: string;
   content: string | null;
 }
+
+type PathRollbackState =
+  | {
+    path: string;
+    state: 'absent';
+  }
+  | {
+    path: string;
+    state: 'file' | 'directory';
+    backupPath: string;
+  }
+  | {
+    path: string;
+    state: 'symlink';
+    target: string;
+  };
 
 type ClaudePermissionState = {
   allow: string[];
@@ -91,10 +110,10 @@ interface ClaudePermissionsRollbackState {
   manualPermissions?: ClaudePermissionState;
 }
 
-interface ArtifactRollbackState {
+export interface ArtifactRollbackState {
   files: FileRollbackState[];
-  codexManagedInstructionValue?: string;
-  codexHooksFile?: FileRollbackState;
+  pathSnapshots: PathRollbackState[];
+  cleanupRoots: string[];
   claudePermissions?: ClaudePermissionsRollbackState;
 }
 
@@ -107,6 +126,136 @@ function resolveTrackingDir(
   return platform === 'claude'
     ? resolveClaudePaths(cwd, scope, env).trackingDir
     : resolveCodexPaths(cwd, scope, env).trackingDir;
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function appendRollbackIssue(
+  issues: string[],
+  surfaces: Set<string>,
+  summary: string,
+  error: unknown,
+  surfaceHints: readonly string[],
+): void {
+  issues.push(`${summary}：${normalizeErrorMessage(error)}`);
+  for (const surface of surfaceHints) {
+    surfaces.add(surface);
+  }
+}
+
+function createRollbackFailureError(
+  error: unknown,
+  issues: string[],
+  surfaces: Set<string>,
+): Error {
+  if (issues.length === 0) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  const baseMessage = normalizeErrorMessage(error);
+  const surfaceText = [...surfaces].join('、');
+  return new Error(
+    `${baseMessage}；回滚未完全完成，请人工检查 ${surfaceText}。${issues.join('；')}`,
+  );
+}
+
+function uniqueArtifactPaths(
+  paths: Iterable<string>,
+): string[] {
+  return [...new Set([...paths].map((value) => path.normalize(value)))];
+}
+
+async function capturePathRollbackState(
+  pathname: string,
+  backupRoot: string,
+  index: number,
+): Promise<PathRollbackState> {
+  const normalizedPath = path.normalize(pathname);
+  if (!(await fs.pathExists(normalizedPath))) {
+    return {
+      path: normalizedPath,
+      state: 'absent',
+    };
+  }
+
+  const stats = await fs.lstat(normalizedPath);
+  if (stats.isSymbolicLink()) {
+    return {
+      path: normalizedPath,
+      state: 'symlink',
+      target: await fs.readlink(normalizedPath),
+    };
+  }
+
+  const backupPath = path.join(backupRoot, `${index}-${path.basename(normalizedPath)}`);
+  await fs.copy(normalizedPath, backupPath, {
+    overwrite: true,
+    errorOnExist: false,
+  });
+
+  return {
+    path: normalizedPath,
+    state: stats.isDirectory() ? 'directory' : 'file',
+    backupPath,
+  };
+}
+
+async function restorePathRollbackState(snapshot: PathRollbackState): Promise<void> {
+  if (snapshot.state === 'absent') {
+    await fs.remove(snapshot.path);
+    return;
+  }
+
+  await fs.remove(snapshot.path);
+  await fs.ensureDir(path.dirname(snapshot.path));
+
+  if (snapshot.state === 'symlink') {
+    await fs.symlink(snapshot.target, snapshot.path);
+    return;
+  }
+
+  await fs.copy(snapshot.backupPath, snapshot.path, {
+    overwrite: true,
+    errorOnExist: false,
+  });
+}
+
+export async function disposeArtifactRollbackState(
+  rollbackState: ArtifactRollbackState | undefined,
+): Promise<void> {
+  if (!rollbackState) {
+    return;
+  }
+
+  await Promise.all(
+    rollbackState.cleanupRoots.map((cleanupRoot) =>
+      fs.remove(cleanupRoot).catch(() => undefined)),
+  );
+}
+
+export function collectArtifactRollbackSurfaceHints(
+  platform: PlatformName,
+  cwd: string,
+  scope: CommandOptions['scope'],
+  env: NodeJS.ProcessEnv,
+  trackedArtifacts: GeneratedArtifact[],
+  rollbackState: ArtifactRollbackState | undefined,
+): string[] {
+  const hints = new Set<string>(['repo artifacts']);
+
+  if (platform === 'codex') {
+    const configTomlPath = resolveCodexPaths(cwd, scope, env).configTomlPath;
+    if (
+      trackedArtifacts.some((artifact) => path.normalize(artifact.path) === path.normalize(configTomlPath)) ||
+      rollbackState?.pathSnapshots.some((snapshot) => path.normalize(snapshot.path) === path.normalize(configTomlPath))
+    ) {
+      hints.add(configTomlPath);
+    }
+  }
+
+  return [...hints];
 }
 
 function preserveLedgerState(
@@ -214,7 +363,15 @@ function didUninstallWriteNativeState(
   return pluginStatus.native.pluginInstalled;
 }
 
-function shouldRematerializeSkillTriggersAfterUninstall(target: ResolvedPluginTarget): boolean {
+function shouldRematerializeSkillTriggersAfterUninstall(
+  platform: PlatformName,
+  scope: CommandOptions['scope'],
+  target: ResolvedPluginTarget,
+): boolean {
+  if (platform === 'codex' && scope === 'project') {
+    return false;
+  }
+
   return target.source === 'currentCatalog' && Boolean(target.embeddedPlugin?.manifest.skills);
 }
 
@@ -287,7 +444,7 @@ async function restoreTextFile(snapshot: FileRollbackState): Promise<void> {
   await fs.writeFile(snapshot.path, snapshot.content, 'utf8');
 }
 
-async function captureArtifactRollbackState(
+export async function captureArtifactRollbackState(
   platform: PlatformName,
   target: ResolvedPluginTarget,
   scope: CommandOptions['scope'],
@@ -298,17 +455,30 @@ async function captureArtifactRollbackState(
     const paths = resolveCodexPaths(cwd, scope, env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
-    const { snapshot } = await readCodexConfigFile(paths.configTomlPath);
+    const rollbackPaths = uniqueArtifactPaths([
+      ...(trackingRecord?.artifacts
+        .filter((artifact) => artifact.kind === 'permission' || artifact.kind === 'agent' || artifact.kind === 'skill')
+        .map((artifact) => artifact.path) ?? []),
+      ...((trackingRecord?.artifacts ?? []).some((artifact) =>
+        artifact.kind === 'instruction' || artifact.kind === 'mcpServer')
+        ? [paths.configTomlPath]
+        : []),
+      ...((trackingRecord?.artifacts ?? []).some((artifact) => artifact.kind === 'hook')
+        ? [paths.hooksPath]
+        : []),
+    ]);
+    const cleanupRoot = rollbackPaths.length > 0
+      ? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-uninstall-rollback-'))
+      : undefined;
 
     return {
-      files: await Promise.all(
-        (trackingRecord?.artifacts ?? [])
-          .filter((artifact) => artifact.kind === 'permission' || artifact.kind === 'agent')
-          .map((artifact) => captureTextFile(artifact.path)),
-      ),
-      codexManagedInstructionValue:
-        snapshot.developerInstructions.managedBlocks[target.pluginName]?.value,
-      codexHooksFile: await captureTextFile(paths.hooksPath),
+      files: [],
+      pathSnapshots: cleanupRoot
+        ? await Promise.all(
+          rollbackPaths.map((artifactPath, index) => capturePathRollbackState(artifactPath, cleanupRoot, index)),
+        )
+        : [],
+      cleanupRoots: cleanupRoot ? [cleanupRoot] : [],
     };
   }
 
@@ -323,6 +493,8 @@ async function captureArtifactRollbackState(
         .filter((artifact) => artifact.kind === 'instruction')
         .map((artifact) => captureTextFile(artifact.path)),
     ),
+    pathSnapshots: [],
+    cleanupRoots: [],
     claudePermissions: {
       topLevelPermissions: cloneClaudePermissionState(settings.permissions),
       generatedPermissions: cloneClaudePermissionState(
@@ -333,7 +505,7 @@ async function captureArtifactRollbackState(
   };
 }
 
-async function rollbackArtifacts(
+export async function rollbackArtifacts(
   platform: PlatformName,
   target: ResolvedPluginTarget,
   scope: CommandOptions['scope'],
@@ -342,22 +514,9 @@ async function rollbackArtifacts(
   rollbackState: ArtifactRollbackState,
 ): Promise<void> {
   await Promise.all(rollbackState.files.map((snapshot) => restoreTextFile(snapshot)));
+  await Promise.all(rollbackState.pathSnapshots.map((snapshot) => restorePathRollbackState(snapshot)));
 
   if (platform === 'codex') {
-    const paths = resolveCodexPaths(cwd, scope, env);
-    if (rollbackState.codexManagedInstructionValue !== undefined) {
-      await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
-        pluginName: target.pluginName,
-        value: rollbackState.codexManagedInstructionValue,
-      });
-    } else {
-      await removeManagedDeveloperInstructionsFile(paths.configTomlPath, target.pluginName);
-    }
-
-    if (rollbackState.codexHooksFile) {
-      await restoreTextFile(rollbackState.codexHooksFile);
-    }
-
     return;
   }
 
@@ -404,11 +563,12 @@ export async function uninstallTargetsOnPlatforms(
   platforms: PlatformName[],
   options: CommandOptions,
   runtime: UninstallCommandRuntime = {},
-): Promise<{ warnings: string[] }> {
+): Promise<{ warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const warnings: string[] = [];
+  let repoManagedArtifacts: GeneratedArtifact[] = [];
 
   for (const platform of platforms) {
     for (const target of targets) {
@@ -418,7 +578,8 @@ export async function uninstallTargetsOnPlatforms(
         continue;
       }
 
-      if (pluginStatus.externalOwnership?.present) {
+      const codexProjectScope = platform === 'codex' && options.scope === 'project';
+      if (pluginStatus.externalOwnership?.present && !codexProjectScope) {
         throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
       }
 
@@ -426,6 +587,22 @@ export async function uninstallTargetsOnPlatforms(
       const historicalEvidence = hasHistoricalEvidence(pluginStatus);
       if (target.source === 'historical' && !historicalEvidence) {
         throw new Error(`Unknown plugin "${target.pluginName}".`);
+      }
+
+      const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
+        cwd: options.cwd,
+        env,
+        platform,
+        scope: options.scope,
+        pluginName: target.pluginName,
+      });
+      if (trackingIdentityRefusal) {
+        throw new Error(trackingIdentityRefusal);
+      }
+
+      const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
+      if (identityRefusal) {
+        throw new Error(identityRefusal);
       }
 
       const refusal = shouldRefuseHistoricalUninstall(platform, pluginStatus);
@@ -439,16 +616,30 @@ export async function uninstallTargetsOnPlatforms(
         continue;
       }
 
+      if (codexProjectScope) {
+        if (pluginStatus.externalOwnership?.checkState === 'unknown') {
+          warnings.push(
+            `[${platform}/${target.pluginName}] 无法可靠读取用户级 Codex 配置；external ownership / project trust 只能按 unknown 处理，本次只会清理 AW 管理的 repo artifacts。`,
+          );
+        } else if (pluginStatus.externalOwnership?.present) {
+          warnings.push(
+            `[${platform}/${target.pluginName}] ${pluginStatus.externalOwnership.details ?? '检测到外部同名插件。'}本次只会清理 AW 管理的 repo artifacts。`,
+          );
+        }
+      }
+
       const baselineLedger = await readInstalledLedger(env);
       const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
       const baselineTracking = await readTrackingManifest(trackingDir);
+      const trackedArtifacts = getTrackingRecord(baselineTracking, target.pluginName)?.artifacts ?? [];
+      repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
       const rollbackState = managedEvidence
         ? await captureArtifactRollbackState(platform, target, options.scope, options.cwd, env)
         : undefined;
 
       let nativeWritten = false;
       let artifactsWritten = false;
-      let trackingWritten = false;
+      let trackingWriteAttempted = false;
       let materializationCommitted = false;
       let materializationRollbackFailed = false;
       let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
@@ -480,17 +671,17 @@ export async function uninstallTargetsOnPlatforms(
           artifactsWritten = true;
           await adapters[platform].uninstallExtensions(target.plugin, options.scope);
 
+          trackingWriteAttempted = true;
           await writeTrackingManifest(
             trackingDir,
             removeTrackingRecordFromManifest(baselineTracking, target.pluginName),
           );
-          trackingWritten = true;
 
           const nextLedger = preserveLedgerState(
             baselineLedger,
             await applyUninstallLedger(platform, baselineLedger, target, options),
           );
-          if (shouldRematerializeSkillTriggersAfterUninstall(target)) {
+          if (shouldRematerializeSkillTriggersAfterUninstall(platform, options.scope, target)) {
             const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
               pluginName: target.pluginName,
               platform,
@@ -503,23 +694,37 @@ export async function uninstallTargetsOnPlatforms(
             materializationRollbackHandle = rematerialization.materialization?.rollbackHandle;
           }
           await writeInstalledLedger(nextLedger, env);
-          await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
+          if (!runtime.skipLifecycleSnapshotGc) {
+            await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
+          }
         }
       } catch (error) {
+        const rollbackIssues: string[] = [];
+        const rollbackSurfaces = new Set<string>();
+        const trackingManifestPath = getTrackingManifestPath(trackingDir);
+        const installedLedgerPath = getInstalledLedgerPath(env);
+        const artifactSurfaceHints = collectArtifactRollbackSurfaceHints(
+          platform,
+          options.cwd,
+          options.scope,
+          env,
+          trackedArtifacts,
+          rollbackState,
+        );
+
         if (materializationCommitted && materializationRollbackHandle) {
           try {
             await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
             materializationCommitted = false;
-          } catch {
+          } catch (rollbackError) {
             materializationRollbackFailed = true;
-          }
-        }
-
-        if (trackingWritten) {
-          try {
-            await writeTrackingManifest(trackingDir, baselineTracking);
-          } catch {
-            // noop
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              'skill trigger 回滚失败',
+              rollbackError,
+              artifactSurfaceHints,
+            );
           }
         }
 
@@ -535,12 +740,32 @@ export async function uninstallTargetsOnPlatforms(
                 rollbackState,
               );
             }
-          } catch {
-            // noop
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              'repo artifacts 回滚失败',
+              rollbackError,
+              artifactSurfaceHints,
+            );
           }
         }
 
-        if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWritten) {
+        if (trackingWriteAttempted) {
+          try {
+            await writeTrackingManifest(trackingDir, baselineTracking);
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `tracking manifest 恢复失败 (${trackingManifestPath})`,
+              rollbackError,
+              [trackingManifestPath],
+            );
+          }
+        }
+
+        if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWriteAttempted) {
           try {
             await writeDegradedLedger(
               baselineLedger,
@@ -549,15 +774,20 @@ export async function uninstallTargetsOnPlatforms(
                 : 'operation_interrupted_after_artifact_write',
               env,
             );
-          } catch (ledgerError) {
-            const detail = ledgerError instanceof Error ? ledgerError.message : String(ledgerError);
-            throw new Error(
-              `${error instanceof Error ? error.message : String(error)}；此外，无法把 installed.json 标记为 degraded：${detail}`,
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `installed.json degraded 写入失败 (${installedLedgerPath})`,
+              rollbackError,
+              [installedLedgerPath],
             );
           }
         }
 
-        throw error;
+        throw createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
+      } finally {
+        await disposeArtifactRollbackState(rollbackState);
       }
 
       if (materializationRollbackHandle) {
@@ -588,14 +818,14 @@ export async function uninstallTargetsOnPlatforms(
     }
   }
 
-  return { warnings };
+  return { warnings, repoManagedArtifacts };
 }
 
 export async function uninstallCommand(
   pluginNames: string[],
   rawOptions: RawCommandOptions,
   runtime: UninstallCommandRuntime = {},
-): Promise<{ platforms: string[]; plugins: string[]; warnings: string[] }> {
+): Promise<{ platforms: string[]; plugins: string[]; warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const options = normalizeCommandOptions(rawOptions, {
     defaultScope: 'user',
     defaultPlatform: 'auto',
@@ -652,6 +882,7 @@ export async function uninstallCommand(
   return {
     platforms,
     plugins: targets.map((target) => target.pluginName),
+    repoManagedArtifacts: result.repoManagedArtifacts,
     warnings: [
       ...collectCommandWarnings(platforms, options.scope),
       ...result.warnings,

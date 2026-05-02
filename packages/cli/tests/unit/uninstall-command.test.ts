@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CodexAdapter } from '../../src/adapters/codex.js';
 import * as commonModule from '../../src/commands/common.js';
 import { uninstallCommand, uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
 import {
   readCodexConfigFile,
   removeManagedDeveloperInstructionsFile,
+  upsertCodexMcpServer,
   upsertManagedDeveloperInstructionsFile,
 } from '../../src/utils/codex-config.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
@@ -20,6 +22,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import * as skillTriggerPreferencesModule from '../../src/utils/skill-trigger-preferences.js';
+import * as trackingModule from '../../src/utils/tracking.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type {
   GeneratedArtifact,
@@ -59,6 +62,16 @@ async function makeWorkspace(): Promise<{ repoRoot: string; env: NodeJS.ProcessE
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     },
   };
+}
+
+async function copyRepoManagedFixturePlugin(
+  repoRoot: string,
+  pluginDir: 'instructions-mcp' | 'skills-mcp',
+): Promise<void> {
+  await fs.copy(
+    fixturePath('codex-project-repo-managed', 'plugins', pluginDir),
+    path.join(repoRoot, 'plugins', pluginDir),
+  );
 }
 
 function makePluginStatus(
@@ -267,6 +280,54 @@ describe('uninstall command coverage', () => {
     ).rejects.toThrow('uninstall 命令至少需要一个插件名。');
   });
 
+  it('refuses historical uninstall when tracked skill or MCP identity is missing artifactKey', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: undefined,
+      embeddedPlugin: undefined,
+      source: 'historical',
+    };
+    const codex = new FakeAdapter('codex', [
+      makeStatusReport('codex', 'project', [
+        makePluginStatus(plugin.manifest.name, {
+          generatedArtifacts: [
+            {
+              path: path.join(repoRoot, '.agents', 'skills', 'commit'),
+              exists: true,
+              kind: 'skill',
+            },
+          ],
+          scopeInitialized: 'unknown',
+        }),
+      ]),
+    ]);
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('缺少 artifactKey');
+
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(codex.uninstallExtensionsCalls).toEqual([]);
+  });
+
   it('uses default adapters when runtime is omitted and skips missing plugin reports', async () => {
     const { repoRoot } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
@@ -299,6 +360,7 @@ describe('uninstall command coverage', () => {
       ),
     ).resolves.toEqual({
       warnings: [],
+      repoManagedArtifacts: [],
     });
   });
 
@@ -321,16 +383,19 @@ describe('uninstall command coverage', () => {
     await expect(
       uninstallTargetsOnPlatforms(
         [currentTarget],
-        ['codex'],
+        ['claude'],
         {
           cwd: repoRoot,
           scope: 'project',
-          platform: 'codex',
+          platform: 'claude',
         },
         {
           adapters: {
             codex: new FakeAdapter('codex', [
-              makeStatusReport('codex', 'project', [
+              makeStatusReport('codex', 'project', []),
+            ]),
+            claude: new FakeAdapter('claude', [
+              makeStatusReport('claude', 'project', [
                 makePluginStatus(plugin.manifest.name, {
                   externalOwnership: {
                     present: true,
@@ -340,7 +405,6 @@ describe('uninstall command coverage', () => {
                 }),
               ]),
             ]),
-            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
           },
           env,
         },
@@ -458,6 +522,7 @@ describe('uninstall command coverage', () => {
       ),
     ).resolves.toEqual({
       warnings: [`[codex/${plugin.manifest.name}] 当前 scope 未受管，无需卸载。`],
+      repoManagedArtifacts: [],
     });
 
     await localMarketplaceModule.writeInstalledLedger(
@@ -516,6 +581,13 @@ describe('uninstall command coverage', () => {
       ),
     ).resolves.toEqual({
       warnings: [],
+      repoManagedArtifacts: [
+        {
+          path: path.join(trackingDir, 'git-commit.rule'),
+          kind: 'instruction',
+          platform: 'codex',
+        },
+      ],
     });
     expect(reporter.event).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -612,6 +684,157 @@ describe('uninstall command coverage', () => {
               path: configTomlPath,
             },
           ],
+        },
+      },
+    });
+    await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'degraded',
+        reason: 'operation_interrupted_after_artifact_write',
+      },
+    });
+  });
+
+  it('restores repo skills and the full Codex config baseline when project uninstall tracking fails', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'skills-mcp');
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'skills-mcp'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      embeddedPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    const paths = resolveCodexPaths(repoRoot, 'project', env);
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    const installedSkillPath = path.join(repoRoot, '.agents', 'skills', 'repo-check');
+
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          [plugin.manifest.name]: {
+            lastResolvedVersion: plugin.manifest.version,
+            platforms: {
+              codex: {
+                projectScopes: {
+                  [projectKey]: {
+                    managed: true,
+                    updatedAt: '2026-04-30T00:00:00.000Z',
+                    resolvedVersion: plugin.manifest.version,
+                    projectKey,
+                    capabilitySnapshot: {
+                      requiresNativePlugin: false,
+                      hasRepoManagedArtifacts: true,
+                      projectManagedKinds: ['skill', 'mcpServer', 'instruction'],
+                    },
+                  },
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    let baselineConfig = upsertCodexMcpServer('# baseline\n\n', 'external', {
+      command: 'keep',
+    });
+    baselineConfig = upsertCodexMcpServer(baselineConfig, 'skills-mcp-server', {
+      command: 'node',
+      args: ['./servers/skills-mcp.js'],
+      env: {
+        FIXTURE_KIND: 'skills-mcp',
+      },
+    });
+    await fs.outputFile(paths.configTomlPath, baselineConfig, 'utf8');
+    await upsertManagedDeveloperInstructionsFile(paths.configTomlPath, {
+      pluginName: plugin.manifest.name,
+      value: '## skills-mcp\n\nmanaged instruction',
+    });
+    baselineConfig = await fs.readFile(paths.configTomlPath, 'utf8');
+
+    await fs.copy(
+      path.join(repoRoot, 'plugins', 'skills-mcp', 'skills', 'repo-check'),
+      installedSkillPath,
+    );
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [
+      {
+        path: installedSkillPath,
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'repo-check',
+      },
+      {
+        path: paths.configTomlPath,
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'skills-mcp-server',
+      },
+      {
+        path: paths.configTomlPath,
+        kind: 'instruction',
+        platform: 'codex',
+      },
+    ]);
+
+    const writeTrackingManifestImpl = trackingModule.writeTrackingManifest;
+    vi.spyOn(trackingModule, 'writeTrackingManifest')
+      .mockImplementationOnce(async () => {
+        throw new Error('tracking boom');
+      })
+      .mockImplementation((trackingDir, manifest) => writeTrackingManifestImpl(trackingDir, manifest));
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: new CodexAdapter(repoRoot, env),
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('tracking boom');
+
+    await expect(fs.pathExists(installedSkillPath)).resolves.toBe(true);
+    await expect(fs.readFile(paths.configTomlPath, 'utf8')).resolves.toBe(baselineConfig);
+    await expect(readTrackingManifest(paths.trackingDir)).resolves.toMatchObject({
+      plugins: {
+        'skills-mcp': {
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'skill',
+              artifactKey: 'repo-check',
+              path: installedSkillPath,
+            }),
+            expect.objectContaining({
+              kind: 'mcpServer',
+              artifactKey: 'skills-mcp-server',
+              path: paths.configTomlPath,
+            }),
+            expect.objectContaining({
+              kind: 'instruction',
+              path: paths.configTomlPath,
+            }),
+          ]),
         },
       },
     });
@@ -899,5 +1122,87 @@ describe('uninstall command coverage', () => {
         reason: 'operation_interrupted_after_native_write',
       },
     });
+  });
+
+  it('does not rematerialize the shared Codex runtime for project-scope uninstall', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      embeddedPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          [plugin.manifest.name]: {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                projectScopes: {
+                  [projectKey]: {
+                    managed: true,
+                    updatedAt: '2026-04-28T00:00:00.000Z',
+                    resolvedVersion: '0.1.0',
+                    projectKey,
+                    capabilitySnapshot: {
+                      requiresNativePlugin: false,
+                      hasRepoManagedArtifacts: true,
+                      projectManagedKinds: ['skill'],
+                    },
+                    installOptions: {
+                      skillTriggerPreference: 'manual',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+    const rematerializeSpy = vi.spyOn(
+      skillTriggerPreferencesModule,
+      'rematerializeSkillTriggerPreferenceAfterUninstall',
+    );
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', [
+              makeStatusReport('codex', 'project', [
+                makePluginStatus(plugin.manifest.name, {
+                  scopeInitialized: 'yes',
+                  scopeManagedEvidence: {
+                    ledger: true,
+                    tracking: false,
+                    sharedNativeRef: false,
+                  },
+                }),
+              ]),
+            ]),
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'project', [])]),
+          },
+          env,
+        },
+      ),
+    ).resolves.toMatchObject({
+      warnings: [],
+    });
+
+    expect(rematerializeSpy).not.toHaveBeenCalled();
   });
 });

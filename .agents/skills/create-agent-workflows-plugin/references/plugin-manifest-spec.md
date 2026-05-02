@@ -10,6 +10,7 @@
 | `version` | string | 是 | semver，例如 `0.1.0` |
 | `description` | string | 是 | 非空字符串 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
+| `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
 | `skillTriggers` | object | 否 | 按 skill 声明是否允许安装时覆盖触发策略 |
 | `mcpServers` | string | 否 | 单个路径，`./` 开头，指向 `.mcp.json` |
 | `apps` | string | 否 | 单个路径，`./` 开头，指向 `.app.json` |
@@ -25,6 +26,8 @@
 ## scripts / config block
 
 `scripts` 和 `config` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
+
+本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
 
 最小配置 helper 示例：
 
@@ -115,10 +118,70 @@
 
 ## 路径约定
 
-- `skills`、`mcpServers`、`apps` 只能写成单个字符串路径，不能写数组或对象。
+- `skills`、`slashCommands`、`mcpServers`、`apps` 只能写成单个字符串路径，不能写数组或对象。
 - 路径必须以 `./` 开头，不能是绝对路径，不能逃出插件根目录。
-- 插件目录里出现标准入口文件时必须声明对应字段：有 `skills/` → 声明 `skills`，有 `.mcp.json` → 声明 `mcpServers`，有 `.app.json` → 声明 `apps`。
+- 插件目录里出现标准入口文件时必须声明对应字段：有 `skills/` → 声明 `skills`，有 `slash-commands/` → 声明 `slashCommands`，有 `.mcp.json` → 声明 `mcpServers`，有 `.app.json` → 声明 `apps`。
+- `slashCommands` 目录只能包含根目录直属 `*.md` 命令文件和保留 `assets/` 资源目录；`assets/` 下的 Markdown 不生成命令，其它子目录直接失败。
 - 声明的路径必须实际存在，构建和验证时都会检查。
+
+## slashCommands block
+
+公共 `slashCommands` 是唯一的跨平台手动命令作者入口。
+
+本节只记录 manifest 侧字段约束；命令文件格式、分平台 frontmatter、模板渲染和生成产物细节见 `references/slash-commands.md`。
+
+目录示例：
+
+```text
+slash-commands/
+├── review.md
+└── assets/
+    ├── review-16.svg
+    └── review-64.svg
+```
+
+每个根目录直属 `*.md` 是一个命令，文件名就是命令名，必须使用小写短横线格式，最长 64 字符。首版不支持 `debug/start.md` 这类命名空间；`assets/` 是唯一允许的子目录，里面的 Markdown 不会生成命令。
+
+命令文件必须包含 YAML frontmatter，顶层只允许 `description`、`claude`、`codex`：
+
+```markdown
+---
+description: 执行代码审查
+claude:
+  description: 使用 Claude Code 工具执行代码审查。
+  allowed-tools:
+    - Bash
+    - Read
+  argument-hint: "[file-path]"
+codex:
+  description: 在 Codex 中手动执行代码审查工作流。
+  interface:
+    display_name: "Review Command"
+    short_description: "手动代码审查命令"
+    icon_small: ./assets/review-16.svg
+    icon_large: ./assets/review-64.svg
+    brand_color: "#2563EB"
+    default_prompt: "Use $review to review current changes."
+---
+
+{{#if supportsCommands}}
+如果用户传入 $ARGUMENTS，只审查指定路径。
+{{/if}}
+{{#unless supportsCommands}}
+先询问用户审查范围，再继续。
+{{/unless}}
+```
+
+字段规则：
+
+- 顶层 `description` 必填。
+- Claude block 可写 `description`、`allowed-tools`、`model`、`argument-hint`、`shell`；Claude-only 字段不能放在顶层。`shell` 只接受 `bash` 或 `powershell`。
+- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
+- `codex.interface.icon_small` / `icon_large` 只能写 `./assets/...`；源文件必须位于 `slashCommands` 根目录下的 `assets/`，不能是绝对路径、`../`、反斜杠、其它目录或非普通文件。build 只复制被引用资源到对应 generated skill 的 `assets/`。
+- Codex generated skill 固定 manual-only：`policy.allow_implicit_invocation: false`。`codex.policy` 不可配置，写了会失败。
+- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法；需要差异内容时，用 `buildConfig.templates` 按平台渲染。
+
+构建后 Claude runtime 得到 generated `claude/commands/<name>.md`；Codex runtime 得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，仍按 `kind: "skill"` + `artifactKey: "<name>"` tracking。
 
 ## skillTriggers block
 
@@ -270,7 +333,7 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
   "description": "自动化代码审查插件。",
   "skills": "./skills",
   "skillTriggers": {
-    "review": {
+    "review-workflow": {
       "allowInstallOverride": true
     }
   },
@@ -289,6 +352,7 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "shortDescription": "自动化代码审查与质量报告",
     "capabilities": ["Skills", "MCP Servers"]
   },
+  "slashCommands": "./slash-commands",
   "extensions": {
     "instructions": [],
     "permissions": [],
@@ -300,11 +364,8 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
     "agents": []
   },
   "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["commands/**"], "exclude": [] }
-    },
     "manifestOverrides": {
-      "claude": { "commands": "./commands" }
+      "claude": { "outputStyles": "./output-styles" }
     }
   }
 }

@@ -10,16 +10,61 @@ import type {
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
+import { generatedArtifactKindRequiresArtifactKey } from './generated-artifacts.js';
 import {
   readJsonFileIfExists,
   writeJsonFile,
 } from './json.js';
+
+export interface TrackingArtifactIntegrityError {
+  code: 'missingArtifactKey';
+  kind: Extract<GeneratedArtifact['kind'], 'skill' | 'mcpServer'>;
+  platform: GeneratedArtifact['platform'];
+  path: string;
+  message: string;
+}
 
 function createEmptyTrackingManifest(): TrackingManifest {
   return {
     version: 1,
     plugins: {},
   };
+}
+
+function assertAbsoluteArtifactPath(artifact: GeneratedArtifact): void {
+  if (!path.isAbsolute(artifact.path)) {
+    throw new Error(`Tracking artifact path must be absolute: ${artifact.path}`);
+  }
+}
+
+function assertTrackingManifestArtifactPaths(manifest: TrackingManifest): void {
+  for (const record of Object.values(manifest.plugins)) {
+    for (const artifact of record.artifacts) {
+      assertAbsoluteArtifactPath(artifact);
+    }
+  }
+}
+
+export function getTrackingArtifactIntegrityErrors(
+  artifacts: GeneratedArtifact[],
+): TrackingArtifactIntegrityError[] {
+  const errors: TrackingArtifactIntegrityError[] = [];
+
+  for (const artifact of artifacts) {
+    if (!generatedArtifactKindRequiresArtifactKey(artifact.kind) || artifact.artifactKey) {
+      continue;
+    }
+
+    errors.push({
+      code: 'missingArtifactKey',
+      kind: artifact.kind,
+      platform: artifact.platform,
+      path: artifact.path,
+      message: `Tracking artifact kind "${artifact.kind}" requires artifactKey: ${artifact.path}`,
+    });
+  }
+
+  return errors;
 }
 
 export function getTrackingManifestPath(targetDir: string): string {
@@ -67,6 +112,7 @@ export async function writeTrackingManifest(
   targetDir: string,
   manifest: TrackingManifest,
 ): Promise<void> {
+  assertTrackingManifestArtifactPaths(manifest);
   const manifestPath = getTrackingManifestPath(targetDir);
   await fs.ensureDir(path.dirname(manifestPath));
   const tempPath = path.join(
@@ -82,6 +128,10 @@ export function upsertTrackingRecordInManifest(
   pluginName: string,
   artifacts: GeneratedArtifact[],
 ): TrackingManifest {
+  for (const artifact of artifacts) {
+    assertAbsoluteArtifactPath(artifact);
+  }
+
   return {
     ...manifest,
     plugins: {

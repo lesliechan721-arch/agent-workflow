@@ -1,0 +1,21 @@
+{
+  "name": "mcp-only",
+  "version": "0.1.0",
+  "description": "Fixture plugin with only MCP servers for Codex project repo-managed tests.",
+  "mcpServers": "./.mcp.json",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex-project", "mcp"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "MCP Only Fixture",
+    "shortDescription": "Only MCP servers",
+    "capabilities": ["MCP"]
+  }
+}

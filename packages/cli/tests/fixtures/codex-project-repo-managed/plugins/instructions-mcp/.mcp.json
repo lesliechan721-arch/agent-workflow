@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "instructions-mcp-server": {
+      "command": "node",
+      "args": ["./servers/instructions-mcp.js"],
+      "env": {
+        "FIXTURE_KIND": "instructions-mcp"
+      }
+    }
+  }
+}

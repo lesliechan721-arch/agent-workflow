@@ -1,0 +1,6 @@
+interface:
+  display_name: "Repo Check MCP"
+  short_description: "Inspect repository state with MCP"
+  default_prompt: "Use $repo-check to inspect the repository and MCP state."
+policy:
+  allow_implicit_invocation: true

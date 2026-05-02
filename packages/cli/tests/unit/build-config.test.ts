@@ -8,6 +8,7 @@ describe('buildConfig validation', () => {
       name: 'demo',
       version: '0.1.0',
       description: 'demo',
+      slashCommands: './slash-commands',
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -28,17 +29,16 @@ describe('buildConfig validation', () => {
         },
         fileRules: {
           claude: {
-            include: ['skills/**', 'commands/**'],
+            include: ['skills/**', 'output-styles/**'],
             exclude: [],
           },
           codex: {
             include: ['skills/**'],
-            exclude: ['commands/**'],
+            exclude: ['output-styles/**'],
           },
         },
         manifestOverrides: {
           claude: {
-            commands: './commands',
             outputStyles: './output-styles',
             lspServers: ['./config/lsp.json', { name: 'inline' }],
           },
@@ -47,11 +47,12 @@ describe('buildConfig validation', () => {
       },
     });
 
-    expect(manifest.buildConfig?.manifestOverrides?.claude?.commands).toBe('./commands');
-    expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['commands/**']);
+    expect(manifest.slashCommands).toBe('./slash-commands');
+    expect(manifest.buildConfig?.manifestOverrides?.claude?.outputStyles).toBe('./output-styles');
+    expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['output-styles/**']);
   });
 
-  it('rejects non-whitelisted Claude manifest overrides', () => {
+  it('rejects deprecated Claude commands authoring entries', () => {
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
         name: 'demo',
@@ -68,11 +69,37 @@ describe('buildConfig validation', () => {
         buildConfig: {
           manifestOverrides: {
             claude: {
-              hooks: './hooks/hooks.json',
+              commands: './commands',
             },
           },
         },
       }),
-    ).toThrow('unknown field "hooks"');
+    ).toThrow('use "slashCommands" instead');
+  });
+
+  it('rejects legacy Claude commands file rules', () => {
+    expect(() =>
+      validatePluginManifest('/tmp/plugin', {
+        name: 'demo',
+        version: '0.1.0',
+        description: 'demo',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+          },
+        },
+        buildConfig: {
+          fileRules: {
+            claude: {
+              include: ['commands/**'],
+              exclude: [],
+            },
+          },
+        },
+      }),
+    ).toThrow('legacy "commands/**"');
   });
 });

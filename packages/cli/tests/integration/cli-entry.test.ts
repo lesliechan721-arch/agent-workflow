@@ -24,6 +24,10 @@ import {
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import {
+  createCapturedCliIo as createCapturedIo,
+  runCliEntry,
+} from '../helpers/cli-entry.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -35,24 +39,6 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
-}
-
-function createCapturedIo() {
-  let stdout = '';
-  let stderr = '';
-
-  return {
-    io: {
-      stdout: (text: string) => {
-        stdout += text;
-      },
-      stderr: (text: string) => {
-        stderr += text;
-      },
-    },
-    readStdout: () => stdout,
-    readStderr: () => stderr,
-  };
 }
 
 async function makeWorkspace(): Promise<{
@@ -197,6 +183,34 @@ async function addConfigSchemaWithFileToGitCommit(repoRoot: string): Promise<voi
     required: true,
   };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  delete manifest.apps;
+  await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', '.app.json'));
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function addCodexProjectFixturePlugins(
+  repoRoot: string,
+  pluginDirs: string[],
+): Promise<void> {
+  for (const pluginDir of pluginDirs) {
+    await fs.copy(
+      fixturePath('codex-project-repo-managed', 'plugins', pluginDir),
+      path.join(repoRoot, 'plugins', pluginDir),
+    );
+  }
+}
+
+async function trustCodexProject(workspace: Awaited<ReturnType<typeof makeWorkspace>>): Promise<void> {
+  const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
+  await fs.outputFile(
+    resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath,
+    ['', `[projects.${JSON.stringify(projectKey)}]`, 'trust_level = "trusted"', ''].join('\n'),
+  );
 }
 
 function createCodexMarketplaceAddRunner(
@@ -1189,6 +1203,70 @@ describe('cli entry integration', () => {
     expect(capture.readStderr()).toContain('无效候选选择：git-commit');
   });
 
+  it('keeps Codex project interactive install candidates visible without a Codex executable', async () => {
+    const workspace = await makeWorkspaceWithMutator(async (repoRoot) => {
+      await addCodexProjectFixturePlugins(repoRoot, [
+        'skills-only',
+        'slashCommands-only',
+      ]);
+    });
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    workspace.env.PATH = '';
+
+    const seenPlatforms: string[][] = [];
+    const seenCandidates: Array<{ pluginName: string; platform?: string; selectable: boolean }> = [];
+    const prompt = {
+      selectScope: async () => 'project',
+      selectPlatform: async ({ available }: { available: string[] }) => {
+        seenPlatforms.push([...available]);
+        return 'codex';
+      },
+      selectPlugins: async ({ candidates }: {
+        candidates: Array<{ id: string; pluginName: string; platform?: string; selectable: boolean }>;
+      }) => {
+        seenCandidates.push(...candidates);
+        const candidate = candidates.find((entry) =>
+          entry.pluginName === 'slash-commands-only' &&
+          entry.platform === 'codex' &&
+          entry.selectable
+        );
+        expect(candidate).toBeTruthy();
+        return [candidate!.id];
+      },
+    };
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['install'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(seenPlatforms).toEqual([['codex', 'claude', 'both']]);
+    expect(seenCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pluginName: 'skills-only',
+          platform: 'codex',
+          selectable: true,
+        }),
+        expect.objectContaining({
+          pluginName: 'slash-commands-only',
+          platform: 'codex',
+          selectable: true,
+        }),
+      ]),
+    );
+    expect(capture.readStdout()).toContain('已安装 slash-commands-only：Codex / project scope。');
+  });
+
   it('prompts for platform when explicit install auto is ambiguous on both platforms', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
@@ -1342,6 +1420,7 @@ describe('cli entry integration', () => {
     expect(exitCode, capture.readStderr()).toBe(0);
     expect(nativeCalls).toEqual([]);
     expect(capture.readStdout()).toContain('已安装 prompt-guard：Codex / project scope。');
+    expect(capture.readStdout()).toContain('已写入 Codex project repo-managed artifacts：.codex/hooks.json、.codex/.agent-workflows-manifest.json。');
     expect(capture.readStdout()).not.toContain('已确认 Codex marketplace 注册');
     expect(capture.readStdout()).not.toContain('已确认插件启用');
 
@@ -1368,6 +1447,77 @@ describe('cli entry integration', () => {
     expect(logEntries.some((entry) => entry.event.type === 'artifacts:written')).toBe(true);
     expect(logEntries.some((entry) => entry.event.type === 'tracking:written')).toBe(true);
     expect(logEntries.some((entry) => entry.event.type === 'ledger:written')).toBe(true);
+  });
+
+  it('prints Codex project repo-managed install, upgrade, uninstall and status without native marketplace as the main diagnosis', async () => {
+    const workspace = await makeWorkspaceWithMutator((repoRoot) =>
+      addCodexProjectFixturePlugins(repoRoot, ['skills-mcp']),
+    );
+    await trustCodexProject(workspace);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const nativeCalls: NativeCliInvocation[] = [];
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['install', 'skills-mcp', '--scope', 'project', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+      },
+    ), capture.readStderr()).toBe(0);
+    expect(nativeCalls).toEqual([]);
+    expect(capture.readStdout()).toContain(
+      '已写入 Codex project repo-managed artifacts：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。',
+    );
+    expect(capture.readStdout()).not.toContain('已确认 Codex marketplace 注册');
+    expect(capture.readStdout()).not.toContain('已确认插件启用');
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['status', 'skills-mcp', '--scope', 'project', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    ), capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain('repo-managed：skills=visible，mcpServers=visible');
+    expect(capture.readStdout()).not.toContain('Codex marketplace aw 未注册');
+    expect(capture.readStdout()).not.toContain('重新注册 Codex marketplace');
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['upgrade', 'skills-mcp', '--scope', 'project', '--platform', 'codex', '--skill-trigger', 'default'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+      },
+    ), capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain(
+      '已刷新 Codex project repo-managed artifacts：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。',
+    );
+    expect(capture.readStdout()).not.toContain('已确认 Codex marketplace 注册');
+    expect(capture.readStdout()).not.toContain('已确认插件启用');
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['uninstall', 'skills-mcp', '--scope', 'project', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+      },
+    ), capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain(
+      '已清理 Codex project repo-managed artifacts：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。',
+    );
+    expect(capture.readStdout()).not.toContain('已确认 Codex marketplace 注册');
+    expect(capture.readStdout()).not.toContain('已确认插件启用');
   });
 
   it('does not prompt when --no-interactive is passed', async () => {
@@ -1444,7 +1594,7 @@ describe('cli entry integration', () => {
   });
 
   it('uninstalls a Codex project candidate discovered from a repo subdirectory', async () => {
-    const workspace = await makeWorkspace();
+    const workspace = await makeWorkspaceWithMutator(removeAppsFromGitCommit);
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await fs.ensureDir(path.join(workspace.repoRoot, '.git'));
     const subdir = path.join(workspace.repoRoot, 'packages', 'feature');
@@ -1514,6 +1664,137 @@ describe('cli entry integration', () => {
     expect(exitCode, capture.readStderr()).toBe(0);
     expect(selectedExecutionCwd).toBe(await fs.realpath(workspace.repoRoot));
     expect(capture.readStdout()).toContain('已卸载 git-commit：Codex / project scope。');
+  });
+
+  it('keeps interactive project uninstall on Codex evidence without a Codex executable', async () => {
+    const workspace = await makeWorkspaceWithMutator(removeAppsFromGitCommit);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const nativeCliRunner = createCodexMarketplaceAddRunner(workspace);
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      [
+        'install',
+        'git-commit',
+        '--scope',
+        'project',
+        '--platform',
+        'codex',
+        '--skill-trigger',
+        'default',
+      ],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        nativeCliRunner,
+      },
+    )).toBe(0);
+
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.PATH = '';
+
+    const seenPlatforms: string[][] = [];
+    const prompt = {
+      selectScope: async () => 'project',
+      selectPlatform: async ({ available }: { available: string[] }) => {
+        seenPlatforms.push([...available]);
+        return 'codex';
+      },
+      selectPlugins: async ({ candidates }: {
+        candidates: Array<{
+          id: string;
+          pluginName: string;
+          platform?: string;
+          scope?: string;
+          selectable: boolean;
+        }>;
+      }) => {
+        const candidate = candidates.find((entry) =>
+          entry.pluginName === 'git-commit' &&
+          entry.platform === 'codex' &&
+          entry.scope === 'project' &&
+          entry.selectable
+        );
+        expect(candidate).toBeTruthy();
+        return [candidate!.id];
+      },
+    };
+    capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['uninstall'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        prompt,
+        nativeCliRunner,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(seenPlatforms).toEqual([['codex']]);
+    expect(capture.readStdout()).toContain('已卸载 git-commit：Codex / project scope。');
+  });
+
+  it('rejects interactive auto uninstall before prompting when Claude and Codex project evidence both exist', async () => {
+    const workspace = await makeWorkspaceWithMutator(async (repoRoot) => {
+      await addCodexProjectFixturePlugins(repoRoot, ['slashCommands-only']);
+    });
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      [
+        'install',
+        'slash-commands-only',
+        '--scope',
+        'project',
+        '--platform',
+        'both',
+      ],
+      {
+        cwd: workspace.repoRoot,
+        env: {
+          ...workspace.env,
+          AW_FORCE_CLAUDE_AVAILABLE: '1',
+        } as NodeJS.ProcessEnv,
+        io: capture.io,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace),
+      },
+    )).toBe(0);
+
+    let promptCalled = false;
+    const prompt = {
+      selectScope: async () => 'project',
+      selectPlatform: async () => {
+        promptCalled = true;
+        return 'codex';
+      },
+      selectPlugins: async () => {
+        promptCalled = true;
+        return [];
+      },
+    };
+    capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['uninstall'],
+      {
+        cwd: workspace.repoRoot,
+        env: {
+          ...workspace.env,
+          AW_FORCE_CLAUDE_AVAILABLE: '1',
+        } as NodeJS.ProcessEnv,
+        io: capture.io,
+        prompt,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(promptCalled).toBe(false);
+    expect(capture.readStderr()).toContain('同时存在 Claude Code 和 Codex 的受管安装证据');
   });
 
   it('can choose interactive upgrade all after selecting scope and platform', async () => {
@@ -1626,47 +1907,33 @@ describe('cli entry integration', () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
 
-    for (const args of [
-      ['status', 'git-commit', '--scope', 'user', '--platform', 'codex', '-j'],
-      ['status', 'git-commit', '--scope', 'user', '--platform', 'codex', '-j', '--verbose'],
+    for (const flags of [
+      ['--json'],
+      ['--json', '--verbose'],
       [
-        'status',
-        'git-commit',
-        '--scope',
-        'user',
-        '--platform',
-        'codex',
-        '-j',
+        '--json',
         '--debug',
         '--log-file',
         path.join(workspace.awHome, 'status-debug.log'),
       ],
       [
-        'status',
-        'git-commit',
-        '--scope',
-        'user',
-        '--platform',
-        'codex',
-        '-j',
+        '--json',
         '--verbose',
         '--debug',
         '--log-file',
         path.join(workspace.awHome, 'status-verbose-debug.log'),
       ],
     ]) {
-      const capture = createCapturedIo();
-      const exitCode = await runCli(
-        args,
+      const result = await runCliEntry(
+        ['status', 'git-commit', '--scope', 'user', '--platform', 'codex', ...flags],
         {
           cwd: workspace.repoRoot,
           env: workspace.env,
-          io: capture.io,
         },
       );
 
-      expect(exitCode, capture.readStderr()).toBe(0);
-      const parsed = JSON.parse(capture.readStdout()) as { reports?: unknown[] };
+      expect(result.exitCode, result.stderr).toBe(0);
+      const parsed = result.parseJsonStdout<{ reports?: unknown[] }>();
       expect(parsed.reports).toBeInstanceOf(Array);
     }
   });

@@ -53,6 +53,10 @@ import {
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
   resolveLifecycleScriptForOs,
 } from './plugin-script-contract.js';
+import {
+  DEFAULT_SLASH_COMMANDS_PATH,
+  resolveSlashCommands,
+} from './slash-commands.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
@@ -402,17 +406,21 @@ function normalizeBuildConfig(
     buildConfig.fileRules = {};
 
     if (fileRulesInput.claude !== undefined) {
-      buildConfig.fileRules.claude = normalizeFileRuleSet(
+      const normalizedRuleSet = normalizeFileRuleSet(
         fileRulesInput.claude,
         `${fieldName}.fileRules.claude`,
       );
+      assertNoDeprecatedCommandFileRules(normalizedRuleSet, `${fieldName}.fileRules.claude`);
+      buildConfig.fileRules.claude = normalizedRuleSet;
     }
 
     if (fileRulesInput.codex !== undefined) {
-      buildConfig.fileRules.codex = normalizeFileRuleSet(
+      const normalizedRuleSet = normalizeFileRuleSet(
         fileRulesInput.codex,
         `${fieldName}.fileRules.codex`,
       );
+      assertNoDeprecatedCommandFileRules(normalizedRuleSet, `${fieldName}.fileRules.codex`);
+      buildConfig.fileRules.codex = normalizedRuleSet;
     }
   }
 
@@ -425,9 +433,18 @@ function normalizeBuildConfig(
     buildConfig.manifestOverrides = {};
 
     if (overridesInput.claude !== undefined) {
+      const claudeOverridesInput = assertObject(
+        overridesInput.claude,
+        `${fieldName}.manifestOverrides.claude`,
+      );
+      if (Object.hasOwn(claudeOverridesInput, 'commands')) {
+        throw new Error(
+          'Invalid buildConfig.manifestOverrides.claude.commands: source manifests must use "slashCommands" instead.',
+        );
+      }
       buildConfig.manifestOverrides.claude = normalizeClaudeManifestOverrides(
         pluginRoot,
-        overridesInput.claude,
+        claudeOverridesInput,
         `${fieldName}.manifestOverrides.claude`,
       );
     }
@@ -443,6 +460,20 @@ function normalizeBuildConfig(
   }
 
   return buildConfig;
+}
+
+function assertNoDeprecatedCommandFileRules(
+  fileRuleSet: BuildConfigFileRuleSet,
+  fieldName: string,
+): void {
+  for (const pattern of [...fileRuleSet.include, ...fileRuleSet.exclude]) {
+    const normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (normalizedPattern === 'commands' || normalizedPattern.startsWith('commands/')) {
+      throw new Error(
+        `Invalid ${fieldName}: legacy "commands/**" source rules are no longer supported; use "slashCommands" instead.`,
+      );
+    }
+  }
 }
 
 function ensureBoolean(value: unknown, fieldName: string): boolean {
@@ -1343,11 +1374,17 @@ export function validatePluginManifest(
   rawManifest: unknown,
 ): PluginManifestSource {
   const input = assertObject(rawManifest, 'plugin manifest');
+  if (Object.hasOwn(input, 'commands')) {
+    throw new Error(
+      'Invalid plugin manifest: top-level "commands" has been removed; use "slashCommands" instead.',
+    );
+  }
   assertAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
     'description',
     'skills',
+    'slashCommands',
     'skillTriggers',
     'mcpServers',
     'apps',
@@ -1371,6 +1408,14 @@ export function validatePluginManifest(
       pluginRoot,
       ensureString(input.skills, 'skills'),
       'skills',
+    );
+  }
+
+  if (input.slashCommands !== undefined) {
+    manifest.slashCommands = normalizePluginRelativePath(
+      pluginRoot,
+      ensureString(input.slashCommands, 'slashCommands'),
+      'slashCommands',
     );
   }
 
@@ -1427,6 +1472,7 @@ async function validateDeclaredNativeAssets(
 ): Promise<void> {
   const declaredAssets = [
     { field: 'skills', defaultPath: 'skills' },
+    { field: 'slashCommands', defaultPath: stripDotSlash(DEFAULT_SLASH_COMMANDS_PATH) },
     { field: 'mcpServers', defaultPath: '.mcp.json' },
     { field: 'apps', defaultPath: '.app.json' },
   ] as const;
@@ -1450,7 +1496,7 @@ async function validateDeclaredAssetPathsExist(
   pluginRoot: string,
   manifest: PluginManifestSource,
 ): Promise<void> {
-  const declaredAssets = ['skills', 'mcpServers', 'apps'] as const;
+  const declaredAssets = ['skills', 'slashCommands', 'mcpServers', 'apps'] as const;
 
   await Promise.all(
     declaredAssets.map(async (field) => {
@@ -1547,6 +1593,7 @@ export async function validateSourcePluginManifest(
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillTriggerPolicies(pluginRoot, manifest),
+    resolveSlashCommands(pluginRoot, manifest),
   ]);
   return manifest;
 }

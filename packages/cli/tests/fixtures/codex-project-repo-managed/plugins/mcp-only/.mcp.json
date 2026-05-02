@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "acme.tools v1": {
+      "command": "node",
+      "args": ["./servers/acme-tools.js", "--stdio"],
+      "env": {
+        "ACME_MODE": "fixture",
+        "ACME_DEBUG": "false"
+      },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30,
+      "tools": {
+        "deploy.check": {
+          "approval_mode": "manual"
+        }
+      }
+    },
+    "sibling-server": {
+      "type": "sse",
+      "url": "https://example.invalid/mcp",
+      "disabled": false,
+      "http_headers": {
+        "X-Fixture": "repo-managed"
+      }
+    }
+  }
+}

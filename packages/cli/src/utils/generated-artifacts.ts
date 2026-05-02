@@ -5,7 +5,19 @@ type GeneratedArtifactsCarrier = {
   generatedArtifacts?: unknown;
 };
 
-function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
+export function generatedArtifactKindRequiresArtifactKey(
+  kind: GeneratedArtifact['kind'],
+): kind is 'skill' | 'mcpServer' {
+  return kind === 'skill' || kind === 'mcpServer';
+}
+
+export function generatedArtifactHasCompleteIdentity(
+  artifact: Pick<GeneratedArtifact, 'kind' | 'artifactKey'>,
+): boolean {
+  return !generatedArtifactKindRequiresArtifactKey(artifact.kind) || Boolean(artifact.artifactKey);
+}
+
+export function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
   if (!value || typeof value !== 'object') {
     return false;
   }
@@ -16,9 +28,29 @@ function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
     (candidate.kind === 'instruction' ||
       candidate.kind === 'permission' ||
       candidate.kind === 'hook' ||
-      candidate.kind === 'agent') &&
-    (candidate.platform === 'claude' || candidate.platform === 'codex')
+      candidate.kind === 'agent' ||
+      candidate.kind === 'skill' ||
+      candidate.kind === 'mcpServer') &&
+    (candidate.platform === 'claude' || candidate.platform === 'codex') &&
+    (
+      candidate.artifactKey === undefined ||
+      typeof candidate.artifactKey === 'string'
+    )
   );
+}
+
+export function getGeneratedArtifactIdentityKey(
+  artifact: GeneratedArtifact,
+): string {
+  return JSON.stringify([
+    artifact.platform,
+    artifact.kind,
+    artifact.path,
+    artifact.artifactKey ?? null,
+    artifact.hookGroups
+      ?.map((group) => serializeTrackedHookGroupIdentity(group))
+      .sort() ?? null,
+  ]);
 }
 
 export function mergeGeneratedArtifacts(
@@ -29,14 +61,7 @@ export function mergeGeneratedArtifacts(
 
   for (const artifactList of artifactLists) {
     for (const artifact of artifactList ?? []) {
-      const key = JSON.stringify([
-        artifact.path,
-        artifact.kind,
-        artifact.platform,
-        artifact.hookGroups
-          ?.map((group) => serializeTrackedHookGroupIdentity(group))
-          .sort() ?? null,
-      ]);
+      const key = getGeneratedArtifactIdentityKey(artifact);
       if (seen.has(key)) {
         continue;
       }

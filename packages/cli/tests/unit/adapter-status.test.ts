@@ -12,7 +12,13 @@ import {
   resolveClaudePlatformRuntimeEvidence,
 } from '../../src/adapters/helpers.js';
 import {
+  applyCodexInstallLedger,
+  applyCodexUninstallLedger,
+  CodexAdapter,
+  getCodexProjectManagedKinds,
+  hasCodexProjectManagedArtifacts,
   hasRepoManagedArtifacts,
+  requiresCodexNativePlugin,
   requiresNativePlugin,
   resolveCodexCatalogCompatibility,
 } from '../../src/adapters/codex.js';
@@ -22,6 +28,8 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import {
+  resolveCodexPaths,
+  resolveCodexProjectKey,
   resolveClaudePaths,
   resolveClaudeProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
@@ -202,6 +210,111 @@ describe('adapter status helpers', () => {
 
     expect(target.source).toBe('historical');
     expect(target.plugin.manifest.extensions?.hooks).toBeUndefined();
+  });
+
+  it('recovers Codex repo skill and MCP placeholders from tracking-only historical evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-repo-tracking-history-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    await upsertTrackingRecord(codexPaths.trackingDir, 'repo-history', [
+      {
+        path: path.join(repoRoot, '.agents', 'skills', 'commit'),
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'commit',
+      },
+      {
+        path: path.join(repoRoot, '.codex', 'config.toml'),
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      },
+    ]);
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['repo-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.plugin.manifest.skills).toBe('./historical-skills');
+    expect(target.plugin.manifest.mcpServers).toBe('./historical-mcp.json');
+    expect(target.plugin.manifest.extensions).toBeUndefined();
+    expect(hasRepoManagedArtifacts(target.plugin)).toBe(true);
+  });
+
+  it('recovers Codex historical placeholders from snapshot managed kinds', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-managed-kinds-history-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const codexProjectKey = await resolveCodexProjectKey(repoRoot);
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          'managed-kind-history': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                projectScopes: {
+                  [codexProjectKey]: {
+                    managed: true,
+                    updatedAt: '2026-04-25T00:00:00.000Z',
+                    resolvedVersion: '0.1.0',
+                    capabilitySnapshot: {
+                      requiresNativePlugin: false,
+                      hasRepoManagedArtifacts: true,
+                      managedKinds: ['skill', 'mcpServer', 'instruction'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['managed-kind-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.plugin.manifest.skills).toBe('./historical-skills');
+    expect(target.plugin.manifest.mcpServers).toBe('./historical-mcp.json');
+    expect(target.plugin.manifest.extensions?.instructions).toHaveLength(1);
+    expect(target.plugin.manifest.extensions?.instructions?.[0]?.agentOverrides).toMatchObject({
+      claude: null,
+    });
   });
 
   it('recovers Claude hook-only historical plugins from ledger snapshots without tracking artifacts', async () => {
@@ -412,8 +525,14 @@ describe('adapter status helpers', () => {
       }),
     ).toBe('missing');
 
-    const nativeOnlyPlugin = makePluginMeta({
+    const skillsOnlyPlugin = makePluginMeta({
       skills: './skills',
+    });
+    const slashCommandsOnlyPlugin = makePluginMeta({
+      slashCommands: './slash-commands',
+    });
+    const mcpOnlyPlugin = makePluginMeta({
+      mcpServers: './.mcp.json',
     });
     const nativeHookOnlyPlugin = makePluginMeta({
       extensions: {
@@ -425,6 +544,54 @@ describe('adapter status helpers', () => {
             },
           ],
         },
+      },
+    });
+    const extensionsOnlyPlugin = makePluginMeta({
+      extensions: {
+        instructions: [
+          {
+            name: 'commit-policy',
+            title: '提交规范',
+            content: '保持提交规范。',
+          },
+        ],
+        permissions: [
+          {
+            name: 'shell-policy',
+            allow: ['Bash(git status)'],
+          },
+        ],
+        hooks: [
+          {
+            event: 'session_start',
+            command: 'echo ready',
+          },
+        ],
+        agents: [
+          {
+            name: 'commit-reviewer',
+            description: 'Review commits.',
+            prompt: 'Review commits.',
+          },
+        ],
+      },
+    });
+    const appsOnlyPlugin = makePluginMeta({
+      apps: './apps',
+    });
+    const appsMixedPlugin = makePluginMeta({
+      skills: './skills',
+      slashCommands: './slash-commands',
+      mcpServers: './.mcp.json',
+      apps: './apps',
+      extensions: {
+        instructions: [
+          {
+            name: 'commit-policy',
+            title: '提交规范',
+            content: '保持提交规范。',
+          },
+        ],
       },
     });
     const hybridPlugin = makePluginMeta({
@@ -440,8 +607,40 @@ describe('adapter status helpers', () => {
       },
     });
 
-    expect(requiresNativePlugin(nativeOnlyPlugin)).toBe(true);
-    expect(hasRepoManagedArtifacts(nativeOnlyPlugin)).toBe(false);
+    expect(requiresCodexNativePlugin(skillsOnlyPlugin, 'user')).toBe(true);
+    expect(requiresCodexNativePlugin(skillsOnlyPlugin, 'project')).toBe(false);
+    expect(requiresCodexNativePlugin(slashCommandsOnlyPlugin, 'user')).toBe(true);
+    expect(requiresCodexNativePlugin(slashCommandsOnlyPlugin, 'project')).toBe(false);
+    expect(requiresCodexNativePlugin(mcpOnlyPlugin, 'user')).toBe(true);
+    expect(requiresCodexNativePlugin(mcpOnlyPlugin, 'project')).toBe(false);
+    expect(requiresCodexNativePlugin(appsOnlyPlugin, 'user')).toBe(true);
+    expect(requiresCodexNativePlugin(appsOnlyPlugin, 'project')).toBe(false);
+    expect(requiresCodexNativePlugin(extensionsOnlyPlugin, 'user')).toBe(false);
+    expect(requiresCodexNativePlugin(extensionsOnlyPlugin, 'project')).toBe(false);
+
+    expect(requiresNativePlugin(skillsOnlyPlugin)).toBe(true);
+    expect(hasRepoManagedArtifacts(skillsOnlyPlugin)).toBe(true);
+    expect(hasCodexProjectManagedArtifacts(skillsOnlyPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(skillsOnlyPlugin)).toEqual(['skill']);
+    expect(hasCodexProjectManagedArtifacts(slashCommandsOnlyPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(slashCommandsOnlyPlugin)).toEqual(['skill']);
+    expect(hasCodexProjectManagedArtifacts(mcpOnlyPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(mcpOnlyPlugin)).toEqual(['mcpServer']);
+    expect(hasCodexProjectManagedArtifacts(extensionsOnlyPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(extensionsOnlyPlugin)).toEqual([
+      'instruction',
+      'permission',
+      'hook',
+      'agent',
+    ]);
+    expect(hasCodexProjectManagedArtifacts(appsOnlyPlugin)).toBe(false);
+    expect(getCodexProjectManagedKinds(appsOnlyPlugin)).toEqual([]);
+    expect(hasCodexProjectManagedArtifacts(appsMixedPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(appsMixedPlugin)).toEqual([
+      'skill',
+      'mcpServer',
+      'instruction',
+    ]);
     expect(requiresNativePlugin(nativeHookOnlyPlugin)).toBe(false);
     expect(hasRepoManagedArtifacts(nativeHookOnlyPlugin)).toBe(true);
     expect(requiresNativePlugin(hybridPlugin)).toBe(true);
@@ -455,9 +654,44 @@ describe('adapter status helpers', () => {
         currentCapabilities: {
           requiresNativePlugin: true,
           hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['skill', 'instruction'],
         },
         installedCapabilitySnapshot: {
           requiresNativePlugin: true,
+          hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['instruction', 'skill'],
+        },
+      }),
+    ).toBe('current');
+    expect(
+      resolveCodexCatalogCompatibility({
+        currentManifestPresent: true,
+        currentScopeManagedEvidence: true,
+        platformNativeFallbackEvidence: false,
+        currentCapabilities: {
+          requiresNativePlugin: false,
+          hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['instruction'],
+        },
+        installedCapabilitySnapshot: {
+          requiresNativePlugin: true,
+          hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['instruction'],
+        },
+      }),
+    ).toBe('capabilityChanged');
+    expect(
+      resolveCodexCatalogCompatibility({
+        currentManifestPresent: true,
+        currentScopeManagedEvidence: true,
+        platformNativeFallbackEvidence: false,
+        currentCapabilities: {
+          requiresNativePlugin: false,
+          hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['skill'],
+        },
+        installedCapabilitySnapshot: {
+          requiresNativePlugin: false,
           hasRepoManagedArtifacts: true,
         },
       }),
@@ -470,10 +704,27 @@ describe('adapter status helpers', () => {
         currentCapabilities: {
           requiresNativePlugin: false,
           hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['skill', 'agent'],
         },
         installedCapabilitySnapshot: {
-          requiresNativePlugin: true,
+          requiresNativePlugin: false,
+          managedKinds: ['agent', 'skill'],
+        },
+      }),
+    ).toBe('current');
+    expect(
+      resolveCodexCatalogCompatibility({
+        currentManifestPresent: true,
+        currentScopeManagedEvidence: true,
+        platformNativeFallbackEvidence: false,
+        currentCapabilities: {
+          requiresNativePlugin: false,
           hasRepoManagedArtifacts: true,
+          projectManagedKinds: ['skill'],
+        },
+        installedCapabilitySnapshot: {
+          requiresNativePlugin: false,
+          projectManagedKinds: ['mcpServer'],
         },
       }),
     ).toBe('capabilityChanged');
@@ -485,5 +736,207 @@ describe('adapter status helpers', () => {
         currentCapabilities: {},
       }),
     ).toBe('missing');
+  });
+
+  it('applies Codex project installability preflight without native fallback', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-installability-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    const adapter = new CodexAdapter(repoRoot, async () => {
+      throw new Error('native runner should not be called for project repo-managed targets');
+    });
+
+    await expect(
+      adapter.installPlugin(makePluginMeta({ skills: './skills' }), 'project'),
+    ).resolves.toBeUndefined();
+    await expect(
+      adapter.installPlugin(makePluginMeta({ slashCommands: './slash-commands' }), 'project'),
+    ).resolves.toBeUndefined();
+    await expect(
+      adapter.installPlugin(makePluginMeta({ mcpServers: './.mcp.json' }), 'project'),
+    ).resolves.toBeUndefined();
+    await expect(
+      adapter.installPlugin(
+        makePluginMeta({
+          extensions: {
+            instructions: [
+              {
+                name: 'commit-policy',
+                title: '提交规范',
+                content: '保持提交规范。',
+              },
+            ],
+          },
+        }),
+        'project',
+      ),
+    ).resolves.toBeUndefined();
+    await expect(adapter.installPlugin(makePluginMeta({ apps: './apps' }), 'project')).rejects.toThrow(
+      'Codex project scope 暂不支持 apps',
+    );
+    await expect(
+      adapter.installPlugin(makePluginMeta({ skills: './skills', apps: './apps' }), 'project'),
+    ).rejects.toThrow('Codex project scope 暂不支持 apps');
+    await expect(adapter.installPlugin(makePluginMeta({}), 'project')).rejects.toThrow(
+      '不包含任何 repo-managed artifacts',
+    );
+  });
+
+  it('writes scope-aware Codex capability snapshots and user native refs', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-capability-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+
+    const slashCommandsOnlyPlugin = makePluginMeta({
+      slashCommands: './slash-commands',
+    });
+    const userLedger = await applyCodexInstallLedger(
+      createAvailableLedger(),
+      slashCommandsOnlyPlugin,
+      'user',
+      repoRoot,
+    );
+    const projectLedger = await applyCodexInstallLedger(
+      userLedger,
+      slashCommandsOnlyPlugin,
+      'project',
+      repoRoot,
+    );
+    const projectKey = await fs.realpath(repoRoot);
+
+    expect(
+      projectLedger.plugins['git-commit'].platforms.codex?.userScope?.capabilitySnapshot,
+    ).toMatchObject({
+      requiresNativePlugin: true,
+      hasRepoManagedArtifacts: true,
+      projectManagedKinds: ['skill'],
+    });
+    expect(
+      projectLedger.plugins['git-commit'].platforms.codex?.projectScopes?.[projectKey]?.capabilitySnapshot,
+    ).toMatchObject({
+      requiresNativePlugin: false,
+      hasRepoManagedArtifacts: true,
+      projectManagedKinds: ['skill'],
+    });
+    expect(
+      projectLedger.plugins['git-commit'].platforms.codex?.projectScopes?.[projectKey]?.projectKey,
+    ).toBe(projectKey);
+    expect(projectLedger.plugins['git-commit'].platforms.codex?.sharedNativeRefs).toEqual({
+      user: true,
+      projects: [],
+    });
+
+    const projectOnlyLedger = await applyCodexInstallLedger(
+      createAvailableLedger(),
+      slashCommandsOnlyPlugin,
+      'project',
+      repoRoot,
+    );
+    expect(
+      projectOnlyLedger.plugins['git-commit'].platforms.codex?.projectScopes?.[projectKey]?.capabilitySnapshot,
+    ).toMatchObject({
+      requiresNativePlugin: false,
+      hasRepoManagedArtifacts: true,
+      projectManagedKinds: ['skill'],
+    });
+    expect(
+      projectOnlyLedger.plugins['git-commit'].platforms.codex?.projectScopes?.[projectKey]?.projectKey,
+    ).toBe(projectKey);
+    expect(projectOnlyLedger.plugins['git-commit'].platforms.codex).not.toHaveProperty('sharedNativeRefs');
+  });
+
+  it('removes Codex project ledger records without mutating shared native refs', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-ledger-remove-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    const projectKey = await fs.realpath(repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-25T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: false,
+                hasRepoManagedArtifacts: true,
+                projectManagedKinds: ['skill'],
+              },
+            },
+          },
+          sharedNativeRefs: {
+            user: true,
+            projects: [projectKey],
+          },
+        },
+      },
+    };
+
+    const updated = await applyCodexUninstallLedger(ledger, 'git-commit', 'project', repoRoot);
+
+    expect(updated.plugins['git-commit'].platforms.codex?.projectScopes).toBeUndefined();
+    expect(updated.plugins['git-commit'].platforms.codex?.sharedNativeRefs).toEqual({
+      user: true,
+      projects: [projectKey],
+    });
+  });
+
+  it('does not count Codex project shared native refs or user native state as project evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-project-evidence-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const projectKey = await fs.realpath(repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          sharedNativeRefs: {
+            user: false,
+            projects: [projectKey],
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, env);
+    const userPaths = resolveCodexPaths(repoRoot, 'user', env);
+    await fs.outputFile(
+      userPaths.configTomlPath,
+      '[plugins."git-commit@aw"]\nenabled = true\n',
+      'utf8',
+    );
+
+    const adapter = new CodexAdapter(repoRoot, env);
+    const report = await adapter.status(makePluginMeta({ skills: './skills' }), 'project');
+
+    expect(report.initialized).toBe(false);
+    expect(report.plugins[0]).toMatchObject({
+      scopeInitialized: 'no',
+      native: {
+        pluginInstalled: true,
+      },
+      scopeManagedEvidence: {
+        ledger: false,
+        tracking: false,
+        sharedNativeRef: false,
+      },
+    });
   });
 });

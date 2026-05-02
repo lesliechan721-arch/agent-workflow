@@ -1,6 +1,5 @@
 import fs from 'fs-extra';
 
-import { hasRepoManagedArtifacts } from '../adapters/codex.js';
 import type {
   CommandOptions,
   InstallCommandOptions,
@@ -26,7 +25,17 @@ import {
   pluginSupportsPlatform,
   type ResolvedPluginTarget,
 } from './common.js';
+import {
+  assertCodexProjectInstallableTargets,
+  getCodexProjectInstallability,
+  shouldOmitCodexProjectInstallCandidate,
+} from './codex-project-installability.js';
 import { parseSkillTriggerPreference } from './options.js';
+import {
+  listExecutablePlatformsForNativeAndCodexProject,
+  resolveEvidenceFirstAutoPlatform,
+  type PlatformEvidenceStateByPlatform,
+} from './platform-resolution.js';
 import type { CommandExecutionContext } from './runtime.js';
 
 export interface InteractiveDispatchGroup<TOptions extends CommandOptions | UpgradeCommandOptions> {
@@ -126,12 +135,85 @@ function formatPlatformList(platforms: PlatformName[]): string {
   return platforms.map((platform) => PLATFORM_DISPLAY[platform]).join(' / ');
 }
 
+const INTERACTIVE_PLATFORMS: PlatformName[] = ['codex', 'claude'];
+
 function platformChoices(platforms: PlatformName[]): string[] {
   const choices: string[] = [...platforms];
   if (platforms.includes('codex') && platforms.includes('claude')) {
     choices.push('both');
   }
   return choices;
+}
+
+function hasInteractiveInstallCodexProjectCandidate(target: ResolvedPluginTarget): boolean {
+  return pluginSupportsPlatform(target.plugin, 'codex') &&
+    getCodexProjectInstallability(target.plugin).managedKinds.length > 0;
+}
+
+function candidateHasActionableEvidence(candidate: CommandCandidate): boolean {
+  return candidate.evidence.sources.some((source) =>
+    source === 'ledger' ||
+      source === 'tracking' ||
+      source === 'codexNativeConfig' ||
+      source === 'codexSharedNativeRef' ||
+      source === 'claudeSettings' ||
+      source === 'claudeInstalledPlugins',
+  );
+}
+
+function filterCandidatesByPlatform(
+  candidates: CommandCandidate[],
+  platformFilter: PlatformName | 'both' | undefined,
+): CommandCandidate[] {
+  if (!platformFilter || platformFilter === 'both') {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) => candidate.platform === platformFilter);
+}
+
+async function resolveInstallPromptPlatforms(options: {
+  cwd: string;
+  scope: Scope;
+  targets: ResolvedPluginTarget[];
+  env: NodeJS.ProcessEnv;
+}): Promise<PlatformName[]> {
+  const nativeAvailablePlatforms = await detectAvailablePlatforms(options.cwd, options.env);
+  const availablePlatforms = new Set(
+    listExecutablePlatformsForNativeAndCodexProject({
+      nativeAvailablePlatforms,
+      codexProjectExecutableWithoutNative: false,
+    }),
+  );
+
+  if (options.scope !== 'project' || availablePlatforms.has('codex')) {
+    return INTERACTIVE_PLATFORMS.filter((platform) => availablePlatforms.has(platform));
+  }
+
+  if (options.targets.length > 0) {
+    if (options.targets.every(hasInteractiveInstallCodexProjectCandidate)) {
+      availablePlatforms.add('codex');
+    }
+    return INTERACTIVE_PLATFORMS.filter((platform) => availablePlatforms.has(platform));
+  }
+
+  const catalogTargets = await loadPluginTargetsForCommand(options.cwd, options.scope, undefined, {
+    allowHistoricalFallback: false,
+    env: options.env,
+  });
+  for (const platform of INTERACTIVE_PLATFORMS) {
+    if (
+      availablePlatforms.has(platform) &&
+      !catalogTargets.some((target) => pluginSupportsPlatform(target.plugin, platform))
+    ) {
+      availablePlatforms.delete(platform);
+    }
+  }
+  if (catalogTargets.some(hasInteractiveInstallCodexProjectCandidate)) {
+    availablePlatforms.add('codex');
+  }
+
+  return INTERACTIVE_PLATFORMS.filter((platform) => availablePlatforms.has(platform));
 }
 
 function assertInteractiveAvailable(forcePrompt: boolean, context: CommandExecutionContext): void {
@@ -339,12 +421,8 @@ function createInstallCandidate(options: {
   let disabledReason = options.wholeSelectionInstallable ? undefined : options.wholeSelectionReason;
   if (!compatiblePlatforms.includes(options.platform)) {
     disabledReason = `插件不支持 ${PLATFORM_DISPLAY[options.platform]}。`;
-  } else if (
-    options.platform === 'codex' &&
-    options.scope === 'project' &&
-    !hasRepoManagedArtifacts(options.target.plugin)
-  ) {
-    disabledReason = 'Codex project scope 只安装 repo-managed artifacts，纯 native-only 插件不可选。';
+  } else if (options.platform === 'codex' && options.scope === 'project') {
+    disabledReason = getCodexProjectInstallability(options.target.plugin).reason;
   }
 
   return {
@@ -374,6 +452,7 @@ function createInstallCandidate(options: {
       executionCwd: options.executionCwd,
       sources: [],
       trackingKinds: [],
+      trackingIntegrityErrors: [],
       trackingHasHookIdentities: false,
       ledgerManaged: false,
       ledgerStateStatus: 'available',
@@ -401,6 +480,7 @@ async function buildInstallCandidates(options: {
     },
   );
   const candidates: CommandCandidate[] = [];
+  const hasExplicitPluginSelection = Boolean(options.pluginNames && options.pluginNames.length > 0);
 
   for (const target of targets) {
     const perPlatformInstallable = options.targetPlatforms.map((platform) => {
@@ -411,11 +491,14 @@ async function buildInstallCandidates(options: {
           reason: `插件不支持 ${PLATFORM_DISPLAY[platform]}。`,
         };
       }
-      if (platform === 'codex' && options.scope === 'project' && !hasRepoManagedArtifacts(target.plugin)) {
+      const codexProjectInstallability = platform === 'codex' && options.scope === 'project'
+        ? getCodexProjectInstallability(target.plugin)
+        : undefined;
+      if (codexProjectInstallability && !codexProjectInstallability.installable) {
         return {
           platform,
           installable: false,
-          reason: 'Codex project scope 只安装 repo-managed artifacts，纯 native-only 插件不可选。',
+          reason: codexProjectInstallability.reason ?? `${target.pluginName} 当前不可选。`,
         };
       }
       return { platform, installable: true };
@@ -427,6 +510,14 @@ async function buildInstallCandidates(options: {
       : undefined;
 
     for (const platform of options.targetPlatforms) {
+      if (shouldOmitCodexProjectInstallCandidate({
+        plugin: target.plugin,
+        platform,
+        scope: options.scope,
+        hasExplicitPluginSelection,
+      })) {
+        continue;
+      }
       const identity = await resolveExecutionCwd(options.cwd, platform, options.scope);
       candidates.push(createInstallCandidate({
         target,
@@ -457,31 +548,27 @@ function assertExplicitInstallCompatibility(
     throw new Error(`插件不支持目标平台：${unsupported.join('；')}。`);
   }
 
-  const codexProjectNativeOnly = targets
-    .filter((target) =>
-      requestedPlatforms.includes('codex') &&
-      scope === 'project' &&
-      !hasRepoManagedArtifacts(target.plugin),
-    )
-    .map((target) => target.pluginName);
-  if (codexProjectNativeOnly.length > 0) {
-    throw new Error(
-      `${codexProjectNativeOnly.join(', ')} 不包含 repo-managed artifacts，Codex project scope 不支持纯 native-only 安装。`,
-    );
-  }
+  assertCodexProjectInstallableTargets(targets, requestedPlatforms, scope);
 }
 
 async function resolveInstallPlatforms(options: {
   cwd: string;
+  scope: Scope;
   requestedPlatform: PlatformSelection;
   targets: ResolvedPluginTarget[];
+  env: NodeJS.ProcessEnv;
   context: CommandExecutionContext;
   forcePrompt: boolean;
 }): Promise<{
   platforms: PlatformName[];
   prompted: boolean;
 }> {
-  const availablePlatforms = await detectAvailablePlatforms(options.cwd, options.context.env);
+  const availablePlatforms = await resolveInstallPromptPlatforms({
+    cwd: options.cwd,
+    scope: options.scope,
+    targets: options.targets,
+    env: options.env,
+  });
   if (availablePlatforms.length === 0) {
     throw new Error('当前环境没有检测到可用平台。');
   }
@@ -626,8 +713,10 @@ export async function createInteractiveInstallPlan(
 
   const platformResolution = await resolveInstallPlatforms({
     cwd: options.cwd,
+    scope,
     requestedPlatform: options.platform,
     targets,
+    env: context.env,
     context,
     forcePrompt: forcePrompt || missingPlugins,
   });
@@ -671,74 +760,169 @@ export async function createInteractiveInstallPlan(
   return usedPrompt ? { groups } : null;
 }
 
-async function resolveInteractiveScopeAndPlatform(options: {
-  options: CommandOptions | UpgradeCommandOptions;
+async function resolveInteractiveScope(options: {
+  requestedScope: Scope;
   context: CommandExecutionContext;
   forcePrompt: boolean;
   missingPlugins: boolean;
 }): Promise<{
   scope: Scope;
-  platformFilter?: PlatformName | 'both';
   prompted: boolean;
 }> {
   let prompted = false;
   const scope = (options.forcePrompt || options.missingPlugins) && options.context.interactive
-    ? await promptScope(options.context, options.options.scope)
-    : options.options.scope;
-  prompted ||= scope !== options.options.scope;
+    ? await promptScope(options.context, options.requestedScope)
+    : options.requestedScope;
+  prompted ||= scope !== options.requestedScope;
 
-  if (options.options.platform !== 'auto') {
+  return {
+    scope,
+    prompted,
+  };
+}
+
+function resolveExistingPromptablePlatforms(options: {
+  candidates: CommandCandidate[];
+  scope: Scope;
+  nativeAvailablePlatforms: PlatformName[];
+}): PlatformName[] {
+  const nativeAvailable = new Set(options.nativeAvailablePlatforms);
+  const byPlatform = new Map<PlatformName, CommandCandidate[]>();
+  for (const candidate of options.candidates) {
+    const list = byPlatform.get(candidate.platform) ?? [];
+    list.push(candidate);
+    byPlatform.set(candidate.platform, list);
+  }
+
+  return (['codex', 'claude'] as const).filter((platform) => {
+    const platformCandidates = byPlatform.get(platform) ?? [];
+    if (platformCandidates.length === 0) {
+      return false;
+    }
+    if (nativeAvailable.has(platform)) {
+      return true;
+    }
+
+    return platform === 'codex' &&
+      options.scope === 'project' &&
+      platformCandidates.some((candidate) =>
+        candidateHasActionableEvidence(candidate) || candidate.evidence.readErrors.length > 0,
+      );
+  });
+}
+
+async function resolveInteractiveExistingPlatform(options: {
+  scope: Scope;
+  requestedPlatform: PlatformSelection;
+  context: CommandExecutionContext;
+  cwd: string;
+  forcePrompt: boolean;
+  missingPlugins: boolean;
+  candidates: CommandCandidate[];
+  prompted: boolean;
+}): Promise<{
+  platformFilter?: PlatformName | 'both';
+  prompted: boolean;
+}> {
+  const nativeAvailablePlatforms = await detectAvailablePlatforms(options.cwd, options.context.env);
+  const promptablePlatforms = resolveExistingPromptablePlatforms({
+    candidates: options.candidates,
+    scope: options.scope,
+    nativeAvailablePlatforms,
+  });
+
+  const currentScopeEvidenceCandidates = options.candidates.filter((candidate) =>
+    candidateHasActionableEvidence(candidate) || candidate.evidence.readErrors.length > 0,
+  );
+  const evidencePlatforms = [...new Set(
+    currentScopeEvidenceCandidates
+      .map((candidate) => candidate.platform)
+      .filter((platform) => promptablePlatforms.includes(platform)),
+  )] as PlatformName[];
+  const evidenceStateByPlatform: PlatformEvidenceStateByPlatform = {
+    codex: 'no',
+    claude: 'no',
+  };
+  for (const platform of INTERACTIVE_PLATFORMS) {
+    if (!promptablePlatforms.includes(platform)) {
+      continue;
+    }
+
+    const platformEvidenceCandidates = currentScopeEvidenceCandidates.filter((candidate) =>
+      candidate.platform === platform,
+    );
+    if (platformEvidenceCandidates.some((candidate) => candidate.evidence.readErrors.length > 0)) {
+      evidenceStateByPlatform[platform] = 'unknown';
+    } else if (platformEvidenceCandidates.some(candidateHasActionableEvidence)) {
+      evidenceStateByPlatform[platform] = 'yes';
+    }
+  }
+
+  if (options.requestedPlatform !== 'auto') {
     if (options.forcePrompt && options.context.interactive) {
-      const availablePlatforms = await detectAvailablePlatforms(options.options.cwd, options.context.env);
-      const choices = platformChoices(availablePlatforms.length > 0 ? availablePlatforms : ['codex', 'claude']);
+      const availableChoices = promptablePlatforms.length > 0
+        ? promptablePlatforms
+        : nativeAvailablePlatforms.length > 0
+          ? nativeAvailablePlatforms
+          : INTERACTIVE_PLATFORMS;
+      const choices = platformChoices(availableChoices);
       const selected = await promptPlatform(
         options.context,
         choices,
-        options.options.platform === 'both' && choices.includes('both')
+        options.requestedPlatform === 'both' && choices.includes('both')
           ? 'both'
-          : choices.includes(options.options.platform)
-            ? options.options.platform
+          : choices.includes(options.requestedPlatform)
+            ? options.requestedPlatform
             : choices[0],
       );
       return {
-        scope,
         platformFilter: selected,
         prompted: true,
       };
     }
 
     return {
-      scope,
-      platformFilter: options.options.platform as PlatformName | 'both',
-      prompted,
+      platformFilter: options.requestedPlatform as PlatformName | 'both',
+      prompted: options.prompted,
     };
   }
 
+  const impliedPlatform = options.scope === 'project' && evidencePlatforms.length > 0
+    ? resolveEvidenceFirstAutoPlatform({
+        evidenceStateByPlatform,
+        candidatePlatforms: promptablePlatforms,
+        unknownMessage: '当前 scope 至少一个平台的受管安装证据读取结果为 unknown，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+        ambiguousMessage: '当前 scope 同时存在 Claude Code 和 Codex 的受管安装证据，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
+      })
+    : evidencePlatforms.length === 1
+      ? evidencePlatforms[0]
+      : undefined;
   if (!options.context.interactive) {
     return {
-      scope,
-      platformFilter: undefined,
-      prompted,
+      platformFilter: impliedPlatform,
+      prompted: options.prompted,
     };
   }
 
-  const availablePlatforms = await detectAvailablePlatforms(options.options.cwd, options.context.env);
-  if (!options.forcePrompt && !options.missingPlugins && availablePlatforms.length <= 1) {
+  const availableChoices = impliedPlatform
+    ? [impliedPlatform]
+    : promptablePlatforms.length > 0
+      ? promptablePlatforms
+      : nativeAvailablePlatforms;
+  if (!options.forcePrompt && !options.missingPlugins && availableChoices.length <= 1) {
     return {
-      scope,
-      platformFilter: undefined,
-      prompted,
+      platformFilter: impliedPlatform,
+      prompted: options.prompted,
     };
   }
 
-  const choices = platformChoices(availablePlatforms.length > 0 ? availablePlatforms : ['codex', 'claude']);
+  const choices = platformChoices(availableChoices.length > 0 ? availableChoices : ['codex', 'claude']);
   const selected = await promptPlatform(
     options.context,
     choices,
     choices.includes('both') ? 'both' : choices[0],
   );
   return {
-    scope,
     platformFilter: selected,
     prompted: true,
   };
@@ -778,20 +962,33 @@ export async function createInteractiveUninstallPlan(
     return null;
   }
 
-  const resolved = await resolveInteractiveScopeAndPlatform({
-    options,
+  const scopeResolution = await resolveInteractiveScope({
+    requestedScope: options.scope,
     context,
     forcePrompt,
     missingPlugins,
   });
-  const candidates = await buildInteractiveExistingCandidates({
+  const candidatePool = await buildInteractiveExistingCandidates({
     command: 'uninstall',
     cwd: options.cwd,
-    scope: resolved.scope,
-    platformFilter: resolved.platformFilter,
+    scope: scopeResolution.scope,
     pluginNames: missingPlugins || forcePrompt ? (missingPlugins ? undefined : pluginNames) : pluginNames,
     env: context.env,
   });
+  const platformResolution = await resolveInteractiveExistingPlatform({
+    scope: scopeResolution.scope,
+    requestedPlatform: options.platform,
+    context,
+    cwd: options.cwd,
+    forcePrompt,
+    missingPlugins,
+    candidates: candidatePool,
+    prompted: scopeResolution.prompted,
+  });
+  const candidates = filterCandidatesByPlatform(
+    candidatePool,
+    platformResolution.platformFilter,
+  );
 
   const selectedCandidates = (missingPlugins || forcePrompt)
     ? await promptPlugins(context, 'uninstall', candidates, {
@@ -810,7 +1007,7 @@ export async function createInteractiveUninstallPlan(
     scope: candidate.scope,
   }));
 
-  return missingPlugins || forcePrompt || resolved.prompted ? { groups } : null;
+  return missingPlugins || forcePrompt || platformResolution.prompted ? { groups } : null;
 }
 
 export async function createInteractiveUpgradePlan(
@@ -832,20 +1029,33 @@ export async function createInteractiveUpgradePlan(
     return null;
   }
 
-  const resolved = await resolveInteractiveScopeAndPlatform({
-    options,
+  const scopeResolution = await resolveInteractiveScope({
+    requestedScope: options.scope,
     context,
     forcePrompt,
     missingPlugins,
   });
-  const candidates = await buildInteractiveExistingCandidates({
+  const candidatePool = await buildInteractiveExistingCandidates({
     command: 'upgrade',
     cwd: options.cwd,
-    scope: resolved.scope,
-    platformFilter: resolved.platformFilter,
+    scope: scopeResolution.scope,
     pluginNames: missingPlugins || forcePrompt ? (missingPlugins ? undefined : pluginNames) : pluginNames,
     env: context.env,
   });
+  const platformResolution = await resolveInteractiveExistingPlatform({
+    scope: scopeResolution.scope,
+    requestedPlatform: options.platform,
+    context,
+    cwd: options.cwd,
+    forcePrompt,
+    missingPlugins,
+    candidates: candidatePool,
+    prompted: scopeResolution.prompted,
+  });
+  const candidates = filterCandidatesByPlatform(
+    candidatePool,
+    platformResolution.platformFilter,
+  );
 
   if (missingPlugins) {
     const selectable = candidates.filter((candidate) => candidate.selectable);
@@ -866,8 +1076,8 @@ export async function createInteractiveUpgradePlan(
           pluginNames: [],
           options: {
             cwd: options.cwd,
-            platform: resolved.platformFilter ?? 'auto',
-            scope: resolved.scope,
+            platform: platformResolution.platformFilter ?? 'auto',
+            scope: scopeResolution.scope,
             all: true,
             requestedSkillTrigger: options.requestedSkillTrigger,
           },
@@ -901,7 +1111,7 @@ export async function createInteractiveUpgradePlan(
   const usedPrompt =
     missingPlugins ||
     forcePrompt ||
-    resolved.prompted ||
+    platformResolution.prompted ||
     groups.some((group) => group.options.requestedSkillTrigger !== options.requestedSkillTrigger);
 
   return usedPrompt ? { groups } : null;

@@ -752,6 +752,22 @@ describe('authoring tools', () => {
       path.join(refBase, 'extensions-spec.md'),
       'utf8',
     );
+    const slashCommandsDoc = await fs.readFile(
+      path.join(refBase, 'slash-commands.md'),
+      'utf8',
+    );
+    const claudeOnlyDoc = await fs.readFile(
+      path.join(refBase, 'claude-only-capabilities.md'),
+      'utf8',
+    );
+    const buildConfigDoc = await fs.readFile(
+      path.join(refBase, 'build-config-spec.md'),
+      'utf8',
+    );
+    const mcpAppsDoc = await fs.readFile(
+      path.join(refBase, 'mcp-and-apps.md'),
+      'utf8',
+    );
 
     expect(skillDoc).toContain('`plugins/marketplace-source.json`');
     expect(skillDoc).toContain('`pnpm build`');
@@ -764,6 +780,7 @@ describe('authoring tools', () => {
     expect(skillDoc).toContain(
       '场景 A 或 B 的路径 + `references/mcp-and-apps.md` + `references/build-config-spec.md`',
     );
+    expect(skillDoc).toContain('`references/slash-commands.md`');
     expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
 
     expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
@@ -801,6 +818,14 @@ describe('authoring tools', () => {
     expect(extensionsSpecDoc).toContain('`session_stop` 已从公共 hook 中移除');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
+    expect(slashCommandsDoc).toContain('公共 `slashCommands` 是源码层唯一的跨平台手动命令作者入口');
+    expect(slashCommandsDoc).toContain('Claude runtime 得到 generated `claude/commands/<name>.md`');
+    expect(slashCommandsDoc).toContain('Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`');
+    expect(claudeOnlyDoc).toContain('公共 `slashCommands` 不是 Claude 专属能力');
+    expect(claudeOnlyDoc).not.toContain('## 公共 slashCommands');
+    expect(buildConfigDoc).toContain('不会排除 manifest 已声明的能力路径');
+    expect(mcpAppsDoc).toContain('`${user_config.KEY}` 是 Claude runtime 的原生占位符');
+
     const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
     expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
     expect(authoringDoc).toContain('references/skills-and-triggers.md');
@@ -814,7 +839,9 @@ describe('authoring tools', () => {
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
-    expect(exampleDoc).toContain('`skillTriggers.review.allowInstallOverride`');
+    expect(exampleDoc).toContain('`skillTriggers.review-workflow.allowInstallOverride`');
+    expect(exampleDoc).toContain('`slash-commands/`');
+    expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
 
   it('validate_plugin.js validates skillTriggers authoring contract', async () => {
@@ -1265,6 +1292,50 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).resolves.toBeDefined();
+  });
+
+  it('validate_plugin.js validates public slashCommands source contracts', async () => {
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.js',
+    );
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-authoring-'));
+    tempDirs.push(tempRoot);
+    const validPluginDir = path.join(tempRoot, 'slash-commands-only');
+    await fs.copy(
+      fixturePath(
+        'codex-project-repo-managed',
+        'plugins',
+        'slashCommands-only',
+      ),
+      validPluginDir,
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, validPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).resolves.toBeDefined();
+
+    const invalidPluginDir = fixturePath(
+      'codex-project-repo-managed',
+      'negative',
+      'slashCommands-invalid-icon',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, invalidPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('codex.interface.icon_small'),
+    });
   });
 
   it('validate_plugin.js enforces Codex skill metadata and YAML shape', async () => {

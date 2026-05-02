@@ -8,6 +8,10 @@
 
 `pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`，真正发布的包是 `packages/cli`（`@yiliang/aw`）。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
+## Maintenance Principles
+
+- 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程，或任何会影响插件作者使用方式的能力时，必须同时检查 `.agents/skills/create-agent-workflows-plugin/`。如果插件作者技能、模板、示例或测试夹具不再准确，要在同一轮修改中更新，避免运行时能力和作者文档脱节。
+
 ## Build & Test Commands
 
 - `pnpm install` — 安装工作区依赖
@@ -19,8 +23,11 @@
 - `pnpm test:smoke` — 验证真实 build/pack 产物（不进入常规 `pnpm test`）
 - `pnpm test:smoke:build` — 只校验 `pnpm build` 产物
 - `pnpm test:smoke:pack` — 只校验 `pnpm pack:cli` 的 tarball 内容
-- `pnpm pack:cli` — 打包 `@yiliang/aw`，发包前验收
-- `pnpm publish:cli` — 先执行 `pnpm pack:cli` 验收 tarball，再发布到 `packages/cli/package.json` 的 `publishConfig.registry`
+- `pnpm run release:pack` / `make pack` — 生成 `.release/tarballs/` 下的本地 tarball
+- `pnpm run release:local` / `make local-install` — 跑本地开发验证链路，并执行本地 `npm install -g`
+- `make beta-release VERSION=x.y.z-beta.n` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布测试版 `beta` dist-tag
+- `make release VERSION=x.y.z` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布正式版 `latest`
+- `pnpm publish:cli` — 兼容旧入口；不改版本号，只发布当前已经写入的稳定版本到 `packages/cli/package.json` 的 `publishConfig.registry`
 
 ## References
 

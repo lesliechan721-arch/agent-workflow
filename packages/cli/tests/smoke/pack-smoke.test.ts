@@ -14,6 +14,15 @@ function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
 
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
+
 function collectStringPaths(value: unknown): string[] {
   if (typeof value === 'string') {
     return [value];
@@ -186,5 +195,76 @@ describe('pack smoke', () => {
       sourcePackage: '@yiliang/aw',
       sourceVersion: packedPackageJson.version,
     });
+  });
+
+  it('bundles public slashCommands correctly from the unpacked tarball runtime', async () => {
+    const root = repoRoot();
+    const packageRoot = path.join(root, 'packages', 'cli');
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pack-slash-commands-'));
+    tempDirs.push(tempRoot);
+
+    const packDir = path.join(tempRoot, 'pack');
+    const unpackDir = path.join(tempRoot, 'unpack');
+    const tempRepo = path.join(tempRoot, 'repo');
+    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    await fs.ensureDir(packDir);
+    await fs.ensureDir(unpackDir);
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    await fs.copy(
+      fixturePath('codex-project-repo-managed', 'plugins', 'slashCommands-only'),
+      path.join(tempRepo, 'plugins', 'slash-commands-only'),
+    );
+
+    await execFileAsync(
+      'pnpm',
+      ['pack:cli', '--pack-destination', packDir],
+      {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+
+    const tarballs = (await fs.readdir(packDir)).filter((entry) => entry.endsWith('.tgz'));
+    expect(tarballs).toHaveLength(1);
+    await execFileAsync(
+      'tar',
+      ['-xzf', path.join(packDir, tarballs[0]), '-C', unpackDir],
+      {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+
+    const unpackedPackageRoot = path.join(unpackDir, 'package');
+    await fs.ensureSymlink(
+      path.join(packageRoot, 'node_modules'),
+      path.join(unpackedPackageRoot, 'node_modules'),
+    );
+
+    const { bundlePlugins } = (await import(
+      pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'scripts', 'bundle-plugins.js')).href
+    )) as { bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown> };
+    await bundlePlugins({ repoRoot: tempRepo, outputRoot });
+
+    const pluginRoot = path.join(outputRoot, 'plugins', 'slash-commands-only');
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'claude', 'commands', 'review.md')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'agents', 'openai.yaml')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'slash-commands', 'review.md')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.readFile(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
+    ).resolves.not.toContain('$ARGUMENTS');
+
+    const { validateBundleLayout } = (await import(
+      pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'bundle-layout.js')).href
+    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
+    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
 });

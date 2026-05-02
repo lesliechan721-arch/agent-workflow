@@ -14,8 +14,19 @@
     "plugin:test": "pnpm --filter @yiliang/aw plugin:test --",
     "test:smoke:plugin-scripts": "pnpm --filter @yiliang/aw test:smoke:plugin-scripts",
     "pack:cli": "pnpm --filter @yiliang/aw pack",
-    "publish:cli": "pnpm run pack:cli && pnpm run publish:cli:raw",
-    "publish:cli:raw": "pnpm --filter @yiliang/aw publish"
+    "release:verify:local": "pnpm test && pnpm test:smoke:build",
+    "release:verify": "pnpm run release:verify:local && pnpm test:smoke:pack",
+    "release:pack": "node scripts/release/pack-cli.mjs",
+    "release:install:local": "node scripts/release/install-local-tarball.mjs",
+    "release:local": "pnpm run release:verify:local && pnpm run release:pack && pnpm run release:install:local",
+    "release:publish:beta": "node scripts/release/publish-cli.mjs beta",
+    "release:publish:latest": "node scripts/release/publish-cli.mjs latest",
+    "publish:cli": "pnpm run release:publish:latest",
+    "publish:cli:raw": "pnpm --filter @yiliang/aw publish --tag latest",
+    "publish:cli:beta:raw": "pnpm --filter @yiliang/aw publish --tag beta",
+    "version:set": "node scripts/release/sync-version.mjs",
+    "version:set:beta": "node scripts/release/sync-version.mjs --kind prerelease",
+    "version:set:release": "node scripts/release/sync-version.mjs --kind stable"
   },
   "dependencies": {
     "yaml": "^2.8.3"

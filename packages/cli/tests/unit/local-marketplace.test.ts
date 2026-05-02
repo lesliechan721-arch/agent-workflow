@@ -16,6 +16,7 @@ import {
 } from '../../src/utils/local-marketplace.js';
 import { readJsonFile } from '../../src/utils/json.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import type { InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -145,6 +146,63 @@ describe('local marketplace', () => {
         },
       },
     });
+  });
+
+  it('preserves Codex project-managed ledger records without shared native refs', async () => {
+    const { repoRoot, awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const projectKey = await fs.realpath(repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              projectKey,
+              capabilitySnapshot: {
+                requiresNativePlugin: false,
+                hasRepoManagedArtifacts: true,
+                projectManagedKinds: ['skill'],
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    const preservedLedger = await readJsonFile<unknown>(path.join(awHome, 'installed.json'));
+    expect(preservedLedger).toMatchObject({
+      plugins: {
+        'git-commit': {
+          platforms: {
+            codex: {
+              projectScopes: {
+                [projectKey]: {
+                  projectKey,
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                    projectManagedKinds: ['skill'],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(
+      (preservedLedger as InstalledLedger).plugins['git-commit'].platforms.codex?.sharedNativeRefs,
+    ).toBeUndefined();
   });
 
   it('preserves AW-managed plugin config during local marketplace rebuilds', async () => {
@@ -345,7 +403,7 @@ describe('local marketplace', () => {
     });
   });
 
-  it('uses the shared winner when replaying conflicting scope records', async () => {
+  it('ignores Codex project scope records when replaying the shared runtime winner', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
@@ -390,8 +448,8 @@ describe('local marketplace', () => {
 
     const result = await initializeLocalMarketplace({ force: true, env: process.env });
 
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
-    expect(result.warnings.join('\n')).toContain('user (manual)');
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+    expect(result.warnings.join('\n')).not.toContain('project-a');
   });
 
   it('uses the stable scope identity fallback when replaying old ledgers without write order', async () => {
@@ -434,6 +492,46 @@ describe('local marketplace', () => {
     };
     await writeInstalledLedger(ledger, process.env);
     await writeCodexAllowImplicitInvocation(awHome, false);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+  });
+
+  it('does not replay Codex project-only preferences into ~/.aw during rebuild', async () => {
+    const { repoRoot, awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const projectKey = await fs.realpath(repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              projectKey,
+              capabilitySnapshot: {
+                requiresNativePlugin: false,
+                hasRepoManagedArtifacts: true,
+                projectManagedKinds: ['skill'],
+              },
+              installOptions: {
+                skillTriggerPreference: 'manual',
+              },
+              skillTriggerWriteOrder: 3,
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await writeCodexAllowImplicitInvocation(awHome, true);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
 

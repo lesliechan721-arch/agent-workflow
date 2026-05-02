@@ -6,6 +6,7 @@ coverage
 *.tsbuildinfo
 packages/cli/.vitest
 packages/cli/plugins-dist
+.release
 .idea
 *.tgz
 .codex/config.toml

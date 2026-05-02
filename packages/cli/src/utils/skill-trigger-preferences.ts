@@ -5,11 +5,14 @@ import YAML from 'yaml';
 
 import type {
   CatalogResolution,
+  GeneratedArtifact,
   InstalledLedger,
   InstalledScopeInstallOptions,
   InstalledScopeRecord,
   PlatformName,
+  PluginMeta,
   Scope,
+  SkillTriggerApplicability,
   SkillTriggerPreference,
 } from '../types.js';
 import { readPluginManifest } from './manifest.js';
@@ -82,6 +85,10 @@ function getMarketplacePluginRoot(marketplaceRoot: string, pluginName: string): 
   return path.join(marketplaceRoot, 'plugins', pluginName);
 }
 
+function getRepoSkillRoot(repoSkillsRoot: string, skillName: string): string {
+  return path.join(repoSkillsRoot, skillName);
+}
+
 function getPlatformSkillsRoot(
   pluginRoot: string,
   platform: PlatformName,
@@ -95,6 +102,40 @@ function getCodexSkillMetadataPath(pluginRoot: string, skillName: string): strin
 
 function getClaudeSkillMetadataPath(pluginRoot: string, skillName: string): string {
   return path.join(pluginRoot, 'claude', 'skills', skillName, 'SKILL.md');
+}
+
+function getTargetSkillRoot(
+  target: SkillTriggerMaterializationTarget,
+  pluginName: string,
+  skillName: string,
+): string {
+  if (target.kind === 'repoSkill') {
+    return getRepoSkillRoot(target.root, skillName);
+  }
+
+  return path.join(
+    getPlatformSkillsRoot(getMarketplacePluginRoot(target.root, pluginName), target.platform),
+    skillName,
+  );
+}
+
+function createLegacyMaterializationTarget(options: {
+  marketplaceRootOrStagingRoot: string;
+  platform: PlatformName;
+}): SkillTriggerMaterializationTarget {
+  return options.platform === 'codex'
+    ? {
+        platform: 'codex',
+        scope: 'user',
+        kind: 'localMarketplaceRuntime',
+        root: options.marketplaceRootOrStagingRoot,
+      }
+    : {
+        platform: 'claude',
+        scope: 'user',
+        kind: 'localMarketplaceRuntime',
+        root: options.marketplaceRootOrStagingRoot,
+      };
 }
 
 function normalizeYamlError(error: unknown): string {
@@ -112,6 +153,8 @@ export interface SkillTriggerPolicyResolution {
   pluginName: string;
   manifestPath: string;
   pluginRoot: string;
+  platform: PlatformName;
+  applicability: SkillTriggerApplicability;
   policies: SkillTriggerPolicyEntry[];
 }
 
@@ -161,10 +204,19 @@ export type SkillTriggerSignatureResult =
 
 export type SkillTriggerMaterializationMode = 'strictExplicit' | 'bestEffortReplay';
 
+export type SkillTriggerMaterializationTarget =
+  | { platform: 'codex'; scope: 'user'; kind: 'localMarketplaceRuntime'; root: string }
+  | { platform: 'codex'; scope: 'project'; kind: 'repoSkill'; root: string }
+  | { platform: 'claude'; scope: Scope; kind: 'localMarketplaceRuntime'; root: string };
+
 export interface SkillTriggerMaterializationRollbackHandle {
   committed: boolean;
   targetSkillsRoot: string;
   backupSkillsRoot: string | null;
+  operations: Array<{
+    targetSkillsRoot: string;
+    backupSkillsRoot: string | null;
+  }>;
 }
 
 export interface SkillTriggerMaterializationSummary {
@@ -179,6 +231,7 @@ export interface SkillTriggerMaterializationResult {
   summary: SkillTriggerMaterializationSummary;
   warnings: string[];
   rollbackHandle: SkillTriggerMaterializationRollbackHandle;
+  generatedArtifacts: GeneratedArtifact[];
 }
 
 export interface SkillTriggerReplayResult {
@@ -204,11 +257,12 @@ export interface SkillTriggerSiblingConflictResult {
 }
 
 export interface SkillTriggerStatusReportFields {
-  installOptions: InstalledScopeInstallOptions;
-  skillTriggerPreference: SkillTriggerPreference;
+  skillTriggerApplicability: SkillTriggerApplicability;
+  installOptions?: InstalledScopeInstallOptions;
+  skillTriggerPreference?: SkillTriggerPreference;
   skillTriggerRuntimeMatches?: SkillTriggerPreference[];
-  skillTriggerRuntimeState: 'matched' | 'mixed' | 'unknown';
-  skillTriggerDrift: 'yes' | 'no' | 'unknown';
+  skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
+  skillTriggerDrift?: 'yes' | 'no' | 'unknown';
   warnings: string[];
 }
 
@@ -244,34 +298,74 @@ async function marketplacePlatformSkillsRootExists(
   );
 }
 
-export async function resolveSkillTriggerPolicies(options: {
-  embeddedRoot: string;
+function getSkillTriggerApplicabilityFromPolicies(
+  policies: SkillTriggerPolicyEntry[],
+): SkillTriggerApplicability {
+  if (policies.length === 0) {
+    return 'none';
+  }
+
+  return policies.some((policy) => policy.allowInstallOverride)
+    ? 'overridable'
+    : 'fixed';
+}
+
+async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
+  pluginRoot: string;
   pluginName: string;
+  manifestPath: string;
+  manifest: PluginMeta['manifest'];
+  platform: PlatformName;
 }): Promise<SkillTriggerPolicyResolution> {
-  const pluginRoot = getEmbeddedPluginRoot(options.embeddedRoot, options.pluginName);
-  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-  const manifestPolicies = plugin.manifest.skillTriggers ?? {};
-  const [codexSkills, claudeSkills] = await Promise.all([
-    listSkillDirectories(getPlatformSkillsRoot(pluginRoot, 'codex')),
-    listSkillDirectories(getPlatformSkillsRoot(pluginRoot, 'claude')),
-  ]);
-  const skillNames = [...new Set([
-    ...Object.keys(manifestPolicies),
-    ...codexSkills,
-    ...claudeSkills,
-  ])].sort();
+  const manifestPolicies = options.manifest.skillTriggers ?? {};
+  const skillNames = await listSkillDirectories(
+    getPlatformSkillsRoot(options.pluginRoot, options.platform),
+  );
+  const policies = skillNames.map((skillName) => ({
+    skillName,
+    allowInstallOverride: manifestPolicies[skillName]?.allowInstallOverride === true,
+    codexFilePath: getCodexSkillMetadataPath(options.pluginRoot, skillName),
+    claudeFilePath: getClaudeSkillMetadataPath(options.pluginRoot, skillName),
+  }));
 
   return {
     pluginName: options.pluginName,
-    manifestPath: plugin.manifestPath,
-    pluginRoot,
-    policies: skillNames.map((skillName) => ({
-      skillName,
-      allowInstallOverride: manifestPolicies[skillName]?.allowInstallOverride === true,
-      codexFilePath: getCodexSkillMetadataPath(pluginRoot, skillName),
-      claudeFilePath: getClaudeSkillMetadataPath(pluginRoot, skillName),
-    })),
+    manifestPath: options.manifestPath,
+    pluginRoot: options.pluginRoot,
+    platform: options.platform,
+    applicability: getSkillTriggerApplicabilityFromPolicies(policies),
+    policies,
   };
+}
+
+export async function resolveSkillTriggerPolicies(options: {
+  embeddedRoot: string;
+  pluginName: string;
+  platform: PlatformName;
+}): Promise<SkillTriggerPolicyResolution> {
+  const pluginRoot = getEmbeddedPluginRoot(options.embeddedRoot, options.pluginName);
+  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  return resolveSkillTriggerPoliciesFromPluginRoot({
+    pluginRoot,
+    pluginName: options.pluginName,
+    manifestPath: plugin.manifestPath,
+    manifest: plugin.manifest,
+    platform: options.platform,
+  });
+}
+
+export async function resolveSkillTriggerApplicabilityForPlugin(
+  plugin: PluginMeta,
+  platform: PlatformName,
+): Promise<SkillTriggerApplicability> {
+  const resolution = await resolveSkillTriggerPoliciesFromPluginRoot({
+    pluginRoot: plugin.rootDir,
+    pluginName: plugin.manifest.name,
+    manifestPath: plugin.manifestPath,
+    manifest: plugin.manifest,
+    platform,
+  });
+  return resolution.applicability;
 }
 
 interface ParsedCodexSkill {
@@ -514,6 +608,24 @@ async function resetStagingSkillsToPristine(
   await copyEmbeddedSkillsToStaging(embeddedRoot, pluginName, platform, stagingSkillsRoot);
 }
 
+async function copyEmbeddedSkillToStaging(
+  embeddedRoot: string,
+  pluginName: string,
+  platform: PlatformName,
+  skillName: string,
+  stagingSkillRoot: string,
+): Promise<void> {
+  const embeddedSkillRoot = path.join(
+    getPlatformSkillsRoot(getEmbeddedPluginRoot(embeddedRoot, pluginName), platform),
+    skillName,
+  );
+  if (!(await fs.pathExists(embeddedSkillRoot))) {
+    throw new Error(`缺少 embedded skill 目录：${embeddedSkillRoot}`);
+  }
+
+  await fs.copy(embeddedSkillRoot, stagingSkillRoot, { overwrite: true });
+}
+
 async function replaceSkillsSubtree(
   targetSkillsRoot: string,
   stagingSkillsRoot: string,
@@ -545,6 +657,25 @@ async function replaceSkillsSubtree(
     committed: true,
     targetSkillsRoot,
     backupSkillsRoot: targetExists ? backupSkillsRoot : null,
+    operations: [{
+      targetSkillsRoot,
+      backupSkillsRoot: targetExists ? backupSkillsRoot : null,
+    }],
+  };
+}
+
+function createRollbackHandleFromOperations(
+  operations: Array<{
+    targetSkillsRoot: string;
+    backupSkillsRoot: string | null;
+  }>,
+): SkillTriggerMaterializationRollbackHandle {
+  const [firstOperation] = operations;
+  return {
+    committed: operations.length > 0,
+    targetSkillsRoot: firstOperation?.targetSkillsRoot ?? '',
+    backupSkillsRoot: firstOperation?.backupSkillsRoot ?? null,
+    operations,
   };
 }
 
@@ -557,6 +688,7 @@ async function readEmbeddedSignatureEntries(
   const resolution = await resolveSkillTriggerPolicies({
     embeddedRoot,
     pluginName,
+    platform,
   });
   const diagnostics: SkillTriggerDiagnostic[] = [];
 
@@ -657,7 +789,7 @@ async function readEmbeddedSignatureEntries(
 }
 
 async function readRuntimeSignatureEntries(
-  marketplaceRoot: string,
+  target: SkillTriggerMaterializationTarget,
   embeddedRoot: string,
   pluginName: string,
   platform: PlatformName,
@@ -665,14 +797,18 @@ async function readRuntimeSignatureEntries(
   const resolution = await resolveSkillTriggerPolicies({
     embeddedRoot,
     pluginName,
+    platform,
   });
-  const runtimePluginRoot = getMarketplacePluginRoot(marketplaceRoot, pluginName);
   const diagnostics: SkillTriggerDiagnostic[] = [];
 
   if (platform === 'codex') {
     const entries: CodexSkillSignatureEntry[] = [];
     for (const policy of resolution.policies) {
-      const runtimePath = getCodexSkillMetadataPath(runtimePluginRoot, policy.skillName);
+      const runtimePath = path.join(
+        getTargetSkillRoot(target, pluginName, policy.skillName),
+        'agents',
+        'openai.yaml',
+      );
       try {
         const skill = await parseCodexSkillMetadata(runtimePath);
         entries.push({
@@ -715,7 +851,10 @@ async function readRuntimeSignatureEntries(
 
   const entries: ClaudeSkillSignatureEntry[] = [];
   for (const policy of resolution.policies) {
-    const runtimePath = getClaudeSkillMetadataPath(runtimePluginRoot, policy.skillName);
+    const runtimePath = path.join(
+      getTargetSkillRoot(target, pluginName, policy.skillName),
+      'SKILL.md',
+    );
     try {
       const skill = await parseClaudeSkillMetadata(runtimePath);
       entries.push({
@@ -774,11 +913,24 @@ export async function buildSkillTriggerMaterializationSignature(options: {
 export async function readCurrentSkillTriggerRuntimeSignature(options: {
   pluginName: string;
   platform: PlatformName;
-  marketplaceRoot: string;
   embeddedRoot: string;
+  target?: SkillTriggerMaterializationTarget;
+  marketplaceRoot?: string;
 }): Promise<SkillTriggerSignatureResult> {
+  const target = options.target ?? (
+    options.marketplaceRoot
+      ? createLegacyMaterializationTarget({
+          marketplaceRootOrStagingRoot: options.marketplaceRoot,
+          platform: options.platform,
+        })
+      : undefined
+  );
+  if (!target) {
+    throw new Error('readCurrentSkillTriggerRuntimeSignature 缺少 materialization target。');
+  }
+
   return readRuntimeSignatureEntries(
-    options.marketplaceRoot,
+    target,
     options.embeddedRoot,
     options.pluginName,
     options.platform,
@@ -869,6 +1021,7 @@ export async function resolveSkillTriggerStatusReportFields(options: {
   currentCatalog: CatalogResolution;
   currentCatalogAvailable: boolean;
   embeddedRoot: string;
+  runtimeTarget?: SkillTriggerMaterializationTarget;
 }): Promise<SkillTriggerStatusReportFields | null> {
   const scopeRecord = getSkillTriggerScopeRecord({
     ledger: options.ledger,
@@ -877,13 +1030,48 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     scope: options.scope,
     projectKey: options.projectKey,
   });
-  const ledgerPreference = scopeRecord?.installOptions?.skillTriggerPreference ?? 'default';
-  const base = {
-    installOptions: {
-      skillTriggerPreference: ledgerPreference,
-    },
-    skillTriggerPreference: ledgerPreference,
+
+  let policyResolution: SkillTriggerPolicyResolution;
+  try {
+    policyResolution = await resolveSkillTriggerPolicies({
+      embeddedRoot: options.embeddedRoot,
+      pluginName: options.pluginName,
+      platform: options.platform,
+    });
+  } catch (error) {
+    if (!options.currentCatalogAvailable) {
+      return {
+        skillTriggerApplicability: 'none',
+        skillTriggerRuntimeState: 'unknown',
+        skillTriggerDrift: 'unknown',
+        warnings: [],
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      skillTriggerApplicability: 'none',
+      skillTriggerRuntimeState: 'unknown',
+      skillTriggerDrift: 'unknown',
+      warnings: [`skill trigger policy 无法从 embedded bundle 读取：${message}`],
+    };
+  }
+
+  const base: SkillTriggerStatusReportFields = {
+    skillTriggerApplicability: policyResolution.applicability,
+    warnings: [],
   };
+  const ledgerPreference = scopeRecord?.installOptions?.skillTriggerPreference;
+  if (policyResolution.applicability === 'overridable' && ledgerPreference) {
+    base.installOptions = {
+      skillTriggerPreference: ledgerPreference,
+    };
+    base.skillTriggerPreference = ledgerPreference;
+  }
+
+  if (policyResolution.applicability === 'none') {
+    return base;
+  }
 
   if (!options.currentCatalogAvailable) {
     return {
@@ -894,28 +1082,8 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     };
   }
 
-  let policyResolution: SkillTriggerPolicyResolution;
-  try {
-    policyResolution = await resolveSkillTriggerPolicies({
-      embeddedRoot: options.embeddedRoot,
-      pluginName: options.pluginName,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ...base,
-      skillTriggerRuntimeState: 'unknown',
-      skillTriggerDrift: 'unknown',
-      warnings: [`skill trigger policy 无法从 embedded bundle 读取：${message}`],
-    };
-  }
-
-  if (policyResolution.policies.length === 0) {
-    return null;
-  }
-
   const warnings: string[] = [];
-  if (options.currentCatalog.source === 'local') {
+  if (!options.runtimeTarget && options.currentCatalog.source === 'local') {
     const manifestDriftWarning = await collectLocalManifestDriftWarning({
       embeddedRoot: options.embeddedRoot,
       marketplaceRoot: options.currentCatalog.rootDir,
@@ -926,7 +1094,14 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     }
   }
 
-  if (options.ledger.ledgerState.status !== 'available') {
+  if (
+    policyResolution.applicability === 'overridable' &&
+    options.ledger.ledgerState.status !== 'available' &&
+    (
+      options.runtimeTarget?.kind !== 'repoSkill' ||
+      !ledgerPreference
+    )
+  ) {
     return {
       ...base,
       skillTriggerRuntimeState: 'unknown',
@@ -935,7 +1110,7 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     };
   }
 
-  if (options.currentCatalog.source !== 'local') {
+  if (!options.runtimeTarget && options.currentCatalog.source !== 'local') {
     return {
       ...base,
       skillTriggerRuntimeState: 'unknown',
@@ -972,8 +1147,10 @@ export async function resolveSkillTriggerStatusReportFields(options: {
   const runtimeSignature = await readCurrentSkillTriggerRuntimeSignature({
     pluginName: options.pluginName,
     platform: options.platform,
-    marketplaceRoot: options.currentCatalog.rootDir,
     embeddedRoot: options.embeddedRoot,
+    ...(options.runtimeTarget
+      ? { target: options.runtimeTarget }
+      : { marketplaceRoot: options.currentCatalog.rootDir }),
   });
   if (runtimeSignature.status === 'unknown') {
     return {
@@ -995,10 +1172,13 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     .filter((entry) => entry.signature.signature === runtimeSignature.signature)
     .map((entry) => entry.preference);
   const runtimeState = matches.length > 0 ? 'matched' : 'mixed';
-  const expectedSignature = knownCandidates.find((entry) => entry.preference === ledgerPreference)?.signature;
+  const expectedPreference = policyResolution.applicability === 'overridable'
+    ? ledgerPreference
+    : 'default';
+  const expectedSignature = knownCandidates.find((entry) => entry.preference === expectedPreference)?.signature;
   const drift = expectedSignature?.signature === runtimeSignature.signature ? 'no' : 'yes';
 
-  if (drift === 'yes') {
+  if (drift === 'yes' && ledgerPreference) {
     warnings.push(
       `skill trigger runtime 与当前 scope ledger 偏好不一致（skillTriggerLedger=${ledgerPreference}, skillTriggerRuntime=${formatRuntimeMatches(runtimeState, matches)}）。`,
     );
@@ -1018,92 +1198,164 @@ export async function materializeSkillTriggerPreference(options: {
   platform: PlatformName;
   resolvedOptions: { skillTriggerPreference: SkillTriggerPreference };
   embeddedRoot: string;
-  marketplaceRootOrStagingRoot: string;
+  target?: SkillTriggerMaterializationTarget;
+  marketplaceRootOrStagingRoot?: string;
   mode: SkillTriggerMaterializationMode;
 }): Promise<SkillTriggerMaterializationResult> {
   const preference = options.resolvedOptions.skillTriggerPreference;
+  const target = options.target ?? (
+    options.marketplaceRootOrStagingRoot
+      ? createLegacyMaterializationTarget({
+          marketplaceRootOrStagingRoot: options.marketplaceRootOrStagingRoot,
+          platform: options.platform,
+        })
+      : undefined
+  );
+  if (!target) {
+    throw new Error('materializeSkillTriggerPreference 缺少 materialization target。');
+  }
   const resolution = await resolveSkillTriggerPolicies({
     embeddedRoot: options.embeddedRoot,
     pluginName: options.pluginName,
+    platform: options.platform,
   });
-  const targetPluginRoot = getMarketplacePluginRoot(
-    options.marketplaceRootOrStagingRoot,
-    options.pluginName,
-  );
-  const targetSkillsRoot = getPlatformSkillsRoot(targetPluginRoot, options.platform);
-  const targetParent = path.dirname(targetSkillsRoot);
-  const stagingSkillsRoot = path.join(
-    targetParent,
-    createTempDirectoryName(`${path.basename(targetSkillsRoot)}-staging`),
-  );
-
-  await fs.ensureDir(targetParent);
-  await copyEmbeddedSkillsToStaging(
-    options.embeddedRoot,
-    options.pluginName,
-    options.platform,
-    stagingSkillsRoot,
-  );
 
   const warnings: string[] = [];
   const patchedSkills: string[] = [];
   const skippedSkills: string[] = [];
+  const generatedArtifacts: GeneratedArtifact[] = [];
 
-  if (preference !== 'default') {
-    for (const policy of resolution.policies) {
-      if (!policy.allowInstallOverride) {
-        skippedSkills.push(policy.skillName);
-        warnings.push(
-          `${options.pluginName} 的 ${options.platform} skill ${policy.skillName} 未声明 allowInstallOverride，保留默认触发策略。`,
+  const patchSkill = async (skillRoot: string, policy: SkillTriggerPolicyEntry): Promise<void> => {
+    if (preference === 'default') {
+      return;
+    }
+
+    if (!policy.allowInstallOverride) {
+      skippedSkills.push(policy.skillName);
+      warnings.push(
+        `${options.pluginName} 的 ${options.platform} skill ${policy.skillName} 未声明 allowInstallOverride，保留默认触发策略。`,
+      );
+      return;
+    }
+
+    try {
+      if (options.platform === 'codex') {
+        await patchCodexOpenAiYaml(
+          path.join(skillRoot, 'agents', 'openai.yaml'),
+          preference,
         );
-        continue;
+      } else {
+        await patchClaudeSkillFrontmatter(
+          path.join(skillRoot, 'SKILL.md'),
+          preference,
+        );
       }
+      patchedSkills.push(policy.skillName);
+    } catch (error) {
+      throw buildSkillTriggerError({
+        pluginName: options.pluginName,
+        platform: options.platform,
+        skillName: policy.skillName,
+        filePath: options.platform === 'codex'
+          ? policy.codexFilePath
+          : policy.claudeFilePath,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  let rollbackHandle: SkillTriggerMaterializationRollbackHandle;
+  if (target.kind === 'repoSkill') {
+    await fs.ensureDir(target.root);
+    const operations: SkillTriggerMaterializationRollbackHandle['operations'] = [];
+    const stagedSkills: Array<{ policy: SkillTriggerPolicyEntry; stagingSkillRoot: string }> = [];
+
+    for (const policy of resolution.policies) {
+      const stagingSkillRoot = path.join(
+        target.root,
+        createTempDirectoryName(`${policy.skillName}-staging`),
+      );
+
+      await copyEmbeddedSkillToStaging(
+        options.embeddedRoot,
+        options.pluginName,
+        options.platform,
+        policy.skillName,
+        stagingSkillRoot,
+      );
+      stagedSkills.push({ policy, stagingSkillRoot });
 
       try {
-        if (options.platform === 'codex') {
-          await patchCodexOpenAiYaml(
-            path.join(stagingSkillsRoot, policy.skillName, 'agents', 'openai.yaml'),
-            preference,
-          );
-        } else {
-          await patchClaudeSkillFrontmatter(
-            path.join(stagingSkillsRoot, policy.skillName, 'SKILL.md'),
-            preference,
-          );
-        }
-        patchedSkills.push(policy.skillName);
+        await patchSkill(stagingSkillRoot, policy);
       } catch (error) {
-        const wrappedError = buildSkillTriggerError({
-          pluginName: options.pluginName,
-          platform: options.platform,
-          skillName: policy.skillName,
-          filePath: options.platform === 'codex'
-            ? policy.codexFilePath
-            : policy.claudeFilePath,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-
         if (options.mode === 'strictExplicit') {
-          await fs.remove(stagingSkillsRoot).catch(() => undefined);
-          throw wrappedError;
+          await fs.remove(stagingSkillRoot).catch(() => undefined);
+          throw error;
         }
 
         warnings.push(
-          `${options.pluginName} 的 ${options.platform} skill trigger 偏好跳过覆盖：${wrappedError.message}`,
+          `${options.pluginName} 的 ${options.platform} skill trigger 偏好跳过覆盖：${error instanceof Error ? error.message : String(error)}`,
         );
-        patchedSkills.length = 0;
-        await resetStagingSkillsToPristine(
-          options.embeddedRoot,
-          options.pluginName,
-          options.platform,
-          stagingSkillsRoot,
-        );
-        break;
       }
     }
+
+    for (const { policy, stagingSkillRoot } of stagedSkills) {
+      const replacement = await replaceSkillsSubtree(
+        getRepoSkillRoot(target.root, policy.skillName),
+        stagingSkillRoot,
+      );
+      operations.push(...replacement.operations);
+      generatedArtifacts.push({
+        path: getRepoSkillRoot(target.root, policy.skillName),
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: policy.skillName,
+      });
+    }
+
+    rollbackHandle = createRollbackHandleFromOperations(operations);
+  } else {
+    const targetPluginRoot = getMarketplacePluginRoot(target.root, options.pluginName);
+    const targetSkillsRoot = getPlatformSkillsRoot(targetPluginRoot, options.platform);
+    const targetParent = path.dirname(targetSkillsRoot);
+    const stagingSkillsRoot = path.join(
+      targetParent,
+      createTempDirectoryName(`${path.basename(targetSkillsRoot)}-staging`),
+    );
+
+    await fs.ensureDir(targetParent);
+    await copyEmbeddedSkillsToStaging(
+      options.embeddedRoot,
+      options.pluginName,
+      options.platform,
+      stagingSkillsRoot,
+    );
+
+    try {
+      for (const policy of resolution.policies) {
+        await patchSkill(path.join(stagingSkillsRoot, policy.skillName), policy);
+      }
+    } catch (error) {
+      if (options.mode === 'strictExplicit') {
+        await fs.remove(stagingSkillsRoot).catch(() => undefined);
+        throw error;
+      }
+
+      warnings.push(
+        `${options.pluginName} 的 ${options.platform} skill trigger 偏好跳过覆盖：${error instanceof Error ? error.message : String(error)}`,
+      );
+      patchedSkills.length = 0;
+      await resetStagingSkillsToPristine(
+        options.embeddedRoot,
+        options.pluginName,
+        options.platform,
+        stagingSkillsRoot,
+      );
+    }
+
+    rollbackHandle = await replaceSkillsSubtree(targetSkillsRoot, stagingSkillsRoot);
   }
 
-  const rollbackHandle = await replaceSkillsSubtree(targetSkillsRoot, stagingSkillsRoot);
   return {
     committed: rollbackHandle.committed,
     warnings,
@@ -1118,6 +1370,7 @@ export async function materializeSkillTriggerPreference(options: {
       skippedSkills,
     },
     rollbackHandle,
+    generatedArtifacts,
   };
 }
 
@@ -1128,12 +1381,22 @@ export async function rollbackMaterializedSkillTriggerPreference(
     return;
   }
 
-  await fs.remove(handle.targetSkillsRoot).catch(() => undefined);
-  if (handle.backupSkillsRoot) {
-    await fs.move(handle.backupSkillsRoot, handle.targetSkillsRoot, { overwrite: true });
+  const operations = handle.operations.length > 0
+    ? [...handle.operations].reverse()
+    : [{
+        targetSkillsRoot: handle.targetSkillsRoot,
+        backupSkillsRoot: handle.backupSkillsRoot,
+      }];
+
+  for (const operation of operations) {
+    await fs.remove(operation.targetSkillsRoot).catch(() => undefined);
+    if (operation.backupSkillsRoot) {
+      await fs.move(operation.backupSkillsRoot, operation.targetSkillsRoot, { overwrite: true });
+    }
   }
   handle.committed = false;
   handle.backupSkillsRoot = null;
+  handle.operations = [];
 }
 
 export async function commitMaterializedSkillTriggerPreference(
@@ -1143,17 +1406,28 @@ export async function commitMaterializedSkillTriggerPreference(
     return;
   }
 
-  if (handle.backupSkillsRoot) {
-    await fs.remove(handle.backupSkillsRoot);
+  const operations = handle.operations.length > 0
+    ? handle.operations
+    : [{
+        targetSkillsRoot: handle.targetSkillsRoot,
+        backupSkillsRoot: handle.backupSkillsRoot,
+      }];
+
+  for (const operation of operations) {
+    if (operation.backupSkillsRoot) {
+      await fs.remove(operation.backupSkillsRoot);
+    }
   }
   handle.committed = false;
   handle.backupSkillsRoot = null;
+  handle.operations = [];
 }
 
 function collectManagedScopeRecords(
   ledger: InstalledLedger,
   pluginName: string,
   platform: PlatformName,
+  mode: 'allScopes' | 'sharedRuntime' = 'allScopes',
 ): EffectiveSkillTriggerRecord[] {
   const platformRecord = ledger.plugins[pluginName]?.platforms[platform];
   if (!platformRecord) {
@@ -1169,6 +1443,11 @@ function collectManagedScopeRecords(
       updatedAt: platformRecord.userScope.updatedAt,
       record: platformRecord.userScope as InstalledScopeRecord<Record<string, unknown>>,
     });
+  }
+
+  const includeProjectScopes = !(mode === 'sharedRuntime' && platform === 'codex');
+  if (!includeProjectScopes) {
+    return records;
   }
 
   for (const [scopeKey, scopeRecord] of Object.entries(platformRecord.projectScopes ?? {})) {
@@ -1193,7 +1472,11 @@ export function getNextSkillTriggerWriteOrder(options: {
   pluginName: string;
   platform: PlatformName;
 }): number {
-  const records = collectManagedScopeRecords(options.ledger, options.pluginName, options.platform);
+  const records = collectManagedScopeRecords(
+    options.ledger,
+    options.pluginName,
+    options.platform,
+  );
   const maxWriteOrder = records.reduce((currentMax, record) => {
     if (typeof record.writeOrder !== 'number' || !Number.isInteger(record.writeOrder) || record.writeOrder < 0) {
       return currentMax;
@@ -1213,7 +1496,12 @@ export function selectEffectiveSkillTriggerRecord(options: {
     throw new Error('degraded installed.json 不能用于确定 skill trigger 胜者。');
   }
 
-  const records = collectManagedScopeRecords(options.ledger, options.pluginName, options.platform);
+  const records = collectManagedScopeRecords(
+    options.ledger,
+    options.pluginName,
+    options.platform,
+    'sharedRuntime',
+  );
   records.sort((left, right) => {
     const leftWriteOrder = left.writeOrder ?? 0;
     const rightWriteOrder = right.writeOrder ?? 0;
@@ -1304,6 +1592,7 @@ export async function collectSkillTriggerSiblingConflictWarnings(options: {
     options.ledgerAfter,
     options.pluginName,
     options.platform,
+    'sharedRuntime',
   ).filter((record) => record.scopeIdentity !== options.writtenScopeIdentity);
 
   if (siblingRecords.length === 0) {

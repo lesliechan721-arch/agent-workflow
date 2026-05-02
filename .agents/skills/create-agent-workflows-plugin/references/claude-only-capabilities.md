@@ -1,26 +1,21 @@
 # Claude 专属能力
 
-以下能力只进入 Claude runtime manifest，通过 `buildConfig.manifestOverrides.claude` 声明，并配合 `buildConfig.fileRules` 控制文件打包。Codex 平台不支持这些能力。
+本文只记录源码层公共 contract 中会落到 Claude 侧、且 Codex 不支持的能力：命令结果填充，以及 `buildConfig.manifestOverrides.claude` 下的 `outputStyles`、`lspServers`、`userConfig`、`channels`。公共 `slashCommands` 不是 Claude 专属能力，完整作者合同见 `references/slash-commands.md`；本文件只说明它的 Claude 渲染结果可以使用哪些 Claude-only 语法。
 
 ## 使用模式
 
-Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
+Claude runtime manifest 专属字段通过 `buildConfig.manifestOverrides.claude` 声明。`outputStyles` 和字符串形式的 `lspServers` 这类路径字段会自动把声明路径复制到 Claude bundle；只有额外辅助文件没有被任何 manifest 路径声明时，才需要再用 `buildConfig.fileRules.claude.include` 补充打包。
 
-1. **fileRules**：把能力文件（如 `commands/`）打包进 Claude bundle
-2. **manifestOverrides**：在 Claude runtime manifest 中声明对应字段
+命令结果填充不通过 `manifestOverrides` 声明；它写在 Claude 会加载的 Markdown prompt 文件中，并通过 frontmatter 的 `allowed-tools` / `shell` 配置运行约束。
 
-此外，`commands/*.md` 和 `output-styles/*.md` 等文本文件支持模板渲染（`{{var}}`、`{{#if}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置，详见 `references/build-config-spec.md`。
+`output-styles/*.md` 等文本文件支持模板渲染（`{{var}}`、`{{#if}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置，详见 `references/build-config-spec.md`。
 
 ```json
 {
   "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["commands/**"], "exclude": [] },
-      "codex": { "include": [], "exclude": ["commands/**"] }
-    },
     "manifestOverrides": {
       "claude": {
-        "commands": "./commands"
+        "outputStyles": "./output-styles"
       }
     }
   }
@@ -31,13 +26,13 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 ## 命令结果填充（Claude Code 专属）
 
-**此能力为 Claude Code 运行时专属，Codex 不支持。** Claude Code 在加载 `commands` 和 `skills` 的 Markdown prompt 文件时，可执行嵌入的 shell 命令并将输出内联到最终 prompt。
+**此能力为 Claude Code 运行时专属，Codex 不支持。** Claude Code 在加载 generated `commands` 和 `skills` 的 Markdown prompt 文件时，可执行嵌入的 shell 命令并将输出内联到最终 prompt。
 
 ### 支持范围
 
 | 扩展类型 | 支持 | 说明 |
 |----------|:----:|------|
-| `commands/*.md` | ✓ | 用户触发斜杠命令时执行 |
+| generated `commands/*.md` | ✓ | 用户触发斜杠命令时执行 |
 | `skills/*/SKILL.md` | ✓ | skill 被触发加载时执行 |
 | `skills/*/references/*.md` | ✓ | 随 skill 加载时执行 |
 | `extensions.agents` | ✗ | 仅支持 `${CLAUDE_PLUGIN_ROOT}` 和 `${user_config.X}` 变量替换 |
@@ -71,83 +66,7 @@ Claude 专属能力的声明需要 `buildConfig` 中两个子系统配合：
 
 `allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
 
-`commands` 和 `skills` 的 frontmatter 均支持这两个字段。
-
----
-
-## commands/
-
-Claude Code 的自定义斜杠命令（slash commands）。用户通过 `/command-name` 触发。
-
-### 目录结构
-
-```text
-plugins/<name>/
-└── commands/
-    ├── review.md
-    ├── deploy.md
-    └── debug/
-        ├── start.md
-        └── stop.md
-```
-
-命令文件是 Markdown 格式，文件名即命令名。支持子目录做命令命名空间（如 `debug/start` → `/debug:start`）。
-
-### 命令文件格式
-
-```markdown
----
-description: 执行代码审查
-allowed-tools:
-  - Bash
-  - Read
-  - Write
-model: inherit
-argument-hint: "[file-path]"
-disable-model-invocation: false
----
-
-对 $ARGUMENTS 指定的文件执行代码审查。
-
-1. 读取目标文件
-2. 分析代码质量
-3. 输出审查报告
-```
-
-### Frontmatter 字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `description` | string | 命令描述，显示在命令列表中 |
-| `allowed-tools` | `string` \| `string[]` | 命令执行期间允许使用的工具 |
-| `model` | string | 指定模型（`inherit` 继承当前模型） |
-| `argument-hint` | string | 参数提示（如 `[file]`、`[branch]`） |
-| `disable-model-invocation` | boolean | 禁止模型自动调用此命令 |
-| `shell` | string | shell 插值使用的解释器（默认 `bash`，可选 `powershell`） |
-
-命令文件里的 `allowed-tools` 同样兼容单个字符串；多条规则建议写成数组。
-
-### 动态参数
-
-- `$ARGUMENTS`：用户在命令名后输入的全部参数
-- `$1`、`$2`、`$3`：按空格分割的第 1、2、3 个参数
-
-命令文件正文支持命令结果填充语法（`` !`command` `` 和 `` ```! ``），详见上方 § 命令结果填充。
-
-### manifest 声明
-
-```json
-{
-  "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["commands/**"], "exclude": [] }
-    },
-    "manifestOverrides": {
-      "claude": { "commands": "./commands" }
-    }
-  }
-}
-```
+公共 `slashCommands` 的 `claude` frontmatter block，以及 `skills` 的 frontmatter，均支持这两个字段。`slashCommands` 的完整公共格式见 `references/slash-commands.md`。
 
 ---
 
@@ -185,9 +104,6 @@ description: 简洁输出模式
 ```json
 {
   "buildConfig": {
-    "fileRules": {
-      "claude": { "include": ["output-styles/**"], "exclude": [] }
-    },
     "manifestOverrides": {
       "claude": { "outputStyles": "./output-styles" }
     }
@@ -207,9 +123,11 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 ```json
 {
-  "manifestOverrides": {
-    "claude": {
-      "lspServers": "./lsp.json"
+  "buildConfig": {
+    "manifestOverrides": {
+      "claude": {
+        "lspServers": "./lsp.json"
+      }
     }
   }
 }
@@ -237,14 +155,16 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 ```json
 {
-  "manifestOverrides": {
-    "claude": {
-      "lspServers": {
-        "python": {
-          "command": "pylsp",
-          "transport": "stdio",
-          "extensionToLanguage": {
-            ".py": "python"
+  "buildConfig": {
+    "manifestOverrides": {
+      "claude": {
+        "lspServers": {
+          "python": {
+            "command": "pylsp",
+            "transport": "stdio",
+            "extensionToLanguage": {
+              ".py": "python"
+            }
           }
         }
       }
@@ -270,38 +190,42 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 用户配置项声明，安装插件时提示用户填写。敏感值存入 keychain。
 
+如果配置需要同时被 Claude Code 和 Codex 使用，优先使用 AW `config.schema` 和 `aw config`，详见 `references/aw-scripts-config-lifecycle.md`。`userConfig` 只适合 Claude Code 原生能力专用的配置，例如只在 Claude runtime manifest、Claude-only MCP 替换或 Claude prompt 变量中消费的值。
+
 ### 配置项定义格式
 
 ```json
 {
-  "manifestOverrides": {
-    "claude": {
-      "userConfig": {
-        "apiKey": {
-          "type": "string",
-          "title": "API Key",
-          "description": "外部审查服务的 API 密钥",
-          "required": true,
-          "sensitive": true
-        },
-        "maxFiles": {
-          "type": "number",
-          "title": "最大文件数",
-          "description": "单次审查的最大文件数量",
-          "default": 10,
-          "min": 1,
-          "max": 100
-        },
-        "autoFix": {
-          "type": "boolean",
-          "title": "自动修复",
-          "description": "是否自动修复可修复的问题",
-          "default": false
-        },
-        "outputDir": {
-          "type": "directory",
-          "title": "输出目录",
-          "description": "审查报告输出路径"
+  "buildConfig": {
+    "manifestOverrides": {
+      "claude": {
+        "userConfig": {
+          "apiKey": {
+            "type": "string",
+            "title": "API Key",
+            "description": "外部审查服务的 API 密钥",
+            "required": true,
+            "sensitive": true
+          },
+          "maxFiles": {
+            "type": "number",
+            "title": "最大文件数",
+            "description": "单次审查的最大文件数量",
+            "default": 10,
+            "min": 1,
+            "max": 100
+          },
+          "autoFix": {
+            "type": "boolean",
+            "title": "自动修复",
+            "description": "是否自动修复可修复的问题",
+            "default": false
+          },
+          "outputDir": {
+            "type": "directory",
+            "title": "输出目录",
+            "description": "审查报告输出路径"
+          }
         }
       }
     }
@@ -334,7 +258,7 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 ### 值的引用
 
-配置值可在 MCP/LSP 配置和 hook 命令中通过 `${user_config.KEY}` 引用：
+配置值可在 Claude runtime 的 MCP/LSP 配置和 hook 命令中通过 `${user_config.KEY}` 引用：
 
 ```json
 {
@@ -349,6 +273,8 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 }
 ```
 
+`${user_config.KEY}` 是 Claude runtime 占位符。共享给 Codex 的 `.mcp.json` 不应直接使用它；跨平台 MCP 配置请优先使用环境变量占位符（如 `${API_TOKEN}`），或用 `buildConfig.templates` 做平台分支。
+
 ---
 
 ## channels
@@ -359,22 +285,24 @@ Language Server Protocol 服务器配置，为 Claude Code 提供代码智能能
 
 ```json
 {
-  "manifestOverrides": {
-    "claude": {
-      "channels": [
-        {
-          "server": "slack-mcp",
-          "displayName": "Slack 频道",
-          "userConfig": {
-            "workspace": {
-              "type": "string",
-              "title": "工作区",
-              "description": "Slack 工作区名称",
-              "required": true
+  "buildConfig": {
+    "manifestOverrides": {
+      "claude": {
+        "channels": [
+          {
+            "server": "slack-mcp",
+            "displayName": "Slack 频道",
+            "userConfig": {
+              "workspace": {
+                "type": "string",
+                "title": "工作区",
+                "description": "Slack 工作区名称",
+                "required": true
+              }
             }
           }
-        }
-      ]
+        ]
+      }
     }
   }
 }

@@ -19,6 +19,13 @@ const MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_COMMAND_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_URL_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
+const CLAUDE_SLASH_COMMAND_ONLY_FIELDS = new Set([
+  'allowed-tools',
+  'model',
+  'argument-hint',
+  'disable-model-invocation',
+  'shell',
+]);
 const CODEX_POLICY_PRODUCTS = new Set([
   'atlas',
   'ATLAS',
@@ -96,6 +103,8 @@ const MATCHERLESS_NATIVE_HOOK_EVENTS = {
   codex: new Set(['UserPromptSubmit', 'Stop']),
 };
 const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i;
+const SLASH_COMMAND_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const DEFAULT_SLASH_COMMANDS_DIR = 'slash-commands';
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const SCRIPT_AUTO_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.sh', '.ps1', '.cmd', '.bat']);
 const SCRIPT_RUNNERS = new Set(['node', 'sh', 'bash', 'pwsh', 'powershell', 'cmd', 'auto']);
@@ -326,11 +335,15 @@ async function tryLoadCliValidator() {
 function validateManifestLightweight(manifest) {
   const input = expectRecord(manifest, 'plugin manifest');
   if (!input) return;
+  if (Object.prototype.hasOwnProperty.call(input, 'commands')) {
+    error('top-level "commands" has been removed; use "slashCommands" instead');
+  }
   validateAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
     'description',
     'skills',
+    'slashCommands',
     'skillTriggers',
     'mcpServers',
     'apps',
@@ -364,9 +377,25 @@ function validateManifestLightweight(manifest) {
     validateManifestPolicyProducts(mp.policy?.products);
   }
 
-  for (const field of ['skills', 'mcpServers', 'apps']) {
+  for (const field of ['skills', 'slashCommands', 'mcpServers', 'apps']) {
     if (manifest[field] && !manifest[field].startsWith('./')) {
       error(`${field} path must start with "./", got "${manifest[field]}"`);
+    }
+  }
+
+  const claudeCommands = manifest.buildConfig?.manifestOverrides?.claude?.commands;
+  if (claudeCommands !== undefined) {
+    error('buildConfig.manifestOverrides.claude.commands has been removed; use "slashCommands" instead');
+  }
+
+  for (const platform of ['claude', 'codex']) {
+    const rules = manifest.buildConfig?.fileRules?.[platform];
+    if (!rules) continue;
+    for (const pattern of [...(rules.include ?? []), ...(rules.exclude ?? [])]) {
+      const normalized = String(pattern).replace(/\\/g, '/').replace(/^\.\//, '');
+      if (normalized === 'commands' || normalized.startsWith('commands/')) {
+        error(`buildConfig.fileRules.${platform} no longer accepts legacy "commands/**" source rules; use "slashCommands" instead`);
+      }
     }
   }
 
@@ -861,7 +890,7 @@ function validateNoBuildOutputDirs(pluginDir) {
 }
 
 function validateDeclaredPathsExist(pluginDir, manifest) {
-  for (const field of ['skills', 'mcpServers', 'apps']) {
+  for (const field of ['skills', 'slashCommands', 'mcpServers', 'apps']) {
     if (!manifest[field]) continue;
     const resolved = path.join(pluginDir, manifest[field]);
     if (!fs.existsSync(resolved)) {
@@ -875,6 +904,7 @@ function validateDeclaredPathsExist(pluginDir, manifest) {
 function validateDeclaredNativeAssets(pluginDir, manifest) {
   const defaults = [
     ['skills', 'skills'],
+    [DEFAULT_SLASH_COMMANDS_DIR, 'slashCommands'],
     ['.mcp.json', 'mcpServers'],
     ['.app.json', 'apps'],
   ];
@@ -1746,6 +1776,276 @@ function validateSkills(pluginDir, manifest) {
   }
 }
 
+function detectCodexSlashCommandForbiddenSyntax(content) {
+  const checks = [
+    [/\$ARGUMENTS\b/, '$ARGUMENTS'],
+    [/\$\d+\b/, '$1'],
+    [/```!/, '```!'],
+    [/!`[^`\r\n]+`/, '!`command`'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(content)) {
+      return label;
+    }
+  }
+  return null;
+}
+
+function validateSlashCommandAssetReference(commandRoot, commandRelativePath, value, fieldName) {
+  if (value === undefined) return;
+  validateCodexIconPath({ [fieldName]: value }, fieldName, `${commandRelativePath}.codex.interface`);
+  if (typeof value !== 'string' || value.trim().length === 0) return;
+
+  const normalized = normalizeRelativePath(stripDotSlash(value));
+  const absolutePath = path.join(commandRoot, normalized);
+  const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
+  if (!stats) {
+    error(`${commandRelativePath}.codex.interface.${fieldName} references missing asset "${value}"`);
+    return;
+  }
+  if (!stats.isFile()) {
+    error(`${commandRelativePath}.codex.interface.${fieldName} must reference a file, got "${value}"`);
+  }
+}
+
+function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, frontmatter) {
+  const fieldName = `${commandRelativePath} frontmatter`;
+  const fm = expectRecord(frontmatter, fieldName);
+  if (!fm) return;
+
+  for (const key of Object.keys(fm)) {
+    if (CLAUDE_SLASH_COMMAND_ONLY_FIELDS.has(key)) {
+      error(`${fieldName}: "${key}" must be nested under "claude"`);
+    }
+  }
+
+  validateAllowedKeys(fm, fieldName, ['description', 'claude', 'codex']);
+  validateNonEmptyString(fm.description, `${fieldName}.description`, MAX_SKILL_DESCRIPTION_LEN);
+
+  if (fm.claude !== undefined) {
+    const claudeBlock = expectRecord(fm.claude, `${fieldName}.claude`);
+    if (claudeBlock) {
+      validateAllowedKeys(claudeBlock, `${fieldName}.claude`, [
+        'description',
+        'allowed-tools',
+        'model',
+        'argument-hint',
+        'shell',
+      ]);
+      if (claudeBlock.description !== undefined) {
+        validateNonEmptyString(
+          claudeBlock.description,
+          `${fieldName}.claude.description`,
+          MAX_SKILL_DESCRIPTION_LEN,
+        );
+      }
+      if (claudeBlock['allowed-tools'] !== undefined) {
+        validateAllowedTools(
+          claudeBlock['allowed-tools'],
+          `${fieldName}.claude.allowed-tools`,
+        );
+      }
+      if (claudeBlock.model !== undefined) {
+        validateNonEmptyString(
+          claudeBlock.model,
+          `${fieldName}.claude.model`,
+        );
+      }
+      if (claudeBlock['argument-hint'] !== undefined) {
+        validateNonEmptyString(
+          claudeBlock['argument-hint'],
+          `${fieldName}.claude.argument-hint`,
+        );
+      }
+      if (claudeBlock.shell !== undefined) {
+        if (typeof claudeBlock.shell !== 'string') {
+          error(`${fieldName}.claude.shell must be a string`);
+        } else if (!CLAUDE_FRONTMATTER_SHELLS.has(claudeBlock.shell.trim().toLowerCase())) {
+          error(`${fieldName}.claude.shell must be "bash" or "powershell"`);
+        }
+      }
+    }
+  }
+
+  if (fm.codex !== undefined) {
+    const codexBlock = expectRecord(fm.codex, `${fieldName}.codex`);
+    if (codexBlock) {
+      if (codexBlock.policy !== undefined) {
+        error(`${fieldName}.codex.policy is not supported; generated slashCommands skills are always manual-only`);
+      }
+      validateAllowedKeys(codexBlock, `${fieldName}.codex`, ['description', 'interface']);
+      if (codexBlock.description !== undefined) {
+        validateNonEmptyString(
+          codexBlock.description,
+          `${fieldName}.codex.description`,
+          MAX_SKILL_DESCRIPTION_LEN,
+        );
+      }
+      if (codexBlock.interface !== undefined) {
+        const interfaceBlock = expectRecord(codexBlock.interface, `${fieldName}.codex.interface`);
+        if (interfaceBlock) {
+          validateAllowedKeys(interfaceBlock, `${fieldName}.codex.interface`, [
+            'display_name',
+            'short_description',
+            'icon_small',
+            'icon_large',
+            'brand_color',
+            'default_prompt',
+          ]);
+          validateCodexMetadataString(
+            interfaceBlock,
+            'display_name',
+            `${fieldName}.codex.interface`,
+            MAX_OPENAI_INTERFACE_NAME_LEN,
+          );
+          validateCodexMetadataString(
+            interfaceBlock,
+            'short_description',
+            `${fieldName}.codex.interface`,
+            MAX_OPENAI_INTERFACE_DESCRIPTION_LEN,
+          );
+          validateCodexMetadataString(
+            interfaceBlock,
+            'default_prompt',
+            `${fieldName}.codex.interface`,
+            MAX_OPENAI_DEFAULT_PROMPT_LEN,
+          );
+          validateCodexBrandColor(interfaceBlock, 'brand_color', `${fieldName}.codex.interface`);
+          validateSlashCommandAssetReference(
+            commandRoot,
+            commandRelativePath,
+            interfaceBlock.icon_small,
+            'icon_small',
+          );
+          validateSlashCommandAssetReference(
+            commandRoot,
+            commandRelativePath,
+            interfaceBlock.icon_large,
+            'icon_large',
+          );
+        }
+      }
+    }
+  }
+}
+
+function validateSlashCommands(pluginDir, manifest) {
+  const defaultSlashCommandsDir = path.join(pluginDir, DEFAULT_SLASH_COMMANDS_DIR);
+  if (fs.existsSync(defaultSlashCommandsDir) && !manifest.slashCommands) {
+    error(`"${DEFAULT_SLASH_COMMANDS_DIR}" exists but manifest does not declare "slashCommands"`);
+  }
+
+  if (!manifest.slashCommands) return;
+
+  const slashCommandsRoot = path.join(pluginDir, manifest.slashCommands);
+  const stats = fs.statSync(slashCommandsRoot, { throwIfNoEntry: false });
+  if (!stats) {
+    error(`slashCommands points to "${manifest.slashCommands}" but path does not exist`);
+    return;
+  }
+  if (!stats.isDirectory()) {
+    error(`slashCommands must point to a directory, got "${manifest.slashCommands}"`);
+    return;
+  }
+
+  const skillNames = new Set();
+  if (manifest.skills) {
+    const skillsRoot = path.join(pluginDir, manifest.skills);
+    if (fs.existsSync(skillsRoot)) {
+      for (const entry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          skillNames.add(entry.name);
+        }
+      }
+    }
+  }
+
+  const seenCommands = new Set();
+  const commandFiles = [];
+  for (const entry of fs.readdirSync(slashCommandsRoot, { withFileTypes: true })) {
+    const relativePath = normalizeRelativePath(path.join(stripDotSlash(manifest.slashCommands), entry.name));
+    if (entry.isDirectory()) {
+      if (entry.name !== 'assets') {
+        error(`slashCommands does not support nested directory "${relativePath}"; only root *.md files and assets/ are allowed`);
+      }
+      continue;
+    }
+    if (!entry.isFile()) {
+      error(`slashCommands has unsupported entry "${relativePath}"`);
+      continue;
+    }
+    if (path.posix.extname(entry.name) !== '.md') {
+      error(`slashCommands only accepts root *.md files; found "${relativePath}"`);
+      continue;
+    }
+    commandFiles.push(entry.name);
+  }
+
+  if (commandFiles.length === 0) {
+    error(`slashCommands "${manifest.slashCommands}" must contain at least one root *.md command file`);
+    return;
+  }
+
+  for (const fileName of commandFiles.sort()) {
+    const commandName = path.posix.basename(fileName, '.md');
+    const commandRelativePath = normalizeRelativePath(
+      path.join(stripDotSlash(manifest.slashCommands), fileName),
+    );
+    if (
+      commandName.length === 0 ||
+      commandName.length > 64 ||
+      !SLASH_COMMAND_NAME_PATTERN.test(commandName)
+    ) {
+      error(`${commandRelativePath} command name must use lowercase hyphen-case and be <= 64 characters`);
+      continue;
+    }
+    if (seenCommands.has(commandName)) {
+      error(`slashCommands has duplicate command name "${commandName}"`);
+      continue;
+    }
+    if (skillNames.has(commandName)) {
+      error(`slashCommands command "${commandName}" conflicts with source skill "${commandName}"`);
+      continue;
+    }
+    seenCommands.add(commandName);
+
+    const absolutePath = path.join(slashCommandsRoot, fileName);
+    const rawContent = fs.readFileSync(absolutePath, 'utf8');
+    const renderedClaude = renderTemplateForPlatform(
+      manifest,
+      commandRelativePath,
+      rawContent,
+      'claude',
+    );
+    const renderedCodex = renderTemplateForPlatform(
+      manifest,
+      commandRelativePath,
+      rawContent,
+      'codex',
+    );
+
+    const codexForbiddenSyntax = detectCodexSlashCommandForbiddenSyntax(renderedCodex);
+    if (codexForbiddenSyntax) {
+      error(`${commandRelativePath} Codex render still contains Claude-only syntax "${codexForbiddenSyntax}"`);
+    }
+
+    for (const [platform, rendered] of [['claude', renderedClaude], ['codex', renderedCodex]]) {
+      let frontmatter;
+      try {
+        frontmatter = parseFrontmatter(rendered, `${commandRelativePath} (${platform} render)`);
+      } catch (parseError) {
+        error(`${commandRelativePath} (${platform} render) has invalid YAML frontmatter: ${parseError.message}`);
+        continue;
+      }
+      if (!frontmatter) {
+        error(`${commandRelativePath} (${platform} render) is missing YAML frontmatter`);
+        continue;
+      }
+      validateSlashCommandFrontmatter(slashCommandsRoot, commandRelativePath, frontmatter);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1790,6 +2090,7 @@ async function validatePluginDir(pluginDir) {
   validateAppsContent(pluginDir, manifest);
   validateExtensionNameUniqueness(manifest);
   validateSkills(pluginDir, manifest);
+  validateSlashCommands(pluginDir, manifest);
 }
 
 async function main() {
