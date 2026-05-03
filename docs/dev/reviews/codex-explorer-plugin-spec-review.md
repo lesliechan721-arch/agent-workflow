@@ -1,78 +1,86 @@
 # `codex-explorer-plugin-spec.md` 复审报告
 
-审查对象：`docs/dev/sepcs/codex-explorer-plugin-spec.md`  
-审查时间：2026-05-02
+审查对象：`docs/dev/specs/codex-explorer-plugin-spec.md`  
+审查时间：2026-05-03
 
 ## Findings
 
-### 1. `effective config` 的定义仍和 user-scope-only 策略冲突
+本轮复审没有再发现需要继续修改 spec 的问题。
 
-严重度：中
+上一轮报告里留下的两条低风险问题，这一版都已经补进了正式需求约束里；我也没有再看到新的逻辑漏洞、基线断层，或会让实现阶段出现明显分叉的表述。
 
-这版 spec 已经明确 `codex-explore` 首版只支持 Codex user scope 安装，但配置语义这里还留着一处真值冲突。
+## 复审结论
 
-spec 一方面把 renderer 输入写成 “effective config”，并多次要求按它来渲染 artifact：
+### 1. 需求合理性与逻辑完整性
 
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:56`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:217`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:223`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:616`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:620`
+当前 spec 的主链路已经闭环，关键边界也都写得足够明确：
 
-另一方面，同一份 spec 又明确：
+- 动态 artifact 的安装前能力真值来自 `artifacts.targets`，不是运行时执行 renderer 才临时推断：
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:56-67`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:163-219`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:410-421`
+- `aw status` 被明确限定为只读路径，不执行 renderer 或 lifecycle：
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:303-310`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:447-449`
+- user/project 两层的 render config 口径已经拆开，避免仓库内 project config 污染 user scope artifact：
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:257-267`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:455-466`
+- 共享 `.codex/config.toml` 的变更已经被收口到单次文档级事务，不再留下“一种 target 写一次文件”的空子：
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:60-67`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:463-464`
+- `codex.agentRole` 的冲突检测、刷新身份校验和 status 诊断，已经统一落到 Codex 最终 role 名空间，而不是只按文件名或 table key 猜：
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:395-406`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:438-449`
+  - `docs/dev/specs/codex-explorer-plugin-spec.md:616-624`
 
-- user scope artifact 只应使用 `schema default + user config`
-- `codex-explore` 首版实际运行时只用 user config
-- project config 可以保存，但不会触发本插件 project artifact refresh
-- 插件本身也不支持 project scope 安装
+我的判断是：需求本身现在是自洽的。默认轻量 instruction、手动 skill + 专用 role、artifact renderer、config-triggered refresh 这四块之间没有再互相打架，也没有再看到明显的逻辑缺口。
 
-相关位置：
+### 2. 是否能在当前基线下落地
 
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:218-220`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:483-489`
-- `docs/dev/sepcs/codex-explorer-plugin-spec.md:605`
+可以落地，而且主要是沿现有基础设施做增量扩展，不是推翻重做。
 
-当前仓库里，“effective config” 的既有真值并不是这个含义。文档和实现都把它定义成 `default < user < project`：
+我确认了几处现成能力，说明这份 spec 不是“纸面可行、代码基线接不住”：
 
-- `docs/plugin-authoring.md:40-46`
-- `docs/architecture.md:66-69`
-- `packages/cli/src/utils/plugin-config.ts:405-507`
+- Codex config 已经有共享文件事务写入原语，可承接 spec 要求的单事务 apply：
+  - `packages/cli/src/utils/codex-config.ts:1390-1413`
+- Codex project scope 已经有成型的写入前安全预检链路，可复用到 install、upgrade 和 config-triggered refresh：
+  - `packages/cli/src/commands/codex-project-safety.ts:281-360`
+- Codex project managed surface 目前已经集中在统一入口判断，后续把动态 `artifacts.targets` 并进去是顺着现有抽象扩展：
+  - `packages/cli/src/utils/codex-project-surface.ts:117-174`
 
-而且当前 `aw config set/configure/unset` 写完后回显的也是这套合并结果：
+同时，当前基线里也确实还有几块需要补齐，但这些都属于明确的工程实现项，不是 spec 层面的断裂：
 
-- `packages/cli/src/index.ts:855-885`
-- `packages/cli/src/index.ts:911-985`
-- `packages/cli/src/index.ts:1005-1039`
+- manifest schema 和类型系统目前还不认识 `artifacts`、`scripts.artifacts.render`：
+  - `packages/cli/src/utils/manifest.ts:1372-1399`
+  - `packages/cli/src/types.ts:242-257`
+- tracking 现在仍是 path-first 结构，还没有 artifact id、target、state、config digest 这些动态 artifact 元数据：
+  - `packages/cli/src/types.ts:324-335`
+- 当前 Codex agent 安装路径仍只写 role 文件，不写 `[agents.<roleKey>]` 注册项，也没有把注册项和 role 文件作为一个逻辑 artifact 跟踪：
+  - `packages/cli/src/adapters/codex.ts:1599-1608`
+- 当前 user scope agent 可见性诊断确实还是按 `agents/*.toml` 文件名收集，再做字符串比对；spec 这次已经把这个缺口明确收掉：
+  - `packages/cli/src/utils/detect.ts:241-302`
+  - `packages/cli/src/utils/detect.ts:470-481`
 
-这会带来一个很具体的歧义：
+所以结论不是“实现很轻”，而是“方向对，改造点明确，当前基线有足够支点承接”。
 
-- 如果实现继续沿用当前 `resolveEffectivePluginConfig()`，那 user scope install/refresh 会错误吃到 project config，和 spec 的 scope 策略冲突。
-- 如果实现按 spec 忽略 project config，那 `aw config get/list`、`configure` 回显和实际写进 `~/.codex` 的 artifact 又会对不上，用户会看到“配置生效了”，但运行时其实没用。
+### 3. 上一轮报告问题是否还有尾巴
 
-建议二选一写进 spec：
+上一轮报告提的两条问题，这轮已经都处理到位，没有再看到衍生问题：
 
-- 方案 A：对 `codex-explore` 这类只允许 user scope 安装的插件，直接禁止 `project` scope config 写入/读取。
-- 方案 B：保留 project config store，但不要再把 renderer 输入叫做 “effective config”，改成显式的 `render config` 或 `scope-resolved config`，并要求 `aw config get/list`、status 或相关提示明确说明这类插件当前只应用 user config。
+- 共享 `.codex/config.toml` 的事务边界，现在已经从“建议”变成了明确 contract。
+- user scope 下 higher-priority layer 的 role 可见性诊断，现在也已经被明确要求按最终 role 名空间解析。
 
-在这个点收口之前，不建议直接开做实现，否则 config helper、config 命令回显和 artifact refresh 很容易各自拿一套不同的真值。
+我这次没有再发现因为修这两条而引入的新问题。
 
-## 已解决项回看
+## 剩余风险与实现注意点
 
-上一轮报告里的主要问题，这版已经基本收住：
+这部分不是 spec 缺陷，但实现时建议盯紧：
 
-- 默认轻量 instruction 已明确降级成建议性入口，不再暗示它能突破 `spawn_agent` 的授权规则。
-- `codex.agentRole` 的路径真值已经收回到 AW core，renderer 不再返回 `config_file`。
-- `codex-explore` 已明确拒绝 project scope 安装，规避了 skill 全局暴露、role 仅仓库本地的 scope 不一致。
-- role 冲突检测已经前置到所有副作用之前，不再留半安装窗口。
-- refresh、drift 和回滚规则已经写到足够可实现的粒度。
-- 当前还在开发阶段，不要求兼容历史安装迁移，这一点也已经在 spec 里说清楚了。
+- 这次会新增 manifest/schema、tracking 结构和 Codex adapter 行为。按仓库约定，`.agents/skills/create-agent-workflows-plugin/`、`docs/plugin-authoring.md` 和 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md` 需要在同一轮同步更新，不能只改 runtime contract。
+- 测试重点建议放在四类场景：`aw status` 只读约束、最终 role 名空间冲突与遮蔽诊断、user scope render config 不吸入 project config、config-triggered refresh 的回滚与失败诊断。
 
-## 可落地性判断
+## 结论
 
-除上面这一个配置语义问题外，我没有再看到新的结构性阻塞点。
+当前这版 `docs/dev/specs/codex-explorer-plugin-spec.md` 已经没有我认为需要继续回炉的 spec 级问题。
 
-我的判断是：
-
-- 需求方向是合理的。
-- 在当前基线下可以落地。
-- 处理完 `effective config` / `user-only render config` 这处真值冲突后，这份 spec 就可以进入实现拆分。
+需求方向合理，逻辑闭环完整，也能在当前基线上落地。接下来可以进入实现拆分和测试设计阶段，不需要再因为上一轮 review 的问题卡住。
