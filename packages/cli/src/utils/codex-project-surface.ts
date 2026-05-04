@@ -198,7 +198,9 @@ export function trackingRecordTouchesCodexProjectConfig(
 ): boolean {
   return Boolean(
     trackingRecord?.artifacts.some((artifact) =>
-      artifact.kind === 'instruction' || artifact.kind === 'mcpServer',
+      artifact.kind === 'instruction' ||
+        artifact.kind === 'mcpServer' ||
+        (artifact.kind === 'agent' && artifact.target === 'codex.agentRole'),
     ),
   );
 }

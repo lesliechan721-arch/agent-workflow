@@ -962,6 +962,54 @@ describe('Codex project safety preflight', () => {
     });
   });
 
+  it('fails write preflight when tracking-only dynamic Codex role needs project config access', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['skills-only'],
+    });
+    const codexPaths = resolveCodexPaths(workspace.repoRoot, 'project', workspace.env);
+    const roleKey = 'codex-explorer';
+    const rolePath = path.join(
+      codexPaths.configDir,
+      'agents',
+      `${buildGeneratedName('skills-only', roleKey)}.toml`,
+    );
+    await upsertTrackingRecord(codexPaths.trackingDir, 'skills-only', [{
+      path: rolePath,
+      paths: [codexPaths.configTomlPath, rolePath],
+      kind: 'agent',
+      platform: 'codex',
+      artifactKey: roleKey,
+      id: 'codex-explorer-role',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey,
+    }]);
+    await writeCorruptedCodexProjectConfig({ repoRoot: workspace.repoRoot });
+    const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'skills-only'));
+
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        () => preflightCodexProjectWriteSafety({
+          targets: [{
+            pluginName: 'skills-only',
+            plugin,
+            currentPlugin: plugin,
+            source: 'currentCatalog',
+          }],
+          platforms: ['codex'],
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          env: workspace.env,
+          operation: 'refresh',
+        }),
+      ),
+    ).rejects.toThrow('项目级 Codex 配置');
+  });
+
   it('installs repo-managed skills into .agents/skills with project-local trigger materialization', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
@@ -1661,6 +1709,59 @@ describe('Codex project safety preflight', () => {
         }),
       ]),
     );
+  });
+
+  it('reads project config for status when tracking only contains a dynamic Codex role', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['skills-only'],
+      forceCodex: false,
+    });
+    const codexPaths = resolveCodexPaths(workspace.repoRoot, 'project', workspace.env);
+    const roleKey = 'codex-explorer';
+    const rolePath = path.join(
+      codexPaths.configDir,
+      'agents',
+      `${buildGeneratedName('skills-only', roleKey)}.toml`,
+    );
+    await seedCodexRoleAlias({
+      configPath: codexPaths.configTomlPath,
+      tableKey: roleKey,
+      roleFileRelativePath: path.relative(codexPaths.configDir, rolePath),
+      roleName: roleKey,
+      description: 'Role layer',
+    });
+    await upsertTrackingRecord(codexPaths.trackingDir, 'skills-only', [{
+      path: rolePath,
+      paths: [codexPaths.configTomlPath, rolePath],
+      kind: 'agent',
+      platform: 'codex',
+      artifactKey: roleKey,
+      id: 'codex-explorer-role',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey,
+    }]);
+
+    const result = await statusCommand(
+      ['skills-only'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: workspace.env,
+      },
+    );
+    const report = result.reports[0].plugins[0];
+    const roleArtifact = report.managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role');
+
+    expect(roleArtifact).toMatchObject({
+      target: 'codex.agentRole',
+      roleKey,
+      health: 'healthy',
+    });
   });
 
   it('fails status for config-backed project targets when project Codex config is unreadable', async () => {
