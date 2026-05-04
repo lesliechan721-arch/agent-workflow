@@ -198,7 +198,7 @@ renderer stdout 必须只输出 JSON：
 }
 ```
 
-`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
 
 renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。写盘、回滚、tracking、status 和 uninstall 都集中在 AW target apply。
 

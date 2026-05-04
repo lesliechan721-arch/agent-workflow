@@ -84,6 +84,8 @@ function renderLightweightInstruction({ explorerModel, modelReasoningEffort }) {
     - \`model\`: \`${explorerModel}\`
     - \`reasoning_effort\`: \`${modelReasoningEffort}\`
 
+    如果用户显式指定其它模型，或 Codex runtime 报告 \`${explorerModel}\` 不可用，先向用户说明当前 workflow 默认模型不可用或已被用户指令覆盖，再按用户最新指示处理，不要静默改用其它模型。
+
     给每个 explorer 的任务必须写清楚：具体问题、范围、探索深度（\`quick\` / \`medium\` / \`very thorough\`）、只读要求和期望输出。提醒它不要创建、编辑、移动、删除、格式化或回退文件，不要安装依赖，不要运行破坏性命令。
 
     explorer 运行时，继续做不重叠的本地调查。已经启动 explorer 后，必须等待并读取它的结果，不能因为暂时没有返回就关闭 explorer、再由主 agent 自己完成同一个探索问题。整合结果时只保留关键结论、文件路径、必要行号和不确定点；必要时补读少量代码验证。读取并整合结果后，立即关闭本次启动的 explorer。

@@ -50,8 +50,10 @@ import {
 import {
   applyCodexConfigTransactionFile,
   type CodexAgentRegistrationConfig,
+  type CodexManagedInstructionBlock,
   type CodexMcpServerConfig,
   type CodexConfigSnapshot,
+  composeManagedDeveloperInstructionsBlock,
   readCodexConfigFile,
   readRenderedCodexMcpServersFile,
   removeCodexMarketplaceFile,
@@ -71,6 +73,7 @@ import {
 } from '../utils/artifact-renderer.js';
 import {
   createArtifactConfigDigest,
+  type ValidatedArtifactPlanArtifact,
   validateArtifactPlan,
 } from '../utils/artifact-plan.js';
 import {
@@ -1726,6 +1729,37 @@ function sortRepoManagedItems(
   );
 }
 
+function composeDynamicInstructionBlock(
+  pluginName: string,
+  artifacts: readonly ValidatedArtifactPlanArtifact[],
+): CodexManagedInstructionBlock | undefined {
+  const fragments = artifacts
+    .filter((artifact) =>
+      artifact.target === 'codex.developerInstructionsBlock' && artifact.state === 'present',
+    )
+    .map((artifact) => {
+      if (typeof artifact.content !== 'string') {
+        throw new Error(`Artifact "${artifact.id}" 的 instruction 必须提供 content。`);
+      }
+      return {
+        artifactId: artifact.id,
+        value: artifact.content,
+      };
+    });
+
+  return fragments.length > 0
+    ? composeManagedDeveloperInstructionsBlock(pluginName, fragments)
+    : undefined;
+}
+
+function createPresentInstructionBlockDigest(block: CodexManagedInstructionBlock): string {
+  return createGeneratedArtifactContentDigest({
+    target: 'codex.developerInstructionsBlock',
+    state: 'present',
+    content: block.value.trim(),
+  });
+}
+
 function summarizeRepoManagedItems(
   items: RepoManagedProjectItemReport[],
   applicable: boolean,
@@ -1872,6 +1906,16 @@ async function buildCodexManagedArtifactStatuses(options: {
   const presentInstructionCount = trackedDynamicArtifacts.filter((artifact) =>
     artifact.target === 'codex.developerInstructionsBlock' && artifact.state === 'present',
   ).length;
+  const trackedInstructionArtifacts = trackedDynamicArtifacts.filter((artifact) =>
+    artifact.target === 'codex.developerInstructionsBlock',
+  );
+  const instructionArtifactDigests = trackedInstructionArtifacts.flatMap((artifact) =>
+    artifact.contentDigest ? [artifact.contentDigest] : [],
+  );
+  const hasSharedInstructionBlockDigest =
+    trackedInstructionArtifacts.length > 0 &&
+    instructionArtifactDigests.length === trackedInstructionArtifacts.length &&
+    new Set(instructionArtifactDigests).size === 1;
 
   return Promise.all(trackedDynamicArtifacts.map(async (artifact) => {
     const diagnostics: string[] = [];
@@ -1924,8 +1968,20 @@ async function buildCodexManagedArtifactStatuses(options: {
               state: 'disabled',
               disabledReason: artifact.disabledReason ?? null,
             })
-          : undefined;
-        if (hasBlock) {
+          : createGeneratedArtifactContentDigest({
+              target: artifact.target,
+              state: 'present',
+              content: instructionBlock.value.trim(),
+            });
+        const canCompareInstructionBlockDigest =
+          hasBlock && hasSharedInstructionBlockDigest && artifact.contentDigest;
+        if (
+          canCompareInstructionBlockDigest &&
+          currentContentDigest !== artifact.contentDigest
+        ) {
+          health = 'contentDrift';
+          diagnostics.push('当前 managed developer_instructions block 与 tracking contentDigest 不一致。');
+        } else if (hasBlock && presentInstructionCount === 0) {
           health = 'contentDrift';
           diagnostics.push('artifact tracking 标记为 disabled，但当前 managed developer_instructions block 仍然存在。');
         } else if (artifact.lastRefresh?.status === 'failed') {
@@ -1950,9 +2006,11 @@ async function buildCodexManagedArtifactStatuses(options: {
           state: 'present',
           content: instructionBlock.value.trim(),
         });
-        if (
-          presentInstructionCount === 1 &&
+        const canCompareInstructionBlockDigest =
           artifact.contentDigest &&
+          (presentInstructionCount === 1 || hasSharedInstructionBlockDigest);
+        if (
+          canCompareInstructionBlockDigest &&
           currentContentDigest !== artifact.contentDigest
         ) {
           health = 'contentDrift';
@@ -2502,22 +2560,17 @@ export class CodexAdapter implements PlatformAdapter {
           await fs.remove(managedRoleFilePath);
         }
 
-        const presentDynamicInstructions = dynamicInstructionArtifacts
-          .filter((artifact) => artifact.state === 'present')
-          .map((artifact) => {
-            if (artifact.content === undefined) {
-              throw new Error(`Artifact "${artifact.id}" 的 instruction 必须提供 content。`);
-            }
-            return artifact.content.trim();
-          });
+        const dynamicInstructionBlock = dynamicInstructionArtifacts.length > 0
+          ? composeDynamicInstructionBlock(plugin.manifest.name, dynamicInstructionArtifacts)
+          : undefined;
+        const dynamicInstructionBlockContentDigest = dynamicInstructionBlock
+          ? createPresentInstructionBlockDigest(dynamicInstructionBlock)
+          : undefined;
         const transaction = await applyCodexConfigTransactionFile(paths.configTomlPath, {
           ...(dynamicInstructionArtifacts.length > 0
-            ? presentDynamicInstructions.length > 0
+            ? dynamicInstructionBlock
               ? {
-                  upsertManagedInstructionBlock: {
-                    pluginName: plugin.manifest.name,
-                    value: presentDynamicInstructions.join('\n\n'),
-                  },
+                  upsertManagedInstructionBlock: dynamicInstructionBlock,
                 }
               : {
                   removeManagedInstructionPluginName: plugin.manifest.name,
@@ -2563,19 +2616,20 @@ export class CodexAdapter implements PlatformAdapter {
                 : { disabledReason: artifact.disabledReason }),
               refreshKeys: [...artifact.refreshKeys],
               configDigest: artifact.configDigest,
-              contentDigest: createGeneratedArtifactContentDigest(
-                artifact.state === 'present'
-                  ? {
-                      target: artifact.target,
-                      state: artifact.state,
-                      content: artifact.content?.trim(),
-                    }
-                  : {
-                      target: artifact.target,
-                      state: artifact.state,
-                      disabledReason: artifact.disabledReason ?? null,
-                    },
-              ),
+              contentDigest: dynamicInstructionBlockContentDigest ??
+                createGeneratedArtifactContentDigest(
+                  artifact.state === 'present'
+                    ? {
+                        target: artifact.target,
+                        state: artifact.state,
+                        content: artifact.content?.trim(),
+                      }
+                    : {
+                        target: artifact.target,
+                        state: artifact.state,
+                        disabledReason: artifact.disabledReason ?? null,
+                      },
+                ),
             });
           }
         } else if (instructions.length > 0) {

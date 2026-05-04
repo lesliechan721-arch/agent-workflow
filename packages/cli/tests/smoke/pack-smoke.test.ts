@@ -80,6 +80,7 @@ describe('pack smoke', () => {
     const unpackedPackageRoot = path.join(unpackDir, 'package');
     const unpackedPluginsRoot = path.join(unpackedPackageRoot, 'plugins-dist');
     const samplePluginRoot = path.join(unpackedPluginsRoot, 'plugins', 'git-commit');
+    const codexExplorePluginRoot = path.join(unpackedPluginsRoot, 'plugins', 'codex-explore');
     await fs.ensureSymlink(
       path.join(packageRoot, 'node_modules'),
       path.join(unpackedPackageRoot, 'node_modules'),
@@ -92,18 +93,35 @@ describe('pack smoke', () => {
       path.join(samplePluginRoot, '.agents-plugin', 'plugin.json'),
       path.join(samplePluginRoot, '.claude-plugin', 'plugin.json'),
       path.join(samplePluginRoot, '.codex-plugin', 'plugin.json'),
+      path.join(codexExplorePluginRoot, '.agents-plugin', 'plugin.json'),
+      path.join(codexExplorePluginRoot, '.codex-plugin', 'plugin.json'),
+      path.join(codexExplorePluginRoot, 'scripts', 'render-artifacts.mjs'),
+      path.join(codexExplorePluginRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md'),
+      path.join(codexExplorePluginRoot, 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      path.join(codexExplorePluginRoot, 'codex', 'roles', 'codex-explorer.md'),
+      path.join(codexExplorePluginRoot, 'codex', 'instructions', 'lightweight.md'),
     ];
     await Promise.all(requiredPaths.map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
     }));
 
-    const [packedPackageJson, claudeMarketplace, codexMarketplace, claudeManifest, codexManifest] =
+    const [
+      packedPackageJson,
+      claudeMarketplace,
+      codexMarketplace,
+      claudeManifest,
+      sampleCodexManifest,
+      codexExploreManifest,
+      codexExploreCodexManifest,
+    ] =
       await Promise.all([
         fs.readJson(path.join(unpackedPackageRoot, 'package.json')),
         fs.readJson(path.join(unpackedPluginsRoot, '.claude-plugin', 'marketplace.json')),
         fs.readJson(path.join(unpackedPluginsRoot, '.agents', 'plugins', 'marketplace.json')),
         fs.readJson(path.join(samplePluginRoot, '.claude-plugin', 'plugin.json')),
         fs.readJson(path.join(samplePluginRoot, '.codex-plugin', 'plugin.json')),
+        fs.readJson(path.join(codexExplorePluginRoot, '.agents-plugin', 'plugin.json')),
+        fs.readJson(path.join(codexExplorePluginRoot, '.codex-plugin', 'plugin.json')),
       ]);
 
     expect(packedPackageJson.name).toBe('@yiliang/aw');
@@ -129,6 +147,13 @@ describe('pack smoke', () => {
             authentication: 'ON_INSTALL',
           },
         }),
+        expect.objectContaining({
+          name: 'codex-explore',
+          source: './plugins/codex-explore',
+          policy: expect.objectContaining({
+            products: ['CODEX'],
+          }),
+        }),
       ]),
     });
     const gitCommitEntry = claudeMarketplace.plugins.find(
@@ -145,10 +170,40 @@ describe('pack smoke', () => {
       claudeManifest.agents,
       claudeManifest.lspServers,
     ]);
+    expect(codexExploreManifest).toMatchObject({
+      scripts: {
+        artifacts: {
+          render: {
+            runner: 'node',
+            path: './scripts/render-artifacts.mjs',
+          },
+        },
+      },
+      artifacts: {
+        targets: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            target: 'codex.developerInstructionsBlock',
+          }),
+          expect.objectContaining({
+            id: 'codex-explorer-role',
+            platform: 'codex',
+            target: 'codex.agentRole',
+            roleKey: 'codex-explorer',
+          }),
+        ]),
+      },
+    });
+    expect(codexExploreCodexManifest).toMatchObject({
+      name: 'codex-explore',
+      skills: './codex/skills',
+    });
+
     const codexBundlePaths = collectStringPaths([
-      codexManifest.skills,
-      codexManifest.mcpServers,
-      codexManifest.apps,
+      sampleCodexManifest.skills,
+      sampleCodexManifest.mcpServers,
+      sampleCodexManifest.apps,
     ]);
 
     expect(claudeBundlePaths.every((entry) => !entry.startsWith('./shared/'))).toBe(true);

@@ -185,7 +185,7 @@
 - `states` 首版支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
 - `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project write safety preflight。
-- `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串；`disabled` 会移除或跳过受管 block。
+- `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
 `ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。

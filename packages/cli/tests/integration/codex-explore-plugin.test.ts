@@ -160,6 +160,96 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
   );
 }
 
+async function addCodexExploreRoleGuidanceInstructionArtifact(rootDir: string): Promise<void> {
+  await mutateCodexExploreManifest(rootDir, (manifest) => {
+    const artifacts = manifest.artifacts as { targets?: Record<string, unknown>[] };
+    artifacts.targets = [
+      ...(artifacts.targets ?? []),
+      {
+        id: 'role-guidance',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.developerInstructionsBlock',
+        projectManagedKind: 'instruction',
+        states: ['present'],
+        refreshKeys: ['modelReasoningEffort'],
+        requiresCodexProjectConfig: true,
+      },
+    ];
+  });
+}
+
+async function writeMultiInstructionCodexExploreRenderer(
+  rootDir: string,
+  logFileName = 'artifact-render.log',
+): Promise<void> {
+  await writeCodexExploreRenderer(
+    rootDir,
+    `
+import { appendFile, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import process from 'node:process';
+
+const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+await appendFile(
+  path.join(context.paths.awHome, ${JSON.stringify(logFileName)}),
+  \`\${context.event}:\${context.scope}\\n\`,
+);
+
+const values = context.artifactRenderConfig?.values ?? {};
+const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
+const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
+
+const plan = {
+  version: 1,
+  artifacts: [
+    {
+      id: 'lightweight-instruction',
+      kind: 'instruction',
+      platform: 'codex',
+      target: 'codex.developerInstructionsBlock',
+      state: 'present',
+      refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      content: \`multi lightweight \${explorerModel} \${modelReasoningEffort}\`,
+    },
+    {
+      id: 'role-guidance',
+      kind: 'instruction',
+      platform: 'codex',
+      target: 'codex.developerInstructionsBlock',
+      state: 'present',
+      refreshKeys: ['modelReasoningEffort'],
+      content: \`multi role guidance \${modelReasoningEffort}\`,
+    },
+    {
+      id: 'codex-explorer-role',
+      kind: 'codexRole',
+      platform: 'codex',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey: 'codex-explorer',
+      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      content: {
+        registration: {
+          description: 'Multi instruction explorer role.',
+        },
+        roleFile: {
+          name: 'codex-explorer',
+          description: 'Multi instruction explorer role.',
+          developer_instructions: 'Multi instruction explorer role instructions.',
+          model: explorerModel,
+          model_reasoning_effort: modelReasoningEffort,
+        },
+      },
+    },
+  ],
+};
+
+process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
+`,
+  );
+}
+
 async function writeCodexExploreLifecycleRecorder(rootDir: string, logFileName = 'lifecycle.log'): Promise<void> {
   await mutateCodexExploreManifest(rootDir, (manifest) => {
     const scripts = (manifest.scripts ?? {}) as Record<string, unknown>;
@@ -2635,6 +2725,117 @@ describe('codex-explore integration acceptance', () => {
     expect(projectRoleStatus).toMatchObject({
       health: 'contentDrift',
     });
+  });
+
+  it('detects multi-instruction managed block drift before refresh runs the renderer', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
+    await addCodexExploreRoleGuidanceInstructionArtifact(repoRoot);
+    await writeMultiInstructionCodexExploreRenderer(repoRoot, 'artifact-render.log');
+    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await writePluginConfigStore({
+      pluginName: 'codex-explore',
+      scope: 'user',
+      cwd: repoRoot,
+      env: process.env,
+      values: {
+        explorerModel: 'gpt-5.4',
+        modelReasoningEffort: 'medium',
+      },
+    });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: process.env,
+        nativeCliRunner: createCodexMarketplaceAddRunner(repoRoot, process.env),
+      },
+    );
+
+    const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
+    const tracking = await readTrackingManifest(userPaths.trackingDir);
+    const instructionArtifacts = tracking.plugins['codex-explore']?.artifacts.filter((artifact) =>
+      artifact.target === 'codex.developerInstructionsBlock') ?? [];
+    const contentDigests = instructionArtifacts.map((artifact) => artifact.contentDigest);
+    expect(instructionArtifacts.map((artifact) => artifact.id)).toEqual([
+      'lightweight-instruction',
+      'role-guidance',
+    ]);
+    expect(contentDigests.every(Boolean)).toBe(true);
+    expect(new Set(contentDigests).size).toBe(1);
+
+    const config = await readCodexConfigFile(userPaths.configTomlPath);
+    expect(config.snapshot.developerInstructions.managedBlocks['codex-explore']?.value.trim().split('\n\n')).toEqual([
+      expect.stringMatching(/^multi lightweight .+ medium$/),
+      'multi role guidance medium',
+    ]);
+
+    const baselineConfig = await fs.readFile(userPaths.configTomlPath, 'utf8');
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      baselineConfig.replace('multi role guidance medium', 'multi role guidance medium edited'),
+      'utf8',
+    );
+
+    const statusResult = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const instructionStatuses = statusResult.reports[0]?.plugins[0].managedArtifacts?.filter((artifact) =>
+      artifact.target === 'codex.developerInstructionsBlock') ?? [];
+    expect(instructionStatuses).toHaveLength(2);
+    expect(instructionStatuses).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        health: 'contentDrift',
+      }),
+      expect.objectContaining({
+        id: 'role-guidance',
+        health: 'contentDrift',
+      }),
+    ]));
+
+    await fs.remove(path.join(awHome, 'artifact-render.log'));
+    const result = await runCliEntry(
+      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
+      {
+        cwd: repoRoot,
+        env: process.env,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: true,
+      command: 'config:set',
+      artifactRefresh: {
+        attempted: true,
+        status: 'failed',
+        triggerKeys: ['modelReasoningEffort'],
+        error: expect.stringContaining('tracking contentDigest 不一致'),
+      },
+    });
+    await expect(fs.pathExists(path.join(awHome, 'artifact-render.log'))).resolves.toBe(false);
+    await expect(fs.readFile(userPaths.configTomlPath, 'utf8')).resolves.toContain(
+      'multi role guidance medium edited',
+    );
   });
 
   it('fails refresh on role layer content drift before renderer, keeps the user-edited role file, and records failed refresh metadata', async () => {

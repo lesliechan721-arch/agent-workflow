@@ -86,6 +86,9 @@ async function testPresentInstructionAndRole() {
   assert.match(instruction.content, /`agent_type`: `explorer`/);
   assert.match(instruction.content, /`model`: `gpt-5\.4`/);
   assert.match(instruction.content, /`reasoning_effort`: `high`/);
+  assert.match(instruction.content, /用户显式指定其它模型/);
+  assert.match(instruction.content, /Codex runtime 报告 `gpt-5\.4` 不可用/);
+  assert.match(instruction.content, /不要静默改用其它模型/);
   assert.match(instruction.content, /只读要求/);
   assert.match(instruction.content, /等待并读取它的结果/);
   assert.match(instruction.content, /立即关闭本次启动的 explorer/);
