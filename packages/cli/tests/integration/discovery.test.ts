@@ -23,6 +23,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { upsertCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
+import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { getTrackingManifestPath, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -79,6 +80,16 @@ function scopeRecord(capabilitySnapshot: Record<string, unknown>) {
     resolvedVersion: '0.1.0',
     capabilitySnapshot,
   };
+}
+
+async function writeCodexActiveCache(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  version = '0.1.0',
+): Promise<string> {
+  const versionPath = path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
+  await fs.outputFile(path.join(versionPath, 'plugin.json'), '{}\n', 'utf8');
+  return versionPath;
 }
 
 afterEach(async () => {
@@ -369,6 +380,239 @@ describe('managed plugin discovery', () => {
     });
     expect(candidates[0].evidence.sources).toContain('codexNativeConfig');
     expect(candidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+  });
+
+  it('discovers cache-only Codex native evidence, but keeps uninstall non-selectable without ownership proof', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const activeCachePath = await writeCodexActiveCache(env, 'cache-only');
+
+    const statusCandidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['cache-only'],
+      env,
+    });
+    const uninstallCandidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['cache-only'],
+      env,
+    });
+
+    expect(statusCandidates).toHaveLength(1);
+    expect(statusCandidates[0].evidence.sources).toContain('codexNativeCache');
+    expect(statusCandidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+
+    expect(uninstallCandidates).toHaveLength(1);
+    expect(uninstallCandidates[0].selectable).toBe(false);
+    expect(uninstallCandidates[0].disabledReason).toContain('Codex cache 残留');
+
+    const status = await statusCommand(
+      ['cache-only'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      { env },
+    );
+    const payload = JSON.parse(status.output) as {
+      cells: Array<{ health: string }>;
+      reports: Array<{
+        plugins: Array<{
+          native: {
+            pluginInstalled: boolean;
+            pluginEnabled?: boolean;
+            activeCachePath?: string;
+            recovery: {
+              present: boolean;
+              state: string | null;
+              reason: string | null;
+              evidenceMatches: boolean | null;
+              suggestion: string | null;
+            };
+          };
+        }>;
+      }>;
+    };
+
+    expect(payload.cells[0]?.health).toBe('needsAttention');
+    expect(payload.reports[0]?.plugins[0]?.native).toMatchObject({
+      pluginInstalled: true,
+      pluginEnabled: false,
+      activeCachePath,
+      recovery: {
+        present: false,
+        state: null,
+        reason: null,
+        evidenceMatches: null,
+        suggestion: null,
+      },
+    });
+  });
+
+  it('keeps shared-ref-only, cache-only, and breadcrumb-only Codex user targets out of upgrade-ready candidates', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              sharedNativeRefs: {
+                user: true,
+                projects: [],
+              },
+            },
+          },
+        },
+      },
+    }, env);
+    await writeCodexActiveCache(env, 'cache-only');
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'recovery-only',
+      state: 'post_check_failed',
+      reason: 'post check failed',
+      env,
+    });
+
+    const sharedRefCandidates = await buildCommandCandidates({
+      command: 'upgrade',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['git-commit'],
+      env,
+    });
+    const cacheOnlyCandidates = await buildCommandCandidates({
+      command: 'upgrade',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['cache-only'],
+      env,
+    });
+    const breadcrumbCandidates = await buildCommandCandidates({
+      command: 'upgrade',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['recovery-only'],
+      env,
+    });
+
+    expect(sharedRefCandidates).toHaveLength(1);
+    expect(sharedRefCandidates[0].selectable).toBe(false);
+    expect(sharedRefCandidates[0].disabledReason).toContain('shared native ref');
+
+    expect(cacheOnlyCandidates).toHaveLength(1);
+    expect(cacheOnlyCandidates[0].selectable).toBe(false);
+    expect(cacheOnlyCandidates[0].disabledReason).toContain('Codex cache 残留');
+
+    expect(breadcrumbCandidates).toHaveLength(1);
+    expect(breadcrumbCandidates[0].selectable).toBe(false);
+    expect(breadcrumbCandidates[0].disabledReason).toContain('native recovery breadcrumb');
+  });
+
+  it('ignores disabled-only Codex config entries when there is no cache or recovery evidence', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await upsertCodexPluginEnabledFile(
+      resolveCodexPaths(repoRoot, 'user', env).configTomlPath,
+      'disabled-only@aw',
+      { enabled: false },
+    );
+
+    const candidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      env,
+    });
+
+    expect(candidates.some((candidate) => candidate.pluginName === 'disabled-only')).toBe(false);
+  });
+
+  it('discovers breadcrumb-only Codex native recovery evidence and exposes stable recovery JSON', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'recovery-only',
+      state: 'post_check_failed',
+      reason: 'post check failed',
+      env,
+    });
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['recovery-only'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].selectable).toBe(true);
+    expect(candidates[0].evidence.sources).toContain('codexNativeRecovery');
+
+    const status = await statusCommand(
+      ['recovery-only'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      { env },
+    );
+    const humanStatus = await statusCommand(
+      ['recovery-only'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      { env },
+    );
+    const payload = JSON.parse(status.output) as {
+      cells: Array<{ health: string }>;
+      reports: Array<{
+        plugins: Array<{
+          native: {
+            pluginInstalled: boolean;
+            pluginEnabled?: boolean;
+            recovery: {
+              present: boolean;
+              state: string | null;
+              reason: string | null;
+              evidenceMatches: boolean | null;
+              suggestion: string | null;
+            };
+          };
+        }>;
+      }>;
+    };
+
+    expect(payload.cells[0]?.health).toBe('needsAttention');
+    expect(payload.reports[0]?.plugins[0]?.native).toMatchObject({
+      pluginInstalled: false,
+      pluginEnabled: false,
+      recovery: {
+        present: true,
+        state: 'post_check_failed',
+        reason: 'post check failed',
+        evidenceMatches: false,
+      },
+    });
+    expect(payload.reports[0]?.plugins[0]?.native.recovery.suggestion).toContain('aw uninstall recovery-only -p codex -s user');
+    expect(humanStatus.output).toContain('native 写入已完成');
+    expect(humanStatus.output).toContain('recovery breadcrumb 仍在');
   });
 
   it('keeps requested status targets as unknown candidates when tracking cannot be read', async () => {

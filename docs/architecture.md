@@ -6,7 +6,7 @@
 - **`adapters/`** — `claude.ts` / `codex.ts` 处理平台原生状态与命令调用；`helpers.ts` 放共享 adapter 逻辑；`types.ts` 放 adapter 层私有类型
 - **`generators/`** — `instructions.ts` / `permissions.ts` / `hooks.ts` / `agents.ts` 分别生成对应产物；`local-plugin.ts` 处理 bundle 和 repo-managed 文件生成；`shared.ts` 放跨生成器共享逻辑
 - **`output/`** — `reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
-- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据和安装账本；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验和 install/upgrade preflight；`plugin-scripts.ts` 管理安装快照、lifecycle target、context 和 runner；`plugin-script-contract.ts` 扫描 Node import contract；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
+- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据和安装账本；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验和 install/upgrade preflight；`plugin-scripts.ts` 管理安装快照、lifecycle target、context 和 runner；`plugin-script-contract.ts` 扫描 Node import contract；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`codex-app-server-client.ts` 封装 Codex app-server 插件 RPC；`codex-native-state.ts` / `codex-native-recovery.ts` 只读检查 Codex enabled config、materialized cache 和 recovery breadcrumb；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
 - **`constants.ts`** — 全局常量：`GENERATED_FILE_PREFIX = 'aw-'`、`TRACKING_MANIFEST_FILE = '.agent-workflows-manifest.json'`、`DEFAULT_CLAUDE_HOOKS_PATH`、`CLAUDE_MARKETPLACE_PATH`、`CODEX_MARKETPLACE_PATH`
 - **`types.ts`** — 项目全局类型定义
 
@@ -38,6 +38,7 @@ npm Registry
   ~/.aw/
   ├── config.json
   ├── installed.json
+  ├── native-recovery/codex/user/<plugin>@aw.json
   ├── plugin-config/<plugin>/config.json
   ├── plugin-install-snapshots/<...>/<plugin>/<digest>/bundle/**
   └── plugins/<name>/**
@@ -48,6 +49,7 @@ npm Registry
 - 仓库源码层是插件作者维护的唯一输入，不手写平台 runtime manifest。
 - `packages/cli/plugins-dist/` 是 `pnpm build` 产物，会随 npm 包发布，不手改。
 - `~/.aw/` 是本机 marketplace 镜像和安装账本。需要 native plugin runtime 时，`aw init`、`aw install`、`aw upgrade` 会按需同步；纯 Codex project repo-managed 路径只读使用 catalog，不会为了项目产物初始化或修复共享 runtime。
+- `native-recovery/codex/user/<plugin>@aw.json` 是 Codex user native 写入后的恢复面包屑。它只记录 AW 已经观察到 native side effect 的事实和后续失败阶段，独立于 `installed.json`，`aw init --force` 和 marketplace refresh 必须保留。
 - `plugin-config/` 和 `plugin-install-snapshots/` 是 AW 自管运行时状态。local marketplace refresh 会保留它们；它们不参与 bundle fingerprint，也不会被当作插件源码。
 
 排查问题时先确认问题发生在哪一层：源码 contract、bundle 生成、本机 runtime 镜像，还是平台配置。
@@ -69,9 +71,11 @@ npm Registry
 - 执行型命令（`install`、`uninstall`、`upgrade`）默认使用 `scope=user`、`platform=auto`；`status` 的 `scope/platform` 是过滤条件，不在 CLI entry 层套用写入型默认值。
 - `aw config` 写命令默认写 `user` store；读命令默认读取 effective config，合并顺序为 manifest default < user store < project store。user store 位于 `<AW_HOME>/plugin-config/<plugin>/config.json`，project store 位于 `<AW project root>/.agent-workflows/plugin-config/<plugin>/config.json`。AW project root 在仓库或 workspace 内解析到 repo root，非仓库目录退回 normalized command `cwd`。
 - Claude Code：通过 `claude plugin marketplace add` / `claude plugin install` 接入本地 marketplace；项目或用户 scope 的 rules/permissions 由 CLI 生成并用 `.agent-workflows-manifest.json` 追踪。
-- Codex user scope：需要原生 plugin 能力时先调用 `codex plugin marketplace add <canonical ~/.aw>` 注册 local marketplace，再由 AW 写入用户级 `[plugins."<plugin>@aw"] enabled = true`。Codex local source 注册不会产生 `.tmp/marketplaces/aw` 物化副本，status 也不应要求这个副本存在。
-- Codex project scope：不调用 `codex plugin marketplace add`，不写用户级 `[marketplaces]` / `[plugins]`，全部收敛为当前仓库 repo-managed artifacts：`.agents/skills/<skill>`、`.codex/config.toml [mcp_servers.*]` / managed instructions、`.codex/hooks.json`、`.codex/rules/*.rules`、`.codex/agents/*.toml` 和 `.codex/.agent-workflows-manifest.json`。`apps` 首版在 project scope fail fast。
+- Codex user scope：需要原生 plugin 能力时先调用 `codex plugin marketplace add <canonical ~/.aw>` 注册 local marketplace，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 自己写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache。AW 不再提供只写 config 的 fallback；RPC 成功后必须用 post-check 同时确认 enabled config 与 active cache。
+- Codex project scope：不调用 `codex plugin marketplace add`，不调用 app-server RPC，不写用户级 `[marketplaces]` / `[plugins]`，全部收敛为当前仓库 repo-managed artifacts：`.agents/skills/<skill>`、`.codex/config.toml [mcp_servers.*]` / managed instructions、`.codex/hooks.json`、`.codex/rules/*.rules`、`.codex/agents/*.toml` 和 `.codex/.agent-workflows-manifest.json`。即使 PATH 缺少 `codex` 可执行文件，project repo-managed target 也不能产生用户级 native side effect；命令事件中对应 skip reason 是 `project_repo_managed_skipped_native`。纯 native-only 插件和 `apps` 首版在 project scope fail fast。
 - 两个平台共享 `~/.aw/installed.json`。它记录 scope、平台、能力快照、`skillTriggerPreference` 和 lifecycle/config 安装快照元数据，用于重复安装、升级、卸载、historical lifecycle 选择和 status drift 判断。
+
+Codex user native 写入后，AW 会先落 `native-recovery/codex/user/<plugin>@aw.json`，状态从 `pending_after_native_write` 开始。若 post-check、snapshot、lifecycle、tracking 或 ledger 后续失败，breadcrumb 会更新为 `post_check_failed`、`snapshot_write_failed`、`lifecycle_failed`、`tracking_write_failed` 或 `ledger_write_failed`；uninstall 清理失败时为 `cleanup_failed`。`status`、repair install 和 breadcrumb-only uninstall 都会读取这条证据：重新 `aw install <plugin> -p codex -s user` 会尝试补齐 AW 账本和 tracking，`aw uninstall <plugin> -p codex -s user` 可以在没有成功 ledger 的情况下清理 config/cache/breadcrumb，breadcrumb-only uninstall 不运行 uninstall lifecycle。breadcrumb 已落盘但后续失败时不能写成功 ledger；breadcrumb 写入本身失败时命令立即失败，因为 AW 不能承诺自动 repair / uninstall 授权。breadcrumb-only upgrade 会明确失败，`upgrade --all` 会跳过。
 
 ## Plugin Scripts and Config
 
@@ -95,6 +99,14 @@ CLI entry 和 direct command 共用 `CommandExecutionContext`。所有会影响�
 
 debug log 记录 runId、argv、cwd、关键路径、native invocation、文件写入摘要、rollback/degraded 和最终错误，但不记录完整敏感内容。写命令默认写到 `~/.aw/logs`；`status` 默认写到系统临时目录，避免为了诊断破坏只读合同。`status --json` 独占 stdout，人类诊断、warning 和 debug log 路径只能进入 stderr 或日志文件。
 
+Codex native 写命令会发结构化 command event，debug log 和 `--verbose` 依赖同一合同：
+
+- `native:marketplace`：Codex user scope 注册或校验本地 marketplace，核心字段为 `platform`、`scope`、`plugin`、`marketplaceName`、`marketplacePath`、`operation`、`phase`、失败时的 `errorCategory` / `suggestion`。
+- `native:rpc`：调用 `plugin/install` 或 `plugin/uninstall`，核心字段为 `pluginId`、`method`、`phase`、`durationMs`、`nativeWriteSucceeded`，失败时带 app-server 错误分类和建议。
+- `native:recovery`：写入、更新或删除 recovery breadcrumb，核心字段为 `operation`、`state`、`nativeWriteSucceeded`、`recoveryBreadcrumbPersisted`。
+- `native:post-check`：RPC 后校验 enabled config 与 active cache，核心字段为 `operation`、`pluginEnabled`、`configEntryPresent`、`pluginInstalled`、`activeCachePath`。
+- `native:skipped`：目标不需要 native 写入，Codex project repo-managed 路径必须带 `reason=project_repo_managed_skipped_native`、`requiresNativeRuntime` 和 `repoManagedArtifactKinds`。
+
 ## Discovery and Status
 
 `commands/discovery.ts` 是 status、交互式 uninstall 和交互式 upgrade 的候选来源。它合并 AW ledger、project tracking manifest、Codex/Claude 原生配置、runtime evidence 和 current catalog；current catalog 找不到时会生成保守的 historical placeholder。
@@ -104,6 +116,8 @@ historical placeholder 必须按 platform + scope 分格。Codex 只有 ledger c
 tracking manifest 中的 `GeneratedArtifact.path` 始终是绝对路径。`kind: "skill"` 和 `kind: "mcpServer"` 还必须带 `artifactKey`：skill 使用 skill 目录名，MCP 使用 rendered `.mcp.json` 的原始 server key。`.codex/config.toml` 是共享文件，多个 MCP server 不能只靠 path 区分；包含点号、空格、斜杠或 Unicode 的 key 必须按 TOML quoted key 语义处理，例如 `[mcp_servers."acme.tools v1"]` 表示单个 server key，而不是嵌套路径。
 
 `aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 明细 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。Codex project scope 的默认视图以 repo-managed evidence 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
+
+Codex user native status 中，`native.pluginInstalled` 表示 Codex materialized cache 中存在单一 active version，不再表示 config enabled；`native.pluginEnabled` 表示 `~/.codex/config.toml [plugins."<plugin>@aw"].enabled === true`；`native.recovery` 固定返回 `{ present, state, reason, evidenceMatches, suggestion }`，无 breadcrumb 时是 `false / null`。enabled-only、cache-only、shared-ref-only、breadcrumb-only 都会进入 `needsAttention` 或诊断候选，不会被静默折叠成 `notInstalled`。
 
 `upgrade --all` 的 skipped target 是 direct command 返回值的一部分，CLI receipt 同步展示 succeeded / skipped。部分成功部分 skipped 时退出 `0`；全部 target skipped 且没有成功升级时退出 `1`。稳定 code 集合是 `scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`trackingIntegrityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`。
 

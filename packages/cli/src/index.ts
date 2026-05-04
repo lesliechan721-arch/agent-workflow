@@ -312,7 +312,10 @@ function writeCommandReceipt(
     const codexNativePlugins = result.nativePlugins?.codex ?? [];
     if (codexNativePlugins.length > 0) {
       writeLine(write, `已确认 Codex marketplace 注册：${awHome}。`);
-      writeLine(write, `已确认插件启用：${codexNativePlugins.map((plugin) => `${plugin}@aw`).join(', ')}。`);
+      writeLine(
+        write,
+        `已通过 Codex app-server 完成原生插件安装并确认启用：${codexNativePlugins.map((plugin) => `${plugin}@aw`).join(', ')}。`,
+      );
     }
     if ((result.nativePlugins?.claude ?? []).length > 0) {
       writeLine(write, `已确认 Claude Code marketplace 和插件状态。`);

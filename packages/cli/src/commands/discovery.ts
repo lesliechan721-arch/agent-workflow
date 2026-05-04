@@ -18,7 +18,8 @@ import type {
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
-import { readCodexConfigFile } from '../utils/codex-config.js';
+import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
+import { listCodexNativeEvidence } from '../utils/codex-native-state.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
@@ -74,6 +75,8 @@ type DiscoveryEvidenceSource =
   | 'ledger'
   | 'tracking'
   | 'codexNativeConfig'
+  | 'codexNativeCache'
+  | 'codexNativeRecovery'
   | 'codexSharedNativeRef'
   | 'claudeSettings'
   | 'claudeInstalledPlugins';
@@ -531,29 +534,29 @@ async function collectCodexNativeEvidence(
   }
 
   const identity = context.identities.codex.user;
-  const paths = resolveCodexPaths(identity.executionCwd, 'user', context.env);
-  let snapshot: Awaited<ReturnType<typeof readCodexConfigFile>>['snapshot'];
   try {
-    snapshot = (await readCodexConfigFile(paths.configTomlPath)).snapshot;
+    const nativeStates = await listCodexNativeEvidence(context.env);
+    for (const nativeState of nativeStates) {
+      const discoveryRecord = getOrCreateDiscoveryRecord(records, nativeState.pluginName);
+      const evidence = getOrCreateEvidence(discoveryRecord, identity, ledger);
+      if (nativeState.pluginEnabled) {
+        addEvidenceSource(evidence, 'codexNativeConfig');
+      }
+      if (nativeState.pluginInstalled) {
+        addEvidenceSource(evidence, 'codexNativeCache');
+      }
+    }
   } catch (error) {
+    const paths = resolveCodexPaths(identity.executionCwd, 'user', context.env);
     return [{
       ...identity,
       message: `Codex config (${paths.configTomlPath}): ${errorMessage(error)}`,
     }];
   }
 
-  for (const [pluginRef, plugin] of Object.entries(snapshot.plugins).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    if (!pluginRef.endsWith(`@${MARKETPLACE_NAME}`) || plugin.enabled !== true) {
-      continue;
-    }
-    const pluginName = pluginRef.slice(0, -(`@${MARKETPLACE_NAME}`.length));
-    const discoveryRecord = getOrCreateDiscoveryRecord(records, pluginName);
-    addEvidenceSource(
-      getOrCreateEvidence(discoveryRecord, identity, ledger),
-      'codexNativeConfig',
-    );
+  for (const breadcrumb of await listCodexNativeRecoveryBreadcrumbs(context.env)) {
+    const discoveryRecord = getOrCreateDiscoveryRecord(records, breadcrumb.pluginName);
+    addEvidenceSource(getOrCreateEvidence(discoveryRecord, identity, ledger), 'codexNativeRecovery');
   }
 
   return [];
@@ -862,6 +865,8 @@ function createHistoricalPluginMeta(
     (
       evidence.codexRequiresNativePlugin === true ||
       evidence.sources.includes('codexNativeConfig') ||
+      evidence.sources.includes('codexNativeCache') ||
+      evidence.sources.includes('codexNativeRecovery') ||
       evidence.sources.includes('codexSharedNativeRef')
     );
   const hasCodexNativeManifestPlaceholder =
@@ -929,10 +934,15 @@ function evidenceHasActionableSource(evidence: DiscoveryEvidenceSummary): boolea
     source === 'ledger' ||
     source === 'tracking' ||
     source === 'codexNativeConfig' ||
+    source === 'codexNativeRecovery' ||
     source === 'codexSharedNativeRef' ||
     source === 'claudeSettings' ||
     source === 'claudeInstalledPlugins',
   );
+}
+
+function evidenceHasDiscoverySource(evidence: DiscoveryEvidenceSummary): boolean {
+  return evidenceHasActionableSource(evidence) || evidence.sources.includes('codexNativeCache');
 }
 
 function evidenceHasReadErrors(evidence: DiscoveryEvidenceSummary): boolean {
@@ -950,6 +960,8 @@ function isCoarseCodexRepoOnlyEvidence(
     evidence.trackingKinds.length === 0 &&
     evidence.codexRequiresNativePlugin !== true &&
     !evidence.sources.includes('codexNativeConfig') &&
+    !evidence.sources.includes('codexNativeCache') &&
+    !evidence.sources.includes('codexNativeRecovery') &&
     !evidence.sources.includes('codexSharedNativeRef')
   );
 }
@@ -964,6 +976,9 @@ function resolveCandidateDisabledReason(
   }
 
   if (!evidenceHasActionableSource(evidence)) {
+    if (evidence.sources.includes('codexNativeCache')) {
+      return '只发现了 Codex cache 残留，AW 没有成功账本或 recovery breadcrumb 证明归属；当前只能展示诊断，不能静默删除。';
+    }
     if (evidence.readErrors.length > 0) {
       return '该 platform/scope 的受管状态读取失败，无法安全处理。';
     }
@@ -976,6 +991,28 @@ function resolveCandidateDisabledReason(
 
   if (evidence.trackingIntegrityErrors.length > 0) {
     return 'tracking manifest 中的 skill/mcpServer 缺少 artifactKey，无法安全清理。';
+  }
+
+  if (
+    command === 'upgrade' &&
+    evidence.platform === 'codex' &&
+    evidence.scope === 'user' &&
+    evidence.sources.includes('codexNativeRecovery') &&
+    !evidence.sources.includes('ledger') &&
+    !evidence.sources.includes('tracking')
+  ) {
+    return '当前只有 Codex native recovery breadcrumb，安装尚未完整成功；请先运行 aw install <plugin> -p codex -s user 修复，或运行 aw uninstall <plugin> -p codex -s user 清理。';
+  }
+
+  if (
+    command === 'upgrade' &&
+    evidence.platform === 'codex' &&
+    evidence.scope === 'user' &&
+    evidence.sources.includes('codexSharedNativeRef') &&
+    !evidence.sources.includes('ledger') &&
+    !evidence.sources.includes('tracking')
+  ) {
+    return '当前只剩 Codex shared native ref，不能证明该 scope 安装已完整成功；请先运行 aw install <plugin> -p codex -s user 修复账本，或运行 aw uninstall <plugin> -p codex -s user 清理残留。';
   }
 
   if (command === 'upgrade' && !target.currentPlugin) {
@@ -1168,10 +1205,10 @@ export async function buildCommandCandidates(
     if (
       options.command === 'status' &&
       requestedNames === undefined &&
-      !evidenceHasActionableSource(discovered.evidence) &&
+      !evidenceHasDiscoverySource(discovered.evidence) &&
       !evidenceHasReadErrors(discovered.evidence) &&
       !Object.values(discovered.evidenceByPlatformScope).some((evidence) =>
-        evidenceHasActionableSource(evidence) || evidenceHasReadErrors(evidence),
+        evidenceHasDiscoverySource(evidence) || evidenceHasReadErrors(evidence),
       )
     ) {
       continue;
@@ -1179,7 +1216,7 @@ export async function buildCommandCandidates(
     if (
       options.command !== 'status' &&
       requestedNames === undefined &&
-      !evidenceHasActionableSource(discovered.evidence) &&
+      !evidenceHasDiscoverySource(discovered.evidence) &&
       !evidenceHasReadErrors(discovered.evidence)
     ) {
       continue;

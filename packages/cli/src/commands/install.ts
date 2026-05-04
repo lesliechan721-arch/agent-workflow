@@ -15,6 +15,7 @@ import type {
   InstalledScopeRecord,
   LedgerStateReason,
   LifecycleConfigSnapshotMetadata,
+  NativeRecoveryState,
   NativePluginsByPlatform,
   PlatformAdapter,
   PlatformName,
@@ -41,11 +42,16 @@ import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
-import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import {
-  createLifecycleConfigSnapshot,
+  getCodexProjectManagedKinds,
+  requiresCodexNativePlugin,
+} from '../utils/codex-project-surface.js';
+import {
   garbageCollectLifecycleConfigSnapshots,
+  persistLifecycleConfigSnapshot,
+  prepareLifecycleConfigSnapshot,
   runLifecycleScript,
+  type PreparedLifecycleConfigSnapshot,
 } from '../utils/plugin-scripts.js';
 import {
   createPluginConfigSchemaIdentity,
@@ -68,6 +74,11 @@ import {
   upsertTrackingRecordInManifest,
   writeTrackingManifest,
 } from '../utils/tracking.js';
+import {
+  deleteCodexNativeRecoveryBreadcrumb,
+  readCodexNativeRecoveryBreadcrumb,
+  updateCodexNativeRecoveryBreadcrumb,
+} from '../utils/codex-native-recovery.js';
 import {
   captureArtifactRollbackState,
   collectArtifactRollbackSurfaceHints as collectTrackedArtifactRollbackSurfaceHints,
@@ -119,6 +130,10 @@ export interface UpgradeRollbackBaseline {
   trackingManifest: TrackingManifest;
   ledger: InstalledLedger;
   degradedReasonOnRestoreFailure: LedgerStateReason;
+}
+
+class PostInstallCleanupError extends Error {
+  readonly skipRollback = true;
 }
 
 function resolveTrackingDir(
@@ -243,31 +258,69 @@ async function restoreUpgradeRollbackBaseline(
 function resolveInstallRollbackLedgerReason(
   platform: PlatformName,
   scope: InstallCommandOptions['scope'],
+  plannedNativeWrite: boolean,
   nativeWritten: boolean,
+  recoveryBreadcrumbPersisted: boolean,
+  ledgerWritten: boolean,
   materializationRollbackFailed: boolean,
   artifactsWritten: boolean,
   trackingWriteAttempted: boolean,
+  artifactsRollbackFailed: boolean,
+  trackingRestoreFailed: boolean,
 ): LedgerStateReason | null {
-  if (nativeWritten) {
+  const recoveredCodexUserNative =
+    platform === 'codex' &&
+    scope === 'user' &&
+    nativeWritten &&
+    recoveryBreadcrumbPersisted;
+
+  if (
+    plannedNativeWrite &&
+    !recoveryBreadcrumbPersisted &&
+    (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWriteAttempted)
+  ) {
     return 'operation_interrupted_after_native_write';
   }
 
-  if (materializationRollbackFailed) {
-    return platform === 'codex' && scope === 'project'
+  if (recoveredCodexUserNative) {
+    return materializationRollbackFailed || artifactsRollbackFailed || trackingRestoreFailed
       ? 'operation_interrupted_after_artifact_write'
-      : 'operation_interrupted_after_native_write';
+      : null;
   }
 
-  return artifactsWritten || trackingWriteAttempted
-    ? 'operation_interrupted_after_artifact_write'
-    : null;
+  if (
+    ledgerWritten ||
+    materializationRollbackFailed ||
+    artifactsWritten ||
+    trackingWriteAttempted ||
+    artifactsRollbackFailed ||
+    trackingRestoreFailed
+  ) {
+    return 'operation_interrupted_after_artifact_write';
+  }
+
+  return null;
 }
 
 function preserveLedgerState(
   baseline: InstalledLedger,
   nextLedger: InstalledLedger,
+  options: {
+    platform: PlatformName;
+    scope: InstallCommandOptions['scope'];
+    target: ResolvedPluginTarget;
+  },
 ): InstalledLedger {
   if (baseline.ledgerState.status === 'available') {
+    return nextLedger;
+  }
+
+  if (
+    baseline.ledgerState.reason === 'operation_interrupted_after_native_write' &&
+    options.platform === 'codex' &&
+    options.scope === 'user' &&
+    mayWriteNativeState(options.platform, options.target, options.scope)
+  ) {
     return nextLedger;
   }
 
@@ -376,6 +429,216 @@ function mayWriteNativeState(
   return target.currentPlugin
     ? requiresCodexNativePlugin(target.currentPlugin, scope)
     : false;
+}
+
+function isCodexUserNativeInstall(
+  platform: PlatformName,
+  target: ResolvedPluginTarget,
+  scope: InstallCommandOptions['scope'],
+): boolean {
+  return platform === 'codex' && scope === 'user' && mayWriteNativeState(platform, target, scope);
+}
+
+function createRecoveryBreadcrumbFailureReason(stage: {
+  snapshotPersisted: boolean;
+  lifecycleStarted: boolean;
+  trackingWriteAttempted: boolean;
+  ledgerWriteAttempted: boolean;
+}): {
+  state:
+    | 'pending_after_native_write'
+    | 'snapshot_write_failed'
+    | 'lifecycle_failed'
+    | 'tracking_write_failed'
+    | 'ledger_write_failed';
+  reason: string;
+} {
+  if (stage.ledgerWriteAttempted) {
+    return {
+      state: 'ledger_write_failed',
+      reason: 'install_ledger_write_failed',
+    };
+  }
+  if (stage.trackingWriteAttempted) {
+    return {
+      state: 'tracking_write_failed',
+      reason: 'install_tracking_write_failed',
+    };
+  }
+  if (stage.lifecycleStarted) {
+    return {
+      state: 'lifecycle_failed',
+      reason: 'install_lifecycle_failed',
+    };
+  }
+  if (stage.snapshotPersisted) {
+    return {
+      state: 'pending_after_native_write',
+      reason: 'native_write_succeeded_post_steps_pending',
+    };
+  }
+  return {
+    state: 'snapshot_write_failed',
+    reason: 'install_snapshot_write_failed',
+  };
+}
+
+async function emitCodexRecoveryEvent(
+  context: ReturnType<typeof createCommandExecutionContext>,
+  options: {
+    plugin: string;
+    scope: InstallCommandOptions['scope'];
+    operation: 'write' | 'update' | 'delete';
+    phase: 'start' | 'success' | 'error';
+    state: NativeRecoveryState;
+    nativeWriteSucceeded: boolean;
+    recoveryBreadcrumbPersisted: boolean;
+    errorCategory?: string;
+    suggestion?: string;
+  },
+): Promise<void> {
+  await emitCommandEvent(context, {
+    type: 'native:recovery',
+    source: {
+      platform: 'codex',
+      plugin: options.plugin,
+      scope: options.scope,
+    },
+    data: {
+      platform: 'codex',
+      scope: options.scope,
+      plugin: options.plugin,
+      pluginId: `${options.plugin}@aw`,
+      operation: options.operation,
+      phase: options.phase,
+      state: options.state,
+      nativeWriteSucceeded: options.nativeWriteSucceeded,
+      recoveryBreadcrumbPersisted: options.recoveryBreadcrumbPersisted,
+      ...(options.errorCategory ? { errorCategory: options.errorCategory } : {}),
+      ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+    },
+  });
+}
+
+async function updateCodexRecoveryBreadcrumbWithEvent(
+  context: ReturnType<typeof createCommandExecutionContext>,
+  options: {
+    pluginName: string;
+    scope: InstallCommandOptions['scope'];
+    state: NativeRecoveryState;
+    reason: string;
+    pluginVersion?: string | null;
+    bundleFingerprint?: string | null;
+    activeCachePath?: string | null;
+    lastError?: string | null;
+    env: NodeJS.ProcessEnv;
+  },
+): Promise<void> {
+  await emitCodexRecoveryEvent(context, {
+    plugin: options.pluginName,
+    scope: options.scope,
+    operation: 'update',
+    phase: 'start',
+    state: options.state,
+    nativeWriteSucceeded: true,
+    recoveryBreadcrumbPersisted: true,
+  });
+  try {
+    await updateCodexNativeRecoveryBreadcrumb({
+      pluginName: options.pluginName,
+      state: options.state,
+      reason: options.reason,
+      pluginVersion: options.pluginVersion ?? undefined,
+      bundleFingerprint: options.bundleFingerprint ?? undefined,
+      activeCachePath: options.activeCachePath ?? undefined,
+      lastError: options.lastError ?? undefined,
+      env: options.env,
+    });
+    await emitCodexRecoveryEvent(context, {
+      plugin: options.pluginName,
+      scope: options.scope,
+      operation: 'update',
+      phase: 'success',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: true,
+    });
+  } catch (error) {
+    await emitCodexRecoveryEvent(context, {
+      plugin: options.pluginName,
+      scope: options.scope,
+      operation: 'update',
+      phase: 'error',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: true,
+      errorCategory: 'breadcrumb_update_failed',
+      suggestion: 'Codex native side effect 已发生，但 AW 更新 recovery breadcrumb 失败；请运行 `aw status --verbose` 查看当前诊断。',
+    });
+    throw error;
+  }
+}
+
+async function deleteCodexRecoveryBreadcrumbWithEvent(
+  context: ReturnType<typeof createCommandExecutionContext>,
+  options: {
+    pluginName: string;
+    scope: InstallCommandOptions['scope'];
+    state: NativeRecoveryState;
+    env: NodeJS.ProcessEnv;
+  },
+): Promise<void> {
+  await emitCodexRecoveryEvent(context, {
+    plugin: options.pluginName,
+    scope: options.scope,
+    operation: 'delete',
+    phase: 'start',
+    state: options.state,
+    nativeWriteSucceeded: true,
+    recoveryBreadcrumbPersisted: true,
+  });
+  try {
+    await deleteCodexNativeRecoveryBreadcrumb(options.pluginName, options.env);
+    await emitCodexRecoveryEvent(context, {
+      plugin: options.pluginName,
+      scope: options.scope,
+      operation: 'delete',
+      phase: 'success',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: false,
+    });
+  } catch (error) {
+    await emitCodexRecoveryEvent(context, {
+      plugin: options.pluginName,
+      scope: options.scope,
+      operation: 'delete',
+      phase: 'error',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: true,
+      errorCategory: 'breadcrumb_delete_failed',
+      suggestion: '插件已安装成功，但 AW 还没有删掉 recovery breadcrumb；请运行 `aw status --verbose` 确认清理情况。',
+    });
+    throw error;
+  }
+}
+
+function wrapCodexNativeInstallFailure(
+  pluginName: string,
+  error: Error,
+  recoveryBreadcrumbPersisted: boolean,
+): Error {
+  const detail = error.message;
+  if (!recoveryBreadcrumbPersisted) {
+    return new Error(
+      `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断。`,
+    );
+  }
+
+  return new Error(
+    `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 安装未完成：${detail}。请运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断，必要时再运行 \`aw uninstall ${pluginName} -p codex -s user\` 清理残留。`,
+  );
 }
 
 function recordNativePlugin(
@@ -585,6 +848,8 @@ export async function installTargetsOnPlatforms(
       let artifactsWritten = false;
       let trackingWritten = false;
       let trackingWriteAttempted = false;
+      let ledgerWritten = false;
+      let plannedNativeWrite = false;
       let materializationCommitted = false;
       let materializationRollbackFailed = false;
       let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
@@ -594,10 +859,20 @@ export async function installTargetsOnPlatforms(
       let generatedArtifacts: GeneratedArtifact[] = [];
       let materializedArtifacts: GeneratedArtifact[] = [];
       let trackedArtifacts: GeneratedArtifact[] = [];
+      let preparedLifecycleConfigSnapshot: PreparedLifecycleConfigSnapshot | undefined;
       let lifecycleConfigSnapshot: LifecycleConfigSnapshotMetadata | undefined;
+      let recoveryBreadcrumbPersisted = false;
+      let artifactsRollbackFailed = false;
+      let trackingRestoreFailed = false;
+      const recoveryFailureStage = {
+        snapshotPersisted: false,
+        lifecycleStarted: false,
+        trackingWriteAttempted: false,
+        ledgerWriteAttempted: false,
+      };
 
       try {
-        lifecycleConfigSnapshot = await createLifecycleConfigSnapshot({
+        preparedLifecycleConfigSnapshot = await prepareLifecycleConfigSnapshot({
           plugin: target.currentPlugin,
           platform,
           scope: options.scope,
@@ -665,14 +940,31 @@ export async function installTargetsOnPlatforms(
           }
         }
 
-        const plannedNativeWrite = mayWriteNativeState(platform, target, options.scope);
+        plannedNativeWrite = mayWriteNativeState(platform, target, options.scope);
         await emitCommandEvent(context, {
           type: plannedNativeWrite ? 'native:plan' : 'native:skipped',
           data: {
             platform,
             plugin: target.currentPlugin.manifest.name,
             scope: options.scope,
-            reason: plannedNativeWrite ? 'plugin_requires_native_registration' : 'repo_managed_artifacts_only',
+            ...(plannedNativeWrite
+              ? {
+                  reason: 'plugin_requires_native_registration',
+                }
+              : {
+                  reason:
+                    platform === 'codex' && options.scope === 'project'
+                      ? 'project_repo_managed_skipped_native'
+                      : 'native_runtime_not_required',
+                  requiresNativeRuntime:
+                    platform === 'codex'
+                      ? requiresCodexNativePlugin(target.currentPlugin, 'user')
+                      : true,
+                  repoManagedArtifactKinds:
+                    platform === 'codex'
+                      ? getCodexProjectManagedKinds(target.currentPlugin)
+                      : [],
+                }),
           },
         });
 
@@ -682,6 +974,11 @@ export async function installTargetsOnPlatforms(
         nativeWritten = plannedNativeWrite;
         if (nativeWritten) {
           recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
+          if (isCodexUserNativeInstall(platform, target, options.scope)) {
+            recoveryBreadcrumbPersisted = Boolean(
+              await readCodexNativeRecoveryBreadcrumb(target.currentPlugin.manifest.name, env),
+            );
+          }
           await emitCommandEvent(context, {
             type: 'native:applied',
             data: {
@@ -690,6 +987,16 @@ export async function installTargetsOnPlatforms(
               scope: options.scope,
             },
           });
+        }
+
+        if (preparedLifecycleConfigSnapshot) {
+          lifecycleConfigSnapshot = await persistLifecycleConfigSnapshot(
+            preparedLifecycleConfigSnapshot,
+          );
+          recoveryFailureStage.snapshotPersisted = true;
+        }
+        if (!lifecycleConfigSnapshot) {
+          throw new Error(`缺少 ${platform}/${target.currentPlugin.manifest.name} 的 lifecycle config snapshot。`);
         }
 
         await emitCommandEvent(context, {
@@ -718,6 +1025,7 @@ export async function installTargetsOnPlatforms(
           },
         });
 
+        recoveryFailureStage.lifecycleStarted = true;
         await runLifecycleScript({
           event: operation,
           pluginName: target.currentPlugin.manifest.name,
@@ -774,6 +1082,7 @@ export async function installTargetsOnPlatforms(
         }
 
         trackingWriteAttempted = true;
+        recoveryFailureStage.trackingWriteAttempted = true;
         await writeTrackingManifest(
           trackingDir,
           trackedArtifacts.length > 0
@@ -799,6 +1108,7 @@ export async function installTargetsOnPlatforms(
           },
         });
 
+        recoveryFailureStage.ledgerWriteAttempted = true;
         const nextLedger = preserveLedgerState(
           baselineLedger,
           await applyInstallLedger(
@@ -808,6 +1118,11 @@ export async function installTargetsOnPlatforms(
             options,
             resolvedInstallOptions,
           ),
+          {
+            platform,
+            scope: options.scope,
+            target,
+          },
         );
         await setLifecycleConfigSnapshotOnLedger(
           nextLedger,
@@ -844,6 +1159,7 @@ export async function installTargetsOnPlatforms(
           );
         }
         await writeInstalledLedger(nextLedger, env);
+        ledgerWritten = true;
         await emitCommandEvent(context, {
           type: 'ledger:written',
           data: {
@@ -858,6 +1174,29 @@ export async function installTargetsOnPlatforms(
           await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
         }
       } catch (error) {
+        if (error instanceof PostInstallCleanupError && error.skipRollback) {
+          throw error;
+        }
+
+        if (
+          nativeWritten &&
+          recoveryBreadcrumbPersisted &&
+          isCodexUserNativeInstall(platform, target, options.scope)
+        ) {
+          const preparedMetadata = preparedLifecycleConfigSnapshot?.metadata;
+          const recoveryFailure = createRecoveryBreadcrumbFailureReason(recoveryFailureStage);
+          await updateCodexRecoveryBreadcrumbWithEvent(context, {
+            pluginName: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            state: recoveryFailure.state,
+            reason: recoveryFailure.reason,
+            pluginVersion: lifecycleConfigSnapshot?.pluginVersion ?? preparedMetadata?.pluginVersion ?? null,
+            bundleFingerprint: lifecycleConfigSnapshot?.bundleFingerprint ?? preparedMetadata?.bundleFingerprint ?? null,
+            lastError: normalizeErrorMessage(error),
+            env,
+          }).catch(() => undefined);
+        }
+
         await emitCommandEvent(context, {
           type: 'rollback:started',
           message: error instanceof Error ? error.message : String(error),
@@ -914,6 +1253,7 @@ export async function installTargetsOnPlatforms(
               generatedArtifacts,
             );
           } catch (rollbackError) {
+            artifactsRollbackFailed = true;
             appendRollbackIssue(
               rollbackIssues,
               rollbackSurfaces,
@@ -928,6 +1268,7 @@ export async function installTargetsOnPlatforms(
           try {
             await writeTrackingManifest(trackingDir, baselineTracking);
           } catch (rollbackError) {
+            trackingRestoreFailed = true;
             appendRollbackIssue(
               rollbackIssues,
               rollbackSurfaces,
@@ -948,6 +1289,20 @@ export async function installTargetsOnPlatforms(
               `install snapshot 清理失败 (${lifecycleConfigSnapshot.snapshotRoot})`,
               rollbackError,
               [lifecycleConfigSnapshot.snapshotRoot],
+            );
+          }
+        } else if (preparedLifecycleConfigSnapshot) {
+          try {
+            if (await fs.pathExists(preparedLifecycleConfigSnapshot.stagingRoot)) {
+              await fs.remove(preparedLifecycleConfigSnapshot.stagingRoot);
+            }
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `install snapshot staging 清理失败 (${preparedLifecycleConfigSnapshot.stagingRoot})`,
+              rollbackError,
+              [preparedLifecycleConfigSnapshot.stagingRoot],
             );
           }
         }
@@ -1015,10 +1370,15 @@ export async function installTargetsOnPlatforms(
           : resolveInstallRollbackLedgerReason(
               platform,
               options.scope,
+              plannedNativeWrite,
               nativeWritten,
+              recoveryBreadcrumbPersisted,
+              ledgerWritten,
               materializationRollbackFailed,
               artifactsWritten,
               trackingWriteAttempted,
+              artifactsRollbackFailed,
+              trackingRestoreFailed,
             );
 
         if (degradedReason) {
@@ -1042,9 +1402,29 @@ export async function installTargetsOnPlatforms(
               [installedLedgerPath],
             );
           }
+        } else if (ledgerWritten) {
+          try {
+            await writeInstalledLedger(baselineLedger, env);
+          } catch (rollbackError) {
+            appendRollbackIssue(
+              rollbackIssues,
+              rollbackSurfaces,
+              `installed.json baseline 恢复失败 (${installedLedgerPath})`,
+              rollbackError,
+              [installedLedgerPath],
+            );
+          }
         }
 
-        throw createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
+        const rollbackFailure = createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
+        if (isCodexUserNativeInstall(platform, target, options.scope) && nativeWritten) {
+          throw wrapCodexNativeInstallFailure(
+            target.currentPlugin.manifest.name,
+            rollbackFailure,
+            recoveryBreadcrumbPersisted,
+          );
+        }
+        throw rollbackFailure;
       }
 
       if (materializationRollbackHandle) {
@@ -1079,6 +1459,33 @@ export async function installTargetsOnPlatforms(
         await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
           .catch(() => undefined);
       }
+
+      if (
+        nativeWritten &&
+        recoveryBreadcrumbPersisted &&
+        isCodexUserNativeInstall(platform, target, options.scope)
+      ) {
+        try {
+          await deleteCodexRecoveryBreadcrumbWithEvent(context, {
+            pluginName: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            state: 'pending_after_native_write',
+            env,
+          });
+        } catch (error) {
+          await updateCodexRecoveryBreadcrumbWithEvent(context, {
+            pluginName: target.currentPlugin.manifest.name,
+            scope: options.scope,
+            state: 'cleanup_failed',
+            reason: 'install_breadcrumb_delete_failed',
+            lastError: normalizeErrorMessage(error),
+            env,
+          }).catch(() => undefined);
+          throw new PostInstallCleanupError(
+            `插件 ${target.currentPlugin.manifest.name} 已安装成功，但删除 Codex native recovery breadcrumb 失败：${normalizeErrorMessage(error)}。请运行 \`aw status --verbose\` 检查并手动重试清理恢复标记。`,
+          );
+        }
+      }
     }
   }
 
@@ -1097,16 +1504,33 @@ export async function installCommand(
 
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
-  const prepared = await preparePluginTargetsForCommand(
-    options.cwd,
-    options.scope,
-    pluginNames,
-    {
-      catalogMode: 'readOnly',
-      allowHistoricalFallback: false,
-      env,
-    },
-  );
+  let prepared: Awaited<ReturnType<typeof preparePluginTargetsForCommand>>;
+  try {
+    prepared = await preparePluginTargetsForCommand(
+      options.cwd,
+      options.scope,
+      pluginNames,
+      {
+        catalogMode: 'readOnly',
+        allowHistoricalFallback: false,
+        env,
+      },
+    );
+  } catch (error) {
+    if (options.scope === 'user') {
+      const missingPluginMatch = /Unknown plugin "([^"]+)"\./.exec(normalizeErrorMessage(error));
+      const missingPluginName = missingPluginMatch?.[1];
+      if (missingPluginName) {
+        const breadcrumb = await readCodexNativeRecoveryBreadcrumb(missingPluginName, env);
+        if (breadcrumb) {
+          throw new Error(
+            `${missingPluginName} 当前不在 current catalog 中，无法执行 repair install。请先恢复该插件到当前 catalog，或运行 \`aw uninstall ${missingPluginName} -p codex -s user\` 清理 Codex native 残留。`,
+          );
+        }
+      }
+    }
+    throw error;
+  }
   await emitCommandEvent(context, {
     type: 'catalog:resolved',
     data: {

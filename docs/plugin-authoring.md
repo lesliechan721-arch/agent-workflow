@@ -145,8 +145,11 @@ pnpm plugin:test --all
 ## Scope Semantics
 
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
-- **Codex user scope**：使用 native plugin / marketplace 平面，注册 `~/.codex/config.toml [marketplaces.aw]` 并启用用户级 `[plugins."<plugin>@aw"]`
-- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.codex/.agent-workflows-manifest.json`
+- **Codex user scope**：使用 native plugin / marketplace 平面。AW 先注册 `~/.codex/config.toml [marketplaces.aw]`，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache；安装后必须同时看到 enabled config 与 active cache。作者不能依赖“只写 config”的旧行为。
+- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 native marketplace add / app-server RPC；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.codex/.agent-workflows-manifest.json`。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可工作并且不能产生用户级 native 副作用。
+- **Codex project installability**：纯 native-only 插件不能以 project scope 安装；包含 `apps` 的插件在 Codex project scope 会 fail fast。面向项目安装的插件至少要提供 repo-managed surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
 - **共享 runtime**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 可能因不同 scope 的 `--skill-trigger` 偏好出现 sibling drift；Codex project scope 不参与共享 runtime 选举，只改当前仓库 repo skill。
 - **Tracking identity**：tracking manifest 中的 `GeneratedArtifact.path` 必须是绝对路径；`kind: "skill"` 和 `kind: "mcpServer"` 必须写 `artifactKey`。MCP `artifactKey` 使用 rendered `.mcp.json` 的原始 server key，包含点号、空格或 Unicode 时仍按 TOML quoted key 写入 `.codex/config.toml`，例如 `[mcp_servers."acme.tools v1"]`。
+
+Codex user native 安装失败时，作者和用户会在 `aw status --json` 里看到更细的诊断：`native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，`native.recovery.present/state/reason/evidenceMatches/suggestion` 表示 `<AW_HOME>/native-recovery/codex/user/<plugin>@aw.json` 是否存在以及该如何 repair 或 cleanup。插件 lifecycle 应保持幂等，因为 native RPC 成功后如果 snapshot、lifecycle、tracking 或 ledger 失败，用户可能通过重新 `aw install` 走 repair install；breadcrumb-only uninstall 不会运行 uninstall lifecycle。

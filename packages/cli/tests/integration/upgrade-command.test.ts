@@ -3,17 +3,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { initCommand } from '../../src/commands/init.js';
+import * as commonModule from '../../src/commands/common.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import type {
   GeneratedArtifact,
+  NativeRecoveryState,
   PlatformAdapter,
   PlatformName,
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import {
   resolveClaudeProjectKey,
@@ -145,8 +149,13 @@ interface FakePluginState {
   scopeInitialized?: 'yes' | 'no' | 'unknown';
   currentCatalogAvailable?: boolean;
   nativeInstalled?: boolean;
+  nativeEnabled?: boolean;
   runtimeEvidence?: boolean;
   nativeFallback?: boolean;
+  sharedNativeRef?: boolean;
+  nativeRecoveryPresent?: boolean;
+  nativeRecoveryState?: NativeRecoveryState;
+  nativeRecoveryReason?: string;
   catalogCompatibility?: 'current' | 'missing' | 'capabilityChanged';
   externalOwnership?: boolean;
   externalOwnershipCheckState?: 'known' | 'unknown';
@@ -249,8 +258,11 @@ class FakeAdapter implements PlatformAdapter {
       initialized:
         state.scopeInitialized === 'yes' ||
         state.nativeInstalled === true ||
+        state.nativeEnabled === true ||
         state.runtimeEvidence === true ||
-        state.nativeFallback === true,
+        state.nativeFallback === true ||
+        state.sharedNativeRef === true ||
+        state.nativeRecoveryPresent === true,
       plugins: [
         {
           pluginName: plugin.manifest.name,
@@ -258,6 +270,14 @@ class FakeAdapter implements PlatformAdapter {
             marketplaceRegistered: state.nativeInstalled === true,
             pluginAvailable: currentCatalogAvailable,
             pluginInstalled: state.nativeInstalled === true,
+            pluginEnabled: state.nativeEnabled === true,
+            recovery: {
+              present: state.nativeRecoveryPresent === true,
+              state: state.nativeRecoveryPresent ? state.nativeRecoveryState ?? 'post_check_failed' : null,
+              reason: state.nativeRecoveryPresent ? state.nativeRecoveryReason ?? 'native_install_post_check_failed' : null,
+              evidenceMatches: null,
+              suggestion: null,
+            },
             version: plugin.manifest.version,
           },
           generatedArtifacts,
@@ -289,7 +309,7 @@ class FakeAdapter implements PlatformAdapter {
           scopeManagedEvidence: {
             ledger: state.scopeInitialized === 'yes',
             tracking: generatedArtifacts.length > 0,
-            sharedNativeRef: false,
+            sharedNativeRef: state.sharedNativeRef === true,
           },
           currentCatalog: {
             rootDir: '/synthetic',
@@ -312,6 +332,7 @@ class FakeAdapter implements PlatformAdapter {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
   process.env.PATH = originalPath;
   delete process.env.AW_HOME;
@@ -414,6 +435,113 @@ describe('upgrade command coverage', () => {
         platform: 'codex',
       }),
     ).rejects.toThrow('upgrade 命令需要插件名，或者显式传入 `--all`。');
+  });
+
+  it('fails breadcrumb-only explicit Codex user upgrade before install option inheritance, lifecycle, and native install', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+      AW_CODEX_HOME: codexHome,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    };
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeRecoveryPresent: true,
+        nativeRecoveryState: 'post_check_failed',
+        nativeRecoveryReason: 'native_install_post_check_failed',
+      },
+    });
+    const resolveInstallOptionsSpy = vi.spyOn(commonModule, 'resolveInstallOptionsForTargets');
+    const lifecycleSpy = vi.spyOn(pluginScriptsModule, 'runLifecycleScript');
+
+    await expect(
+      upgradeCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow(
+      'git-commit 当前只有 Codex native recovery breadcrumb，安装尚未完整成功；请先运行 aw install git-commit -p codex -s user 修复，或运行 aw uninstall git-commit -p codex -s user 清理。',
+    );
+
+    expect(resolveInstallOptionsSpy).not.toHaveBeenCalled();
+    expect(lifecycleSpy).not.toHaveBeenCalled();
+    expect(codex.installCalls).toEqual([]);
+    expect(codex.extensionInstallCalls).toEqual([]);
+  });
+
+  it('skips breadcrumb-only Codex user targets during upgrade --all and suggests repair or cleanup', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+      AW_CODEX_HOME: codexHome,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    };
+    await writeInstalledLedger(createAvailableLedger(), env);
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeRecoveryPresent: true,
+        nativeRecoveryState: 'post_check_failed',
+        nativeRecoveryReason: 'native_install_post_check_failed',
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [],
+        {
+          all: true,
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+          env,
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: [],
+      skipped: [
+        expect.objectContaining({
+          platform: 'codex',
+          scope: 'user',
+          plugin: 'git-commit',
+          code: 'repairRequired',
+          reason: expect.stringContaining('请先运行 aw install git-commit -p codex -s user 修复'),
+        }),
+      ],
+    });
+
+    expect(codex.installCalls).toEqual([]);
+    expect(codex.extensionInstallCalls).toEqual([]);
   });
 
   it('refuses explicit upgrade when tracked skill or MCP identity is missing artifactKey', async () => {

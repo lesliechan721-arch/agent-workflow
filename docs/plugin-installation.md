@@ -165,7 +165,9 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 - 明细：按 platform + scope 展示 native 注册（只在相关时作为诊断）、repo-managed artifacts、catalog 状态、skill trigger、config/script health、`healthSource` 和可见性摘要
 - 下一步：给出最可能的修复或确认命令，例如 `aw status <plugin> --verbose`、`aw upgrade <plugin>` 或 `aw install <plugin>`
 
-`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。Codex project scope 的默认状态面板以 repo-managed evidence 为主；用户级 native marketplace 注册缺失不会覆盖正常的 repo-managed installed signal。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会刷新 marketplace、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。Codex project scope 的默认状态面板以 repo-managed evidence 为主；用户级 native marketplace 注册缺失不会覆盖正常的 repo-managed installed signal。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会刷新 marketplace、不会启动 `codex app-server`、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+
+Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled` 表示 Codex cache 中已经 materialize 出可用 active version；`native.pluginEnabled` 表示用户级 config 中 `[plugins."<plugin>@aw"].enabled === true`；`native.recovery` 固定返回 `{ present, state, reason, evidenceMatches, suggestion }`，无 breadcrumb 时这些字段为 `false` / `null`。因此 enabled-only、cache-only、breadcrumb-only 状态都会作为诊断或 `needsAttention` 暴露，不再被解释成完整安装。
 
 ---
 
@@ -178,7 +180,7 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 | 写入位置 | 当前项目目录下的 `.claude/`；Codex 写当前仓库的 `.agents/skills` 和 `.codex/` | `~/.claude/` 或 `~/.codex/`，并按需使用 `~/.aw` native runtime |
 | 适用场景 | 项目级配置，提交到版本控制 | 跨项目共享的个人配置 |
 
-> **Codex 注意**：`--scope user` 仍使用 Codex native plugin 平面，AW 会通过 `codex plugin marketplace add <canonical ~/.aw>` 注册本地 marketplace，并维护用户级 `[plugins."<plugin>@aw"]` enabled 状态。`--scope project` 不写 `~/.codex/config.toml [marketplaces]` 或 `[plugins]`，也不调用 native marketplace add；它只写当前仓库的 repo-managed artifacts，并用 `.codex/.agent-workflows-manifest.json` 追踪。
+> **Codex 注意**：`--scope user` 仍使用 Codex native plugin 平面。AW 会先通过 `codex plugin marketplace add <canonical ~/.aw>` 注册本地 marketplace，再调用 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC，由 Codex 写入 enabled config 和 materialized cache；AW 不再回退到只写或只删 `~/.codex/config.toml`。`--scope project` 不写 `~/.codex/config.toml [marketplaces]` 或 `[plugins]`，也不调用 native marketplace add / app-server RPC；它只写当前仓库的 repo-managed artifacts，并用 `.codex/.agent-workflows-manifest.json` 追踪。即使本机缺少 `codex` 可执行文件，Codex project repo-managed 安装也不会产生用户级 native 副作用。
 
 ### Platform
 
@@ -299,6 +301,31 @@ aw install git-commit -t default
 ### 提示"插件已由外部 marketplace 管理"
 
 Codex project scope 安装 / 显式升级时，如果用户级 `~/.codex/config.toml [plugins]` 中已有同名外部 native plugin，CLI 会在写入任何 repo artifact 前拒绝，避免运行时歧义。已有 repo-managed evidence 的 `status` 会继续以当前仓库的安装状态为主，把 external ownership 作为附加诊断和下一步；`uninstall -p codex -s project` 只清理 AW 管理的 repo artifacts，不删除用户级 native plugin。
+
+### Codex app-server 或 native RPC 失败
+
+`aw install <plugin> -p codex -s user` 和 `aw uninstall <plugin> -p codex -s user` 需要 Codex 提供 `codex app-server`，并支持 `plugin/install` / `plugin/uninstall`。如果 app-server 无法启动、提前退出、协议输出无法解析、unknown method、plugins 被 workspace 禁用，或 install policy 拒绝，命令会失败并给出可行动建议。AW 不会退回到只写 enabled config 或只删 config；请先升级/修复 Codex CLI 或 workspace policy，再重试同一条 `aw install` / `aw uninstall`。
+
+排查时建议加 `--verbose` 或 `--debug`。debug event 会区分：
+
+- `native:marketplace`：marketplace add / verify，失败通常是 `codex plugin marketplace add <canonical ~/.aw>` 不可用或注册后未指向当前 AW_HOME。
+- `native:rpc`：`plugin/install` / `plugin/uninstall` RPC，失败会带 `method`、`pluginId`、`errorCategory` 和 `suggestion`。
+- `native:post-check`：RPC 后检查 enabled config、config entry 和 active cache；install 要求 enabled config + active cache 同时存在，uninstall 要求 config entry 不存在且 active cache 不存在。
+- `native:recovery`：breadcrumb 写入、更新或删除；它说明 AW 是否能自动 repair 或 cleanup。
+- `native:skipped`：Codex project repo-managed 路径不会写 native 状态，reason 为 `project_repo_managed_skipped_native`。
+
+### Codex native recovery breadcrumb
+
+Codex user native RPC 成功后，AW 会在 `<AW_HOME>/native-recovery/codex/user/<plugin>@aw.json` 写入恢复标记，再继续 post-check、安装快照、lifecycle、tracking 和 ledger。只要后续步骤失败，`aw status --verbose` / `aw status --json` 都会显示 `native.recovery`。
+
+常见状态和处理方式：
+
+- `pending_after_native_write`：Codex native 写入已发生，AW 后续步骤未完成。运行 `aw install <plugin> -p codex -s user` 修复账本，或运行 `aw uninstall <plugin> -p codex -s user` 清理残留。
+- `post_check_failed`：RPC 返回成功，但 enabled config 或 active cache 缺失。AW 不会 config-only fallback；先修复 Codex app-server / marketplace，再重试 install 或 uninstall。
+- `snapshot_write_failed`、`lifecycle_failed`、`tracking_write_failed`、`ledger_write_failed`：native 已写入，AW 后续持久化或脚本失败。重新 install 会尝试补齐；uninstall 可用 breadcrumb 授权清理残留。
+- `cleanup_failed`：native 卸载大概率已执行，但 cache/config 或 breadcrumb 清理未收口。重新运行 `aw uninstall <plugin> -p codex -s user`。
+
+如果 breadcrumb 写入本身失败，命令会立即失败，并提示 AW 不能承诺后续自动 repair / uninstall。此时先运行 `aw status --verbose` 检查 config/cache，再决定是否修复文件权限或手动处理。breadcrumb-only install 可以补齐 AW ledger / tracking 并在成功后删除 breadcrumb；breadcrumb-only uninstall 会清 config/cache/breadcrumb，但不会运行 uninstall lifecycle；breadcrumb-only upgrade 会明确失败，`upgrade --all` 会跳过。
 
 ### `upgrade --all` 跳过 code
 

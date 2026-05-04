@@ -11,8 +11,9 @@ import type { InstalledScopeRecord, PluginManifestSource, PluginMeta } from '../
 import {
   buildLifecycleScriptInvocation,
   buildLifecycleSpawnEnv,
-  createLifecycleConfigSnapshot,
   garbageCollectLifecycleConfigSnapshots,
+  persistLifecycleConfigSnapshot,
+  prepareLifecycleConfigSnapshot,
   quoteCmdArgument,
   resolveLifecycleScriptTarget,
   resolveLifecycleScriptTimeoutMs,
@@ -113,6 +114,18 @@ function readMarkerLines(markerPath: string): Promise<string[]> {
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
+
+async function createLifecycleConfigSnapshotForTest(options: {
+  plugin: PluginMeta;
+  platform: 'codex' | 'claude';
+  scope: 'user' | 'project';
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}) {
+  return persistLifecycleConfigSnapshot(
+    await prepareLifecycleConfigSnapshot(options),
+  );
+}
 
 describe('plugin lifecycle scripts', () => {
   it('writes AW_PLUGIN_CONTEXT as 0600 best effort and cleans it up', async () => {
@@ -748,7 +761,7 @@ describe('plugin lifecycle scripts', () => {
     await fs.ensureDir(cwd);
     const plugin = await writePlugin(root);
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    const snapshot = await createLifecycleConfigSnapshot({
+    const snapshot = await createLifecycleConfigSnapshotForTest({
       plugin,
       platform: 'codex',
       scope: 'user',
@@ -791,7 +804,7 @@ describe('plugin lifecycle scripts', () => {
     await fs.ensureDir(cwd);
     const plugin = await writePlugin(root);
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    const snapshot = await createLifecycleConfigSnapshot({
+    const snapshot = await createLifecycleConfigSnapshotForTest({
       plugin,
       platform: 'codex',
       scope: 'user',
@@ -831,7 +844,7 @@ describe('plugin lifecycle scripts', () => {
     await fs.ensureDir(cwd);
     const installedPlugin = await writePlugin(root);
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    const snapshot = await createLifecycleConfigSnapshot({
+    const snapshot = await createLifecycleConfigSnapshotForTest({
       plugin: installedPlugin,
       platform: 'codex',
       scope: 'user',
@@ -922,8 +935,8 @@ describe('plugin lifecycle scripts', () => {
     await fs.ensureDir(cwd);
     const plugin = await writePlugin(root);
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    const kept = await createLifecycleConfigSnapshot({ plugin, platform: 'codex', scope: 'user', cwd, env });
-    const orphan = await createLifecycleConfigSnapshot({ plugin, platform: 'codex', scope: 'project', cwd, env });
+    const kept = await createLifecycleConfigSnapshotForTest({ plugin, platform: 'codex', scope: 'user', cwd, env });
+    const orphan = await createLifecycleConfigSnapshotForTest({ plugin, platform: 'codex', scope: 'project', cwd, env });
     const ledger = {
       version: 1,
       ledgerState: {

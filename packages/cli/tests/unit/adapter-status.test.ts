@@ -930,7 +930,8 @@ describe('adapter status helpers', () => {
     expect(report.plugins[0]).toMatchObject({
       scopeInitialized: 'no',
       native: {
-        pluginInstalled: true,
+        pluginInstalled: false,
+        pluginEnabled: true,
       },
       scopeManagedEvidence: {
         ledger: false,

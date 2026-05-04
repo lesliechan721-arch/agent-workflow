@@ -11,7 +11,15 @@ import { renderCodexManagedInstructionBlock } from '../generators/instructions.j
 import { generateCodexPermissionArtifacts } from '../generators/permissions.js';
 import { buildGeneratedName } from '../generators/shared.js';
 import type {
+  CommandEvent,
+  NativeMarketplaceEventData,
+  NativePostCheckEventData,
+  NativeRecoveryEventData,
+  NativeRpcEventData,
+} from '../output/model.js';
+import type {
   CatalogCompatibility,
+  CodexNativeCacheStatus,
   CodexCapabilitySnapshot,
   CodexProjectManagedKind,
   CodexSharedHookGroup,
@@ -22,6 +30,8 @@ import type {
   InstalledScopeRecord,
   MarketplaceRootResolution,
   MarketplaceSourceStatus,
+  NativeRecoveryState,
+  NativeRecoveryStatus,
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
@@ -52,10 +62,27 @@ import {
   readCodexConfigFile,
   readRenderedCodexMcpServersFile,
   removeCodexMarketplaceFile,
-  removeCodexPluginEnabledFile,
   resolveCodexMcpServerStatusSignal,
-  upsertCodexPluginEnabledFile,
 } from '../utils/codex-config.js';
+import {
+  CodexAppServerError,
+  type CodexAppServerProcessRunner,
+  installCodexPluginViaAppServer,
+  uninstallCodexPluginViaAppServer,
+} from '../utils/codex-app-server-client.js';
+import {
+  checkCodexNativeInstallPostCheck,
+  checkCodexNativeUninstallPostCheck,
+  listCodexNativeEvidence,
+  readCodexNativePluginState,
+} from '../utils/codex-native-state.js';
+import {
+  deleteCodexNativeRecoveryBreadcrumb,
+  listCodexNativeRecoveryBreadcrumbs,
+  readCodexNativeRecoveryBreadcrumb,
+  updateCodexNativeRecoveryBreadcrumb,
+  writeCodexNativeRecoveryBreadcrumb,
+} from '../utils/codex-native-recovery.js';
 import {
   ensureLocalMarketplace,
   readInstalledLedger,
@@ -134,6 +161,13 @@ export {
 } from '../utils/codex-project-surface.js';
 
 const MARKETPLACE_NAME = 'aw';
+const NOOP_COMMAND_EVENT_SINK = () => undefined;
+
+type CommandEventSink = (event: CommandEvent) => void | Promise<void>;
+type NativeMarketplaceOperation = NativeMarketplaceEventData['operation'];
+type NativeRpcMethod = NativeRpcEventData['method'];
+type NativeRecoveryOperation = NativeRecoveryEventData['operation'];
+type NativePostCheckOperation = NativePostCheckEventData['operation'];
 
 export function buildCodexMarketplaceAddInvocation(
   awHome: string,
@@ -247,6 +281,60 @@ function summarizeNativeCliOutput(error: NativeCliError): string {
   return detail || `exit code ${error.exitCode}`;
 }
 
+function classifyCodexMarketplaceError(error: unknown): string {
+  if (error instanceof NativeCliError) {
+    const cause = error.cause as { code?: string } | undefined;
+    if (cause?.code === 'ENOENT') {
+      return 'spawn_failure';
+    }
+    if (error.exitCode === 124) {
+      return 'timeout';
+    }
+    return 'native_cli_failed';
+  }
+
+  return 'native_cli_failed';
+}
+
+function createCodexMarketplaceSuggestion(
+  awHome: string,
+  error?: unknown,
+): string {
+  if (error === undefined) {
+    return `请确认 [marketplaces.aw] 指向 ${awHome}，必要时手动运行 \`codex plugin marketplace add ${awHome}\` 后重试。`;
+  }
+
+  return `请确认可以运行 \`codex plugin marketplace add ${awHome}\`。${nativeCliFailureHint(error)}`;
+}
+
+function createCodexNativePostCheckSuggestion(
+  operation: 'install' | 'uninstall',
+): string {
+  return operation === 'install'
+    ? 'Codex native side effect 已发生，但 AW 安装尚未完成；请运行 `aw status --verbose` 查看 breadcrumb、config 和 cache 诊断。'
+    : 'Codex native side effect 已发生，但 AW 卸载校验未通过；请运行 `aw status --verbose` 查看当前残留。';
+}
+
+function createCodexRecoverySuggestion(
+  operation: NativeRecoveryOperation,
+  state: NativeRecoveryState,
+  recoveryBreadcrumbPersisted: boolean,
+): string {
+  if (operation === 'write' && !recoveryBreadcrumbPersisted) {
+    return 'Codex native side effect 已发生，但 AW 没有持久化恢复证据；当前不能承诺后续 repair / uninstall 一定具备自动授权。';
+  }
+
+  if (operation === 'delete') {
+    return '原生状态已处理，但 AW 还需要清理 recovery breadcrumb；请运行 `aw status --verbose` 继续确认。';
+  }
+
+  if (state === 'cleanup_failed') {
+    return 'Codex native side effect 已发生，但 recovery 记录还需要保留；请运行 `aw status --verbose` 查看当前诊断。';
+  }
+
+  return 'Codex native side effect 已发生，但 AW 仍需依赖 recovery breadcrumb 跟踪后续修复。';
+}
+
 function nativeCliFailureHint(error: unknown): string {
   if (!(error instanceof NativeCliError)) {
     return error instanceof Error ? error.message : String(error);
@@ -280,6 +368,86 @@ function createCodexMarketplaceVerificationError(
   return new Error(
     `Codex 原生命令已执行，但 ${configPath} 中的 [marketplaces.aw] 没有指向 ${awHome}（source_type 应为 "local"）。请手动运行 \`codex plugin marketplace add ${awHome}\` 后重试。`,
   );
+}
+
+function normalizeCodexUserPluginId(pluginNameOrId: string): `${string}@aw` {
+  const normalized = pluginNameOrId.endsWith(`@${MARKETPLACE_NAME}`)
+    ? pluginNameOrId
+    : `${pluginNameOrId}@${MARKETPLACE_NAME}`;
+  if (
+    normalized.trim() === '' ||
+    normalized.includes('/') ||
+    normalized.includes('\\')
+  ) {
+    throw new Error(`Invalid Codex plugin id: "${pluginNameOrId}".`);
+  }
+  return normalized as `${string}@aw`;
+}
+
+function codexPluginNameFromId(pluginId: `${string}@aw`): string {
+  return pluginId.slice(0, -(`@${MARKETPLACE_NAME}`.length));
+}
+
+function describeCodexNativeInstallPostCheckFailure(
+  state: Awaited<ReturnType<typeof checkCodexNativeInstallPostCheck>>['state'],
+): string {
+  if (!state.pluginEnabled && !state.pluginInstalled) {
+    return `enabled config 与 native cache 都缺失（config: ${state.configPath}，cache: ${state.cacheRootPath}）。`;
+  }
+  if (!state.pluginEnabled) {
+    return `缺少 enabled config entry（${state.configPath}），但 cache 状态为 ${state.cacheStatus}${state.activeCachePath ? `（${state.activeCachePath}）` : ''}。`;
+  }
+  return `缺少可用 native cache（cache 状态：${state.cacheStatus}，目录：${state.cacheRootPath}）。`;
+}
+
+function describeCodexNativeUninstallPostCheckFailure(
+  state: Awaited<ReturnType<typeof checkCodexNativeUninstallPostCheck>>['state'],
+): string {
+  if (state.configEntryPresent && state.pluginInstalled) {
+    return `config entry 与 native cache 都仍然存在（config: ${state.configPath}，cache: ${state.cacheRootPath}）。`;
+  }
+  if (state.configEntryPresent) {
+    return `目标 config entry 仍然存在（${state.configPath}）。`;
+  }
+  return `目标 native cache 仍然存在（${state.cacheRootPath}）。`;
+}
+
+function hasCodexSharedNativeRefs(
+  ledger: InstalledLedger,
+  pluginName?: string,
+  nextRefs?: CodexSharedNativeRefs,
+): boolean {
+  return Object.entries(ledger.plugins).some(([name, record]) => {
+    const snapshot = normalizeCodexCapabilitySnapshot(record.platforms.codex?.userScope?.capabilitySnapshot);
+    if (!snapshot.requiresNativePlugin) {
+      return false;
+    }
+    const refs = name === pluginName && nextRefs
+      ? nextRefs
+      : normalizeSharedNativeRefs(record.platforms.codex?.sharedNativeRefs);
+    return refs.user || refs.projects.length > 0;
+  });
+}
+
+async function assessCodexMarketplaceCleanupForAdapter(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  ledger: InstalledLedger;
+  pluginName?: string;
+  nextRefs?: CodexSharedNativeRefs;
+}): Promise<{ marketplaceConfigPresent: boolean; canCleanup: boolean }> {
+  const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
+  const config = await readCodexConfigFile(configPath);
+  const hasSharedRefs = hasCodexSharedNativeRefs(options.ledger, options.pluginName, options.nextRefs);
+  const [breadcrumbs, nativeEvidence] = await Promise.all([
+    listCodexNativeRecoveryBreadcrumbs(options.env),
+    listCodexNativeEvidence(options.env),
+  ]);
+
+  return {
+    marketplaceConfigPresent: config.snapshot.marketplaces[MARKETPLACE_NAME] !== undefined,
+    canCleanup: !hasSharedRefs && breadcrumbs.length === 0 && nativeEvidence.length === 0,
+  };
 }
 
 function createEmptyCodexConfigSnapshot(): CodexConfigSnapshot {
@@ -465,18 +633,16 @@ async function compareCodexRepoSkillToPristine(options: {
 }
 
 function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
-  if (ledger.ledgerState.status === 'available') {
-    return ledger;
-  }
-
-  return {
-    ...ledger,
-    ledgerState: {
+  const nextLedger = structuredClone(ledger);
+  if (nextLedger.ledgerState.status !== 'available') {
+    nextLedger.ledgerState = {
       status: 'available',
       degradedAt: null,
       reason: null,
-    },
-  };
+    };
+  }
+
+  return nextLedger;
 }
 
 function normalizeSharedNativeRefs(
@@ -485,6 +651,66 @@ function normalizeSharedNativeRefs(
   return {
     user: sharedNativeRefs?.user === true,
     projects: [...new Set(sharedNativeRefs?.projects ?? [])].sort(),
+  };
+}
+
+function createEmptyNativeRecoveryStatus(): NativeRecoveryStatus {
+  return {
+    present: false,
+    state: null,
+    reason: null,
+    evidenceMatches: null,
+    suggestion: null,
+  };
+}
+
+function createCodexNativeRecoverySuggestion(
+  pluginName: string,
+  state: NativeRecoveryStatus['state'],
+  evidenceMatches: boolean,
+): string {
+  const repairCommand = `aw install ${pluginName} -p codex -s user`;
+  const cleanupCommand = `aw uninstall ${pluginName} -p codex -s user`;
+
+  if (state === 'cleanup_failed' || !evidenceMatches) {
+    return `重新运行 ${cleanupCommand} 清理残留恢复记录；如果 Codex cache 和 config 已经手动清掉，AW 仍需要删除 breadcrumb。`;
+  }
+
+  if (state === 'pending_after_native_write') {
+    return `运行 ${repairCommand} 补齐 AW 安装账本，或运行 ${cleanupCommand} 清理 Codex native 残留。`;
+  }
+
+  return `运行 ${repairCommand} 修复未完成安装，或运行 ${cleanupCommand} 清理 Codex native 残留。`;
+}
+
+function buildNativeRecoveryStatus(options: {
+  pluginName: string;
+  pluginEnabled: boolean;
+  pluginInstalled: boolean;
+  sharedNativeRef: boolean;
+  hasSuccessfulScopeRecord: boolean;
+  breadcrumb: Awaited<ReturnType<typeof readCodexNativeRecoveryBreadcrumb>>;
+}): NativeRecoveryStatus {
+  if (!options.breadcrumb) {
+    return createEmptyNativeRecoveryStatus();
+  }
+
+  const evidenceMatches =
+    options.pluginEnabled ||
+    options.pluginInstalled ||
+    options.sharedNativeRef ||
+    options.hasSuccessfulScopeRecord;
+
+  return {
+    present: true,
+    state: options.breadcrumb.state,
+    reason: options.breadcrumb.reason,
+    evidenceMatches,
+    suggestion: createCodexNativeRecoverySuggestion(
+      options.pluginName,
+      options.breadcrumb.state,
+      evidenceMatches,
+    ),
   };
 }
 
@@ -1403,21 +1629,353 @@ export class CodexAdapter implements PlatformAdapter {
 
   private readonly cwd: string;
   private readonly nativeCliRunner?: NativeCliRunner;
+  private readonly codexAppServerRunner?: CodexAppServerProcessRunner;
   private readonly env: NodeJS.ProcessEnv;
+  private commandEventSink: CommandEventSink = NOOP_COMMAND_EVENT_SINK;
 
   constructor(cwd: string, env?: NodeJS.ProcessEnv);
-  constructor(cwd: string, nativeCliRunner?: NativeCliRunner, env?: NodeJS.ProcessEnv);
+  constructor(
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    codexAppServerRunner: CodexAppServerProcessRunner,
+  );
+  constructor(
+    cwd: string,
+    nativeCliRunner?: NativeCliRunner,
+    env?: NodeJS.ProcessEnv,
+    codexAppServerRunner?: CodexAppServerProcessRunner,
+  );
   constructor(
     cwd: string,
     nativeCliRunnerOrEnv?: NativeCliRunner | NodeJS.ProcessEnv,
-    env: NodeJS.ProcessEnv = process.env,
+    envOrAppServerRunner: NodeJS.ProcessEnv | CodexAppServerProcessRunner = process.env,
+    codexAppServerRunner?: CodexAppServerProcessRunner,
   ) {
     this.cwd = cwd;
     if (typeof nativeCliRunnerOrEnv === 'function') {
       this.nativeCliRunner = nativeCliRunnerOrEnv;
-      this.env = env;
+      this.env =
+        typeof envOrAppServerRunner === 'function' ? process.env : envOrAppServerRunner;
+      this.codexAppServerRunner =
+        typeof envOrAppServerRunner === 'function'
+          ? envOrAppServerRunner
+          : codexAppServerRunner;
     } else {
-      this.env = nativeCliRunnerOrEnv ?? env;
+      this.env = nativeCliRunnerOrEnv ?? process.env;
+      this.codexAppServerRunner =
+        typeof envOrAppServerRunner === 'function' ? envOrAppServerRunner : codexAppServerRunner;
+    }
+  }
+
+  setCommandEventSink(sink: CommandEventSink | undefined): void {
+    this.commandEventSink = sink ?? NOOP_COMMAND_EVENT_SINK;
+  }
+
+  private async emitCommandEvent(event: CommandEvent): Promise<void> {
+    await this.commandEventSink(event);
+  }
+
+  private async emitNativeMarketplaceEvent(options: {
+    plugin: string;
+    scope: Scope;
+    marketplacePath: string;
+    operation: NativeMarketplaceOperation;
+    phase: NativeMarketplaceEventData['phase'];
+    errorCategory?: string;
+    suggestion?: string;
+  }): Promise<void> {
+    await this.emitCommandEvent({
+      type: 'native:marketplace',
+      source: {
+        platform: 'codex',
+        plugin: options.plugin,
+        scope: options.scope,
+      },
+      data: {
+        platform: 'codex',
+        scope: options.scope,
+        plugin: options.plugin,
+        marketplaceName: MARKETPLACE_NAME,
+        marketplacePath: options.marketplacePath,
+        operation: options.operation,
+        phase: options.phase,
+        ...(options.errorCategory ? { errorCategory: options.errorCategory } : {}),
+        ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+      },
+    });
+  }
+
+  private async emitNativeRpcEvent(options: {
+    plugin: string;
+    scope: Scope;
+    pluginId: string;
+    method: NativeRpcMethod;
+    phase: NativeRpcEventData['phase'];
+    durationMs: number;
+    nativeWriteSucceeded?: boolean;
+    errorCategory?: string;
+    suggestion?: string;
+  }): Promise<void> {
+    await this.emitCommandEvent({
+      type: 'native:rpc',
+      source: {
+        platform: 'codex',
+        plugin: options.plugin,
+        scope: options.scope,
+      },
+      data: {
+        platform: 'codex',
+        scope: options.scope,
+        plugin: options.plugin,
+        pluginId: options.pluginId,
+        method: options.method,
+        phase: options.phase,
+        durationMs: options.durationMs,
+        ...(options.nativeWriteSucceeded === undefined
+          ? {}
+          : { nativeWriteSucceeded: options.nativeWriteSucceeded }),
+        ...(options.errorCategory ? { errorCategory: options.errorCategory } : {}),
+        ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+      },
+    });
+  }
+
+  private async emitNativeRecoveryEvent(options: {
+    plugin: string;
+    scope: Scope;
+    pluginId: string;
+    operation: NativeRecoveryOperation;
+    phase: NativeRecoveryEventData['phase'];
+    state: NativeRecoveryState;
+    nativeWriteSucceeded: boolean;
+    recoveryBreadcrumbPersisted: boolean;
+    errorCategory?: string;
+    suggestion?: string;
+  }): Promise<void> {
+    await this.emitCommandEvent({
+      type: 'native:recovery',
+      source: {
+        platform: 'codex',
+        plugin: options.plugin,
+        scope: options.scope,
+      },
+      data: {
+        platform: 'codex',
+        scope: options.scope,
+        plugin: options.plugin,
+        pluginId: options.pluginId,
+        operation: options.operation,
+        phase: options.phase,
+        state: options.state,
+        nativeWriteSucceeded: options.nativeWriteSucceeded,
+        recoveryBreadcrumbPersisted: options.recoveryBreadcrumbPersisted,
+        ...(options.errorCategory ? { errorCategory: options.errorCategory } : {}),
+        ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+      },
+    });
+  }
+
+  private async emitNativePostCheckEvent(options: {
+    plugin: string;
+    scope: Scope;
+    pluginId: string;
+    operation: NativePostCheckOperation;
+    phase: NativePostCheckEventData['phase'];
+    pluginEnabled: boolean | null;
+    configEntryPresent: boolean | null;
+    pluginInstalled: boolean | null;
+    activeCachePath: string | null;
+    errorCategory?: string;
+    suggestion?: string;
+  }): Promise<void> {
+    await this.emitCommandEvent({
+      type: 'native:post-check',
+      source: {
+        platform: 'codex',
+        plugin: options.plugin,
+        scope: options.scope,
+      },
+      data: {
+        platform: 'codex',
+        scope: options.scope,
+        plugin: options.plugin,
+        pluginId: options.pluginId,
+        operation: options.operation,
+        phase: options.phase,
+        pluginEnabled: options.pluginEnabled,
+        configEntryPresent: options.configEntryPresent,
+        pluginInstalled: options.pluginInstalled,
+        activeCachePath: options.activeCachePath,
+        ...(options.errorCategory ? { errorCategory: options.errorCategory } : {}),
+        ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+      },
+    });
+  }
+
+  private async writeRecoveryBreadcrumbWithEvent(options: {
+    plugin: string;
+    scope: Scope;
+    state: NativeRecoveryState;
+    reason: string;
+    marketplacePath?: string;
+    pluginVersion?: string;
+    bundleFingerprint?: string | null;
+    activeCachePath?: string | null;
+    lastError?: string | null;
+  }): Promise<void> {
+    const pluginId = normalizeCodexUserPluginId(options.plugin);
+    await this.emitNativeRecoveryEvent({
+      plugin: options.plugin,
+      scope: options.scope,
+      pluginId,
+      operation: 'write',
+      phase: 'start',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: false,
+    });
+    try {
+      await writeCodexNativeRecoveryBreadcrumb({
+        pluginName: options.plugin,
+        state: options.state,
+        reason: options.reason,
+        marketplacePath: options.marketplacePath,
+        pluginVersion: options.pluginVersion,
+        bundleFingerprint: options.bundleFingerprint ?? undefined,
+        activeCachePath: options.activeCachePath ?? undefined,
+        lastError: options.lastError ?? undefined,
+        env: this.env,
+      });
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'write',
+        phase: 'success',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: true,
+      });
+    } catch (error) {
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'write',
+        phase: 'error',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: false,
+        errorCategory: 'breadcrumb_write_failed',
+        suggestion: createCodexRecoverySuggestion('write', options.state, false),
+      });
+      throw error;
+    }
+  }
+
+  private async updateRecoveryBreadcrumbWithEvent(options: {
+    plugin: string;
+    scope: Scope;
+    state: NativeRecoveryState;
+    reason: string;
+    pluginVersion?: string | null;
+    bundleFingerprint?: string | null;
+    activeCachePath?: string | null;
+    lastError?: string | null;
+  }): Promise<void> {
+    const pluginId = normalizeCodexUserPluginId(options.plugin);
+    await this.emitNativeRecoveryEvent({
+      plugin: options.plugin,
+      scope: options.scope,
+      pluginId,
+      operation: 'update',
+      phase: 'start',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: true,
+    });
+    try {
+      await updateCodexNativeRecoveryBreadcrumb({
+        pluginName: options.plugin,
+        state: options.state,
+        reason: options.reason,
+        pluginVersion: options.pluginVersion ?? undefined,
+        bundleFingerprint: options.bundleFingerprint ?? undefined,
+        activeCachePath: options.activeCachePath ?? undefined,
+        lastError: options.lastError ?? undefined,
+        env: this.env,
+      });
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'update',
+        phase: 'success',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: true,
+      });
+    } catch (error) {
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'update',
+        phase: 'error',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: true,
+        errorCategory: 'breadcrumb_update_failed',
+        suggestion: createCodexRecoverySuggestion('update', options.state, true),
+      });
+      throw error;
+    }
+  }
+
+  private async deleteRecoveryBreadcrumbWithEvent(options: {
+    plugin: string;
+    scope: Scope;
+    state: NativeRecoveryState;
+    recoveryBreadcrumbPersistedBefore?: boolean;
+  }): Promise<void> {
+    const pluginId = normalizeCodexUserPluginId(options.plugin);
+    const recoveryBreadcrumbPersistedBefore = options.recoveryBreadcrumbPersistedBefore ?? true;
+    await this.emitNativeRecoveryEvent({
+      plugin: options.plugin,
+      scope: options.scope,
+      pluginId,
+      operation: 'delete',
+      phase: 'start',
+      state: options.state,
+      nativeWriteSucceeded: true,
+      recoveryBreadcrumbPersisted: recoveryBreadcrumbPersistedBefore,
+    });
+    try {
+      await deleteCodexNativeRecoveryBreadcrumb(pluginId, this.env);
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'delete',
+        phase: 'success',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: false,
+      });
+    } catch (error) {
+      await this.emitNativeRecoveryEvent({
+        plugin: options.plugin,
+        scope: options.scope,
+        pluginId,
+        operation: 'delete',
+        phase: 'error',
+        state: options.state,
+        nativeWriteSucceeded: true,
+        recoveryBreadcrumbPersisted: recoveryBreadcrumbPersistedBefore,
+        errorCategory: 'breadcrumb_delete_failed',
+        suggestion: createCodexRecoverySuggestion('delete', options.state, true),
+      });
+      throw error;
     }
   }
 
@@ -1458,23 +2016,175 @@ export class CodexAdapter implements PlatformAdapter {
     }
 
     if (!isCodexMarketplaceRegistered(userConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
+      await this.emitNativeMarketplaceEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        marketplacePath: awHome,
+        operation: 'add',
+        phase: 'start',
+      });
       try {
         await runNativeCli(
           buildCodexMarketplaceAddInvocation(awHome, this.cwd, this.env),
           this.nativeCliRunner,
         );
+        await this.emitNativeMarketplaceEvent({
+          plugin: plugin.manifest.name,
+          scope,
+          marketplacePath: awHome,
+          operation: 'add',
+          phase: 'success',
+        });
       } catch (error) {
+        await this.emitNativeMarketplaceEvent({
+          plugin: plugin.manifest.name,
+          scope,
+          marketplacePath: awHome,
+          operation: 'add',
+          phase: 'error',
+          errorCategory: classifyCodexMarketplaceError(error),
+          suggestion: createCodexMarketplaceSuggestion(awHome, error),
+        });
         throw createCodexMarketplaceAddError(awHome, error);
-      }
-
-      const refreshedConfig = await readCodexConfigFile(userPaths.configTomlPath);
-      if (!isCodexMarketplaceRegistered(refreshedConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
-        throw createCodexMarketplaceVerificationError(awHome, userPaths.configTomlPath);
       }
     }
 
-    await upsertCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`, {
-      enabled: true,
+    await this.emitNativeMarketplaceEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      marketplacePath: awHome,
+      operation: 'verify',
+      phase: 'start',
+    });
+    const refreshedConfig = await readCodexConfigFile(userPaths.configTomlPath);
+    if (!isCodexMarketplaceRegistered(refreshedConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
+      await this.emitNativeMarketplaceEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        marketplacePath: awHome,
+        operation: 'verify',
+        phase: 'error',
+        errorCategory: 'verification_failed',
+        suggestion: createCodexMarketplaceSuggestion(awHome),
+      });
+      throw createCodexMarketplaceVerificationError(awHome, userPaths.configTomlPath);
+    }
+    await this.emitNativeMarketplaceEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      marketplacePath: awHome,
+      operation: 'verify',
+      phase: 'success',
+    });
+
+    const marketplacePath = path.join(awHome, '.agents', 'plugins', 'marketplace.json');
+    const pluginId = normalizeCodexUserPluginId(plugin.manifest.name);
+    const installStartedAt = Date.now();
+    await this.emitNativeRpcEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      pluginId,
+      method: 'plugin/install',
+      phase: 'start',
+      durationMs: 0,
+    });
+    try {
+      await installCodexPluginViaAppServer({
+        cwd: this.cwd,
+        env: this.env,
+        marketplacePath,
+        pluginName: plugin.manifest.name,
+        runner: this.codexAppServerRunner,
+      });
+    } catch (error) {
+      await this.emitNativeRpcEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        pluginId,
+        method: 'plugin/install',
+        phase: 'error',
+        durationMs: Date.now() - installStartedAt,
+        nativeWriteSucceeded: false,
+        errorCategory: error instanceof CodexAppServerError ? error.category : 'request_rejected',
+        suggestion: error instanceof CodexAppServerError ? error.suggestion : undefined,
+      });
+      throw error;
+    }
+    await this.emitNativeRpcEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      pluginId,
+      method: 'plugin/install',
+      phase: 'success',
+      durationMs: Date.now() - installStartedAt,
+      nativeWriteSucceeded: true,
+    });
+
+    try {
+      await this.writeRecoveryBreadcrumbWithEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        state: 'pending_after_native_write',
+        reason: 'native_write_succeeded_post_steps_pending',
+        marketplacePath,
+        pluginVersion: plugin.manifest.version,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请先运行 \`aw status --verbose\` 检查 breadcrumb、config 和 cache 诊断，再决定后续修复或清理。`,
+      );
+    }
+
+    await this.emitNativePostCheckEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      pluginId,
+      operation: 'install',
+      phase: 'start',
+      pluginEnabled: null,
+      configEntryPresent: null,
+      pluginInstalled: null,
+      activeCachePath: null,
+    });
+    const postCheck = await checkCodexNativeInstallPostCheck(plugin.manifest.name, this.env);
+    if (!postCheck.ok) {
+      const detail = describeCodexNativeInstallPostCheckFailure(postCheck.state);
+      await this.emitNativePostCheckEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        pluginId,
+        operation: 'install',
+        phase: 'error',
+        pluginEnabled: postCheck.state.pluginEnabled,
+        configEntryPresent: postCheck.state.configEntryPresent,
+        pluginInstalled: postCheck.state.pluginInstalled,
+        activeCachePath: postCheck.state.activeCachePath ?? null,
+        errorCategory: 'post_check_failed',
+        suggestion: createCodexNativePostCheckSuggestion('install'),
+      });
+      await this.updateRecoveryBreadcrumbWithEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        state: 'post_check_failed',
+        reason: 'native_install_post_check_failed',
+        activeCachePath: postCheck.state.activeCachePath ?? null,
+        lastError: detail,
+      });
+      throw new Error(
+        `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但安装后校验失败：${detail}。AW 不会回退到只写 enabled config；请先运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断。`,
+      );
+    }
+    await this.emitNativePostCheckEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      pluginId,
+      operation: 'install',
+      phase: 'success',
+      pluginEnabled: postCheck.state.pluginEnabled,
+      configEntryPresent: postCheck.state.configEntryPresent,
+      pluginInstalled: postCheck.state.pluginInstalled,
+      activeCachePath: postCheck.state.activeCachePath ?? null,
     });
   }
 
@@ -1499,20 +2209,163 @@ export class CodexAdapter implements PlatformAdapter {
     nextRefs.user = false;
 
     if (!nextRefs.user && nextRefs.projects.length === 0) {
-      await removeCodexPluginEnabledFile(userPaths.configTomlPath, `${plugin.manifest.name}@${MARKETPLACE_NAME}`);
+      await this.uninstallCodexUserNativePlugin(plugin.manifest.name, {
+        preserveMarketplace: true,
+      });
     }
 
-    const hasRemainingNativeRefs = Object.entries(ledger.plugins).some(([name, record]) => {
-      if (name === plugin.manifest.name) {
-        return nextRefs.user || nextRefs.projects.length > 0;
-      }
-
-      const snapshot = normalizeCodexCapabilitySnapshot(record.platforms.codex?.userScope?.capabilitySnapshot);
-      const refs = normalizeSharedNativeRefs(record.platforms.codex?.sharedNativeRefs);
-      return snapshot.requiresNativePlugin && (refs.user || refs.projects.length > 0);
+    const cleanup = await assessCodexMarketplaceCleanupForAdapter({
+      cwd: this.cwd,
+      env: this.env,
+      ledger,
+      pluginName: plugin.manifest.name,
+      nextRefs,
     });
-    if (!hasRemainingNativeRefs) {
+    if (cleanup.marketplaceConfigPresent && cleanup.canCleanup) {
       await removeCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME);
+    }
+  }
+
+  async uninstallUserNativePluginById(pluginNameOrId: string): Promise<void> {
+    await this.uninstallCodexUserNativePlugin(pluginNameOrId);
+
+    const cleanup = await assessCodexMarketplaceCleanupForAdapter({
+      cwd: this.cwd,
+      env: this.env,
+      ledger: await readInstalledLedger(this.env),
+    });
+    if (cleanup.marketplaceConfigPresent && cleanup.canCleanup) {
+      await removeCodexMarketplaceFile(resolveCodexPaths(this.cwd, 'user', this.env).configTomlPath, MARKETPLACE_NAME);
+    }
+  }
+
+  private async uninstallCodexUserNativePlugin(
+    pluginNameOrId: string,
+    options: { preserveMarketplace?: boolean } = {},
+  ): Promise<void> {
+    const pluginId = normalizeCodexUserPluginId(pluginNameOrId);
+    const pluginName = codexPluginNameFromId(pluginId);
+    const scope = 'user' as const;
+    const existingBreadcrumb = await readCodexNativeRecoveryBreadcrumb(pluginId, this.env);
+
+    const uninstallStartedAt = Date.now();
+    await this.emitNativeRpcEvent({
+      plugin: pluginName,
+      scope,
+      pluginId,
+      method: 'plugin/uninstall',
+      phase: 'start',
+      durationMs: 0,
+    });
+    try {
+      await uninstallCodexPluginViaAppServer({
+        cwd: this.cwd,
+        env: this.env,
+        pluginId,
+        runner: this.codexAppServerRunner,
+      });
+    } catch (error) {
+      await this.emitNativeRpcEvent({
+        plugin: pluginName,
+        scope,
+        pluginId,
+        method: 'plugin/uninstall',
+        phase: 'error',
+        durationMs: Date.now() - uninstallStartedAt,
+        nativeWriteSucceeded: false,
+        errorCategory: error instanceof CodexAppServerError ? error.category : 'request_rejected',
+        suggestion: error instanceof CodexAppServerError ? error.suggestion : undefined,
+      });
+      if (existingBreadcrumb) {
+        await this.updateRecoveryBreadcrumbWithEvent({
+          plugin: pluginName,
+          scope,
+          state: 'cleanup_failed',
+          reason: 'native_uninstall_rpc_failed',
+          lastError: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+    await this.emitNativeRpcEvent({
+      plugin: pluginName,
+      scope,
+      pluginId,
+      method: 'plugin/uninstall',
+      phase: 'success',
+      durationMs: Date.now() - uninstallStartedAt,
+      nativeWriteSucceeded: true,
+    });
+
+    await this.emitNativePostCheckEvent({
+      plugin: pluginName,
+      scope,
+      pluginId,
+      operation: 'uninstall',
+      phase: 'start',
+      pluginEnabled: null,
+      configEntryPresent: null,
+      pluginInstalled: null,
+      activeCachePath: null,
+    });
+    const postCheck = await checkCodexNativeUninstallPostCheck(pluginName, this.env);
+    if (!postCheck.ok) {
+      const detail = describeCodexNativeUninstallPostCheckFailure(postCheck.state);
+      await this.emitNativePostCheckEvent({
+        plugin: pluginName,
+        scope,
+        pluginId,
+        operation: 'uninstall',
+        phase: 'error',
+        pluginEnabled: postCheck.state.pluginEnabled,
+        configEntryPresent: postCheck.state.configEntryPresent,
+        pluginInstalled: postCheck.state.pluginInstalled,
+        activeCachePath: postCheck.state.activeCachePath ?? null,
+        errorCategory: 'post_check_failed',
+        suggestion: createCodexNativePostCheckSuggestion('uninstall'),
+      });
+      if (existingBreadcrumb) {
+        await this.updateRecoveryBreadcrumbWithEvent({
+          plugin: pluginName,
+          scope,
+          state: 'cleanup_failed',
+          reason: 'native_uninstall_post_check_failed',
+          activeCachePath: postCheck.state.activeCachePath ?? null,
+          lastError: detail,
+        }).catch(() => undefined);
+      }
+      throw new Error(
+        `Codex 原生插件 ${pluginId} 卸载后校验失败：${detail}。AW 不会退回到只删 enabled config；请先运行 \`aw status --verbose\` 查看当前残留。`,
+      );
+    }
+    await this.emitNativePostCheckEvent({
+      plugin: pluginName,
+      scope,
+      pluginId,
+      operation: 'uninstall',
+      phase: 'success',
+      pluginEnabled: postCheck.state.pluginEnabled,
+      configEntryPresent: postCheck.state.configEntryPresent,
+      pluginInstalled: postCheck.state.pluginInstalled,
+      activeCachePath: postCheck.state.activeCachePath ?? null,
+    });
+
+    try {
+      await this.deleteRecoveryBreadcrumbWithEvent({
+        plugin: pluginName,
+        scope,
+        state: existingBreadcrumb?.state ?? 'cleanup_failed',
+        recoveryBreadcrumbPersistedBefore: Boolean(existingBreadcrumb),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Codex 原生插件 ${pluginId} 已卸载，但删除恢复标记失败：${detail}。请先运行 \`aw status --verbose\` 确认 breadcrumb 清理情况。`,
+      );
+    }
+
+    if (options.preserveMarketplace) {
+      return;
     }
   }
 
@@ -1745,12 +2598,28 @@ export class CodexAdapter implements PlatformAdapter {
       ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
     );
     const sharedNativeRefEvidence = scope === 'user' ? sharedNativeRefs.user : false;
+    const nativeState = scope === 'user' || !userConfigUnreadableDetail
+      ? await readCodexNativePluginState(plugin.manifest.name, this.env)
+      : null;
+    const nativePluginEnabled = nativeState?.pluginEnabled ?? false;
+    const nativePluginInstalled = nativeState?.pluginInstalled ?? false;
     const currentScopeManagedEvidence =
       scopeInitialized === 'yes' ||
       trackingEvidenceUsable ||
       sharedNativeRefEvidence;
-    const nativePluginEnabled =
-      userConfig.snapshot.plugins[`${plugin.manifest.name}@${MARKETPLACE_NAME}`]?.enabled === true;
+    const recoveryBreadcrumb = scope === 'user'
+      ? await readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, this.env)
+      : null;
+    const nativeRecovery = scope === 'user'
+      ? buildNativeRecoveryStatus({
+          pluginName: plugin.manifest.name,
+          pluginEnabled: nativePluginEnabled,
+          pluginInstalled: nativePluginInstalled,
+          sharedNativeRef: sharedNativeRefEvidence,
+          hasSuccessfulScopeRecord: ledgerScopeInitialized === 'yes',
+          breadcrumb: recoveryBreadcrumb,
+        })
+      : createEmptyNativeRecoveryStatus();
     const platformNativeFallbackEvidence =
       scope === 'user' &&
       nativePluginEnabled &&
@@ -1781,6 +2650,13 @@ export class CodexAdapter implements PlatformAdapter {
       currentCapabilities,
       installedCapabilitySnapshot,
     });
+    const requiresNativePluginStatus =
+      currentCapabilities.requiresNativePlugin ||
+      installedCapabilities.requiresNativePlugin ||
+      sharedNativeRefEvidence ||
+      nativePluginEnabled ||
+      nativePluginInstalled ||
+      nativeRecovery.present;
     const marketplaceHealth = resolveCodexMarketplaceHealth(
       userConfig.snapshot.marketplaces[MARKETPLACE_NAME],
       awHome,
@@ -1989,7 +2865,8 @@ export class CodexAdapter implements PlatformAdapter {
     if (
       (currentCapabilities.requiresNativePlugin ||
         installedCapabilities.requiresNativePlugin ||
-        nativePluginEnabled) &&
+        nativePluginEnabled ||
+        nativePluginInstalled) &&
       !marketplaceHealth.registered &&
       marketplaceHealth.warning
     ) {
@@ -2362,8 +3239,21 @@ export class CodexAdapter implements PlatformAdapter {
         marketplaceSource: marketplaceHealth.source,
         marketplaceSourceType: marketplaceHealth.sourceType,
         marketplaceRootResolution: marketplaceHealth.rootResolution,
+        requiresNativePlugin: requiresNativePluginStatus,
         pluginAvailable: currentCatalogAvailable,
-        pluginInstalled: nativePluginEnabled,
+        pluginInstalled: nativePluginInstalled,
+        pluginEnabled: nativePluginEnabled,
+        configEntryPresent: nativeState?.configEntryPresent,
+        configPath: nativeState?.configPath,
+        cacheRootPath: nativeState?.cacheRootPath,
+        cacheStatus: nativeState?.cacheStatus as CodexNativeCacheStatus | undefined,
+        activeCacheVersion: nativeState?.activeCacheVersion,
+        activeCachePath: nativeState?.activeCachePath,
+        validCachePaths: nativeState?.validCachePaths,
+        invalidCachePaths: nativeState?.invalidCachePaths,
+        ignoredCacheEntries: nativeState?.ignoredCacheEntries,
+        recovery: nativeRecovery,
+        version: nativeState?.activeCacheVersion,
         declaredSource: marketplaceHealth.source,
         details: marketplaceHealth.source
           ? `source=${marketplaceHealth.source}`
@@ -2382,7 +3272,7 @@ export class CodexAdapter implements PlatformAdapter {
       platformNativeFallbackEvidence: {
         present: platformNativeFallbackEvidence,
         details: platformNativeFallbackEvidence
-          ? 'user scope 的 [plugins."<plugin>@aw"] enabled 仍然存在。'
+          ? 'user scope 的 [plugins."<plugin>@aw"] enabled 仍然存在，但 AW 缺少成功 scope record。'
           : undefined,
       },
       scopeManagedEvidence: {
@@ -2415,7 +3305,11 @@ export class CodexAdapter implements PlatformAdapter {
       scope,
       initialized:
         scopeInitialized === 'yes' ||
-        (scope === 'user' && pluginStatus.native.pluginInstalled) ||
+        (scope === 'user' && (
+          pluginStatus.native.pluginInstalled ||
+          pluginStatus.native.pluginEnabled === true ||
+          pluginStatus.native.recovery?.present === true
+        )) ||
         generatedArtifacts.length > 0 ||
         platformNativeFallbackEvidence,
       scopeInitialized: scopeInitialized as ScopeInitializedState,

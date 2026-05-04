@@ -70,4 +70,8 @@ code-review/
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 ledger 里的安装快照，避免当前 marketplace 已刷新时误用新版脚本。`aw uninstall` 默认保留 AW config，清理残留配置需要显式运行 `aw config reset code-review -s user|project --yes`。
 
+**Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会注册本地 marketplace，并调用 `codex app-server` 的 `plugin/install` RPC。成功后 Codex 侧必须同时有 `[plugins."code-review@aw"].enabled = true` 和 materialized cache；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。若 RPC 成功但 AW 后续步骤失败，会在 `<AW_HOME>/native-recovery/codex/user/code-review@aw.json` 留 recovery breadcrumb，重新 install 可 repair，breadcrumb-only uninstall 可清残留且不运行 uninstall lifecycle。
+
 **Codex 安装时生成的 repo-managed artifacts**（project scope）：源码 skill `.agents/skills/review-workflow`、公共 `slashCommands` 生成的 `.agents/skills/review` manual-only 入口 skill、`.codex/config.toml` 中的 instructions managed blocks 和 `mcp_servers`、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（包含目标平台生效的公共 hooks 与 `nativeHooks.codex`）、agents .toml，以及 `.codex/.agent-workflows-manifest.json` tracking。MCP server 的 tracking `artifactKey` 使用 `.mcp.json` 中的原始 key；若 key 需要 quoted TOML，写入后仍按同一个 key 识别。
+
+**Codex project scope native 行为**：安装 `aw install code-review -p codex -s project` 只写上面的 repo-managed artifacts，不调用 `codex plugin marketplace add`，也不启动 `codex app-server`。即使 PATH 缺少 `codex` 可执行文件，只要 project surface 可安装，也不能产生用户级 config/cache 副作用。示例包含 skills、MCP、slashCommands 和 extensions，因此可 project 安装；如果插件只包含 `apps` 或纯 native-only 能力，Codex project scope 会 fail fast。

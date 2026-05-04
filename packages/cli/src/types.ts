@@ -354,14 +354,43 @@ export interface EnvironmentDetection {
 
 export type MarketplaceSourceStatus = 'local' | 'missing' | 'invalid';
 export type MarketplaceRootResolution = 'localSource' | 'installedCopy' | 'missing' | 'unknown';
+export type CodexNativeCacheStatus = 'missing' | 'active' | 'invalid' | 'ambiguous';
+export type NativeRecoveryState =
+  | 'pending_after_native_write'
+  | 'post_check_failed'
+  | 'lifecycle_failed'
+  | 'tracking_write_failed'
+  | 'ledger_write_failed'
+  | 'snapshot_write_failed'
+  | 'cleanup_failed';
+
+export interface NativeRecoveryStatus {
+  present: boolean;
+  state: NativeRecoveryState | null;
+  reason: string | null;
+  evidenceMatches: boolean | null;
+  suggestion: string | null;
+}
 
 export interface NativePluginStatus {
   marketplaceRegistered: boolean;
   marketplaceSource?: string;
   marketplaceSourceType?: MarketplaceSourceStatus;
   marketplaceRootResolution?: MarketplaceRootResolution;
+  requiresNativePlugin?: boolean;
   pluginAvailable: boolean;
   pluginInstalled: boolean;
+  pluginEnabled?: boolean;
+  configEntryPresent?: boolean;
+  configPath?: string;
+  cacheRootPath?: string;
+  cacheStatus?: CodexNativeCacheStatus;
+  activeCacheVersion?: string;
+  activeCachePath?: string;
+  validCachePaths?: string[];
+  invalidCachePaths?: string[];
+  ignoredCacheEntries?: string[];
+  recovery?: NativeRecoveryStatus;
   version?: string;
   details?: string;
   declaredSource?: string;
@@ -525,6 +554,7 @@ export interface UpgradeCommandOptions extends CommandOptions {
 
 export type SkippedUpgradeCode =
   | 'scopeNotInitialized'
+  | 'repairRequired'
   | 'codexProjectUserConfigUnreadable'
   | 'externalOwnershipUnknown'
   | 'externalOwnershipPresent'

@@ -163,7 +163,7 @@ describe('cli entry', () => {
     expect(readStdout()).toContain('使用插件目录：本地 marketplace（/tmp/aw-home）。');
     expect(readStdout()).toContain('已复用本地 marketplace：/tmp/aw-home。');
     expect(readStdout()).toContain('已确认 Codex marketplace 注册：/tmp/aw-home。');
-    expect(readStdout()).toContain('已确认插件启用：git-commit@aw。');
+    expect(readStdout()).toContain('已通过 Codex app-server 完成原生插件安装并确认启用：git-commit@aw。');
     expect(readStdout()).toContain('完成。下一步：运行 aw status git-commit -p codex');
     expect(readStderr()).not.toContain('Warning:');
     expect(readStderr()).toContain('注意：Codex 已写入 repo-managed project artifacts');

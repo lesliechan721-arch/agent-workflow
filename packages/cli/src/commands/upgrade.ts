@@ -74,6 +74,7 @@ import {
   captureArtifactRollbackState,
   uninstallTargetsOnPlatforms,
 } from './uninstall.js';
+import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
 import {
   resolveClaudeProjectKey,
   resolveClaudePaths,
@@ -88,6 +89,7 @@ import {
 } from '../utils/tracking.js';
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
 import { codexCapabilitySnapshotHasRepoManagedArtifacts } from '../utils/codex-project-surface.js';
+import type { PluginStatusReport, StatusReport } from '../types.js';
 
 type UpgradeCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
@@ -111,6 +113,149 @@ interface UpgradeAllCandidatePlatformState {
 interface UpgradeAllReadyTarget {
   platform: PlatformName;
   target: ResolvedPluginTarget;
+}
+
+function createCodexUserRepairSuggestion(pluginName: string): string {
+  return `请先运行 aw install ${pluginName} -p codex -s user 修复，或运行 aw uninstall ${pluginName} -p codex -s user 清理。`;
+}
+
+function hasUpgradeReadyManagedEvidence(
+  pluginStatus: PluginStatusReport,
+  platform: PlatformName,
+  scope: Scope,
+): boolean {
+  if (platform === 'codex' && scope === 'user') {
+    return Boolean(
+      pluginStatus.scopeManagedEvidence?.ledger ||
+        pluginStatus.scopeManagedEvidence?.tracking,
+    );
+  }
+
+  return hasScopeManagedEvidence(pluginStatus);
+}
+
+function getCodexUserUpgradeBlockReason(
+  pluginName: string,
+  pluginStatus: PluginStatusReport,
+  scope: Scope,
+  platform: PlatformName,
+): string | null {
+  if (platform !== 'codex' || scope !== 'user') {
+    return null;
+  }
+
+  const hasCompleteManagedEvidence = hasUpgradeReadyManagedEvidence(
+    pluginStatus,
+    platform,
+    scope,
+  );
+  if (hasCompleteManagedEvidence) {
+    return null;
+  }
+
+  if (pluginStatus.native.recovery?.present === true) {
+    return `${pluginName} 当前只有 Codex native recovery breadcrumb，安装尚未完整成功；${createCodexUserRepairSuggestion(pluginName)}`;
+  }
+
+  if (pluginStatus.scopeManagedEvidence?.sharedNativeRef === true) {
+    return `${pluginName} 当前只剩 Codex shared native ref，不能证明该 scope 安装已完整成功；${createCodexUserRepairSuggestion(pluginName)}`;
+  }
+
+  if (
+    pluginStatus.native.pluginInstalled &&
+    pluginStatus.native.pluginEnabled !== true
+  ) {
+    return `${pluginName} 当前只发现 Codex cache 残留，AW 缺少成功账本或 recovery breadcrumb 证明归属；不能直接 upgrade。请先人工确认归属，再决定是否手动清理。`;
+  }
+
+  return null;
+}
+
+function getOnlyPluginStatus(
+  status: StatusReport,
+  platform: PlatformName,
+  pluginName: string,
+): PluginStatusReport {
+  const pluginStatus = status.plugins[0];
+  if (!pluginStatus) {
+    throw new Error(`无法读取 ${platform}/${pluginName} 的当前状态。`);
+  }
+
+  return pluginStatus;
+}
+
+async function readUpgradeTargetStatus(
+  adapters: Record<PlatformName, PlatformAdapter>,
+  platform: PlatformName,
+  target: ResolvedPluginTarget,
+  scope: Scope,
+): Promise<PluginStatusReport> {
+  const status = await adapters[platform].status(target.currentPlugin ?? target.plugin, scope);
+  return getOnlyPluginStatus(status, platform, target.pluginName);
+}
+
+async function preflightExplicitUpgradeTargets(
+  targets: ResolvedPluginTarget[],
+  platforms: PlatformName[],
+  options: UpgradeCommandOptions,
+  adapters: Record<PlatformName, PlatformAdapter>,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  for (const platform of platforms) {
+    for (const target of targets) {
+      const pluginStatus = await readUpgradeTargetStatus(
+        adapters,
+        platform,
+        target,
+        options.scope,
+      );
+
+      if (
+        pluginStatus.externalOwnership?.present &&
+        !(platform === 'codex' && options.scope === 'project')
+      ) {
+        throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+      }
+
+      const codexUserUpgradeBlockReason = getCodexUserUpgradeBlockReason(
+        target.pluginName,
+        pluginStatus,
+        options.scope,
+        platform,
+      );
+      if (codexUserUpgradeBlockReason) {
+        throw new Error(codexUserUpgradeBlockReason);
+      }
+
+      if (target.source === 'historical' && !hasHistoricalEvidence(pluginStatus)) {
+        throw new Error(`Unknown plugin "${target.pluginName}".`);
+      }
+
+      const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
+        cwd: options.cwd,
+        env,
+        platform,
+        scope: options.scope,
+        pluginName: target.pluginName,
+      });
+      if (trackingIdentityRefusal) {
+        throw new Error(trackingIdentityRefusal);
+      }
+
+      const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
+      if (identityRefusal) {
+        throw new Error(identityRefusal);
+      }
+
+      if (pluginStatus.catalogCompatibility === 'missing') {
+        throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
+      }
+
+      if (!target.currentPlugin) {
+        throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
+      }
+    }
+  }
 }
 
 function createSkippedUpgradeTarget(
@@ -298,10 +443,17 @@ async function collectUpgradeAllCandidateStateByPlatform(
   };
 
   if (scope !== 'project') {
+    const codexBreadcrumbNames = [...new Set(
+      (await listCodexNativeRecoveryBreadcrumbs(env)).map((breadcrumb) => breadcrumb.pluginName),
+    )].sort();
+    const codexPluginNames = [...new Set([
+      ...managedNamesByPlatform.codex,
+      ...codexBreadcrumbNames,
+    ])].sort();
     return {
       codex: {
-        pluginNames: managedNamesByPlatform.codex,
-        evidenceState: managedNamesByPlatform.codex.length > 0 ? 'yes' : 'no',
+        pluginNames: codexPluginNames,
+        evidenceState: codexPluginNames.length > 0 ? 'yes' : 'no',
       },
       claude: {
         pluginNames: managedNamesByPlatform.claude,
@@ -646,21 +798,6 @@ async function evaluateUpgradeAllTarget(options: {
     platform,
   );
 
-  if (
-    !hasCompleteUpgradeAllLedgerEvidence(scopeRecord, platform, scope) &&
-    trackingEvidence.state === 'none'
-  ) {
-    return {
-      skipped: createSkippedUpgradeTarget(
-        platform,
-        scope,
-        target.pluginName,
-        'scopeNotInitialized',
-        `${target.pluginName} 在 ${platform} (${scope}) 没有可用于 upgrade --all 的完整受管证据；请先显式 reinstall，或先修复当前 scope 的 tracking / ledger。`,
-      ),
-    };
-  }
-
   if (platform === 'codex' && scope === 'project') {
     try {
       await preflightCodexProjectWriteSafety({
@@ -707,13 +844,7 @@ async function evaluateUpgradeAllTarget(options: {
     }
   }
 
-  let pluginStatus;
-  const status = await adapters[platform].status(target.currentPlugin ?? target.plugin, scope);
-  pluginStatus = status.plugins[0];
-
-  if (!pluginStatus) {
-    throw new Error(`无法读取 ${platform}/${target.pluginName} 的当前状态。`);
-  }
+  const pluginStatus = await readUpgradeTargetStatus(adapters, platform, target, scope);
 
   if (platform === 'codex' && scope === 'project') {
     if (
@@ -744,6 +875,39 @@ async function evaluateUpgradeAllTarget(options: {
     }
   } else if (pluginStatus.externalOwnership?.present) {
     throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+  }
+
+  const codexUserUpgradeBlockReason = getCodexUserUpgradeBlockReason(
+    target.pluginName,
+    pluginStatus,
+    scope,
+    platform,
+  );
+  if (codexUserUpgradeBlockReason) {
+    return {
+      skipped: createSkippedUpgradeTarget(
+        platform,
+        scope,
+        target.pluginName,
+        'repairRequired',
+        codexUserUpgradeBlockReason,
+      ),
+    };
+  }
+
+  if (
+    !hasCompleteUpgradeAllLedgerEvidence(scopeRecord, platform, scope) &&
+    trackingEvidence.state === 'none'
+  ) {
+    return {
+      skipped: createSkippedUpgradeTarget(
+        platform,
+        scope,
+        target.pluginName,
+        'scopeNotInitialized',
+        `${target.pluginName} 在 ${platform} (${scope}) 没有可用于 upgrade --all 的完整受管证据；请先显式 reinstall，或先修复当前 scope 的 tracking / ledger。`,
+      ),
+    };
   }
 
   if (!target.currentPlugin || pluginStatus.catalogCompatibility === 'missing') {
@@ -835,16 +999,23 @@ async function runExplicitUpgrade(
   for (const platform of platforms) {
     for (const target of targets) {
       const status = await adapters[platform].status(target.plugin, options.scope);
-      const pluginStatus = status.plugins[0];
-      if (!pluginStatus) {
-        continue;
-      }
+      const pluginStatus = getOnlyPluginStatus(status, platform, target.pluginName);
 
       if (
         pluginStatus.externalOwnership?.present &&
         !(platform === 'codex' && options.scope === 'project')
       ) {
         throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+      }
+
+      const codexUserUpgradeBlockReason = getCodexUserUpgradeBlockReason(
+        target.pluginName,
+        pluginStatus,
+        options.scope,
+        platform,
+      );
+      if (codexUserUpgradeBlockReason) {
+        throw new Error(codexUserUpgradeBlockReason);
       }
 
       if (target.source === 'historical' && !hasHistoricalEvidence(pluginStatus)) {
@@ -867,7 +1038,11 @@ async function runExplicitUpgrade(
         throw new Error(identityRefusal);
       }
 
-      const managedEvidence = hasScopeManagedEvidence(pluginStatus);
+      const managedEvidence = hasUpgradeReadyManagedEvidence(
+        pluginStatus,
+        platform,
+        options.scope,
+      );
       const fallbackOnly =
         !managedEvidence &&
         (
@@ -883,7 +1058,7 @@ async function runExplicitUpgrade(
 
       if (!managedEvidence) {
         throw new Error(
-          `${target.pluginName} 在 ${platform} (${options.scope}) 尚未初始化，不能执行 upgrade。`,
+          `${target.pluginName} 在 ${platform} (${options.scope}) 缺少完整受管安装证据，不能执行 upgrade。`,
         );
       }
 
@@ -1318,6 +1493,13 @@ export async function upgradeCommand(
       env,
       operation: 'upgrade',
     });
+    await preflightExplicitUpgradeTargets(
+      prepared.targets,
+      platforms,
+      options,
+      adapters,
+      env,
+    );
     await preflightUpgradeConfigs(
       prepared.targets,
       options,

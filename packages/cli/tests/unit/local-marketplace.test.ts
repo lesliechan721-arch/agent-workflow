@@ -7,8 +7,14 @@ import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  getCodexNativeRecoveryBreadcrumbPath,
+  readCodexNativeRecoveryBreadcrumb,
+  writeCodexNativeRecoveryBreadcrumb,
+} from '../../src/utils/codex-native-recovery.js';
+import {
   calculateBundleFingerprint,
   createAvailableLedger,
+  ensureLocalMarketplace,
   initializeLocalMarketplace,
   readInstalledLedger,
   validateLocalMarketplaceLayout,
@@ -258,6 +264,52 @@ describe('local marketplace', () => {
     )).resolves.toBe('snapshot');
   });
 
+  it('preserves native recovery breadcrumbs during ensureLocalMarketplace refreshes', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const breadcrumb = await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      reason: 'native install completed',
+      nativeWrittenAt: '2026-05-04T09:00:00.000Z',
+      bundleFingerprint: 'sha256:bundle-a',
+      env: process.env,
+    });
+
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# changed for recovery preserve\n',
+      'utf8',
+    );
+    await ensureLocalMarketplace(process.env);
+
+    await expect(readCodexNativeRecoveryBreadcrumb('git-commit', process.env)).resolves.toEqual(breadcrumb);
+  });
+
+  it('preserves native recovery breadcrumbs during force init rebuilds', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      reason: 'native install completed',
+      nativeWrittenAt: '2026-05-04T09:00:00.000Z',
+      pluginVersion: '0.1.0',
+      env: process.env,
+    });
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await expect(readCodexNativeRecoveryBreadcrumb('git-commit', process.env)).resolves.toMatchObject({
+      pluginId: 'git-commit@aw',
+      pluginVersion: '0.1.0',
+    });
+  });
+
   it('repairs a corrupted local marketplace layout during force init', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -356,6 +408,59 @@ describe('local marketplace', () => {
       plugins: {},
     });
     await expect(calculateBundleFingerprint(awHome)).resolves.toMatch(/^sha256:/);
+  });
+
+  it('ignores native-recovery contents when calculating bundle fingerprints', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const before = await calculateBundleFingerprint(awHome);
+
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      reason: 'native install completed',
+      nativeWrittenAt: '2026-05-04T09:00:00.000Z',
+      env: process.env,
+    });
+
+    const afterWrite = await calculateBundleFingerprint(awHome);
+    expect(afterWrite).toBe(before);
+
+    await fs.writeFile(
+      getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
+      JSON.stringify({
+        version: 1,
+        platform: 'codex',
+        scope: 'user',
+        marketplaceName: 'aw',
+        pluginName: 'git-commit',
+        pluginId: 'git-commit@aw',
+        state: 'cleanup_failed',
+        reason: 'changed diagnostics',
+        nativeWrittenAt: '2026-05-04T09:00:00.000Z',
+        updatedAt: '2026-05-04T09:05:00.000Z',
+      }, null, 2),
+      'utf8',
+    );
+
+    await expect(calculateBundleFingerprint(awHome)).resolves.toBe(before);
+  });
+
+  it('accepts native-recovery runtime state when validating local marketplace layout', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.outputFile(
+      getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
+      'not a bundle source',
+      'utf8',
+    );
+
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
   it('replays available ledger skill trigger preferences during force rebuild', async () => {

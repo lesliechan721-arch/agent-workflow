@@ -15,6 +15,7 @@ import type {
   GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
+  PlatformAdapter,
   LedgerStateReason,
   PlatformName,
   PluginStatusReport,
@@ -108,6 +109,10 @@ interface ClaudePermissionsRollbackState {
   topLevelPermissions?: ClaudePermissionState;
   generatedPermissions?: ClaudePermissionState;
   manualPermissions?: ClaudePermissionState;
+}
+
+interface CodexNativeRecoveryCleanupAdapter extends PlatformAdapter {
+  uninstallUserNativePluginById(pluginNameOrId: string): Promise<void>;
 }
 
 export interface ArtifactRollbackState {
@@ -347,6 +352,29 @@ function shouldRefuseHistoricalUninstall(
   return null;
 }
 
+function isCodexBreadcrumbOnlyUninstallTarget(
+  platform: PlatformName,
+  scope: CommandOptions['scope'],
+  pluginStatus: PluginStatusReport,
+): boolean {
+  return (
+    platform === 'codex' &&
+    scope === 'user' &&
+    pluginStatus.native.recovery?.present === true &&
+    !hasScopeManagedEvidence(pluginStatus)
+  );
+}
+
+function getCodexNativeRecoveryCleanupAdapter(
+  adapter: PlatformAdapter,
+): CodexNativeRecoveryCleanupAdapter {
+  if (typeof (adapter as Partial<CodexNativeRecoveryCleanupAdapter>).uninstallUserNativePluginById !== 'function') {
+    throw new Error('当前 Codex adapter 不支持 native recovery breadcrumb cleanup。');
+  }
+
+  return adapter as CodexNativeRecoveryCleanupAdapter;
+}
+
 function didUninstallWriteNativeState(
   platform: PlatformName,
   scope: CommandOptions['scope'],
@@ -579,39 +607,54 @@ export async function uninstallTargetsOnPlatforms(
       }
 
       const codexProjectScope = platform === 'codex' && options.scope === 'project';
-      if (pluginStatus.externalOwnership?.present && !codexProjectScope) {
+      const managedEvidence = hasScopeManagedEvidence(pluginStatus);
+      const breadcrumbOnlyCodexUninstall = isCodexBreadcrumbOnlyUninstallTarget(
+        platform,
+        options.scope,
+        pluginStatus,
+      );
+      if (
+        pluginStatus.externalOwnership?.present &&
+        !codexProjectScope &&
+        !breadcrumbOnlyCodexUninstall
+      ) {
         throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
       }
 
-      const managedEvidence = hasScopeManagedEvidence(pluginStatus);
       const historicalEvidence = hasHistoricalEvidence(pluginStatus);
-      if (target.source === 'historical' && !historicalEvidence) {
+      if (
+        target.source === 'historical' &&
+        !historicalEvidence &&
+        !breadcrumbOnlyCodexUninstall
+      ) {
         throw new Error(`Unknown plugin "${target.pluginName}".`);
       }
 
-      const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
-        cwd: options.cwd,
-        env,
-        platform,
-        scope: options.scope,
-        pluginName: target.pluginName,
-      });
-      if (trackingIdentityRefusal) {
-        throw new Error(trackingIdentityRefusal);
-      }
+      if (!breadcrumbOnlyCodexUninstall) {
+        const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
+          cwd: options.cwd,
+          env,
+          platform,
+          scope: options.scope,
+          pluginName: target.pluginName,
+        });
+        if (trackingIdentityRefusal) {
+          throw new Error(trackingIdentityRefusal);
+        }
 
-      const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
-      if (identityRefusal) {
-        throw new Error(identityRefusal);
-      }
+        const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
+        if (identityRefusal) {
+          throw new Error(identityRefusal);
+        }
 
-      const refusal = shouldRefuseHistoricalUninstall(platform, pluginStatus);
-      if (refusal) {
-        throw new Error(refusal);
+        const refusal = shouldRefuseHistoricalUninstall(platform, pluginStatus);
+        if (refusal) {
+          throw new Error(refusal);
+        }
       }
 
       const nativeFallback = pluginStatus.platformNativeFallbackEvidence?.present === true;
-      if (!managedEvidence && !nativeFallback) {
+      if (!managedEvidence && !nativeFallback && !breadcrumbOnlyCodexUninstall) {
         warnings.push(`[${platform}/${target.pluginName}] 当前 scope 未受管，无需卸载。`);
         continue;
       }
@@ -626,6 +669,12 @@ export async function uninstallTargetsOnPlatforms(
             `[${platform}/${target.pluginName}] ${pluginStatus.externalOwnership.details ?? '检测到外部同名插件。'}本次只会清理 AW 管理的 repo artifacts。`,
           );
         }
+      }
+
+      if (breadcrumbOnlyCodexUninstall) {
+        await getCodexNativeRecoveryCleanupAdapter(adapters[platform])
+          .uninstallUserNativePluginById(`${target.pluginName}@aw`);
+        continue;
       }
 
       const baselineLedger = await readInstalledLedger(env);

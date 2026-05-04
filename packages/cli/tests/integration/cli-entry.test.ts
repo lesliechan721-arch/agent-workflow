@@ -4,11 +4,18 @@ import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import YAML from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ClaudeAdapter } from '../../src/adapters/claude.js';
+import { CodexAdapter } from '../../src/adapters/codex.js';
 import { runCli } from '../../src/index.js';
 import type { InstalledLedger } from '../../src/types.js';
-import { upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
+import {
+  removeCodexPluginEnabledFile,
+  upsertCodexMarketplaceFile,
+  upsertCodexPluginEnabledFile,
+} from '../../src/utils/codex-config.js';
+import * as codexNativeRecoveryModule from '../../src/utils/codex-native-recovery.js';
 import {
   createAvailableLedger,
   readInstalledLedger,
@@ -29,6 +36,7 @@ import {
   runCliEntry,
 } from '../helpers/cli-entry.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
 
 const tempDirs: string[] = [];
 
@@ -275,6 +283,86 @@ function createCodexUserManagedLedger(): InstalledLedger {
   return ledger;
 }
 
+async function writeCodexActiveCache(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  version = '0.1.0',
+): Promise<void> {
+  await fs.outputFile(
+    path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version, 'plugin.json'),
+    '{}\n',
+    'utf8',
+  );
+}
+
+async function waitForHarnessMethod(
+  harness: ReturnType<typeof createFakeCodexAppServerHarness>,
+  method: string,
+): Promise<void> {
+  while (!harness.stdinMessages.some((message) => message.json?.method === method)) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function createCodexNativeCliRuntime(
+  workspace: Awaited<ReturnType<typeof makeWorkspace>>,
+  nativeCalls: NativeCliInvocation[] = [],
+): {
+  runtime: {
+    nativeCliRunner: NativeCliRunner;
+    adaptersFactory: Parameters<typeof runCli>[1]['adaptersFactory'];
+  };
+  scheduleInstallSideEffect: (pluginName?: string, version?: string) => Promise<void>;
+  scheduleUninstallSideEffect: (pluginName?: string) => Promise<void>;
+} {
+  const nativeCliRunner = createCodexMarketplaceAddRunner(workspace, nativeCalls);
+  const appServerHarness = createFakeCodexAppServerHarness([
+    {
+      when: 'stdin',
+      match: { method: 'initialize' },
+      actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      repeat: true,
+    },
+    {
+      when: 'stdin',
+      match: { method: 'plugin/install' },
+      actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
+      repeat: true,
+    },
+    {
+      when: 'stdin',
+      match: { method: 'plugin/uninstall' },
+      actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
+      repeat: true,
+    },
+  ]);
+
+  return {
+    runtime: {
+      nativeCliRunner,
+      adaptersFactory: (cwd, context) => ({
+        codex: new CodexAdapter(cwd, context.nativeCliRunner, context.env, appServerHarness.createRunner()),
+        claude: new ClaudeAdapter(cwd, context.nativeCliRunner, context.env),
+      }),
+    },
+    scheduleInstallSideEffect: async (
+      pluginName = 'git-commit',
+      version = '0.1.0',
+    ) => {
+      await waitForHarnessMethod(appServerHarness, 'plugin/install');
+      const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
+      await upsertCodexPluginEnabledFile(configPath, `${pluginName}@aw`, { enabled: true });
+      await writeCodexActiveCache(workspace.env, pluginName, version);
+    },
+    scheduleUninstallSideEffect: async (pluginName = 'git-commit') => {
+      await waitForHarnessMethod(appServerHarness, 'plugin/uninstall');
+      const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
+      await removeCodexPluginEnabledFile(configPath, `${pluginName}@aw`);
+      await fs.remove(path.join(workspace.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    },
+  };
+}
+
 async function readCodexAllowImplicitInvocation(awHome: string): Promise<boolean> {
   const openAiYamlPath = path.join(
     awHome,
@@ -293,6 +381,7 @@ async function readCodexAllowImplicitInvocation(awHome: string): Promise<boolean
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -731,7 +820,6 @@ describe('cli entry integration', () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     const nativeCalls: NativeCliInvocation[] = [];
-    const nativeCliRunner = createCodexMarketplaceAddRunner(workspace, nativeCalls);
 
     for (const [preference, expected] of [
       ['manual', false],
@@ -739,6 +827,8 @@ describe('cli entry integration', () => {
       ['default', true],
     ] as const) {
       const { io, readStderr } = createCapturedIo();
+      const codexRuntime = createCodexNativeCliRuntime(workspace, nativeCalls);
+      const installSideEffect = codexRuntime.scheduleInstallSideEffect();
       const exitCode = await runCli(
         [
           'install',
@@ -754,11 +844,12 @@ describe('cli entry integration', () => {
           cwd: workspace.repoRoot,
           env: workspace.env,
           io,
-          nativeCliRunner,
+          ...codexRuntime.runtime,
         },
       );
 
       expect(exitCode, readStderr()).toBe(0);
+      await installSideEffect;
       expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(expected);
     }
     expect(nativeCalls.map((invocation) => invocation.args)).toContainEqual([
@@ -834,8 +925,9 @@ describe('cli entry integration', () => {
     expect(exitCode).toBe(1);
     expect(readStderr()).toContain('无法通过 Codex 原生命令注册 AW 本地 marketplace');
     const logLines = (await fs.readFile(logFile, 'utf8')).trim().split('\n');
-    const nativeErrorEntry = logLines
-      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } })
+    const logEntries = logLines
+      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
+    const nativeErrorEntry = logEntries
       .find((entry) => entry.event.type === 'native:error');
     expect(nativeErrorEntry?.event.data).toMatchObject({
       invocation: {
@@ -850,6 +942,19 @@ describe('cli entry integration', () => {
         causeCode: 'EACCES',
       },
     });
+    expect(logEntries).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'native:marketplace',
+          data: expect.objectContaining({
+            operation: 'add',
+            phase: 'error',
+            errorCategory: 'native_cli_failed',
+            marketplaceName: 'aw',
+          }),
+        }),
+      }),
+    );
   });
 
   it('prints a readable Codex native add error when the runner has no output', async () => {
@@ -884,6 +989,8 @@ describe('cli entry integration', () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     const { io, readStderr } = createCapturedIo();
+    const codexRuntime = createCodexNativeCliRuntime(workspace);
+    const installSideEffect = codexRuntime.scheduleInstallSideEffect();
 
     const exitCode = await runCli(
       [
@@ -899,24 +1006,203 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace),
+        ...codexRuntime.runtime,
       },
     );
 
     expect(exitCode, readStderr()).toBe(0);
+    await installSideEffect;
     expect(readStderr()).toContain('options:normalized');
     expect(readStderr()).toContain('catalog:resolved');
     expect(readStderr()).toContain('platform:resolved');
     expect(readStderr()).toContain('skill-trigger:resolved');
+    expect(readStderr()).toContain('native:marketplace');
+    expect(readStderr()).toContain('native:rpc');
+    expect(readStderr()).toContain('native:post-check');
+  });
+
+  it('explains missing recovery evidence in stderr and debug events when the native write already happened', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const logFile = path.join(workspace.awHome, 'native-recovery-risk.log');
+    const capture = createCapturedIo();
+    const codexRuntime = createCodexNativeCliRuntime(workspace);
+    const installSideEffect = codexRuntime.scheduleInstallSideEffect();
+
+    vi.spyOn(codexNativeRecoveryModule, 'writeCodexNativeRecoveryBreadcrumb')
+      .mockRejectedValueOnce(new Error('simulated breadcrumb write failure'));
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--scope', 'user', '--platform', 'codex', '--debug', '--log-file', logFile],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        ...codexRuntime.runtime,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    await installSideEffect;
+    expect(capture.readStderr()).toContain('AW 没有持久化恢复证据');
+    expect(capture.readStderr()).toContain('不能承诺后续 repair / uninstall 一定具备自动授权');
+
+    const logEntries = (await fs.readFile(logFile, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
+    expect(logEntries).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'native:recovery',
+          data: expect.objectContaining({
+            operation: 'write',
+            phase: 'error',
+            state: 'pending_after_native_write',
+            nativeWriteSucceeded: true,
+            recoveryBreadcrumbPersisted: false,
+            errorCategory: 'breadcrumb_write_failed',
+          }),
+        }),
+      }),
+    );
+    expect(
+      logEntries.find((entry) =>
+        entry.event.type === 'native:recovery' &&
+        entry.event.data?.operation === 'write' &&
+        entry.event.data?.phase === 'error',
+      )?.event.data?.suggestion,
+    ).toContain('自动授权');
+  });
+
+  it('persists marketplace, rpc, recovery, and post-check events in the debug log for successful Codex user installs and uninstalls', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+
+    const installLogFile = path.join(workspace.awHome, 'native-install-events.log');
+    let capture = createCapturedIo();
+    let codexRuntime = createCodexNativeCliRuntime(workspace);
+    let installSideEffect = codexRuntime.scheduleInstallSideEffect();
+
+    expect(await runCli(
+      ['install', 'git-commit', '--scope', 'user', '--platform', 'codex', '--debug', '--log-file', installLogFile],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        ...codexRuntime.runtime,
+      },
+    )).toBe(0);
+    await installSideEffect;
+
+    const installEntries = (await fs.readFile(installLogFile, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
+    expect(installEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:marketplace',
+            data: expect.objectContaining({
+              operation: 'verify',
+              phase: 'success',
+              marketplaceName: 'aw',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:rpc',
+            data: expect.objectContaining({
+              method: 'plugin/install',
+              phase: 'success',
+              pluginId: 'git-commit@aw',
+              nativeWriteSucceeded: true,
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:recovery',
+            data: expect.objectContaining({
+              operation: 'write',
+              phase: 'success',
+              state: 'pending_after_native_write',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:post-check',
+            data: expect.objectContaining({
+              operation: 'install',
+              phase: 'success',
+              pluginEnabled: true,
+              configEntryPresent: true,
+              pluginInstalled: true,
+            }),
+          }),
+        }),
+      ]),
+    );
+
+    const uninstallLogFile = path.join(workspace.awHome, 'native-uninstall-events.log');
+    capture = createCapturedIo();
+    codexRuntime = createCodexNativeCliRuntime(workspace);
+    const uninstallSideEffect = codexRuntime.scheduleUninstallSideEffect();
+    expect(await runCli(
+      ['uninstall', 'git-commit', '--scope', 'user', '--platform', 'codex', '--debug', '--log-file', uninstallLogFile],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+        ...codexRuntime.runtime,
+      },
+    )).toBe(0);
+    await uninstallSideEffect;
+
+    const uninstallEntries = (await fs.readFile(uninstallLogFile, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
+    expect(uninstallEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:rpc',
+            data: expect.objectContaining({
+              method: 'plugin/uninstall',
+              phase: 'success',
+              pluginId: 'git-commit@aw',
+              nativeWriteSucceeded: true,
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'native:post-check',
+            data: expect.objectContaining({
+              operation: 'uninstall',
+              phase: 'success',
+              pluginEnabled: false,
+              configEntryPresent: false,
+              pluginInstalled: false,
+            }),
+          }),
+        }),
+      ]),
+    );
   });
 
   it('applies explicit upgrade --skill-trigger manual, auto, and default through runCli', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    const nativeCliRunner = createCodexMarketplaceAddRunner(workspace);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
 
     let capture = createCapturedIo();
+    let codexRuntime = createCodexNativeCliRuntime(workspace);
+    let installSideEffect = codexRuntime.scheduleInstallSideEffect();
     expect(await runCli(
       [
         'install',
@@ -932,9 +1218,10 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io: capture.io,
-        nativeCliRunner,
+        ...codexRuntime.runtime,
       },
     )).toBe(0);
+    await installSideEffect;
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
 
     for (const [preference, expected] of [
@@ -943,6 +1230,8 @@ describe('cli entry integration', () => {
       ['default', true],
     ] as const) {
       capture = createCapturedIo();
+      codexRuntime = createCodexNativeCliRuntime(workspace);
+      installSideEffect = codexRuntime.scheduleInstallSideEffect();
       const exitCode = await runCli(
         [
           'upgrade',
@@ -958,11 +1247,12 @@ describe('cli entry integration', () => {
           cwd: workspace.repoRoot,
           env: workspace.env,
           io: capture.io,
-          nativeCliRunner,
+          ...codexRuntime.runtime,
         },
       );
 
       expect(exitCode, capture.readStderr()).toBe(0);
+      await installSideEffect;
       expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(expected);
     }
   });
@@ -1109,6 +1399,8 @@ describe('cli entry integration', () => {
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     await fs.writeFile(path.join(workspace.awHome, 'config.json'), '{"version":', 'utf8');
     capture = createCapturedIo();
+    const codexRuntime = createCodexNativeCliRuntime(workspace);
+    const installSideEffect = codexRuntime.scheduleInstallSideEffect();
     expect(await runCli(
       [
         'install',
@@ -1124,9 +1416,10 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io: capture.io,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace),
+        ...codexRuntime.runtime,
       },
     )).toBe(0);
+    await installSideEffect;
     expect(capture.readStderr().match(/跳过 skill trigger 偏好 replay/g)).toBeNull();
   });
 
@@ -1155,6 +1448,8 @@ describe('cli entry integration', () => {
       },
     };
     const capture = createCapturedIo();
+    const codexRuntime = createCodexNativeCliRuntime(workspace, nativeCalls);
+    const installSideEffect = codexRuntime.scheduleInstallSideEffect();
 
     const exitCode = await runCli(
       ['install'],
@@ -1163,11 +1458,12 @@ describe('cli entry integration', () => {
         env: workspace.env,
         io: capture.io,
         prompt,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
+        ...codexRuntime.runtime,
       },
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
+    await installSideEffect;
     expect(capture.readStdout()).toContain('已安装 git-commit：Codex / user scope。');
     expect(seenCandidates[0].id).not.toBe('git-commit');
     expect(nativeCalls.map((invocation) => invocation.args)).toContainEqual([
@@ -1282,6 +1578,8 @@ describe('cli entry integration', () => {
       },
     };
     const capture = createCapturedIo();
+    const codexRuntime = createCodexNativeCliRuntime(workspace);
+    const installSideEffect = codexRuntime.scheduleInstallSideEffect();
 
     const exitCode = await runCli(
       ['install', 'git-commit'],
@@ -1290,11 +1588,12 @@ describe('cli entry integration', () => {
         env,
         io: capture.io,
         prompt,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace),
+        ...codexRuntime.runtime,
       },
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
+    await installSideEffect;
     expect(selectedPlatforms).toEqual(['codex', 'claude', 'both']);
     expect(capture.readStdout()).toContain('已安装 git-commit：Codex / user scope。');
   });
@@ -1443,7 +1742,21 @@ describe('cli entry integration', () => {
         logFile,
       ],
     });
-    expect(logEntries.some((entry) => entry.event.type === 'native:skipped')).toBe(true);
+    expect(logEntries).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          type: 'native:skipped',
+          data: expect.objectContaining({
+            platform: 'codex',
+            scope: 'project',
+            plugin: 'prompt-guard',
+            reason: 'project_repo_managed_skipped_native',
+            requiresNativeRuntime: false,
+            repoManagedArtifactKinds: ['hook'],
+          }),
+        }),
+      }),
+    );
     expect(logEntries.some((entry) => entry.event.type === 'artifacts:written')).toBe(true);
     expect(logEntries.some((entry) => entry.event.type === 'tracking:written')).toBe(true);
     expect(logEntries.some((entry) => entry.event.type === 'ledger:written')).toBe(true);
@@ -1800,10 +2113,11 @@ describe('cli entry integration', () => {
   it('can choose interactive upgrade all after selecting scope and platform', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    const nativeCliRunner = createCodexMarketplaceAddRunner(workspace);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
 
     let capture = createCapturedIo();
+    let codexRuntime = createCodexNativeCliRuntime(workspace);
+    let installSideEffect = codexRuntime.scheduleInstallSideEffect();
     expect(await runCli(
       [
         'install',
@@ -1819,9 +2133,10 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io: capture.io,
-        nativeCliRunner,
+        ...codexRuntime.runtime,
       },
     )).toBe(0);
+    await installSideEffect;
 
     const prompt = {
       selectScope: async () => 'user',
@@ -1832,6 +2147,8 @@ describe('cli entry integration', () => {
       },
     };
     capture = createCapturedIo();
+    codexRuntime = createCodexNativeCliRuntime(workspace);
+    installSideEffect = codexRuntime.scheduleInstallSideEffect();
 
     const exitCode = await runCli(
       ['upgrade'],
@@ -1840,20 +2157,22 @@ describe('cli entry integration', () => {
         env: workspace.env,
         io: capture.io,
         prompt,
-        nativeCliRunner,
+        ...codexRuntime.runtime,
       },
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
+    await installSideEffect;
     expect(capture.readStdout()).toContain('已升级 git-commit：Codex / user scope。');
   });
 
   it('prompts for skill-trigger before dispatch when degraded ledger blocks implicit install inheritance', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    const nativeCliRunner = createCodexMarketplaceAddRunner(workspace);
 
     let capture = createCapturedIo();
+    let codexRuntime = createCodexNativeCliRuntime(workspace);
+    let installSideEffect = codexRuntime.scheduleInstallSideEffect();
     expect(await runCli(
       [
         'install',
@@ -1869,9 +2188,10 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io: capture.io,
-        nativeCliRunner,
+        ...codexRuntime.runtime,
       },
     )).toBe(0);
+    await installSideEffect;
 
     const degraded = await readInstalledLedger(workspace.env);
     degraded.ledgerState = {
@@ -1888,6 +2208,8 @@ describe('cli entry integration', () => {
       },
     };
     capture = createCapturedIo();
+    codexRuntime = createCodexNativeCliRuntime(workspace);
+    installSideEffect = codexRuntime.scheduleInstallSideEffect();
     const exitCode = await runCli(
       ['install', 'git-commit', '--scope', 'user', '--platform', 'codex'],
       {
@@ -1895,11 +2217,12 @@ describe('cli entry integration', () => {
         env: workspace.env,
         io: capture.io,
         prompt,
-        nativeCliRunner,
+        ...codexRuntime.runtime,
       },
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
+    await installSideEffect;
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
   });
 
@@ -1942,27 +2265,14 @@ describe('cli entry integration', () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     let capture = createCapturedIo();
-    const nativeCalls: NativeCliInvocation[] = [];
-
-    expect(await runCli(
-      ['install', 'git-commit', '--scope', 'user', '--platform', 'codex'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
-      },
-    )).toBe(0);
-
+    const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
+    await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
+    await writeCodexActiveCache(workspace.env, 'git-commit');
     const wrongSource = path.join(workspace.awHome, 'old-copy');
-    await upsertCodexMarketplaceFile(
-      resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath,
-      'aw',
-      {
-        source: wrongSource,
-        sourceType: 'local',
-      },
-    );
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: wrongSource,
+      sourceType: 'local',
+    });
     await writeInstalledLedger(createCodexUserManagedLedger(), workspace.env);
 
     capture = createCapturedIo();

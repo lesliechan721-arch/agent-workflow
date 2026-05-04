@@ -10,12 +10,20 @@ import * as commonModule from '../../src/commands/common.js';
 import { uninstallCommand, uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
 import {
   readCodexConfigFile,
+  removeCodexPluginEnabledFile,
   removeManagedDeveloperInstructionsFile,
+  upsertCodexMarketplaceFile,
   upsertCodexMcpServer,
+  upsertCodexPluginEnabledFile,
   upsertManagedDeveloperInstructionsFile,
 } from '../../src/utils/codex-config.js';
+import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  readCodexNativeRecoveryBreadcrumb,
+  writeCodexNativeRecoveryBreadcrumb,
+} from '../../src/utils/codex-native-recovery.js';
 import {
   resolveCodexPaths,
   resolveCodexProjectKey,
@@ -34,6 +42,7 @@ import type {
 } from '../../src/types.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
 
 const tempDirs: string[] = [];
 
@@ -72,6 +81,23 @@ async function copyRepoManagedFixturePlugin(
     fixturePath('codex-project-repo-managed', 'plugins', pluginDir),
     path.join(repoRoot, 'plugins', pluginDir),
   );
+}
+
+function resolveCodexNativeCacheVersionPath(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  version = '0.1.0',
+): string {
+  return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
+}
+
+async function waitForHarnessMethod(
+  harness: ReturnType<typeof createFakeCodexAppServerHarness>,
+  method: string,
+): Promise<void> {
+  while (!harness.stdinMessages.some((message) => message.json?.method === method)) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function makePluginStatus(
@@ -1204,5 +1230,367 @@ describe('uninstall command coverage', () => {
     });
 
     expect(rematerializeSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses breadcrumb-only Codex uninstall authorization without lifecycle or current catalog requirements', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const pluginName = 'recovery-only';
+    const pluginId = `${pluginName}@aw`;
+    await fs.ensureDir(env.AW_HOME!);
+
+    const configPath = resolveCodexPaths(repoRoot, 'user', env).configTomlPath;
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, pluginId, {
+      enabled: true,
+    });
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, pluginName), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName,
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+
+    const [target] = await commonModule.loadPluginTargetsForCommand(
+      repoRoot,
+      'user',
+      [pluginName],
+      {
+        allowHistoricalFallback: true,
+        env,
+      },
+    );
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/uninstall' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
+      },
+    ]);
+    const lifecycleSpy = vi.spyOn(pluginScriptsModule, 'runLifecycleScript');
+    const adapter = new CodexAdapter(repoRoot, env, appServerHarness.createRunner());
+    const uninstallSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/uninstall').then(async () => {
+      await removeCodexPluginEnabledFile(configPath, pluginId);
+      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    });
+
+    expect(target.source).toBe('historical');
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: adapter,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).resolves.toEqual({
+      warnings: [],
+      repoManagedArtifacts: [],
+    });
+    await uninstallSideEffect;
+
+    expect(lifecycleSpy).not.toHaveBeenCalled();
+    await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toBeNull();
+    await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
+      snapshot: {
+        plugins: {},
+        marketplaces: {},
+      },
+    });
+    expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/uninstall');
+  });
+
+  it('fails breadcrumb-only uninstall when RPC succeeds but native post-check still sees enabled config and cache', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const pluginName = 'post-check-fails';
+    const pluginId = `${pluginName}@aw`;
+    await fs.ensureDir(env.AW_HOME!);
+
+    const configPath = resolveCodexPaths(repoRoot, 'user', env).configTomlPath;
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, pluginId, {
+      enabled: true,
+    });
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, pluginName), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName,
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+
+    const [target] = await commonModule.loadPluginTargetsForCommand(
+      repoRoot,
+      'user',
+      [pluginName],
+      {
+        allowHistoricalFallback: true,
+        env,
+      },
+    );
+    const adapter = new CodexAdapter(
+      repoRoot,
+      env,
+      createFakeCodexAppServerHarness([
+        {
+          when: 'stdin',
+          match: { method: 'initialize' },
+          actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+        },
+        {
+          when: 'stdin',
+          match: { method: 'plugin/uninstall' },
+          actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } } }],
+        },
+      ]).createRunner(),
+    );
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: adapter,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('卸载后校验失败');
+
+    await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toMatchObject({
+      state: 'cleanup_failed',
+      reason: 'native_uninstall_post_check_failed',
+    });
+  });
+
+  it('treats a disabled residual config entry as breadcrumb-only uninstall failure', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const pluginName = 'disabled-residual';
+    const pluginId = `${pluginName}@aw`;
+    await fs.ensureDir(env.AW_HOME!);
+
+    const configPath = resolveCodexPaths(repoRoot, 'user', env).configTomlPath;
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, pluginId, {
+      enabled: true,
+    });
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, pluginName), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName,
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+
+    const [target] = await commonModule.loadPluginTargetsForCommand(
+      repoRoot,
+      'user',
+      [pluginName],
+      {
+        allowHistoricalFallback: true,
+        env,
+      },
+    );
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/uninstall' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
+      },
+    ]);
+    const adapter = new CodexAdapter(repoRoot, env, appServerHarness.createRunner());
+    const uninstallSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/uninstall').then(async () => {
+      await upsertCodexPluginEnabledFile(configPath, pluginId, {
+        enabled: false,
+      });
+      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    });
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: adapter,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow('目标 config entry 仍然存在');
+    await uninstallSideEffect;
+
+    await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toMatchObject({
+      state: 'cleanup_failed',
+      reason: 'native_uninstall_post_check_failed',
+    });
+  });
+
+  it('keeps [marketplaces.aw] while other Codex breadcrumbs or native evidence still remain', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const pluginName = 'cleanup-target';
+    const pluginId = `${pluginName}@aw`;
+    await fs.ensureDir(env.AW_HOME!);
+
+    const configPath = resolveCodexPaths(repoRoot, 'user', env).configTomlPath;
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, pluginId, {
+      enabled: true,
+    });
+    await upsertCodexPluginEnabledFile(configPath, 'other-evidence@aw', {
+      enabled: true,
+    });
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, pluginName), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, 'other-evidence'), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName,
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'other-breadcrumb',
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
+
+    const [target] = await commonModule.loadPluginTargetsForCommand(
+      repoRoot,
+      'user',
+      [pluginName],
+      {
+        allowHistoricalFallback: true,
+        env,
+      },
+    );
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/uninstall' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
+      },
+    ]);
+    const adapter = new CodexAdapter(repoRoot, env, appServerHarness.createRunner());
+    const uninstallSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/uninstall').then(async () => {
+      await removeCodexPluginEnabledFile(configPath, pluginId);
+      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    });
+
+    await expect(
+      uninstallTargetsOnPlatforms(
+        [target],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: adapter,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).resolves.toEqual({
+      warnings: [],
+      repoManagedArtifacts: [],
+    });
+    await uninstallSideEffect;
+
+    await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toBeNull();
+    await expect(readCodexNativeRecoveryBreadcrumb('other-breadcrumb', env)).resolves.toMatchObject({
+      pluginName: 'other-breadcrumb',
+    });
+    await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
+      snapshot: {
+        marketplaces: {
+          aw: {
+            source: canonicalAwHome,
+            sourceType: 'local',
+          },
+        },
+        plugins: {
+          'other-evidence@aw': {
+            enabled: true,
+          },
+        },
+      },
+    });
   });
 });

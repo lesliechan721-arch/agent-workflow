@@ -48,6 +48,12 @@ export interface CreateLifecycleConfigSnapshotOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface PreparedLifecycleConfigSnapshot {
+  metadata: LifecycleConfigSnapshotMetadata;
+  sourceBundleRoot: string;
+  stagingRoot: string;
+}
+
 export interface LifecycleScriptTarget {
   noOp: boolean;
   source: LifecycleScriptTargetSource;
@@ -218,9 +224,9 @@ async function resolveSnapshotScopeIdentity(
     : resolveCodexProjectKey(cwd);
 }
 
-export async function createLifecycleConfigSnapshot(
+export async function prepareLifecycleConfigSnapshot(
   options: CreateLifecycleConfigSnapshotOptions,
-): Promise<LifecycleConfigSnapshotMetadata> {
+): Promise<PreparedLifecycleConfigSnapshot> {
   const env = options.env ?? process.env;
   const manifestPath = path.join(options.plugin.rootDir, SOURCE_MANIFEST_PATH);
   const [manifestDigest, bundleFingerprint, catalog, scopeIdentity] = await Promise.all([
@@ -241,31 +247,44 @@ export async function createLifecycleConfigSnapshot(
     `${digestSegment}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,
   );
   const bundleRoot = path.join(snapshotRoot, 'bundle');
-
-  await fs.ensureDir(path.dirname(snapshotRoot));
-  const stagingRoot = `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`;
-  await fs.copy(options.plugin.rootDir, path.join(stagingRoot, 'bundle'), {
-    overwrite: true,
-    errorOnExist: false,
-  });
-  await fs.move(stagingRoot, snapshotRoot, { overwrite: false });
-
   return {
-    snapshotRoot,
-    bundleRoot,
-    manifestPath: path.join(bundleRoot, SOURCE_MANIFEST_PATH),
-    pluginName: options.plugin.manifest.name,
-    pluginVersion: options.plugin.manifest.version,
-    sourceManifestDigest: manifestDigest,
-    bundleFingerprint,
-    createdAt,
-    createdFrom: {
-      source: 'currentCatalog',
-      catalogRoot: catalog?.rootDir,
-      catalogSource: catalog?.source,
-      pluginRoot: options.plugin.rootDir,
+    metadata: {
+      snapshotRoot,
+      bundleRoot,
+      manifestPath: path.join(bundleRoot, SOURCE_MANIFEST_PATH),
+      pluginName: options.plugin.manifest.name,
+      pluginVersion: options.plugin.manifest.version,
+      sourceManifestDigest: manifestDigest,
+      bundleFingerprint,
+      createdAt,
+      createdFrom: {
+        source: 'currentCatalog',
+        catalogRoot: catalog?.rootDir,
+        catalogSource: catalog?.source,
+        pluginRoot: options.plugin.rootDir,
+      },
     },
+    sourceBundleRoot: options.plugin.rootDir,
+    stagingRoot: `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`,
   };
+}
+
+export async function persistLifecycleConfigSnapshot(
+  prepared: PreparedLifecycleConfigSnapshot,
+): Promise<LifecycleConfigSnapshotMetadata> {
+  await fs.ensureDir(path.dirname(prepared.metadata.snapshotRoot));
+  try {
+    await fs.copy(prepared.sourceBundleRoot, path.join(prepared.stagingRoot, 'bundle'), {
+      overwrite: true,
+      errorOnExist: false,
+    });
+    await fs.move(prepared.stagingRoot, prepared.metadata.snapshotRoot, { overwrite: false });
+  } catch (error) {
+    await fs.remove(prepared.stagingRoot).catch(() => undefined);
+    throw error;
+  }
+
+  return prepared.metadata;
 }
 
 function collectReferencedSnapshotRoots(ledger: InstalledLedger): Set<string> {

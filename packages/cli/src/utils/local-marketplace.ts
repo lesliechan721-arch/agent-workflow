@@ -14,6 +14,7 @@ import type {
   Scope,
 } from '../types.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
+import { CODEX_NATIVE_RECOVERY_DIR } from './codex-native-recovery.js';
 import {
   resolveAwHome,
   resolveCliPackageRoot,
@@ -258,6 +259,12 @@ export function createAvailableLedger(): InstalledLedger {
   };
 }
 
+const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
+  'plugin-config',
+  'plugin-install-snapshots',
+  CODEX_NATIVE_RECOVERY_DIR,
+]);
+
 export function getInstalledLedgerPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -363,10 +370,7 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
     if (entry.name === 'config.json' || entry.name === 'installed.json') {
       continue;
     }
-    if (entry.name === 'plugin-config') {
-      continue;
-    }
-    if (entry.name === 'plugin-install-snapshots') {
+    if (LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS.has(entry.name)) {
       continue;
     }
 
@@ -459,28 +463,18 @@ async function readPreservedLedger(
   };
 }
 
-async function preservePluginConfigDirectory(awHome: string, stagingDir: string): Promise<void> {
-  const sourceDir = path.join(awHome, 'plugin-config');
-  if (!(await fs.pathExists(sourceDir))) {
-    return;
+async function preserveLocalRuntimeStateDirectories(sourceRoot: string, targetRoot: string): Promise<void> {
+  for (const directoryName of LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS) {
+    const sourceDir = path.join(sourceRoot, directoryName);
+    if (!(await fs.pathExists(sourceDir))) {
+      continue;
+    }
+
+    await fs.copy(sourceDir, path.join(targetRoot, directoryName), {
+      overwrite: true,
+      errorOnExist: false,
+    });
   }
-
-  await fs.copy(sourceDir, path.join(stagingDir, 'plugin-config'), {
-    overwrite: true,
-    errorOnExist: false,
-  });
-}
-
-async function preservePluginInstallSnapshotsDirectory(awHome: string, stagingDir: string): Promise<void> {
-  const sourceDir = path.join(awHome, 'plugin-install-snapshots');
-  if (!(await fs.pathExists(sourceDir))) {
-    return;
-  }
-
-  await fs.copy(sourceDir, path.join(stagingDir, 'plugin-install-snapshots'), {
-    overwrite: true,
-    errorOnExist: false,
-  });
 }
 
 async function replaceDirectoryAtomically(targetDir: string, stagingDir: string): Promise<void> {
@@ -495,6 +489,7 @@ async function replaceDirectoryAtomically(targetDir: string, stagingDir: string)
 
     await fs.move(stagingDir, targetDir, { overwrite: true });
     if (targetExists) {
+      await preserveLocalRuntimeStateDirectories(backupDir, targetDir);
       await fs.remove(backupDir);
     }
   } catch (error) {
@@ -547,8 +542,7 @@ export async function initializeLocalMarketplace(
   try {
     await copyBundleToStaging(embeddedRoot, stagingDir);
     const { ledger, ledgerFileExists } = await readPreservedLedger(awHome);
-    await preservePluginConfigDirectory(awHome, stagingDir);
-    await preservePluginInstallSnapshotsDirectory(awHome, stagingDir);
+    await preserveLocalRuntimeStateDirectories(awHome, stagingDir);
     const replay = await replaySkillTriggerPreferencesFromLedger({
       ledger,
       marketplaceRoot: stagingDir,

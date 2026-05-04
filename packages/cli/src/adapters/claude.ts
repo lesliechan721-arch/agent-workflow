@@ -238,18 +238,16 @@ function normalizeLocalPath(input: string | undefined): string | undefined {
 }
 
 function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
-  if (ledger.ledgerState.status === 'available') {
-    return ledger;
-  }
-
-  return {
-    ...ledger,
-    ledgerState: {
+  const nextLedger = structuredClone(ledger);
+  if (nextLedger.ledgerState.status !== 'available') {
+    nextLedger.ledgerState = {
       status: 'available',
       degradedAt: null,
       reason: null,
-    },
-  };
+    };
+  }
+
+  return nextLedger;
 }
 
 function upsertClaudeScopeLedger(

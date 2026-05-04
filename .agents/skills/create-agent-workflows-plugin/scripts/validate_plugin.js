@@ -1509,6 +1509,43 @@ function validateAppsContent(pluginDir, manifest) {
   }
 }
 
+function hasCodexRepoManagedSurface(manifest) {
+  if (manifest.skills || manifest.slashCommands || manifest.mcpServers) {
+    return true;
+  }
+  const extensions = manifest.extensions;
+  if (!extensions || typeof extensions !== 'object' || Array.isArray(extensions)) {
+    return false;
+  }
+  return ['instructions', 'permissions', 'hooks', 'agents'].some((key) =>
+    Array.isArray(extensions[key]) && extensions[key].length > 0,
+  ) || (
+    extensions.nativeHooks &&
+    typeof extensions.nativeHooks === 'object' &&
+    !Array.isArray(extensions.nativeHooks) &&
+    Array.isArray(extensions.nativeHooks.codex) &&
+    extensions.nativeHooks.codex.length > 0
+  );
+}
+
+function warnCodexProjectScopeLimitations(manifest) {
+  if (!isCodexTargeted(manifest)) {
+    return;
+  }
+
+  if (manifest.apps) {
+    warn(
+      'Codex project scope does not support apps; users must install this app surface with `aw install <plugin> -p codex -s user` or split the plugin.',
+    );
+  }
+
+  if (!hasCodexRepoManagedSurface(manifest)) {
+    warn(
+      'This Codex-targeted plugin has no repo-managed project surface; Codex project scope will fail fast and only Codex user native install is applicable.',
+    );
+  }
+}
+
 function validateExtensionNameUniqueness(manifest) {
   if (!manifest.extensions) return;
   for (const extType of ['instructions', 'permissions', 'hooks', 'agents']) {
@@ -2088,6 +2125,7 @@ async function validatePluginDir(pluginDir) {
   validateScriptsLightweight(pluginDir, manifest);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
+  warnCodexProjectScopeLimitations(manifest);
   validateExtensionNameUniqueness(manifest);
   validateSkills(pluginDir, manifest);
   validateSlashCommands(pluginDir, manifest);

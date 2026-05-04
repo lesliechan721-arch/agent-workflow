@@ -4,6 +4,8 @@
 
 不要新增顶层 `claude` block，也不要把 hooks / agents 塞进 `buildConfig.manifestOverrides.claude`。
 
+对 Codex 来说，extensions 是 project scope 的 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest，不会调用 Codex native marketplace 或 app-server RPC。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
+
 ## 整体结构
 
 ```json

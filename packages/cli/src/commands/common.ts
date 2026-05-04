@@ -29,6 +29,7 @@ import type {
 } from '../types.js';
 import {
   createCommandExecutionContext,
+  emitCommandEvent,
   isCommandExecutionContext,
   type CommandExecutionContext,
   type CommandExecutionContextInput,
@@ -71,7 +72,14 @@ export function createAdapters(
   options: CommandExecutionContextInput = {},
 ): Record<PlatformName, PlatformAdapter> {
   if (isCommandExecutionContext(runtimeOrEnv)) {
-    return runtimeOrEnv.adapters ?? runtimeOrEnv.adaptersFactory(cwd, runtimeOrEnv);
+    const adapters = runtimeOrEnv.adapters ?? runtimeOrEnv.adaptersFactory(cwd, runtimeOrEnv);
+    const codexAdapter = adapters.codex as {
+      setCommandEventSink?: (
+        sink: (event: import('../output/model.js').CommandEvent) => void | Promise<void>,
+      ) => void;
+    };
+    codexAdapter.setCommandEventSink?.((event) => emitCommandEvent(runtimeOrEnv, event));
+    return adapters;
   }
 
   const context = createCommandExecutionContext({
@@ -1197,8 +1205,29 @@ export function formatStatusReports(reports: StatusReport[]): string {
       lines.push(`  - ${plugin.pluginName}`);
       lines.push('    native-state:');
       lines.push(
-        `      marketplaceRegistered=${plugin.native.marketplaceRegistered ? 'yes' : 'no'} pluginAvailable=${plugin.native.pluginAvailable ? 'yes' : 'no'} pluginInstalled=${plugin.native.pluginInstalled ? 'yes' : 'no'} version=${plugin.native.version ?? '-'}`,
+        `      marketplaceRegistered=${plugin.native.marketplaceRegistered ? 'yes' : 'no'} pluginAvailable=${plugin.native.pluginAvailable ? 'yes' : 'no'} pluginEnabled=${plugin.native.pluginEnabled === true ? 'yes' : 'no'} pluginInstalled=${plugin.native.pluginInstalled ? 'yes' : 'no'} version=${plugin.native.version ?? '-'}`,
       );
+      if (plugin.native.configEntryPresent !== undefined || plugin.native.configPath) {
+        lines.push(
+          `      configEntryPresent=${plugin.native.configEntryPresent ? 'yes' : 'no'} configPath=${plugin.native.configPath ?? '-'}`,
+        );
+      }
+      if (plugin.native.cacheStatus || plugin.native.cacheRootPath || plugin.native.activeCachePath) {
+        lines.push(
+          `      cacheStatus=${plugin.native.cacheStatus ?? '-'} cacheRootPath=${plugin.native.cacheRootPath ?? '-'} activeCachePath=${plugin.native.activeCachePath ?? '-'} activeCacheVersion=${plugin.native.activeCacheVersion ?? '-'}`,
+        );
+      }
+      if (plugin.native.recovery) {
+        lines.push(
+          `      recoveryPresent=${plugin.native.recovery.present ? 'yes' : 'no'} state=${plugin.native.recovery.state ?? '-'} evidenceMatches=${plugin.native.recovery.evidenceMatches === null ? '-' : plugin.native.recovery.evidenceMatches ? 'yes' : 'no'}`,
+        );
+        if (plugin.native.recovery.reason) {
+          lines.push(`      recoveryReason=${plugin.native.recovery.reason}`);
+        }
+        if (plugin.native.recovery.suggestion) {
+          lines.push(`      recoverySuggestion=${plugin.native.recovery.suggestion}`);
+        }
+      }
       if (plugin.native.marketplaceSource) {
         lines.push(`      marketplaceSource=${plugin.native.marketplaceSource}`);
       }

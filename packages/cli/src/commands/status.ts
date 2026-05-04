@@ -450,7 +450,63 @@ function isReadySkillsOnlyProjectStatus(plugin: PluginStatusReport): boolean {
     plugin.externalOwnership?.checkState !== 'unknown';
 }
 
-function resolvePluginHealth(plugin: PluginStatusReport | undefined): StatusHealth {
+function isCodexUserNativePlugin(
+  plugin: PluginStatusReport,
+  platform: PlatformName,
+  scope: Scope,
+): boolean {
+  return platform === 'codex' && scope === 'user' && plugin.native.requiresNativePlugin === true;
+}
+
+function hasNativeRecovery(plugin: PluginStatusReport): boolean {
+  return plugin.native.recovery?.present === true;
+}
+
+function hasGeneralHealthDowngrade(plugin: PluginStatusReport): boolean {
+  return (
+    (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
+    plugin.catalogCompatibility === 'missing' ||
+    plugin.catalogCompatibility === 'capabilityChanged' ||
+    plugin.skillTriggerDrift === 'yes' ||
+    hasMissingArtifacts(plugin) ||
+    plugin.currentCatalog?.available === false
+  );
+}
+
+function resolveCodexUserNativeHealth(plugin: PluginStatusReport): StatusHealth {
+  const installed = plugin.native.pluginInstalled;
+  const enabled = plugin.native.pluginEnabled === true;
+  const hasSuccessfulScopeRecord = plugin.scopeManagedEvidence?.ledger === true;
+  const hasManagedEvidence = hasScopeManagedEvidence(plugin);
+
+  if (hasRepoManagedActionableItems(plugin) || hasGeneralHealthDowngrade(plugin)) {
+    return 'needsAttention';
+  }
+
+  if (hasRepoManagedUnknownItems(plugin) || plugin.skillTriggerDrift === 'unknown') {
+    return 'unknown';
+  }
+
+  if (!installed && !enabled) {
+    return hasManagedEvidence || hasNativeRecovery(plugin) ? 'needsAttention' : 'notInstalled';
+  }
+
+  if (!installed || !enabled) {
+    return 'needsAttention';
+  }
+
+  if (hasNativeRecovery(plugin) || !hasSuccessfulScopeRecord || plugin.scopeInitialized !== 'yes') {
+    return 'needsAttention';
+  }
+
+  return 'ready';
+}
+
+function resolvePluginHealth(
+  plugin: PluginStatusReport | undefined,
+  platform: PlatformName,
+  scope: Scope,
+): StatusHealth {
   if (!plugin) {
     return 'unknown';
   }
@@ -460,10 +516,14 @@ function resolvePluginHealth(plugin: PluginStatusReport | undefined): StatusHeal
   }
 
   if (plugin.externalOwnership?.present) {
-    if (hasRuntimeEvidence(plugin) || hasManagedRepoEvidence(plugin)) {
+    if (hasRuntimeEvidence(plugin) || hasManagedRepoEvidence(plugin) || hasNativeRecovery(plugin)) {
       return 'needsAttention';
     }
     return 'external';
+  }
+
+  if (isCodexUserNativePlugin(plugin, platform, scope)) {
+    return resolveCodexUserNativeHealth(plugin);
   }
 
   if (!hasRuntimeEvidence(plugin)) {
@@ -478,14 +538,7 @@ function resolvePluginHealth(plugin: PluginStatusReport | undefined): StatusHeal
     return 'needsAttention';
   }
 
-  if (
-    (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
-    plugin.catalogCompatibility === 'missing' ||
-    plugin.catalogCompatibility === 'capabilityChanged' ||
-    plugin.skillTriggerDrift === 'yes' ||
-    hasMissingArtifacts(plugin) ||
-    plugin.currentCatalog?.available === false
-  ) {
+  if (hasGeneralHealthDowngrade(plugin)) {
     return 'needsAttention';
   }
 
@@ -521,8 +574,21 @@ function combineHealth(healths: StatusHealth[]): StatusHealth {
   return meaningful.sort((left, right) => HEALTH_SEVERITY[right] - HEALTH_SEVERITY[left])[0];
 }
 
+function describeEvidenceSource(source: string): string {
+  return {
+    ledger: 'ledger',
+    tracking: 'tracking',
+    codexNativeConfig: 'Codex enabled config',
+    codexNativeCache: 'Codex active cache',
+    codexNativeRecovery: 'Codex native recovery',
+    codexSharedNativeRef: 'shared native ref',
+    claudeSettings: 'Claude settings',
+    claudeInstalledPlugins: 'Claude installed plugins',
+  }[source] ?? source;
+}
+
 function describeEvidence(cell: StatusMatrixCell): string {
-  const evidence = new Set(cell.evidenceSources);
+  const evidence = new Set(cell.evidenceSources.map(describeEvidenceSource));
   if (cell.report?.scopeManagedEvidence?.ledger) {
     evidence.add('ledger');
   }
@@ -569,9 +635,39 @@ function describeNative(
   }
 
   if (platform === 'codex') {
+    if (scope === 'user' && plugin.native.requiresNativePlugin) {
+      const recovery = plugin.native.recovery;
+      if (recovery?.present) {
+        const stateLabels = {
+          pending_after_native_write: 'native 写入已完成，AW 后续步骤仍待完成',
+          post_check_failed: 'native 写入已完成，但 post-check 失败',
+          lifecycle_failed: 'native 写入已完成，但 lifecycle 失败',
+          tracking_write_failed: 'native 写入已完成，但 tracking 写入失败',
+          ledger_write_failed: 'native 写入已完成，但 ledger 写入失败',
+          snapshot_write_failed: 'native 写入已完成，但 snapshot 写入失败',
+          cleanup_failed: 'native 残留大概率已清理，但 recovery breadcrumb 仍未删除',
+        } as const;
+        const summary = stateLabels[recovery.state ?? 'pending_after_native_write'];
+        if (recovery.evidenceMatches === false) {
+          return `Codex native recovery breadcrumb 仍在：${summary}。当前 cache/config 已不匹配，通常表示 breadcrumb 删除失败。`;
+        }
+        return `Codex native 已写入，但 AW 安装或清理未完成：${summary}。`;
+      }
+
+      if (plugin.native.pluginInstalled && plugin.native.pluginEnabled !== true) {
+        return 'Codex active cache 仍在，但 enabled config 缺失或已关闭。';
+      }
+
+      if (!plugin.native.pluginInstalled && plugin.native.pluginEnabled === true) {
+        return 'Codex enabled config 已存在，但 active cache 缺失，原生安装未完成。';
+      }
+    }
+
     if (scope === 'project' && hasManagedRepoEvidence(plugin)) {
       if (plugin.native.pluginInstalled) {
-        return '附加诊断：用户级 Codex native plugin 也存在';
+        return plugin.native.pluginEnabled === true
+          ? '附加诊断：用户级 Codex native cache 和 enabled config 也存在'
+          : '附加诊断：用户级 Codex native cache 也存在';
       }
       return undefined;
     }
@@ -596,7 +692,7 @@ function describeNative(
   }
 
   if (plugin.native.pluginInstalled) {
-    return '原生插件状态存在';
+    return plugin.native.pluginEnabled === true ? '原生插件已安装并启用' : '原生插件 cache 仍然存在';
   }
 
   return undefined;
@@ -725,6 +821,27 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
   }
   if (cell.report?.catalogCompatibility === 'missing') {
     return `当前插件目录缺失；如需清理历史状态，运行 aw uninstall ${cell.pluginName}${suffix}`;
+  }
+  if (cell.platform === 'codex' && cell.scope === 'user' && cell.report?.native.requiresNativePlugin) {
+    if (cell.report.native.recovery?.present) {
+      if (cell.report.native.recovery.evidenceMatches === false) {
+        return `重新运行 aw uninstall ${cell.pluginName}${suffix} 清理 recovery breadcrumb；如果 Codex cache/config 已手动清掉，AW 仍需要移除这条恢复记录。`;
+      }
+      return `当前 Codex native 安装未完整收口；运行 aw install ${cell.pluginName}${suffix} 修复，或运行 aw uninstall ${cell.pluginName}${suffix} 清理残留。`;
+    }
+    if (cell.report.native.pluginInstalled && cell.report.native.pluginEnabled !== true) {
+      return `先确认 ${cell.pluginName} 的 Codex cache 残留来源；当前 AW 不会在缺少归属证据时静默删除它。`;
+    }
+    if (!cell.report.native.pluginInstalled && cell.report.native.pluginEnabled === true) {
+      return `重新运行 aw install ${cell.pluginName}${suffix}，让 Codex 同时补齐 enabled config 和 active cache。`;
+    }
+    if (
+      cell.report.native.pluginInstalled &&
+      cell.report.native.pluginEnabled === true &&
+      cell.report.scopeManagedEvidence?.ledger !== true
+    ) {
+      return `当前 Codex native 状态已存在，但 AW 缺少成功 scope record；请先运行 aw install ${cell.pluginName}${suffix} 修复账本。`;
+    }
   }
   if (cell.report?.catalogCompatibility === 'capabilityChanged') {
     return `插件能力声明已变化，运行 aw upgrade ${cell.pluginName}${suffix}`;
@@ -983,7 +1100,7 @@ export async function statusCommand(
         projectKey: candidate.projectKey,
         projectRoot: candidate.projectRoot,
         executionCwd: candidate.executionCwd,
-        health: resolvePluginHealth(pluginStatus),
+        health: resolvePluginHealth(pluginStatus, candidate.platform, candidate.scope),
         report: pluginStatus,
         evidenceSources: candidate.evidence.sources,
         ...runtimeHealth,

@@ -103,6 +103,13 @@ plugins/<name>/
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
 8. **测试**：插件内 Node 脚本用 `pnpm plugin:test <plugin>`；改到 manifest、bundle 或安装逻辑时，再运行相关 `pnpm test:*`。
 
+### Codex scope 提醒
+
+- Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。
+- Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace add 或 app-server RPC，也不会改用户级 config/cache。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可用。
+- 面向 Codex project 的插件必须有 repo-managed surface。纯 native-only 插件不能 project 安装；包含 `apps` 的插件 project scope 会 fail fast，请引导用户使用 `--scope user` 或拆分插件。
+- 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 recovery breadcrumb 触发 repair install；breadcrumb-only uninstall 不运行 uninstall lifecycle。
+
 ## 脚手架脚本
 
 ```bash
@@ -144,6 +151,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - lifecycle 支持 Node 和受控 shell 文件，不支持内联 shell 命令；Windows 优先写 Node 入口，或单独提供 `.ps1` / `.cmd`。
 - Node lifecycle/helper/test 默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时声明 `scripts.node.packageRoot`，提交 `package.json` 和 `pnpm-lock.yaml`，并只使用 registry-backed 依赖；运行时依赖离线随 bundle 携带。
 - manifest build 只能通过 `scripts.node.build` 显式触发，并运行在隔离 staging 目录；不要期待 `package.json` scripts 或 npm lifecycle 自动执行，也不要依赖源码树被回写。
+- Codex user native 成功状态需要 enabled config 和 materialized cache 同时存在；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。
 
 ## 脚本测试入口
 
