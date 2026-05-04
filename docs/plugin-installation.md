@@ -105,6 +105,10 @@ aw config reset <插件名> [-s project|user] [-i] [--no-interactive] [-y] [-j]
 
 插件名会先经过 config store 路径段安全校验：只允许非空单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
 
+带动态 artifact 的插件会在配置写入后按需刷新已安装产物。刷新只在写入的 key 命中已安装 artifact 的 `refreshKeys` 时触发；未命中时只保存配置。user 配置写入会刷新 user scope artifact，并在当前仓库也安装了 project artifact 时一并刷新当前仓库；project 配置写入只刷新当前仓库 project artifact，不会改写 user artifact。CLI 不会扫描所有历史项目。
+
+刷新使用 artifact render config，而不是 `get/list` 的 effective config：user artifact 只看 `default < user store`，project artifact 看 `default < user store < 当前 project store`。如果 renderer、project preflight 或写盘失败，已经写入的 config store 会保留，受影响 artifact 会被标记为最近刷新失败，`aw status` 可继续诊断。`aw config ... --json` 会在 receipt 中包含 `artifactRefresh.attempted`、`status`、`triggerKeys`、`artifacts[]`，失败时还会有稳定的 `error` 摘要。
+
 ---
 
 ## 交互式模式
@@ -165,7 +169,7 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 - 明细：按 platform + scope 展示 native 注册（只在相关时作为诊断）、repo-managed artifacts、catalog 状态、skill trigger、config/script health、`healthSource` 和可见性摘要
 - 下一步：给出最可能的修复或确认命令，例如 `aw status <plugin> --verbose`、`aw upgrade <plugin>` 或 `aw install <plugin>`
 
-`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。Codex project scope 的默认状态面板以 repo-managed evidence 为主；用户级 native marketplace 注册缺失不会覆盖正常的 repo-managed installed signal。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会刷新 marketplace、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+`--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。Codex project scope 的默认状态面板以 repo-managed evidence 为主；用户级 native marketplace 注册缺失不会覆盖正常的 repo-managed installed signal。动态 artifact 会单独展示 instruction / role 等 artifact health，常见状态包括 healthy、disabled by config、block missing、content drift、config digest stale 和 recent refresh failed。user 配置写入没有扫描历史项目时，`refreshReach` 会说明本次已刷新 user / 当前 project，以及其它已知 project target 是否可能仍 stale。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会执行 artifact renderer、不会刷新 marketplace、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
 
 ---
 
@@ -204,14 +208,14 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 
 **Codex**
 - `.agents/skills/<skill>/` — Codex project scope 的 repo skill；公共 `slashCommands` 也会在 Codex 侧生成 manual-only skill
-- `.codex/config.toml` — 追加 managed instructions block，并写入 `mcp_servers`；MCP server key 保留 rendered `.mcp.json` 的原始属性名，包含点号、空格或 Unicode 时使用 TOML quoted key，例如 `[mcp_servers."acme.tools v1"]`
+- `.codex/config.toml` — 追加 managed instructions block，写入动态 `developer_instructions` block、Codex agent role 注册项和 `mcp_servers`；MCP server key 保留 rendered `.mcp.json` 的原始属性名，包含点号、空格或 Unicode 时使用 TOML quoted key，例如 `[mcp_servers."acme.tools v1"]`
 - `.codex/rules/*.rules` — Codex execpolicy `prefix_rule(...)` 权限规则
 - `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置，包含公共 hooks 和 `extensions.nativeHooks.codex`
 - `.codex/agents/*.toml` — Codex agent role 文件
 
 Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到的 hook groups，手写配置或其它工具写入的 runtime-valid groups 会原样保留。
 
-同时会在 `~/.aw/installed.json` 更新安装账本，在平台目录下写入 `.agent-workflows-manifest.json` 追踪清单（用于精确卸载/升级）。tracking 中的 `GeneratedArtifact.path` 一律是绝对文件系统路径；`.agents/skills/<skill>`、`.codex/config.toml` 只是文档和 receipt 里的展示写法。`kind: "skill"` 和 `kind: "mcpServer"` 必须带 `artifactKey`，分别记录 skill 名和 MCP server 原始 key，不能只靠共享文件路径区分。
+同时会在 `~/.aw/installed.json` 更新安装账本，在平台目录下写入 `.agent-workflows-manifest.json` 追踪清单（用于精确卸载/升级）。tracking 中的 `GeneratedArtifact.path` 一律是绝对文件系统路径；`.agents/skills/<skill>`、`.codex/config.toml` 只是文档和 receipt 里的展示写法。`kind: "skill"` 和 `kind: "mcpServer"` 必须带 `artifactKey`，分别记录 skill 名和 MCP server 原始 key，不能只靠共享文件路径区分。动态 artifact 还会记录 `id`、`target`、`state`、`refreshKeys`、`configDigest`、`contentDigest`、`disabledReason`、`roleKey`、`lastRefresh` 和 `refreshReach` 等字段，供 refresh、status、upgrade 和 uninstall 精确识别。
 
 带 lifecycle/config 的插件还会在 `~/.aw/plugin-install-snapshots/` 下记录每个 platform + scope 的安装快照。后续 `uninstall` 和 `status` 会优先使用该快照解释 lifecycle/config 真值；即使本地 marketplace 已刷新到新版本，也不会把新 catalog 的 schema 或脚本误当成旧安装的运行时。
 

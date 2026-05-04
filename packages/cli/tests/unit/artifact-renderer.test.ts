@@ -1,0 +1,439 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
+import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
+import {
+  runArtifactRenderer,
+  writeArtifactRendererContext,
+  resolveArtifactRendererTarget,
+} from '../../src/utils/artifact-renderer.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+
+const tempDirs: string[] = [];
+
+async function makeTempRoot(prefix: string): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(root);
+  return root;
+}
+
+function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
+  return {
+    name,
+    version: '0.1.0',
+    description: 'Dynamic artifact renderer fixture',
+    marketplace: {
+      category: 'test',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+      },
+    },
+    scripts: {
+      timeoutMs: 2500,
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+        },
+      },
+    },
+    config: {
+      schema: {
+        token: {
+          type: 'string',
+          sensitive: true,
+        },
+        enableLightweightInstruction: {
+          type: 'boolean',
+          default: true,
+        },
+        explorerModel: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+        modelReasoningEffort: {
+          type: 'enum',
+          values: ['low', 'medium', 'high', 'xhigh'],
+          default: 'medium',
+        },
+      },
+    },
+    artifacts: {
+      targets: [
+        {
+          id: 'lightweight-instruction',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.developerInstructionsBlock',
+          projectManagedKind: 'instruction',
+          states: ['present', 'disabled'],
+          refreshKeys: [
+            'enableLightweightInstruction',
+            'explorerModel',
+            'modelReasoningEffort',
+          ],
+          requiresCodexProjectConfig: true,
+        },
+        {
+          id: 'codex-explorer-role',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.agentRole',
+          projectManagedKind: 'agent',
+          states: ['present'],
+          refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+          requiresCodexProjectConfig: true,
+          roleKey: 'codex-explorer',
+        },
+      ],
+    },
+  };
+}
+
+async function writePlugin(
+  root: string,
+  manifest = createManifest(),
+  scriptSource?: string,
+): Promise<PluginMeta> {
+  const pluginRoot = path.join(root, 'plugins', manifest.name);
+  await fs.outputJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+  await fs.outputFile(
+    path.join(pluginRoot, 'scripts', 'render-artifacts.mjs'),
+    scriptSource ?? [
+      'import { readFileSync } from "node:fs";',
+      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'console.error(`renderer token=${context.config.values.token ?? ""}`);',
+      'console.log(JSON.stringify({',
+      '  version: 1,',
+      '  artifacts: [',
+      '    {',
+      '      id: "lightweight-instruction",',
+      '      kind: "instruction",',
+      '      platform: "codex",',
+      '      target: "codex.developerInstructionsBlock",',
+      '      state: "present",',
+      '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+      '      content: `scope=${context.config.targetScope};model=${context.config.values.explorerModel}`',
+      '    },',
+      '    {',
+      '      id: "codex-explorer-role",',
+      '      kind: "codexRole",',
+      '      platform: "codex",',
+      '      target: "codex.agentRole",',
+      '      state: "present",',
+      '      roleKey: "codex-explorer",',
+      '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+      '      content: {',
+      '        roleFile: {',
+      '          name: "codex-explorer",',
+      '          developer_instructions: "Inspect the repository."',
+      '        }',
+      '      }',
+      '    }',
+      '  ]',
+      '}));',
+    ].join('\n'),
+    'utf8',
+  );
+
+  return {
+    rootDir: pluginRoot,
+    manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe('artifact renderer runtime', () => {
+  it('writes target-scoped artifact render config into renderer context', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        token: 'secret-token',
+        explorerModel: 'gpt-5.4',
+      },
+    });
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {
+        explorerModel: 'project-model',
+        modelReasoningEffort: 'high',
+      },
+    });
+
+    const target = await resolveArtifactRendererTarget(plugin);
+    const userContext = await writeArtifactRendererContext({
+      target,
+      event: 'refresh',
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      changedConfigKeys: ['explorerModel'],
+      previousArtifacts: [{ id: 'lightweight-instruction', state: 'present' }],
+    });
+    expect(userContext.context.config).toMatchObject({
+      mode: 'artifact-render',
+      targetScope: 'user',
+      values: {
+        token: 'secret-token',
+        explorerModel: 'gpt-5.4',
+        enableLightweightInstruction: true,
+        modelReasoningEffort: 'medium',
+      },
+      sources: {
+        token: 'user',
+        explorerModel: 'user',
+        enableLightweightInstruction: 'default',
+        modelReasoningEffort: 'default',
+      },
+    });
+    expect(userContext.context.changedConfigKeys).toEqual(['explorerModel']);
+    expect(userContext.context.previousArtifacts).toEqual([
+      { id: 'lightweight-instruction', state: 'present' },
+    ]);
+    expect(userContext.context.paths.configStores.user).toContain('/plugin-config/');
+    expect(userContext.context.paths.configStores.project).toContain('/plugin-config/');
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(userContext.contextPath)).mode & 0o777).toBe(0o600);
+    }
+
+    const projectContext = await writeArtifactRendererContext({
+      target,
+      event: 'install',
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      commandEnv: env,
+    });
+    expect(projectContext.context.config.values.explorerModel).toBe('project-model');
+    expect(projectContext.context.config.values.modelReasoningEffort).toBe('high');
+    expect(projectContext.context.config.sources.explorerModel).toBe('project');
+    expect(projectContext.context.config.sources.modelReasoningEffort).toBe('project');
+    expect(projectContext.context.changedConfigKeys).toEqual([]);
+
+    await userContext.cleanup();
+    await projectContext.cleanup();
+  });
+
+  it('runs renderer with empty changed keys for install and upgrade, and explicit keys for refresh', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-run-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        token: 'secret-token',
+        explorerModel: 'gpt-5.4',
+      },
+    });
+
+    const installResult = await runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    });
+    expect(installResult.context.changedConfigKeys).toEqual([]);
+    expect(installResult.plan.artifacts[0]?.content).toContain('scope=user');
+
+    const upgradeResult = await runArtifactRenderer({
+      event: 'upgrade',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    });
+    expect(upgradeResult.context.changedConfigKeys).toEqual([]);
+    expect(upgradeResult.plan.version).toBe(1);
+
+    const refreshResult = await runArtifactRenderer({
+      event: 'refresh',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      changedConfigKeys: ['explorerModel'],
+    });
+    expect(refreshResult.context.changedConfigKeys).toEqual(['explorerModel']);
+    expect(refreshResult.plan.version).toBe(1);
+
+    await expect(runArtifactRenderer({
+      event: 'refresh',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    })).rejects.toThrow('changedConfigKeys');
+  });
+
+  it('rejects non-write events at runtime', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-event-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
+
+    await expect(runArtifactRenderer({
+      event: 'status' as ArtifactRenderEvent,
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    })).rejects.toThrow('only supports install, upgrade, and refresh events');
+  });
+
+  it('fails when stdout is not JSON and redacts sensitive diagnostics', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-nonjson-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: 'secret-token' },
+    });
+
+    await expect(runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      runner: {
+        async run() {
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: 'not-json secret-token',
+            stderr: 'stderr secret-token',
+            timedOut: false,
+          };
+        },
+      },
+    })).rejects.toThrow('[REDACTED]');
+  });
+
+  it('fails on unsupported versions, non-zero exit, and timeouts', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-failures-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: 'secret-token' },
+    });
+
+    await expect(runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      runner: {
+        async run() {
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: JSON.stringify({ version: 2, artifacts: [] }),
+            stderr: 'unknown-version secret-token',
+            timedOut: false,
+          };
+        },
+      },
+    })).rejects.toThrow('unsupported plan version');
+
+    await expect(runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      runner: {
+        async run() {
+          return {
+            exitCode: 9,
+            signal: null,
+            stdout: '',
+            stderr: 'boom secret-token',
+            timedOut: false,
+          };
+        },
+      },
+    })).rejects.toThrow('[REDACTED]');
+
+    await expect(runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      runner: {
+        async run() {
+          return {
+            exitCode: null,
+            signal: 'SIGTERM',
+            stdout: '',
+            stderr: 'timeout secret-token',
+            timedOut: true,
+          };
+        },
+      },
+    })).rejects.toThrow('[REDACTED]');
+  });
+});

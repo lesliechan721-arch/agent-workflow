@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  createGeneratedArtifactContentDigest,
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../../src/utils/generated-artifacts.js';
@@ -73,6 +74,58 @@ describe('generated artifacts', () => {
       'acme.tools v1',
       'search',
     ]);
+  });
+
+  it('does not merge dynamic instruction artifacts that share a file but use different ids', () => {
+    const merged = mergeGeneratedArtifacts(
+      [
+        {
+          path: '/repo/.codex/config.toml',
+          paths: ['/repo/.codex/config.toml'],
+          kind: 'instruction',
+          platform: 'codex',
+          id: 'instruction-a',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          refreshKeys: ['mode'],
+          configDigest: 'sha256:config-a',
+          contentDigest: 'sha256:content-a',
+        },
+      ],
+      [
+        {
+          path: '/repo/.codex/config.toml',
+          paths: ['/repo/.codex/config.toml'],
+          kind: 'instruction',
+          platform: 'codex',
+          id: 'instruction-b',
+          target: 'codex.developerInstructionsBlock',
+          state: 'disabled',
+          disabledReason: 'config',
+          refreshKeys: ['mode'],
+          configDigest: 'sha256:config-b',
+          contentDigest: 'sha256:content-b',
+        },
+      ],
+    );
+
+    expect(merged).toHaveLength(2);
+    expect(merged.map((artifact) => artifact.id)).toEqual([
+      'instruction-a',
+      'instruction-b',
+    ]);
+  });
+
+  it('creates stable content digests for structured tracking metadata', () => {
+    expect(createGeneratedArtifactContentDigest({
+      state: 'disabled',
+      target: 'codex.developerInstructionsBlock',
+      disabledReason: 'config',
+    })).toBe(createGeneratedArtifactContentDigest({
+      disabledReason: 'config',
+      target: 'codex.developerInstructionsBlock',
+      state: 'disabled',
+    }));
   });
 
   it('accepts repo-managed artifact kinds and preserves artifactKey on error carriers', () => {

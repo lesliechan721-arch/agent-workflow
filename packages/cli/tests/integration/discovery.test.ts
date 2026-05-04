@@ -212,6 +212,141 @@ describe('managed plugin discovery', () => {
     expect(candidates[0].target.plugin.manifest.extensions).toBeUndefined();
   });
 
+  it('reuses artifact-aware historical fallback for Codex dynamic uninstall candidates', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    const rolePath = path.join(codexPaths.configDir, 'agents', 'aw-history-role.toml');
+    await upsertTrackingRecord(codexPaths.trackingDir, 'dynamic-history', [
+      {
+        path: codexPaths.configTomlPath,
+        paths: [codexPaths.configTomlPath],
+        kind: 'instruction',
+        platform: 'codex',
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        state: 'disabled',
+        disabledReason: 'config',
+        refreshKeys: ['enableLightweightInstruction'],
+      },
+      {
+        path: rolePath,
+        paths: [codexPaths.configTomlPath, rolePath],
+        kind: 'agent',
+        platform: 'codex',
+        artifactKey: 'codex-explorer',
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      },
+    ]);
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['dynamic-history'],
+      env,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].target.source).toBe('historical');
+    expect(candidates[0].target.historicalArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        paths: [codexPaths.configTomlPath],
+        state: 'disabled',
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        paths: [codexPaths.configTomlPath, rolePath],
+        roleKey: 'codex-explorer',
+        artifactKey: 'codex-explorer',
+        state: 'present',
+      }),
+    ]));
+    expect(candidates[0].target.plugin.manifest.extensions?.agents).toBeUndefined();
+    expect(candidates[0].target.plugin.manifest.artifacts?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        scopes: ['project'],
+        states: ['disabled'],
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        roleKey: 'codex-explorer',
+        scopes: ['project'],
+      }),
+    ]));
+  });
+
+  it('marks historical Codex dynamic role identities as unavailable when tracking cannot recover the real roleKey', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    const rolePath = path.join(codexPaths.configDir, 'agents', 'aw-history-role.toml');
+    await upsertTrackingRecord(codexPaths.trackingDir, 'dynamic-history-broken', [
+      {
+        path: rolePath,
+        paths: [codexPaths.configTomlPath, rolePath],
+        kind: 'agent',
+        platform: 'codex',
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      },
+    ]);
+
+    const [uninstallCandidate] = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['dynamic-history-broken'],
+      env,
+    });
+    const [upgradeCandidate] = await buildCommandCandidates({
+      command: 'upgrade',
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['dynamic-history-broken'],
+      env,
+    });
+
+    expect(uninstallCandidate.selectable).toBe(false);
+    expect(uninstallCandidate.disabledReason).toContain('无法恢复 codex.agentRole 的真实 roleKey');
+    expect(upgradeCandidate.selectable).toBe(false);
+    expect(upgradeCandidate.disabledReason).toContain('无法恢复 codex.agentRole 的真实 roleKey');
+
+    const result = await statusCommand(
+      ['dynamic-history-broken'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env,
+      },
+    );
+    const roleArtifact = result.reports[0]?.plugins[0]?.managedArtifacts?.find((artifact) =>
+      artifact.id === 'codex-explorer-role');
+
+    expect(roleArtifact).toMatchObject({
+      target: 'codex.agentRole',
+      health: 'unavailable',
+      sessionVisibility: 'absent',
+    });
+    expect(roleArtifact?.diagnostics[0]).toContain('无法从 tracking 或静态 metadata 恢复');
+  });
+
   it('marks historical Codex repo skill targets with missing artifactKey as non-selectable for uninstall', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const codexProjectKey = await resolveCodexProjectKey(repoRoot);

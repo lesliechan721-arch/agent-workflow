@@ -301,6 +301,7 @@ describe('cli entry', () => {
     'codexProjectUserConfigUnreadable',
     'externalOwnershipUnknown',
     'externalOwnershipPresent',
+    'roleNameConflict',
     'trackingIntegrityError',
     'installOptionsUnavailable',
     'catalogNotCurrent',

@@ -45,6 +45,7 @@ import {
 import { formatWarnings } from './output/reporter.js';
 import { resolveAwHome, resolveCliPackageRoot } from './utils/paths.js';
 import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
+import { refreshArtifactsAfterConfigWrite } from './utils/artifact-refresh.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigValue,
@@ -57,7 +58,7 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigIssue,
 } from './utils/plugin-config.js';
-import type { PluginManifestSource, Scope } from './types.js';
+import type { PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export { parseSkillTriggerPreference } from './commands/options.js';
@@ -457,7 +458,7 @@ async function runActionWithContext<T>(
 async function loadConfigManifest(
   pluginName: string,
   context: CliExecutionContext,
-): Promise<PluginManifestSource> {
+): Promise<PluginMeta> {
   assertSafePluginConfigSegment(pluginName);
   let plugins: Awaited<ReturnType<typeof resolveCatalogPlugins>>['plugins'];
   try {
@@ -473,15 +474,33 @@ async function loadConfigManifest(
     }
     throw error;
   }
-  const manifest = plugins[0].manifest;
-  if (!manifest.config?.schema) {
+  const plugin = plugins[0];
+  if (!plugin.manifest.config?.schema) {
     throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
   }
-  return manifest;
+  return plugin;
 }
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
   writeLine(write, JSON.stringify(payload, null, 2));
+}
+
+function writeArtifactRefreshNotice(
+  write: (text: string) => void,
+  artifactRefresh: {
+    attempted: boolean;
+    status: 'succeeded' | 'failed' | 'skipped';
+    error?: string;
+  } | undefined,
+): void {
+  if (!artifactRefresh?.attempted || artifactRefresh.status !== 'failed') {
+    return;
+  }
+
+  writeLine(
+    write,
+    `配置已保存，但 artifact refresh 失败：${artifactRefresh.error ?? '请运行 aw status 检查详细诊断。'}`,
+  );
 }
 
 function formatConfigIssueRepairHint(
@@ -637,6 +656,23 @@ async function resolveConfigForRead(options: {
     issues: scopedIssues,
     ignoredUnknownKeys: resolved.ignoredUnknownKeys.filter((entry) => entry.scope === options.scopeOrEffective),
   };
+}
+
+async function refreshArtifactsForConfigWrite(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  changedKeys?: string[];
+  resetAllTrackedKeys?: boolean;
+  context: CliExecutionContext;
+}) {
+  return refreshArtifactsAfterConfigWrite({
+    plugin: options.plugin,
+    commandScope: options.scope,
+    cwd: options.context.cwd,
+    env: options.context.env,
+    changedKeys: options.changedKeys,
+    resetAllTrackedKeys: options.resetAllTrackedKeys,
+  });
 }
 
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
@@ -920,10 +956,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:list', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
-        const manifest = await loadConfigManifest(pluginName, context);
+        const plugin = await loadConfigManifest(pluginName, context);
         return resolveConfigForRead({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
           context,
         });
@@ -952,10 +988,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:get', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
-        const manifest = await loadConfigManifest(pluginName, context);
+        const plugin = await loadConfigManifest(pluginName, context);
         const configForRead = await resolveConfigForRead({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
           context,
         });
@@ -998,11 +1034,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     ) => {
       const context = createActionContext('config:set', rawOptions);
       const receipt = await runActionWithContext(context, async () => {
-        const manifest = await loadConfigManifest(pluginName, context);
+        const plugin = await loadConfigManifest(pluginName, context);
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
         const updates = await coercePluginConfigUpdates({
-          schema: manifest.config!.schema,
+          schema: plugin.manifest.config!.schema,
           updates: { [key]: inputValue },
           cwd: context.cwd,
         });
@@ -1015,9 +1051,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         const effective = await resolveEffectivePluginConfig({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           cwd: context.cwd,
           env: context.env,
+        });
+        const artifactRefresh = await refreshArtifactsForConfigWrite({
+          plugin,
+          scope,
+          changedKeys: [key],
+          context,
         });
         return {
           ok: true,
@@ -1026,12 +1068,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope,
           updatedKeys: [key],
           effective: summarizeEffectivePluginConfig(effective),
+          artifactRefresh,
         };
       });
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, `已写入 ${receipt.plugin}.${key} (${receipt.scope})。`);
+        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
 
@@ -1053,10 +1097,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             `Interactive config is not available. Run \`aw config set ${pluginName} <key> <value>\` for each required key.`,
           );
         }
-        const manifest = await loadConfigManifest(pluginName, context);
+        const plugin = await loadConfigManifest(pluginName, context);
         const effective = await resolveEffectivePluginConfig({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           cwd: context.cwd,
           env: context.env,
         });
@@ -1064,7 +1108,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ? undefined
           : resolveConfigWriteScope(rawOptions.scope);
         const allowedScopes: Scope[] = explicitScope ? [explicitScope] : ['user', 'project'];
-        const promptSchema = Object.fromEntries(Object.entries(manifest.config!.schema).map(([schemaKey, field]) => [
+        const promptSchema = Object.fromEntries(Object.entries(plugin.manifest.config!.schema).map(([schemaKey, field]) => [
           schemaKey,
           {
             type: field.type === 'enum' ? 'string' : field.type,
@@ -1102,7 +1146,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           throw new Error(`Unsupported config scope "${scope}".`);
         }
         const updates = await coercePluginConfigUpdates({
-          schema: manifest.config!.schema,
+          schema: plugin.manifest.config!.schema,
           updates: promptResult.updates,
           cwd: context.cwd,
         });
@@ -1115,9 +1159,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         const nextEffective = await resolveEffectivePluginConfig({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           cwd: context.cwd,
           env: context.env,
+        });
+        const artifactRefresh = await refreshArtifactsForConfigWrite({
+          plugin,
+          scope,
+          changedKeys: promptResult.updatedKeys,
+          context,
         });
         return {
           ok: true,
@@ -1126,12 +1176,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope,
           updatedKeys: promptResult.updatedKeys,
           effective: summarizeEffectivePluginConfig(nextEffective),
+          artifactRefresh,
         };
       });
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, `已更新 ${receipt.plugin} 配置 (${receipt.scope})。`);
+        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
 
@@ -1147,8 +1199,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, key: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:unset', rawOptions);
       const receipt = await runActionWithContext(context, async () => {
-        const manifest = await loadConfigManifest(pluginName, context);
-        if (!manifest.config!.schema[key]) {
+        const plugin = await loadConfigManifest(pluginName, context);
+        if (!plugin.manifest.config!.schema[key]) {
           throw new Error(`Unknown config key "${key}".`);
         }
         const scope = resolveConfigWriteScope(rawOptions.scope);
@@ -1169,9 +1221,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         const effective = await resolveEffectivePluginConfig({
           pluginName,
-          manifest,
+          manifest: plugin.manifest,
           cwd: context.cwd,
           env: context.env,
+        });
+        const artifactRefresh = await refreshArtifactsForConfigWrite({
+          plugin,
+          scope,
+          changedKeys: existed ? [key] : [],
+          context,
         });
         return {
           ok: true,
@@ -1181,6 +1239,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           removedKey: key,
           existed,
           effective: summarizeEffectivePluginConfig(effective),
+          artifactRefresh,
         };
       });
       if (rawOptions.json) {
@@ -1189,6 +1248,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeLine(io.stdout, receipt.existed
           ? `已删除 ${receipt.plugin}.${receipt.removedKey} (${receipt.scope})。`
           : `${receipt.plugin}.${receipt.removedKey} (${receipt.scope}) 原本不存在。`);
+        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
 
@@ -1234,6 +1294,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
         });
+        let artifactRefresh: Awaited<ReturnType<typeof refreshArtifactsForConfigWrite>> = {
+          attempted: false,
+          status: 'skipped' as const,
+          triggerKeys: [],
+          artifacts: [],
+        };
+        if (reset.deleted) {
+          try {
+            const plugin = await loadConfigManifest(pluginName, context);
+            artifactRefresh = await refreshArtifactsForConfigWrite({
+              plugin,
+              scope,
+              resetAllTrackedKeys: true,
+              context,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.startsWith(`Unknown plugin "${pluginName}".`)) {
+              throw error;
+            }
+          }
+        }
         return {
           ok: true,
           command: 'config:reset',
@@ -1241,6 +1323,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope,
           existed: reset.existed,
           deleted: reset.deleted,
+          artifactRefresh,
         };
       });
       if (rawOptions.json) {
@@ -1249,6 +1332,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeLine(io.stdout, receipt.deleted
           ? `已重置 ${receipt.plugin} 的 ${receipt.scope} 配置。`
           : `${receipt.plugin} 没有可重置的 ${receipt.scope} 配置。`);
+        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
 

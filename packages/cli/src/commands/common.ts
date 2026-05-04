@@ -5,10 +5,12 @@ import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import type {
   AgentDefinition,
+  ArtifactTarget,
   CatalogResolution,
   CommandAction,
   CodexCapabilitySnapshot,
   CodexProjectManagedKind,
+  DynamicArtifactKind,
   EnvironmentDetection,
   GeneratedArtifact,
   HookDefinition,
@@ -20,6 +22,7 @@ import type {
   PlatformName,
   PlatformSelection,
   PluginMeta,
+  PluginArtifactTargetDefinition,
   PermissionDefinition,
   PluginStatusReport,
   ResolvedInstallOptions,
@@ -94,6 +97,7 @@ export interface ResolvedPluginTarget {
   currentPlugin?: PluginMeta;
   embeddedPlugin?: PluginMeta;
   source: 'currentCatalog' | 'historical';
+  historicalArtifacts?: GeneratedArtifact[];
 }
 
 export interface PreparedPluginCommandContext {
@@ -161,6 +165,15 @@ type HistoricalExtensionKind = Extract<
   'instruction' | 'permission' | 'hook' | 'agent'
 >;
 type HistoricalManagedKindsByPlatform = Record<PlatformName, Set<HistoricalManagedKind>>;
+type HistoricalDynamicTargetsByPlatform = Record<PlatformName, Map<string, PluginArtifactTargetDefinition>>;
+
+interface HistoricalTrackingSummary {
+  kindsByPlatform: HistoricalManagedKindsByPlatform;
+  trackedStaticKindsByPlatform: HistoricalManagedKindsByPlatform;
+  trackedDynamicKindsByPlatform: HistoricalManagedKindsByPlatform;
+  dynamicTargetsByPlatform: HistoricalDynamicTargetsByPlatform;
+  historicalArtifacts: GeneratedArtifact[];
+}
 
 const HISTORICAL_SKILLS_PATH = './historical-skills';
 const HISTORICAL_MCP_SERVERS_PATH = './historical-mcp.json';
@@ -228,23 +241,153 @@ function isHistoricalExtensionKind(kind: HistoricalManagedKind): kind is Histori
   return HISTORICAL_EXTENSION_KIND_ORDER.includes(kind as HistoricalExtensionKind);
 }
 
+function createHistoricalKindsByPlatform(): HistoricalManagedKindsByPlatform {
+  return {
+    claude: new Set(),
+    codex: new Set(),
+  };
+}
+
+function createHistoricalDynamicTargetsByPlatform(): HistoricalDynamicTargetsByPlatform {
+  return {
+    claude: new Map(),
+    codex: new Map(),
+  };
+}
+
+function createHistoricalTrackingSummary(): HistoricalTrackingSummary {
+  return {
+    kindsByPlatform: createHistoricalKindsByPlatform(),
+    trackedStaticKindsByPlatform: createHistoricalKindsByPlatform(),
+    trackedDynamicKindsByPlatform: createHistoricalKindsByPlatform(),
+    dynamicTargetsByPlatform: createHistoricalDynamicTargetsByPlatform(),
+    historicalArtifacts: [],
+  };
+}
+
+function inferDynamicManagedKind(target: ArtifactTarget): DynamicArtifactKind {
+  return target === 'codex.agentRole' ? 'codexRole' : 'instruction';
+}
+
+function inferProjectManagedKind(target: ArtifactTarget): CodexProjectManagedKind {
+  return target === 'codex.agentRole' ? 'agent' : 'instruction';
+}
+
+function inferHistoricalExtensionKindFromDynamicTarget(
+  target: ArtifactTarget,
+): HistoricalExtensionKind {
+  return target === 'codex.agentRole' ? 'agent' : 'instruction';
+}
+
+function resolveHistoricalTrackedRoleKey(
+  artifact: Pick<GeneratedArtifact, 'target' | 'roleKey' | 'artifactKey'>,
+): string | undefined {
+  if (artifact.target !== 'codex.agentRole') {
+    return undefined;
+  }
+
+  const roleKey = artifact.roleKey?.trim() || artifact.artifactKey?.trim();
+  return roleKey || undefined;
+}
+
+function appendHistoricalTrackingArtifacts(
+  summary: HistoricalTrackingSummary,
+  artifacts: GeneratedArtifact[],
+  scope: Scope,
+): void {
+  for (const artifact of artifacts) {
+    const normalizedArtifact = artifact.target === 'codex.agentRole'
+      ? {
+          ...artifact,
+          ...(resolveHistoricalTrackedRoleKey(artifact) && !artifact.roleKey
+            ? { roleKey: resolveHistoricalTrackedRoleKey(artifact) }
+            : {}),
+        }
+      : artifact;
+    summary.kindsByPlatform[artifact.platform].add(artifact.kind);
+
+    const artifactId = normalizedArtifact.id;
+    const artifactTarget = normalizedArtifact.target;
+    const dynamicTarget =
+      normalizedArtifact.platform === 'codex' &&
+      artifactId !== undefined &&
+      artifactTarget !== undefined;
+    if (!dynamicTarget) {
+      summary.trackedStaticKindsByPlatform[normalizedArtifact.platform].add(normalizedArtifact.kind);
+      summary.historicalArtifacts.push(structuredClone(normalizedArtifact));
+      continue;
+    }
+
+    const extensionKind = inferHistoricalExtensionKindFromDynamicTarget(artifactTarget);
+    summary.trackedDynamicKindsByPlatform[normalizedArtifact.platform].add(extensionKind);
+    summary.historicalArtifacts.push(structuredClone(normalizedArtifact));
+
+    const dynamicKey = `${normalizedArtifact.platform}:${artifactId}:${artifactTarget}`;
+    if (summary.dynamicTargetsByPlatform[normalizedArtifact.platform].has(dynamicKey)) {
+      continue;
+    }
+
+    const states: PluginArtifactTargetDefinition['states'] = normalizedArtifact.state
+      ? [normalizedArtifact.state]
+      : ['present'];
+    const resolvedRoleKey = resolveHistoricalTrackedRoleKey(normalizedArtifact);
+    summary.dynamicTargetsByPlatform[normalizedArtifact.platform].set(dynamicKey, {
+      id: artifactId,
+      platform: normalizedArtifact.platform,
+      scopes: [scope],
+      target: artifactTarget,
+      kind: inferDynamicManagedKind(artifactTarget),
+      projectManagedKind: inferProjectManagedKind(artifactTarget),
+      states,
+      refreshKeys: normalizedArtifact.refreshKeys ? [...normalizedArtifact.refreshKeys] : [],
+      requiresCodexProjectConfig: true,
+      ...(artifactTarget === 'codex.agentRole' && resolvedRoleKey
+        ? { roleKey: resolvedRoleKey }
+        : {}),
+    });
+  }
+}
+
 function getCodexSnapshotManagedKinds(
   snapshot: CodexCapabilitySnapshot | undefined,
 ): CodexProjectManagedKind[] {
   return normalizeCodexCapabilitySnapshot(snapshot).projectManagedKinds;
 }
 
+function shouldEmitHistoricalPlaceholderKind(
+  kind: HistoricalExtensionKind,
+  platform: PlatformName,
+  summary: HistoricalTrackingSummary,
+): boolean {
+  if (kind === 'agent') {
+    return summary.trackedStaticKindsByPlatform[platform].has('agent');
+  }
+
+  if (kind === 'instruction') {
+    return (
+      summary.trackedStaticKindsByPlatform[platform].has('instruction') ||
+      (
+        summary.kindsByPlatform[platform].has('instruction') &&
+        !summary.trackedDynamicKindsByPlatform[platform].has('instruction')
+      )
+    );
+  }
+
+  return summary.kindsByPlatform[platform].has(kind);
+}
+
 function createHistoricalExtensionKinds(
-  kindsByPlatform: HistoricalManagedKindsByPlatform,
+  summary: HistoricalTrackingSummary,
 ): PluginMeta['manifest']['extensions'] | undefined {
   const hasKind = (kind: HistoricalExtensionKind): boolean =>
-    kindsByPlatform.claude.has(kind) || kindsByPlatform.codex.has(kind);
+    shouldEmitHistoricalPlaceholderKind(kind, 'claude', summary) ||
+    shouldEmitHistoricalPlaceholderKind(kind, 'codex', summary);
   const platformOverrides = (kind: HistoricalExtensionKind) => ({
-    claude: kindsByPlatform.claude.has(kind) ? undefined : null,
-    codex: kindsByPlatform.codex.has(kind) ? undefined : null,
+    claude: shouldEmitHistoricalPlaceholderKind(kind, 'claude', summary) ? undefined : null,
+    codex: shouldEmitHistoricalPlaceholderKind(kind, 'codex', summary) ? undefined : null,
   });
 
-  if (!Object.values(kindsByPlatform).some((kinds) =>
+  if (!Object.values(summary.kindsByPlatform).some((kinds) =>
     [...kinds].some((kind) => isHistoricalExtensionKind(kind)),
   )) {
     return undefined;
@@ -287,33 +430,46 @@ function createHistoricalExtensionKinds(
   };
 }
 
-async function createHistoricalPluginMeta(
+function createHistoricalArtifactTargets(
+  summary: HistoricalTrackingSummary,
+): PluginArtifactTargetDefinition[] | undefined {
+  const targets = [...summary.dynamicTargetsByPlatform.codex.values()]
+    .sort((left, right) =>
+      left.target.localeCompare(right.target) || left.id.localeCompare(right.id),
+    );
+  return targets.length > 0 ? targets : undefined;
+}
+
+export async function createHistoricalPluginTarget(
   cwd: string,
   scope: Scope,
   pluginName: string,
+  embeddedPlugin: PluginMeta | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<PluginMeta> {
-  const ledger = await readInstalledLedger(env);
-  const pluginRecord = ledger.plugins[pluginName];
+  ledger: InstalledLedger | undefined = undefined,
+  hints: {
+    codexNativeManifestPlaceholder?: boolean;
+  } = {},
+): Promise<ResolvedPluginTarget> {
+  const resolvedLedger = ledger ?? await readInstalledLedger(env);
+  const pluginRecord = resolvedLedger.plugins[pluginName];
   const [claudeProjectKey, codexProjectKey] = await Promise.all([
     resolveClaudeProjectKey(cwd),
     resolveCodexProjectKey(cwd),
   ]);
 
-  const trackedKindsByPlatform: HistoricalManagedKindsByPlatform = {
-    claude: new Set(),
-    codex: new Set(),
-  };
+  const trackingSummary = createHistoricalTrackingSummary();
   const [claudeTracking, codexTracking] = await Promise.all([
-    readTrackingManifest(resolveClaudePaths(cwd, scope, env).trackingDir),
-    readTrackingManifest(resolveCodexPaths(cwd, scope, env).trackingDir),
+    readTrackingManifest(resolveClaudePaths(cwd, scope, env).trackingDir).catch(() => undefined),
+    readTrackingManifest(resolveCodexPaths(cwd, scope, env).trackingDir).catch(() => undefined),
   ]);
 
   for (const manifest of [claudeTracking, codexTracking]) {
-    const record = getTrackingRecord(manifest, pluginName);
-    for (const artifact of record?.artifacts ?? []) {
-      trackedKindsByPlatform[artifact.platform].add(artifact.kind);
+    if (!manifest) {
+      continue;
     }
+    const record = getTrackingRecord(manifest, pluginName);
+    appendHistoricalTrackingArtifacts(trackingSummary, record?.artifacts ?? [], scope);
   }
 
   const claudeScopeRecord =
@@ -321,13 +477,13 @@ async function createHistoricalPluginMeta(
       ? pluginRecord?.platforms.claude?.userScope
       : pluginRecord?.platforms.claude?.projectScopes?.[claudeProjectKey];
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('instructions')) {
-    trackedKindsByPlatform.claude.add('instruction');
+    trackingSummary.kindsByPlatform.claude.add('instruction');
   }
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('permissions')) {
-    trackedKindsByPlatform.claude.add('permission');
+    trackingSummary.kindsByPlatform.claude.add('permission');
   }
   if (claudeScopeRecord?.capabilitySnapshot.managedExtensions?.includes('hooks')) {
-    trackedKindsByPlatform.claude.add('hook');
+    trackingSummary.kindsByPlatform.claude.add('hook');
   }
 
   const codexScopeRecord =
@@ -335,40 +491,55 @@ async function createHistoricalPluginMeta(
       ? pluginRecord?.platforms.codex?.userScope
       : pluginRecord?.platforms.codex?.projectScopes?.[codexProjectKey];
   for (const kind of getCodexSnapshotManagedKinds(codexScopeRecord?.capabilitySnapshot)) {
-    trackedKindsByPlatform.codex.add(kind);
+    trackingSummary.kindsByPlatform.codex.add(kind);
   }
 
-  const codexHistoricalKinds = trackedKindsByPlatform.codex;
+  const codexHistoricalKinds = trackingSummary.kindsByPlatform.codex;
   const codexRequiresNativePlugin =
-    codexScopeRecord?.capabilitySnapshot.requiresNativePlugin === true;
+    codexScopeRecord?.capabilitySnapshot.requiresNativePlugin === true ||
+    hints.codexNativeManifestPlaceholder === true;
   const hasCodexNativeManifestPlaceholder =
     codexHistoricalKinds.has('skill') || codexHistoricalKinds.has('mcpServer');
 
   return {
-    rootDir: '',
-    manifestPath: '',
-    manifest: {
-      name: pluginName,
-      version: pluginRecord?.lastResolvedVersion ?? '0.0.0',
-      description: 'Historical managed plugin placeholder.',
-      skills:
-        codexHistoricalKinds.has('skill') ||
-        (codexRequiresNativePlugin && !hasCodexNativeManifestPlaceholder)
-          ? HISTORICAL_SKILLS_PATH
+    pluginName,
+    plugin: {
+      rootDir: '',
+      manifestPath: '',
+      manifest: {
+        name: pluginName,
+        version: pluginRecord?.lastResolvedVersion ?? '0.0.0',
+        description: 'Historical managed plugin placeholder.',
+        skills:
+          codexHistoricalKinds.has('skill') ||
+          (codexRequiresNativePlugin && !hasCodexNativeManifestPlaceholder)
+            ? HISTORICAL_SKILLS_PATH
+            : undefined,
+        mcpServers: codexHistoricalKinds.has('mcpServer')
+          ? HISTORICAL_MCP_SERVERS_PATH
           : undefined,
-      mcpServers: codexHistoricalKinds.has('mcpServer')
-        ? HISTORICAL_MCP_SERVERS_PATH
-        : undefined,
-      marketplace: {
-        category: 'historical',
-        strict: true,
-        policy: {
-          installation: 'HISTORICAL',
-          authentication: 'NONE',
+        marketplace: {
+          category: 'historical',
+          strict: true,
+          policy: {
+            installation: 'HISTORICAL',
+            authentication: 'NONE',
+          },
         },
+        extensions: createHistoricalExtensionKinds(trackingSummary),
+        ...(createHistoricalArtifactTargets(trackingSummary)
+          ? {
+              artifacts: {
+                targets: createHistoricalArtifactTargets(trackingSummary),
+              },
+            }
+          : {}),
       },
-      extensions: createHistoricalExtensionKinds(trackedKindsByPlatform),
     },
+    currentPlugin: undefined,
+    embeddedPlugin,
+    source: 'historical',
+    historicalArtifacts: trackingSummary.historicalArtifacts,
   };
 }
 
@@ -809,6 +980,9 @@ async function loadPluginTargetsForCommandWithCatalog(
   const embeddedPluginMap = new Map(
     embeddedPlugins.map((plugin) => [plugin.manifest.name, plugin]),
   );
+  const ledger = options.allowHistoricalFallback
+    ? await readInstalledLedger(env)
+    : undefined;
   const targets: ResolvedPluginTarget[] = [];
   for (const pluginName of pluginNames) {
     const currentPlugin = catalogMap.get(pluginName);
@@ -827,13 +1001,14 @@ async function loadPluginTargetsForCommandWithCatalog(
       throw new Error(`Unknown plugin "${pluginName}".`);
     }
 
-    targets.push({
+    targets.push(await createHistoricalPluginTarget(
+      cwd,
+      scope,
       pluginName,
-      plugin: await createHistoricalPluginMeta(cwd, scope, pluginName, env),
-      currentPlugin: undefined,
-      embeddedPlugin: embeddedPluginMap.get(pluginName),
-      source: 'historical',
-    });
+      embeddedPluginMap.get(pluginName),
+      env,
+      ledger,
+    ));
   }
 
   return {
@@ -882,7 +1057,20 @@ export function getGeneratedArtifactIdentityRefusal(
     generatedArtifactKindRequiresArtifactKey(artifact.kind) && !artifact.artifactKey,
   );
   if (invalidArtifacts.length === 0) {
-    return null;
+    const unrecoverableRoleArtifacts = plugin.generatedArtifacts.filter((artifact) =>
+      artifact.kind === 'agent' &&
+      artifact.target === 'codex.agentRole' &&
+      !artifact.roleKey &&
+      !artifact.artifactKey,
+    );
+    if (unrecoverableRoleArtifacts.length === 0) {
+      return null;
+    }
+
+    const details = unrecoverableRoleArtifacts
+      .map((artifact) => `${artifact.id ?? 'codex.agentRole'} ${artifact.path}`)
+      .join('；');
+    return `tracking manifest 中存在无法恢复真实 roleKey 的 codex.agentRole 产物（${details}），CLI 不会编造占位 role 名；请先恢复 current catalog 或修复 tracking manifest 后重试。`;
   }
 
   const details = invalidArtifacts
@@ -1289,6 +1477,14 @@ export function formatStatusReports(reports: StatusReport[]): string {
         for (const artifact of plugin.generatedArtifacts) {
           lines.push(
             `      ${artifact.kind}=${artifact.exists ? 'present' : 'missing'} path=${artifact.path}${artifact.artifactKey ? ` artifactKey=${artifact.artifactKey}` : ''}`,
+          );
+        }
+      }
+      if (plugin.managedArtifacts?.length) {
+        lines.push('    managed-artifacts:');
+        for (const artifact of plugin.managedArtifacts) {
+          lines.push(
+            `      target=${artifact.target ?? '-'} id=${artifact.id ?? '-'} health=${artifact.health} visibility=${artifact.sessionVisibility} state=${artifact.state ?? '-'} kind=${artifact.kind} path=${artifact.path}${artifact.roleKey ? ` roleKey=${artifact.roleKey}` : ''}${artifact.artifactKey ? ` artifactKey=${artifact.artifactKey}` : ''}${artifact.configDigest ? ` configDigest=${artifact.configDigest}` : ''}${artifact.currentConfigDigest ? ` currentConfigDigest=${artifact.currentConfigDigest}` : ''}${artifact.contentDigest ? ` contentDigest=${artifact.contentDigest}` : ''}${artifact.currentContentDigest ? ` currentContentDigest=${artifact.currentContentDigest}` : ''}${artifact.diagnostics.length > 0 ? ` diagnostics=${artifact.diagnostics.join(' | ')}` : ''}`,
           );
         }
       }

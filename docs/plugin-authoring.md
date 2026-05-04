@@ -4,12 +4,13 @@
 
 插件源码 manifest 以 `plugins/<name>/.agents-plugin/plugin.json` 为唯一真值，`plugins/marketplace-source.json` 汇总 marketplace 元数据。
 
-- `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明派生能力，不新增顶层 `claude` block
+- `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明简单静态产物，不新增顶层 `claude` block
 - 路径字段（`skills`、`slashCommands`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`
 - `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
-- `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
+- `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
+- `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 ledger snapshot 都以它作为 renderer 执行前的真值
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -25,6 +26,8 @@
 根级 marketplace 也会生成两份镜像：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。CLI 读取时会校验两份 marketplace 内容一致；本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
 
 AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
+
+`scripts.artifacts.render` 和 `artifacts.targets` 也保留在 AW runtime bundle 的源码 manifest 中，但不会写入 Claude/Codex 原生 manifest。平台 manifest 只接收平台能识别的静态能力；动态 artifact 由 AW 在写路径里渲染、校验和落盘。
 
 ## Public Slash Commands
 
@@ -88,15 +91,86 @@ Node 脚本默认只能使用 `node:` 内置模块和插件内相对 import。�
 
 `scripts.timeoutMs` 是插件默认脚本超时；用户可在 `aw install`、`aw upgrade`、`aw uninstall` 上用 `--script-timeout <ms>` 覆盖。有效范围是 `1000..300000` 毫秒。
 
+`scripts.artifacts.render` 用于动态生成 AW 管理的 artifact plan。它只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行；`aw status` 不会执行 renderer，也不会执行 lifecycle。首版 renderer 入口使用 `runner = "node"`，`path` 必须是插件包内的 `./` 相对路径，可选 `args` 会传给脚本。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 context JSON 文件；context 包含 event、platform、scope、插件名/版本/rootDir、artifact render config、changedConfigKeys、previousArtifacts、AW/Codex/Claude home、manifestPath、renderer digest 等信息。
+
+renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败诊断摘要。renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件；它只能返回 plan。AW 会先按 manifest 校验 plan，再由对应 target runtime 统一写盘、回滚、tracking、status 和 uninstall。
+
+示例：
+
+```json
+{
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  }
+}
+```
+
 ## AW Config
 
 `config.schema` 是 AW 自管配置的唯一 schema 真值，独立于 Claude 原生 `userConfig`。`aw config` 可以在插件未安装前写入配置，也可以为未安装的另一层 scope 预置覆盖值；`aw uninstall` 默认保留 AW config store，清理配置要显式运行 `aw config reset <plugin>`。
 
 配置分为 `user` 和 `project` 两层，读取 effective config 时按 `default < user < project` 合并。写命令 `set` / `unset` / `reset` / `configure` 默认写 `user`；读命令 `get` / `list` 默认读 effective config，传 `--scope user|project` 时只看单层 store。project config root 在 git repo 或 workspace 内锚定仓库根；不在仓库内时退回 normalized command `cwd`。
 
+动态 artifact 使用另一套 artifact render config，不能和读命令里的 effective config 混用。user scope artifact 只按 `default < user store` 渲染；project scope artifact 按 `default < user store < 当前 project store` 渲染。这样 project 覆盖只影响当前 repo 的 project artifact，不会进入 user artifact 的内容、digest、stale 判断或 refresh 结果。
+
 `file` / `directory` 类型写入时，相对路径按 AW project root 解析，落盘为 canonical absolute realpath；每次读取 effective config 都会重新校验路径存在且类型正确。失效路径会进入 `invalid-config`，install/upgrade preflight、lifecycle context 和 helper 都会 fail closed。插件名作为 config store 路径段时只允许安全的单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
 
 `scripts.helpers.config` 必须显式声明标准配置 helper。CLI 执行 lifecycle 或 `pnpm plugin:test` 时会通过 `AW_PLUGIN_CONTEXT` 传入已经解析好的 `config.values`、`config.sources` 和 schema；helper 没有 context 时，只读取当前 bundle 邻近的 `.agents-plugin/plugin.json` 来解释 schema/default/redaction。这意味着 helper 的 bundle 视图可能和 `aw config get/list` 的 current catalog 视图短暂不同，这是预期行为。
+
+如果已安装的动态 artifact 在 tracking 中记录了 `refreshKeys`，`aw config set` / `configure` / `unset` / `reset` 写入后会按当前命令能定位到的 scope 自动刷新命中的 artifact。user config 写入会刷新 user target，并在当前 repo 也安装了 project target 时刷新当前 repo；project config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project，tracking 会用 `refreshReach` 记录本次覆盖了 user、当前 project，还是有其它已知 project target 可能仍 stale。刷新失败不会回滚已经写入的 config store，但会把受影响 artifact 标记为最近 refresh failed，`aw status` 和 JSON receipt 会给出稳定诊断。
+
+## Dynamic Artifacts
+
+动态 artifact 适合“内容由配置决定，但写盘仍必须由 AW 管理”的场景。插件用 manifest 的 `artifacts.targets` 声明安装前能力真值，再用 `scripts.artifacts.render` 返回当前 scope 的 `ArtifactPlan`。安装、升级、交互式候选、project write safety preflight、status current catalog 和 ledger `capabilitySnapshot.projectManagedKinds` 都读取 `artifacts.targets`，不能等 renderer 执行后才推断插件能力。
+
+```json
+{
+  "artifacts": {
+    "targets": [
+      {
+        "id": "lightweight-instruction",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.developerInstructionsBlock",
+        "projectManagedKind": "instruction",
+        "states": ["present", "disabled"],
+        "refreshKeys": ["enableLightweightInstruction"],
+        "requiresCodexProjectConfig": true
+      },
+      {
+        "id": "codex-explorer-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["explorerModel"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explorer"
+      }
+    ]
+  }
+}
+```
+
+`ArtifactPlan` 顶层格式为 `{ "version": 1, "artifacts": [...] }`。每个 artifact 的关键字段：
+
+- `id`：插件内稳定 id，只能使用安全字符；`pluginName + id + target` 是 AW 受管 artifact 的逻辑身份
+- `target`：首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`
+- `state`：首版支持 `present` 和 `disabled`；当前 platform/scope 在 manifest 中声明过的动态 artifact 必须返回其中一种状态，不能省略
+- `refreshKeys`：必须完整保留 manifest 中该 artifact 声明的 config key，且 key 必须存在于 `config.schema`
+- `disabledReason`：`state = "disabled"` 时可写，例如 `config`；disabled artifact 可以没有 content，但仍要保留 `refreshKeys`
+
+`codex.developerInstructionsBlock` 写入当前 scope 对应 Codex config 的 AW managed developer instructions block。`present` 需要 `content` 字符串；`disabled` 会移除或跳过该 artifact 对应的受管 instruction，不保留“已禁用”的运行时提示词。project scope 下它的 `projectManagedKind` 应声明为 `instruction`。
+
+`codex.agentRole` 管理 Codex agent role 注册项和 role layer 文件。manifest target 必须静态声明 `roleKey`，用于安装前 role namespace 冲突检查；renderer plan 里的 `roleKey` 必须完全匹配。`present` content 包含 `registration.description` 和 `roleFile`；`registration.config_file` 由 AW 生成，renderer 不能提供。`roleFile.name` 必须等于 `roleKey`，可包含 Codex-only 的 `model` 和 `model_reasoning_effort`。project scope 下它的 `projectManagedKind` 应声明为 `agent`，不要把内部 `kind = "codexRole"` 写入 capability snapshot。
+
+静态 `extensions.*` 仍然适合不依赖 AW config 动态切换的简单产物，例如固定 instructions、permissions、hooks、native hooks 或 agent 文件。已有静态插件不需要迁移到 renderer；只有当产物内容、启用状态或 role 注册需要随 AW config 刷新时，才应使用动态 artifact。
 
 ## Plugin Script Tests
 

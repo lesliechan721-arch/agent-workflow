@@ -6,6 +6,7 @@
 
 - 插件需要跨 Claude Code 和 Codex 共享配置，例如 API Key、模式开关、工作目录或文件路径。
 - 插件安装、升级、卸载时需要创建或清理 AW 受管状态。
+- 插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role。
 - Claude 命令结果填充、lifecycle 或测试脚本需要读取同一份 AW config。
 - 插件包含 Node runtime helper、lifecycle 或测试，需要用 `pnpm plugin:test` 验证。
 
@@ -124,6 +125,84 @@ helper 的读取路径分两种：
 无 context fallback 使用的是“当前 bundle 视图”，而 `aw config get/list` 使用的是“当前 catalog 视图”。升级或刷新过程中两者可能短暂不同，这是预期行为。helper 找不到 bundle manifest、manifest 损坏或 schema 校验失败时必须 fail closed，不能回退到 current catalog，也不能 schema-less 读取 raw store。
 
 `get` 输出原始值，供脚本使用；`json` 同时包含 `values` 和 `redactedValues`。调试、日志和错误消息应优先使用 `redactedValues`。
+
+## 动态 Artifact Renderer
+
+动态 artifact 用于“产物内容或启用状态由 AW config 决定，但写盘必须由 AW 管理”的 Codex 能力。首版 target 只有：
+
+- `codex.developerInstructionsBlock`：写入当前 scope 的 Codex AW managed developer instructions block。
+- `codex.agentRole`：写入 role layer 文件，并在当前 scope Codex config 中注册 `[agents.<roleKey>]`。
+
+manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`。`artifacts.targets` 是安装前能力真值，负责 installability、project preflight、status current catalog 和 ledger snapshot；renderer 只负责根据当前 config 输出 `ArtifactPlan`。
+
+```json
+{
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  }
+}
+```
+
+renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行。`aw status` 不执行 renderer，也不执行 lifecycle。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
+
+- `event`、`platform`、`scope`
+- 插件 `name`、`version`、`rootDir`、`manifestPath`
+- `artifactRenderConfig.values`，以及兼容字段 `renderConfig.values`
+- `changedConfigKeys`，仅 refresh 事件表示本次命中的配置 key
+- `previousArtifacts`、AW/Codex/Claude home 和 renderer digest 等诊断信息
+
+artifact render config 和 `aw config get/list` 的 effective config 不同：
+
+- user scope artifact 只按 `schema default < user store` 渲染。
+- project scope artifact 按 `schema default < user store < 当前 project store` 渲染。
+- project config 不会影响 user artifact 的内容、digest、stale 判断或 refresh 结果。
+
+renderer stdout 必须只输出 JSON：
+
+```json
+{
+  "version": 1,
+  "artifacts": [
+    {
+      "id": "lightweight-instruction",
+      "kind": "instruction",
+      "platform": "codex",
+      "target": "codex.developerInstructionsBlock",
+      "state": "present",
+      "refreshKeys": ["enableInstruction"],
+      "content": "Use the explorer role for read-only codebase exploration."
+    },
+    {
+      "id": "codex-explorer-role",
+      "kind": "codexRole",
+      "platform": "codex",
+      "target": "codex.agentRole",
+      "state": "present",
+      "roleKey": "codex-explorer",
+      "refreshKeys": ["explorerModel"],
+      "content": {
+        "registration": { "description": "Read-only explorer role." },
+        "roleFile": {
+          "name": "codex-explorer",
+          "description": "Read-only explorer role.",
+          "developer_instructions": "Read only. Do not edit files."
+        }
+      }
+    }
+  ]
+}
+```
+
+`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+
+renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。写盘、回滚、tracking、status 和 uninstall 都集中在 AW target apply。
+
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入刷新 user target，并在当前 repo 安装了 project target 时刷新当前 repo；project config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project，tracking 会用 `refreshReach` 记录本次刷新范围和其它已知 project target 是否可能 stale。refresh 失败不会回滚已经写入的 config store，但 `lastRefresh` 会记录失败摘要，`aw status` 和 JSON receipt 会显示 recent refresh failed。
 
 ## Lifecycle
 

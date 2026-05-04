@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { detectCodexExternalOwnership } from '../adapters/helpers.js';
+import { buildGeneratedName } from '../generators/shared.js';
 import type {
   GeneratedArtifact,
   PlatformName,
@@ -13,9 +14,15 @@ import type {
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
   collectDesiredCodexProjectRepoArtifacts,
+  getCodexDynamicArtifactTargets,
   needsCodexProjectConfigAccess,
   type CodexProjectRepoArtifact,
 } from '../utils/codex-project-surface.js';
+import {
+  findCodexRoleNameConflict,
+  resolveCodexRoleNamespace,
+  type CodexResolvedRole,
+} from '../utils/codex-roles.js';
 import { resolveCodexPaths, resolveRepoRoot } from '../utils/paths.js';
 import {
   getTrackingArtifactIntegrityErrors,
@@ -37,6 +44,7 @@ export class CodexProjectWriteSafetyError extends Error {
     | 'codexProjectUserConfigUnreadable'
     | 'externalOwnershipPresent'
     | 'projectConfigUnreadable'
+    | 'roleNameConflict'
     | 'trackingIntegrityError'
     | 'unmanagedRepoArtifactConflict'
     | 'catalogNotCurrent';
@@ -70,6 +78,10 @@ function codexProjectPlatformsSelected(
   scope: Scope,
 ): boolean {
   return scope === 'project' && platforms.includes('codex');
+}
+
+function codexPlatformsSelected(platforms: PlatformName[]): boolean {
+  return platforms.includes('codex');
 }
 
 export function isCodexProjectWriteSafetyError(
@@ -150,6 +162,20 @@ function createProjectConfigUnreadableError(
   );
 }
 
+function createRoleNamespaceUnreadableError(
+  configPath: string,
+  scope: Scope,
+  pluginName: string,
+  error: unknown,
+): CodexProjectWriteSafetyError {
+  const detail = error instanceof Error ? error.message : String(error);
+  const scopeLabel = scope === 'user' ? '用户级' : '项目级';
+  return new CodexProjectWriteSafetyError(
+    'projectConfigUnreadable',
+    `无法完成 Codex role 冲突预检：${scopeLabel} Codex 配置 ${configPath} 无法解析，而 ${pluginName} 需要读取该 layer 的 role namespace。${detail}`,
+  );
+}
+
 function createStatusProjectConfigUnreadableError(
   configPath: string,
   pluginName: string,
@@ -167,6 +193,46 @@ function createExternalOwnershipPresentError(
   return new CodexProjectWriteSafetyError(
     'externalOwnershipPresent',
     detail,
+  );
+}
+
+function describeCodexRoleConflictSource(
+  layerRoot: string,
+  role: CodexResolvedRole,
+): string {
+  if (role.source === 'registration') {
+    const parts = [`[agents.${role.tableKey ?? role.finalName}]`];
+    if (role.roleLayerPath) {
+      parts.push(
+        `config_file=${JSON.stringify(path.relative(layerRoot, role.roleLayerPath) || path.basename(role.roleLayerPath))}`,
+      );
+    }
+    return parts.join(' ');
+  }
+
+  if (role.roleLayerPath) {
+    return path.relative(layerRoot, role.roleLayerPath) || path.basename(role.roleLayerPath);
+  }
+
+  return role.finalName;
+}
+
+function createRoleNameConflictError(options: {
+  pluginName: string;
+  scope: Scope;
+  roleName: string;
+  configPath: string;
+  matches: CodexResolvedRole[];
+}): CodexProjectWriteSafetyError {
+  const scopeLabel = options.scope === 'user' ? '用户级' : '项目级';
+  const layerRoot = path.dirname(options.configPath);
+  const conflictSources = options.matches
+    .map((match) => describeCodexRoleConflictSource(layerRoot, match))
+    .join('；');
+
+  return new CodexProjectWriteSafetyError(
+    'roleNameConflict',
+    `无法完成 Codex role 冲突预检：${scopeLabel} Codex 配置层里已经存在最终 role 名为 "${options.roleName}" 的非 AW 受管角色（${conflictSources}），${options.pluginName} 不能继续写入同名 role。`,
   );
 }
 
@@ -205,6 +271,104 @@ async function readProjectTrackingManifest(
       'trackingIntegrityError',
       `无法读取 Codex project tracking manifest（${trackingDir}）：${detail}`,
     );
+  }
+}
+
+function resolvePreflightPlugin(
+  target: ResolvedPluginTarget,
+  operation: 'install' | 'upgrade' | 'refresh',
+): PluginMeta {
+  if (operation !== 'install' && !target.currentPlugin) {
+    throw new CodexProjectWriteSafetyError(
+      'catalogNotCurrent',
+      `${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`,
+    );
+  }
+
+  return target.currentPlugin ?? target.plugin;
+}
+
+function collectStaticCodexRoleKeys(
+  plugin: PluginMeta,
+  scope: Scope,
+): string[] {
+  const roleKeys = new Set<string>();
+  for (const target of getCodexDynamicArtifactTargets(plugin, { scope })) {
+    if (target.target !== 'codex.agentRole' || !target.roleKey) {
+      continue;
+    }
+    roleKeys.add(target.roleKey);
+  }
+
+  return [...roleKeys].sort();
+}
+
+function resolveManagedRoleLayerPath(
+  configPath: string,
+  pluginName: string,
+  roleKey: string,
+): string {
+  return path.join(
+    path.dirname(configPath),
+    'agents',
+    `${buildGeneratedName(pluginName, roleKey)}.toml`,
+  );
+}
+
+async function preflightCodexRoleWriteSafety(options: {
+  targets: ResolvedPluginTarget[];
+  platforms: PlatformName[];
+  cwd: string;
+  scope: Scope;
+  env?: NodeJS.ProcessEnv;
+  operation: 'install' | 'upgrade' | 'refresh';
+}): Promise<void> {
+  if (!codexPlatformsSelected(options.platforms)) {
+    return;
+  }
+
+  const env = options.env ?? process.env;
+  const configPath = resolveCodexPaths(options.cwd, options.scope, env).configTomlPath;
+
+  for (const target of options.targets) {
+    const plugin = resolvePreflightPlugin(target, options.operation);
+    const roleKeys = collectStaticCodexRoleKeys(plugin, options.scope);
+    if (roleKeys.length === 0) {
+      continue;
+    }
+
+    let namespace: Awaited<ReturnType<typeof resolveCodexRoleNamespace>>;
+    try {
+      namespace = await resolveCodexRoleNamespace(configPath, {
+        strict: true,
+        awManagedTableKeys: roleKeys,
+        awManagedRoleLayerPaths: roleKeys.map((roleKey) =>
+          resolveManagedRoleLayerPath(configPath, plugin.manifest.name, roleKey)
+        ),
+      });
+    } catch (error) {
+      throw createRoleNamespaceUnreadableError(
+        configPath,
+        options.scope,
+        target.pluginName,
+        error,
+      );
+    }
+
+    for (const roleKey of roleKeys) {
+      const conflict = findCodexRoleNameConflict(namespace, roleKey);
+      if (!conflict?.conflict) {
+        continue;
+      }
+
+      throw createRoleNameConflictError({
+        pluginName: target.pluginName,
+        scope: options.scope,
+        roleName: roleKey,
+        configPath,
+        matches: conflict.externalMatches,
+      });
+    }
   }
 }
 
@@ -284,8 +448,10 @@ export async function preflightCodexProjectWriteSafety(options: {
   cwd: string;
   scope: Scope;
   env?: NodeJS.ProcessEnv;
-  operation: 'install' | 'upgrade';
+  operation: 'install' | 'upgrade' | 'refresh';
 }): Promise<void> {
+  await preflightCodexRoleWriteSafety(options);
+
   if (!codexProjectPlatformsSelected(options.platforms, options.scope)) {
     return;
   }
@@ -305,13 +471,7 @@ export async function preflightCodexProjectWriteSafety(options: {
   let projectConfigSnapshot: Awaited<ReturnType<typeof readCodexConfigFile>>['snapshot'] | undefined;
 
   for (const target of options.targets) {
-    const plugin = target.currentPlugin ?? target.plugin;
-    if (options.operation === 'upgrade' && !target.currentPlugin) {
-      throw new CodexProjectWriteSafetyError(
-        'catalogNotCurrent',
-        `${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`,
-      );
-    }
+    const plugin = resolvePreflightPlugin(target, options.operation);
 
     const externalOwnership = detectCodexExternalOwnership(
       userConfig.snapshot.plugins,

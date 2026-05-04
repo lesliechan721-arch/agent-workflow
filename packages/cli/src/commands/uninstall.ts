@@ -375,6 +375,32 @@ function shouldRematerializeSkillTriggersAfterUninstall(
   return target.source === 'currentCatalog' && Boolean(target.embeddedPlugin?.manifest.skills);
 }
 
+function normalizeGeneratedArtifactForUninstall(
+  platform: PlatformName,
+  artifact: PluginStatusReport['generatedArtifacts'][number],
+): GeneratedArtifact {
+  return {
+    path: artifact.path,
+    kind: artifact.kind,
+    platform,
+    ...(artifact.hookGroups === undefined
+      ? {}
+      : { hookGroups: structuredClone(artifact.hookGroups) }),
+    ...(artifact.paths === undefined ? {} : { paths: [...artifact.paths] }),
+    ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+    ...(artifact.id === undefined ? {} : { id: artifact.id }),
+    ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.disabledReason === undefined ? {} : { disabledReason: artifact.disabledReason }),
+    ...(artifact.refreshKeys === undefined ? {} : { refreshKeys: [...artifact.refreshKeys] }),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
+    ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
+    ...(artifact.lastRefresh === undefined ? {} : { lastRefresh: structuredClone(artifact.lastRefresh) }),
+    ...(artifact.refreshReach === undefined ? {} : { refreshReach: structuredClone(artifact.refreshReach) }),
+  };
+}
+
 function cloneClaudePermissionState(
   permissions:
     | ClaudePermissionState
@@ -669,7 +695,12 @@ export async function uninstallTargetsOnPlatforms(
 
         if (managedEvidence) {
           artifactsWritten = true;
-          await adapters[platform].uninstallExtensions(target.plugin, options.scope);
+          await adapters[platform].uninstallExtensions(
+            target.plugin,
+            options.scope,
+            pluginStatus.generatedArtifacts.map((artifact) =>
+              normalizeGeneratedArtifactForUninstall(platform, artifact)),
+          );
 
           trackingWriteAttempted = true;
           await writeTrackingManifest(

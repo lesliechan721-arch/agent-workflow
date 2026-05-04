@@ -25,6 +25,7 @@ import type {
 } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
+  resolveCodexProjectKey,
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
@@ -235,6 +236,58 @@ describe('Codex project installability', () => {
       installable: true,
       managedKinds: ['instruction'],
     });
+    expect(getCodexProjectInstallability(createPlugin({
+      skills: './skills',
+      config: {
+        schema: {
+          enableLightweightInstruction: {
+            type: 'boolean',
+            default: true,
+          },
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+          modelReasoningEffort: {
+            type: 'enum',
+            values: ['low', 'medium', 'high', 'xhigh'],
+            default: 'medium',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.developerInstructionsBlock',
+            projectManagedKind: 'instruction',
+            states: ['present', 'disabled'],
+            refreshKeys: [
+              'enableLightweightInstruction',
+              'explorerModel',
+              'modelReasoningEffort',
+            ],
+            requiresCodexProjectConfig: true,
+          },
+          {
+            id: 'codex-explorer-role',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.agentRole',
+            projectManagedKind: 'agent',
+            states: ['present'],
+            refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+            requiresCodexProjectConfig: true,
+            roleKey: 'codex-explorer',
+          },
+        ],
+      },
+    }))).toMatchObject({
+      installable: true,
+      managedKinds: ['skill', 'instruction', 'agent'],
+    });
   });
 
   it('fails apps and native-only Codex project installs before writing state', async () => {
@@ -328,6 +381,45 @@ describe('Codex project installability', () => {
 
     expect(codex.nativeInstallCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual(['mcp-only:project']);
+  });
+
+  it('records dynamic artifact metadata in the project capability snapshot before renderer execution', async () => {
+    const workspace = await makeWorkspace(['dynamic-artifacts']);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.PATH = '';
+    const codex = new RecordingAdapter('codex', workspace.repoRoot);
+    const claude = new RecordingAdapter('claude', workspace.repoRoot);
+
+    await expect(
+      installCommand(
+        ['dynamic-artifacts'],
+        {
+          cwd: workspace.repoRoot,
+          platform: 'codex',
+          scope: 'project',
+        },
+        {
+          env: workspace.env,
+          adapters: { codex, claude },
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['dynamic-artifacts'],
+    });
+
+    expect(codex.nativeInstallCalls).toEqual([]);
+    expect(codex.extensionInstallCalls).toEqual(['dynamic-artifacts:project']);
+
+    const ledger = await readInstalledLedger(workspace.env);
+    const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
+    expect(
+      ledger.plugins['dynamic-artifacts'].platforms.codex?.projectScopes?.[projectKey]?.capabilitySnapshot,
+    ).toMatchObject({
+      requiresNativePlugin: false,
+      hasRepoManagedArtifacts: true,
+      projectManagedKinds: ['skill', 'instruction', 'agent'],
+    });
   });
 
   it('uses a read-only catalog for Codex project-only install without creating shared runtime', async () => {

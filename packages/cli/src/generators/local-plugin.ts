@@ -332,6 +332,21 @@ function addHelperRuntimeEntries(
   nodeEntries.add(filePath);
 }
 
+function addArtifactRendererRuntimeEntry(
+  plugin: PluginMeta,
+  rootFiles: Set<string>,
+  nodeEntries: Set<string>,
+): void {
+  const renderer = plugin.manifest.scripts?.artifacts?.render;
+  if (!renderer) {
+    return;
+  }
+
+  const filePath = stripDotSlash(renderer.path);
+  rootFiles.add(filePath);
+  nodeEntries.add(filePath);
+}
+
 async function readJsonObject(filePath: string, fieldName: string): Promise<Record<string, unknown>> {
   const content = await fs.readJson(filePath);
   if (!content || typeof content !== 'object' || Array.isArray(content)) {
@@ -406,6 +421,7 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   const nodeEntries = new Set<string>();
   addLifecycleRuntimeEntries(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
+  addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
 
   for (const filePath of await collectRuntimeClosureFiles(plugin, [...nodeEntries])) {
     rootFiles.add(filePath);

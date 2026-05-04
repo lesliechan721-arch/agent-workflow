@@ -551,8 +551,6 @@ export async function installTargetsOnPlatforms(
         platform,
         target.pluginName,
       );
-      const hasProvidedUpgradeRollbackBaseline =
-        runtime.upgradeRollbackBaselines?.has(upgradeRollbackBaselineKey) === true;
       const upgradeRollbackBaseline = isCodexProjectUpgrade
         ? runtime.upgradeRollbackBaselines?.get(upgradeRollbackBaselineKey) ?? {
             artifactRollbackState: pluginStatus && (
@@ -597,14 +595,6 @@ export async function installTargetsOnPlatforms(
       let lifecycleConfigSnapshot: LifecycleConfigSnapshotMetadata | undefined;
 
       try {
-        lifecycleConfigSnapshot = await createLifecycleConfigSnapshot({
-          plugin: target.currentPlugin,
-          platform,
-          scope: options.scope,
-          cwd: options.cwd,
-          env,
-        });
-
         if (materializeSkillTriggers) {
           const [embeddedRoot, writtenScope] = await Promise.all([
             resolveEmbeddedPluginsRoot(),
@@ -701,7 +691,9 @@ export async function installTargetsOnPlatforms(
             trackingDir,
           },
         });
-        generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope);
+        generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope, {
+          event: operation,
+        });
         trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
         repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
         artifactsWritten = trackedArtifacts.length > 0;
@@ -716,6 +708,14 @@ export async function installTargetsOnPlatforms(
               path: artifact.path,
             })),
           },
+        });
+
+        lifecycleConfigSnapshot = await createLifecycleConfigSnapshot({
+          plugin: target.currentPlugin,
+          platform,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
         });
 
         await runLifecycleScript({
@@ -756,6 +756,7 @@ export async function installTargetsOnPlatforms(
               env,
               pluginName: target.currentPlugin.manifest.name,
               artifacts: staleArtifacts,
+              preservedArtifacts: trackedArtifacts,
             });
             await emitCommandEvent(context, {
               type: 'artifacts:pruned',
@@ -956,7 +957,6 @@ export async function installTargetsOnPlatforms(
         const shouldAttemptUpgradeBaselineRestore = Boolean(
           upgradeRollbackBaseline &&
           (
-            hasProvidedUpgradeRollbackBaseline ||
             nativeWritten ||
             artifactsWritten ||
             trackingWriteAttempted ||

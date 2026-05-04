@@ -71,12 +71,26 @@ plugins/<name>/
 
 **先读**：`references/aw-scripts-config-lifecycle.md` → `references/plugin-manifest-spec.md` 的 `scripts / config block`。可用脚手架 `--with-config-api` / `--with-lifecycle` 生成样板。
 
+### 场景 E：Codex 动态 Artifact 插件
+
+插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role，并在 `aw config set/configure/unset/reset` 后自动刷新。
+
+```text
+plugins/<name>/
+├── .agents-plugin/plugin.json      # scripts.artifacts.render + artifacts.targets
+└── scripts/
+    └── render-artifacts.mjs        # stdout 输出 ArtifactPlan JSON
+```
+
+**先读**：`references/plugin-manifest-spec.md` 的 `artifacts.targets` → `references/aw-scripts-config-lifecycle.md` 的动态 Artifact Renderer → `references/extensions-spec.md` 的静态 / 动态边界。
+
 ## 能力速查
 
 | 能力 | 平台 | 配置位置 | 细节 |
 |------|------|----------|------|
 | Skills | 双平台 | `skills/`、`SKILL.md`、`agents/openai.yaml` | `references/skills-and-triggers.md` |
 | Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
+| Dynamic Artifacts | Codex | `artifacts.targets`、`scripts.artifacts.render` | `references/plugin-manifest-spec.md`、`references/aw-scripts-config-lifecycle.md` |
 | MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
 | Public Slash Commands | 双平台 | `slashCommands`、`slash-commands/`、`slash-commands/assets/` | `references/slash-commands.md` |
@@ -99,6 +113,7 @@ plugins/<name>/
    - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
+   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；renderer 只输出 `ArtifactPlan`，不要直接写 `.codex/config.toml`、`.codex/agents/*.toml`、tracking 或 ledger
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
 8. **测试**：插件内 Node 脚本用 `pnpm plugin:test <plugin>`；改到 manifest、bundle 或安装逻辑时，再运行相关 `pnpm test:*`。
@@ -139,6 +154,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `slashCommands` 的 Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
+- Codex 动态 artifact 插件必须显式声明 `marketplace.policy.products: ["CODEX"]`；`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
+- `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh 写路径执行，`aw status` 不执行 renderer。
 - 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
 - 插件内 Node 脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 - lifecycle 支持 Node 和受控 shell 文件，不支持内联 shell 命令；Windows 优先写 Node 入口，或单独提供 `.ps1` / `.cmd`。

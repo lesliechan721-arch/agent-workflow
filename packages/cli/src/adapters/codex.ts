@@ -20,9 +20,11 @@ import type {
   GeneratedArtifactStatus,
   InstalledLedger,
   InstalledScopeRecord,
+  ManagedArtifactStatus,
   MarketplaceRootResolution,
   MarketplaceSourceStatus,
   PlatformAdapter,
+  PluginArtifactTargetDefinition,
   PluginMeta,
   PluginStatusReport,
   ProjectTrust,
@@ -47,6 +49,7 @@ import {
 } from '../utils/detect.js';
 import {
   applyCodexConfigTransactionFile,
+  type CodexAgentRegistrationConfig,
   type CodexMcpServerConfig,
   type CodexConfigSnapshot,
   readCodexConfigFile,
@@ -62,6 +65,20 @@ import {
   resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
 } from '../utils/local-marketplace.js';
+import {
+  resolveArtifactRenderConfig,
+  runArtifactRenderer,
+} from '../utils/artifact-renderer.js';
+import {
+  createArtifactConfigDigest,
+  validateArtifactPlan,
+} from '../utils/artifact-plan.js';
+import {
+  diagnoseCodexRoleVisibility,
+  getCodexRoleDescriptionMismatch,
+  planCodexManagedRoleRemoval,
+  resolveCodexRoleNamespace,
+} from '../utils/codex-roles.js';
 import { writeJsonFile } from '../utils/json.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { readMarketplaceManifest } from '../utils/marketplace.js';
@@ -83,6 +100,8 @@ import {
 } from '../utils/rendered-contract.js';
 import {
   attachGeneratedArtifactsToError,
+  createGeneratedArtifactContentDigest,
+  getGeneratedArtifactIdentityKey,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
 import {
@@ -121,6 +140,10 @@ import {
   type NativeCliInvocation,
   type NativeCliRunner,
 } from '../utils/native-cli.js';
+import {
+  calculateFileDigest,
+  resolveBundledPluginFilePath,
+} from '../utils/plugin-scripts.js';
 import { detectCodexExternalOwnership } from './helpers.js';
 import {
   preflightCodexProjectStatusProjectConfig,
@@ -287,6 +310,7 @@ function createEmptyCodexConfigSnapshot(): CodexConfigSnapshot {
     marketplaces: {},
     plugins: {},
     projects: {},
+    agents: {},
     mcpServers: {},
     developerInstructions: {
       defined: false,
@@ -342,6 +366,65 @@ async function writeTextArtifact(
   await fs.ensureDir(path.dirname(targetPath));
   await fs.writeFile(targetPath, content, 'utf8');
   return targetPath;
+}
+
+function renderCodexRoleTomlString(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.includes('\n')) {
+    const escaped = trimmed
+      .replace(/\\/g, '\\\\')
+      .replace(/"""/g, '\\"\\"\\"');
+    return `"""\n${escaped}\n"""`;
+  }
+
+  return JSON.stringify(trimmed);
+}
+
+function normalizeCodexRelativePath(filePath: string): string {
+  return filePath.split(path.sep).join('/');
+}
+
+function getManagedCodexRoleLayerPath(
+  configDir: string,
+  pluginName: string,
+  roleKey: string,
+): string {
+  return path.join(configDir, 'agents', `${buildGeneratedName(pluginName, roleKey)}.toml`);
+}
+
+function renderManagedCodexRoleFile(options: {
+  roleKey: string;
+  description: string;
+  developerInstructions: string;
+  model?: string;
+  modelReasoningEffort?: string;
+}): string {
+  return [
+    `name = ${renderCodexRoleTomlString(options.roleKey)}`,
+    `description = ${renderCodexRoleTomlString(options.description)}`,
+    `developer_instructions = ${renderCodexRoleTomlString(options.developerInstructions)}`,
+    ...(options.model ? [`model = ${renderCodexRoleTomlString(options.model)}`] : []),
+    ...(options.modelReasoningEffort
+      ? [`model_reasoning_effort = ${renderCodexRoleTomlString(options.modelReasoningEffort)}`]
+      : []),
+    '',
+  ].join('\n');
+}
+
+function buildGeneratedArtifactPaths(...artifactPaths: string[]): string[] {
+  const output: string[] = [];
+  const seen = new Set<string>();
+
+  for (const artifactPath of artifactPaths) {
+    const normalizedPath = path.normalize(artifactPath);
+    if (seen.has(normalizedPath)) {
+      continue;
+    }
+    seen.add(normalizedPath);
+    output.push(artifactPath);
+  }
+
+  return output;
 }
 
 function getRepoSkillsRoot(repoRoot: string): string {
@@ -625,6 +708,7 @@ export async function pruneCodexTrackedArtifacts(options: {
   env?: NodeJS.ProcessEnv;
   pluginName: string;
   artifacts: GeneratedArtifact[];
+  preservedArtifacts?: GeneratedArtifact[];
 }): Promise<void> {
   const trackingRecord = options.artifacts.length > 0
     ? {
@@ -639,6 +723,7 @@ export async function pruneCodexTrackedArtifacts(options: {
     env: options.env ?? process.env,
     pluginName: options.pluginName,
     trackingRecord,
+    preservedArtifacts: options.preservedArtifacts,
   });
 }
 
@@ -690,7 +775,43 @@ function createTrackingRecordFromArtifacts(
   trackingRecord: TrackingPluginRecord | undefined,
   generatedArtifacts: GeneratedArtifact[],
 ): TrackingPluginRecord | undefined {
-  const artifacts = mergeGeneratedArtifacts(trackingRecord?.artifacts, generatedArtifacts);
+  const previousArtifacts = trackingRecord?.artifacts ?? [];
+  const nextArtifacts = generatedArtifacts.map((artifact) => {
+    const previousArtifact = previousArtifacts.find((candidate) => {
+      if (
+        artifact.id &&
+        artifact.target &&
+        candidate.id === artifact.id &&
+        candidate.target === artifact.target &&
+        candidate.platform === artifact.platform
+      ) {
+        return true;
+      }
+
+      if (
+        (artifact.kind === 'skill' || artifact.kind === 'mcpServer') &&
+        artifact.artifactKey &&
+        candidate.kind === artifact.kind &&
+        candidate.platform === artifact.platform &&
+        candidate.artifactKey === artifact.artifactKey
+      ) {
+        return true;
+      }
+
+      return getGeneratedArtifactIdentityKey(candidate) === getGeneratedArtifactIdentityKey(artifact);
+    });
+
+    return previousArtifact
+      ? {
+          ...previousArtifact,
+          ...artifact,
+        }
+      : artifact;
+  });
+  const artifacts = mergeGeneratedArtifacts(
+    previousArtifacts,
+    nextArtifacts,
+  );
   if (artifacts.length === 0) {
     return undefined;
   }
@@ -708,12 +829,32 @@ async function pruneTrackedCodexArtifacts(options: {
   env: NodeJS.ProcessEnv;
   pluginName: string;
   trackingRecord: TrackingPluginRecord | undefined;
+  preservedArtifacts?: GeneratedArtifact[];
   rollbackBaseline?: { path: string; content: string | null };
+  roleFileRollbackBaselines?: Map<string, TextFileRollbackBaseline>;
 }): Promise<void> {
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
+  const trackedRoleArtifacts = readTrackedCodexRoleArtifacts(options.trackingRecord);
+  const preservedRoleArtifacts = readTrackedCodexRoleArtifacts(
+    options.preservedArtifacts?.length
+      ? {
+          name: options.pluginName,
+          generatedAt: new Date(0).toISOString(),
+          artifacts: options.preservedArtifacts,
+        }
+      : undefined,
+  );
+  const roleFileRollbackBaselines = options.roleFileRollbackBaselines ?? new Map();
+  const restoringRoleFiles = Boolean(options.rollbackBaseline) || roleFileRollbackBaselines.size > 0;
   if (options.trackingRecord) {
     for (const artifact of options.trackingRecord.artifacts) {
-      if (artifact.kind === 'permission' || artifact.kind === 'agent' || artifact.kind === 'skill') {
+      const managedRoleArtifact =
+        artifact.kind === 'agent' &&
+        trackedRoleArtifacts.some((entry) =>
+          entry.path === artifact.path &&
+          entry.artifactKey === resolveCodexRoleIdentity(artifact),
+        );
+      if (artifact.kind === 'permission' || artifact.kind === 'skill' || (artifact.kind === 'agent' && !managedRoleArtifact)) {
         if (artifact.kind === 'skill' && !artifact.artifactKey) {
           throw new Error(
             `tracking manifest 中的 skill 缺少 artifactKey，不能对 ${artifact.path} 执行 path-only 删除。`,
@@ -733,6 +874,7 @@ async function pruneTrackedCodexArtifacts(options: {
     }
   } else {
     const trackedInstruction = options.trackingRecord?.artifacts.some((artifact) => artifact.kind === 'instruction');
+    const preservedInstruction = options.preservedArtifacts?.some((artifact) => artifact.kind === 'instruction') ?? false;
     const trackedMcpArtifacts = readTrackedCodexMcpArtifacts(options.trackingRecord);
     if (trackedMcpArtifacts.some((artifact) => !artifact.artifactKey)) {
       throw new Error(
@@ -740,9 +882,9 @@ async function pruneTrackedCodexArtifacts(options: {
       );
     }
 
-    if (trackedInstruction || trackedMcpArtifacts.length > 0) {
+    if ((trackedInstruction && !preservedInstruction) || trackedMcpArtifacts.length > 0) {
       await applyCodexConfigTransactionFile(paths.configTomlPath, {
-        ...(trackedInstruction
+        ...((trackedInstruction && !preservedInstruction)
           ? { removeManagedInstructionPluginName: options.pluginName }
           : {}),
         ...(trackedMcpArtifacts.length > 0
@@ -752,6 +894,39 @@ async function pruneTrackedCodexArtifacts(options: {
                 .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
             }
           : {}),
+      });
+    }
+  }
+
+  if (trackedRoleArtifacts.length > 0) {
+    const staleRoleArtifacts = trackedRoleArtifacts.filter((artifact) =>
+      !preservedRoleArtifacts.some((preserved) =>
+        path.normalize(preserved.path) === path.normalize(artifact.path) ||
+        preserved.artifactKey === artifact.artifactKey,
+      ),
+    );
+    for (const artifact of staleRoleArtifacts) {
+      if (restoringRoleFiles) {
+        const baseline = roleFileRollbackBaselines.get(path.normalize(artifact.path));
+        if (baseline) {
+          await restoreTextFileRollbackBaseline(baseline);
+        } else if (options.rollbackBaseline) {
+          await fs.remove(artifact.path);
+        }
+        continue;
+      }
+
+      const removalPlan = planCodexManagedRoleRemoval({
+        content: (await readCodexConfigFile(paths.configTomlPath)).content,
+        configPath: paths.configTomlPath,
+        roleKey: artifact.artifactKey,
+        managedRoleLayerPath: artifact.path,
+      });
+      await fs.remove(removalPlan.roleLayerPathToDelete);
+    }
+    if (!restoringRoleFiles && staleRoleArtifacts.length > 0) {
+      await applyCodexConfigTransactionFile(paths.configTomlPath, {
+        removeAgentRegistrations: staleRoleArtifacts.map((artifact) => artifact.artifactKey),
       });
     }
   }
@@ -960,12 +1135,22 @@ async function syncCodexHooks(
 }
 
 const CODEX_CONFIG_ROLLBACK_BASELINE = Symbol('codexConfigRollbackBaseline');
+const CODEX_ROLE_FILE_ROLLBACK_BASELINES = Symbol('codexRoleFileRollbackBaselines');
 
 type GeneratedArtifactWithCodexRollbackBaseline = GeneratedArtifact & {
   [CODEX_CONFIG_ROLLBACK_BASELINE]?: {
     path: string;
     content: string | null;
   };
+};
+
+interface TextFileRollbackBaseline {
+  path: string;
+  content: string | null;
+}
+
+type GeneratedArtifactWithCodexRoleFileRollbackBaselines = GeneratedArtifact & {
+  [CODEX_ROLE_FILE_ROLLBACK_BASELINES]?: TextFileRollbackBaseline[];
 };
 
 function attachCodexConfigRollbackBaseline(
@@ -975,13 +1160,32 @@ function attachCodexConfigRollbackBaseline(
   for (const artifact of artifacts) {
     if (
       artifact.kind !== 'instruction' &&
-      artifact.kind !== 'mcpServer'
+      artifact.kind !== 'mcpServer' &&
+      artifact.kind !== 'agent'
     ) {
       continue;
     }
 
     Object.defineProperty(artifact, CODEX_CONFIG_ROLLBACK_BASELINE, {
       value: baseline,
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  }
+}
+
+function attachCodexRoleFileRollbackBaselines(
+  artifacts: GeneratedArtifact[],
+  baselines: TextFileRollbackBaseline[],
+): void {
+  if (baselines.length === 0) {
+    return;
+  }
+
+  for (const artifact of artifacts) {
+    Object.defineProperty(artifact, CODEX_ROLE_FILE_ROLLBACK_BASELINES, {
+      value: baselines,
       configurable: true,
       enumerable: false,
       writable: true,
@@ -1002,6 +1206,43 @@ function getCodexConfigRollbackBaseline(
   }
 
   return undefined;
+}
+
+function getCodexRoleFileRollbackBaselines(
+  artifacts: GeneratedArtifact[],
+): Map<string, TextFileRollbackBaseline> {
+  const baselines = new Map<string, TextFileRollbackBaseline>();
+  for (const artifact of artifacts) {
+    const artifactBaselines = (artifact as GeneratedArtifactWithCodexRoleFileRollbackBaselines)[
+      CODEX_ROLE_FILE_ROLLBACK_BASELINES
+    ] ?? [];
+    for (const baseline of artifactBaselines) {
+      baselines.set(path.normalize(baseline.path), baseline);
+    }
+  }
+  return baselines;
+}
+
+async function captureTextFileRollbackBaseline(
+  filePath: string,
+): Promise<TextFileRollbackBaseline> {
+  const exists = await fs.pathExists(filePath);
+  return {
+    path: filePath,
+    content: exists ? await fs.readFile(filePath, 'utf8') : null,
+  };
+}
+
+async function restoreTextFileRollbackBaseline(
+  baseline: TextFileRollbackBaseline,
+): Promise<void> {
+  if (baseline.content === null) {
+    await fs.remove(baseline.path);
+    return;
+  }
+
+  await fs.ensureDir(path.dirname(baseline.path));
+  await fs.writeFile(baseline.path, baseline.content, 'utf8');
 }
 
 async function resolveRenderedCodexMcpServers(
@@ -1030,6 +1271,70 @@ function readTrackedCodexMcpArtifacts(
   record: TrackingPluginRecord | undefined,
 ): GeneratedArtifact[] {
   return (record?.artifacts ?? []).filter((artifact) => artifact.kind === 'mcpServer');
+}
+
+function resolveCodexRoleIdentity(
+  artifact: Pick<GeneratedArtifact, 'target' | 'roleKey' | 'artifactKey'>,
+): string | undefined {
+  if (artifact.target !== 'codex.agentRole' && artifact.roleKey === undefined) {
+    return undefined;
+  }
+
+  const roleKey = artifact.roleKey?.trim() || artifact.artifactKey?.trim();
+  return roleKey || undefined;
+}
+
+function readTrackedCodexRoleArtifacts(
+  record: TrackingPluginRecord | undefined,
+): Array<GeneratedArtifact & { artifactKey: string; roleKey: string }> {
+  return (record?.artifacts ?? [])
+    .filter((artifact) => artifact.kind === 'agent')
+    .map((artifact) => {
+      const roleKey = resolveCodexRoleIdentity(artifact);
+      if (!roleKey) {
+        return undefined;
+      }
+
+      return {
+        ...artifact,
+        artifactKey: roleKey,
+        roleKey,
+      };
+    })
+    .filter((artifact): artifact is GeneratedArtifact & { artifactKey: string; roleKey: string } =>
+      Boolean(artifact),
+    );
+}
+
+function assertTrackedCodexRoleIdentityMatchesPlan(options: {
+  pluginName: string;
+  trackingRecord: TrackingPluginRecord | undefined;
+  roleArtifacts: Array<{
+    id: string;
+    target: 'codex.agentRole';
+    roleKey: string;
+  }>;
+}): void {
+  const trackedRoleArtifactsById = new Map(
+    readTrackedCodexRoleArtifacts(options.trackingRecord)
+      .filter((artifact) => artifact.id && artifact.target === 'codex.agentRole')
+      .map((artifact) => [artifact.id as string, artifact]),
+  );
+
+  for (const artifact of options.roleArtifacts) {
+    const trackedArtifact = trackedRoleArtifactsById.get(artifact.id);
+    if (!trackedArtifact) {
+      continue;
+    }
+
+    if (trackedArtifact.roleKey !== artifact.roleKey) {
+      throw new Error(
+        `Tracking artifact "${artifact.id}" 记录的 roleKey 为 "${trackedArtifact.roleKey}"，` +
+          `但 ${options.pluginName} 当前静态 metadata / render plan 要求 "${artifact.roleKey}"。` +
+          '请先修复 tracking 受管身份后再继续写入。',
+      );
+    }
+  }
 }
 
 function hasTrackedCodexMcpServer(
@@ -1233,9 +1538,103 @@ async function collectGeneratedArtifacts(
       path: artifact.path,
       exists: await fs.pathExists(artifact.path),
       kind: artifact.kind,
+      ...(artifact.hookGroups === undefined
+        ? {}
+        : { hookGroups: structuredClone(artifact.hookGroups) }),
+      ...(artifact.paths === undefined ? {} : { paths: [...artifact.paths] }),
       ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+      ...(artifact.id === undefined ? {} : { id: artifact.id }),
+      ...(artifact.target === undefined ? {} : { target: artifact.target }),
+      ...(artifact.state === undefined ? {} : { state: artifact.state }),
+      ...(artifact.disabledReason === undefined
+        ? {}
+        : { disabledReason: artifact.disabledReason }),
+      ...(artifact.refreshKeys === undefined ? {} : { refreshKeys: [...artifact.refreshKeys] }),
+      ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+      ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
+      ...(resolveCodexRoleIdentity(artifact) === undefined
+        ? {}
+        : { roleKey: resolveCodexRoleIdentity(artifact) }),
+      ...(artifact.lastRefresh === undefined
+        ? {}
+        : { lastRefresh: structuredClone(artifact.lastRefresh) }),
+      ...(artifact.refreshReach === undefined
+        ? {}
+        : { refreshReach: structuredClone(artifact.refreshReach) }),
     })),
   );
+}
+
+function listCodexHigherPriorityLayerRoots(cwd: string, repoRoot: string): string[] {
+  const roots: string[] = [path.resolve(cwd)];
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  let currentDir = path.resolve(cwd);
+
+  while (currentDir !== resolvedRepoRoot) {
+    roots.push(path.join(currentDir, '.codex'));
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  roots.push(path.join(resolvedRepoRoot, '.codex'));
+  return [...new Set(roots.map((root) => path.resolve(root)))];
+}
+
+async function resolveCodexHigherPriorityRoleNamespaces(
+  cwd: string,
+  repoRoot: string,
+): Promise<Awaited<ReturnType<typeof resolveCodexRoleNamespace>>[]> {
+  return Promise.all(
+    listCodexHigherPriorityLayerRoots(cwd, repoRoot).map((layerRoot) =>
+      resolveCodexRoleNamespace(path.join(layerRoot, 'config.toml')),
+    ),
+  );
+}
+
+async function resolveCurrentArtifactConfigDigest(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'refreshKeys'>;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<string | undefined> {
+  if (
+    !options.plugin.manifest.scripts?.artifacts?.render ||
+    !options.artifact.id ||
+    !options.artifact.target ||
+    !options.artifact.refreshKeys
+  ) {
+    return undefined;
+  }
+
+  const renderConfig = await resolveArtifactRenderConfig({
+    pluginName: options.plugin.manifest.name,
+    manifest: options.plugin.manifest,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  const manifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const rendererPath = await resolveBundledPluginFilePath({
+    bundleRoot: options.plugin.rootDir,
+    pluginRelativePath: options.plugin.manifest.scripts.artifacts.render.path,
+    fieldName: 'scripts.artifacts.render.path',
+  });
+  const rendererDigest = await calculateFileDigest(rendererPath);
+
+  return createArtifactConfigDigest({
+    artifact: {
+      id: options.artifact.id,
+      platform: options.artifact.platform,
+      target: options.artifact.target,
+      refreshKeys: options.artifact.refreshKeys,
+    },
+    configValues: renderConfig.values,
+    digestSalt: rendererDigest ?? manifestDigest,
+  });
 }
 
 const CODEX_TRUST_GATED_PROJECT_KINDS = new Set<CodexProjectManagedKind>([
@@ -1398,6 +1797,348 @@ function summarizeRepoManagedItems(
   return summary;
 }
 
+function resolveProjectArtifactVisibility(
+  projectTrust: ProjectTrust,
+): 'visible' | 'blockedByProjectTrust' | 'projectTrustUnknown' {
+  if (projectTrust === 'untrusted') {
+    return 'blockedByProjectTrust';
+  }
+  if (projectTrust === 'unknown') {
+    return 'projectTrustUnknown';
+  }
+  return 'visible';
+}
+
+function describeFailedArtifactRefresh(
+  artifact: Pick<GeneratedArtifactStatus, 'lastRefresh'>,
+): string | undefined {
+  if (artifact.lastRefresh?.status !== 'failed') {
+    return undefined;
+  }
+
+  const triggerKeys = artifact.lastRefresh.triggerKeys?.length
+    ? `，triggerKeys=${artifact.lastRefresh.triggerKeys.join(',')}`
+    : '';
+  const errorSummary = artifact.lastRefresh.error
+    ? `：${artifact.lastRefresh.error}`
+    : '';
+  return `最近一次 ${artifact.lastRefresh.event} 失败（${artifact.lastRefresh.updatedAt}${triggerKeys}）${errorSummary}`;
+}
+
+async function buildCodexManagedArtifactStatuses(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  repoRoot: string;
+  projectTrust: ProjectTrust;
+  projectLayerEvidence: CodexProjectLayerEvidence;
+  scopeConfig: { snapshot: CodexConfigSnapshot };
+  generatedArtifacts: GeneratedArtifactStatus[];
+}): Promise<ManagedArtifactStatus[]> {
+  const trackedDynamicArtifacts = options.generatedArtifacts.filter((artifact) =>
+    artifact.id !== undefined && artifact.target !== undefined,
+  );
+  if (trackedDynamicArtifacts.length === 0) {
+    return [];
+  }
+
+  const trackedRoleArtifacts = trackedDynamicArtifacts.filter(
+    (artifact) =>
+      artifact.target === 'codex.agentRole' &&
+      resolveCodexRoleIdentity({
+        target: artifact.target,
+        roleKey: artifact.roleKey,
+        artifactKey: artifact.artifactKey,
+      }),
+  );
+  const currentScopeRoleNamespace = trackedRoleArtifacts.length > 0
+    ? await resolveCodexRoleNamespace(resolveCodexPaths(options.cwd, options.scope, options.env).configTomlPath, {
+        awManagedTableKeys: trackedRoleArtifacts
+          .map((artifact) =>
+            resolveCodexRoleIdentity({
+              target: artifact.target,
+              roleKey: artifact.roleKey,
+              artifactKey: artifact.artifactKey,
+            }))
+          .filter((roleKey): roleKey is string => Boolean(roleKey)),
+        awManagedRoleLayerPaths: trackedRoleArtifacts.map((artifact) => artifact.path),
+      })
+    : undefined;
+  const higherPriorityRoleNamespaces =
+    options.scope === 'user' && options.projectTrust === 'trusted' && trackedRoleArtifacts.length > 0
+      ? await resolveCodexHigherPriorityRoleNamespaces(options.cwd, options.repoRoot)
+      : [];
+  const presentInstructionCount = trackedDynamicArtifacts.filter((artifact) =>
+    artifact.target === 'codex.developerInstructionsBlock' && artifact.state === 'present',
+  ).length;
+
+  return Promise.all(trackedDynamicArtifacts.map(async (artifact) => {
+    const diagnostics: string[] = [];
+    let currentConfigDigest: string | undefined;
+    try {
+      currentConfigDigest = await resolveCurrentArtifactConfigDigest({
+        plugin: options.plugin,
+        scope: options.scope,
+        artifact: {
+          id: artifact.id,
+          platform: 'codex',
+          target: artifact.target,
+          refreshKeys: artifact.refreshKeys,
+        },
+        cwd: options.cwd,
+        env: options.env,
+      });
+    } catch (error) {
+      diagnostics.push(`无法计算当前 config digest：${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (artifact.target === 'codex.developerInstructionsBlock') {
+      const instructionBlock =
+        options.scopeConfig.snapshot.developerInstructions.managedBlocks[options.plugin.manifest.name];
+      const hasBlock = Boolean(instructionBlock);
+      const sessionVisibility =
+        options.scope === 'project'
+          ? hasBlock
+            ? resolveProjectArtifactVisibility(options.projectTrust)
+            : 'absent'
+          : !hasBlock
+            ? 'absent'
+            : options.projectTrust === 'trusted' &&
+                (
+                  options.projectLayerEvidence.currentLayerDeveloperInstructionsDefined ||
+                  options.projectLayerEvidence.ancestorDeveloperInstructionsDefined
+                )
+              ? 'unknownByExternalLayer'
+              : options.projectTrust === 'trusted' &&
+                  options.projectLayerEvidence.projectLayerDeveloperInstructionsDefined
+                ? 'shadowedByProjectDeveloperInstructions'
+                : 'visible';
+      let currentContentDigest: string | undefined;
+      let health: ManagedArtifactStatus['health'];
+
+      if (artifact.state === 'disabled') {
+        currentContentDigest = !hasBlock
+          ? createGeneratedArtifactContentDigest({
+              target: artifact.target,
+              state: 'disabled',
+              disabledReason: artifact.disabledReason ?? null,
+            })
+          : undefined;
+        if (hasBlock) {
+          health = 'contentDrift';
+          diagnostics.push('artifact tracking 标记为 disabled，但当前 managed developer_instructions block 仍然存在。');
+        } else if (artifact.lastRefresh?.status === 'failed') {
+          health = 'recentRefreshFailed';
+          diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+        } else if (
+          artifact.configDigest &&
+          currentConfigDigest &&
+          artifact.configDigest !== currentConfigDigest
+        ) {
+          health = 'configDigestStale';
+          diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+        } else {
+          health = 'disabledByConfig';
+        }
+      } else if (!hasBlock) {
+        health = 'blockMissing';
+        diagnostics.push('当前 scope 的 AW managed developer_instructions block 缺失。');
+      } else {
+        currentContentDigest = createGeneratedArtifactContentDigest({
+          target: artifact.target,
+          state: 'present',
+          content: instructionBlock.value.trim(),
+        });
+        if (
+          presentInstructionCount === 1 &&
+          artifact.contentDigest &&
+          currentContentDigest !== artifact.contentDigest
+        ) {
+          health = 'contentDrift';
+          diagnostics.push('当前 managed developer_instructions block 与 tracking contentDigest 不一致。');
+        } else if (artifact.lastRefresh?.status === 'failed') {
+          health = 'recentRefreshFailed';
+          diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+        } else if (
+          artifact.configDigest &&
+          currentConfigDigest &&
+          artifact.configDigest !== currentConfigDigest
+        ) {
+          health = 'configDigestStale';
+          diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+        } else {
+          health = 'healthy';
+        }
+      }
+
+      return {
+        ...artifact,
+        tracked: true,
+        currentConfigDigest,
+        currentContentDigest,
+        health,
+        sessionVisibility,
+        diagnostics,
+      };
+    }
+
+    const roleKey = resolveCodexRoleIdentity({
+      target: artifact.target,
+      roleKey: artifact.roleKey,
+      artifactKey: artifact.artifactKey,
+    });
+    if (!roleKey) {
+      diagnostics.push('无法从 tracking 或静态 metadata 恢复 codex.agentRole 的真实 roleKey。');
+      return {
+        ...artifact,
+        tracked: true,
+        currentConfigDigest,
+        currentContentDigest: undefined,
+        health: 'unavailable',
+        sessionVisibility: 'absent',
+        diagnostics,
+      };
+    }
+    const registration = roleKey
+      ? options.scopeConfig.snapshot.agents[roleKey]
+      : undefined;
+    const namespaceRole = roleKey
+      ? currentScopeRoleNamespace?.roles.find((role) => role.tableKey === roleKey)
+      : undefined;
+    const expectedRoleLayerPath = path.normalize(artifact.path);
+    const registeredRoleLayerPath = registration?.configFile
+      ? path.normalize(path.resolve(path.dirname(resolveCodexPaths(options.cwd, options.scope, options.env).configTomlPath), registration.configFile))
+      : undefined;
+    const registrationHealthy = Boolean(
+      roleKey &&
+      registration &&
+      registeredRoleLayerPath === expectedRoleLayerPath,
+    );
+    const roleLayerExists = await fs.pathExists(artifact.path);
+    let currentContentDigest: string | undefined;
+    let health: ManagedArtifactStatus['health'];
+
+    if (artifact.state === 'disabled') {
+      if (registration || roleLayerExists) {
+        health = registration && !registrationHealthy ? 'registrationDrift' : 'contentDrift';
+        diagnostics.push('artifact tracking 标记为 disabled，但当前 role registration 或 role layer 仍然存在。');
+      } else if (artifact.lastRefresh?.status === 'failed') {
+        health = 'recentRefreshFailed';
+        diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+      } else if (
+        artifact.configDigest &&
+        currentConfigDigest &&
+        artifact.configDigest !== currentConfigDigest
+      ) {
+        health = 'configDigestStale';
+        diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+      } else {
+        health = 'disabledByConfig';
+      }
+    } else if (!registration) {
+      health = 'registrationDrift';
+      diagnostics.push('当前 scope 缺少受管 role registration。');
+    } else if (!registrationHealthy) {
+      health = 'registrationDrift';
+      diagnostics.push(
+        registeredRoleLayerPath
+          ? `role registration 当前指向 ${registeredRoleLayerPath}，未指向 tracking role layer ${expectedRoleLayerPath}。`
+          : 'role registration 缺少 config_file，无法指向 tracking role layer。',
+      );
+    } else if (!roleLayerExists) {
+      health = 'roleLayerMissing';
+      diagnostics.push('tracking role layer 文件缺失。');
+    } else {
+      const roleFileContent = await fs.readFile(artifact.path, 'utf8');
+      currentContentDigest = createGeneratedArtifactContentDigest({
+        target: artifact.target,
+        state: 'present',
+        roleKey,
+        registration: {
+          description: registration.description?.trim(),
+        },
+        roleFile: roleFileContent,
+      });
+      const descriptionMismatch = namespaceRole
+        ? getCodexRoleDescriptionMismatch(namespaceRole)
+        : undefined;
+      if (descriptionMismatch) {
+        health = 'registrationDrift';
+        diagnostics.push('role registration.description 与 role layer description 不一致。');
+      } else if (artifact.contentDigest && currentContentDigest !== artifact.contentDigest) {
+        health = 'contentDrift';
+        diagnostics.push('当前 role registration / role layer 内容与 tracking contentDigest 不一致。');
+      } else if (artifact.lastRefresh?.status === 'failed') {
+        health = 'recentRefreshFailed';
+        diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+      } else if (
+        artifact.configDigest &&
+        currentConfigDigest &&
+        artifact.configDigest !== currentConfigDigest
+      ) {
+        health = 'configDigestStale';
+        diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+      } else {
+        health = 'healthy';
+      }
+    }
+
+    const sessionVisibility =
+      !registrationHealthy || !roleLayerExists
+        ? 'absent'
+        : options.scope === 'project'
+          ? resolveProjectArtifactVisibility(options.projectTrust)
+          : options.projectTrust === 'trusted' && roleKey
+            ? diagnoseCodexRoleVisibility(roleKey, higherPriorityRoleNamespaces).state
+            : 'visible';
+
+    return {
+      ...artifact,
+      tracked: true,
+      currentConfigDigest,
+      currentContentDigest,
+      health,
+      sessionVisibility,
+      diagnostics,
+    };
+  }));
+}
+
+function applyDeclaredDynamicArtifactIdentity(
+  generatedArtifacts: GeneratedArtifactStatus[],
+  declaredTargets: PluginArtifactTargetDefinition[],
+): GeneratedArtifactStatus[] {
+  const declaredByKey = new Map(
+    declaredTargets.map((target) => [`${target.id}:${target.target}`, target]),
+  );
+
+  return generatedArtifacts.map((artifact) => {
+    if (!artifact.id || !artifact.target) {
+      return artifact;
+    }
+
+    const declaration = declaredByKey.get(`${artifact.id}:${artifact.target}`);
+    if (!declaration || artifact.target !== 'codex.agentRole') {
+      return artifact;
+    }
+
+    const resolvedRoleKey = resolveCodexRoleIdentity({
+      target: artifact.target,
+      roleKey: artifact.roleKey ?? declaration.roleKey,
+      artifactKey: artifact.artifactKey,
+    });
+    if (!resolvedRoleKey) {
+      return artifact;
+    }
+
+    return {
+      ...artifact,
+      roleKey: resolvedRoleKey,
+    };
+  });
+}
+
 export class CodexAdapter implements PlatformAdapter {
   readonly name = 'codex' as const;
 
@@ -1516,17 +2257,104 @@ export class CodexAdapter implements PlatformAdapter {
     }
   }
 
-  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      event?: 'install' | 'upgrade' | 'refresh';
+      changedConfigKeys?: string[];
+      dynamicOnly?: boolean;
+    },
+  ): Promise<GeneratedArtifact[]> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
+    const roleFileRollbackBaselines = new Map<string, TextFileRollbackBaseline>();
+    let codexConfigRollbackBaseline: { path: string; content: string | null } | undefined;
+
+    const captureRoleFileRollbackBaseline = async (filePath: string): Promise<void> => {
+      const normalizedPath = path.normalize(filePath);
+      if (roleFileRollbackBaselines.has(normalizedPath)) {
+        return;
+      }
+      roleFileRollbackBaselines.set(
+        normalizedPath,
+        await captureTextFileRollbackBaseline(filePath),
+      );
+    };
 
     try {
       const trackingManifest = await readTrackingManifest(paths.trackingDir);
       const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
-      const instructions = resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
-      const renderedMcpServers = await resolveRenderedCodexMcpServers(plugin);
+      const event = options?.event ?? 'install';
+      const dynamicOnly = options?.dynamicOnly === true;
+      const declaredDynamicTargets = (plugin.manifest.artifacts?.targets ?? []).filter(
+        (target) => target.platform === 'codex' && target.scopes.includes(scope),
+      );
+      const dynamicRenderResult = declaredDynamicTargets.length > 0
+        ? await runArtifactRenderer({
+            event,
+            plugin,
+            platform: 'codex',
+            scope,
+            cwd: this.cwd,
+            commandEnv: this.env,
+            changedConfigKeys: options?.changedConfigKeys,
+            previousArtifacts: trackingRecord?.artifacts ?? [],
+          })
+        : undefined;
+      const dynamicRenderConfig = declaredDynamicTargets.length > 0
+        ? await resolveArtifactRenderConfig({
+            pluginName: plugin.manifest.name,
+            manifest: plugin.manifest,
+            scope,
+            cwd: this.cwd,
+            env: this.env,
+          })
+        : undefined;
+      const validatedDynamicArtifacts = declaredDynamicTargets.length > 0
+        ? validateArtifactPlan({
+            manifest: plugin.manifest,
+            plan: dynamicRenderResult!.plan,
+            platform: 'codex',
+            scope,
+            renderConfig: dynamicRenderConfig!,
+            rendererDigest: dynamicRenderResult!.target.rendererDigest,
+            manifestDigest: dynamicRenderResult!.target.manifestDigest,
+          }).artifacts
+        : [];
+      const dynamicInstructionArtifacts = validatedDynamicArtifacts.filter(
+        (artifact) => artifact.target === 'codex.developerInstructionsBlock',
+      );
+      const dynamicRoleArtifacts = validatedDynamicArtifacts.filter(
+        (artifact) => artifact.target === 'codex.agentRole',
+      );
+      assertTrackedCodexRoleIdentityMatchesPlan({
+        pluginName: plugin.manifest.name,
+        trackingRecord,
+        roleArtifacts: dynamicRoleArtifacts.map((artifact) => {
+          if (!artifact.roleKey) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.agentRole 必须声明 roleKey。`);
+          }
+          return {
+            id: artifact.id,
+            target: 'codex.agentRole' as const,
+            roleKey: artifact.roleKey,
+          };
+        }),
+      });
+      const instructions = dynamicOnly || dynamicInstructionArtifacts.length > 0
+        ? []
+        : resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
+      const renderedMcpServers = dynamicOnly
+        ? {}
+        : await resolveRenderedCodexMcpServers(plugin);
 
-      if (instructions.length > 0 || Object.keys(renderedMcpServers).length > 0) {
+      if (
+        instructions.length > 0 ||
+        dynamicInstructionArtifacts.length > 0 ||
+        dynamicRoleArtifacts.length > 0 ||
+        Object.keys(renderedMcpServers).length > 0
+      ) {
         const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
         assertNoCodexMcpServerConflicts({
           pluginName: plugin.manifest.name,
@@ -1536,24 +2364,221 @@ export class CodexAdapter implements PlatformAdapter {
           desiredServers: renderedMcpServers,
         });
 
+        const roleRegistrations: Record<string, CodexAgentRegistrationConfig> = {};
+        const removeRoleRegistrations: string[] = [];
+        const managedRoleFilesToDelete: string[] = [];
+        for (const artifact of dynamicRoleArtifacts) {
+          const roleKey = artifact.roleKey;
+          if (!roleKey) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.agentRole 必须声明 roleKey。`);
+          }
+          const managedRoleLayerPath = getManagedCodexRoleLayerPath(
+            paths.configDir,
+            plugin.manifest.name,
+            roleKey,
+          );
+          const existingRegistration = scopeConfig.snapshot.agents[roleKey];
+          const existingConfigFile = existingRegistration?.configFile;
+          const existingRoleLayerPath = existingConfigFile
+            ? path.resolve(path.dirname(paths.configTomlPath), existingConfigFile)
+            : undefined;
+          const registrationPointsAtManagedRole =
+            existingRoleLayerPath !== undefined &&
+            path.normalize(existingRoleLayerPath) === path.normalize(managedRoleLayerPath);
+
+          if (artifact.state === 'disabled') {
+            const removalPlan = planCodexManagedRoleRemoval({
+              content: scopeConfig.content,
+              configPath: paths.configTomlPath,
+              roleKey,
+              managedRoleLayerPath,
+            });
+            await captureRoleFileRollbackBaseline(removalPlan.roleLayerPathToDelete);
+            if (registrationPointsAtManagedRole) {
+              removeRoleRegistrations.push(roleKey);
+            }
+            managedRoleFilesToDelete.push(removalPlan.roleLayerPathToDelete);
+            artifacts.push({
+              path: managedRoleLayerPath,
+              paths: buildGeneratedArtifactPaths(paths.configTomlPath, managedRoleLayerPath),
+              kind: 'agent',
+              platform: 'codex',
+              artifactKey: roleKey,
+              id: artifact.id,
+              target: artifact.target,
+              state: artifact.state,
+              ...(artifact.disabledReason === undefined
+                ? {}
+                : { disabledReason: artifact.disabledReason }),
+              refreshKeys: [...artifact.refreshKeys],
+              configDigest: artifact.configDigest,
+              contentDigest: createGeneratedArtifactContentDigest({
+                target: artifact.target,
+                state: artifact.state,
+                roleKey,
+                disabledReason: artifact.disabledReason ?? null,
+              }),
+              roleKey,
+            });
+            continue;
+          }
+
+          if (
+            existingRegistration &&
+            !registrationPointsAtManagedRole
+          ) {
+            throw new Error(
+              `Codex role "${roleKey}" 已存在非 AW managed registration，当前 config_file 为 ${
+                existingConfigFile ?? '<missing>'
+              }，不会静默覆盖。`,
+            );
+          }
+
+          const registrationDescription = artifact.content?.registration?.description?.trim();
+          const roleFileDescription = artifact.content?.roleFile?.description?.trim();
+          if (
+            registrationDescription &&
+            roleFileDescription &&
+            registrationDescription !== roleFileDescription
+          ) {
+            throw new Error(
+              `Artifact "${artifact.id}" 的 registration.description 与 roleFile.description 必须保持一致。`,
+            );
+          }
+          const description = registrationDescription ?? roleFileDescription;
+          if (!description) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.agentRole 必须提供 description。`);
+          }
+
+          const roleFile = artifact.content?.roleFile;
+          if (!roleFile?.developer_instructions?.trim()) {
+            throw new Error(
+              `Artifact "${artifact.id}" 的 codex.agentRole 必须提供 developer_instructions。`,
+            );
+          }
+
+          await captureRoleFileRollbackBaseline(managedRoleLayerPath);
+          const renderedRoleFile = renderManagedCodexRoleFile({
+            roleKey,
+            description,
+            developerInstructions: roleFile.developer_instructions,
+            model: roleFile.model,
+            modelReasoningEffort: roleFile.model_reasoning_effort,
+          });
+          const artifactPath = await writeTextArtifact(
+            paths.configDir,
+            normalizeCodexRelativePath(path.relative(paths.configDir, managedRoleLayerPath)),
+            renderedRoleFile,
+          );
+          artifacts.push({
+            path: artifactPath,
+            paths: buildGeneratedArtifactPaths(paths.configTomlPath, artifactPath),
+            kind: 'agent',
+            platform: 'codex',
+            artifactKey: roleKey,
+            id: artifact.id,
+            target: artifact.target,
+            state: artifact.state,
+            refreshKeys: [...artifact.refreshKeys],
+            configDigest: artifact.configDigest,
+            contentDigest: createGeneratedArtifactContentDigest({
+              target: artifact.target,
+              state: artifact.state,
+              roleKey,
+              registration: { description },
+              roleFile: renderedRoleFile,
+            }),
+            roleKey,
+          });
+          roleRegistrations[roleKey] = {
+            description,
+            configFile: normalizeCodexRelativePath(
+              path.relative(path.dirname(paths.configTomlPath), managedRoleLayerPath),
+            ),
+          };
+        }
+
+        for (const managedRoleFilePath of managedRoleFilesToDelete) {
+          await fs.remove(managedRoleFilePath);
+        }
+
+        const presentDynamicInstructions = dynamicInstructionArtifacts
+          .filter((artifact) => artifact.state === 'present')
+          .map((artifact) => {
+            if (artifact.content === undefined) {
+              throw new Error(`Artifact "${artifact.id}" 的 instruction 必须提供 content。`);
+            }
+            return artifact.content.trim();
+          });
         const transaction = await applyCodexConfigTransactionFile(paths.configTomlPath, {
-          ...(instructions.length > 0
-            ? {
-                upsertManagedInstructionBlock: {
-                  pluginName: plugin.manifest.name,
-                  value: renderCodexManagedInstructionBlock(
-                    plugin.manifest.name,
-                    instructions,
-                  ),
-                },
-              }
+          ...(dynamicInstructionArtifacts.length > 0
+            ? presentDynamicInstructions.length > 0
+              ? {
+                  upsertManagedInstructionBlock: {
+                    pluginName: plugin.manifest.name,
+                    value: presentDynamicInstructions.join('\n\n'),
+                  },
+                }
+              : {
+                  removeManagedInstructionPluginName: plugin.manifest.name,
+                }
+            : instructions.length > 0
+              ? {
+                  upsertManagedInstructionBlock: {
+                    pluginName: plugin.manifest.name,
+                    value: renderCodexManagedInstructionBlock(
+                      plugin.manifest.name,
+                      instructions,
+                    ),
+                  },
+                }
+              : {}),
+          ...(Object.keys(roleRegistrations).length > 0
+            ? { upsertAgentRegistrations: roleRegistrations }
+            : {}),
+          ...(removeRoleRegistrations.length > 0
+            ? { removeAgentRegistrations: removeRoleRegistrations }
             : {}),
           ...(Object.keys(renderedMcpServers).length > 0
             ? { upsertMcpServers: renderedMcpServers }
             : {}),
         });
+        codexConfigRollbackBaseline = {
+          path: paths.configTomlPath,
+          content: transaction.baselineContent,
+        };
 
-        if (instructions.length > 0) {
+        if (dynamicInstructionArtifacts.length > 0) {
+          for (const artifact of dynamicInstructionArtifacts) {
+            artifacts.push({
+              path: paths.configTomlPath,
+              paths: buildGeneratedArtifactPaths(paths.configTomlPath),
+              kind: 'instruction',
+              platform: 'codex',
+              id: artifact.id,
+              target: artifact.target,
+              state: artifact.state,
+              ...(artifact.disabledReason === undefined
+                ? {}
+                : { disabledReason: artifact.disabledReason }),
+              refreshKeys: [...artifact.refreshKeys],
+              configDigest: artifact.configDigest,
+              contentDigest: createGeneratedArtifactContentDigest(
+                artifact.state === 'present'
+                  ? {
+                      target: artifact.target,
+                      state: artifact.state,
+                      content: artifact.content?.trim(),
+                    }
+                  : {
+                      target: artifact.target,
+                      state: artifact.state,
+                      disabledReason: artifact.disabledReason ?? null,
+                    },
+              ),
+            });
+          }
+        } else if (instructions.length > 0) {
           artifacts.push({ path: paths.configTomlPath, kind: 'instruction', platform: 'codex' });
         }
         for (const serverKey of Object.keys(renderedMcpServers)) {
@@ -1565,12 +2590,23 @@ export class CodexAdapter implements PlatformAdapter {
           });
         }
 
-        if (artifacts.some((artifact) => artifact.path === paths.configTomlPath)) {
+        if (artifacts.some((artifact) =>
+          artifact.kind === 'instruction' ||
+          artifact.kind === 'mcpServer' ||
+          (artifact.kind === 'agent' && Boolean(artifact.artifactKey))
+        )) {
           attachCodexConfigRollbackBaseline(artifacts, {
             path: paths.configTomlPath,
             content: transaction.baselineContent,
           });
+          attachCodexRoleFileRollbackBaselines(artifacts, [
+            ...roleFileRollbackBaselines.values(),
+          ]);
         }
+      }
+
+      if (dynamicOnly) {
+        return artifacts;
       }
 
       for (const artifact of generateCodexPermissionArtifacts(
@@ -1609,6 +2645,21 @@ export class CodexAdapter implements PlatformAdapter {
 
       return artifacts;
     } catch (error) {
+      for (const baseline of [...roleFileRollbackBaselines.values()].reverse()) {
+        await restoreTextFileRollbackBaseline(baseline);
+      }
+      if (codexConfigRollbackBaseline) {
+        if (codexConfigRollbackBaseline.content === null) {
+          await fs.remove(codexConfigRollbackBaseline.path);
+        } else {
+          await fs.ensureDir(path.dirname(codexConfigRollbackBaseline.path));
+          await fs.writeFile(
+            codexConfigRollbackBaseline.path,
+            codexConfigRollbackBaseline.content,
+            'utf8',
+          );
+        }
+      }
       throw attachGeneratedArtifactsToError(error, artifacts);
     }
   }
@@ -1625,6 +2676,7 @@ export class CodexAdapter implements PlatformAdapter {
       generatedArtifacts,
     );
     const rollbackBaseline = getCodexConfigRollbackBaseline(generatedArtifacts);
+    const roleFileRollbackBaselines = getCodexRoleFileRollbackBaselines(generatedArtifacts);
     await pruneTrackedCodexArtifacts({
       cwd: this.cwd,
       scope,
@@ -1632,6 +2684,7 @@ export class CodexAdapter implements PlatformAdapter {
       pluginName: plugin.manifest.name,
       trackingRecord,
       rollbackBaseline,
+      roleFileRollbackBaselines,
     });
   }
 
@@ -1648,13 +2701,13 @@ export class CodexAdapter implements PlatformAdapter {
     }
 
     await this.installPlugin(plugin, scope);
-    await this.installExtensions(plugin, scope);
+    await this.installExtensions(plugin, scope, { event: 'upgrade' });
   }
 
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [ledger, generatedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
+    const [ledger, trackedGeneratedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
       await Promise.all([
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
@@ -1664,6 +2717,7 @@ export class CodexAdapter implements PlatformAdapter {
         resolveEmbeddedPluginsRoot(),
         resolveAwHomeCanonical(this.env),
       ]);
+    let generatedArtifacts = trackedGeneratedArtifacts;
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
     const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(
@@ -1810,6 +2864,22 @@ export class CodexAdapter implements PlatformAdapter {
         hasProjectLayerArtifacts: projectTrustApplicable,
       });
 
+    const declaredDynamicTargets = (plugin.manifest.artifacts?.targets ?? []).filter((artifact) =>
+      artifact.platform === 'codex' && artifact.scopes.includes(scope),
+    );
+    generatedArtifacts = applyDeclaredDynamicArtifactIdentity(generatedArtifacts, declaredDynamicTargets);
+    const declaredDynamicInstructionTargets = declaredDynamicTargets.filter(
+      (artifact) => artifact.target === 'codex.developerInstructionsBlock',
+    );
+    const declaredDynamicRoleTargets = declaredDynamicTargets.filter(
+      (artifact) => artifact.target === 'codex.agentRole',
+    );
+    const trackedDynamicInstructionArtifacts = generatedArtifacts.filter(
+      (artifact) => artifact.target === 'codex.developerInstructionsBlock',
+    );
+    const trackedDynamicRoleArtifacts = generatedArtifacts.filter(
+      (artifact) => artifact.target === 'codex.agentRole',
+    );
     const codexInstructions = resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
     const codexPermissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex');
     const codexHookExpectation = await resolveCodexStatusHookExpectation(
@@ -1825,7 +2895,7 @@ export class CodexAdapter implements PlatformAdapter {
       this.env,
     );
     const codexAgents = resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex');
-    const trackedAgentIds = codexAgents.map((agent) =>
+    const trackedStaticAgentIds = codexAgents.map((agent) =>
       buildGeneratedName(plugin.manifest.name, agent.name),
     );
     const trackedMcpKeys = new Set(trackedCodexMcpServerKeys(trackingRecord));
@@ -1850,6 +2920,23 @@ export class CodexAdapter implements PlatformAdapter {
         }),
       );
 
+    const managedArtifacts = await buildCodexManagedArtifactStatuses({
+      plugin,
+      scope,
+      cwd: this.cwd,
+      env: this.env,
+      repoRoot,
+      projectTrust,
+      projectLayerEvidence,
+      scopeConfig,
+      generatedArtifacts,
+    });
+    const dynamicInstructionStatuses = managedArtifacts.filter(
+      (artifact) => artifact.target === 'codex.developerInstructionsBlock',
+    );
+    const dynamicRoleStatuses = managedArtifacts.filter(
+      (artifact) => artifact.target === 'codex.agentRole',
+    );
     const instructionManaged = Boolean(
       scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name],
     );
@@ -1863,11 +2950,14 @@ export class CodexAdapter implements PlatformAdapter {
     ) && generatedArtifacts
       .filter((artifact) => artifact.kind === 'hook')
       .every((artifact) => artifact.exists);
-    const agentsManaged = Boolean(
-      trackingRecord?.artifacts.some((artifact) => artifact.kind === 'agent'),
+    const staticAgentsManaged = Boolean(
+      trackingRecord?.artifacts.some((artifact) => artifact.kind === 'agent' && artifact.target === undefined),
     ) && generatedArtifacts
-      .filter((artifact) => artifact.kind === 'agent')
+      .filter((artifact) => artifact.kind === 'agent' && artifact.target === undefined)
       .every((artifact) => artifact.exists);
+    const dynamicRoleManaged = dynamicRoleStatuses.length > 0 &&
+      dynamicRoleStatuses.every((artifact) => artifact.sessionVisibility !== 'absent');
+    const agentsManaged = staticAgentsManaged || dynamicRoleManaged;
 
     const driftWarnings: string[] = [];
     driftWarnings.push(...codexHookExpectation.diagnostics);
@@ -1902,20 +2992,65 @@ export class CodexAdapter implements PlatformAdapter {
       }
     }
 
+    for (const artifact of managedArtifacts) {
+      if (artifact.health === 'healthy' || artifact.health === 'disabledByConfig') {
+        continue;
+      }
+      const subject = artifact.target === 'codex.developerInstructionsBlock'
+        ? `Codex instruction artifact "${artifact.id ?? plugin.manifest.name}"`
+        : `Codex role artifact "${
+          resolveCodexRoleIdentity({
+            target: artifact.target,
+            roleKey: artifact.roleKey,
+            artifactKey: artifact.artifactKey,
+          }) ?? artifact.id ?? artifact.path
+        }"`;
+      const detail = artifact.diagnostics[0] ? ` ${artifact.diagnostics[0]}` : '';
+      if (artifact.health === 'blockMissing' || artifact.health === 'roleLayerMissing' || artifact.health === 'missing') {
+        driftWarnings.push(`${subject} 缺失。${detail}`.trim());
+      } else if (artifact.health === 'registrationDrift') {
+        driftWarnings.push(`${subject} registration 已漂移。${detail}`.trim());
+      } else if (artifact.health === 'recentRefreshFailed') {
+        driftWarnings.push(`${subject} 最近 refresh 失败。${detail}`.trim());
+      } else if (artifact.health === 'configDigestStale') {
+        driftWarnings.push(`${subject} config digest 已过期。${detail}`.trim());
+      } else if (artifact.health === 'contentDrift') {
+        driftWarnings.push(`${subject} 内容已漂移。${detail}`.trim());
+      } else {
+        driftWarnings.push(`${subject} 状态无法可靠判定。${detail}`.trim());
+      }
+    }
+
     const repoManagedSessionState = detectCodexSessionState({
       scope,
       declarations: {
-        instructions: codexInstructions.length > 0,
+        instructions:
+          codexInstructions.length > 0 ||
+          declaredDynamicInstructionTargets.length > 0 ||
+          trackedDynamicInstructionArtifacts.length > 0,
         permissions: codexPermissions.length > 0,
         hooks: codexHookExpectation.declared,
-        agents: codexAgents.length > 0,
+        agents:
+          codexAgents.length > 0 ||
+          declaredDynamicRoleTargets.length > 0 ||
+          trackedDynamicRoleArtifacts.length > 0,
       },
       managed: {
         instructions: instructionManaged,
         rules: rulesManaged,
         hooks: hooksManaged,
         agents: agentsManaged,
-        agentRoleNames: trackedAgentIds,
+        agentRoleNames: [
+          ...trackedStaticAgentIds,
+          ...dynamicRoleStatuses
+            .map((artifact) =>
+              resolveCodexRoleIdentity({
+                target: artifact.target,
+                roleKey: artifact.roleKey,
+                artifactKey: artifact.artifactKey,
+              }))
+            .filter((roleKey): roleKey is string => Boolean(roleKey)),
+        ],
       },
       higherPriorityExternal: {
         developerInstructions:
@@ -1965,6 +3100,9 @@ export class CodexAdapter implements PlatformAdapter {
     });
 
     const artifactsInitialized = generatedArtifacts.every((artifact) => artifact.exists) &&
+      managedArtifacts.every((artifact) =>
+        artifact.health === 'healthy' || artifact.health === 'disabledByConfig',
+      ) &&
       (
         !trackingRecord?.artifacts.some((artifact) => artifact.kind === 'instruction') ||
         instructionManaged
@@ -2130,8 +3268,14 @@ export class CodexAdapter implements PlatformAdapter {
         }));
       }
 
-      const instructionArtifact = trackingRecord?.artifacts.find((artifact) => artifact.kind === 'instruction');
-      if (codexInstructions.length > 0 || instructionArtifact) {
+      const instructionArtifact = trackingRecord?.artifacts.find((artifact) =>
+        artifact.kind === 'instruction' && artifact.target === undefined,
+      );
+      if (
+        (codexInstructions.length > 0 || instructionArtifact) &&
+        declaredDynamicInstructionTargets.length === 0 &&
+        trackedDynamicInstructionArtifacts.length === 0
+      ) {
         const instructionBlock = scopeConfig.snapshot.developerInstructions.managedBlocks[plugin.manifest.name];
         let instructionState: Extract<RepoManagedProjectItemState, 'visible' | 'missing' | 'drifted' | 'absent'>;
         if (!instructionArtifact) {
@@ -2254,7 +3398,7 @@ export class CodexAdapter implements PlatformAdapter {
           )
         : new Map<string, string>();
       const trackedAgentArtifacts = (trackingRecord?.artifacts ?? [])
-        .filter((artifact) => artifact.kind === 'agent')
+        .filter((artifact) => artifact.kind === 'agent' && artifact.target === undefined)
         .sort((left, right) => left.path.localeCompare(right.path));
       const emittedAgentPaths = new Set<string>();
       for (const artifact of trackedAgentArtifacts) {
@@ -2371,6 +3515,7 @@ export class CodexAdapter implements PlatformAdapter {
         sharedNativeRefs,
       },
       generatedArtifacts,
+      managedArtifacts,
       driftWarnings: [...new Set(driftWarnings)],
       ledgerStateStatus: ledger.ledgerState.status,
       ledgerStateReason: ledger.ledgerState.reason,

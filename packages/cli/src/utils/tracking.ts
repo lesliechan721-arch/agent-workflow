@@ -10,7 +10,11 @@ import type {
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
-import { generatedArtifactKindRequiresArtifactKey } from './generated-artifacts.js';
+import {
+  generatedArtifactKindRequiresArtifactKey,
+  getGeneratedArtifactIdentityKey,
+  isGeneratedArtifact,
+} from './generated-artifacts.js';
 import {
   readJsonFileIfExists,
   writeJsonFile,
@@ -31,9 +35,65 @@ function createEmptyTrackingManifest(): TrackingManifest {
   };
 }
 
+function assertValidTrackingArtifact(artifact: unknown, context: string): asserts artifact is GeneratedArtifact {
+  if (!isGeneratedArtifact(artifact)) {
+    throw new Error(`Invalid ${context}: unsupported tracking artifact shape.`);
+  }
+}
+
+function assertValidTrackingRecord(
+  record: unknown,
+  pluginName: string,
+): asserts record is TrackingPluginRecord {
+  if (!record || typeof record !== 'object') {
+    throw new Error(`Invalid tracking record for plugin "${pluginName}".`);
+  }
+
+  const candidate = record as Record<string, unknown>;
+  if (typeof candidate.name !== 'string') {
+    throw new Error(`Invalid tracking record for plugin "${pluginName}": "name" must be a string.`);
+  }
+  if (typeof candidate.generatedAt !== 'string') {
+    throw new Error(`Invalid tracking record for plugin "${pluginName}": "generatedAt" must be a string.`);
+  }
+  if (!Array.isArray(candidate.artifacts)) {
+    throw new Error(`Invalid tracking record for plugin "${pluginName}": "artifacts" must be an array.`);
+  }
+
+  candidate.artifacts.forEach((artifact, index) =>
+    assertValidTrackingArtifact(artifact, `tracking record "${pluginName}".artifacts[${index}]`));
+}
+
+function normalizeTrackingManifest(manifest: unknown): TrackingManifest {
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('Invalid tracking manifest: root must be an object.');
+  }
+
+  const candidate = manifest as Record<string, unknown>;
+  if (candidate.version !== 1) {
+    throw new Error('Invalid tracking manifest: unsupported version.');
+  }
+  if (!candidate.plugins || typeof candidate.plugins !== 'object' || Array.isArray(candidate.plugins)) {
+    throw new Error('Invalid tracking manifest: "plugins" must be an object.');
+  }
+
+  const plugins = candidate.plugins as Record<string, unknown>;
+  for (const [pluginName, record] of Object.entries(plugins)) {
+    assertValidTrackingRecord(record, pluginName);
+  }
+
+  return candidate as unknown as TrackingManifest;
+}
+
 function assertAbsoluteArtifactPath(artifact: GeneratedArtifact): void {
   if (!path.isAbsolute(artifact.path)) {
     throw new Error(`Tracking artifact path must be absolute: ${artifact.path}`);
+  }
+
+  for (const extraPath of artifact.paths ?? []) {
+    if (!path.isAbsolute(extraPath)) {
+      throw new Error(`Tracking artifact path must be absolute: ${extraPath}`);
+    }
   }
 }
 
@@ -73,8 +133,12 @@ export function getTrackingManifestPath(targetDir: string): string {
 
 export async function readTrackingManifest(targetDir: string): Promise<TrackingManifest> {
   const manifestPath = getTrackingManifestPath(targetDir);
-  const manifest = await readJsonFileIfExists<TrackingManifest>(manifestPath);
-  return manifest ?? createEmptyTrackingManifest();
+  const manifest = await readJsonFileIfExists<unknown>(manifestPath);
+  const normalizedManifest = manifest === null
+    ? createEmptyTrackingManifest()
+    : normalizeTrackingManifest(manifest);
+  assertTrackingManifestArtifactPaths(normalizedManifest);
+  return normalizedManifest;
 }
 
 export async function readTrackingRecord(
@@ -112,6 +176,7 @@ export async function writeTrackingManifest(
   targetDir: string,
   manifest: TrackingManifest,
 ): Promise<void> {
+  normalizeTrackingManifest(manifest);
   assertTrackingManifestArtifactPaths(manifest);
   const manifestPath = getTrackingManifestPath(targetDir);
   await fs.ensureDir(path.dirname(manifestPath));
@@ -128,9 +193,50 @@ export function upsertTrackingRecordInManifest(
   pluginName: string,
   artifacts: GeneratedArtifact[],
 ): TrackingManifest {
+  const previousArtifacts = manifest.plugins[pluginName]?.artifacts ?? [];
   for (const artifact of artifacts) {
     assertAbsoluteArtifactPath(artifact);
   }
+
+  const nextArtifacts = artifacts.map((artifact) => {
+    const previousArtifact = previousArtifacts.find((candidate) => {
+      if (
+        artifact.id &&
+        artifact.target &&
+        candidate.id === artifact.id &&
+        candidate.target === artifact.target &&
+        candidate.platform === artifact.platform
+      ) {
+        return true;
+      }
+
+      if (
+        generatedArtifactKindRequiresArtifactKey(artifact.kind) &&
+        artifact.artifactKey &&
+        candidate.kind === artifact.kind &&
+        candidate.platform === artifact.platform &&
+        candidate.artifactKey === artifact.artifactKey
+      ) {
+        return true;
+      }
+
+      return getGeneratedArtifactIdentityKey(candidate) === getGeneratedArtifactIdentityKey(artifact);
+    });
+
+    if (!previousArtifact) {
+      return artifact;
+    }
+
+    return {
+      ...artifact,
+      ...(artifact.lastRefresh === undefined && previousArtifact.lastRefresh !== undefined
+        ? { lastRefresh: structuredClone(previousArtifact.lastRefresh) }
+        : {}),
+      ...(artifact.refreshReach === undefined && previousArtifact.refreshReach !== undefined
+        ? { refreshReach: structuredClone(previousArtifact.refreshReach) }
+        : {}),
+    };
+  });
 
   return {
     ...manifest,
@@ -139,7 +245,7 @@ export function upsertTrackingRecordInManifest(
       [pluginName]: {
         name: pluginName,
         generatedAt: new Date().toISOString(),
-        artifacts,
+        artifacts: nextArtifacts,
       },
     },
   };

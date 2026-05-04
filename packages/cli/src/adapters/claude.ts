@@ -464,7 +464,11 @@ export class ClaudeAdapter implements PlatformAdapter {
     );
   }
 
-  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    _options?: { event?: 'install' | 'upgrade' },
+  ): Promise<GeneratedArtifact[]> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
 
@@ -552,7 +556,7 @@ export class ClaudeAdapter implements PlatformAdapter {
     }
 
     await this.installPlugin(plugin, scope);
-    await this.installExtensions(plugin, scope);
+    await this.installExtensions(plugin, scope, { event: 'upgrade' });
   }
 
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {

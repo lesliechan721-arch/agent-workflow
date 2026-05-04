@@ -4,6 +4,8 @@
 
 不要新增顶层 `claude` block，也不要把 hooks / agents 塞进 `buildConfig.manifestOverrides.claude`。
 
+`extensions.*` 适合简单静态产物：内容固定，或只需要通过 `buildConfig.templates` 做平台差异渲染。需要根据 AW config 动态开启/关闭、刷新内容、诊断 stale / failed refresh，或管理 Codex role registration 时，不要把逻辑塞进 lifecycle；改用 `artifacts.targets` + `scripts.artifacts.render`，详见 `references/plugin-manifest-spec.md` 和 `references/aw-scripts-config-lifecycle.md`。
+
 ## 整体结构
 
 ```json
