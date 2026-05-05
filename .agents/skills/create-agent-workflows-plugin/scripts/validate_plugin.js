@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const errors = [];
@@ -113,6 +115,19 @@ const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 300000;
 const CONFIG_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
+const ARTIFACT_TARGETS = new Set(['codex.developerInstructionsBlock', 'codex.agentRole']);
+const ARTIFACT_STATES = new Set(['present', 'disabled']);
+const ARTIFACT_SCOPES = new Set(['user', 'project']);
+const ARTIFACT_KINDS = new Set(['instruction', 'codexRole']);
+const ARTIFACT_PROJECT_MANAGED_KINDS = new Set(['instruction', 'agent']);
+const ARTIFACT_KIND_BY_TARGET = {
+  'codex.developerInstructionsBlock': 'instruction',
+  'codex.agentRole': 'codexRole',
+};
+const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
+  'codex.developerInstructionsBlock': 'instruction',
+  'codex.agentRole': 'agent',
+};
 let yamlParser = null;
 
 function error(msg) {
@@ -353,6 +368,7 @@ function validateManifestLightweight(manifest) {
     'buildConfig',
     'scripts',
     'config',
+    'artifacts',
   ]);
 
   for (const field of ['name', 'version', 'description', 'marketplace']) {
@@ -1363,13 +1379,400 @@ function validateConfigSchemaLightweight(config) {
   }
 }
 
+function configSchemaKeys(manifest) {
+  const schema = manifest.config?.schema;
+  return isRecord(schema) ? new Set(Object.keys(schema)) : new Set();
+}
+
+function defaultConfigValues(manifest) {
+  const schema = manifest.config?.schema;
+  const values = {};
+  if (!isRecord(schema)) return values;
+  for (const [key, field] of Object.entries(schema)) {
+    if (isRecord(field) && Object.prototype.hasOwnProperty.call(field, 'default')) {
+      values[key] = field.default;
+    }
+  }
+  return values;
+}
+
+function validateArtifactId(value, fieldName) {
+  const id = validateManifestString(value, fieldName);
+  if (!id) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(id)) {
+    error(`${fieldName}: expected a stable id using letters, numbers, ".", "_" or "-"`);
+  }
+  return id;
+}
+
+function validateCodexRoleKey(value, fieldName) {
+  const roleKey = validateManifestString(value, fieldName);
+  if (!roleKey) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(roleKey)) {
+    error(`${fieldName}: expected a valid Codex role key`);
+  }
+  return roleKey;
+}
+
+function validateStringArray(value, fieldName, options = {}) {
+  if (!Array.isArray(value)) {
+    error(`${fieldName} must be an array`);
+    return [];
+  }
+
+  const output = [];
+  for (const [index, entry] of value.entries()) {
+    const itemFieldName = `${fieldName}[${index}]`;
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      error(`${itemFieldName} must be a non-empty string`);
+      continue;
+    }
+    if (options.allowed && !options.allowed.has(entry)) {
+      error(`${itemFieldName}: unsupported ${options.label ?? 'value'} "${entry}"`);
+      continue;
+    }
+    if (!output.includes(entry)) output.push(entry);
+  }
+
+  if (options.requireNonEmpty && output.length === 0) {
+    error(`${fieldName} must contain at least one value`);
+  }
+
+  return output;
+}
+
+function validateArtifactTargetEntry(entry, index, manifest, seen) {
+  const fieldName = `artifacts.targets[${index}]`;
+  const target = expectRecord(entry, fieldName);
+  if (!target) return null;
+
+  validateAllowedKeys(target, fieldName, [
+    'id',
+    'platform',
+    'scopes',
+    'target',
+    'kind',
+    'projectManagedKind',
+    'states',
+    'refreshKeys',
+    'requiresCodexProjectConfig',
+    'roleKey',
+  ]);
+
+  const id = validateArtifactId(target.id, `${fieldName}.id`);
+  const platform = validateManifestString(target.platform, `${fieldName}.platform`);
+  const artifactTarget = validateManifestString(target.target, `${fieldName}.target`);
+  if (platform && platform !== 'codex') {
+    error(`${fieldName}.platform: dynamic Codex artifacts must use "codex"`);
+  }
+  if (artifactTarget && !ARTIFACT_TARGETS.has(artifactTarget)) {
+    error(`${fieldName}.target: unsupported artifact target "${artifactTarget}"`);
+  }
+
+  const key = id && artifactTarget ? `${id}:${artifactTarget}` : null;
+  if (key) {
+    if (seen.has(key)) {
+      error(`${fieldName}: duplicate artifact id + target "${key}"`);
+    }
+    seen.add(key);
+  }
+
+  const expectedKind = ARTIFACT_KIND_BY_TARGET[artifactTarget];
+  const kind = target.kind === undefined
+    ? expectedKind
+    : validateManifestString(target.kind, `${fieldName}.kind`);
+  if (kind && !ARTIFACT_KINDS.has(kind)) {
+    error(`${fieldName}.kind: unsupported artifact kind "${kind}"`);
+  }
+  if (expectedKind && kind && kind !== expectedKind) {
+    error(`${fieldName}.kind: target "${artifactTarget}" requires kind "${expectedKind}"`);
+  }
+
+  const expectedProjectManagedKind = ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET[artifactTarget];
+  const projectManagedKind = target.projectManagedKind === undefined
+    ? expectedProjectManagedKind
+    : validateManifestString(target.projectManagedKind, `${fieldName}.projectManagedKind`);
+  if (projectManagedKind && !ARTIFACT_PROJECT_MANAGED_KINDS.has(projectManagedKind)) {
+    error(`${fieldName}.projectManagedKind: unsupported Codex project managed kind "${projectManagedKind}"`);
+  }
+  if (
+    expectedProjectManagedKind &&
+    projectManagedKind &&
+    projectManagedKind !== expectedProjectManagedKind
+  ) {
+    error(
+      `${fieldName}.projectManagedKind: target "${artifactTarget}" must map to "${expectedProjectManagedKind}"`,
+    );
+  }
+
+  const scopes = validateStringArray(target.scopes, `${fieldName}.scopes`, {
+    allowed: ARTIFACT_SCOPES,
+    label: 'artifact scope',
+    requireNonEmpty: true,
+  });
+  const states = validateStringArray(target.states, `${fieldName}.states`, {
+    allowed: ARTIFACT_STATES,
+    label: 'artifact state',
+    requireNonEmpty: true,
+  });
+  const refreshKeys = validateStringArray(target.refreshKeys, `${fieldName}.refreshKeys`);
+  const schemaKeys = configSchemaKeys(manifest);
+  for (const [refreshIndex, refreshKey] of refreshKeys.entries()) {
+    if (!schemaKeys.has(refreshKey)) {
+      error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
+    }
+  }
+
+  if (
+    target.requiresCodexProjectConfig !== undefined &&
+    typeof target.requiresCodexProjectConfig !== 'boolean'
+  ) {
+    error(`${fieldName}.requiresCodexProjectConfig must be a boolean`);
+  }
+
+  let roleKey;
+  if (artifactTarget === 'codex.agentRole') {
+    roleKey = validateCodexRoleKey(target.roleKey, `${fieldName}.roleKey`);
+    if (!roleKey) {
+      error(`${fieldName}.roleKey: codex.agentRole targets must declare a static roleKey`);
+    }
+  } else if (target.roleKey !== undefined) {
+    error(`${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets`);
+  }
+
+  return {
+    id,
+    platform,
+    scopes,
+    target: artifactTarget,
+    kind,
+    projectManagedKind,
+    states,
+    refreshKeys,
+    roleKey,
+  };
+}
+
+function validateArtifactsConfigLightweight(manifest) {
+  if (manifest.artifacts === undefined) return [];
+  const artifacts = expectRecord(manifest.artifacts, 'artifacts');
+  if (!artifacts) return [];
+  validateAllowedKeys(artifacts, 'artifacts', ['targets']);
+  if (artifacts.targets === undefined) return [];
+  if (!Array.isArray(artifacts.targets)) {
+    error('artifacts.targets must be an array');
+    return [];
+  }
+
+  const products = manifest.marketplace?.policy?.products;
+  const normalizedProducts = Array.isArray(products)
+    ? products.map(normalizeManifestProductToken)
+    : [];
+  if (!normalizedProducts.includes('CODEX') || normalizedProducts.includes('CLAUDE')) {
+    error('artifacts.targets with Codex targets must declare marketplace.policy.products as Codex-only');
+  }
+
+  const seen = new Set();
+  return artifacts.targets
+    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen))
+    .filter(Boolean);
+}
+
+function validateArtifactPlanRefreshKeys(refreshKeys, declaration, fieldName) {
+  const keys = validateStringArray(refreshKeys, `${fieldName}.refreshKeys`);
+  for (const [index, key] of keys.entries()) {
+    if (!declaration.refreshKeys.includes(key)) {
+      error(`${fieldName}.refreshKeys[${index}]: "${key}" is not declared for artifact "${declaration.id}"`);
+    }
+  }
+  for (const declaredKey of declaration.refreshKeys) {
+    if (!keys.includes(declaredKey)) {
+      error(`${fieldName}: artifact "${declaration.id}" must preserve declared refresh key "${declaredKey}"`);
+    }
+  }
+}
+
+function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
+  const planField = `scripts.artifacts.render fixture (${scopeLabel})`;
+  const root = expectRecord(plan, planField);
+  if (!root) return;
+  validateAllowedKeys(root, planField, ['version', 'artifacts']);
+  if (root.version !== 1) {
+    error(`${planField}.version must be 1`);
+  }
+  if (!Array.isArray(root.artifacts)) {
+    error(`${planField}.artifacts must be an array`);
+    return;
+  }
+
+  const byKey = new Map(declarations.map((target) => [`${target.id}:${target.target}`, target]));
+  const returned = new Set();
+
+  root.artifacts.forEach((artifact, index) => {
+    const fieldName = `${planField}.artifacts[${index}]`;
+    const entry = expectRecord(artifact, fieldName);
+    if (!entry) return;
+    validateAllowedKeys(entry, fieldName, [
+      'id',
+      'platform',
+      'target',
+      'kind',
+      'state',
+      'refreshKeys',
+      'disabledReason',
+      'roleKey',
+      'content',
+    ]);
+    const id = validateArtifactId(entry.id, `${fieldName}.id`);
+    const target = validateManifestString(entry.target, `${fieldName}.target`);
+    const key = id && target ? `${id}:${target}` : null;
+    const declaration = key ? byKey.get(key) : null;
+    if (!declaration) {
+      error(`${fieldName}: artifact "${key ?? '<unknown>'}" is not declared for ${scopeLabel}`);
+      return;
+    }
+    if (returned.has(key)) {
+      error(`${fieldName}: duplicate artifact id + target "${key}"`);
+    }
+    returned.add(key);
+
+    if (entry.platform !== declaration.platform) {
+      error(`${fieldName}.platform: expected "${declaration.platform}"`);
+    }
+    if (entry.kind !== declaration.kind) {
+      error(`${fieldName}.kind: expected "${declaration.kind}"`);
+    }
+    if (!declaration.states.includes(entry.state)) {
+      error(`${fieldName}.state: "${entry.state}" is not declared for artifact "${declaration.id}"`);
+    }
+    validateArtifactPlanRefreshKeys(entry.refreshKeys, declaration, fieldName);
+    if (entry.state === 'present' && entry.content === undefined) {
+      error(`${fieldName}.content is required when state is "present"`);
+    }
+    if (
+      entry.disabledReason !== undefined &&
+      (typeof entry.disabledReason !== 'string' || entry.disabledReason.trim() === '')
+    ) {
+      error(`${fieldName}.disabledReason must be a non-empty string`);
+    }
+    if (declaration.target === 'codex.agentRole') {
+      if (entry.roleKey !== declaration.roleKey) {
+        error(`${fieldName}.roleKey: expected "${declaration.roleKey}" from static metadata`);
+      }
+      if (isRecord(entry.content)) {
+        const registration = entry.content.registration;
+        if (isRecord(registration) && registration.config_file !== undefined) {
+          error(`${fieldName}.content.registration.config_file must be generated by AW, not renderer`);
+        }
+        const roleFile = entry.content.roleFile;
+        if (isRecord(roleFile) && roleFile.name !== declaration.roleKey) {
+          error(`${fieldName}.content.roleFile.name: expected "${declaration.roleKey}"`);
+        }
+      }
+    } else if (entry.roleKey !== undefined) {
+      error(`${fieldName}.roleKey is only supported for codex.agentRole artifacts`);
+    }
+  });
+
+  for (const declaration of declarations) {
+    const key = `${declaration.id}:${declaration.target}`;
+    if (!returned.has(key)) {
+      error(`${planField}: renderer must return artifact "${declaration.id}" target "${declaration.target}"`);
+    }
+  }
+}
+
+function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations) {
+  if (!renderEntry || declarations.length === 0) return;
+
+  const scopes = [...new Set(declarations.flatMap((target) => target.scopes))];
+  const values = defaultConfigValues(manifest);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
+  try {
+    for (const scope of scopes) {
+      const scopedDeclarations = declarations.filter((target) => target.scopes.includes(scope));
+      const contextPath = path.join(tempRoot, `context-${scope}.json`);
+      fs.writeFileSync(
+        contextPath,
+        JSON.stringify({
+          event: 'install',
+          platform: 'codex',
+          scope,
+          plugin: {
+            name: manifest.name,
+            version: manifest.version,
+            rootDir: pluginDir,
+          },
+          rootDir: pluginDir,
+          manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
+          config: { schema: manifest.config?.schema ?? {}, values },
+          renderConfig: { values },
+          artifactRenderConfig: { values },
+          changedConfigKeys: [],
+          previousArtifacts: [],
+          awHome: path.join(tempRoot, 'aw-home'),
+          codexHome: path.join(tempRoot, 'codex-home'),
+          claudeHome: path.join(tempRoot, 'claude-home'),
+        }),
+        'utf8',
+      );
+      const result = spawnSync(
+        process.execPath,
+        [path.join(pluginDir, renderEntry.path), ...(renderEntry.args ?? [])],
+        {
+          cwd: pluginDir,
+          env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath },
+          encoding: 'utf8',
+          timeout: 5000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      const fieldName = `scripts.artifacts.render fixture (${scope})`;
+      if (result.error) {
+        error(`${fieldName} failed: ${result.error.message}`);
+        continue;
+      }
+      if (result.status !== 0) {
+        const stderr = String(result.stderr ?? '').trim().split('\n')[0] ?? '';
+        error(`${fieldName} exited with code ${result.status}${stderr ? `: ${stderr}` : ''}`);
+        continue;
+      }
+      let plan;
+      try {
+        plan = JSON.parse(result.stdout);
+      } catch (e) {
+        error(`${fieldName} stdout must be JSON ArtifactPlan: ${e.message}`);
+        continue;
+      }
+      validateRenderedArtifactPlan(plan, scopedDeclarations, scope);
+    }
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry) {
+  const declarations = validateArtifactsConfigLightweight(manifest);
+  const hasTargets = declarations.length > 0;
+  const hasRenderer = Boolean(manifest.scripts?.artifacts?.render);
+
+  if (hasTargets && !hasRenderer) {
+    error('artifacts.targets requires scripts.artifacts.render');
+  }
+  if (hasRenderer && !hasTargets) {
+    error('scripts.artifacts.render requires artifacts.targets');
+  }
+
+  runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations);
+}
+
 function validateScriptsLightweight(pluginDir, manifest) {
   validateConfigSchemaLightweight(manifest.config);
-  if (manifest.scripts === undefined) return;
+  if (manifest.scripts === undefined) return null;
 
   const scripts = expectRecord(manifest.scripts, 'scripts');
-  if (!scripts) return;
-  validateAllowedKeys(scripts, 'scripts', ['timeoutMs', 'lifecycle', 'helpers', 'node', 'tests']);
+  if (!scripts) return null;
+  validateAllowedKeys(scripts, 'scripts', ['timeoutMs', 'lifecycle', 'helpers', 'node', 'artifacts', 'tests']);
   if (
     scripts.timeoutMs !== undefined &&
     (!Number.isInteger(scripts.timeoutMs) ||
@@ -1380,6 +1783,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
   }
 
   const runtimeNodeEntries = [];
+  let artifactRenderEntry = null;
   let packageMeta = null;
 
   if (scripts.helpers !== undefined) {
@@ -1437,6 +1841,25 @@ function validateScriptsLightweight(pluginDir, manifest) {
     }
   }
 
+  if (scripts.artifacts !== undefined) {
+    const artifacts = expectRecord(scripts.artifacts, 'scripts.artifacts');
+    if (artifacts) {
+      validateAllowedKeys(artifacts, 'scripts.artifacts', ['render']);
+      if (artifacts.render !== undefined) {
+        artifactRenderEntry = validateScriptEntry(pluginDir, artifacts.render, 'scripts.artifacts.render', {
+          requireNodeRunner: true,
+          requireNodePath: true,
+        });
+        if (artifactRenderEntry) {
+          runtimeNodeEntries.push({
+            path: artifactRenderEntry.path,
+            fieldName: 'scripts.artifacts.render.path',
+          });
+        }
+      }
+    }
+  }
+
   if (scripts.tests !== undefined) {
     const tests = expectRecord(scripts.tests, 'scripts.tests');
     if (tests) {
@@ -1477,6 +1900,8 @@ function validateScriptsLightweight(pluginDir, manifest) {
       allowDevDependencies: false,
     },
   );
+
+  return artifactRenderEntry;
 }
 
 function validateMcpContent(pluginDir, manifest) {
@@ -2122,7 +2547,8 @@ async function validatePluginDir(pluginDir) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateSkillTriggers(pluginDir, manifest);
-  validateScriptsLightweight(pluginDir, manifest);
+  const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
+  validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   warnCodexProjectScopeLimitations(manifest);

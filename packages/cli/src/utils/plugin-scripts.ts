@@ -173,10 +173,26 @@ function lifecycleClaudeHome(env: NodeJS.ProcessEnv): string {
   return env.AW_CLAUDE_HOME || path.join(resolveAwHome(env), 'isolated-claude-home');
 }
 
-async function fileDigest(filePath: string): Promise<string> {
+export async function calculateFileDigest(filePath: string): Promise<string> {
   const hash = crypto.createHash('sha256');
   hash.update(await fs.readFile(filePath));
   return `sha256:${hash.digest('hex')}`;
+}
+
+export async function resolveBundledPluginFilePath(options: {
+  bundleRoot: string;
+  pluginRelativePath: string;
+  fieldName: string;
+}): Promise<string> {
+  const resolvedBundleRoot = await fs.realpath(options.bundleRoot);
+  const resolvedPath = await fs.realpath(
+    path.join(options.bundleRoot, stripDotSlash(options.pluginRelativePath)),
+  );
+  if (!isInsidePath(resolvedPath, resolvedBundleRoot)) {
+    throw new Error(`${options.fieldName} "${options.pluginRelativePath}" resolves outside the plugin bundle root.`);
+  }
+
+  return resolvedPath;
 }
 
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
@@ -230,7 +246,7 @@ export async function prepareLifecycleConfigSnapshot(
   const env = options.env ?? process.env;
   const manifestPath = path.join(options.plugin.rootDir, SOURCE_MANIFEST_PATH);
   const [manifestDigest, bundleFingerprint, catalog, scopeIdentity] = await Promise.all([
-    fileDigest(manifestPath),
+    calculateFileDigest(manifestPath),
     calculatePluginBundleFingerprint(options.plugin.rootDir),
     resolveCurrentCatalog(env).catch(() => undefined),
     resolveSnapshotScopeIdentity(options.platform, options.scope, options.cwd),
@@ -384,7 +400,7 @@ async function createTargetFromPlugin(options: {
       bundleRoot: options.plugin.rootDir,
       sourceManifest: options.plugin.manifest,
       manifestPath: options.plugin.manifestPath,
-      manifestDigest: await fileDigest(options.plugin.manifestPath),
+      manifestDigest: await calculateFileDigest(options.plugin.manifestPath),
       warnings: options.warnings ?? [],
     };
   }
@@ -397,10 +413,11 @@ async function createTargetFromPlugin(options: {
   }
 
   const bundleRoot = await fs.realpath(options.plugin.rootDir);
-  const entryPath = await fs.realpath(path.join(options.plugin.rootDir, stripDotSlash(entry.path)));
-  if (!isInsidePath(entryPath, bundleRoot)) {
-    throw new Error(`Lifecycle script "${entry.path}" resolves outside the plugin bundle root.`);
-  }
+  const entryPath = await resolveBundledPluginFilePath({
+    bundleRoot,
+    pluginRelativePath: entry.path,
+    fieldName: 'Lifecycle script',
+  });
 
   return {
     noOp: false,
@@ -410,7 +427,7 @@ async function createTargetFromPlugin(options: {
     bundleRoot,
     sourceManifest: options.plugin.manifest,
     manifestPath: options.plugin.manifestPath,
-    manifestDigest: await fileDigest(options.plugin.manifestPath),
+    manifestDigest: await calculateFileDigest(options.plugin.manifestPath),
     warnings: options.warnings ?? [],
   };
 }
@@ -433,7 +450,7 @@ async function createTargetFromSnapshot(options: {
     throw new Error('snapshot manifest path is outside the snapshot bundle root');
   }
 
-  const manifestDigest = await fileDigest(manifestPath);
+  const manifestDigest = await calculateFileDigest(manifestPath);
   if (manifestDigest !== options.snapshot.sourceManifestDigest) {
     throw new Error('snapshot manifest digest does not match ledger metadata');
   }
@@ -653,12 +670,12 @@ export function resolveLifecycleScriptTimeoutMs(options: {
   return PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS;
 }
 
-export function buildLifecycleSpawnEnv(options: {
+export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv;
   contextPath: string;
   tempDir: string;
   plugin: { name: string; version: string };
-  event: PluginLifecycleEvent | 'test';
+  event: string;
   platform: PlatformName;
   scope: Scope;
   bundleRoot: string;
@@ -698,6 +715,20 @@ export function buildLifecycleSpawnEnv(options: {
   return output;
 }
 
+export function buildLifecycleSpawnEnv(options: {
+  commandEnv: NodeJS.ProcessEnv;
+  contextPath: string;
+  tempDir: string;
+  plugin: { name: string; version: string };
+  event: PluginLifecycleEvent | 'test';
+  platform: PlatformName;
+  scope: Scope;
+  bundleRoot: string;
+  runtimeOs?: PluginLifecycleRuntimeOs;
+}): NodeJS.ProcessEnv {
+  return buildPluginScriptSpawnEnv(options);
+}
+
 export function collectSensitivePluginConfigValues(
   manifest: PluginManifestSource,
   values: Record<string, string | number | boolean>,
@@ -719,7 +750,10 @@ export function redactPluginScriptOutput(value: string, sensitiveValues: readonl
   return output;
 }
 
-function summarizeOutput(value: string, sensitiveValues: readonly string[]): string {
+export function summarizePluginScriptOutput(
+  value: string,
+  sensitiveValues: readonly string[],
+): string {
   const normalized = value.trim().slice(0, 4000);
   return redactPluginScriptOutput(normalized, sensitiveValues);
 }
@@ -818,7 +852,7 @@ export async function writeLifecycleScriptContext(options: {
   };
 }
 
-const defaultLifecycleProcessRunner: LifecycleProcessRunner = {
+export const defaultPluginProcessRunner: LifecycleProcessRunner = {
   run(invocation, options) {
     return new Promise((resolve, reject) => {
       const child = spawn(invocation.command, invocation.args, {
@@ -984,9 +1018,9 @@ export async function runLifecycleScript(options: {
       },
     });
 
-    const result = await (options.runner ?? defaultLifecycleProcessRunner).run(invocation, { timeoutMs });
-    const stdoutSummary = summarizeOutput(result.stdout, writtenContext.sensitiveValues);
-    const stderrSummary = summarizeOutput(result.stderr, writtenContext.sensitiveValues);
+    const result = await (options.runner ?? defaultPluginProcessRunner).run(invocation, { timeoutMs });
+    const stdoutSummary = summarizePluginScriptOutput(result.stdout, writtenContext.sensitiveValues);
+    const stderrSummary = summarizePluginScriptOutput(result.stderr, writtenContext.sensitiveValues);
     await emitLifecycleEvent(options.context, {
       type: 'lifecycle.finish',
       plugin: options.pluginName,

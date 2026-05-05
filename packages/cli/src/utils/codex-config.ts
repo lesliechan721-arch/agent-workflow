@@ -75,6 +75,11 @@ export interface CodexManagedInstructionBlock {
   value: string;
 }
 
+export interface CodexManagedInstructionFragment {
+  artifactId: string;
+  value: string;
+}
+
 export interface CodexMarketplaceSnapshot {
   name: string;
   source?: string;
@@ -93,6 +98,17 @@ export interface CodexProjectSnapshot {
   trustLevel?: string;
 }
 
+export interface CodexAgentRegistrationConfig {
+  description?: string;
+  configFile?: string;
+}
+
+export interface CodexAgentRegistrationSnapshot {
+  key: string;
+  description?: string;
+  configFile?: string;
+}
+
 export interface CodexDeveloperInstructionsSnapshot {
   defined: boolean;
   value?: string;
@@ -103,6 +119,7 @@ export interface CodexConfigSnapshot {
   marketplaces: Record<string, CodexMarketplaceSnapshot>;
   plugins: Record<string, CodexPluginSnapshot>;
   projects: Record<string, CodexProjectSnapshot>;
+  agents: Record<string, CodexAgentRegistrationSnapshot>;
   mcpServers: Record<string, CodexMcpServerSnapshot>;
   developerInstructions: CodexDeveloperInstructionsSnapshot;
 }
@@ -110,6 +127,8 @@ export interface CodexConfigSnapshot {
 export interface CodexConfigTransaction {
   upsertManagedInstructionBlock?: CodexManagedInstructionBlock;
   removeManagedInstructionPluginName?: string;
+  upsertAgentRegistrations?: Record<string, CodexAgentRegistrationConfig>;
+  removeAgentRegistrations?: string[];
   upsertMcpServers?: Record<string, CodexMcpServerConfig>;
   removeMcpServers?: string[];
 }
@@ -809,6 +828,36 @@ function renderManagedInstructionBlock(
   ].join('\n') + '\n';
 }
 
+export function composeManagedDeveloperInstructionsBlock(
+  pluginName: string,
+  fragments: readonly CodexManagedInstructionFragment[],
+): CodexManagedInstructionBlock {
+  const seenArtifactIds = new Set<string>();
+  const normalizedValues = [...fragments]
+    .map((fragment) => {
+      const artifactId = fragment.artifactId.trim();
+      if (!artifactId) {
+        throw new Error('Managed instruction fragments must declare a non-empty artifactId.');
+      }
+      if (seenArtifactIds.has(artifactId)) {
+        throw new Error(`Duplicate managed instruction fragment id: ${artifactId}.`);
+      }
+      seenArtifactIds.add(artifactId);
+      return {
+        artifactId,
+        value: fragment.value.trim(),
+      };
+    })
+    .sort((left, right) => left.artifactId.localeCompare(right.artifactId))
+    .map((fragment) => fragment.value)
+    .filter((value) => value.length > 0);
+
+  return {
+    pluginName,
+    value: normalizedValues.join('\n\n'),
+  };
+}
+
 function renderManagedInstructionSegments(
   segments: ManagedInstructionSegment[],
 ): string {
@@ -939,6 +988,7 @@ export function parseCodexConfig(content: string): CodexConfigSnapshot {
   const marketplaces: Record<string, CodexMarketplaceSnapshot> = {};
   const plugins: Record<string, CodexPluginSnapshot> = {};
   const projects: Record<string, CodexProjectSnapshot> = {};
+  const agents: Record<string, CodexAgentRegistrationSnapshot> = {};
   const mcpServers = collectCodexMcpServerSnapshots(document);
 
   for (const entry of document.topLevel.body) {
@@ -990,6 +1040,17 @@ export function parseCodexConfig(content: string): CodexConfigSnapshot {
         trustLevel:
           typeof values.trust_level === 'string' ? values.trust_level : undefined,
       };
+      continue;
+    }
+
+    if (segments[0] === 'agents') {
+      agents[segments[1]] = {
+        key: segments[1],
+        description:
+          typeof values.description === 'string' ? values.description : undefined,
+        configFile:
+          typeof values.config_file === 'string' ? values.config_file : undefined,
+      };
     }
   }
 
@@ -1019,6 +1080,7 @@ export function parseCodexConfig(content: string): CodexConfigSnapshot {
     marketplaces,
     plugins,
     projects,
+    agents,
     mcpServers,
     developerInstructions: {
       defined: developerInstructionsValue !== undefined,
@@ -1060,6 +1122,28 @@ export function removeCodexPluginEnabled(
   name: string,
 ): string {
   return removeSection(content, 'plugins', name);
+}
+
+export function upsertCodexAgentRegistration(
+  content: string,
+  roleKey: string,
+  config: CodexAgentRegistrationConfig,
+): string {
+  const entries: Array<[string, ScalarTomlValue]> = [];
+  if (config.configFile !== undefined) {
+    entries.push(['config_file', config.configFile]);
+  }
+  if (config.description !== undefined) {
+    entries.push(['description', config.description]);
+  }
+  return upsertSectionEntries(content, 'agents', roleKey, entries);
+}
+
+export function removeCodexAgentRegistration(
+  content: string,
+  roleKey: string,
+): string {
+  return removeSection(content, 'agents', roleKey);
 }
 
 export function normalizeRenderedCodexMcpServers(
@@ -1358,8 +1442,16 @@ export function applyCodexConfigTransaction(
     next = removeCodexMcpServer(next, serverName);
   }
 
+  for (const roleKey of [...new Set(transaction.removeAgentRegistrations ?? [])]) {
+    next = removeCodexAgentRegistration(next, roleKey);
+  }
+
   for (const [serverName, serverConfig] of Object.entries(transaction.upsertMcpServers ?? {})) {
     next = upsertCodexMcpServer(next, serverName, serverConfig);
+  }
+
+  for (const [roleKey, registration] of Object.entries(transaction.upsertAgentRegistrations ?? {})) {
+    next = upsertCodexAgentRegistration(next, roleKey, registration);
   }
 
   if (transaction.removeManagedInstructionPluginName) {

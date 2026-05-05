@@ -1,16 +1,21 @@
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyCodexConfigTransactionFile,
+  composeManagedDeveloperInstructionsBlock,
   parseRenderedCodexMcpFileContent,
   getAwManagedSentinelPrefix,
   parseCodexConfig,
+  removeCodexAgentRegistration,
   removeCodexMcpServer,
   removeManagedDeveloperInstructions,
   resolveCodexMcpServerStatusSignal,
+  upsertCodexAgentRegistration,
   upsertCodexMcpServer,
   upsertCodexMarketplace,
   upsertCodexPluginEnabled,
@@ -109,6 +114,67 @@ describe('codex-config', () => {
         value: `${getAwManagedSentinelPrefix()} bad`,
       }),
     ).toThrow('[[aw-managed:');
+  });
+
+  it('composes multiple managed instruction fragments in a stable artifact-id order', () => {
+    const left = composeManagedDeveloperInstructionsBlock('codex-explore', [
+      {
+        artifactId: 'role-guidance',
+        value: 'Use the built-in explorer role.',
+      },
+      {
+        artifactId: 'lightweight-instruction',
+        value: 'Spawn read-only explorers for code search.',
+      },
+    ]);
+    const right = composeManagedDeveloperInstructionsBlock('codex-explore', [
+      {
+        artifactId: 'lightweight-instruction',
+        value: 'Spawn read-only explorers for code search.',
+      },
+      {
+        artifactId: 'role-guidance',
+        value: 'Use the built-in explorer role.',
+      },
+    ]);
+
+    expect(left).toEqual(right);
+    expect(left.value).toBe(
+      [
+        'Spawn read-only explorers for code search.',
+        'Use the built-in explorer role.',
+      ].join('\n\n'),
+    );
+  });
+
+  it('upserts and removes [agents.<roleKey>] registrations without disturbing other TOML', () => {
+    const input = [
+      'title = "workspace"',
+      '',
+      '[plugins."other@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n');
+
+    const next = upsertCodexAgentRegistration(input, 'codex-explorer', {
+      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+      description: 'Codex explorer role',
+    });
+
+    expect(next).toContain('[agents.codex-explorer]');
+    expect(next).toContain('config_file = "agents/aw-codex-explore-codex-explorer.toml"');
+    expect(next).toContain('description = "Codex explorer role"');
+    expect(next).toContain('[plugins."other@aw"]');
+    expect(parseCodexConfig(next).agents['codex-explorer']).toEqual({
+      key: 'codex-explorer',
+      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+      description: 'Codex explorer role',
+    });
+
+    const removed = removeCodexAgentRegistration(next, 'codex-explorer');
+    expect(removed).not.toContain('[agents.codex-explorer]');
+    expect(removed).toContain('[plugins."other@aw"]');
+    expect(parseCodexConfig(removed).agents).toEqual({});
   });
 
   it('writes quoted-key MCP servers and preserves sibling content', () => {
@@ -292,5 +358,42 @@ describe('codex-config', () => {
       state: 'orphan',
       tracked: false,
     });
+  });
+
+  it('applies instruction and agent registration changes through one config transaction baseline', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-config-transaction-'));
+    const configPath = path.join(root, 'config.toml');
+    const baselineContent = [
+      '[plugins."other@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n');
+    await fs.writeFile(configPath, baselineContent, 'utf8');
+
+    const result = await applyCodexConfigTransactionFile(configPath, {
+      upsertManagedInstructionBlock: {
+        pluginName: 'codex-explore',
+        value: 'Use the built-in explorer role.',
+      },
+      upsertAgentRegistrations: {
+        'codex-explorer': {
+          configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+          description: 'Codex explorer role',
+        },
+      },
+    });
+
+    expect(result.baselineContent).toBe(baselineContent);
+    expect(result.wrote).toBe(true);
+    expect(result.snapshot.developerInstructions.managedBlocks['codex-explore']).toEqual({
+      pluginName: 'codex-explore',
+      value: 'Use the built-in explorer role.\n',
+    });
+    expect(result.snapshot.agents['codex-explorer']).toEqual({
+      key: 'codex-explorer',
+      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+      description: 'Codex explorer role',
+    });
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(result.content);
   });
 });

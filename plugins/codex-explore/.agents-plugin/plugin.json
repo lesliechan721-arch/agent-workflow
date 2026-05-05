@@ -1,0 +1,93 @@
+{
+  "name": "codex-explore",
+  "version": "0.1.0",
+  "description": "为 Codex 提供轻量 explorer 指令、手动 $codex-explore workflow 与专用只读探索 role。",
+  "skills": "./skills",
+  "skillTriggers": {
+    "codex-explore": {
+      "allowInstallOverride": true
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex", "explorer", "research"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Codex Explore",
+    "shortDescription": "Codex 的轻量 explorer 指令与专用只读探索 role",
+    "capabilities": ["Skills"]
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    },
+    "tests": {
+      "node": ["./scripts/render-artifacts.test.mjs"]
+    }
+  },
+  "config": {
+    "schema": {
+      "enableLightweightInstruction": {
+        "type": "boolean",
+        "title": "Enable lightweight instruction",
+        "default": true,
+        "description": "Whether to install the lightweight instruction that lets the main Codex agent use the built-in explorer role."
+      },
+      "explorerModel": {
+        "type": "string",
+        "title": "Explorer model",
+        "default": "gpt-5.4-mini",
+        "description": "Model passed to spawn_agent when using the built-in explorer role."
+      },
+      "modelReasoningEffort": {
+        "type": "enum",
+        "title": "Explorer reasoning effort",
+        "values": ["low", "medium", "high", "xhigh"],
+        "default": "medium",
+        "description": "Reasoning effort passed to spawn_agent for explorer tasks."
+      }
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "lightweight-instruction",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.developerInstructionsBlock",
+        "projectManagedKind": "instruction",
+        "states": ["present", "disabled"],
+        "refreshKeys": ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],
+        "requiresCodexProjectConfig": true
+      },
+      {
+        "id": "codex-explorer-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explorer"
+      }
+    ]
+  },
+  "buildConfig": {
+    "fileRules": {
+      "codex": {
+        "include": ["instructions/**", "roles/**"],
+        "exclude": []
+      }
+    }
+  }
+}

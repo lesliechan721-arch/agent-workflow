@@ -1,0 +1,596 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
+
+import type {
+  ArtifactPlan,
+  PlatformName,
+  PluginArtifactRenderScriptEntry,
+  PluginConfigSchema,
+  PluginManifestSource,
+  PluginMeta,
+  Scope,
+} from '../types.js';
+import type {
+  PluginConfigIssue,
+  PluginConfigSource,
+  PluginConfigStore,
+  PluginConfigValue,
+} from './plugin-config.js';
+import {
+  coercePluginConfigValue,
+  readPluginConfigStore,
+  resolveAwProjectRoot,
+} from './plugin-config.js';
+import {
+  buildLifecycleScriptInvocation,
+  buildPluginScriptSpawnEnv,
+  calculateFileDigest,
+  collectSensitivePluginConfigValues,
+  defaultPluginProcessRunner,
+  resolveBundledPluginFilePath,
+  resolveLifecycleScriptTimeoutMs,
+  summarizePluginScriptOutput,
+  type LifecycleProcessRunner,
+  type LifecycleProcessResult,
+  type LifecycleScriptInvocation,
+} from './plugin-scripts.js';
+import { resolveAwHome } from './paths.js';
+
+export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh';
+
+export interface ResolvedArtifactRenderConfig {
+  mode: 'artifact-render';
+  targetScope: Scope;
+  schema?: PluginConfigSchema['schema'];
+  values: Record<string, PluginConfigValue>;
+  sources: Record<string, PluginConfigSource>;
+  issues: PluginConfigIssue[];
+  stores: Record<Scope, PluginConfigStore>;
+}
+
+export interface ArtifactRendererContext {
+  event: ArtifactRenderEvent;
+  platform: PlatformName;
+  scope: Scope;
+  plugin: {
+    name: string;
+    version: string;
+    rootDir: string;
+  };
+  config: {
+    mode: 'artifact-render';
+    targetScope: Scope;
+    schema?: PluginConfigSchema['schema'];
+    values: Record<string, PluginConfigValue>;
+    sources: Record<string, PluginConfigSource>;
+    issues: PluginConfigIssue[];
+  };
+  changedConfigKeys: string[];
+  previousArtifacts: unknown[];
+  paths: {
+    awHome: string;
+    codexHome: string;
+    claudeHome: string;
+    manifestPath: string;
+    configStores: Record<Scope, string>;
+  };
+  renderer: {
+    runner: PluginArtifactRenderScriptEntry['runner'];
+    path: string;
+    args: string[];
+    manifestDigest: string;
+    rendererDigest: string;
+  };
+}
+
+export interface ArtifactRendererTarget {
+  noOp: boolean;
+  entry?: PluginArtifactRenderScriptEntry;
+  entryPath?: string;
+  bundleRoot?: string;
+  sourceManifest?: PluginManifestSource;
+  manifestPath?: string;
+  manifestDigest?: string;
+  rendererDigest?: string;
+}
+
+export interface WrittenArtifactRendererContext {
+  context: ArtifactRendererContext;
+  contextPath: string;
+  tempDir: string;
+  sensitiveValues: string[];
+  cleanup: () => Promise<void>;
+}
+
+export interface RunArtifactRendererResult {
+  plan: ArtifactPlan;
+  target: ArtifactRendererTarget;
+  context: ArtifactRendererContext;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
+  'install',
+  'upgrade',
+  'refresh',
+]);
+
+function artifactRendererCodexHome(env: NodeJS.ProcessEnv): string {
+  return env.AW_CODEX_HOME || path.join(resolveAwHome(env), 'isolated-codex-home');
+}
+
+function artifactRendererClaudeHome(env: NodeJS.ProcessEnv): string {
+  return env.AW_CLAUDE_HOME || path.join(resolveAwHome(env), 'isolated-claude-home');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
+  if (!SUPPORTED_ARTIFACT_RENDER_EVENTS.has(value as ArtifactRenderEvent)) {
+    throw new Error(
+      `Artifact renderer only supports install, upgrade, and refresh events; received "${value}".`,
+    );
+  }
+  return value as ArtifactRenderEvent;
+}
+
+function createIssueMap(): Map<string, PluginConfigIssue> {
+  return new Map<string, PluginConfigIssue>();
+}
+
+async function applyArtifactConfigLayer(options: {
+  values: Record<string, PluginConfigValue>;
+  sources: Record<string, PluginConfigSource>;
+  invalidIssues: Map<string, PluginConfigIssue>;
+  schema: PluginConfigSchema['schema'];
+  entries: Record<string, unknown>;
+  source: PluginConfigSource;
+  projectRoot: string;
+}): Promise<void> {
+  for (const [key, field] of Object.entries(options.schema)) {
+    if (!Object.hasOwn(options.entries, key)) {
+      continue;
+    }
+
+    try {
+      const coerced = await coercePluginConfigValue({
+        key,
+        field,
+        value: options.entries[key],
+        projectRoot: options.projectRoot,
+      });
+      options.values[key] = coerced;
+      options.sources[key] = options.source;
+      options.invalidIssues.delete(key);
+    } catch (error) {
+      delete options.values[key];
+      options.sources[key] = options.source;
+      options.invalidIssues.set(key, {
+        type: 'invalid-config',
+        key,
+        source: options.source,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+export async function resolveArtifactRenderConfig(options: {
+  pluginName?: string;
+  manifest: PluginManifestSource;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ResolvedArtifactRenderConfig> {
+  const pluginName = options.pluginName ?? options.manifest.name;
+  const schema = options.manifest.config?.schema;
+  const projectRoot = resolveAwProjectRoot(options.cwd);
+  const [userStore, projectStore] = await Promise.all([
+    readPluginConfigStore({
+      pluginName,
+      scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    readPluginConfigStore({
+      pluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+  ]);
+
+  if (!schema) {
+    return {
+      mode: 'artifact-render',
+      targetScope: options.scope,
+      schema: undefined,
+      values: {},
+      sources: {},
+      issues: [],
+      stores: {
+        user: userStore,
+        project: projectStore,
+      },
+    };
+  }
+
+  const values: Record<string, PluginConfigValue> = {};
+  const sources: Record<string, PluginConfigSource> = {};
+  const invalidIssues = createIssueMap();
+
+  for (const key of Object.keys(schema)) {
+    sources[key] = 'missing';
+  }
+
+  for (const [key, field] of Object.entries(schema)) {
+    if (field.default === undefined) {
+      continue;
+    }
+    await applyArtifactConfigLayer({
+      values,
+      sources,
+      invalidIssues,
+      schema: { [key]: field },
+      entries: { [key]: field.default },
+      source: 'default',
+      projectRoot,
+    });
+  }
+
+  await applyArtifactConfigLayer({
+    values,
+    sources,
+    invalidIssues,
+    schema,
+    entries: userStore.values,
+    source: 'user',
+    projectRoot,
+  });
+
+  if (options.scope === 'project') {
+    await applyArtifactConfigLayer({
+      values,
+      sources,
+      invalidIssues,
+      schema,
+      entries: projectStore.values,
+      source: 'project',
+      projectRoot,
+    });
+  }
+
+  const issues = [...invalidIssues.values()];
+  for (const [key, field] of Object.entries(schema)) {
+    if (field.required && values[key] === undefined) {
+      issues.push({
+        type: 'missing-required',
+        key,
+        source: sources[key],
+        message: `Config "${key}" is required.`,
+      });
+    }
+  }
+
+  return {
+    mode: 'artifact-render',
+    targetScope: options.scope,
+    schema,
+    values,
+    sources,
+    issues,
+    stores: {
+      user: userStore,
+      project: projectStore,
+    },
+  };
+}
+
+export async function resolveArtifactRendererTarget(
+  plugin: PluginMeta,
+): Promise<ArtifactRendererTarget> {
+  const entry = plugin.manifest.scripts?.artifacts?.render;
+  const bundleRoot = await fs.realpath(plugin.rootDir);
+  const manifestPath = await fs.realpath(plugin.manifestPath);
+  const manifestDigest = await calculateFileDigest(manifestPath);
+
+  if (!entry) {
+    return {
+      noOp: true,
+      bundleRoot,
+      sourceManifest: plugin.manifest,
+      manifestPath,
+      manifestDigest,
+    };
+  }
+
+  const entryPath = await resolveBundledPluginFilePath({
+    bundleRoot,
+    pluginRelativePath: entry.path,
+    fieldName: 'Artifact renderer',
+  });
+
+  return {
+    noOp: false,
+    entry,
+    entryPath,
+    bundleRoot,
+    sourceManifest: plugin.manifest,
+    manifestPath,
+    manifestDigest,
+    rendererDigest: await calculateFileDigest(entryPath),
+  };
+}
+
+export async function writeArtifactRendererContext(options: {
+  target: ArtifactRendererTarget;
+  event: ArtifactRenderEvent;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  commandEnv: NodeJS.ProcessEnv;
+  changedConfigKeys?: string[];
+  previousArtifacts?: unknown[];
+}): Promise<WrittenArtifactRendererContext> {
+  const event = assertArtifactRenderEvent(options.event);
+  if (
+    options.target.noOp ||
+    !options.target.entry ||
+    !options.target.entryPath ||
+    !options.target.bundleRoot ||
+    !options.target.sourceManifest ||
+    !options.target.manifestPath ||
+    !options.target.manifestDigest ||
+    !options.target.rendererDigest
+  ) {
+    throw new Error('Cannot write artifact renderer context for a no-op target.');
+  }
+
+  const config = await resolveArtifactRenderConfig({
+    pluginName: options.target.sourceManifest.name,
+    manifest: options.target.sourceManifest,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.commandEnv,
+  });
+
+  const context: ArtifactRendererContext = {
+    event,
+    platform: options.platform,
+    scope: options.scope,
+    plugin: {
+      name: options.target.sourceManifest.name,
+      version: options.target.sourceManifest.version,
+      rootDir: options.target.bundleRoot,
+    },
+    config: {
+      mode: config.mode,
+      targetScope: config.targetScope,
+      schema: config.schema,
+      values: config.values,
+      sources: config.sources,
+      issues: config.issues,
+    },
+    changedConfigKeys: options.changedConfigKeys ?? [],
+    previousArtifacts: options.previousArtifacts ?? [],
+    paths: {
+      awHome: resolveAwHome(options.commandEnv),
+      codexHome: artifactRendererCodexHome(options.commandEnv),
+      claudeHome: artifactRendererClaudeHome(options.commandEnv),
+      manifestPath: options.target.manifestPath,
+      configStores: {
+        user: config.stores.user.path,
+        project: config.stores.project.path,
+      },
+    },
+    renderer: {
+      runner: options.target.entry.runner,
+      path: options.target.entryPath,
+      args: options.target.entry.args ?? [],
+      manifestDigest: options.target.manifestDigest,
+      rendererDigest: options.target.rendererDigest,
+    },
+  };
+
+  const tempRoot = path.join(resolveAwHome(options.commandEnv), 'tmp');
+  await fs.ensureDir(tempRoot);
+  const tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-artifact-render-'));
+  const contextPath = path.join(tempDir, 'context.json');
+  await fs.writeJson(contextPath, context, { spaces: 2 });
+  try {
+    await fs.chmod(contextPath, 0o600);
+  } catch {
+    // Best effort on non-POSIX filesystems.
+  }
+
+  return {
+    context,
+    contextPath,
+    tempDir,
+    sensitiveValues: collectSensitivePluginConfigValues(
+      options.target.sourceManifest,
+      config.values,
+    ),
+    cleanup: async () => {
+      await fs.remove(tempDir);
+    },
+  };
+}
+
+function summarizeRenderOutput(value: string, sensitiveValues: readonly string[]): string {
+  const summary = summarizePluginScriptOutput(value, sensitiveValues);
+  return summary === '' ? '<empty>' : summary;
+}
+
+function assertArtifactPlanEnvelope(
+  value: unknown,
+  output: { stdoutSummary: string; stderrSummary: string },
+): ArtifactPlan {
+  if (!isRecord(value)) {
+    throw new Error(
+      `Artifact renderer must write a JSON object to stdout. stdout: ${output.stdoutSummary}. stderr: ${output.stderrSummary}`,
+    );
+  }
+  if (value.version !== 1) {
+    throw new Error(
+      `Artifact renderer returned unsupported plan version "${String(value.version)}". stderr: ${output.stderrSummary}`,
+    );
+  }
+  if (!Array.isArray(value.artifacts)) {
+    throw new Error(
+      `Artifact renderer returned an invalid plan: "artifacts" must be an array. stdout: ${output.stdoutSummary}. stderr: ${output.stderrSummary}`,
+    );
+  }
+  return value as unknown as ArtifactPlan;
+}
+
+function buildArtifactRendererInvocation(options: {
+  entry: PluginArtifactRenderScriptEntry;
+  entryPath: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): LifecycleScriptInvocation {
+  return buildLifecycleScriptInvocation(options);
+}
+
+function assertRefreshKeysForEvent(
+  event: string,
+  changedConfigKeys: readonly string[] | undefined,
+): string[] {
+  assertArtifactRenderEvent(event);
+  const keys = changedConfigKeys ? [...changedConfigKeys] : [];
+  if (event === 'refresh' && keys.length === 0) {
+    throw new Error('Artifact renderer refresh requires changedConfigKeys.');
+  }
+  return keys;
+}
+
+async function runArtifactRendererProcess(options: {
+  invocation: LifecycleScriptInvocation;
+  timeoutMs: number;
+  runner?: LifecycleProcessRunner;
+}): Promise<LifecycleProcessResult> {
+  return (options.runner ?? defaultPluginProcessRunner).run(options.invocation, {
+    timeoutMs: options.timeoutMs,
+  });
+}
+
+export async function runArtifactRenderer(options: {
+  event: ArtifactRenderEvent;
+  plugin: PluginMeta;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  commandEnv?: NodeJS.ProcessEnv;
+  changedConfigKeys?: string[];
+  previousArtifacts?: unknown[];
+  scriptTimeoutMs?: number;
+  runner?: LifecycleProcessRunner;
+}): Promise<RunArtifactRendererResult> {
+  const event = assertArtifactRenderEvent(options.event);
+  const commandEnv = options.commandEnv ?? process.env;
+  const changedConfigKeys = assertRefreshKeysForEvent(
+    event,
+    options.changedConfigKeys,
+  );
+  const target = await resolveArtifactRendererTarget(options.plugin);
+  if (target.noOp) {
+    throw new Error(`Plugin "${options.plugin.manifest.name}" does not declare scripts.artifacts.render.`);
+  }
+
+  const writtenContext = await writeArtifactRendererContext({
+    target,
+    event,
+    platform: options.platform,
+    scope: options.scope,
+    cwd: options.cwd,
+    commandEnv,
+    changedConfigKeys,
+    previousArtifacts: options.previousArtifacts,
+  });
+
+  try {
+    await fs.ensureDir(path.join(writtenContext.tempDir, 'home'));
+    await fs.ensureDir(path.join(writtenContext.tempDir, 'tmp'));
+    const timeoutMs = resolveLifecycleScriptTimeoutMs({
+      cliTimeoutMs: options.scriptTimeoutMs,
+      manifest: target.sourceManifest,
+    });
+    const spawnEnv = buildPluginScriptSpawnEnv({
+      commandEnv,
+      contextPath: writtenContext.contextPath,
+      tempDir: writtenContext.tempDir,
+      plugin: writtenContext.context.plugin,
+      event,
+      platform: options.platform,
+      scope: options.scope,
+      bundleRoot: writtenContext.context.plugin.rootDir,
+    });
+    const invocation = buildArtifactRendererInvocation({
+      entry: target.entry!,
+      entryPath: target.entryPath!,
+      cwd: options.cwd,
+      env: spawnEnv,
+    });
+
+    const result = await runArtifactRendererProcess({
+      invocation,
+      timeoutMs,
+      runner: options.runner,
+    });
+    const stdoutSummary = summarizeRenderOutput(
+      result.stdout,
+      writtenContext.sensitiveValues,
+    );
+    const stderrSummary = summarizeRenderOutput(
+      result.stderr,
+      writtenContext.sensitiveValues,
+    );
+
+    if (result.timedOut) {
+      throw new Error(
+        `Artifact renderer timed out after ${timeoutMs} ms. stderr: ${stderrSummary}`,
+      );
+    }
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Artifact renderer failed with exit code ${result.exitCode}. stderr: ${stderrSummary}`,
+      );
+    }
+
+    const rawStdout = result.stdout.trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawStdout);
+    } catch {
+      throw new Error(
+        `Artifact renderer must write JSON to stdout. stdout: ${stdoutSummary}. stderr: ${stderrSummary}`,
+      );
+    }
+
+    const plan = assertArtifactPlanEnvelope(parsed, {
+      stdoutSummary,
+      stderrSummary,
+    });
+
+    return {
+      plan,
+      target,
+      context: writtenContext.context,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stdout: stdoutSummary,
+      stderr: stderrSummary,
+      timedOut: result.timedOut,
+    };
+  } finally {
+    await writtenContext.cleanup();
+  }
+}

@@ -56,6 +56,61 @@ describe('build smoke', () => {
         },
       },
     });
+    await expect(
+      fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
+    ).resolves.toMatchObject({
+      plugins: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'codex-explore',
+          source: './plugins/codex-explore',
+          policy: expect.objectContaining({
+            products: ['CODEX'],
+          }),
+        }),
+      ]),
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      name: 'codex-explore',
+      skills: './codex/skills',
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      scripts: {
+        artifacts: {
+          render: {
+            runner: 'node',
+            path: './scripts/render-artifacts.mjs',
+          },
+        },
+      },
+      artifacts: {
+        targets: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            target: 'codex.developerInstructionsBlock',
+          }),
+          expect.objectContaining({
+            id: 'codex-explorer-role',
+            platform: 'codex',
+            target: 'codex.agentRole',
+            roleKey: 'codex-explorer',
+          }),
+        ]),
+      },
+    });
+    await Promise.all([
+      path.join(outputRoot, 'plugins', 'codex-explore', 'scripts', 'render-artifacts.mjs'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'SKILL.md'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'roles', 'codex-explorer.md'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'instructions', 'lightweight.md'),
+    ].map(async (requiredPath) => {
+      await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
+    }));
 
     const { validateBundleLayout } = (await import(
       '../../src/utils/bundle-layout.js'

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createBundleSourceManifest,
+  createPlatformManifestBase,
   readMarketplaceSourceMeta,
   readPluginManifest,
 } from '../../src/utils/manifest.js';
@@ -62,6 +63,7 @@ async function writeScriptFixture(pluginRoot: string): Promise<void> {
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'uninstall.ps1'), 'Write-Output uninstall\n', 'utf8');
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.cjs'), 'module.exports = {};\n', 'utf8');
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'console.log("build");\n', 'utf8');
+  await fs.writeFile(path.join(pluginRoot, 'scripts', 'render-artifacts.mjs'), 'import "./shared.mjs";\nconsole.log("{}");\n', 'utf8');
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.test.mjs'), 'import "./shared.mjs";\n', 'utf8');
   await fs.writeJson(
     path.join(pluginRoot, 'scripts', 'package.json'),
@@ -257,6 +259,13 @@ describe('manifest utils', () => {
       helpers: {
         config: './scripts/aw-config.cjs',
       },
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+          args: ['--plan'],
+        },
+      },
       node: {
         packageRoot: './scripts',
         build: {
@@ -271,6 +280,19 @@ describe('manifest utils', () => {
     };
     manifest.config = {
       schema: {
+        enableLightweightInstruction: {
+          type: 'boolean',
+          default: true,
+        },
+        explorerModel: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+        modelReasoningEffort: {
+          type: 'enum',
+          values: ['low', 'medium', 'high', 'xhigh'],
+          default: 'medium',
+        },
         token: {
           type: 'string',
           title: 'API Token',
@@ -290,6 +312,35 @@ describe('manifest utils', () => {
         },
       },
     };
+    manifest.artifacts = {
+      targets: [
+        {
+          id: 'lightweight-instruction',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.developerInstructionsBlock',
+          projectManagedKind: 'instruction',
+          states: ['present', 'disabled'],
+          refreshKeys: [
+            'enableLightweightInstruction',
+            'explorerModel',
+            'modelReasoningEffort',
+          ],
+          requiresCodexProjectConfig: true,
+        },
+        {
+          id: 'codex-explorer-role',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.agentRole',
+          projectManagedKind: 'agent',
+          states: ['present'],
+          refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+          requiresCodexProjectConfig: true,
+          roleKey: 'codex-explorer',
+        },
+      ],
+    };
     await writeFixturePluginManifest(repoRoot, manifest);
 
     const plugin = await readPluginManifest(pluginRoot);
@@ -305,6 +356,13 @@ describe('manifest utils', () => {
       },
       helpers: {
         config: './scripts/aw-config.cjs',
+      },
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+          args: ['--plan'],
+        },
       },
       node: {
         packageRoot: './scripts',
@@ -329,8 +387,31 @@ describe('manifest utils', () => {
     expect(bundleManifest.scripts?.node?.build).toBeUndefined();
     expect(bundleManifest.scripts?.node?.packageRoot).toBe('./scripts');
     expect(bundleManifest.scripts?.helpers?.config).toBe('./scripts/aw-config.cjs');
+    expect(bundleManifest.scripts?.artifacts?.render).toMatchObject({
+      runner: 'node',
+      path: './scripts/render-artifacts.mjs',
+      args: ['--plan'],
+    });
+    expect(bundleManifest.artifacts?.targets).toEqual([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        projectManagedKind: 'instruction',
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        projectManagedKind: 'agent',
+        roleKey: 'codex-explorer',
+      }),
+    ]);
     expect(bundleManifest.config?.schema.token.sensitive).toBe(true);
     expect(bundleManifest.config?.schema.token.title).toBe('API Token');
+
+    const platformManifest = createPlatformManifestBase(plugin) as Record<string, unknown>;
+    expect(platformManifest.scripts).toBeUndefined();
+    expect(platformManifest.artifacts).toBeUndefined();
+    expect(platformManifest.config).toBeUndefined();
   });
 
   it('resolves lifecycle OS selectors with narrow, wide, and default priority', () => {
@@ -442,6 +523,58 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('absolute paths are not allowed');
+  });
+
+  it('rejects unsafe artifact renderer script declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeScriptFixture(pluginRoot);
+
+    manifest.scripts = {
+      artifacts: {
+        render: {
+          runner: 'bash',
+          path: './scripts/render-artifacts.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected "node"');
+
+    manifest.scripts = {
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: '../render-artifacts.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('path must start with "./"');
+
+    manifest.scripts = {
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.sh',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('Node runnable file extension');
+
+    manifest.scripts = {
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+        },
+      },
+      unknown: true,
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unknown field "unknown"');
   });
 
   it('rejects unsafe packageRoot metadata before staging install', async () => {
@@ -560,6 +693,104 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min/max are only supported for number config');
+  });
+
+  it('rejects invalid dynamic artifact target declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    manifest.config = {
+      schema: {
+        enabled: {
+          type: 'boolean',
+          default: true,
+        },
+        model: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+      },
+    };
+
+    const validTarget = {
+      id: 'lightweight-instruction',
+      platform: 'codex',
+      scopes: ['user', 'project'],
+      target: 'codex.developerInstructionsBlock',
+      projectManagedKind: 'instruction',
+      states: ['present', 'disabled'],
+      refreshKeys: ['enabled', 'model'],
+      requiresCodexProjectConfig: true,
+    };
+
+    manifest.artifacts = {
+      targets: [validTarget],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        artifacts: {
+          targets: [expect.objectContaining(validTarget)],
+        },
+      },
+    });
+
+    manifest.artifacts = {
+      targets: [{ ...validTarget, target: 'codex.unknown' }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported artifact target "codex.unknown"');
+
+    manifest.artifacts = {
+      targets: [{ ...validTarget, states: ['present', 'archived'] }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported artifact state "archived"');
+
+    manifest.artifacts = {
+      targets: [{ ...validTarget, refreshKeys: ['missingKey'] }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unknown config key "missingKey"');
+
+    manifest.artifacts = {
+      targets: [{ ...validTarget, projectManagedKind: 'codexRole' }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported Codex project managed kind "codexRole"');
+
+    manifest.artifacts = {
+      targets: [{ ...validTarget, projectManagedKind: 'agent' }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must map to "instruction"');
+
+    manifest.artifacts = {
+      targets: [
+        {
+          ...validTarget,
+          id: 'codex-explorer-role',
+          target: 'codex.agentRole',
+          projectManagedKind: 'agent',
+          states: ['present'],
+          refreshKeys: ['model'],
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must declare a static roleKey');
+
+    manifest.artifacts = {
+      targets: [
+        validTarget,
+        {
+          ...validTarget,
+          scopes: ['project'],
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('duplicate artifact id + target');
   });
 
   it('scans Node import contracts for relative closures and undeclared bare specifiers', () => {

@@ -114,6 +114,7 @@ policy:
 
 ### policy 块
 
+- `policy` block 必须存在，且必须显式声明 `allow_implicit_invocation`；作者工具不会接受缺失字段并套用隐式默认值。
 - `allow_implicit_invocation: true`：允许 Codex 自动注入和隐式识别
 - `allow_implicit_invocation: false`：关闭自动注入，但仍可通过 `$skill-name` 显式触发
 - `products`：可选的 Codex-only per-skill override。一般不需要写；只有同一插件里的不同 skill 需要限制到不同 Codex 产品时才使用。当前 Codex runtime 支持 `codex` / `chatgpt` / `atlas` 及对应全大写别名

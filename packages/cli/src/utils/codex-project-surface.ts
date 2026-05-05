@@ -6,6 +6,7 @@ import type {
   CodexCapabilitySnapshot,
   CodexProjectManagedKind,
   GeneratedArtifact,
+  PluginArtifactTargetDefinition,
   PluginMeta,
   Scope,
   TrackingPluginRecord,
@@ -114,6 +115,38 @@ export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boo
   );
 }
 
+export function getCodexDynamicArtifactTargets(
+  plugin: PluginMeta,
+  options: { scope?: Scope; requiresCodexProjectConfig?: boolean } = {},
+): PluginArtifactTargetDefinition[] {
+  return (plugin.manifest.artifacts?.targets ?? []).filter((target) => {
+    if (target.platform !== 'codex') {
+      return false;
+    }
+    if (options.scope && !target.scopes.includes(options.scope)) {
+      return false;
+    }
+    if (
+      options.requiresCodexProjectConfig !== undefined &&
+      target.requiresCodexProjectConfig !== options.requiresCodexProjectConfig
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function addCodexDynamicProjectManagedKinds(
+  plugin: PluginMeta,
+  kinds: Set<CodexProjectManagedKind>,
+): void {
+  for (const target of getCodexDynamicArtifactTargets(plugin, { scope: 'project' })) {
+    if (target.projectManagedKind) {
+      kinds.add(target.projectManagedKind);
+    }
+  }
+}
+
 export function getCodexProjectManagedKinds(plugin: PluginMeta): CodexProjectManagedKind[] {
   const kinds = new Set<CodexProjectManagedKind>();
   if (plugin.manifest.skills || plugin.manifest.slashCommands) {
@@ -134,6 +167,7 @@ export function getCodexProjectManagedKinds(plugin: PluginMeta): CodexProjectMan
   if (resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex').length > 0) {
     kinds.add('agent');
   }
+  addCodexDynamicProjectManagedKinds(plugin, kinds);
 
   return CODEX_PROJECT_MANAGED_KIND_ORDER.filter((kind) => kinds.has(kind));
 }
@@ -151,7 +185,11 @@ export function pluginDeclaresCodexProjectConfigBackedArtifacts(
 ): boolean {
   return Boolean(
     plugin.manifest.mcpServers ||
-      resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0,
+      resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0 ||
+      getCodexDynamicArtifactTargets(plugin, {
+        scope: 'project',
+        requiresCodexProjectConfig: true,
+      }).length > 0,
   );
 }
 
@@ -160,7 +198,9 @@ export function trackingRecordTouchesCodexProjectConfig(
 ): boolean {
   return Boolean(
     trackingRecord?.artifacts.some((artifact) =>
-      artifact.kind === 'instruction' || artifact.kind === 'mcpServer',
+      artifact.kind === 'instruction' ||
+        artifact.kind === 'mcpServer' ||
+        (artifact.kind === 'agent' && artifact.target === 'codex.agentRole'),
     ),
   );
 }

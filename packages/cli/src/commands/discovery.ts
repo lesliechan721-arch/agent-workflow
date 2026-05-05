@@ -12,7 +12,6 @@ import type {
   InstalledLedgerPluginRecord,
   InstalledScopeRecord,
   PlatformName,
-  PluginExtensions,
   PluginMeta,
   Scope,
   TrackingManifest,
@@ -44,25 +43,16 @@ import {
   readClaudeInstalledPluginsState,
   readClaudeSettings,
 } from '../adapters/helpers.js';
-import { pluginSupportsPlatform, type ResolvedPluginTarget } from './common.js';
+import {
+  createHistoricalPluginTarget,
+  pluginSupportsPlatform,
+  type ResolvedPluginTarget,
+} from './common.js';
 
 const MARKETPLACE_NAME = 'aw';
 
 type HistoricalManagedKind = GeneratedArtifact['kind'];
-type HistoricalExtensionKind = Extract<
-  HistoricalManagedKind,
-  'instruction' | 'permission' | 'hook' | 'agent'
->;
 type HistoricalCodexKind = CodexProjectManagedKind;
-
-const HISTORICAL_SKILLS_PATH = './historical-skills';
-const HISTORICAL_MCP_SERVERS_PATH = './historical-mcp.json';
-const HISTORICAL_EXTENSION_KIND_ORDER: HistoricalExtensionKind[] = [
-  'instruction',
-  'permission',
-  'hook',
-  'agent',
-];
 const HISTORICAL_CODEX_KIND_ORDER: HistoricalCodexKind[] = [
   'skill',
   'mcpServer',
@@ -765,153 +755,11 @@ function platformProduct(platform: PlatformName): string {
   return platform === 'codex' ? 'CODEX' : 'CLAUDE';
 }
 
-function platformOverrides<T>(
-  platform: PlatformName,
-  value: Partial<T> | undefined = undefined,
-): { claude?: Partial<T> | null; codex?: Partial<T> | null } {
-  return platform === 'codex'
-    ? { codex: value, claude: null }
-    : { claude: value, codex: null };
-}
-
-function addHistoricalKind(
-  extensions: PluginExtensions,
-  platform: PlatformName,
-  kind: HistoricalExtensionKind,
-): void {
-  if (kind === 'instruction') {
-    extensions.instructions ??= [];
-    extensions.instructions.push({
-      name: 'historical-instruction',
-      title: 'Historical Instruction',
-      content: 'Historical managed instruction placeholder.',
-      agentOverrides: platformOverrides(platform),
-    });
-  }
-  if (kind === 'permission') {
-    extensions.permissions ??= [];
-    extensions.permissions.push({
-      name: 'historical-permission',
-      allow: [],
-      ask: [],
-      deny: [],
-      agentOverrides: platformOverrides(platform),
-    });
-  }
-  if (kind === 'hook') {
-    extensions.hooks ??= [];
-    extensions.hooks.push({
-      event: 'session_start',
-      command: 'true',
-      agentOverrides: platformOverrides(platform),
-    });
-  }
-  if (kind === 'agent') {
-    extensions.agents ??= [];
-    extensions.agents.push({
-      name: 'historical-agent',
-      description: 'Historical agent placeholder.',
-      prompt: 'Historical agent placeholder.',
-      tools: [],
-      agentOverrides: platformOverrides(platform),
-    });
-  }
-}
-
-function collectHistoricalKinds(evidence: DiscoveryEvidenceSummary): Set<HistoricalManagedKind> {
-  const kinds = new Set<HistoricalManagedKind>(evidence.trackingKinds);
-  if (evidence.platform === 'codex') {
-    for (const kind of evidence.codexManagedKinds ?? []) {
-      kinds.add(kind);
-    }
-  }
-  if (evidence.platform === 'claude') {
-    for (const extension of evidence.claudeManagedExtensions ?? []) {
-      if (extension === 'instructions') {
-        kinds.add('instruction');
-      }
-      if (extension === 'permissions') {
-        kinds.add('permission');
-      }
-      if (extension === 'hooks') {
-        kinds.add('hook');
-      }
-    }
-  }
-
-  return kinds;
-}
-
-function createHistoricalExtensions(
-  evidence: DiscoveryEvidenceSummary,
-  kinds: Set<HistoricalManagedKind>,
-): PluginExtensions | undefined {
-  const extensionKinds = HISTORICAL_EXTENSION_KIND_ORDER.filter((kind) => kinds.has(kind));
-  if (extensionKinds.length === 0) {
-    return undefined;
-  }
-
-  const extensions: PluginExtensions = {};
-  for (const kind of extensionKinds) {
-    addHistoricalKind(extensions, evidence.platform, kind);
-  }
-  return extensions;
-}
-
-function createHistoricalPluginMeta(
+async function createTargetForEvidence(
+  env: NodeJS.ProcessEnv,
   record: DiscoveredPluginName,
   evidence: DiscoveryEvidenceSummary,
-): PluginMeta {
-  const historicalKinds = collectHistoricalKinds(evidence);
-  const requiresNativePlugin =
-    evidence.platform === 'codex' &&
-    (
-      evidence.codexRequiresNativePlugin === true ||
-      evidence.sources.includes('codexNativeConfig') ||
-      evidence.sources.includes('codexNativeCache') ||
-      evidence.sources.includes('codexNativeRecovery') ||
-      evidence.sources.includes('codexSharedNativeRef')
-    );
-  const hasCodexNativeManifestPlaceholder =
-    historicalKinds.has('skill') || historicalKinds.has('mcpServer');
-
-  return {
-    rootDir: '',
-    manifestPath: '',
-    manifest: {
-      name: record.pluginName,
-      version: record.ledgerRecord?.lastResolvedVersion ?? '0.0.0',
-      description: 'Historical managed plugin placeholder.',
-      skills:
-        evidence.platform === 'codex' &&
-        (
-          historicalKinds.has('skill') ||
-          (requiresNativePlugin && !hasCodexNativeManifestPlaceholder)
-        )
-          ? HISTORICAL_SKILLS_PATH
-          : undefined,
-      mcpServers:
-        evidence.platform === 'codex' && historicalKinds.has('mcpServer')
-          ? HISTORICAL_MCP_SERVERS_PATH
-          : undefined,
-      marketplace: {
-        category: 'historical',
-        strict: true,
-        policy: {
-          installation: 'HISTORICAL',
-          authentication: 'NONE',
-          products: [platformProduct(evidence.platform)],
-        },
-      },
-      extensions: createHistoricalExtensions(evidence, historicalKinds),
-    },
-  };
-}
-
-function createTargetForEvidence(
-  record: DiscoveredPluginName,
-  evidence: DiscoveryEvidenceSummary,
-): ResolvedPluginTarget {
+): Promise<ResolvedPluginTarget> {
   const currentPlugin = record.currentCatalog?.currentPlugin;
   if (currentPlugin) {
     return {
@@ -923,13 +771,25 @@ function createTargetForEvidence(
     };
   }
 
-  return {
-    pluginName: record.pluginName,
-    plugin: createHistoricalPluginMeta(record, evidence),
-    currentPlugin: undefined,
-    embeddedPlugin: record.currentCatalog?.embeddedPlugin,
-    source: 'historical',
-  };
+  return createHistoricalPluginTarget(
+    evidence.executionCwd,
+    evidence.scope,
+    record.pluginName,
+    record.currentCatalog?.embeddedPlugin,
+    env,
+    undefined,
+    {
+      codexNativeManifestPlaceholder:
+        evidence.platform === 'codex' &&
+        (
+          evidence.codexRequiresNativePlugin === true ||
+          evidence.sources.includes('codexNativeConfig') ||
+          evidence.sources.includes('codexNativeCache') ||
+          evidence.sources.includes('codexNativeRecovery') ||
+          evidence.sources.includes('codexSharedNativeRef')
+        ),
+    },
+  );
 }
 
 function evidenceHasActionableSource(evidence: DiscoveryEvidenceSummary): boolean {
@@ -969,6 +829,20 @@ function isCoarseCodexRepoOnlyEvidence(
   );
 }
 
+function hasUnrecoverableHistoricalCodexRoleIdentity(
+  target: ResolvedPluginTarget,
+): boolean {
+  if (target.source !== 'historical') {
+    return false;
+  }
+
+  return (target.plugin.manifest.artifacts?.targets ?? []).some((artifact) =>
+    artifact.platform === 'codex' &&
+    artifact.target === 'codex.agentRole' &&
+    (!artifact.roleKey || artifact.roleKey.trim() === ''),
+  );
+}
+
 function resolveCandidateDisabledReason(
   command: 'status' | 'uninstall' | 'upgrade',
   target: ResolvedPluginTarget,
@@ -990,6 +864,10 @@ function resolveCandidateDisabledReason(
 
   if (isCoarseCodexRepoOnlyEvidence(target, evidence)) {
     return '只有 Codex 历史账本中的粗粒度 repo-managed 标记，无法安全恢复具体受管能力。';
+  }
+
+  if (hasUnrecoverableHistoricalCodexRoleIdentity(target)) {
+    return '历史 tracking 无法恢复 codex.agentRole 的真实 roleKey；当前不会编造占位 role 名，请先恢复 current catalog 或手动清理。';
   }
 
   if (evidence.trackingIntegrityErrors.length > 0) {
@@ -1073,7 +951,7 @@ export async function resolveDiscoveredPluginTargets(
       if (!context.platforms.includes(evidence.platform) || !context.scopes.includes(evidence.scope)) {
         continue;
       }
-      const target = createTargetForEvidence(record, evidence);
+      const target = await createTargetForEvidence(context.env, record, evidence);
       if (target.currentPlugin && !pluginSupportsPlatform(target.currentPlugin, evidence.platform)) {
         continue;
       }
@@ -1115,13 +993,13 @@ export async function resolveDiscoveredPluginTargets(
               projectKey: identity.projectKey,
               projectRoot: identity.projectRoot,
               executionCwd: identity.executionCwd,
-              target: {
-                pluginName: record.pluginName,
-                plugin: createHistoricalPluginMeta(record, evidence),
-                currentPlugin: undefined,
-                embeddedPlugin: record.currentCatalog?.embeddedPlugin,
-                source: 'historical',
-              },
+              target: await createHistoricalPluginTarget(
+                identity.executionCwd,
+                identity.scope,
+                record.pluginName,
+                record.currentCatalog?.embeddedPlugin,
+                context.env,
+              ),
               evidence,
               evidenceByPlatformScope: record.evidenceByPlatformScope,
             });

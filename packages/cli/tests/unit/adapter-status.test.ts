@@ -23,6 +23,7 @@ import {
   resolveCodexCatalogCompatibility,
 } from '../../src/adapters/codex.js';
 import { loadPluginTargetsForCommand } from '../../src/commands/common.js';
+import { pluginDeclaresCodexProjectConfigBackedArtifacts } from '../../src/commands/codex-project-safety.js';
 import {
   createAvailableLedger,
   writeInstalledLedger,
@@ -317,6 +318,92 @@ describe('adapter status helpers', () => {
     });
   });
 
+  it('recovers tracked Codex dynamic artifact identities without synthesizing historical-agent placeholders', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-dynamic-history-'));
+    tempDirs.push(root);
+    const repoRoot = path.join(root, 'repo');
+    await fs.ensureDir(repoRoot);
+    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
+
+    const env = {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    };
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    const rolePath = path.join(codexPaths.configDir, 'agents', 'aw-history-role.toml');
+    await upsertTrackingRecord(codexPaths.trackingDir, 'dynamic-history', [
+      {
+        path: codexPaths.configTomlPath,
+        paths: [codexPaths.configTomlPath],
+        kind: 'instruction',
+        platform: 'codex',
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        state: 'disabled',
+        disabledReason: 'config',
+        refreshKeys: ['enableLightweightInstruction'],
+      },
+      {
+        path: rolePath,
+        paths: [codexPaths.configTomlPath, rolePath],
+        kind: 'agent',
+        platform: 'codex',
+        artifactKey: 'codex-explorer',
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      },
+    ]);
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['dynamic-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.historicalArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        paths: [codexPaths.configTomlPath],
+        state: 'disabled',
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        paths: [codexPaths.configTomlPath, rolePath],
+        roleKey: 'codex-explorer',
+        artifactKey: 'codex-explorer',
+        state: 'present',
+      }),
+    ]));
+    expect(target.plugin.manifest.extensions?.agents).toBeUndefined();
+    expect(target.plugin.manifest.artifacts?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        scopes: ['project'],
+        states: ['disabled'],
+        refreshKeys: ['enableLightweightInstruction'],
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        roleKey: 'codex-explorer',
+        scopes: ['project'],
+        states: ['present'],
+      }),
+    ]));
+    expect(getCodexProjectManagedKinds(target.plugin)).toEqual(['instruction', 'agent']);
+  });
+
   it('recovers Claude hook-only historical plugins from ledger snapshots without tracking artifacts', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-hook-history-'));
     tempDirs.push(root);
@@ -594,6 +681,55 @@ describe('adapter status helpers', () => {
         ],
       },
     });
+    const dynamicArtifactsPlugin = makePluginMeta({
+      skills: './skills',
+      config: {
+        schema: {
+          enableLightweightInstruction: {
+            type: 'boolean',
+            default: true,
+          },
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+          modelReasoningEffort: {
+            type: 'enum',
+            values: ['low', 'medium', 'high', 'xhigh'],
+            default: 'medium',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.developerInstructionsBlock',
+            projectManagedKind: 'instruction',
+            states: ['present', 'disabled'],
+            refreshKeys: [
+              'enableLightweightInstruction',
+              'explorerModel',
+              'modelReasoningEffort',
+            ],
+            requiresCodexProjectConfig: true,
+          },
+          {
+            id: 'codex-explorer-role',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.agentRole',
+            projectManagedKind: 'agent',
+            states: ['present'],
+            refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+            requiresCodexProjectConfig: true,
+            roleKey: 'codex-explorer',
+          },
+        ],
+      },
+    });
     const hybridPlugin = makePluginMeta({
       skills: './skills',
       extensions: {
@@ -641,6 +777,13 @@ describe('adapter status helpers', () => {
       'mcpServer',
       'instruction',
     ]);
+    expect(hasCodexProjectManagedArtifacts(dynamicArtifactsPlugin)).toBe(true);
+    expect(getCodexProjectManagedKinds(dynamicArtifactsPlugin)).toEqual([
+      'skill',
+      'instruction',
+      'agent',
+    ]);
+    expect(pluginDeclaresCodexProjectConfigBackedArtifacts(dynamicArtifactsPlugin)).toBe(true);
     expect(requiresNativePlugin(nativeHookOnlyPlugin)).toBe(false);
     expect(hasRepoManagedArtifacts(nativeHookOnlyPlugin)).toBe(true);
     expect(requiresNativePlugin(hybridPlugin)).toBe(true);

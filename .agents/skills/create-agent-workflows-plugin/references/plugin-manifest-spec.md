@@ -20,14 +20,15 @@
 | `buildConfig` | object | 否 | 详见 `references/build-config-spec.md` |
 | `scripts` | object | 否 | AW 管理的 lifecycle、config helper、Node package 和测试入口声明 |
 | `config` | object | 否 | AW 自管配置 schema，供 `aw config`、lifecycle context 和标准 helper 使用 |
+| `artifacts` | object | 否 | 动态 artifact 静态能力声明，首版用于 Codex developer instructions / agent role |
 
 不允许出现上表以外的顶层字段。
 
 ## scripts / config block
 
-`scripts` 和 `config` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
+`scripts`、`config` 和 `artifacts` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 
-本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
+本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、动态 artifact renderer、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
 
 最小配置 helper 示例：
 
@@ -62,6 +63,7 @@
 - `scripts.timeoutMs` 是脚本默认超时，单位毫秒，合法范围 `1000..300000`，默认 `30000`。`aw install` / `aw upgrade` / `aw uninstall --script-timeout <ms>` 可覆盖 manifest 值。
 - `scripts.node.packageRoot` 声明第三方 Node 依赖时，目录内必须提交 `package.json` 和 `pnpm-lock.yaml`。依赖 specifier 必须来自 registry，不支持 `workspace:`、`file:`、`link:`、`portal:`、本地路径、git/GitHub shortcut、HTTP(S) URL 或 tarball URL；也不支持把 `optionalDependencies` / `bundledDependencies` 当作 runtime 依赖入口。
 - `scripts.node.build` 是唯一支持的 manifest build 入口，格式为 `{ "runner": "node", "path": "./...", "args": [] }`。build 在隔离 staging 目录运行，允许改写 staging manifest 和 packageRoot；build 后 staging manifest 是发布真值，源码树不会被修改。`package.json` scripts、`preinstall`、`postinstall`、`prepare` 等 npm lifecycle 不会被 AW 自动执行。
+- `scripts.artifacts.render` 是动态 artifact renderer 入口，格式为 `{ "runner": "node", "path": "./...", "args": [] }`。首版只支持 Node runner，路径必须在插件根内。renderer stdout 必须是 JSON `ArtifactPlan`；stderr 只作为诊断摘要。
 - 发布 bundle 只复制 lifecycle/helper 入口、这些 Node 入口可静态识别的相对依赖闭包，以及 `scripts.node.packageRoot` 的 production 依赖。运行时安装/升级/卸载离线执行，不联网安装依赖，也不借用宿主或仓库根 `node_modules`。
 - `scripts.tests.node` 是开发期 Node 测试 glob，只由 `pnpm plugin:test` 使用。无匹配测试时是 skipped/no-op；test-only helper 可通过静态相对 import/require 递归复制到临时 bundle，但不会进入发布 runtime bundle。
 - `config.schema` 是 AW config 的唯一真值。`string`、`number`、`boolean`、`enum`、`file`、`directory` 为首版支持类型；字段可声明 `title`、`description`、`default`、`required`、`sensitive`，`enum` 用 `values`，`number` 可用 `min` / `max`。未知 key 不进入 helper、lifecycle context 或 effective config，只能作为脱敏诊断出现。
@@ -115,6 +117,78 @@
   }
 }
 ```
+
+## artifacts.targets block
+
+`artifacts.targets` 声明动态 artifact 的安装前能力真值。installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot 都读这个静态声明，不能等 renderer 执行后再推断插件能力。只要声明 Codex 动态 target，`marketplace.policy.products` 应显式收窄为 `["CODEX"]`。
+
+最小示例：
+
+```json
+{
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "NONE",
+      "products": ["CODEX"]
+    }
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  },
+  "config": {
+    "schema": {
+      "enableInstruction": { "type": "boolean", "default": true },
+      "explorerModel": { "type": "string", "default": "gpt-5.4-mini" }
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "lightweight-instruction",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.developerInstructionsBlock",
+        "projectManagedKind": "instruction",
+        "states": ["present", "disabled"],
+        "refreshKeys": ["enableInstruction", "explorerModel"],
+        "requiresCodexProjectConfig": true
+      },
+      {
+        "id": "codex-explorer-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["explorerModel"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explorer"
+      }
+    ]
+  }
+}
+```
+
+字段规则：
+
+- `id + target` 在同一插件内必须唯一，`id` 只能使用字母、数字、`.`、`_`、`-`，并以字母开头。
+- `platform` 首版只能是 `codex`；`scopes` 只能包含 `user`、`project`。
+- `target` 首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`。
+- `states` 首版支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
+- `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
+- `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project write safety preflight。
+- `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
+- `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
+
+`ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。
 
 ## 路径约定
 

@@ -124,11 +124,22 @@ export interface PluginScriptTestsConfig {
   node?: string[];
 }
 
+export interface PluginArtifactRenderScriptEntry {
+  runner: 'node';
+  path: string;
+  args?: string[];
+}
+
+export interface PluginArtifactScriptsConfig {
+  render?: PluginArtifactRenderScriptEntry;
+}
+
 export interface PluginScriptsConfig {
   timeoutMs?: number;
   lifecycle?: PluginLifecycleScripts;
   helpers?: PluginScriptHelpersConfig;
   node?: PluginNodeScriptsConfig;
+  artifacts?: PluginArtifactScriptsConfig;
   tests?: PluginScriptTestsConfig;
 }
 
@@ -235,6 +246,73 @@ export interface PluginExtensions {
   agents?: AgentDefinition[];
 }
 
+export type ArtifactState = 'present' | 'disabled';
+export type ArtifactTarget = 'codex.developerInstructionsBlock' | 'codex.agentRole';
+export type DynamicArtifactKind = 'instruction' | 'codexRole';
+export type ManagedArtifactId = string;
+
+export interface PluginArtifactTargetDefinition {
+  id: ManagedArtifactId;
+  platform: PlatformName;
+  scopes: Scope[];
+  target: ArtifactTarget;
+  kind?: DynamicArtifactKind;
+  projectManagedKind?: CodexProjectManagedKind;
+  states: ArtifactState[];
+  refreshKeys: string[];
+  requiresCodexProjectConfig?: boolean;
+  roleKey?: string;
+}
+
+export interface PluginArtifactsConfig {
+  targets?: PluginArtifactTargetDefinition[];
+}
+
+export interface ArtifactPlanBase {
+  version: 1;
+  artifacts: ArtifactPlanArtifact[];
+}
+
+export type ArtifactPlan = ArtifactPlanBase;
+
+export interface ArtifactPlanArtifactBase {
+  id: ManagedArtifactId;
+  platform: PlatformName;
+  target: ArtifactTarget;
+  kind: DynamicArtifactKind;
+  state: ArtifactState;
+  refreshKeys: string[];
+  disabledReason?: string;
+}
+
+export interface DeveloperInstructionsBlockArtifact extends ArtifactPlanArtifactBase {
+  target: 'codex.developerInstructionsBlock';
+  kind: 'instruction';
+  content?: string;
+}
+
+export interface CodexAgentRoleArtifact extends ArtifactPlanArtifactBase {
+  target: 'codex.agentRole';
+  kind: 'codexRole';
+  roleKey?: string;
+  content?: {
+    registration?: {
+      description?: string;
+    };
+    roleFile?: {
+      name?: string;
+      description?: string;
+      developer_instructions?: string;
+      model?: string;
+      model_reasoning_effort?: string;
+    };
+  };
+}
+
+export type ArtifactPlanArtifact =
+  | DeveloperInstructionsBlockArtifact
+  | CodexAgentRoleArtifact;
+
 export interface SkillTriggerPolicy {
   allowInstallOverride: boolean;
 }
@@ -251,6 +329,7 @@ export interface PluginManifestSource {
   marketplace: PluginMarketplaceMeta;
   interface?: PluginInterfaceMeta;
   extensions?: PluginExtensions;
+  artifacts?: PluginArtifactsConfig;
   buildConfig?: BuildConfig;
   scripts?: PluginScriptsConfig;
   config?: PluginConfigSchema;
@@ -321,12 +400,43 @@ export interface CodexSharedHookGroup {
   rawGroup: Record<string, unknown>;
 }
 
+export type ArtifactRefreshEvent = 'install' | 'upgrade' | 'refresh';
+export type ArtifactRefreshStatus = 'succeeded' | 'failed' | 'skipped';
+
+export interface ArtifactLastRefresh {
+  status: ArtifactRefreshStatus;
+  updatedAt: string;
+  triggerKeys?: string[];
+  event: ArtifactRefreshEvent;
+  error?: string;
+}
+
+export interface ArtifactRefreshReach {
+  commandScope: Scope;
+  refreshedUserTarget?: boolean;
+  refreshedCurrentProjectTarget?: boolean;
+  scannedHistoricalProjects?: boolean;
+  historicalProjectTargetsMayBeStale?: boolean;
+  knownProjectTargetsOutsideReach?: string[];
+}
+
 export interface GeneratedArtifact {
   path: string;
+  paths?: string[];
   kind: 'instruction' | 'permission' | 'hook' | 'agent' | 'skill' | 'mcpServer';
   platform: PlatformName;
   artifactKey?: string;
   hookGroups?: TrackedHookGroupIdentity[];
+  id?: ManagedArtifactId;
+  target?: ArtifactTarget;
+  state?: ArtifactState;
+  disabledReason?: string;
+  refreshKeys?: string[];
+  configDigest?: string;
+  contentDigest?: string;
+  roleKey?: string;
+  lastRefresh?: ArtifactLastRefresh;
+  refreshReach?: ArtifactRefreshReach;
 }
 
 export interface TrackingPluginRecord {
@@ -404,6 +514,43 @@ export interface GeneratedArtifactStatus {
   exists: boolean;
   kind: GeneratedArtifact['kind'];
   artifactKey?: string;
+  hookGroups?: TrackedHookGroupIdentity[];
+  paths?: string[];
+  id?: ManagedArtifactId;
+  target?: ArtifactTarget;
+  state?: ArtifactState;
+  disabledReason?: string;
+  refreshKeys?: string[];
+  configDigest?: string;
+  currentConfigDigest?: string;
+  contentDigest?: string;
+  currentContentDigest?: string;
+  roleKey?: string;
+  lastRefresh?: ArtifactLastRefresh;
+  refreshReach?: ArtifactRefreshReach;
+}
+
+export type GeneratedArtifactHealth =
+  | 'healthy'
+  | 'disabledByConfig'
+  | 'blockMissing'
+  | 'missing'
+  | 'contentDrift'
+  | 'roleLayerMissing'
+  | 'registrationDrift'
+  | 'configDigestStale'
+  | 'recentRefreshFailed'
+  | 'unknown'
+  | 'unavailable';
+export type GeneratedArtifactSessionVisibility =
+  | InstructionsSessionState
+  | RepoManagedSessionVisibility;
+
+export interface ManagedArtifactStatus extends GeneratedArtifactStatus {
+  tracked: boolean;
+  health: GeneratedArtifactHealth;
+  sessionVisibility: GeneratedArtifactSessionVisibility;
+  diagnostics: string[];
 }
 
 export type ScopeInitializedState = 'yes' | 'no' | 'unknown';
@@ -505,6 +652,7 @@ export interface PluginStatusReport {
   pluginName: string;
   native: NativePluginStatus;
   generatedArtifacts: GeneratedArtifactStatus[];
+  managedArtifacts?: ManagedArtifactStatus[];
   driftWarnings: string[];
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerApplicability?: SkillTriggerApplicability;
@@ -558,6 +706,7 @@ export type SkippedUpgradeCode =
   | 'codexProjectUserConfigUnreadable'
   | 'externalOwnershipUnknown'
   | 'externalOwnershipPresent'
+  | 'roleNameConflict'
   | 'trackingIntegrityError'
   | 'installOptionsUnavailable'
   | 'catalogNotCurrent'
@@ -664,7 +813,13 @@ export interface PlatformAdapter {
   detect(cwd: string): Promise<boolean>;
   installPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
-  installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]>;
+  installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      event?: 'install' | 'upgrade';
+    },
+  ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(
     plugin: PluginMeta,
     scope: Scope,

@@ -397,7 +397,7 @@ describe('ClaudeAdapter', () => {
     await expect(adapter.upgradePlugin(plugin, 'project')).resolves.toBeUndefined();
     expect(uninstallExtensionsSpy).toHaveBeenCalledWith(plugin, 'project');
     expect(installPluginSpy).toHaveBeenCalledWith(plugin, 'project');
-    expect(installExtensionsSpy).toHaveBeenCalledWith(plugin, 'project');
+    expect(installExtensionsSpy).toHaveBeenCalledWith(plugin, 'project', { event: 'upgrade' });
   });
 
   it('keeps available ledgers unchanged when adding Claude scope records', async () => {

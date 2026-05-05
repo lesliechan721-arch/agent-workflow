@@ -43,6 +43,14 @@
       "skillTriggerApplicability": "overridable"
     },
     {
+      "name": "dynamic-artifacts",
+      "pluginName": "dynamic-artifacts",
+      "path": "plugins/dynamic-artifacts",
+      "projectManagedKinds": ["skill", "instruction", "agent"],
+      "projectInstallability": "allowed",
+      "skillTriggerApplicability": "fixed"
+    },
+    {
       "name": "instructions+MCP",
       "pluginName": "instructions-mcp",
       "path": "plugins/instructions-mcp",

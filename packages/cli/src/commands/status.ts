@@ -413,8 +413,19 @@ function hasRuntimeEvidence(plugin: PluginStatusReport): boolean {
 function hasMissingArtifacts(plugin: PluginStatusReport): boolean {
   return (
     plugin.generatedArtifacts.some((artifact) => !artifact.exists) ||
+    plugin.managedArtifacts?.some((artifact) =>
+      artifact.health === 'blockMissing' ||
+      artifact.health === 'missing' ||
+      artifact.health === 'roleLayerMissing',
+    ) === true ||
     plugin.artifactsInitialized === false
   );
+}
+
+function hasManagedArtifactIssues(plugin: PluginStatusReport): boolean {
+  return plugin.managedArtifacts?.some((artifact) =>
+    artifact.health !== 'healthy' && artifact.health !== 'disabledByConfig',
+  ) === true;
 }
 
 function getRepoManagedProjectItems(plugin: PluginStatusReport): RepoManagedProjectItemReport[] {
@@ -464,6 +475,7 @@ function hasNativeRecovery(plugin: PluginStatusReport): boolean {
 
 function hasGeneralHealthDowngrade(plugin: PluginStatusReport): boolean {
   return (
+    hasManagedArtifactIssues(plugin) ||
     (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
     plugin.catalogCompatibility === 'missing' ||
     plugin.catalogCompatibility === 'capabilityChanged' ||
@@ -729,9 +741,60 @@ function formatRepoManagedItemLabel(
   return item.kind;
 }
 
+function formatManagedArtifactLabel(
+  plugin: PluginStatusReport,
+): string[] {
+  if (!plugin.managedArtifacts?.length) {
+    return [];
+  }
+
+  return plugin.managedArtifacts.map((artifact) => {
+    const label = artifact.target === 'codex.developerInstructionsBlock'
+      ? `instruction:${artifact.id ?? plugin.pluginName}`
+      : `role:${artifact.roleKey ?? artifact.artifactKey ?? artifact.id ?? artifact.path}`;
+    return `${label}=${artifact.health}/${artifact.sessionVisibility}`;
+  });
+}
+
+function describeManagedArtifactVisibilityReason(
+  plugin: PluginStatusReport,
+): string[] {
+  if (!plugin.managedArtifacts?.length) {
+    return [];
+  }
+
+  return plugin.managedArtifacts.flatMap((artifact) => {
+    const label = artifact.target === 'codex.developerInstructionsBlock'
+      ? 'instruction'
+      : `role ${artifact.roleKey ?? artifact.artifactKey ?? artifact.id ?? artifact.path}`;
+
+    switch (artifact.sessionVisibility) {
+      case 'blockedByProjectTrust':
+        return `${label} 当前不会进入 project scope 会话，因为 Codex 还未信任这个仓库。`;
+      case 'projectTrustUnknown':
+        return `${label} 的 project scope 会话可见性暂时无法确定，因为当前 repo trust 状态未知。`;
+      case 'unknownByExternalLayer':
+        return `${label} 的会话可见性无法可靠判断，因为更高优先级 layer 里存在可能覆盖它的同名配置。`;
+      case 'shadowedByProjectDeveloperInstructions':
+        return `${label} 已写入 user scope，但当前 repo 的 project developer_instructions 会遮住它。`;
+      default:
+        return [];
+    }
+  });
+}
+
 function describeRepoManagedState(plugin: PluginStatusReport | undefined): string | undefined {
   if (!plugin?.repoManagedSessionState) {
-    return undefined;
+    const managedArtifactLabels = plugin ? formatManagedArtifactLabel(plugin) : [];
+    const visibilityReasons = plugin ? describeManagedArtifactVisibilityReason(plugin) : [];
+    const parts: string[] = [];
+    if (managedArtifactLabels.length > 0) {
+      parts.push(`artifacts：${managedArtifactLabels.join('，')}`);
+    }
+    if (visibilityReasons.length > 0) {
+      parts.push(`不可见原因：${visibilityReasons.join('；')}`);
+    }
+    return parts.length > 0 ? parts.join('；') : undefined;
   }
 
   const parts: string[] = [];
@@ -747,6 +810,11 @@ function describeRepoManagedState(plugin: PluginStatusReport | undefined): strin
     .slice(0, 4)
     .map((item) => `${formatRepoManagedItemLabel(item)}=${item.state}`);
   parts.push(...notableItems);
+  parts.push(...formatManagedArtifactLabel(plugin));
+  const visibilityReasons = describeManagedArtifactVisibilityReason(plugin);
+  if (visibilityReasons.length > 0) {
+    parts.push(`不可见原因：${visibilityReasons.join('；')}`);
+  }
 
   if (parts.length === 0) {
     return undefined;

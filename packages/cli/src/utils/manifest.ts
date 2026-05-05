@@ -4,10 +4,14 @@ import fs from 'fs-extra';
 
 import type {
   AgentDefinition,
+  ArtifactState,
+  ArtifactTarget,
   BuildConfig,
   BuildConfigFileRuleSet,
   BuildConfigTemplates,
   ClaudeManifestOverrides,
+  CodexProjectManagedKind,
+  DynamicArtifactKind,
   HookDefinition,
   InstructionDefinition,
   MarketplaceManifest,
@@ -18,6 +22,9 @@ import type {
   PlatformName,
   PlatformPluginManifest,
   PluginConfigSchema,
+  PluginArtifactRenderScriptEntry,
+  PluginArtifactsConfig,
+  PluginArtifactTargetDefinition,
   PluginInterfaceMeta,
   PluginLifecycleScriptEntry,
   PluginLifecycleScriptSelector,
@@ -812,13 +819,45 @@ function normalizeScriptTests(
   };
 }
 
+function normalizeArtifactRenderScript(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): PluginArtifactRenderScriptEntry {
+  const entry = normalizeScriptEntry(pluginRoot, value, fieldName, {
+    requireNodeRunner: true,
+  });
+  assertNodeRunnablePath(entry.path, `${fieldName}.path`);
+  return {
+    runner: 'node',
+    path: entry.path,
+    args: entry.args,
+  };
+}
+
+function normalizeArtifactScripts(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginScriptsConfig['artifacts']> {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['render']);
+
+  return {
+    render:
+      input.render === undefined
+        ? undefined
+        : normalizeArtifactRenderScript(pluginRoot, input.render, `${fieldName}.render`),
+  };
+}
+
 function normalizePluginScripts(
   pluginRoot: string,
   value: unknown,
   fieldName: string,
 ): PluginScriptsConfig {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['timeoutMs', 'lifecycle', 'helpers', 'node', 'tests']);
+  assertAllowedKeys(input, fieldName, ['timeoutMs', 'lifecycle', 'helpers', 'node', 'artifacts', 'tests']);
 
   const output: PluginScriptsConfig = {
     timeoutMs:
@@ -837,6 +876,10 @@ function normalizePluginScripts(
 
   if (input.node !== undefined) {
     output.node = normalizeNodeScripts(pluginRoot, input.node, `${fieldName}.node`);
+  }
+
+  if (input.artifacts !== undefined) {
+    output.artifacts = normalizeArtifactScripts(pluginRoot, input.artifacts, `${fieldName}.artifacts`);
   }
 
   if (input.tests !== undefined) {
@@ -983,6 +1026,236 @@ function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginC
   }
 
   return { schema };
+}
+
+const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
+  'codex.developerInstructionsBlock',
+  'codex.agentRole',
+]);
+
+const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
+const DYNAMIC_ARTIFACT_KINDS = new Set<DynamicArtifactKind>(['instruction', 'codexRole']);
+const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET: Record<ArtifactTarget, CodexProjectManagedKind> = {
+  'codex.developerInstructionsBlock': 'instruction',
+  'codex.agentRole': 'agent',
+};
+const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, DynamicArtifactKind> = {
+  'codex.developerInstructionsBlock': 'instruction',
+  'codex.agentRole': 'codexRole',
+};
+
+function normalizePlatformName(value: unknown, fieldName: string): PlatformName {
+  const platform = ensureString(value, fieldName);
+  if (platform !== 'codex' && platform !== 'claude') {
+    throw new Error(`Invalid ${fieldName}: expected "codex" or "claude".`);
+  }
+
+  return platform;
+}
+
+function normalizeScopeArray(value: unknown, fieldName: string): Array<'user' | 'project'> {
+  const scopes = ensureStringArray(value, fieldName);
+  const normalized: Array<'user' | 'project'> = [];
+  for (const [index, scope] of scopes.entries()) {
+    if (scope !== 'user' && scope !== 'project') {
+      throw new Error(`Invalid ${fieldName}[${index}]: expected "user" or "project".`);
+    }
+    if (!normalized.includes(scope)) {
+      normalized.push(scope);
+    }
+  }
+
+  if (normalized.length === 0) {
+    throw new Error(`Invalid ${fieldName}: expected at least one scope.`);
+  }
+
+  return normalized;
+}
+
+function normalizeArtifactTarget(value: unknown, fieldName: string): ArtifactTarget {
+  const target = ensureString(value, fieldName);
+  if (!ARTIFACT_TARGETS.has(target as ArtifactTarget)) {
+    throw new Error(`Invalid ${fieldName}: unsupported artifact target "${target}".`);
+  }
+
+  return target as ArtifactTarget;
+}
+
+function normalizeArtifactStates(value: unknown, fieldName: string): ArtifactState[] {
+  const states = ensureStringArray(value, fieldName);
+  const normalized: ArtifactState[] = [];
+  for (const [index, state] of states.entries()) {
+    if (!ARTIFACT_STATES.has(state as ArtifactState)) {
+      throw new Error(`Invalid ${fieldName}[${index}]: unsupported artifact state "${state}".`);
+    }
+    if (!normalized.includes(state as ArtifactState)) {
+      normalized.push(state as ArtifactState);
+    }
+  }
+
+  if (normalized.length === 0) {
+    throw new Error(`Invalid ${fieldName}: expected at least one state.`);
+  }
+
+  return normalized;
+}
+
+function normalizeArtifactRefreshKeys(
+  value: unknown,
+  fieldName: string,
+  schema: PluginConfigSchema | undefined,
+): string[] {
+  const refreshKeys = ensureStringArray(value, fieldName);
+  const schemaKeys = new Set(Object.keys(schema?.schema ?? {}));
+  const normalized: string[] = [];
+
+  for (const [index, key] of refreshKeys.entries()) {
+    if (!schemaKeys.has(key)) {
+      throw new Error(`Invalid ${fieldName}[${index}]: unknown config key "${key}".`);
+    }
+    if (!normalized.includes(key)) {
+      normalized.push(key);
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeDynamicArtifactKind(value: unknown, fieldName: string): DynamicArtifactKind {
+  const kind = ensureString(value, fieldName);
+  if (!DYNAMIC_ARTIFACT_KINDS.has(kind as DynamicArtifactKind)) {
+    throw new Error(`Invalid ${fieldName}: unsupported artifact kind "${kind}".`);
+  }
+
+  return kind as DynamicArtifactKind;
+}
+
+function normalizeProjectManagedKind(value: unknown, fieldName: string): CodexProjectManagedKind {
+  const kind = ensureString(value, fieldName);
+  if (!['skill', 'mcpServer', 'instruction', 'permission', 'hook', 'agent'].includes(kind)) {
+    throw new Error(`Invalid ${fieldName}: unsupported Codex project managed kind "${kind}".`);
+  }
+
+  return kind as CodexProjectManagedKind;
+}
+
+function validateArtifactId(value: string, fieldName: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a stable id using letters, numbers, ".", "_" or "-".`);
+  }
+}
+
+function validateCodexRoleKey(value: string, fieldName: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a valid Codex role key.`);
+  }
+}
+
+function normalizeArtifactTargetEntry(
+  entry: unknown,
+  fieldName: string,
+  schema: PluginConfigSchema | undefined,
+): PluginArtifactTargetDefinition {
+  const input = assertObject(entry, fieldName);
+  assertAllowedKeys(input, fieldName, [
+    'id',
+    'platform',
+    'scopes',
+    'target',
+    'kind',
+    'projectManagedKind',
+    'states',
+    'refreshKeys',
+    'requiresCodexProjectConfig',
+    'roleKey',
+  ]);
+
+  const id = ensureString(input.id, `${fieldName}.id`);
+  validateArtifactId(id, `${fieldName}.id`);
+
+  const platform = normalizePlatformName(input.platform, `${fieldName}.platform`);
+  const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
+  if (platform !== 'codex') {
+    throw new Error(`Invalid ${fieldName}.platform: target "${target}" is only supported on "codex".`);
+  }
+
+  const expectedKind = ARTIFACT_KIND_BY_TARGET[target];
+  const kind = input.kind === undefined
+    ? expectedKind
+    : normalizeDynamicArtifactKind(input.kind, `${fieldName}.kind`);
+  if (kind !== expectedKind) {
+    throw new Error(`Invalid ${fieldName}.kind: target "${target}" requires kind "${expectedKind}".`);
+  }
+
+  const expectedProjectManagedKind = ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET[target];
+  const projectManagedKind = input.projectManagedKind === undefined
+    ? expectedProjectManagedKind
+    : normalizeProjectManagedKind(input.projectManagedKind, `${fieldName}.projectManagedKind`);
+  if (projectManagedKind !== expectedProjectManagedKind) {
+    throw new Error(
+      `Invalid ${fieldName}.projectManagedKind: target "${target}" must map to "${expectedProjectManagedKind}".`,
+    );
+  }
+
+  const roleKey =
+    input.roleKey === undefined
+      ? undefined
+      : ensureString(input.roleKey, `${fieldName}.roleKey`);
+  if (target === 'codex.agentRole') {
+    if (!roleKey) {
+      throw new Error(`Invalid ${fieldName}.roleKey: codex.agentRole targets must declare a static roleKey.`);
+    }
+    validateCodexRoleKey(roleKey, `${fieldName}.roleKey`);
+  } else if (roleKey !== undefined) {
+    throw new Error(`Invalid ${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets.`);
+  }
+
+  return {
+    id,
+    platform,
+    scopes: normalizeScopeArray(input.scopes, `${fieldName}.scopes`),
+    target,
+    kind,
+    projectManagedKind,
+    states: normalizeArtifactStates(input.states, `${fieldName}.states`),
+    refreshKeys: normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema),
+    requiresCodexProjectConfig:
+      input.requiresCodexProjectConfig === undefined
+        ? undefined
+        : ensureBoolean(input.requiresCodexProjectConfig, `${fieldName}.requiresCodexProjectConfig`),
+    roleKey,
+  };
+}
+
+function normalizeArtifacts(
+  value: unknown,
+  fieldName: string,
+  schema: PluginConfigSchema | undefined,
+): PluginArtifactsConfig {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['targets']);
+
+  const targetsInput = input.targets;
+  const targets = targetsInput === undefined
+    ? undefined
+    : (() => {
+        if (!Array.isArray(targetsInput)) {
+          throw new Error(`Invalid ${fieldName}.targets: expected an array.`);
+        }
+
+        const seen = new Set<string>();
+        return targetsInput.map((entry, index) => {
+          const target = normalizeArtifactTargetEntry(entry, `${fieldName}.targets[${index}]`, schema);
+          const key = `${target.id}:${target.target}`;
+          if (seen.has(key)) {
+            throw new Error(`Invalid ${fieldName}.targets[${index}]: duplicate artifact id + target "${key}".`);
+          }
+          seen.add(key);
+          return target;
+        });
+      })();
+
+  return { targets };
 }
 
 function normalizePlatformAgentOverrides<T>(
@@ -1391,6 +1664,7 @@ export function validatePluginManifest(
     'marketplace',
     'interface',
     'extensions',
+    'artifacts',
     'buildConfig',
     'scripts',
     'config',
@@ -1461,6 +1735,10 @@ export function validatePluginManifest(
 
   if (input.config !== undefined) {
     manifest.config = normalizePluginConfigSchema(input.config, 'config');
+  }
+
+  if (input.artifacts !== undefined) {
+    manifest.artifacts = normalizeArtifacts(input.artifacts, 'artifacts', manifest.config);
   }
 
   return manifest;
@@ -1743,6 +2021,9 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
           agents: plugin.manifest.extensions.agents
             ?.map((entry) => structuredClone(entry)),
         }
+      : undefined,
+    artifacts: plugin.manifest.artifacts
+      ? structuredClone(plugin.manifest.artifacts)
       : undefined,
     scripts,
     config: plugin.manifest.config

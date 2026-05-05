@@ -60,6 +60,171 @@ async function writeManifestOnlyPlugin(
   return pluginDir;
 }
 
+function validatePluginScriptPath(): string {
+  return path.join(
+    repoRoot(),
+    '.agents',
+    'skills',
+    'create-agent-workflows-plugin',
+    'scripts',
+    'validate_plugin.js',
+  );
+}
+
+async function runValidatePlugin(pluginDir: string) {
+  return execFileAsync('node', [validatePluginScriptPath(), pluginDir], {
+    cwd: repoRoot(),
+    env: process.env,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+async function writeDynamicArtifactPlugin(
+  root: string,
+  options: {
+    rendererRoleKey?: string;
+    includeRoleKey?: boolean;
+    omitSkillPolicy?: boolean;
+  } = {},
+): Promise<{ pluginDir: string; manifestPath: string }> {
+  const pluginDir = path.join(root, 'dynamic-authoring-test');
+  const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+  const roleKey = 'codex-explorer';
+  const rendererRoleKey = options.rendererRoleKey ?? roleKey;
+
+  await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+  await fs.ensureDir(path.join(pluginDir, 'scripts'));
+  await fs.ensureDir(path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'agents'));
+  await fs.writeJson(manifestPath, {
+    name: 'dynamic-authoring-test',
+    version: '0.1.0',
+    description: 'Test dynamic artifact authoring contracts.',
+    skills: './skills',
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+        products: ['CODEX'],
+      },
+    },
+    scripts: {
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+        },
+      },
+    },
+    config: {
+      schema: {
+        enableInstruction: {
+          type: 'boolean',
+          default: true,
+        },
+        explorerModel: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+      },
+    },
+    artifacts: {
+      targets: [
+        {
+          id: 'lightweight-instruction',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.developerInstructionsBlock',
+          projectManagedKind: 'instruction',
+          states: ['present', 'disabled'],
+          refreshKeys: ['enableInstruction', 'explorerModel'],
+          requiresCodexProjectConfig: true,
+        },
+        {
+          id: 'codex-explorer-role',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.agentRole',
+          projectManagedKind: 'agent',
+          states: ['present'],
+          refreshKeys: ['explorerModel'],
+          requiresCodexProjectConfig: true,
+          ...(options.includeRoleKey === false ? {} : { roleKey }),
+        },
+      ],
+    },
+  }, { spaces: 2 });
+
+  await fs.writeFile(
+    path.join(pluginDir, 'scripts', 'render-artifacts.mjs'),
+    [
+      'const roleKey = process.env.TEST_RENDERER_ROLE_KEY ?? ' + JSON.stringify(rendererRoleKey) + ';',
+      'process.stdout.write(JSON.stringify({',
+      '  version: 1,',
+      '  artifacts: [',
+      '    {',
+      '      id: "lightweight-instruction",',
+      '      kind: "instruction",',
+      '      platform: "codex",',
+      '      target: "codex.developerInstructionsBlock",',
+      '      state: "present",',
+      '      refreshKeys: ["enableInstruction", "explorerModel"],',
+      '      content: "Use the explorer role for read-only codebase exploration."',
+      '    },',
+      '    {',
+      '      id: "codex-explorer-role",',
+      '      kind: "codexRole",',
+      '      platform: "codex",',
+      '      target: "codex.agentRole",',
+      '      state: "present",',
+      '      roleKey,',
+      '      refreshKeys: ["explorerModel"],',
+      '      content: {',
+      '        registration: { description: "Read-only explorer role." },',
+      '        roleFile: {',
+      '          name: roleKey,',
+      '          description: "Read-only explorer role.",',
+      '          developer_instructions: "Read only. Do not edit files."',
+      '        }',
+      '      }',
+      '    }',
+      '  ]',
+      '}));',
+    ].join('\n'),
+    'utf8',
+  );
+
+  await fs.writeFile(
+    path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'SKILL.md'),
+    [
+      '---',
+      'name: dynamic-authoring-test',
+      'description: Validate dynamic artifact authoring.',
+      'disable-model-invocation: true',
+      '---',
+      '',
+      '# Dynamic Authoring Test',
+      '',
+      'Validate dynamic artifact authoring contracts.',
+    ].join('\n'),
+    'utf8',
+  );
+
+  await fs.writeFile(
+    path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'agents', 'openai.yaml'),
+    options.omitSkillPolicy
+      ? ''
+      : [
+          'policy:',
+          '  allow_implicit_invocation: false',
+        ].join('\n'),
+    'utf8',
+  );
+
+  return { pluginDir, manifestPath };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -1126,6 +1291,92 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('file:../local.tgz'),
+    });
+  });
+
+  it('validate_plugin.js validates dynamic Codex artifact renderer contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifacts-'));
+    tempDirs.push(tempRoot);
+
+    const { pluginDir, manifestPath } = await writeDynamicArtifactPlugin(tempRoot);
+
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const validManifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: {
+        targets: [
+          {
+            ...validManifest.artifacts.targets[0],
+            target: 'codex.unknownTarget',
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('unsupported artifact target "codex.unknownTarget"'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: {
+        targets: [
+          {
+            ...validManifest.artifacts.targets[0],
+            states: ['archived'],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('unsupported artifact state "archived"'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: {
+        targets: [
+          {
+            ...validManifest.artifacts.targets[0],
+            refreshKeys: ['missingConfigKey'],
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
+    });
+  });
+
+  it('validate_plugin.js rejects dynamic role metadata and skill trigger policy mistakes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-role-'));
+    tempDirs.push(tempRoot);
+
+    const missingRole = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'missing-role'),
+      { includeRoleKey: false },
+    );
+    await expect(runValidatePlugin(missingRole.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('codex.agentRole targets must declare a static roleKey'),
+    });
+
+    const mismatchedRole = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'mismatched-role'),
+      { rendererRoleKey: 'other-explorer' },
+    );
+    await expect(runValidatePlugin(mismatchedRole.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('expected "codex-explorer" from static metadata'),
+    });
+
+    const missingPolicy = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'missing-policy'),
+      { omitSkillPolicy: true },
+    );
+    await expect(runValidatePlugin(missingPolicy.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('policy is required for Codex-targeted skills'),
     });
   });
 

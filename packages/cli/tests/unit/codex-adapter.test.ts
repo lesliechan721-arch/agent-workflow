@@ -8,14 +8,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildCodexMarketplaceAddInvocation,
   CodexAdapter,
+  pruneCodexTrackedArtifacts,
 } from '../../src/adapters/codex.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
+import { getGeneratedArtifactIdentityKey } from '../../src/utils/generated-artifacts.js';
 import {
   createAvailableLedger,
   initializeLocalMarketplace,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import {
+  applyCodexConfigTransactionFile,
   readCodexConfigFile,
   removeCodexPluginEnabledFile,
   removeCodexMcpServer,
@@ -28,6 +31,7 @@ import {
   writeCodexNativeRecoveryBreadcrumb,
 } from '../../src/utils/codex-native-recovery.js';
 import * as codexNativeRecoveryModule from '../../src/utils/codex-native-recovery.js';
+import * as codexConfigModule from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   NativeCliError,
@@ -40,6 +44,7 @@ import {
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import {
   removeTrackingRecordFromManifest,
   readTrackingManifest,
@@ -93,7 +98,12 @@ async function makeWorkspace(): Promise<{
 
 async function copyRepoManagedFixturePlugin(
   repoRoot: string,
-  pluginDir: 'mcp-only' | 'instructions-mcp' | 'skills-only' | 'slashCommands-only',
+  pluginDir:
+    | 'dynamic-artifacts'
+    | 'mcp-only'
+    | 'instructions-mcp'
+    | 'skills-only'
+    | 'slashCommands-only',
 ): Promise<void> {
   await fs.copy(
     fixturePath('codex-project-repo-managed', 'plugins', pluginDir),
@@ -107,6 +117,95 @@ function resolveCodexNativeCacheVersionPath(
   version = '0.1.0',
 ): string {
   return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
+}
+
+async function writeDynamicArtifactRendererScript(
+  repoRoot: string,
+  source: string,
+): Promise<void> {
+  await fs.writeFile(
+    path.join(repoRoot, 'plugins', 'dynamic-artifacts', 'scripts', 'render-artifacts.mjs'),
+    source,
+    'utf8',
+  );
+}
+
+function renderDynamicArtifactsFixture(options?: {
+  instructionState?: 'present' | 'disabled';
+  instructionContent?: string;
+  instructionDisabledReason?: string;
+  roleState?: 'present' | 'disabled';
+  roleDisabledReason?: string;
+}): string {
+  const instructionState = options?.instructionState ?? 'present';
+  const roleState = options?.roleState ?? 'present';
+  const instructionBody = instructionState === 'present'
+    ? [
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        `      content: ${JSON.stringify(options?.instructionContent ?? 'Inspect the repository carefully.')}`,
+        '    },',
+      ]
+    : [
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "disabled",',
+        `      disabledReason: ${JSON.stringify(options?.instructionDisabledReason ?? 'config')},`,
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"]',
+        '    },',
+      ];
+  const roleBody = roleState === 'present'
+    ? [
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: "Inspect the repository.",',
+        '          model: "gpt-5.4-mini",',
+        '          model_reasoning_effort: "medium"',
+        '        }',
+        '      }',
+        '    }',
+      ]
+    : [
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "disabled",',
+        '      roleKey: "codex-explorer",',
+        `      disabledReason: ${JSON.stringify(options?.roleDisabledReason ?? 'config')},`,
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"]',
+        '    }',
+      ];
+
+  return [
+    'console.log(JSON.stringify({',
+    '  version: 1,',
+    '  artifacts: [',
+    ...instructionBody,
+    ...roleBody,
+    '  ]',
+    '}));',
+  ].join('\n');
 }
 
 function createCodexMarketplaceAddRunner(
@@ -628,6 +727,1145 @@ describe('CodexAdapter', () => {
     expect(report.plugins[0].driftWarnings).toContain(
       'Codex repo skill "repo-check" 存在，但当前插件没有 tracking 证明归属。',
     );
+  });
+
+  it('renders and applies Codex instruction and role artifacts before writing static outputs', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'import { readFileSync } from "node:fs";',
+        'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: `event=${context.event};scope=${context.scope};model=${context.config.values.explorerModel}`,',
+        '          model: context.config.values.explorerModel,',
+        '          model_reasoning_effort: context.config.values.modelReasoningEffort',
+        '        }',
+        '      }',
+        '    },',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: `instruction-event=${context.event}`',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project', { event: 'upgrade' });
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    expect(artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: paths.configTomlPath,
+        kind: 'instruction',
+        platform: 'codex',
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        state: 'present',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      }),
+      expect.objectContaining({
+        path: roleFilePath,
+        kind: 'agent',
+        platform: 'codex',
+        artifactKey: 'codex-explorer',
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        roleKey: 'codex-explorer',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      }),
+    ]));
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    const trackedArtifacts = (await readTrackingManifest(paths.trackingDir))
+      .plugins[plugin.manifest.name]?.artifacts ?? [];
+    expect(trackedArtifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toEqual(
+      expect.objectContaining({
+        path: paths.configTomlPath,
+        paths: [paths.configTomlPath],
+        state: 'present',
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    );
+    expect(trackedArtifacts.find((artifact) => artifact.id === 'codex-explorer-role')).toEqual(
+      expect.objectContaining({
+        path: roleFilePath,
+        paths: [paths.configTomlPath, roleFilePath],
+        state: 'present',
+        roleKey: 'codex-explorer',
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    );
+
+    const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
+    expect(scopeConfig.snapshot.developerInstructions.managedBlocks['dynamic-artifacts']?.value).toContain(
+      'instruction-event=upgrade',
+    );
+    expect(scopeConfig.snapshot.agents['codex-explorer']).toEqual({
+      key: 'codex-explorer',
+      description: 'Read-only code exploration role.',
+      configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
+    });
+    await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
+      'developer_instructions = "event=upgrade;scope=project;model=gpt-5.4-mini"',
+    );
+    await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
+      'model_reasoning_effort = "medium"',
+    );
+  });
+
+  it('removes disabled rendered instruction blocks without leaving stale prompt text', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "disabled",',
+        '      disabledReason: "config",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"]',
+        '    },',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: "Inspect the repository."',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      upsertManagedInstructionBlock: {
+        pluginName: 'dynamic-artifacts',
+        value: 'legacy dynamic instruction',
+      },
+    });
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      upsertManagedInstructionBlock: {
+        pluginName: 'other-plugin',
+        value: 'keep me',
+      },
+    });
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    const trackedArtifacts = (await readTrackingManifest(paths.trackingDir))
+      .plugins[plugin.manifest.name]?.artifacts ?? [];
+    expect(trackedArtifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toEqual(
+      expect.objectContaining({
+        path: paths.configTomlPath,
+        paths: [paths.configTomlPath],
+        kind: 'instruction',
+        platform: 'codex',
+        state: 'disabled',
+        disabledReason: 'config',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    );
+    expect(trackedArtifacts.find((artifact) => artifact.id === 'codex-explorer-role')).toEqual(
+      expect.objectContaining({
+        kind: 'agent',
+        roleKey: 'codex-explorer',
+        state: 'present',
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    );
+
+    const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
+    expect(scopeConfig.snapshot.developerInstructions.managedBlocks['dynamic-artifacts']).toBeUndefined();
+    expect(scopeConfig.snapshot.developerInstructions.managedBlocks['other-plugin']?.value).toBe('keep me\n');
+    await expect(fs.readFile(paths.configTomlPath, 'utf8')).resolves.not.toContain('legacy dynamic instruction');
+  });
+
+  it('removes disabled rendered role registrations and managed role layers while tracking the role as disabled', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    const initialArtifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, initialArtifacts);
+    await expect(fs.pathExists(roleFilePath)).resolves.toBe(true);
+
+    const roleTarget = plugin.manifest.artifacts?.targets.find((artifact) =>
+      artifact.id === 'codex-explorer-role' && artifact.target === 'codex.agentRole',
+    );
+    if (!roleTarget) {
+      throw new Error('missing codex-explorer-role target');
+    }
+    roleTarget.states = ['present', 'disabled'];
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      renderDynamicArtifactsFixture({ roleState: 'disabled' }),
+    );
+
+    const disabledArtifacts = await adapter.installExtensions(plugin, 'project', { event: 'upgrade' });
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, disabledArtifacts);
+
+    await expect(fs.pathExists(roleFilePath)).resolves.toBe(false);
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        agents: {},
+      },
+    });
+
+    const trackedArtifacts = (await readTrackingManifest(paths.trackingDir))
+      .plugins[plugin.manifest.name]?.artifacts ?? [];
+    expect(trackedArtifacts.find((artifact) => artifact.id === 'codex-explorer-role')).toEqual(
+      expect.objectContaining({
+        path: roleFilePath,
+        paths: [paths.configTomlPath, roleFilePath],
+        kind: 'agent',
+        target: 'codex.agentRole',
+        state: 'disabled',
+        roleKey: 'codex-explorer',
+        disabledReason: 'config',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    );
+
+    const status = await adapter.status(plugin, 'project');
+    const roleArtifact = status.plugins[0].managedArtifacts?.find((artifact) =>
+      artifact.id === 'codex-explorer-role',
+    );
+    expect(roleArtifact).toMatchObject({
+      target: 'codex.agentRole',
+      state: 'disabled',
+      health: 'disabledByConfig',
+      sessionVisibility: 'absent',
+      disabledReason: 'config',
+    });
+    expect(status.plugins[0].driftWarnings).not.toContain(
+      'Codex role artifact "codex-explorer" 缺失。',
+    );
+  });
+
+  it('does not remove externally managed role registrations or files when a rendered role becomes disabled', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const managedRolePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+    const userRolePath = path.join(paths.configDir, 'agents', 'user-codex-explorer.toml');
+
+    const initialArtifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, initialArtifacts);
+    await fs.outputFile(
+      userRolePath,
+      [
+        'name = "codex-explorer"',
+        'description = "User owned role"',
+        'developer_instructions = "User instructions"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      upsertAgentRegistrations: {
+        'codex-explorer': {
+          description: 'User owned role',
+          configFile: 'agents/user-codex-explorer.toml',
+        },
+      },
+    });
+
+    const roleTarget = plugin.manifest.artifacts?.targets.find((artifact) =>
+      artifact.id === 'codex-explorer-role' && artifact.target === 'codex.agentRole',
+    );
+    if (!roleTarget) {
+      throw new Error('missing codex-explorer-role target');
+    }
+    roleTarget.states = ['present', 'disabled'];
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      renderDynamicArtifactsFixture({ roleState: 'disabled' }),
+    );
+
+    const disabledArtifacts = await adapter.installExtensions(plugin, 'project', { event: 'upgrade' });
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, disabledArtifacts);
+
+    await expect(fs.pathExists(managedRolePath)).resolves.toBe(false);
+    await expect(fs.pathExists(userRolePath)).resolves.toBe(true);
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        agents: {
+          'codex-explorer': {
+            key: 'codex-explorer',
+            description: 'User owned role',
+            configFile: 'agents/user-codex-explorer.toml',
+          },
+        },
+      },
+    });
+  });
+
+  it('applies dynamic instruction and role registration changes through a single Codex config transaction', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const transactionSpy = vi.spyOn(codexConfigModule, 'applyCodexConfigTransactionFile');
+
+    await adapter.installExtensions(plugin, 'project');
+
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+    expect(transactionSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        upsertManagedInstructionBlock: expect.objectContaining({
+          pluginName: 'dynamic-artifacts',
+        }),
+        upsertAgentRegistrations: {
+          'codex-explorer': expect.objectContaining({
+            description: 'Read-only code exploration role.',
+            configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
+          }),
+        },
+      }),
+    );
+  });
+
+  it('keeps upgraded dynamic instruction and role surfaces while pruning stale tracked identities', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+
+    const legacyPlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    legacyPlugin.manifest = {
+      ...legacyPlugin.manifest,
+      artifacts: {
+        targets: [
+          {
+            id: 'legacy-instruction',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.developerInstructionsBlock',
+            kind: 'instruction',
+            projectManagedKind: 'instruction',
+            states: ['present'],
+            refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+            requiresCodexProjectConfig: true,
+          },
+          {
+            id: 'legacy-role',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.agentRole',
+            kind: 'codexRole',
+            projectManagedKind: 'agent',
+            states: ['present'],
+            refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+            requiresCodexProjectConfig: true,
+            roleKey: 'legacy-explorer',
+          },
+        ],
+      },
+    };
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "legacy-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: "legacy instruction body"',
+        '    },',
+        '    {',
+        '      id: "legacy-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "legacy-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Legacy role" },',
+        '        roleFile: {',
+        '          name: "legacy-explorer",',
+        '          description: "Legacy role",',
+        '          developer_instructions: "legacy role instructions"',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const legacyArtifacts = await adapter.installExtensions(legacyPlugin, 'project', { event: 'install' });
+    await upsertTrackingRecord(paths.trackingDir, legacyPlugin.manifest.name, legacyArtifacts);
+
+    const upgradedPlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: "upgraded instruction body"',
+        '    },',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Upgraded role" },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Upgraded role",',
+        '          developer_instructions: "upgraded role instructions"',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const upgradedArtifacts = await adapter.installExtensions(upgradedPlugin, 'project', { event: 'upgrade' });
+    const staleArtifacts = legacyArtifacts.filter((artifact) =>
+      !new Set(upgradedArtifacts.map((entry) => getGeneratedArtifactIdentityKey(entry))).has(
+        getGeneratedArtifactIdentityKey(artifact),
+      ),
+    );
+    await pruneCodexTrackedArtifacts({
+      cwd,
+      scope: 'project',
+      env,
+      pluginName: upgradedPlugin.manifest.name,
+      artifacts: staleArtifacts,
+      preservedArtifacts: upgradedArtifacts,
+    });
+    await upsertTrackingRecord(paths.trackingDir, upgradedPlugin.manifest.name, upgradedArtifacts);
+
+    const legacyRolePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(upgradedPlugin.manifest.name, 'legacy-explorer')}.toml`,
+    );
+    const upgradedRolePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(upgradedPlugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+    const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
+    const trackedArtifacts = (await readTrackingManifest(paths.trackingDir))
+      .plugins[upgradedPlugin.manifest.name]?.artifacts ?? [];
+
+    expect(scopeConfig.snapshot.developerInstructions.managedBlocks['dynamic-artifacts']?.value).toContain(
+      'upgraded instruction body',
+    );
+    expect(scopeConfig.snapshot.developerInstructions.managedBlocks['dynamic-artifacts']?.value).not.toContain(
+      'legacy instruction body',
+    );
+    expect(scopeConfig.snapshot.agents['legacy-explorer']).toBeUndefined();
+    expect(scopeConfig.snapshot.agents['codex-explorer']).toEqual({
+      key: 'codex-explorer',
+      description: 'Upgraded role',
+      configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
+    });
+    await expect(fs.pathExists(legacyRolePath)).resolves.toBe(false);
+    await expect(fs.readFile(upgradedRolePath, 'utf8')).resolves.toContain('upgraded role instructions');
+    expect(trackedArtifacts.map((artifact) => artifact.id).sort()).toEqual([
+      'codex-explorer-role',
+      'lightweight-instruction',
+    ]);
+  });
+
+  it('reports dynamic instruction and role artifacts separately in project status', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const userPaths = resolveCodexPaths(cwd, 'user', env);
+    await fs.ensureDir(path.dirname(userPaths.configTomlPath));
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      `[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "trusted"\n`,
+      'utf8',
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    const status = await adapter.status(plugin, 'project');
+    const managedArtifacts = status.plugins[0].managedArtifacts ?? [];
+
+    expect(status.plugins[0].repoManagedSessionState).toMatchObject({
+      instructions: 'visible',
+      agents: 'visible',
+    });
+    expect(managedArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+        state: 'present',
+        health: 'healthy',
+        sessionVisibility: 'visible',
+        configDigest: expect.stringMatching(/^sha256:/),
+        currentConfigDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+        currentContentDigest: expect.stringMatching(/^sha256:/),
+      }),
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        roleKey: 'codex-explorer',
+        health: 'healthy',
+        sessionVisibility: 'visible',
+        configDigest: expect.stringMatching(/^sha256:/),
+        currentConfigDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+        currentContentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    ]));
+  });
+
+  it('does not report disabled instruction artifacts as missing in status', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      renderDynamicArtifactsFixture({ instructionState: 'disabled' }),
+    );
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    const status = await adapter.status(plugin, 'project');
+    const instructionArtifact = status.plugins[0].managedArtifacts?.find((artifact) =>
+      artifact.id === 'lightweight-instruction',
+    );
+
+    expect(instructionArtifact).toMatchObject({
+      target: 'codex.developerInstructionsBlock',
+      state: 'disabled',
+      health: 'disabledByConfig',
+      sessionVisibility: 'absent',
+      disabledReason: 'config',
+    });
+    expect(status.plugins[0].driftWarnings).not.toContain(
+      'Codex instruction artifact "lightweight-instruction" 缺失。',
+    );
+  });
+
+  it('diagnoses recent refresh failures from tracking metadata', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const userPaths = resolveCodexPaths(cwd, 'user', env);
+    await fs.ensureDir(path.dirname(userPaths.configTomlPath));
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      `[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "trusted"\n`,
+      'utf8',
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(
+      paths.trackingDir,
+      plugin.manifest.name,
+      artifacts.map((artifact) =>
+        artifact.id === 'codex-explorer-role'
+          ? {
+              ...artifact,
+              lastRefresh: {
+                status: 'failed' as const,
+                updatedAt: '2026-05-04T08:00:00.000Z',
+                triggerKeys: ['explorerModel'],
+                event: 'refresh' as const,
+                error: 'renderer failed',
+              },
+              refreshReach: {
+                commandScope: 'project' as const,
+                refreshedCurrentProjectTarget: true,
+                scannedHistoricalProjects: false,
+              },
+            }
+          : artifact),
+    );
+
+    const status = await adapter.status(plugin, 'project');
+    const roleArtifact = status.plugins[0].managedArtifacts?.find((artifact) =>
+      artifact.id === 'codex-explorer-role',
+    );
+
+    expect(roleArtifact).toMatchObject({
+      health: 'recentRefreshFailed',
+      sessionVisibility: 'visible',
+      lastRefresh: {
+        status: 'failed',
+        updatedAt: '2026-05-04T08:00:00.000Z',
+        triggerKeys: ['explorerModel'],
+        event: 'refresh',
+        error: 'renderer failed',
+      },
+      refreshReach: {
+        commandScope: 'project',
+        refreshedCurrentProjectTarget: true,
+        scannedHistoricalProjects: false,
+      },
+    });
+    expect(status.plugins[0].driftWarnings).toContain(
+      'Codex role artifact "codex-explorer" 最近 refresh 失败。 最近一次 refresh 失败（2026-05-04T08:00:00.000Z，triggerKeys=explorerModel）：renderer failed',
+    );
+  });
+
+  it('diagnoses config stale, registration drift, and missing role layers for dynamic role artifacts', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const userPaths = resolveCodexPaths(cwd, 'user', env);
+    await fs.ensureDir(path.dirname(userPaths.configTomlPath));
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      `[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "trusted"\n`,
+      'utf8',
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {
+        explorerModel: 'gpt-5.4',
+      },
+    });
+    let status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
+      health: 'configDigestStale',
+      sessionVisibility: 'visible',
+    });
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {},
+    });
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      upsertAgentRegistrations: {
+        'codex-explorer': {
+          description: 'Drifted registration description.',
+          configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
+        },
+      },
+    });
+    status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
+      health: 'registrationDrift',
+      sessionVisibility: 'visible',
+    });
+
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      upsertAgentRegistrations: {
+        'codex-explorer': {
+          description: 'Read-only code exploration role.',
+          configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
+        },
+      },
+    });
+    await fs.remove(roleFilePath);
+    status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
+      health: 'roleLayerMissing',
+      sessionVisibility: 'absent',
+    });
+  });
+
+  it('separates project artifact health from session visibility across repo trust states', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const userPaths = resolveCodexPaths(cwd, 'user', env);
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+
+    let status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].projectTrust).toBe('unknown');
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.health)).toEqual([
+      'healthy',
+      'healthy',
+    ]);
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.sessionVisibility)).toEqual([
+      'projectTrustUnknown',
+      'projectTrustUnknown',
+    ]);
+
+    await fs.ensureDir(path.dirname(userPaths.configTomlPath));
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      `[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "untrusted"\n`,
+      'utf8',
+    );
+    status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].projectTrust).toBe('untrusted');
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.health)).toEqual([
+      'healthy',
+      'healthy',
+    ]);
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.sessionVisibility)).toEqual([
+      'blockedByProjectTrust',
+      'blockedByProjectTrust',
+    ]);
+
+    await fs.writeFile(
+      userPaths.configTomlPath,
+      `[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "trusted"\n`,
+      'utf8',
+    );
+    status = await adapter.status(plugin, 'project');
+    expect(status.plugins[0].projectTrust).toBe('trusted');
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.health)).toEqual([
+      'healthy',
+      'healthy',
+    ]);
+    expect(status.plugins[0].managedArtifacts?.map((artifact) => artifact.sessionVisibility)).toEqual([
+      'visible',
+      'visible',
+    ]);
+  });
+
+  it('diagnoses user-scope dynamic role visibility from the final role namespace', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'user', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'user');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    await fs.ensureDir(path.dirname(paths.configTomlPath));
+    await fs.writeFile(
+      paths.configTomlPath,
+      `${await fs.readFile(paths.configTomlPath, 'utf8')}\n[projects.${JSON.stringify(repoRoot)}]\ntrust_level = "trusted"\n`,
+      'utf8',
+    );
+
+    const projectCodexDir = path.join(repoRoot, '.codex');
+    await fs.ensureDir(path.join(projectCodexDir, 'agents'));
+    await fs.writeFile(
+      path.join(projectCodexDir, 'config.toml'),
+      '[agents.shadow-alias]\ndescription = "Shadow alias"\nconfig_file = "agents/shadow.toml"\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(projectCodexDir, 'agents', 'shadow.toml'),
+      'name = "codex-explorer"\ndescription = "Shadow role"\ndeveloper_instructions = "shadow"\n',
+      'utf8',
+    );
+
+    const status = await adapter.status(plugin, 'user');
+    expect(status.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
+      health: 'healthy',
+      sessionVisibility: 'unknownByExternalLayer',
+    });
+  });
+
+  it('fails invalid rendered artifact plans before writing any Codex files', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await expect(adapter.installExtensions(plugin, 'project')).rejects.toThrow(
+      'renderer must return artifact "lightweight-instruction"',
+    );
+    await expect(fs.pathExists(paths.configTomlPath)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(paths.configDir, 'agents'))).resolves.toBe(false);
+  });
+
+  it('refuses to apply a rendered role when tracking claims a different managed role identity', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    const baselineConfig = await fs.readFile(paths.configTomlPath, 'utf8');
+    const baselineRoleFile = await fs.readFile(roleFilePath, 'utf8');
+    const trackingManifest = await readTrackingManifest(paths.trackingDir);
+    const trackedRoleArtifact = trackingManifest.plugins[plugin.manifest.name]?.artifacts.find((artifact) =>
+      artifact.id === 'codex-explorer-role'
+    );
+    if (!trackedRoleArtifact) {
+      throw new Error('missing tracked role artifact');
+    }
+    trackedRoleArtifact.artifactKey = 'shadow-explorer';
+    trackedRoleArtifact.roleKey = 'shadow-explorer';
+    await writeTrackingManifest(paths.trackingDir, trackingManifest);
+
+    await expect(
+      adapter.installExtensions(plugin, 'project', { event: 'upgrade' }),
+    ).rejects.toThrow('tracking 受管身份');
+    await expect(fs.readFile(paths.configTomlPath, 'utf8')).resolves.toBe(baselineConfig);
+    await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toBe(baselineRoleFile);
+  });
+
+  it('restores dynamic role files and config when later static artifact generation fails', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: "old instruction"',
+        '    },',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: "old role instructions"',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    await adapter.installExtensions(plugin, 'project');
+    const baselineConfig = await fs.readFile(paths.configTomlPath, 'utf8');
+    const baselineRoleFile = await fs.readFile(roleFilePath, 'utf8');
+
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: "new instruction"',
+        '    },',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: "new role instructions"',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+    const pluginWithInvalidPermission = {
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        extensions: {
+          ...(plugin.manifest.extensions ?? {}),
+          permissions: [{
+            name: 'invalid',
+            allow: ['bad;cmd'],
+          }],
+        },
+      },
+    };
+
+    await expect(adapter.installExtensions(pluginWithInvalidPermission, 'project')).rejects.toThrow(
+      'only plain token prefixes',
+    );
+    await expect(fs.readFile(paths.configTomlPath, 'utf8')).resolves.toBe(baselineConfig);
+    await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toBe(baselineRoleFile);
+  });
+
+  it('uninstalls managed Codex roles without deleting drifted user-owned role files', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(
+      repoRoot,
+      [
+        'console.log(JSON.stringify({',
+        '  version: 1,',
+        '  artifacts: [',
+        '    {',
+        '      id: "lightweight-instruction",',
+        '      kind: "instruction",',
+        '      platform: "codex",',
+        '      target: "codex.developerInstructionsBlock",',
+        '      state: "present",',
+        '      refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+        '      content: "Inspect the repository."',
+        '    },',
+        '    {',
+        '      id: "codex-explorer-role",',
+        '      kind: "codexRole",',
+        '      platform: "codex",',
+        '      target: "codex.agentRole",',
+        '      state: "present",',
+        '      roleKey: "codex-explorer",',
+        '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+        '      content: {',
+        '        registration: { description: "Read-only code exploration role." },',
+        '        roleFile: {',
+        '          name: "codex-explorer",',
+        '          description: "Read-only code exploration role.",',
+        '          developer_instructions: "Inspect the repository."',
+        '        }',
+        '      }',
+        '    }',
+        '  ]',
+        '}));',
+      ].join('\n'),
+    );
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    const managedRolePath = artifacts.find(
+      (artifact) => artifact.kind === 'agent' && artifact.artifactKey === 'codex-explorer',
+    )?.path;
+    const userRolePath = path.join(paths.configDir, 'agents', 'user-codex-explorer.toml');
+    await fs.outputFile(
+      userRolePath,
+      'name = "codex-explorer"\ndescription = "user"\ndeveloper_instructions = "user"\n',
+      'utf8',
+    );
+    await applyCodexConfigTransactionFile(paths.configTomlPath, {
+      removeAgentRegistrations: ['codex-explorer'],
+      upsertAgentRegistrations: {
+        'codex-explorer': {
+          description: 'User owned role',
+          configFile: 'agents/user-codex-explorer.toml',
+        },
+      },
+    });
+
+    await adapter.uninstallExtensions(plugin, 'project');
+
+    expect(managedRolePath).toBeTruthy();
+    await expect(fs.pathExists(managedRolePath!)).resolves.toBe(false);
+    await expect(fs.pathExists(userRolePath)).resolves.toBe(true);
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        agents: {},
+      },
+    });
+  });
+
+  it('cleans up disabled dynamic instruction and role artifacts during uninstall', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
+    await writeDynamicArtifactRendererScript(repoRoot, renderDynamicArtifactsFixture());
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'dynamic-artifacts'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const roleFilePath = path.join(
+      paths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'codex-explorer')}.toml`,
+    );
+
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    await upsertTrackingRecord(
+      paths.trackingDir,
+      plugin.manifest.name,
+      artifacts.map((artifact) =>
+        artifact.id
+          ? {
+              ...artifact,
+              state: 'disabled' as const,
+              disabledReason: 'config',
+            }
+          : artifact),
+    );
+
+    await adapter.uninstallExtensions(plugin, 'project');
+
+    await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
+      snapshot: {
+        developerInstructions: {
+          managedBlocks: {},
+        },
+        agents: {},
+      },
+    });
+    await expect(fs.pathExists(roleFilePath)).resolves.toBe(false);
   });
 
   it('registers the Codex marketplace through native add using the canonical AW_HOME path', async () => {
