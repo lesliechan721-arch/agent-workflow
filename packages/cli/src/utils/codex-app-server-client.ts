@@ -470,7 +470,6 @@ class CodexAppServerSession {
     if (this.terminalError) {
       throw this.terminalError;
     }
-    await this.writeFrame({ id, method, params });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
@@ -489,12 +488,21 @@ class CodexAppServerSession {
           }),
         );
       }, this.timeoutMs);
-      this.pendingRequests.set(id, {
+      const pending: PendingRequest = {
         id,
         method,
         timer,
         resolve,
         reject,
+      };
+      this.pendingRequests.set(id, pending);
+      this.writeFrame({ id, method, params }).catch((error) => {
+        if (this.pendingRequests.get(id) !== pending) {
+          return;
+        }
+        clearTimeout(timer);
+        this.pendingRequests.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
   }

@@ -73,6 +73,8 @@ import {
 import {
   checkCodexNativeInstallPostCheck,
   checkCodexNativeUninstallPostCheck,
+  hasCodexNativeCacheEvidence,
+  hasCodexNativeStateEvidence,
   listCodexNativeEvidence,
   readCodexNativePluginState,
 } from '../utils/codex-native-state.js';
@@ -400,16 +402,39 @@ function describeCodexNativeInstallPostCheckFailure(
   return `缺少可用 native cache（cache 状态：${state.cacheStatus}，目录：${state.cacheRootPath}）。`;
 }
 
+function formatCodexNativeCacheResidue(
+  state: Awaited<ReturnType<typeof checkCodexNativeUninstallPostCheck>>['state'],
+): string {
+  if (state.cacheStatus === 'active') {
+    return `目标 native cache 仍然存在（active cache: ${state.activeCachePath ?? state.cacheRootPath}）。`;
+  }
+
+  if (state.cacheStatus === 'ambiguous') {
+    return `目标 native cache 状态 ambiguous，cache root 下存在多个有效版本（${
+      state.validCachePaths.join('，') || state.cacheRootPath
+    }）。`;
+  }
+
+  if (state.cacheStatus === 'invalid') {
+    const residues = [...state.invalidCachePaths, ...state.ignoredCacheEntries];
+    return `目标 native cache 状态 invalid，cache root 下存在无效目录或非目录条目（${
+      residues.join('，') || state.cacheRootPath
+    }）。`;
+  }
+
+  return `目标 native cache 仍然存在（${state.cacheRootPath}）。`;
+}
+
 function describeCodexNativeUninstallPostCheckFailure(
   state: Awaited<ReturnType<typeof checkCodexNativeUninstallPostCheck>>['state'],
 ): string {
-  if (state.configEntryPresent && state.pluginInstalled) {
-    return `config entry 与 native cache 都仍然存在（config: ${state.configPath}，cache: ${state.cacheRootPath}）。`;
+  if (state.configEntryPresent && hasCodexNativeCacheEvidence(state)) {
+    return `config entry 与 native cache 残留都仍然存在（config: ${state.configPath}；${formatCodexNativeCacheResidue(state)}）。`;
   }
   if (state.configEntryPresent) {
     return `目标 config entry 仍然存在（${state.configPath}）。`;
   }
-  return `目标 native cache 仍然存在（${state.cacheRootPath}）。`;
+  return formatCodexNativeCacheResidue(state);
 }
 
 function hasCodexSharedNativeRefs(
@@ -687,19 +712,13 @@ function buildNativeRecoveryStatus(options: {
   pluginName: string;
   pluginEnabled: boolean;
   pluginInstalled: boolean;
-  sharedNativeRef: boolean;
-  hasSuccessfulScopeRecord: boolean;
   breadcrumb: Awaited<ReturnType<typeof readCodexNativeRecoveryBreadcrumb>>;
 }): NativeRecoveryStatus {
   if (!options.breadcrumb) {
     return createEmptyNativeRecoveryStatus();
   }
 
-  const evidenceMatches =
-    options.pluginEnabled ||
-    options.pluginInstalled ||
-    options.sharedNativeRef ||
-    options.hasSuccessfulScopeRecord;
+  const evidenceMatches = options.pluginEnabled || options.pluginInstalled;
 
   return {
     present: true,
@@ -2191,20 +2210,43 @@ export class CodexAdapter implements PlatformAdapter {
   async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
     const ledger = await readInstalledLedger(this.env);
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
-    const projectKey = await resolveCodexProjectKey(this.cwd);
-    const installedSnapshot = getInstalledScopeSnapshot(ledger, plugin.manifest.name, scope, projectKey);
-    if (!normalizeCodexCapabilitySnapshot(installedSnapshot).requiresNativePlugin) {
-      return;
-    }
-
     // Codex project uninstall only removes repo-managed artifacts; shared user native state stays in place.
     if (scope === 'project') {
       return;
     }
 
+    const projectKey = await resolveCodexProjectKey(this.cwd);
+    const installedSnapshot = getInstalledScopeSnapshot(ledger, plugin.manifest.name, scope, projectKey);
+    const installedRequiresNative = normalizeCodexCapabilitySnapshot(installedSnapshot).requiresNativePlugin;
     const currentRefs = normalizeSharedNativeRefs(
       ledger.plugins[plugin.manifest.name]?.platforms.codex?.sharedNativeRefs,
     );
+    const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
+    const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
+    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const trackingEvidenceUsable =
+      Boolean(trackingRecord) &&
+      getTrackingArtifactIntegrityErrors(trackingRecord?.artifacts ?? []).length === 0;
+    const nativeState = await readCodexNativePluginState(plugin.manifest.name, this.env);
+    const recoveryBreadcrumb = await readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, this.env);
+    const managedOrRecoveryEvidence =
+      installedRequiresNative ||
+      trackingEvidenceUsable ||
+      currentRefs.user ||
+      recoveryBreadcrumb !== null;
+    const shouldHandleUserNative =
+      managedOrRecoveryEvidence
+        ? (
+            requiresCodexNativePlugin(plugin, scope) ||
+            installedRequiresNative ||
+            hasCodexNativeStateEvidence(nativeState) ||
+            recoveryBreadcrumb !== null
+          )
+        : nativeState.pluginEnabled;
+    if (!shouldHandleUserNative) {
+      return;
+    }
+
     const nextRefs = normalizeSharedNativeRefs(currentRefs);
     nextRefs.user = false;
 
@@ -2615,8 +2657,6 @@ export class CodexAdapter implements PlatformAdapter {
           pluginName: plugin.manifest.name,
           pluginEnabled: nativePluginEnabled,
           pluginInstalled: nativePluginInstalled,
-          sharedNativeRef: sharedNativeRefEvidence,
-          hasSuccessfulScopeRecord: ledgerScopeInitialized === 'yes',
           breadcrumb: recoveryBreadcrumb,
         })
       : createEmptyNativeRecoveryStatus();
@@ -2656,6 +2696,7 @@ export class CodexAdapter implements PlatformAdapter {
       sharedNativeRefEvidence ||
       nativePluginEnabled ||
       nativePluginInstalled ||
+      (nativeState ? hasCodexNativeCacheEvidence(nativeState) : false) ||
       nativeRecovery.present;
     const marketplaceHealth = resolveCodexMarketplaceHealth(
       userConfig.snapshot.marketplaces[MARKETPLACE_NAME],

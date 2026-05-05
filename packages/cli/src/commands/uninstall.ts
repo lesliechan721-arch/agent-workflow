@@ -385,7 +385,14 @@ function didUninstallWriteNativeState(
       return false;
     }
 
-    return pluginStatus.native.pluginInstalled;
+    return (
+      pluginStatus.native.pluginInstalled ||
+      pluginStatus.native.pluginEnabled === true ||
+      pluginStatus.native.configEntryPresent === true ||
+      pluginStatus.native.cacheStatus === 'ambiguous' ||
+      pluginStatus.native.cacheStatus === 'invalid' ||
+      pluginStatus.native.recovery?.present === true
+    );
   }
 
   return pluginStatus.native.pluginInstalled;

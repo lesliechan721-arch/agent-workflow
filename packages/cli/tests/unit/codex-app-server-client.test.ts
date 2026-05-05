@@ -1,7 +1,11 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   installCodexPluginViaAppServer,
+  type CodexAppServerProcess,
   uninstallCodexPluginViaAppServer,
   type CodexAppServerProcessRunner,
 } from '../../src/utils/codex-app-server-client.js';
@@ -16,7 +20,91 @@ async function captureErrorMessage(promise: Promise<unknown>): Promise<string> {
   throw new Error('Expected promise to reject.');
 }
 
+class SynchronousReplyCodexAppServerProcess
+  extends EventEmitter
+  implements CodexAppServerProcess {
+  readonly stdin: Writable;
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly pid = 5252;
+  readonly messages: Array<Record<string, unknown>> = [];
+
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  killed = false;
+  private stdinBuffer = '';
+
+  constructor() {
+    super();
+    this.stdin = new Writable({
+      write: (chunk, _encoding, callback) => {
+        this.pushStdinChunk(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+        callback();
+      },
+    });
+  }
+
+  kill(signal?: NodeJS.Signals | number): boolean {
+    if (this.killed) {
+      return false;
+    }
+    this.killed = true;
+    this.signalCode = typeof signal === 'string' ? signal : null;
+    this.stdout.end();
+    this.stderr.end();
+    this.emit('close', null, this.signalCode);
+    return true;
+  }
+
+  private pushStdinChunk(chunk: string): void {
+    this.stdinBuffer += chunk;
+    let newlineIndex = this.stdinBuffer.indexOf('\n');
+    while (newlineIndex >= 0) {
+      const line = this.stdinBuffer.slice(0, newlineIndex).replace(/\r$/, '');
+      this.stdinBuffer = this.stdinBuffer.slice(newlineIndex + 1);
+      this.handleStdinLine(line);
+      newlineIndex = this.stdinBuffer.indexOf('\n');
+    }
+  }
+
+  private handleStdinLine(line: string): void {
+    const frame = JSON.parse(line) as Record<string, unknown>;
+    this.messages.push(frame);
+    if (frame.method === 'initialize') {
+      this.stdout.write(`${JSON.stringify({ id: frame.id, result: { protocolVersion: '2026-05-04' } })}\n`);
+    }
+    if (frame.method === 'plugin/install') {
+      this.stdout.write(`${JSON.stringify({ id: frame.id, result: { installed: true } })}\n`);
+    }
+  }
+}
+
 describe('codex-app-server-client', () => {
+  it('registers pending requests before writing so synchronous app-server replies are matched', async () => {
+    const child = new SynchronousReplyCodexAppServerProcess();
+    const runner: CodexAppServerProcessRunner = () => child;
+
+    await expect(
+      installCodexPluginViaAppServer({
+        cwd: '/tmp/project',
+        env: { PATH: '/tmp/bin' },
+        marketplacePath: '/tmp/aw/.agents/plugins/marketplace.json',
+        pluginName: 'git-commit',
+        timeoutMs: 25,
+        runner,
+      }),
+    ).resolves.toMatchObject({
+      method: 'plugin/install',
+      requestId: 'install-1',
+      result: { installed: true },
+    });
+    expect(child.messages.map((message) => message.method)).toEqual([
+      'initialize',
+      'initialized',
+      'plugin/install',
+    ]);
+  });
+
   it('runs initialize -> initialized -> plugin/install over stdio JSONL, ignores unrelated frames, and captures stderr', async () => {
     const harness = createFakeCodexAppServerHarness([
       {

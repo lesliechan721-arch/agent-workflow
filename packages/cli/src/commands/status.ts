@@ -476,6 +476,10 @@ function hasGeneralHealthDowngrade(plugin: PluginStatusReport): boolean {
 function resolveCodexUserNativeHealth(plugin: PluginStatusReport): StatusHealth {
   const installed = plugin.native.pluginInstalled;
   const enabled = plugin.native.pluginEnabled === true;
+  const hasCacheEvidence =
+    plugin.native.cacheStatus === 'active' ||
+    plugin.native.cacheStatus === 'ambiguous' ||
+    plugin.native.cacheStatus === 'invalid';
   const hasSuccessfulScopeRecord = plugin.scopeManagedEvidence?.ledger === true;
   const hasManagedEvidence = hasScopeManagedEvidence(plugin);
 
@@ -488,7 +492,9 @@ function resolveCodexUserNativeHealth(plugin: PluginStatusReport): StatusHealth 
   }
 
   if (!installed && !enabled) {
-    return hasManagedEvidence || hasNativeRecovery(plugin) ? 'needsAttention' : 'notInstalled';
+    return hasManagedEvidence || hasNativeRecovery(plugin) || hasCacheEvidence
+      ? 'needsAttention'
+      : 'notInstalled';
   }
 
   if (!installed || !enabled) {

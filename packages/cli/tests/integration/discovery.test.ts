@@ -92,6 +92,14 @@ async function writeCodexActiveCache(
   return versionPath;
 }
 
+function resolveCodexCacheVersionPath(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+  version = '0.1.0',
+): string {
+  return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -456,6 +464,89 @@ describe('managed plugin discovery', () => {
     });
   });
 
+  it('discovers ambiguous and invalid Codex cache residues as diagnostics only', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const firstPath = await writeCodexActiveCache(env, 'multi-version', '0.1.0');
+    const secondPath = await writeCodexActiveCache(env, 'multi-version', '0.2.0');
+    const invalidVersionPath = resolveCodexCacheVersionPath(env, 'invalid-cache', '0.1.0');
+    const ignoredEntryPath = resolveCodexCacheVersionPath(env, 'file-entry', '0.1.0');
+    await fs.ensureDir(invalidVersionPath);
+    await fs.outputFile(ignoredEntryPath, 'not a directory\n', 'utf8');
+
+    const statusCandidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['multi-version', 'invalid-cache', 'file-entry'],
+      env,
+    });
+    const uninstallCandidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['multi-version', 'invalid-cache', 'file-entry'],
+      env,
+    });
+
+    expect(statusCandidates.map((candidate) => candidate.pluginName).sort()).toEqual([
+      'file-entry',
+      'invalid-cache',
+      'multi-version',
+    ]);
+    expect(statusCandidates.every((candidate) => candidate.evidence.sources.includes('codexNativeCache'))).toBe(true);
+    expect(uninstallCandidates).toHaveLength(3);
+    expect(uninstallCandidates.every((candidate) => candidate.selectable === false)).toBe(true);
+    expect(uninstallCandidates.every((candidate) => candidate.disabledReason?.includes('Codex cache 残留'))).toBe(true);
+
+    const status = await statusCommand(
+      ['multi-version', 'invalid-cache', 'file-entry'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      { env },
+    );
+    const payload = JSON.parse(status.output) as {
+      cells: Array<{ plugin: string; health: string }>;
+      reports: Array<{
+        plugins: Array<{
+          pluginName: string;
+          native: {
+            pluginInstalled: boolean;
+            cacheStatus?: string;
+            validCachePaths?: string[];
+            invalidCachePaths?: string[];
+            ignoredCacheEntries?: string[];
+          };
+        }>;
+      }>;
+    };
+    const plugins = new Map(
+      payload.reports.flatMap((report) => report.plugins).map((plugin) => [plugin.pluginName, plugin]),
+    );
+
+    expect(payload.cells.every((cell) => cell.health === 'needsAttention')).toBe(true);
+    expect(plugins.get('multi-version')?.native).toMatchObject({
+      pluginInstalled: false,
+      cacheStatus: 'ambiguous',
+      validCachePaths: [firstPath, secondPath],
+    });
+    expect(plugins.get('invalid-cache')?.native).toMatchObject({
+      pluginInstalled: false,
+      cacheStatus: 'invalid',
+      invalidCachePaths: [invalidVersionPath],
+    });
+    expect(plugins.get('file-entry')?.native).toMatchObject({
+      pluginInstalled: false,
+      cacheStatus: 'invalid',
+      ignoredCacheEntries: [ignoredEntryPath],
+    });
+  });
+
   it('keeps shared-ref-only, cache-only, and breadcrumb-only Codex user targets out of upgrade-ready candidates', async () => {
     const { repoRoot, env } = await makeWorkspace();
     await writeInstalledLedger({
@@ -613,6 +704,82 @@ describe('managed plugin discovery', () => {
     expect(payload.reports[0]?.plugins[0]?.native.recovery.suggestion).toContain('aw uninstall recovery-only -p codex -s user');
     expect(humanStatus.output).toContain('native 写入已完成');
     expect(humanStatus.output).toContain('recovery breadcrumb 仍在');
+  });
+
+  it('keeps recovery evidenceMatches false when only ledger and shared native refs remain', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: scopeRecord({
+                requiresNativePlugin: true,
+              }),
+              sharedNativeRefs: {
+                user: true,
+                projects: [],
+              },
+            },
+          },
+        },
+      },
+    }, env);
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      state: 'post_check_failed',
+      reason: 'post check failed',
+      env,
+    });
+
+    const status = await statusCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      { env },
+    );
+    const payload = JSON.parse(status.output) as {
+      reports: Array<{
+        plugins: Array<{
+          native: {
+            pluginInstalled: boolean;
+            pluginEnabled?: boolean;
+            recovery: {
+              present: boolean;
+              evidenceMatches: boolean | null;
+              suggestion: string | null;
+            };
+          };
+          scopeManagedEvidence?: {
+            ledger: boolean;
+            sharedNativeRef: boolean;
+          };
+        }>;
+      }>;
+    };
+    const plugin = payload.reports[0]?.plugins[0];
+
+    expect(plugin).toMatchObject({
+      native: {
+        pluginInstalled: false,
+        pluginEnabled: false,
+        recovery: {
+          present: true,
+          evidenceMatches: false,
+        },
+      },
+      scopeManagedEvidence: {
+        ledger: true,
+        sharedNativeRef: true,
+      },
+    });
+    expect(plugin?.native.recovery.suggestion).toContain('aw uninstall git-commit -p codex -s user');
   });
 
   it('keeps requested status targets as unknown candidates when tracking cannot be read', async () => {

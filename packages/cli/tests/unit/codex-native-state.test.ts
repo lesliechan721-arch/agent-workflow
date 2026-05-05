@@ -124,10 +124,17 @@ describe('codex-native-state', () => {
     });
     expect(state.activeCachePath).toBeUndefined();
 
-    await expect(listCodexNativeEvidence(env)).resolves.toEqual([]);
+    await expect(listCodexNativeEvidence(env)).resolves.toMatchObject([
+      {
+        pluginName: 'multi-version',
+        pluginInstalled: false,
+        cacheStatus: 'ambiguous',
+        validCachePaths: [firstPath, secondPath],
+      },
+    ]);
   });
 
-  it('rejects invalid cache directories and non-directory entries', async () => {
+  it('surfaces invalid cache directories and non-directory entries as native evidence diagnostics', async () => {
     const env = await makeEnv();
     const invalidVersionPath = getCacheVersionPath(env, 'invalid-cache', '0.1.0');
     await fs.ensureDir(invalidVersionPath);
@@ -146,6 +153,20 @@ describe('codex-native-state', () => {
       invalidCachePaths: [],
       ignoredCacheEntries: [nonDirectoryEntryPath],
     });
+    await expect(listCodexNativeEvidence(env)).resolves.toMatchObject([
+      {
+        pluginName: 'file-entry',
+        pluginInstalled: false,
+        cacheStatus: 'invalid',
+        ignoredCacheEntries: [nonDirectoryEntryPath],
+      },
+      {
+        pluginName: 'invalid-cache',
+        pluginInstalled: false,
+        cacheStatus: 'invalid',
+        invalidCachePaths: [invalidVersionPath],
+      },
+    ]);
   });
 
   it('runs install post-check against both enabled config and active cache', async () => {
@@ -186,6 +207,9 @@ describe('codex-native-state', () => {
 
     await upsertCodexPluginEnabledFile(configPath, 'disabled-residue@aw', { enabled: false });
     await writeActiveCache(env, 'cache-residue');
+    await fs.ensureDir(getCacheVersionPath(env, 'invalid-cache-residue', '0.1.0'));
+    await writeActiveCache(env, 'ambiguous-cache-residue', '0.1.0');
+    await writeActiveCache(env, 'ambiguous-cache-residue', '0.2.0');
 
     await expect(checkCodexNativeUninstallPostCheck('clean', env)).resolves.toMatchObject({
       ok: true,
@@ -207,6 +231,22 @@ describe('codex-native-state', () => {
       state: {
         configEntryPresent: false,
         pluginInstalled: true,
+      },
+    });
+    await expect(checkCodexNativeUninstallPostCheck('invalid-cache-residue', env)).resolves.toMatchObject({
+      ok: false,
+      state: {
+        configEntryPresent: false,
+        pluginInstalled: false,
+        cacheStatus: 'invalid',
+      },
+    });
+    await expect(checkCodexNativeUninstallPostCheck('ambiguous-cache-residue', env)).resolves.toMatchObject({
+      ok: false,
+      state: {
+        configEntryPresent: false,
+        pluginInstalled: false,
+        cacheStatus: 'ambiguous',
       },
     });
   });

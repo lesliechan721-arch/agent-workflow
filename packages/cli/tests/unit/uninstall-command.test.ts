@@ -1322,6 +1322,91 @@ describe('uninstall command coverage', () => {
     expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/uninstall');
   });
 
+  it('runs Codex user native uninstall for tracking-only records when the ledger scope record is missing', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const target: ResolvedPluginTarget = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    await fs.ensureDir(env.AW_HOME!);
+    await localMarketplaceModule.writeInstalledLedger(
+      localMarketplaceModule.createAvailableLedger(),
+      env,
+    );
+
+    const configPath = resolveCodexPaths(repoRoot, 'user', env).configTomlPath;
+    const trackingDir = resolveCodexPaths(repoRoot, 'user', env).trackingDir;
+    const trackedArtifact = {
+      path: path.join(trackingDir, 'git-commit.rule'),
+      kind: 'instruction' as const,
+      platform: 'codex' as const,
+    };
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', {
+      enabled: true,
+    });
+    await fs.outputFile(
+      path.join(resolveCodexNativeCacheVersionPath(env, plugin.manifest.name), 'plugin.json'),
+      '{}\n',
+      'utf8',
+    );
+    await upsertTrackingRecord(trackingDir, plugin.manifest.name, [trackedArtifact]);
+
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/uninstall' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
+      },
+    ]);
+    const adapter = new CodexAdapter(repoRoot, env, appServerHarness.createRunner());
+    const commandPromise = uninstallTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: adapter,
+          claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+        },
+        env,
+      },
+    );
+
+    await waitForHarnessMethod(appServerHarness, 'plugin/uninstall');
+    await removeCodexPluginEnabledFile(configPath, 'git-commit@aw');
+    await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', plugin.manifest.name));
+
+    const result = await commandPromise;
+    expect(result.repoManagedArtifacts).toEqual([trackedArtifact]);
+    expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/uninstall');
+    await expect(readTrackingManifest(trackingDir)).resolves.toMatchObject({
+      plugins: {},
+    });
+    await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
+      snapshot: {
+        plugins: {},
+        marketplaces: {},
+      },
+    });
+  });
+
   it('fails breadcrumb-only uninstall when RPC succeeds but native post-check still sees enabled config and cache', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const pluginName = 'post-check-fails';
@@ -1479,6 +1564,146 @@ describe('uninstall command coverage', () => {
     await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toMatchObject({
       state: 'cleanup_failed',
       reason: 'native_uninstall_post_check_failed',
+    });
+  });
+
+  it('fails managed Codex user uninstall when RPC leaves invalid cache and preserves recovery bookkeeping', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const pluginName = plugin.manifest.name;
+    const pluginId = `${pluginName}@aw`;
+    const target: ResolvedPluginTarget = {
+      pluginName,
+      plugin,
+      currentPlugin: plugin,
+      embeddedPlugin: plugin,
+      source: 'currentCatalog',
+    };
+    await fs.ensureDir(env.AW_HOME!);
+
+    const paths = resolveCodexPaths(repoRoot, 'user', env);
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, pluginName);
+    const trackedArtifact = {
+      path: path.join(paths.trackingDir, 'git-commit.rule'),
+      kind: 'instruction' as const,
+      platform: 'codex' as const,
+    };
+
+    await upsertCodexMarketplaceFile(paths.configTomlPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+    await upsertCodexPluginEnabledFile(paths.configTomlPath, pluginId, {
+      enabled: true,
+    });
+    await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
+    await upsertTrackingRecord(paths.trackingDir, pluginName, [trackedArtifact]);
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          [pluginName]: {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-04-28T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                },
+                sharedNativeRefs: {
+                  user: true,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName,
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      activeCachePath: cacheVersionPath,
+      env,
+    });
+
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/uninstall' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 250 }],
+      },
+    ]);
+    const adapter = new CodexAdapter(repoRoot, env, appServerHarness.createRunner());
+    const commandPromise = uninstallTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: adapter,
+          claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+        },
+        env,
+      },
+    );
+
+    await waitForHarnessMethod(appServerHarness, 'plugin/uninstall');
+    await removeCodexPluginEnabledFile(paths.configTomlPath, pluginId);
+    await fs.remove(path.join(cacheVersionPath, 'plugin.json'));
+
+    await expect(commandPromise).rejects.toThrow('native cache 状态 invalid');
+    await expect(readCodexNativeRecoveryBreadcrumb(pluginName, env)).resolves.toMatchObject({
+      state: 'cleanup_failed',
+      reason: 'native_uninstall_post_check_failed',
+      lastError: expect.stringContaining('native cache 状态 invalid'),
+    });
+    await expect(readTrackingManifest(paths.trackingDir)).resolves.toMatchObject({
+      plugins: {
+        [pluginName]: {
+          artifacts: [
+            {
+              path: trackedArtifact.path,
+            },
+          ],
+        },
+      },
+    });
+    await expect(localMarketplaceModule.readInstalledLedger(env)).resolves.toMatchObject({
+      plugins: {
+        [pluginName]: {
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+                capabilitySnapshot: {
+                  requiresNativePlugin: true,
+                },
+              },
+              sharedNativeRefs: {
+                user: true,
+                projects: [],
+              },
+            },
+          },
+        },
+      },
     });
   });
 

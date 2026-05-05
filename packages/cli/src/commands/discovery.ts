@@ -19,7 +19,10 @@ import type {
   TrackingPluginRecord,
 } from '../types.js';
 import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
-import { listCodexNativeEvidence } from '../utils/codex-native-state.js';
+import {
+  hasCodexNativeCacheEvidence,
+  listCodexNativeEvidence,
+} from '../utils/codex-native-state.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
@@ -542,7 +545,7 @@ async function collectCodexNativeEvidence(
       if (nativeState.pluginEnabled) {
         addEvidenceSource(evidence, 'codexNativeConfig');
       }
-      if (nativeState.pluginInstalled) {
+      if (hasCodexNativeCacheEvidence(nativeState)) {
         addEvidenceSource(evidence, 'codexNativeCache');
       }
     }

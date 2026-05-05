@@ -61,6 +61,14 @@ function stripMarketplaceSuffix(pluginId: string): string | null {
   return pluginId.slice(0, -suffix.length);
 }
 
+export function hasCodexNativeCacheEvidence(state: CodexNativePluginState): boolean {
+  return state.cacheStatus !== 'missing';
+}
+
+export function hasCodexNativeStateEvidence(state: CodexNativePluginState): boolean {
+  return state.pluginEnabled || state.pluginInstalled || hasCodexNativeCacheEvidence(state);
+}
+
 async function isValidCodexCacheVersionDir(versionPath: string): Promise<boolean> {
   for (const relativePath of CACHE_MANIFEST_CANDIDATES) {
     const manifestPath = path.join(versionPath, relativePath);
@@ -213,9 +221,7 @@ export async function listCodexNativeEvidence(
   try {
     const cacheEntries = await fs.readdir(cacheRootPath, { withFileTypes: true });
     for (const entry of cacheEntries) {
-      if (entry.isDirectory()) {
-        pluginNames.add(entry.name);
-      }
+      pluginNames.add(entry.name);
     }
   } catch {
     // Ignore missing cache roots.
@@ -227,7 +233,7 @@ export async function listCodexNativeEvidence(
     ),
   );
 
-  return states.filter((state) => state.pluginEnabled || state.pluginInstalled);
+  return states.filter((state) => hasCodexNativeStateEvidence(state));
 }
 
 export async function checkCodexNativeInstallPostCheck(
@@ -247,7 +253,7 @@ export async function checkCodexNativeUninstallPostCheck(
 ): Promise<CodexNativePostCheckResult> {
   const state = await readCodexNativePluginState(pluginName, env);
   return {
-    ok: !state.configEntryPresent && !state.pluginInstalled,
+    ok: !state.configEntryPresent && !hasCodexNativeCacheEvidence(state),
     state,
   };
 }
