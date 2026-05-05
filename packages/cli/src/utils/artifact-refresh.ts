@@ -36,6 +36,7 @@ export interface ArtifactRefreshReceipt {
   triggerKeys: string[];
   artifacts: ArtifactRefreshReceiptArtifact[];
   error?: string;
+  reason?: 'no-tracked-dynamic-artifact' | 'no-trigger-keys';
 }
 
 interface RefreshUnit {
@@ -168,6 +169,68 @@ async function collectRefreshUnits(options: {
   }
 
   return units;
+}
+
+async function collectRefreshUnitsForReapply(options: {
+  plugin: PluginMeta;
+  commandScope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  units: RefreshUnit[];
+  reason?: ArtifactRefreshReceipt['reason'];
+}> {
+  const candidateScopes: Scope[] = options.commandScope === 'user'
+    ? ['user', 'project']
+    : ['project'];
+  const units: RefreshUnit[] = [];
+  let sawTrackedDynamicArtifact = false;
+
+  for (const scope of candidateScopes) {
+    const trackingDir = resolveCodexPaths(options.cwd, scope, options.env).trackingDir;
+    const trackingManifest = await readTrackingManifest(trackingDir);
+    const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+    if (!trackingRecord) {
+      continue;
+    }
+
+    const dynamicArtifacts = trackingRecord.artifacts.filter(isTrackedCodexDynamicArtifact);
+    if (dynamicArtifacts.length === 0) {
+      continue;
+    }
+    sawTrackedDynamicArtifact = true;
+
+    const failedRefreshKeys = uniqueSorted(
+      dynamicArtifacts.flatMap((artifact) =>
+        artifact.lastRefresh?.status === 'failed' ? artifact.lastRefresh.triggerKeys ?? [] : []),
+    );
+    const trackedRefreshKeys = uniqueSorted(
+      dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
+    );
+    const triggerKeys = failedRefreshKeys.length > 0 ? failedRefreshKeys : trackedRefreshKeys;
+    if (triggerKeys.length === 0) {
+      continue;
+    }
+
+    units.push({
+      scope,
+      triggerKeys,
+      trackingDir,
+      trackingManifest,
+      trackingRecord,
+      dynamicArtifacts,
+      staticArtifacts: trackingRecord.artifacts.filter((artifact) => !isTrackedCodexDynamicArtifact(artifact)),
+    });
+  }
+
+  if (units.length > 0) {
+    return { units };
+  }
+
+  return {
+    units,
+    reason: sawTrackedDynamicArtifact ? 'no-trigger-keys' : 'no-tracked-dynamic-artifact',
+  };
 }
 
 async function preflightDynamicArtifactRefresh(options: {
@@ -393,6 +456,86 @@ export async function refreshArtifactsAfterConfigWrite(options: {
       attempted: changedKeys.length > 0 || options.resetAllTrackedKeys === true,
       status: 'failed',
       triggerKeys: changedKeys,
+      artifacts: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function reapplyConfigRefresh(options: {
+  plugin: PluginMeta;
+  commandScope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ArtifactRefreshReceipt> {
+  const env = options.env ?? process.env;
+  try {
+    const collected = await collectRefreshUnitsForReapply({
+      plugin: options.plugin,
+      commandScope: options.commandScope,
+      cwd: options.cwd,
+      env,
+    });
+    const units = collected.units;
+
+    if (units.length === 0) {
+      return {
+        attempted: false,
+        status: 'skipped',
+        triggerKeys: [],
+        artifacts: [],
+        ...(collected.reason ? { reason: collected.reason } : {}),
+      };
+    }
+
+    const executedUnits: ExecutedRefreshUnit[] = [];
+    for (const unit of units) {
+      executedUnits.push(await executeRefreshUnit({
+        unit,
+        plugin: options.plugin,
+        cwd: options.cwd,
+        env,
+      }));
+    }
+
+    const refreshedScopes = executedUnits
+      .filter((unit) => unit.status === 'succeeded')
+      .map((unit) => unit.scope);
+    const refreshReach = await createRefreshReach({
+      pluginName: options.plugin.manifest.name,
+      commandScope: options.commandScope,
+      refreshedScopes,
+      cwd: options.cwd,
+      env,
+    });
+
+    const writtenResults = [];
+    for (const unit of executedUnits) {
+      writtenResults.push(await writeRefreshTrackingResult({
+        unit,
+        refreshReach,
+      }));
+    }
+
+    const artifacts = writtenResults.flatMap((result, index) =>
+      summarizeArtifacts(executedUnits[index].scope, result.artifacts),
+    );
+    const errors = writtenResults
+      .map((result) => result.error)
+      .filter((error): error is string => Boolean(error));
+
+    return {
+      attempted: true,
+      status: errors.length > 0 ? 'failed' : 'succeeded',
+      triggerKeys: uniqueSorted(units.flatMap((unit) => unit.triggerKeys)),
+      artifacts,
+      ...(errors.length > 0 ? { error: errors.join('；') } : {}),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      status: 'failed',
+      triggerKeys: [],
       artifacts: [],
       error: error instanceof Error ? error.message : String(error),
     };

@@ -4,10 +4,10 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  CliConfigPromptOptions,
   CliConfigPromptSchema,
   CommandExecutionContext,
 } from '../commands/runtime.js';
-import { validateCliConfigPromptResult } from '../commands/runtime.js';
 import type {
   PluginConfigSchema,
   PluginConfigSchemaField,
@@ -71,6 +71,29 @@ export interface RequiredPluginConfigPreflightResult {
   checked: number;
   prompted: number;
   written: Array<{ pluginName: string; scope: Scope; updatedKeys: string[] }>;
+}
+
+export interface PluginConfigFormFieldModel {
+  key: string;
+  type: PluginConfigSchemaField['type'];
+  label: string;
+  description?: string;
+  required: boolean;
+  sensitive: boolean;
+  defaultValue?: PluginConfigValue;
+  enumValues?: PluginConfigValue[];
+  min?: number;
+  max?: number;
+  configured: boolean;
+  currentValue?: PluginConfigValue;
+}
+
+export interface PluginConfigFormModel {
+  pluginName: string;
+  allowedScopes: Scope[];
+  initialScope: Scope;
+  requiredKeys: string[];
+  fields: PluginConfigFormFieldModel[];
 }
 
 const CONFIG_DIR = 'plugin-config';
@@ -560,7 +583,7 @@ export function createPluginConfigSchemaIdentity(
   return `${manifest.name}:${hash}`;
 }
 
-function toPromptSchema(schema: PluginConfigSchema['schema']): CliConfigPromptSchema {
+export function toCliConfigPromptSchema(schema: PluginConfigSchema['schema']): CliConfigPromptSchema {
   const promptSchema: CliConfigPromptSchema = {};
   for (const [key, field] of Object.entries(schema)) {
     promptSchema[key] = {
@@ -576,6 +599,99 @@ function toPromptSchema(schema: PluginConfigSchema['schema']): CliConfigPromptSc
     };
   }
   return promptSchema;
+}
+
+export function createPluginConfigFormModel(options: {
+  pluginName?: string;
+  manifest: PluginManifestSource;
+  effective: ResolvedEffectivePluginConfig;
+  initialScope: Scope;
+  allowedScopes?: Scope[];
+}): PluginConfigFormModel {
+  const schema = options.manifest.config?.schema;
+  if (!schema) {
+    throw new Error(`Plugin "${options.pluginName ?? options.manifest.name}" does not declare an AW config schema.`);
+  }
+
+  const requiredKeys = [...new Set(
+    options.effective.issues
+      .filter((issue) => issue.type === 'missing-required' || issue.type === 'invalid-config')
+      .map((issue) => issue.key),
+  )];
+
+  return {
+    pluginName: options.pluginName ?? options.manifest.name,
+    allowedScopes: options.allowedScopes ?? ['user', 'project'],
+    initialScope: options.initialScope,
+    requiredKeys,
+    fields: Object.entries(schema).map(([key, field]) => ({
+      key,
+      type: field.type,
+      label: field.title ?? key,
+      description: field.description,
+      required: field.required === true,
+      sensitive: field.sensitive === true,
+      defaultValue: field.default as PluginConfigValue | undefined,
+      enumValues: field.type === 'enum' ? field.values : undefined,
+      min: field.min,
+      max: field.max,
+      configured: options.effective.values[key] !== undefined,
+      currentValue: field.sensitive ? undefined : options.effective.values[key],
+    })),
+  };
+}
+
+export function toCliConfigPromptOptions(model: PluginConfigFormModel): CliConfigPromptOptions {
+  const currentValues: Record<string, PluginConfigValue | undefined> = {};
+  const configuredKeys: string[] = [];
+
+  for (const field of model.fields) {
+    if (field.configured) {
+      configuredKeys.push(field.key);
+    }
+    if (field.currentValue !== undefined) {
+      currentValues[field.key] = field.currentValue;
+    }
+  }
+
+  return {
+    pluginName: model.pluginName,
+    schema: Object.fromEntries(model.fields.map((field) => [
+      field.key,
+      {
+        type: field.type === 'enum' ? 'string' : field.type,
+        label: field.label,
+        description: field.description,
+        required: field.required,
+        sensitive: field.sensitive,
+        default: field.defaultValue,
+        enum: field.enumValues,
+        min: field.min,
+        max: field.max,
+      },
+    ])) satisfies CliConfigPromptSchema,
+    initialScope: model.initialScope,
+    allowedScopes: [...model.allowedScopes],
+    currentValues,
+    configuredKeys,
+    requiredKeys: [...model.requiredKeys],
+  };
+}
+
+function formatRequiredConfigSetCommands(
+  pluginName: string,
+  issues: PluginConfigIssue[],
+  defaultScope: Scope,
+): string {
+  const commands = new Set<string>();
+  for (const issue of issues) {
+    const scope = issue.source === 'user' || issue.source === 'project'
+      ? issue.source
+      : defaultScope;
+    commands.add(`aw config set ${pluginName} ${issue.key} <value> -s ${scope}`);
+  }
+
+  return [...commands].map((command) => `\`${command}\``).join(' 或 ');
 }
 
 export async function preflightRequiredPluginConfigs(options: {
@@ -619,62 +735,16 @@ export async function preflightRequiredPluginConfigs(options: {
       continue;
     }
 
-    if (!options.interactive || !options.context.interactive || !options.context.prompt.configurePlugin) {
-      const details = blockingIssues.map((issue) => issue.key).join(', ');
-      throw new Error(
-        `${pluginName} requires valid AW config before install/upgrade: ${details}. Run \`aw config configure ${pluginName}\` or \`aw config set ${pluginName} <key> <value>\`.`,
-      );
-    }
-
-    const requiredKeys = [...new Set(blockingIssues.map((issue) => issue.key))];
-    const promptResult = validateCliConfigPromptResult(
-      {
-        allowedScopes: ['user', 'project'],
-        schema: toPromptSchema(target.manifest.config.schema),
-      },
-      await options.context.prompt.configurePlugin({
-        pluginName,
-        schema: toPromptSchema(target.manifest.config.schema),
-        initialScope: options.defaultScope,
-        allowedScopes: ['user', 'project'],
-        currentValues: effective.values,
-        requiredKeys,
-      }),
+    const details = blockingIssues.map((issue) => issue.key).join(', ');
+    const setCommands = formatRequiredConfigSetCommands(
+      pluginName,
+      blockingIssues,
+      options.defaultScope,
     );
-    if (promptResult.cancelled) {
-      throw new Error(`Config setup for ${pluginName} was cancelled.`);
-    }
-
-    const updates = await coercePluginConfigUpdates({
-      schema: target.manifest.config.schema,
-      updates: promptResult.updates,
-      cwd: options.cwd,
-    });
-    await patchPluginConfigStore({
-      pluginName,
-      scope: promptResult.selectedScope,
-      cwd: options.cwd,
-      env: options.context.env,
-      updates,
-    });
-    result.prompted += 1;
-    result.written.push({
-      pluginName,
-      scope: promptResult.selectedScope,
-      updatedKeys: promptResult.updatedKeys,
-    });
-
-    effective = await resolveEffectivePluginConfig({
-      pluginName,
-      manifest: target.manifest,
-      cwd: options.cwd,
-      env: options.context.env,
-    });
-    if (effective.issues.some((issue) => issue.type === 'missing-required' || issue.type === 'invalid-config')) {
-      throw new Error(
-        `${pluginName} still has invalid AW config after configuration: ${effective.issues.map((issue) => `${issue.key} (${issue.type})`).join(', ')}.`,
-      );
-    }
+    throw new Error(
+      `${pluginName} requires valid AW config before install/upgrade: ${details}. ` +
+        `Run ${setCommands}, or open \`aw\` to complete setup.`,
+    );
   }
 
   return result;

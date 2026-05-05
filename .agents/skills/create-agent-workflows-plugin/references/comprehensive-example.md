@@ -70,8 +70,12 @@ code-review/
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 ledger 里的安装快照，避免当前 marketplace 已刷新时误用新版脚本。`aw uninstall` 默认保留 AW config，清理残留配置需要显式运行 `aw config reset code-review -s user|project --yes`。
 
-**Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会注册本地 marketplace，并调用 `codex app-server` 的 `plugin/install` RPC。成功后 Codex 侧必须同时有 `[plugins."code-review@aw"].enabled = true` 和 materialized cache；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。若 RPC 成功但 AW 后续步骤失败，会在 `<AW_HOME>/native-recovery/codex/user/code-review@aw.json` 留 recovery breadcrumb，重新 install 可 repair，breadcrumb-only uninstall 可清残留且不运行 uninstall lifecycle。
+**Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会注册本地 marketplace，并调用 `codex app-server` 的 `plugin/install` RPC。成功后 Codex 侧必须同时有 `[plugins."code-review@aw"].enabled = true`、active materialized cache 和 AW 受管记录；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。友好状态只有在 enabled config、active cache 和 AW record 都健康时才显示为已安装；enabled-only、cache-only、breadcrumb-only 都不是普通已安装。若 RPC 成功但 AW 后续步骤失败，会在 `<AW_HOME>/native-recovery/codex/user/code-review@aw.json` 留 recovery breadcrumb，重新 install 可 repair，breadcrumb-only uninstall 可清残留且不运行 uninstall lifecycle。
 
 **Codex 安装时生成的 repo-managed artifacts**（project scope）：源码 skill `.agents/skills/review-workflow`、公共 `slashCommands` 生成的 `.agents/skills/review` manual-only 入口 skill、`.codex/config.toml` 中的 instructions managed blocks 和 `mcp_servers`、`prefix_rule(...)` rules files、`hooks.<Event>[]` hooks.json（包含目标平台生效的公共 hooks 与 `nativeHooks.codex`）、agents .toml，以及 `.codex/.agent-workflows-manifest.json` tracking。MCP server 的 tracking `artifactKey` 使用 `.mcp.json` 中的原始 key；若 key 需要 quoted TOML，写入后仍按同一个 key 识别。
 
 **Codex project scope native 行为**：安装 `aw install code-review -p codex -s project` 只写上面的 repo-managed artifacts，不调用 `codex plugin marketplace add`，也不启动 `codex app-server`。即使 PATH 缺少 `codex` 可执行文件，只要 project surface 可安装，也不能产生用户级 config/cache 副作用。示例包含 skills、MCP、slashCommands 和 extensions，因此可 project 安装；如果插件只包含 `apps` 或纯 native-only 能力，Codex project scope 会 fail fast。
+
+**交互与脚本化入口**：用户直接运行 `aw` 进入主控制台；配置向导只在主控制台中提供。脚本和文档示例使用 `aw config set/unset/reset` 写配置，用 `aw config list/get` 读取配置，不再使用旧的子命令交互入口。写命令的 `--json` stdout 是单一 JSON receipt；默认输出只展示友好完成状态和下一步，诊断信息进入 `--verbose`、`--debug` 或 JSON。
+
+**Dynamic artifact 刷新和位置安全**：配置保存命中 `refreshKeys` 后，AW 会通过统一 apply / tracking 路径刷新当前命令能定位到的 target。refresh-only 只重新应用已有配置，不改 config store；成功、失败和 skipped 都会进入 receipt，后续 `aw status --json` / `aw status --verbose` 也能读到最近一次结果。示例或测试中若同一插件出现在多个位置，状态可以汇总展示，但写动作必须先选定明确的 platform / scope / project root，不能隐式批量写多个位置。

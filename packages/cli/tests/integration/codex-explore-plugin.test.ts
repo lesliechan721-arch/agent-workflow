@@ -1850,7 +1850,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(readTrackingManifest(userPaths.trackingDir)).resolves.toEqual(beforeTracking);
   });
 
-  it('refreshes Codex project artifacts through config configure and writes updated digests back to tracking', async () => {
+  it('refreshes Codex project artifacts through config set and writes updated digests back to tracking', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -1888,30 +1888,17 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explorer-role')?.configDigest;
 
     const result = await runCliEntry(
-      ['config', 'configure', 'codex-explore', '-s', 'project', '--json'],
+      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '-s', 'project', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
-        interactive: true,
-        prompt: {
-          configurePlugin: async (options) => {
-            expect(options.initialScope).toBe('project');
-            return {
-              selectedScope: 'project',
-              updates: {
-                modelReasoningEffort: 'low',
-              },
-              updatedKeys: ['modelReasoningEffort'],
-            };
-          },
-        },
       },
     );
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: true,
-      command: 'config:configure',
+      command: 'config:set',
       scope: 'project',
       updatedKeys: ['modelReasoningEffort'],
       artifactRefresh: {

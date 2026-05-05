@@ -34,7 +34,7 @@
 - 支持 `codex.developerInstructionsBlock` target。
 - 支持 `codex.agentRole` target。
 - 扩展 tracking，从 path-only 变成 artifact-aware。
-- 在 `aw config set/configure/unset/reset` 后，根据已安装 artifact 的 `refreshKeys` 和目标 scope render config 自动刷新当前可定位 target。
+- 在 `aw config set/unset/reset` 或主控制台配置向导后，根据已安装 artifact 的 `refreshKeys` 和目标 scope render config 自动刷新当前可定位 target。
 - 保留静态 `extensions.instructions/permissions/hooks/agents` 的兼容路径，可通过内置 renderer 或等价兼容层实现。
 
 第二层是 `codex-explore` 插件：
@@ -71,7 +71,7 @@
 仍需保留上一版计划里已经 review 过、且没有被新 spec 推翻的执行细节：
 
 - 安装/升级路径中的 Codex role 冲突 preflight 必须尽早执行；发现非 AW 管理的同名最终 role 时，命令保持完全只读，不能写 config store、native plugin enabled、artifact、tracking、ledger，也不能调用 config prompt。
-- tracking / status 要能从历史记录恢复 artifact 身份；current catalog 缺失时，status、discovery、交互式 uninstall/upgrade 候选和 direct uninstall/upgrade 不能退回假名。
+- tracking / status 要能从历史记录恢复 artifact 身份；current catalog 缺失时，status、discovery、主控制台 uninstall/upgrade 候选和 direct uninstall/upgrade 不能退回假名。
 - user scope 配置写入不会扫描所有历史 project；refresh metadata 要写实记录本次刷新覆盖了哪些当前可定位 target，status 需要能说明其它已知历史 project target 可能仍 stale。
 - 内容回归要直接锁住 `SKILL.md`、`agents/openai.yaml`、轻量 instruction 和专用 role prompt 的关键句，而不是只验证文件存在。
 
@@ -345,7 +345,7 @@ status 至少诊断：
 - upgrade 普通路径和 capabilityChanged / 重装路径都按 artifact id 和 target 处理旧产物。
 - upgrade 的 `capabilityChanged` 比较使用 installed snapshot 与 current catalog 的动态 metadata 合并结果；current catalog 缺失时，只能根据 installed snapshot、tracking artifact kind 和 historical evidence 保守回退，不能执行 renderer 恢复 current truth。
 - current catalog 缺失时，historical fallback 必须尽量从 tracking 恢复 artifact id、target、paths、roleKey 和 state。
-- discovery、status、交互式 uninstall/upgrade 候选，以及按插件名直达的 `aw uninstall codex-explore` / `aw upgrade codex-explore` 要共用同一套恢复逻辑。
+- discovery、status、主控制台 uninstall/upgrade 候选，以及按插件名直达的 `aw uninstall codex-explore` / `aw upgrade codex-explore` 要共用同一套恢复逻辑。
 - 恢复不了的 manifest-derived 诊断标为 unavailable，不能编造假 role 名或 `historical-agent`。
 - status 不执行 renderer 或 lifecycle 脚本。它基于 current catalog、ledger、tracking、install snapshot 和当前目标 scope config 只读判断 artifact 缺失、disabled、config stale、drifted 或 refresh failed。
 
@@ -363,9 +363,9 @@ status 至少诊断：
 
 - config 写命令接入点：
   - `aw config set`
-  - `aw config configure`
   - `aw config unset`
   - `aw config reset`
+  - `aw` 主控制台配置向导
 - 写入 config store 成功后，读取当前命令上下文能定位的已安装插件 tracking。
 - 如果 changed keys 命中任一 artifact 的 `refreshKeys`，且本次写入层会进入该 artifact 所属 scope 的 artifact render config，触发 renderer `event = "refresh"`。
 - `reset` 按可能影响该插件所有 tracked `refreshKeys` 处理。
@@ -616,7 +616,7 @@ renderer 行为：
 - role layer 缺失、注册项 drift、config stale、refresh failed 都可诊断。
 - project scope status 能分别报告 artifact health 和 session visibility，覆盖 `trusted` / `untrusted` / `unknown` repo trust 状态。
 - 不要求迁移已经落盘的旧 path-only tracking；静态 extensions 的源码/runtime 兼容行为保持不变。
-- current catalog 缺失但 tracking 仍有 artifact-aware record 时，status/discovery/交互式 uninstall/upgrade 候选/direct uninstall/direct upgrade 能从 tracking 恢复真实 artifact identity 和 roleKey。
+- current catalog 缺失但 tracking 仍有 artifact-aware record 时，status/discovery/主控制台 uninstall/upgrade 候选/direct uninstall/direct upgrade 能从 tracking 恢复真实 artifact identity 和 roleKey。
 
 ### 阶段 5：config-triggered refresh
 
@@ -630,7 +630,7 @@ renderer 行为：
 
 - 修改 `enableLightweightInstruction` 会切换轻量 instruction present/disabled。
 - 修改 `explorerModel` 或 `modelReasoningEffort` 会刷新 instruction 和 role。
-- `aw config set/configure/unset/reset` 四个写入口都各自覆盖 refresh 触发、digest 更新和状态回写。
+- `aw config set/unset/reset` 和主控制台配置向导都各自覆盖 refresh 触发、digest 更新和状态回写。
 - 未命中 `refreshKeys` 的配置写入不刷新。
 - 命中 `refreshKeys` 的 config-triggered refresh 有独立回归保证不执行插件 lifecycle 脚本。
 - refresh 失败保留 config store，并让 status 报告 refresh failed。
@@ -780,8 +780,8 @@ renderer 行为：
   - tracking digest 更新。
 - `aw config set codex-explore modelReasoningEffort high`：
   - instruction 和 role layer 都更新。
-- `aw config configure codex-explore` 写入命中 `refreshKeys` 的值：
-  - interactive 写入层保存成功。
+- `aw` 主控制台配置向导写入命中 `refreshKeys` 的值：
+  - 主控制台选择的写入层保存成功。
   - changed keys 进入 renderer refresh context。
   - 受影响 artifact 按写入后的 artifact render config 刷新。
 - `aw config unset codex-explore explorerModel`：
@@ -793,7 +793,7 @@ renderer 行为：
   - 命中的 instruction 和 role artifact 都纳入 refresh 计划。
   - reset 后的 tracking/status 不残留 reset 前的成功 digest。
 - 带 install / upgrade / uninstall lifecycle 脚本的测试插件在 config-triggered refresh 中：
-  - 命中 `refreshKeys` 的 `aw config set/configure/unset/reset` 仍按 renderer + 受管 artifact apply 链路刷新 artifact。
+  - 命中 `refreshKeys` 的 `aw config set/unset/reset` 或主控制台配置向导仍按 renderer + 受管 artifact apply 链路刷新 artifact。
   - fake lifecycle runner 或 lifecycle log 没有新增调用记录。
   - config 命令 JSON receipt 和后续 status 只报告 artifact refresh 结果，不出现 lifecycle 执行副作用。
 - unrelated config key 写入不触发 refresh。
@@ -852,7 +852,7 @@ renderer 行为：
   - 重装后不留下旧 block、旧 role 文件或旧 artifact tracking 残留。
 - 静态 `extensions.*` 兼容回归：
   - 旧静态 `extensions.instructions`、`extensions.permissions`、`extensions.hooks`、`extensions.agents` 插件在新基础设施下 install / status / uninstall 仍按原行为工作。
-  - 静态 instruction 没有 dynamic `refreshKeys` 时，`aw config set/configure/unset/reset` 不触发 renderer refresh 或 artifact rewrite。
+  - 静态 instruction 没有 dynamic `refreshKeys` 时，`aw config set/unset/reset` 和主控制台配置向导不触发 renderer refresh 或 artifact rewrite。
   - status 不对静态旧 artifact 额外报告 dynamic `configDigest` stale / refresh failed 诊断。
 - config 命令 JSON receipt：
   - refresh succeeded 时，`aw config ... --json` 输出 `artifactRefresh.attempted = true`、`status = "succeeded"`、命中的 `triggerKeys` 和刷新后的 `artifacts[]`。
@@ -867,7 +867,7 @@ renderer 行为：
 - current catalog 缺失但 tracking 仍有 artifact-aware record：
   - discovery 恢复真实 artifact id / target / roleKey。
   - status 展示 historical source 和 artifact identity。
-  - 交互式 uninstall / upgrade 候选恢复真实 artifact identity。
+  - 主控制台 uninstall / upgrade 候选恢复真实 artifact identity。
   - direct uninstall / direct upgrade 仍按恢复出的 artifact identity 执行。
 - `aw install --skill-trigger manual` 后仍可 `$codex-explore` 显式触发。
 - `aw install --skill-trigger auto` 后 Codex 才允许该 skill 自动触发。
@@ -960,7 +960,7 @@ renderer 行为：
 - role 冲突会通过 command-level preflight 在 required-config preflight、config prompt、skill trigger materialization、renderer 之前，以及任何 config/native/artifact/tracking/ledger 写入前失败。
 - upgrade 路径遇到非 AW 管理同名最终 role 时，也会在 renderer 和任何写入前失败，不改 native state、instruction、role、tracking 或 ledger。
 - tracking/status/uninstall/upgrade/refresh 都按 artifact id / target / roleKey 处理。
-- `aw config set/configure/unset/reset` 命中 `refreshKeys` 后自动刷新当前可定位 artifact。
+- `aw config set/unset/reset` 和主控制台配置向导命中 `refreshKeys` 后自动刷新当前可定位 artifact。
 - 未安装插件时写入配置只保存 config store；后续 install / upgrade 按目标 scope 的最新 artifact render config 首次落盘。
 - 命中 project scope target 的 config refresh 先执行 project write safety preflight；失败时不执行 renderer、不写 repo artifact、不写成功 digest。
 - `enableLightweightInstruction=false` 会移除或跳过轻量 instruction，status 报告 disabled by config。
@@ -969,7 +969,7 @@ renderer 行为：
 - user scope 和 project scope refresh 作为独立原子单元处理，一边失败不能回滚另一边已经成功提交的 artifact。
 - user scope refresh 不扫描所有历史 project，但 tracking/status 会写实报告当前刷新覆盖范围和其它已知 project target 可能 stale。
 - project config 不影响 user scope artifact 的内容、digest、stale 判断或 refresh 结果。
-- current catalog 缺失但 tracking 仍有 artifact-aware record 时，status/discovery/交互式 uninstall/upgrade 候选/direct uninstall/direct upgrade 仍保留真实 artifact identity。
+- current catalog 缺失但 tracking 仍有 artifact-aware record 时，status/discovery/主控制台 uninstall/upgrade 候选/direct uninstall/direct upgrade 仍保留真实 artifact identity。
 - status 保持 artifact health 和 session visibility 两层诊断，project scope 覆盖 repo trust `trusted` / `untrusted` / `unknown`。
 - `aw status -j`、`-j --verbose`、`-j --debug`、`-j --verbose --debug` 的 stdout 都是纯 JSON，包含 instruction 和 role artifact 诊断字段。
 - uninstall 清理 AW 管理的 instruction block、注册项和 role layer，不影响用户手写文件。

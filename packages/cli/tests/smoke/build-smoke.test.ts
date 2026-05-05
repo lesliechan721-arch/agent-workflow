@@ -176,7 +176,7 @@ describe('build smoke', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).resolves.toMatchObject({
-      stdout: expect.stringContaining('local marketplace'),
+      stdout: expect.stringContaining('已准备好本地插件目录'),
     });
     await expect(
       fs.pathExists(path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),

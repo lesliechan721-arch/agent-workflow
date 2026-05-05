@@ -62,7 +62,14 @@ export interface CommandDiagnosticsInput {
 export interface CliPromptChoice {
   value: string;
   label: string;
+  description?: string;
+  short?: string;
   disabled?: boolean | string;
+}
+
+export interface CliPromptResult<T> {
+  cancelled: boolean;
+  value?: T;
 }
 
 export interface CliPromptCandidate {
@@ -101,6 +108,7 @@ export interface CliConfigPromptOptions {
   initialScope: CliConfigPromptScope;
   allowedScopes: CliConfigPromptScope[];
   currentValues?: Record<string, CliConfigPromptValue | undefined>;
+  configuredKeys?: string[];
   requiredKeys?: string[];
 }
 
@@ -108,6 +116,7 @@ export interface CliConfigPromptResult {
   selectedScope: CliConfigPromptScope;
   updates: Record<string, CliConfigPromptValue>;
   updatedKeys: string[];
+  removeKeys?: string[];
   cancelled?: boolean;
 }
 
@@ -116,13 +125,26 @@ export interface CliPrompt {
     message: string;
     choices: CliPromptChoice[];
     defaultValue?: string;
-  }) => Promise<string>;
+    pageSize?: number;
+  }) => Promise<CliPromptResult<string>>;
   multiSelect?: (options: {
     message: string;
     choices: CliPromptChoice[];
     defaultValues?: string[];
-  }) => Promise<string[]>;
-  confirm?: (options: { message: string; defaultValue?: boolean }) => Promise<boolean>;
+    pageSize?: number;
+  }) => Promise<CliPromptResult<string[]>>;
+  confirm?: (options: {
+    message: string;
+    defaultValue?: boolean;
+  }) => Promise<CliPromptResult<boolean>>;
+  input?: (options: {
+    message: string;
+    defaultValue?: string;
+  }) => Promise<CliPromptResult<string>>;
+  password?: (options: {
+    message: string;
+    mask?: boolean;
+  }) => Promise<CliPromptResult<string>>;
   selectPlatform?: (options: {
     available: string[];
     defaultValue?: string;
@@ -175,6 +197,7 @@ export interface CliExecutionContext extends CommandExecutionContext {
   io: CliIo;
   isTty: boolean;
   isCi: boolean;
+  consoleDriver: CliConsoleDriver;
 }
 
 export interface CliExecutionContextInput extends CommandExecutionContextInput {
@@ -182,6 +205,7 @@ export interface CliExecutionContextInput extends CommandExecutionContextInput {
   io?: Partial<CliIo>;
   stdin?: NodeJS.ReadableStream;
   promptOutputSink?: CliPromptOutputSink;
+  consoleDriver?: CliConsoleDriver;
 }
 
 export interface CliPromptOutputSink {
@@ -189,10 +213,27 @@ export interface CliPromptOutputSink {
   isTTY?: boolean;
 }
 
+export interface CliConsoleView {
+  title: string;
+  lines: string[];
+}
+
+export interface CliConsoleDriver {
+  render: (view: CliConsoleView) => unknown | Promise<unknown>;
+}
+
 function createDefaultIo(): CliIo {
   return {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
+  };
+}
+
+function createDefaultConsoleDriver(io: CliIo): CliConsoleDriver {
+  return {
+    render: ({ title, lines }) => {
+      io.stderr(['', `== ${title} ==`, ...lines, ''].join('\n'));
+    },
   };
 }
 
@@ -252,7 +293,8 @@ export function validateCliConfigPromptResult(
 
   const schemaKeys = new Set(Object.keys(options.schema));
   const updateKeys = Object.keys(result.updates);
-  for (const key of [...result.updatedKeys, ...updateKeys]) {
+  const removeKeys = result.removeKeys ?? [];
+  for (const key of [...result.updatedKeys, ...updateKeys, ...removeKeys]) {
     if (!schemaKeys.has(key)) {
       throw new Error(`Unsupported config key "${key}".`);
     }
@@ -269,6 +311,11 @@ export function validateCliConfigPromptResult(
       throw new Error(`Config prompt result updatedKeys contains "${key}" without an update value.`);
     }
   }
+  for (const key of removeKeys) {
+    if (Object.hasOwn(result.updates, key)) {
+      throw new Error(`Config prompt result cannot update and remove "${key}" in the same submission.`);
+    }
+  }
 
   return result;
 }
@@ -281,6 +328,8 @@ function createUnavailablePrompt(): CliPrompt {
     select: unavailable,
     multiSelect: unavailable,
     confirm: unavailable,
+    input: unavailable,
+    password: unavailable,
     selectPlatform: unavailable,
     selectScope: unavailable,
     selectPlugins: unavailable,
@@ -341,16 +390,89 @@ function createPromptWritable(outputSink: CliPromptOutputSink): NodeJS.WritableS
   return writable;
 }
 
+function createPromptResult<T>(value: T): CliPromptResult<T> {
+  return {
+    cancelled: false,
+    value,
+  };
+}
+
+function createCancelledPromptResult<T>(): CliPromptResult<T> {
+  return {
+    cancelled: true,
+  };
+}
+
+function unwrapPromptResult<T>(
+  result: CliPromptResult<T>,
+  message = 'Interactive prompt cancelled.',
+): T {
+  if (result.cancelled || result.value === undefined) {
+    throw new Error(message);
+  }
+  return result.value;
+}
+
+function isPromptCancellationError(error: unknown): boolean {
+  return error instanceof Error &&
+    (error.name === 'ExitPromptError' || error.name === 'AbortPromptError');
+}
+
+interface InquirerPromptContext {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+  clearPromptOnDone?: boolean;
+}
+
+interface InquirerPromptModule {
+  select: (options: {
+    message: string;
+    choices: Array<{
+      name: string;
+      value: string;
+      description?: string;
+      short?: string;
+      disabled?: boolean | string;
+    }>;
+    default?: string;
+    pageSize?: number;
+    loop?: boolean;
+  }, context?: InquirerPromptContext) => Promise<string>;
+  confirm: (options: {
+    message: string;
+    default?: boolean;
+  }, context?: InquirerPromptContext) => Promise<boolean>;
+  input: (options: {
+    message: string;
+    default?: string;
+  }, context?: InquirerPromptContext) => Promise<string>;
+  password: (options: {
+    message: string;
+    mask?: boolean;
+  }, context?: InquirerPromptContext) => Promise<string>;
+}
+
+let inquirerPromptModulePromise: Promise<InquirerPromptModule> | null = null;
+
+async function loadInquirerPromptModule(): Promise<InquirerPromptModule> {
+  if (!inquirerPromptModulePromise) {
+    const moduleName = '@inquirer/prompts';
+    inquirerPromptModulePromise = import(moduleName) as Promise<InquirerPromptModule>;
+  }
+  return inquirerPromptModulePromise;
+}
+
 function shouldPromptConfigKey(
   key: string,
   definition: CliConfigPromptSchemaEntry,
   options: CliConfigPromptOptions,
 ): boolean {
   const currentValue = options.currentValues?.[key];
+  const configured = currentValue !== undefined || options.configuredKeys?.includes(key) === true;
   return Boolean(
     definition.required ||
       options.requiredKeys?.includes(key) ||
-      currentValue === undefined,
+      !configured,
   );
 }
 
@@ -361,7 +483,8 @@ function formatConfigKeyChoiceLabel(
 ): string {
   const label = definition.label ?? key;
   const currentValue = options.currentValues?.[key];
-  if (currentValue === undefined) {
+  const configured = currentValue !== undefined || options.configuredKeys?.includes(key) === true;
+  if (!configured) {
     return label;
   }
   if (definition.sensitive) {
@@ -462,7 +585,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
       defaultValues,
       false,
     );
-    return selected[0];
+    return createPromptResult(selected[0]);
   };
 
   const multiSelect: NonNullable<CliPrompt['multiSelect']> = async ({
@@ -480,45 +603,59 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
     const body = choices
       .map((choice, index) => formatChoice(choice, index, new Set(defaults)))
       .join('\n');
-    return parseSelectionInput(
+    return createPromptResult(parseSelectionInput(
       await ask(`${message}\n${body}\n选择编号，可用逗号分隔多个：`),
       choices,
       defaults,
       true,
-    );
+    ));
   };
 
   const confirm: NonNullable<CliPrompt['confirm']> = async ({ message, defaultValue = true }) => {
     const suffix = defaultValue ? 'Y/n' : 'y/N';
     const answer = (await ask(`${message} [${suffix}] `)).trim().toLowerCase();
     if (!answer) {
-      return defaultValue;
+      return createPromptResult(defaultValue);
     }
-    return answer === 'y' || answer === 'yes';
+    return createPromptResult(answer === 'y' || answer === 'yes');
+  };
+
+  const inputPrompt: NonNullable<CliPrompt['input']> = async ({ message, defaultValue }) => {
+    const answer = await ask(defaultValue === undefined
+      ? `${message}: `
+      : `${message}（默认：${defaultValue}）: `);
+    return createPromptResult(answer.trim() === '' && defaultValue !== undefined ? defaultValue : answer);
+  };
+
+  const passwordPrompt: NonNullable<CliPrompt['password']> = async ({ message }) => {
+    const answer = await ask(`${message}: `, { hidden: true });
+    return createPromptResult(answer);
   };
 
   return {
     select,
     multiSelect,
     confirm,
+    input: inputPrompt,
+    password: passwordPrompt,
     selectPlatform: async ({ available, defaultValue, message }) =>
-      select({
+      unwrapPromptResult(await select({
         message: message ?? '选择目标平台',
         choices: available.map((value) => ({
           value,
           label: value === 'both' ? 'Codex + Claude Code' : value === 'codex' ? 'Codex' : 'Claude Code',
         })),
         defaultValue,
-      }),
+      })),
     selectScope: async ({ defaultValue = 'user' }) =>
-      select({
+      unwrapPromptResult(await select({
         message: '选择安装范围',
         choices: [
           { value: 'user', label: 'user' },
           { value: 'project', label: 'project' },
         ],
         defaultValue,
-      }),
+      })),
     selectPlugins: async ({ command, candidates, defaultValues, allowMultiple }) => {
       const choices = candidates.map((candidate) => ({
         value: candidate.id,
@@ -526,19 +663,19 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         disabled: candidate.selectable ? undefined : candidate.disabledReason ?? true,
       }));
       return allowMultiple
-        ? multiSelect({
+        ? unwrapPromptResult(await multiSelect({
             message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
             choices,
             defaultValues,
-          })
-        : [await select({
+          }))
+        : [unwrapPromptResult(await select({
             message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
             choices,
             defaultValue: defaultValues?.[0],
-          })];
+          }))];
     },
     selectUpgradeMode: async ({ canUpgradeAll }) =>
-      select({
+      unwrapPromptResult(await select({
         message: '选择升级方式',
         choices: [
           {
@@ -549,9 +686,9 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
           { value: 'select', label: '手动选择插件' },
         ],
         defaultValue: canUpgradeAll ? 'all' : 'select',
-      }),
+      })),
     selectSkillTrigger: async ({ defaultValue = 'default', allowSkip = true }) =>
-      select({
+      unwrapPromptResult(await select({
         message: '选择 skill 触发偏好',
         choices: [
           { value: 'default', label: 'default' },
@@ -560,16 +697,17 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
           ...(allowSkip ? [{ value: 'skip', label: '跳过' }] : []),
         ],
         defaultValue,
-      }),
+      })),
     configurePlugin: async (configOptions) => {
       const selectedScope = configOptions.allowedScopes.length > 1
-        ? await select({
+        ? unwrapPromptResult(await select({
             message: `选择 ${configOptions.pluginName} 配置写入范围`,
             choices: configOptions.allowedScopes.map((value) => ({ value, label: value })),
             defaultValue: configOptions.initialScope,
-          }) as CliConfigPromptScope
+          })) as CliConfigPromptScope
         : configOptions.initialScope;
       const updates: Record<string, CliConfigPromptValue> = {};
+      const removeKeys: string[] = [];
       const keysToPrompt = new Set<string>();
       const optionalConfiguredChoices: CliPromptChoice[] = [];
 
@@ -609,7 +747,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
 
         const label = definition.label ?? key;
         if (definition.enum && definition.enum.length > 0) {
-          const selected = await select({
+          const selected = unwrapPromptResult(await select({
             message: label,
             choices: definition.enum.map((value) => ({
               value: String(value),
@@ -618,7 +756,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
             defaultValue: configOptions.currentValues?.[key] === undefined
               ? undefined
               : String(configOptions.currentValues[key]),
-          });
+          }));
           updates[key] = selected;
           continue;
         }
@@ -626,21 +764,30 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         if (definition.type === 'boolean') {
           updates[key] = await (async () => {
             const current = configOptions.currentValues?.[key];
-            return current === undefined
-              ? confirm({ message: label, defaultValue: Boolean(definition.default) })
-              : confirm({ message: label, defaultValue: Boolean(current) });
+            return unwrapPromptResult(
+              current === undefined
+                ? await confirm({ message: label, defaultValue: Boolean(definition.default) })
+                : await confirm({ message: label, defaultValue: Boolean(current) }),
+            );
           })();
           continue;
         }
 
         const current = configOptions.currentValues?.[key];
-        const suffix = current === undefined || definition.sensitive ? '' : `（当前：${String(current)}）`;
+        const configured = current !== undefined || configOptions.configuredKeys?.includes(key) === true;
+        const suffix = !configured || definition.sensitive
+          ? definition.sensitive && configured
+            ? '（当前：已配置）'
+            : ''
+          : `（当前：${String(current)}）`;
         const answer = await ask(`${label}${suffix}: `, {
           hidden: definition.sensitive && definition.type === 'string',
         });
         const parsed = parsePromptedConfigValue(key, definition, answer);
         if (parsed !== undefined) {
           updates[key] = parsed;
+        } else if (!definition.required && configured) {
+          removeKeys.push(key);
         }
       }
 
@@ -648,10 +795,111 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         selectedScope,
         updates,
         updatedKeys: Object.keys(updates),
+        removeKeys,
         cancelled: false,
       };
       return validateCliConfigPromptResult(configOptions, result);
     },
+  };
+}
+
+interface InquirerPromptOptions extends ReadlinePromptOptions {
+  fallback?: CliPrompt;
+}
+
+async function runPromptWithFallback<T>(options: {
+  run: (module: InquirerPromptModule, context: InquirerPromptContext) => Promise<T>;
+  fallback?: () => Promise<CliPromptResult<T>>;
+  input: NodeJS.ReadableStream;
+  outputSink: CliPromptOutputSink;
+}): Promise<CliPromptResult<T>> {
+  try {
+    const module = await loadInquirerPromptModule();
+    const output = createPromptWritable(options.outputSink);
+    const value = await options.run(module, {
+      input: options.input,
+      output,
+      clearPromptOnDone: true,
+    });
+    return createPromptResult(value);
+  } catch (error) {
+    if (isPromptCancellationError(error)) {
+      return createCancelledPromptResult();
+    }
+    if (options.fallback) {
+      return options.fallback();
+    }
+    throw error;
+  }
+}
+
+export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPrompt {
+  const input = options.input ?? process.stdin;
+  const outputSink = options.outputSink ?? process.stderr;
+  const fallback = options.fallback;
+
+  return {
+    select: async ({ message, choices, defaultValue, pageSize }) =>
+      runPromptWithFallback({
+        input,
+        outputSink,
+        fallback: fallback?.select
+          ? () => fallback.select!({ message, choices, defaultValue, pageSize })
+          : undefined,
+        run: (module, context) => module.select({
+          message,
+          choices: choices.map((choice) => ({
+            name: choice.label,
+            value: choice.value,
+            description: choice.description,
+            short: choice.short,
+            disabled: choice.disabled,
+          })),
+          default: defaultValue,
+          pageSize,
+          loop: false,
+        }, context),
+      }),
+    multiSelect: async ({ message, choices, defaultValues, pageSize }) =>
+      fallback?.multiSelect
+        ? fallback.multiSelect({ message, choices, defaultValues, pageSize })
+        : createCancelledPromptResult(),
+    confirm: async ({ message, defaultValue }) =>
+      runPromptWithFallback({
+        input,
+        outputSink,
+        fallback: fallback?.confirm
+          ? () => fallback.confirm!({ message, defaultValue })
+          : undefined,
+        run: (module, context) => module.confirm({
+          message,
+          default: defaultValue,
+        }, context),
+      }),
+    input: async ({ message, defaultValue }) =>
+      runPromptWithFallback({
+        input,
+        outputSink,
+        fallback: fallback?.input
+          ? () => fallback.input!({ message, defaultValue })
+          : undefined,
+        run: (module, context) => module.input({
+          message,
+          default: defaultValue,
+        }, context),
+      }),
+    password: async ({ message, mask }) =>
+      runPromptWithFallback({
+        input,
+        outputSink,
+        fallback: fallback?.password
+          ? () => fallback.password!({ message, mask })
+          : undefined,
+        run: (module, context) => module.password({
+          message,
+          mask,
+        }, context),
+      }),
   };
 }
 
@@ -858,8 +1106,13 @@ export function createCliExecutionContext(
   const reporter = input.reporter ?? createIoReporter(io, diagnostics);
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
   const prompt = input.prompt ?? (interactive
-    ? createReadlinePrompt({ input: stdin, outputSink: promptOutputSink })
+    ? createInquirerPrompt({
+        input: stdin,
+        outputSink: promptOutputSink,
+        fallback: createReadlinePrompt({ input: stdin, outputSink: promptOutputSink }),
+      })
     : createUnavailablePrompt());
+  const consoleDriver = input.consoleDriver ?? createDefaultConsoleDriver(io);
   const commandContext = createCommandExecutionContext({
     ...input,
     env,
@@ -876,5 +1129,6 @@ export function createCliExecutionContext(
     io,
     isTty,
     isCi,
+    consoleDriver,
   };
 }

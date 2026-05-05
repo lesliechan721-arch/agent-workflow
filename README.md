@@ -11,11 +11,13 @@ aw install git-commit
 aw status
 ```
 
-也可以直接运行交互式安装，从候选列表里选择插件、平台和 scope：
+直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、重新应用配置和诊断。`install`、`uninstall`、`upgrade`、`config`、`status` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
 
 ```bash
-aw install
+aw
 ```
+
+脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --json` 保留矩阵字段并追加 `friendlySummaries` 和 `consoleItems`。
 
 `install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 是 repo-managed：不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest。
 

@@ -1367,7 +1367,7 @@ describe('Codex project safety preflight', () => {
     expect(events.map((event) => event.type)).not.toContain('ledger:written');
   });
 
-  it('prompts required config only once for mixed project installs after safety preflight passes', async () => {
+  it('fails mixed project installs with missing required config without prompting or writing state', async () => {
     const workspace = await makeRepoTemplateWorkspace({
       mutateRepo: async (repoRoot) => addRequiredTokenConfig(repoRoot, 'git-commit'),
     });
@@ -1375,44 +1375,42 @@ describe('Codex project safety preflight', () => {
     const claude = new RecordingAdapter('claude', workspace.repoRoot);
     const configureCalls: Array<{ pluginName: string; allowedScopes: string[] }> = [];
 
-    const result = await installCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'both',
-      },
-      {
-        env: workspace.env,
-        interactive: true,
-        prompt: {
-          configurePlugin: async (options) => {
-            configureCalls.push({
-              pluginName: options.pluginName,
-              allowedScopes: options.allowedScopes,
-            });
-            return {
-              selectedScope: 'project',
-              updates: { token: 'shared-secret' },
-              updatedKeys: ['token'],
-              cancelled: false,
-            };
-          },
-        },
-        adapters: { codex, claude },
-      },
-    );
-
-    expect(result.platforms).toEqual(['codex', 'claude']);
-    expect(configureCalls).toEqual([{
-      pluginName: 'git-commit',
-      allowedScopes: ['user', 'project'],
-    }]);
     await expect(
-      fs.readJson(path.join(workspace.repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json')),
-    ).resolves.toEqual({
-      token: 'shared-secret',
-    });
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'both',
+        },
+        {
+          env: workspace.env,
+          interactive: true,
+          prompt: {
+            configurePlugin: async (options) => {
+              configureCalls.push({
+                pluginName: options.pluginName,
+                allowedScopes: options.allowedScopes,
+              });
+              return {
+                selectedScope: 'project',
+                updates: { token: 'shared-secret' },
+                updatedKeys: ['token'],
+                cancelled: false,
+              };
+            },
+          },
+          adapters: { codex, claude },
+        },
+      ),
+    ).rejects.toThrow('Run `aw config set git-commit token <value> -s project`, or open `aw` to complete setup.');
+
+    expect(configureCalls).toEqual([]);
+    expect(codex.installExtensionsCalls).toEqual([]);
+    expect(claude.installExtensionsCalls).toEqual([]);
+    await expect(
+      fs.pathExists(path.join(workspace.repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json')),
+    ).resolves.toBe(false);
   });
 
   it('allows project uninstall to continue when user Codex config is unreadable', async () => {

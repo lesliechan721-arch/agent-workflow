@@ -20,6 +20,7 @@ import type {
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import {
+  resolveCodexPaths,
   resolveClaudeProjectKey,
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
@@ -680,7 +681,7 @@ describe('upgrade command coverage', () => {
     expect(codex.extensionInstallCalls).toEqual(['git-commit']);
   });
 
-  it('preflights missing required config during upgrade and honors the selected config scope', async () => {
+  it('preflights missing required config during upgrade, rejects without prompting, and avoids config/native writes', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addRequiredConfigSchemaToGitCommit,
     );
@@ -723,12 +724,6 @@ describe('upgrade command coverage', () => {
     };
     await writeInstalledLedger(installedLedger, process.env);
 
-    const configureCalls: Array<{
-      allowedScopes: string[];
-      initialScope: string;
-      requiredKeys?: string[];
-      currentValues?: Record<string, unknown>;
-    }> = [];
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
         currentCatalogAvailable: true,
@@ -737,6 +732,9 @@ describe('upgrade command coverage', () => {
         catalogCompatibility: 'current',
       },
     });
+
+    const userCodexPaths = resolveCodexPaths(repoRoot, 'user', process.env);
+    const projectCodexPaths = resolveCodexPaths(repoRoot, 'project', process.env);
 
     await expect(
       upgradeCommand(
@@ -747,51 +745,25 @@ describe('upgrade command coverage', () => {
           platform: 'codex',
         },
         {
-          interactive: true,
-          prompt: {
-            configurePlugin: async (options) => {
-              configureCalls.push({
-                allowedScopes: options.allowedScopes,
-                initialScope: options.initialScope,
-                requiredKeys: options.requiredKeys,
-                currentValues: options.currentValues,
-              });
-              return {
-                selectedScope: 'user',
-                updates: { token: 'upgrade-secret' },
-                updatedKeys: ['token'],
-                cancelled: false,
-              };
-            },
-          },
           adapters: {
             codex,
             claude: new FakeAdapter('claude', repoRoot, {}),
           },
         },
       ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['git-commit'],
-    });
+    ).rejects.toThrow(
+      'git-commit requires valid AW config before install/upgrade: token. ' +
+        'Run `aw config set git-commit token <value> -s project`, or open `aw` to complete setup.',
+    );
 
     expect(codex.installCalls).toEqual([]);
-    expect(configureCalls).toEqual([
-      {
-        allowedScopes: ['user', 'project'],
-        initialScope: 'project',
-        requiredKeys: ['token'],
-        currentValues: {},
-      },
-    ]);
+    expect(codex.extensionInstallCalls).toEqual([]);
     await expect(fs.readJson(
       path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
-    )).resolves.toEqual({
-      token: 'upgrade-secret',
-    });
-    await expect(fs.pathExists(
-      path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
-    )).resolves.toBe(false);
+    )).rejects.toThrow();
+    await expect(fs.pathExists(path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'))).resolves.toBe(false);
+    await expect(fs.pathExists(userCodexPaths.configTomlPath)).resolves.toBe(false);
+    await expect(fs.pathExists(projectCodexPaths.configTomlPath)).resolves.toBe(false);
   });
 
   it.each([

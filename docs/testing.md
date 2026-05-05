@@ -23,15 +23,15 @@
 
 CLI entry 测试优先通过 `CliRuntimeOptions` 注入 fake native runner、fake adapters、fake prompt、reporter 和 debug logger。不要为了普通集成测试依赖真实 `codex` 或 `claude` 可执行文件；只有明确验证 PATH 查找时才创建 stub binary。
 
-交互式测试默认必须使用 fake prompt，且断言不会访问真实 stdin。窄例外只允许放在专门验证 readline prompt harness、TTY sink 或隐藏敏感输入的测试里；这类测试必须显式隔离 stdin/stdout/stderr，并证明 `--json` stdout 仍是单一可解析 JSON。`install`、`uninstall`、`upgrade` 的 prompt 返回值必须来自本轮候选列表；非法 candidate id、过期 token、候选外插件名、skip/空值或非法 skill trigger 都要在 runtime 层拒绝。
+主控制台测试默认必须使用 fake prompt / fake console driver，且断言不会访问真实 stdin。窄例外只允许放在专门验证 readline prompt harness、TTY sink 或隐藏敏感输入的测试里；这类测试必须显式隔离 stdin/stdout/stderr，并证明 `--json` stdout 仍是单一可解析 JSON。`runCli([])` 在 TTY 环境进入控制台；非 TTY、`CI=true` 或 prompt 不可用时不能挂起，必须返回清晰错误、可复制命令示例和 `--json` 提示。子命令即使注入 fake prompt 也不能 prompt。
 
-`aw config configure` 和 install/upgrade required config preflight 也必须通过 fake prompt 覆盖。fake prompt 要返回 `selectedScope`、`updates`、`updatedKeys` 和 `cancelled`；显式 `--scope user|project` 时，prompt 不能改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
+主控制台安装、升级、配置、卸载、取消和诊断流程都要通过 fake prompt 覆盖。prompt adapter 要覆盖 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果；非法 candidate id、过期 token、候选外插件名、skip/空值或非法 skill trigger 都要在 runtime 层拒绝。配置向导 fake prompt 要返回 `selectedScope`、`updates`、`removeKeys`、`updatedKeys`、`removedKeys` 和 `cancelled`；显式位置不能被 prompt 改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
 
-交互式 `install` 需要覆盖平台兼容性和可安装性：`marketplace.policy.products` 过滤、`both` 下单平台插件禁用、显式多插件名共同兼容平台交集、无共同兼容平台时 dispatch 前失败，以及 fake prompt 返回不兼容平台时的拒绝。`Codex + project scope` 还要覆盖 repo-managed 候选过滤、空态、显式插件名早失败和正向可选插件；skills-only、mcp-only、slashCommands-only 应可选，apps-only 不进入无名候选，apps-mixed disabled 且指向 user scope 或拆分插件。
+主控制台安装向导需要覆盖平台兼容性和可安装性：`marketplace.policy.products` 过滤、`both` 下单平台插件禁用、显式多插件名共同兼容平台交集、无共同兼容平台时 dispatch 前失败，以及 fake prompt 返回不兼容平台时的拒绝。`Codex + project scope` 还要覆盖 repo-managed 候选过滤、空态、显式插件名早失败和正向可选插件；skills-only、mcp-only、slashCommands-only 应可选，apps-only 不进入候选，apps-mixed disabled 且指向 user scope 或拆分插件。
 
-交互式 Codex project scope 测试不能只依赖 native executable availability。PATH 缺少 `codex` 且未设置 `AW_FORCE_CODEX_AVAILABLE` 时，`install -i -p codex -s project` 仍要能展示并选择 repo-managed 候选；已有 Codex project repo-managed evidence 时，`uninstall -i --scope project` 和 `upgrade -i --scope project` 的 platform prompt 也必须包含 Codex。Claude 可用、Codex executable 不可用的混合环境要单独覆盖，断言 Codex project repo-managed 选项不会被隐藏。
+主控制台 Codex project scope 测试不能只依赖 native executable availability。PATH 缺少 `codex` 且未设置 `AW_FORCE_CODEX_AVAILABLE` 时，`aw` 仍要能展示并选择 Codex project repo-managed 候选；已有 Codex project repo-managed evidence 时，卸载和升级动作的目标选择也必须包含 Codex。Claude 可用、Codex executable 不可用的混合环境要单独覆盖，断言 Codex project repo-managed 选项不会被隐藏。
 
-degraded ledger 下，重复 `install` 和显式插件 `upgrade` 要覆盖交互式补问 `skill-trigger`、非交互确定性错误、`CI=true` / `--no-interactive` 不 prompt，以及非法 prompt 返回值。`--skill-trigger` CLI entry 回归要覆盖显式 `install`、显式插件 `upgrade` 的 `manual|auto|default` 正向透传，也要覆盖 `upgrade --all --skill-trigger` 和 `upgrade -a -t` 在入口层确定性拒绝。
+degraded ledger 下，重复 `install` 和显式插件 `upgrade` 要覆盖主控制台补问 `skill-trigger`、脚本化确定性错误、`CI=true` 不 prompt，以及非法 prompt 返回值。`--skill-trigger` CLI entry 回归要覆盖显式 `install`、显式插件 `upgrade` 的 `manual|auto|default` 正向透传，也要覆盖 `upgrade --all --skill-trigger` 和 `upgrade -a -t` 在入口层确定性拒绝。
 
 Codex project 的 `skillTriggerApplicability` 要单独覆盖 `none`、`fixed`、`overridable`：mcp-only / extensions-only 不需要 ledger 偏好，公共 `slashCommands` 生成的 manual-only skill 属于 fixed，只有 overridable target 在 tracking-only 且缺少可恢复 install options 时拒绝显式 install/upgrade；`upgrade --all` 对这类 target 记为 `installOptionsUnavailable`。
 
@@ -49,25 +49,29 @@ Codex project repo-managed 写命令要有 CLI output 回归：pure project inst
 
 Codex project repo-managed 测试还要断言缺少 `codex` 可执行文件时不会调用 marketplace add、app-server RPC，也不会写用户级 config/cache；对应 command event 应为 `native:skipped` 且 reason 为 `project_repo_managed_skipped_native`。纯 native-only 插件和包含 `apps` 的 Codex project 安装要在写任何 repo artifact 前 fail fast。
 
-Codex project required config 顺序要用零写入 helper 锁住：project installability、用户级 Codex config external ownership、必要的 project `.codex/config.toml` 解析、tracking identity 和 unmanaged repo artifact 冲突都必须早于 required AW config prompt / store 写入。同一条 mixed explicit command 里同一插件只能 prompt 一次，prompt 的 selected scope 是唯一写入层。
+Codex project required config 顺序要用零写入 helper 锁住：project installability、用户级 Codex config external ownership、必要的 project `.codex/config.toml` 解析、tracking identity 和 unmanaged repo artifact 冲突都必须早于 required AW config 表单 / store 写入。安全预检失败时，主控制台不调用 required config 表单，不创建 config store，不写 native state、artifact、tracking 或 ledger。同一条 mixed explicit command 里同一插件只解析一次 required config，主控制台同一轮只展示一次配置表单。
 
 Codex project MCP 回归要覆盖结构化 JSON 到 TOML 的 round-trip、`null` fail fast、删除 stale descendant tables、同名 unmanaged 冲突，以及 quoted key 身份。tracking 里的 `artifactKey` 必须等于 rendered `.mcp.json` 的原始 server key，例如 `acme.tools v1`；测试要断言 `[mcp_servers."acme.tools v1"]` 不被当成嵌套路径。
 
-repo 子目录回归要分别覆盖 discovery、status、交互式 `uninstall/upgrade`：Codex project scope 证据锚定 repo root realpath；Claude project scope 证据锚定调用目录 realpath，不能混入 repo root 或兄弟目录。
+repo 子目录回归要分别覆盖 discovery、status、主控制台 `uninstall/upgrade` 动作：Codex project scope 证据锚定 repo root realpath；Claude project scope 证据锚定调用目录 realpath，不能混入 repo root 或兄弟目录。
 
-historical placeholder 回归要覆盖 discovery、默认 status、交互式 `uninstall/upgrade` 候选。Codex ledger-only 的 `hasRepoManagedArtifacts: true` 不能恢复 hook、instruction、permission、agent 等具体 kind；tracking 明确记录 `kind: "hook"` 或 hook identity 时，才允许恢复 hook 能力。
+historical placeholder 回归要覆盖 discovery、默认 status、主控制台 `uninstall/upgrade` 候选。Codex ledger-only 的 `hasRepoManagedArtifacts: true` 不能恢复 hook、instruction、permission、agent 等具体 kind；tracking 明确记录 `kind: "hook"` 或 hook identity 时，才允许恢复 hook 能力。
 
-status 测试要把默认、verbose、JSON、debug 通道分开锁住。`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度；verbose/debug 人类诊断只能出现在 stderr 或 debug log。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
+status 测试要把默认、verbose、JSON、debug 通道分开锁住。默认 `aw status` 只展示友好摘要、位置和下一步，不泄露内部禁词；`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度，并断言旧矩阵字段以及新增 `ok`、`command`、`friendlySummaries`、`consoleItems` 都可用；verbose/debug 人类诊断只能出现在 stderr 或 debug log。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
 
 status skill-trigger 状态矩阵要覆盖 matched、equivalent defaults、mixed、drift、unknown 和 historical fallback，并分别断言默认视图不暴露 raw 字段名、verbose 可读展开、JSON 保留稳定机器字段。
+
+友好状态投影测试要覆盖六类首屏状态、全部原因码、跨位置汇总、状态优先级、保守升级判定、Codex enabled-only / cache-only / breadcrumb-only、native recovery、无归属 native residue、dynamic artifact refresh failed、disabled by config 和 session visibility。action 安全不变量必须锁住：`PluginConsoleItem.actions` 不包含任何立即写状态的动作或隐式批量写动作；`runInstall`、`runUpgrade`、`runUninstall`、`repairInstall`、`cleanupRecovery`、`reapplyConfigRefresh` 只能出现在 `locations[].actions[]`；所有写动作都有完整 target，project 动作需要时带 `projectKey`；删除、覆盖和 cleanup 动作都有 `destructive: true` 和 `confirmText`；disabled 动作带 `disabledReason`。
 
 stale 本地 marketplace 回归要断言 status 完全只读：`~/.aw` 缺失、`config.json` stale、marketplace 布局损坏或 ledger degraded 时，status 只读回退 embedded catalog；`--verbose` / `--json` 能看到 `source=embedded` 和本地目录不可用原因；测试要用文件存在性、mtime 或内容快照确认不会创建插件目录、修复 `~/.aw`、改写 `installed.json`、tracking manifest 或平台配置。
 
 runtime env 贯穿测试要覆盖 direct command 与 `runCli(..., { env })` 两条入口。平台检测、ledger/current catalog 解析、home 路径、默认 adapter 创建、discovery 和 status 读取路径都必须消费注入 env，防止新 helper 悄悄回落到 `process.env`。
 
-reporter/debug log 回归要覆盖默认输出稳定、中文 warning 有序去重、prepare / replay warning 先于 terminal error 输出、同一 prepare warning 一次命令只渲染一次，以及 debug log 对 token、password、secret、authorization、cookie 等敏感内容脱敏。`aw status --debug` 未传 `--log-file` 时不能创建或清理 `~/.aw/logs`。
+reporter/debug log 回归要覆盖 JSON receipt、默认输出稳定、中文 warning 有序去重、prepare / replay warning 先于 terminal error 输出、同一 prepare warning 一次命令只渲染一次，以及 debug log 对 token、password、secret、authorization、cookie 等敏感内容脱敏。写命令 `--json` stdout 必须是单一可解析 JSON，至少包含 `{ ok, command, warnings, nextSteps }`；`config set/unset/reset --json` 要锁住 `updatedKeys`、`removedKeys`、`artifactRefresh`，失败路径 stdout 为空或仍是单一 JSON，错误只在 stderr。默认输出不得出现 marketplace、app-server、RPC、cache、recovery breadcrumb、repo-managed、ledger、healthSource、artifactRefresh、sessionVisibility、projectTrust、tracking、config/script health 等禁词；可复制命令、argv、flag、JSON 字段和类型名是例外。`aw status --debug` 未传 `--log-file` 时不能创建或清理 `~/.aw/logs`。
 
 AW config 回归要覆盖 default < user < project 的 effective 合并、未安装插件预配置、uninstall 保留配置、current catalog 缺失时 `reset --yes` 清理 raw store、非法插件名路径段拒绝、unknown keys 脱敏保留、`file` / `directory` 写入 realpath 和读取时重校验。config store 不能作为 discovery/status 的安装证据。
+
+config write helper 和 refresh-only 回归要覆盖 `updates` / `removeKeys` 混合写入、sensitive 值不进入输出或 receipt、命中 refresh key 后 `artifactRefresh.triggerKeys` 与变更 key 对齐、refresh succeeded / failed / skipped 三态，以及 `reapplyConfigRefresh` 不修改 config store。refresh-only 成功后要更新 `lastRefresh` 和 tracking 诊断；失败后保留配置，并让后续 `aw status --json` / `aw status --verbose` 读到新的 `artifactRefresh.error`；没有 tracked dynamic artifact 时返回 skipped。
 
 lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断、`--script-timeout` 优先级、stdout/stderr 脱敏、Windows/POSIX env 分支、安装快照真值和快照 GC。status health 必须只读：它能展示 `healthSource`、config/script health 和 `invalid-config`，但不能执行脚本、刷新 marketplace、创建配置目录或修复 ledger。
 

@@ -150,7 +150,7 @@ describe('cli entry', () => {
     const { runCli } = await import('../../src/index.js');
 
     const exitCode = await runCli(
-      ['install', 'git-commit', '--platform', 'codex', '--scope', 'user', '--no-interactive'],
+      ['install', 'git-commit', '--platform', 'codex', '--scope', 'user'],
       {
         cwd: '/tmp/workspace',
         env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
@@ -159,14 +159,11 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(readStdout()).toContain('已安装 git-commit：Codex / user scope。');
-    expect(readStdout()).toContain('使用插件目录：本地 marketplace（/tmp/aw-home）。');
-    expect(readStdout()).toContain('已复用本地 marketplace：/tmp/aw-home。');
-    expect(readStdout()).toContain('已确认 Codex marketplace 注册：/tmp/aw-home。');
-    expect(readStdout()).toContain('已通过 Codex app-server 完成原生插件安装并确认启用：git-commit@aw。');
-    expect(readStdout()).toContain('完成。下一步：运行 aw status git-commit -p codex');
+    expect(readStdout()).toContain('已安装 git-commit。');
+    expect(readStdout()).toContain('目标：Codex；当前用户。');
+    expect(readStdout()).toContain('下一步：运行 aw status git-commit -p codex 查看当前状态。');
     expect(readStderr()).not.toContain('Warning:');
-    expect(readStderr()).toContain('注意：Codex 已写入 repo-managed project artifacts');
+    expect(readStderr()).toContain('注意：Codex 已写入当前仓库需要的项目文件');
   });
 
   it('prints repo-managed Codex project receipts without native marketplace success lines', async () => {
@@ -229,10 +226,10 @@ describe('cli entry', () => {
 
     const { runCli } = await import('../../src/index.js');
 
-    for (const [args, verb] of [
-      [['install', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已写入'],
-      [['upgrade', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已刷新'],
-      [['uninstall', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已清理'],
+    for (const [args, expectedLine] of [
+      [['install', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已更新项目文件'],
+      [['upgrade', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已更新项目文件'],
+      [['uninstall', 'skills-mcp', '--platform', 'codex', '--scope', 'project'], '已清理项目文件'],
     ] as const) {
       const capture = createCapturedIo();
       expect(await runCli(args, {
@@ -242,8 +239,9 @@ describe('cli entry', () => {
       })).toBe(0);
       const stdout = capture.readStdout();
       expect(stdout).toContain(
-        `${verb} Codex project repo-managed artifacts：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。`,
+        `${expectedLine}：.agents/skills、.codex/config.toml、.codex/.agent-workflows-manifest.json。`,
       );
+      expect(stdout).not.toMatch(/repo-managed/i);
       expect(stdout).not.toContain('已确认 Codex marketplace 注册');
       expect(stdout).not.toContain('已确认插件启用');
       expect(stdout).not.toContain('已复用本地 marketplace');
@@ -283,17 +281,18 @@ describe('cli entry', () => {
       ['uninstall', 'git-commit', '--platform', 'codex'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
-    expect(capture.readStdout()).toContain('已卸载 git-commit：Codex / user scope。');
-    expect(capture.readStdout()).toContain('已清理匹配的受管状态和生成产物。');
+    expect(capture.readStdout()).toContain('已卸载 git-commit。');
+    expect(capture.readStdout()).toContain('目标：Codex；当前用户。');
+    expect(capture.readStdout()).toContain('已清理相关文件和已安装项。');
 
     capture = createCapturedIo();
     expect(await runCli(
       ['upgrade', 'git-commit', '--platform', 'claude'],
       { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
-    expect(capture.readStdout()).toContain('已升级 git-commit：Claude Code / user scope。');
-    expect(capture.readStdout()).toContain('已同步本地 marketplace：/tmp/aw-home。');
-    expect(capture.readStdout()).toContain('已确认 Claude Code marketplace 和插件状态。');
+    expect(capture.readStdout()).toContain('已升级 git-commit。');
+    expect(capture.readStdout()).toContain('目标：Claude Code；当前用户。');
+    expect(capture.readStdout()).toContain('下一步：运行 aw status git-commit -p claude 查看当前状态。');
   });
 
   it.each([
@@ -336,9 +335,9 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(1);
-    expect(capture.readStdout()).toContain('未升级任何插件，已跳过 1 个目标');
-    expect(capture.readStdout()).toContain('Codex / project scope / git-commit');
-    expect(capture.readStdout()).toContain(`[${code}] ${code} reason`);
+    expect(capture.readStdout()).toContain('这次没有完成升级，已跳过 1 个目标。');
+    expect(capture.readStdout()).toContain('Codex / 当前项目 / git-commit');
+    expect(capture.readStdout()).toContain(`${code} reason`);
   });
 
   it('prints succeeded + skipped upgrade receipts and keeps exit 0', async () => {
@@ -379,9 +378,10 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(capture.readStdout()).toContain('已升级 git-commit：Codex, Claude Code / project scope。');
-    expect(capture.readStdout()).toContain('已跳过 1 个目标：');
-    expect(capture.readStdout()).toContain('[externalOwnershipUnknown] externalOwnershipUnknown reason');
+    expect(capture.readStdout()).toContain('已升级 git-commit。');
+    expect(capture.readStdout()).toContain('目标：Codex、Claude Code；当前项目。');
+    expect(capture.readStdout()).toContain('未处理 1 个目标：');
+    expect(capture.readStdout()).toContain('externalOwnershipUnknown reason');
   });
 
   it('prints embedded catalog receipts only when the command returns that decision', async () => {
@@ -412,13 +412,17 @@ describe('cli entry', () => {
     )).toBe(0);
 
     const stdout = readStdout();
-    expect(stdout).toContain(
-      '使用插件目录：embedded catalog（/tmp/embedded-aw，local marketplace is missing, stale, or unhealthy）。',
-    );
-    expect(stdout).not.toContain('已复用本地 marketplace：/tmp/aw-home。');
+    expect(stdout).toContain('已安装 git-commit。');
+    expect(stdout).toContain('目标：Codex；当前用户。');
+    expect(stdout).not.toMatch(/marketplace/i);
   });
 
-  it('skips interactive existing-candidate planning for non-interactive explicit commands', async () => {
+  it('dispatches install, uninstall, and upgrade directly even when a fake prompt is injected', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
     const uninstallCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -429,34 +433,43 @@ describe('cli entry', () => {
       platforms: ['codex'],
       warnings: [],
     }));
-    const createInteractiveUninstallPlan = vi.fn(async () => {
-      throw new Error('unexpected uninstall planner call');
-    });
-    const createInteractiveUpgradePlan = vi.fn(async () => {
-      throw new Error('unexpected upgrade planner call');
-    });
-
+    const prompt = {
+      selectScope: vi.fn(async () => 'project' as const),
+      selectPlatform: vi.fn(async () => 'claude' as const),
+      selectPlugins: vi.fn(async () => ['not-used']),
+      selectUpgradeMode: vi.fn(async () => 'all' as const),
+    };
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
     vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
     vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
-    vi.doMock('../../src/commands/interactive.js', () => ({
-      createInteractiveInstallPlan: vi.fn(async () => null),
-      createInteractiveUninstallPlan,
-      createInteractiveUpgradePlan,
-    }));
 
     const { runCli } = await import('../../src/index.js');
 
     expect(await runCli(
+      ['install', 'git-commit'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
+    )).toBe(0);
+    expect(await runCli(
       ['uninstall', 'git-commit'],
-      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
     )).toBe(0);
     expect(await runCli(
       ['upgrade', 'git-commit'],
-      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
     )).toBe(0);
 
-    expect(createInteractiveUninstallPlan).not.toHaveBeenCalled();
-    expect(createInteractiveUpgradePlan).not.toHaveBeenCalled();
+    expect(prompt.selectScope).not.toHaveBeenCalled();
+    expect(prompt.selectPlatform).not.toHaveBeenCalled();
+    expect(prompt.selectPlugins).not.toHaveBeenCalled();
+    expect(prompt.selectUpgradeMode).not.toHaveBeenCalled();
+    expect(installCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        platform: 'auto',
+      }),
+      expect.anything(),
+    );
     expect(uninstallCommand).toHaveBeenCalledWith(
       ['git-commit'],
       expect.objectContaining({
@@ -664,13 +677,17 @@ describe('cli entry', () => {
     expect(statusCommand.mock.calls[0][1]).not.toHaveProperty('platform');
   });
 
-  it('passes missing install and uninstall plugin names through Commander to command handlers', async () => {
-    const installCommand = vi.fn(async () => {
-      throw new Error('install 命令至少需要一个插件名。');
-    });
-    const uninstallCommand = vi.fn(async () => {
-      throw new Error('uninstall 命令至少需要一个插件名。');
-    });
+  it('fails missing install and uninstall plugin names at the entry layer with guidance', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['unexpected'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const uninstallCommand = vi.fn(async () => ({
+      plugins: ['unexpected'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
     vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
     vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
 
@@ -682,15 +699,10 @@ describe('cli entry', () => {
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(1);
     expect(capture.readStderr()).toContain('install 命令至少需要一个插件名');
+    expect(capture.readStderr()).toContain('`aw`');
+    expect(capture.readStderr()).toContain('`aw install <plugin>`');
     expect(capture.readStderr()).not.toContain('missing required argument');
-    expect(installCommand).toHaveBeenCalledWith(
-      [],
-      expect.objectContaining({
-        scope: 'user',
-        platform: 'auto',
-      }),
-      expect.anything(),
-    );
+    expect(installCommand).not.toHaveBeenCalled();
 
     capture = createCapturedIo();
     expect(await runCli(
@@ -698,16 +710,380 @@ describe('cli entry', () => {
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(1);
     expect(capture.readStderr()).toContain('uninstall 命令至少需要一个插件名');
+    expect(capture.readStderr()).toContain('`aw`');
+    expect(capture.readStderr()).toContain('`aw uninstall <plugin>`');
     expect(capture.readStderr()).not.toContain('missing required argument');
-    expect(uninstallCommand).toHaveBeenCalledWith(
-      [],
-      expect.objectContaining({
-        scope: 'user',
-        platform: 'auto',
-      }),
-      expect.anything(),
-    );
+    expect(uninstallCommand).not.toHaveBeenCalled();
   });
+
+  it('fails bare aw deterministically in non-interactive mode instead of printing help', async () => {
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli([], {
+      cwd: '/tmp/workspace',
+      env: { CI: '1' } as NodeJS.ProcessEnv,
+      io,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(readStdout()).toBe('');
+    expect(readStderr()).toContain('当前运行环境不可交互');
+    expect(readStderr()).toContain('`aw status`');
+    expect(readStderr()).toContain('`aw install <plugin> --platform codex --scope user`');
+    expect(readStderr()).toContain('`aw status --json`');
+    expect(readStderr()).not.toContain('Usage:');
+  });
+
+  it('routes bare aw into the console controller when interactive prompt support is injected', async () => {
+    const runConsoleController = vi.fn(async () => 0);
+    vi.doMock('../../src/commands/console.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/commands/console.js')>('../../src/commands/console.js');
+      return {
+        ...actual,
+        runConsoleController,
+      };
+    });
+
+    const { io } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli([], {
+      cwd: '/tmp/workspace',
+      env: {} as NodeJS.ProcessEnv,
+      io,
+      prompt: {
+        select: vi.fn(async () => ({ cancelled: true })),
+      },
+      consoleDriver: {
+        render: vi.fn(),
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(runConsoleController).toHaveBeenCalledTimes(1);
+    expect(runConsoleController.mock.calls[0][0]).toMatchObject({
+      interactive: true,
+      cwd: '/tmp/workspace',
+    });
+  });
+
+  it('fails install without entering a fake prompt', async () => {
+    let promptCalled = false;
+    const prompt = {
+      selectScope: async () => {
+        promptCalled = true;
+        return 'user' as const;
+      },
+      selectPlatform: async () => {
+        promptCalled = true;
+        return 'codex' as const;
+      },
+      selectPlugins: async () => {
+        promptCalled = true;
+        return ['git-commit'];
+      },
+    };
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(['install'], {
+      cwd: '/tmp/workspace',
+      env: {} as NodeJS.ProcessEnv,
+      io,
+      prompt,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(promptCalled).toBe(false);
+    expect(readStderr()).toContain('install 命令至少需要一个插件名');
+  });
+
+  it.each([
+    ['uninstall', ['uninstall'], 'uninstall 命令至少需要一个插件名'],
+    ['upgrade', ['upgrade'], '`aw upgrade <plugin>` / `aw upgrade --all`'],
+  ])(
+    '%s fails before entering a fake prompt',
+    async (_command, argv, expectedMessage) => {
+      let promptCalled = false;
+      const prompt = {
+        selectScope: async () => {
+          promptCalled = true;
+          return 'user' as const;
+        },
+        selectPlatform: async () => {
+          promptCalled = true;
+          return 'codex' as const;
+        },
+        selectPlugins: async () => {
+          promptCalled = true;
+          return ['git-commit'];
+        },
+      };
+      const { io, readStderr } = createCapturedIo();
+      const { runCli } = await import('../../src/index.js');
+
+      const exitCode = await runCli(argv, {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+        prompt,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(promptCalled).toBe(false);
+      expect(readStderr()).toContain(expectedMessage);
+    },
+  );
+
+  it.each([
+    ['install', ['install', '--interactive']],
+    ['install', ['install', '--no-interactive']],
+    ['uninstall', ['uninstall', 'git-commit', '--interactive']],
+    ['upgrade', ['upgrade', 'git-commit', '--no-interactive']],
+    ['config reset', ['config', 'reset', 'git-commit', '--interactive']],
+    ['config reset', ['config', 'reset', 'git-commit', '--no-interactive']],
+  ])('rejects removed interactive flags for %s', async (_label, argv) => {
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(argv, {
+      cwd: '/tmp/workspace',
+      env: {} as NodeJS.ProcessEnv,
+      io,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(readStderr()).toContain('unknown option');
+  });
+
+  it('rejects removed config configure subcommand', async () => {
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'configure', 'git-commit'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(readStderr()).toContain('unknown command');
+    expect(readStderr()).toContain('configure');
+  });
+
+  it('P0 baseline: default install receipts should not leak internal implementation nouns', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      nativePlugins: {
+        codex: ['git-commit'],
+      },
+      marketplace: {
+        rootDir: '/tmp/aw-home',
+        changed: false,
+        catalog: {
+          rootDir: '/tmp/aw-home',
+          source: 'local',
+        },
+      },
+      warnings: ['当前 repo trust 状态未知，project scope 会话可见性无法确定。'],
+    }));
+    vi.doMock('../../src/commands/install.js', () => ({
+      installCommand,
+    }));
+
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--platform', 'codex', '--scope', 'user'],
+      {
+        cwd: '/tmp/workspace',
+        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    const combinedOutput = `${readStdout()}\n${readStderr()}`;
+    expect(exitCode).toBe(0);
+    expect(combinedOutput).not.toMatch(/marketplace/i);
+    expect(combinedOutput).not.toMatch(/app-server/i);
+    expect(combinedOutput).not.toMatch(/repo-managed/i);
+    expect(combinedOutput).not.toMatch(/\bledger\b/i);
+    expect(combinedOutput).not.toMatch(/\bcache\b/i);
+    expect(combinedOutput).not.toMatch(/breadcrumb/i);
+  });
+
+  it('prints init/install/uninstall/upgrade --json receipts as parseable single JSON objects', async () => {
+    const initCommand = vi.fn(async () => ({
+      changed: true,
+      rootDir: '/tmp/aw-home',
+      warnings: ['init warning'],
+    }));
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      nativePlugins: {
+        codex: ['git-commit'],
+      },
+      repoManagedArtifacts: [{
+        platform: 'codex',
+        kind: 'skill',
+        path: '/tmp/workspace/.agents/skills/git-commit',
+        artifactKey: 'git-commit',
+      }],
+      warnings: ['install warning'],
+    }));
+    const uninstallCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      repoManagedArtifacts: [{
+        platform: 'codex',
+        kind: 'skill',
+        path: '/tmp/workspace/.agents/skills/git-commit',
+        artifactKey: 'git-commit',
+      }],
+      warnings: ['uninstall warning'],
+    }));
+    const upgradeCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      skipped: [{
+        platform: 'claude',
+        scope: 'user',
+        plugin: 'git-commit',
+        code: 'catalogNotCurrent',
+        reason: 'catalogNotCurrent reason',
+      }],
+      nativePlugins: {
+        codex: ['git-commit'],
+      },
+      repoManagedArtifacts: [{
+        platform: 'codex',
+        kind: 'skill',
+        path: '/tmp/workspace/.agents/skills/git-commit',
+        artifactKey: 'git-commit',
+      }],
+      warnings: ['upgrade warning'],
+    }));
+    vi.doMock('../../src/commands/init.js', () => ({ initCommand }));
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
+    vi.doMock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    const initCapture = createCapturedIo();
+    expect(await runCli(
+      ['init', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: initCapture.io },
+    )).toBe(0);
+    expect(JSON.parse(initCapture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'init',
+      changed: true,
+      rootDir: '/tmp/aw-home',
+      warnings: ['init warning'],
+      nextSteps: expect.any(Array),
+    });
+
+    const installCapture = createCapturedIo();
+    expect(await runCli(
+      ['install', 'git-commit', '--platform', 'codex', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: installCapture.io },
+    )).toBe(0);
+    expect(JSON.parse(installCapture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'install',
+      plugins: ['git-commit'],
+      targets: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
+      actions: [{ type: 'install', plugin: 'git-commit', platform: 'codex', scope: 'user', status: 'succeeded' }],
+      artifacts: [{ platform: 'codex', kind: 'skill', path: '/tmp/workspace/.agents/skills/git-commit', artifactKey: 'git-commit' }],
+      native: {
+        plugins: [{ platform: 'codex', plugin: 'git-commit' }],
+      },
+      warnings: ['install warning'],
+      nextSteps: expect.any(Array),
+    });
+
+    const uninstallCapture = createCapturedIo();
+    expect(await runCli(
+      ['uninstall', 'git-commit', '--platform', 'codex', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: uninstallCapture.io },
+    )).toBe(0);
+    expect(JSON.parse(uninstallCapture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'uninstall',
+      plugins: ['git-commit'],
+      targets: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
+      actions: [{ type: 'uninstall', plugin: 'git-commit', platform: 'codex', scope: 'user', status: 'succeeded' }],
+      artifacts: [{ platform: 'codex', kind: 'skill', path: '/tmp/workspace/.agents/skills/git-commit', artifactKey: 'git-commit' }],
+      native: {
+        plugins: [],
+      },
+      warnings: ['uninstall warning'],
+      nextSteps: expect.any(Array),
+    });
+
+    const upgradeCapture = createCapturedIo();
+    expect(await runCli(
+      ['upgrade', 'git-commit', '--platform', 'codex', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: upgradeCapture.io },
+    )).toBe(0);
+    expect(JSON.parse(upgradeCapture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'upgrade',
+      upgraded: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
+      skipped: [{
+        platform: 'claude',
+        scope: 'user',
+        plugin: 'git-commit',
+        code: 'catalogNotCurrent',
+        reason: 'catalogNotCurrent reason',
+      }],
+      targets: expect.arrayContaining([
+        { plugin: 'git-commit', platform: 'codex', scope: 'user' },
+        { plugin: 'git-commit', platform: 'claude', scope: 'user' },
+      ]),
+      actions: [{ type: 'upgrade', plugin: 'git-commit', platform: 'codex', scope: 'user', status: 'succeeded' }],
+      artifacts: [{ platform: 'codex', kind: 'skill', path: '/tmp/workspace/.agents/skills/git-commit', artifactKey: 'git-commit' }],
+      native: {
+        plugins: [{ platform: 'codex', plugin: 'git-commit' }],
+      },
+      warnings: ['upgrade warning'],
+      nextSteps: expect.any(Array),
+    });
+  });
+
+  it('keeps stdout empty when a write command fails in --json mode', async () => {
+    vi.doMock('../../src/commands/install.js', () => ({
+      installCommand: vi.fn(async () => {
+        throw new CommandWarningError('fatal install error', {
+          warnings: ['install warning'],
+        });
+      }),
+    }));
+
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--json'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(readStdout()).toBe('');
+    expect(readStderr()).toContain('注意：install warning');
+    expect(readStderr()).toContain('fatal install error');
+  });
+
+  it.todo('P0 baseline: default status and error copy should avoid internal terms like healthSource and scope prose');
+  it.todo('P0 baseline: dynamic artifact refresh failed default copy should be rewritten without leaking internal fields');
 
   it('threads injected native runner, prompt, reporter, and debug logger through one context', async () => {
     const nativeCliRunner = vi.fn(async () => ({
@@ -965,7 +1341,7 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(readStderr()).toContain('本机安装账本处于异常恢复状态');
+    expect(readStderr()).toContain('本地安装记录处于异常恢复状态');
     expect(readStderr()).toContain('--skill-trigger default|manual|auto');
     expect(readStderr()).not.toContain('[codex/git-commit]');
     expect(readStderr()).not.toContain('Warning:');
@@ -1010,7 +1386,7 @@ describe('cli entry', () => {
     const { io, readStderr } = createCapturedIo();
     const { runCli } = await import('../../src/index.js');
     const exitCode = await runCli(
-      ['install', 'git-commit', '--platform', 'codex', '--debug', '--log-file', logFile, '--no-interactive'],
+      ['install', 'git-commit', '--platform', 'codex', '--debug', '--log-file', logFile],
       {
         cwd: '/tmp/workspace',
         env: {} as NodeJS.ProcessEnv,

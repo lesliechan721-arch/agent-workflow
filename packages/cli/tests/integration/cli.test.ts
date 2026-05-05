@@ -825,8 +825,10 @@ describe('CLI integration', () => {
       },
     );
 
-    expect(result.output).toContain('状态摘要');
+    expect(result.output).toContain('插件状态');
     expect(result.output).toContain('git-commit');
+    expect(result.output).toContain('状态：');
+    expect(result.output).toContain('位置：');
     expect(result.output).not.toContain('catalogCompatibility=');
     expect(result.output).not.toContain('scopeInitialized=');
     expect(result.output).not.toContain('driftWarnings=');
@@ -901,7 +903,7 @@ describe('CLI integration', () => {
     });
   });
 
-  it('preflights missing required config during install and honors the selected config scope', async () => {
+  it('fails install preflight for missing required config without prompting or writing state', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addRequiredConfigSchemaToGitCommit,
     );
@@ -920,7 +922,7 @@ describe('CLI integration', () => {
       currentValues?: Record<string, unknown>;
     }> = [];
 
-    const result = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: repoRoot,
@@ -950,25 +952,20 @@ describe('CLI integration', () => {
           claude: new FakeAdapter('claude', repoRoot, {}),
         },
       },
+    )).rejects.toThrow(
+      'git-commit requires valid AW config before install/upgrade: token. Run `aw config set git-commit token <value> -s user`, or open `aw` to complete setup.',
     );
 
-    expect(result.plugins).toEqual(['git-commit']);
-    expect(states['git-commit']?.scopeInitialized).toBe('yes');
-    expect(configureCalls).toEqual([
-      {
-        allowedScopes: ['user', 'project'],
-        initialScope: 'user',
-        requiredKeys: ['token'],
-        currentValues: {},
-      },
-    ]);
+    expect(states).toEqual({});
+    expect(configureCalls).toEqual([]);
     await expect(fs.readJson(
       path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
-    )).resolves.toEqual({
-      token: 'install-secret',
-    });
+    )).rejects.toThrow();
     await expect(fs.pathExists(
       path.join(awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toBe(false);
+    await expect(fs.pathExists(
+      path.join(repoRoot, '.codex', 'config.toml'),
     )).resolves.toBe(false);
   });
 
@@ -1044,7 +1041,8 @@ describe('CLI integration', () => {
     );
 
     expect(result.output).toContain('git-commit');
-    expect(result.output).toContain('状态摘要');
+    expect(result.output).toContain('插件状态');
+    expect(result.output).toContain('状态：');
     expect(result.matrix.summaries.map((summary) => summary.pluginName)).toContain('git-commit');
   });
 
@@ -2335,7 +2333,23 @@ describe('CLI integration', () => {
     );
 
     expect(result.reports[0].plugins[0].repoManagedSessionState?.hooks).toBe('absent');
-    expect(result.output).toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
+    expect(result.output).toContain('插件状态');
+    expect(result.output).not.toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
+    expect(result.reports[0].plugins[0].driftWarnings).toContain(
+      'Codex hooks artifact 中缺少当前插件声明的 hook handlers。',
+    );
+
+    const verboseResult = await statusCommand(
+      ['mixed-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        verbose: true,
+      },
+    );
+    expect(verboseResult.output).toContain('诊断信息');
+    expect(verboseResult.output).toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
   });
 
   it('keeps Claude nativeHooks-only capability through embedded catalog and ledger fallback', async () => {

@@ -2,11 +2,11 @@
 
 ## CLI Source Layout (`packages/cli/src`)
 
-- **`commands/`** — 编排 `init`、`install`、`uninstall`、`upgrade`、`config`、`status`；`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管或可发现插件，`interactive.ts` 只在 CLI entry 层处理候选选择，`common.ts` 放平台推断、catalog/ledger 准备和共享状态格式化逻辑
+- **`commands/`** — 编排主控制台以及 `init`、`install`、`uninstall`、`upgrade`、`config`、`status`；`console.ts` 负责 `aw` 主交互入口，`console-model.ts` / friendly status 投影给 TUI、默认 status 和 `status --json.consoleItems` 复用，`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管或可发现插件，`common.ts` 放平台推断、catalog/ledger 准备和共享状态格式化逻辑
 - **`adapters/`** — `claude.ts` / `codex.ts` 处理平台原生状态与命令调用；`helpers.ts` 放共享 adapter 逻辑；`types.ts` 放 adapter 层私有类型
 - **`generators/`** — `instructions.ts` / `permissions.ts` / `hooks.ts` / `agents.ts` 分别生成对应产物；`local-plugin.ts` 处理 bundle 和 repo-managed 文件生成；`shared.ts` 放跨生成器共享逻辑
-- **`output/`** — `reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
-- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据和安装账本；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验和 install/upgrade preflight；`plugin-scripts.ts` 管理安装快照、lifecycle target、context 和 runner；`artifact-renderer.ts` 执行动态 artifact renderer 并解析 artifact render config；`artifact-plan.ts` 校验 `ArtifactPlan` 并计算 digest；`artifact-refresh.ts` 处理 config-triggered refresh；`plugin-script-contract.ts` 扫描 Node import contract；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`codex-app-server-client.ts` 封装 Codex app-server 插件 RPC；`codex-native-state.ts` / `codex-native-recovery.ts` 只读检查 Codex enabled config、materialized cache 和 recovery breadcrumb；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
+- **`output/`** — `command-receipt.ts` 构造写命令 JSON receipt 和默认人类 renderer；`reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
+- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理 marketplace 数据和安装账本；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验和 install/upgrade preflight；`plugin-config-write.ts` 提供共享 config write helper；`plugin-scripts.ts` 管理安装快照、lifecycle target、context 和 runner；`artifact-renderer.ts` 执行动态 artifact renderer 并解析 artifact render config；`artifact-plan.ts` 校验 `ArtifactPlan` 并计算 digest；`artifact-refresh.ts` 处理 config-triggered refresh 和 refresh-only 重试动作；`plugin-script-contract.ts` 扫描 Node import contract；`tracking.ts` 管理项目侧生成产物清单；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`codex-app-server-client.ts` 封装 Codex app-server 插件 RPC；`codex-native-state.ts` / `codex-native-recovery.ts` 只读检查 Codex enabled config、materialized cache 和 recovery breadcrumb；`skill-trigger-preferences.ts` 处理安装时触发策略物化和 drift 检查；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
 - **`constants.ts`** — 全局常量：`GENERATED_FILE_PREFIX = 'aw-'`、`TRACKING_MANIFEST_FILE = '.agent-workflows-manifest.json'`、`DEFAULT_CLAUDE_HOOKS_PATH`、`CLAUDE_MARKETPLACE_PATH`、`CODEX_MARKETPLACE_PATH`
 - **`types.ts`** — 项目全局类型定义
 
@@ -71,6 +71,7 @@ npm Registry
 - 执行型命令（`install`、`uninstall`、`upgrade`）默认使用 `scope=user`、`platform=auto`；`status` 的 `scope/platform` 是过滤条件，不在 CLI entry 层套用写入型默认值。
 - `aw config` 写命令默认写 `user` store；读命令默认读取 effective config，合并顺序为 manifest default < user store < project store。user store 位于 `<AW_HOME>/plugin-config/<plugin>/config.json`，project store 位于 `<AW project root>/.agent-workflows/plugin-config/<plugin>/config.json`。AW project root 在仓库或 workspace 内解析到 repo root，非仓库目录退回 normalized command `cwd`。
 - 动态 artifact 使用 artifact render config，而不是读命令的 effective config。user scope render config 只合并 manifest default 和 user store；project scope render config 合并 manifest default、user store 和当前 project store。status 可按同一 scope 规则只读计算 config digest / stale 诊断，但不能执行 renderer。
+- config 写入统一走共享 helper，输入表达 `updates` 和 `removeKeys`，receipt 返回 `updatedKeys`、`removedKeys` 和 `artifactRefresh`。命中 refresh key 时先保存 config store，再按 tracked artifact 执行刷新；refresh-only 动作复用同一条 artifact apply / tracking 写回路径，但不修改 config store。
 - Claude Code：通过 `claude plugin marketplace add` / `claude plugin install` 接入本地 marketplace；项目或用户 scope 的 rules/permissions 由 CLI 生成并用 `.agent-workflows-manifest.json` 追踪。
 - Codex user scope：需要原生 plugin 能力时先调用 `codex plugin marketplace add <canonical ~/.aw>` 注册 local marketplace，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 自己写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache。AW 不再提供只写 config 的 fallback；RPC 成功后必须用 post-check 同时确认 enabled config 与 active cache。
 - Codex project scope：不调用 `codex plugin marketplace add`，不调用 app-server RPC，不写用户级 `[marketplaces]` / `[plugins]`，全部收敛为当前仓库 repo-managed artifacts：`.agents/skills/<skill>`、`.codex/config.toml [mcp_servers.*]` / managed instructions、`.codex/hooks.json`、`.codex/rules/*.rules`、`.codex/agents/*.toml` 和 `.codex/.agent-workflows-manifest.json`。即使 PATH 缺少 `codex` 可执行文件，project repo-managed target 也不能产生用户级 native side effect；命令事件中对应 skip reason 是 `project_repo_managed_skipped_native`。纯 native-only 插件和 `apps` 首版在 project scope fail fast。
@@ -84,7 +85,7 @@ Codex user native 写入后，AW 会先落 `native-recovery/codex/user/<plugin>@
 
 发布 bundle 只保留运行时需要的 lifecycle/helper/artifact renderer 入口、这些 Node 入口的静态相对依赖闭包、`scripts.node.packageRoot` 的 `package.json` / `pnpm-lock.yaml` / production `node_modules`。测试文件、test-only helper、build 入口和 dev-only 模块不进入发布 runtime bundle。运行时 lifecycle 和 artifact renderer 离线执行，不安装依赖，不回退到宿主或仓库根 `node_modules`。
 
-install/upgrade 会先按 schema 做 required config preflight；交互可用时调用同一套 prompt 补问配置，非交互时 fail fast。Codex project install / explicit upgrade / mixed explicit command 在 required config prompt 之前还会先完成安全预检：project installability、用户级 Codex config external ownership、必要的 project `.codex/config.toml` 解析、tracking identity 和未受管 repo artifact 冲突。lifecycle 执行时机是：install/upgrade 在平台状态和 repo-managed artifacts 写完后、tracking/ledger 提交前执行；uninstall 在平台卸载和 artifact 清理前执行。失败会阻断命令并保留可重试状态。
+install/upgrade 会先按 schema 做 required config preflight；脚本化子命令缺配置时 fail fast 并提示 `aw config set` 或 `aw` 主控制台。Codex project install / explicit upgrade / mixed explicit command 在 required config 检查之前还会先完成安全预检：project installability、用户级 Codex config external ownership、必要的 project `.codex/config.toml` 解析、tracking identity 和未受管 repo artifact 冲突。安全预检失败路径完全只读，不能创建 config store，不能写 native state、artifact、tracking 或 ledger。lifecycle 执行时机是：install/upgrade 在平台状态和 repo-managed artifacts 写完后、tracking/ledger 提交前执行；uninstall 在平台卸载和 artifact 清理前执行。失败会阻断命令并保留可重试状态。
 
 动态 artifact 的写路径分三段：先执行 renderer，拿到 stdout JSON `ArtifactPlan`；再由 `artifact-plan.ts` 按当前 platform/scope 的 `artifacts.targets` 校验 `id`、`target`、`state`、`refreshKeys`、roleKey 和 target content；最后交给 adapter 的 target apply 写入受管文件。renderer 和 lifecycle 都不能直接写 AW 受管文件，`.codex/config.toml`、`.codex/agents/*.toml`、tracking、ledger 等写盘集中在 AW target apply 和命令提交阶段。
 
@@ -98,11 +99,15 @@ config-triggered refresh 发生在 config store 写入成功之后，只刷新 t
 
 CLI entry 和 direct command 共用 `CommandExecutionContext`。所有会影响外部世界的能力都从这里进入：`env`、adapter factory、native CLI runner、prompt、reporter、debug logger 和 diagnostics。新增 helper 时必须继续消费 context 里的 `env`，不能退回 `process.env`；测试也应该通过同一条 context 注入 fake runner、fake prompt 或 fake adapters。
 
-交互式逻辑只存在于 `commands/interactive.ts`、config prompt 和 CLI action 之间。底层 `installCommand`、`uninstallCommand`、`upgradeCommand` 仍按确定性 options 执行，便于脚本化调用和单元测试。交互式选择使用带身份的候选项，身份包含 plugin、platform、scope、projectKey 和 executionCwd，不能只按插件名模糊 dispatch。config prompt 必须返回 selected scope、dirty updates 和 updatedKeys；命令层只 patch 本次显式更新的 key，不能把整份 effective config 复制到目标层。
+`aw` 主命令是唯一交互入口。TTY 下由 `commands/console.ts` 通过 prompt adapter 驱动控制台；非 TTY、CI 或交互不可用时不会挂起，会输出清晰说明、可复制脚本命令和 `--json` 提示。prompt adapter 提供 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果，默认实现基于 inquirer，并保留可注入 fake prompt / console driver 供测试使用。
+
+底层 `installCommand`、`uninstallCommand`、`upgradeCommand`、`config` 写命令按确定性 options 执行，便于脚本化调用和单元测试；即使 runtime 注入 fake prompt，子命令也不能 prompt。控制台动作使用带身份的 location，身份包含 plugin、platform、scope、projectKey 和 executionCwd，不能只按插件名模糊 dispatch。配置向导必须返回 selected scope、dirty updates、removeKeys、updatedKeys 和 removedKeys；命令层只 patch 本次显式更新或删除的 key，不能把整份 effective config 复制到目标层。
 
 ## Output and Debug
 
-命令结果逐步从散落的 `output` / `warnings` 迁到结构化 notices 和 events。默认 stdout 面向日常使用，说明目标插件、platform、scope、实际使用的插件目录、native 注册或 repo-managed artifacts，以及下一步命令。纯 Codex project repo-managed 成功路径不输出 native marketplace add 或 plugin enabled 成功信息；`--verbose` 把 options normalization、platform/catalog 选择、marketplace 修复判断和降噪后的 drift 诊断写到 stderr；`--debug` 或 `AW_DEBUG=1` 生成脱敏 debug log，并隐含 verbose。
+命令结果已经分为 JSON receipt 和默认人类 renderer。所有写命令的最小公共 receipt 包含 `ok`、`command`、`warnings` 和 `nextSteps`；`install` / `uninstall` / `upgrade` 追加 `plugins`、`targets`、`actions`、`artifacts`、`native`、`skipped` 等命令字段，`config set/unset/reset` 追加 `updatedKeys`、`removedKeys` 和 `artifactRefresh`。`--json` stdout 必须是单一可解析 JSON；失败时 stdout 为空或仍是单一 JSON，错误和 warning 只写 stderr。
+
+默认 stdout 面向日常使用，只说明目标插件、位置、结果和必要下一步，不展示 marketplace、app-server、RPC、cache、recovery breadcrumb、repo-managed、ledger、healthSource、artifactRefresh、sessionVisibility、projectTrust、tracking、config/script health 等内部词。可复制命令、argv、flag、JSON 字段和类型名保留真实技术标识。纯 Codex project repo-managed 成功路径不输出 native marketplace add 或 plugin enabled 成功信息；`--verbose` 把 options normalization、platform/catalog 选择、marketplace 修复判断和降噪后的 drift 诊断写到 stderr；`--debug` 或 `AW_DEBUG=1` 生成脱敏 debug log，并隐含 verbose。
 
 debug log 记录 runId、argv、cwd、关键路径、native invocation、文件写入摘要、rollback/degraded 和最终错误，但不记录完整敏感内容。写命令默认写到 `~/.aw/logs`；`status` 默认写到系统临时目录，避免为了诊断破坏只读合同。`status --json` 独占 stdout，人类诊断、warning 和 debug log 路径只能进入 stderr 或日志文件。
 
@@ -116,15 +121,19 @@ Codex native 写命令会发结构化 command event，debug log 和 `--verbose` 
 
 ## Discovery and Status
 
-`commands/discovery.ts` 是 status、交互式 uninstall 和交互式 upgrade 的候选来源。它合并 AW ledger、project tracking manifest、Codex/Claude 原生配置、runtime evidence 和 current catalog；current catalog 找不到时会生成保守的 historical placeholder。
+`commands/discovery.ts` 是 status 和主控制台候选来源，也为脚本化 uninstall/upgrade 恢复目标身份。它合并 AW ledger、project tracking manifest、Codex/Claude 原生配置、runtime evidence 和 current catalog；current catalog 找不到时会生成保守的 historical placeholder。
 
 historical placeholder 必须按 platform + scope 分格。Codex 只有 ledger coarse boolean（例如 `hasRepoManagedArtifacts: true`）时，不能恢复成 hook、instruction、permission 或 agent 等具体能力；只有 tracking artifact kind、hook identity 等明确证据存在时，才能恢复对应能力。
 
 tracking manifest 中的 `GeneratedArtifact.path` 始终是绝对路径。`kind: "skill"` 和 `kind: "mcpServer"` 还必须带 `artifactKey`：skill 使用 skill 目录名，MCP 使用 rendered `.mcp.json` 的原始 server key。`.codex/config.toml` 是共享文件，多个 MCP server 不能只靠 path 区分；包含点号、空格、斜杠或 Unicode 的 key 必须按 TOML quoted key 语义处理，例如 `[mcp_servers."acme.tools v1"]` 表示单个 server key，而不是嵌套路径。
 
-动态 artifact tracking 在 `GeneratedArtifact` 上额外记录 `id`、`target`、`state`、`disabledReason`、`refreshKeys`、`configDigest`、`contentDigest`、`roleKey`、`lastRefresh` 和 `refreshReach`。status、discovery、交互式 uninstall/upgrade、direct uninstall/upgrade 都应优先使用 artifact id/target/roleKey 恢复身份；current catalog 缺失时只能从 installed snapshot、tracking 和 runtime evidence 保守恢复，不能编造假 role 名。uninstall 清理 AW 受管 instruction block、role registration 和 role layer；遇到用户手写或外部接管内容时不得删除用户文件。
+动态 artifact tracking 在 `GeneratedArtifact` 上额外记录 `id`、`target`、`state`、`disabledReason`、`refreshKeys`、`configDigest`、`contentDigest`、`roleKey`、`lastRefresh` 和 `refreshReach`。status、discovery、主控制台动作和 direct uninstall/upgrade 都应优先使用 artifact id/target/roleKey 恢复身份；current catalog 缺失时只能从 installed snapshot、tracking 和 runtime evidence 保守恢复，不能编造假 role 名。uninstall 清理 AW 受管 instruction block、role registration 和 role layer；遇到用户手写或外部接管内容时不得删除用户文件。
 
-`aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 明细 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。Codex project scope 的默认视图以 repo-managed evidence 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
+`aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 友好位置 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。`status --json` 保留旧矩阵字段 `detection`、`summaries`、`cells`、`reports`，并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`。TUI、默认 status 和 JSON 共用同一友好状态投影，状态优先级、原因码、保守升级判定、Codex user native enabled/cache/recovery、dynamic artifact refresh failed 和 session visibility 都在这一层统一映射。
+
+投影层的 action 合同是安全边界：`PluginConsoleItem.actions` 不包含任何立即写状态的动作，也不承载多 location 隐式批量写；`runInstall`、`runUpgrade`、`runUninstall`、`repairInstall`、`cleanupRecovery`、`reapplyConfigRefresh` 等写动作只能出现在 `locations[].actions[]`，并且必须带完整 target，project 动作需要时带 `projectKey`。删除、覆盖和 cleanup 动作必须带 `destructive: true` 和 `confirmText`；disabled 动作必须带 `disabledReason`，控制台不能靠 `label` 判断行为。
+
+Codex project scope 的默认视图以 repo-managed evidence 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
 
 Codex user native status 中，`native.pluginInstalled` 表示 Codex materialized cache 中存在单一 active version，不再表示 config enabled；`native.pluginEnabled` 表示 `~/.codex/config.toml [plugins."<plugin>@aw"].enabled === true`；`native.recovery` 固定返回 `{ present, state, reason, evidenceMatches, suggestion }`，无 breadcrumb 时是 `false / null`。enabled-only、cache-only、shared-ref-only、breadcrumb-only 都会进入 `needsAttention` 或诊断候选，不会被静默折叠成 `notInstalled`。
 

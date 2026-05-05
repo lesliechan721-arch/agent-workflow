@@ -33,6 +33,16 @@ import {
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
 } from './common.js';
+import {
+  createPluginConsoleItems,
+  createPluginConsoleLocationKey,
+  pluginConsoleLocationLabel,
+  PLUGIN_CONSOLE_STATUS_LABELS,
+  type PluginConsoleItem,
+  type PluginConsoleLocationDiagnostics,
+  type PluginConsolePluginMeta,
+  type PluginConsoleStatus,
+} from './console-model.js';
 import { buildCommandCandidates, type CommandCandidate } from './discovery.js';
 import {
   createCommandExecutionContext,
@@ -98,6 +108,23 @@ export interface StatusMatrixReport {
   summaries: StatusSummary[];
   cells: StatusMatrixCell[];
   reports: StatusReport[];
+}
+
+export interface FriendlyStatusSummary {
+  pluginName: string;
+  status: PluginConsoleStatus;
+  statusLabel: string;
+  location: string;
+  nextStep?: string;
+  nextSteps: string[];
+  issueSummary?: string;
+}
+
+export interface StatusJsonPayload extends StatusMatrixReport {
+  ok: true;
+  command: 'status';
+  friendlySummaries: FriendlyStatusSummary[];
+  consoleItems: PluginConsoleItem[];
 }
 
 function statusErrorMessage(error: unknown): string {
@@ -994,54 +1021,133 @@ function formatDetectionSummary(detection: EnvironmentDetection): string {
   return parts.join('，');
 }
 
-function formatDefaultStatusOutput(matrix: StatusMatrixReport): string {
-  const lines: string[] = [
-    '状态摘要',
-    `平台检测：${formatDetectionSummary(matrix.detection)}`,
-  ];
+function mapStatusHealthToFriendlyStatus(health: StatusHealth): PluginConsoleStatus {
+  switch (health) {
+    case 'ready':
+      return 'installed';
+    case 'partial':
+      return 'partial';
+    case 'external':
+      return 'external';
+    case 'notInstalled':
+      return 'notInstalled';
+    case 'needsAttention':
+    case 'unknown':
+    default:
+      return 'needsAction';
+  }
+}
 
-  if (matrix.summaries.length === 0) {
-    lines.push('未发现 AW 管理的插件。');
-    lines.push('');
-    lines.push('下一步');
-    lines.push('- 运行 aw install 进入交互式安装，或运行 aw install <plugin> 安装指定插件。');
-    return lines.join('\n');
+function summarizeFallbackLocation(summary: StatusSummary): string {
+  if (summary.cells.length === 0) {
+    return '未发现安装位置';
+  }
+  if (summary.cells.length === 1) {
+    return pluginConsoleLocationLabel(summary.cells[0]);
+  }
+  return '多个位置';
+}
+
+function buildFriendlySummaries(
+  matrix: StatusMatrixReport,
+  consoleItems: PluginConsoleItem[],
+): FriendlyStatusSummary[] {
+  const itemsByPlugin = new Map(
+    consoleItems.map((item) => [item.pluginName, item] as const),
+  );
+
+  return matrix.summaries.map((summary) => {
+    const item = itemsByPlugin.get(summary.pluginName);
+    if (item) {
+      const nextSteps = item.nextSteps.length > 0
+        ? item.nextSteps
+        : item.status === 'notInstalled'
+          ? summary.nextSteps
+          : [`查看详情：aw status ${summary.pluginName} --verbose`];
+      const nextStep = nextSteps[0];
+      return {
+        pluginName: summary.pluginName,
+        status: item.status,
+        statusLabel: item.statusLabel,
+        location: item.locationSummary,
+        ...(nextStep ? { nextStep } : {}),
+        nextSteps,
+        ...(item.issueSummary ? { issueSummary: item.issueSummary } : {}),
+      };
+    }
+
+    const status = mapStatusHealthToFriendlyStatus(summary.health);
+    const nextSteps = summary.nextSteps;
+    const nextStep = nextSteps[0];
+    return {
+      pluginName: summary.pluginName,
+      status,
+      statusLabel: PLUGIN_CONSOLE_STATUS_LABELS[status],
+      location: summarizeFallbackLocation(summary),
+      ...(nextStep ? { nextStep } : {}),
+      nextSteps,
+    };
+  });
+}
+
+function formatFriendlyStatusOutput(friendlySummaries: FriendlyStatusSummary[]): string {
+  if (friendlySummaries.length === 0) {
+    return [
+      '插件状态',
+      '当前还没有可显示的插件状态。',
+      '下一步：运行 aw install <plugin> 安装指定插件。',
+    ].join('\n');
   }
 
-  for (const summary of matrix.summaries) {
-    const cellCount = summary.cells.length;
-    const suffix = cellCount > 0 ? `，${cellCount} 个状态点` : '';
-    lines.push(`- ${summary.pluginName}：${healthLabel(summary.health)}${suffix}`);
-  }
-
-  lines.push('');
-  lines.push('明细');
-  for (const cell of matrix.cells) {
-    lines.push(
-      `- ${cell.pluginName} / ${platformLabel(cell.platform)} / ${cell.scope} scope：${healthLabel(cell.health)}。${describeCell(cell)}`,
-    );
-  }
-
-  const steps = [
-    ...new Set(matrix.summaries.flatMap((summary) => summary.nextSteps)),
-  ];
-  if (steps.length > 0) {
-    lines.push('');
-    lines.push('下一步');
-    for (const step of steps) {
-      lines.push(`- ${step}`);
+  const lines = ['插件状态'];
+  for (const summary of friendlySummaries) {
+    lines.push(`- ${summary.pluginName}`);
+    lines.push(`  状态：${summary.statusLabel}`);
+    lines.push(`  位置：${summary.location}`);
+    if (summary.nextStep) {
+      lines.push(`  下一步：${summary.nextStep}`);
     }
   }
 
   return lines.join('\n');
 }
 
-function formatStatusJsonPayload(
+function formatVerboseMatrixOutput(matrix: StatusMatrixReport): string {
+  if (matrix.cells.length === 0) {
+    return '未发现更多诊断。';
+  }
+
+  return [
+    `平台检测：${formatDetectionSummary(matrix.detection)}`,
+    ...matrix.cells.map((cell) =>
+      `- ${cell.pluginName} / ${pluginConsoleLocationLabel(cell)}：${healthLabel(cell.health)}。${describeCell(cell)}`,
+    ),
+  ].join('\n');
+}
+
+function formatVerboseStatusOutput(
   matrix: StatusMatrixReport,
+  reports: StatusReport[],
+  friendlySummaries: FriendlyStatusSummary[],
+): string {
+  return [
+    formatFriendlyStatusOutput(friendlySummaries),
+    '',
+    '诊断信息',
+    '状态矩阵',
+    formatVerboseMatrixOutput(matrix),
+    '',
+    '命令诊断',
+    formatStatusOutput(matrix.detection, reports),
+  ].join('\n').trimEnd();
+}
+
+function formatStatusJsonPayload(
+  payload: StatusJsonPayload,
   verbose: boolean | undefined,
 ): string {
   return JSON.stringify(
-    matrix,
+    payload,
     null,
     verbose ? 2 : 0,
   );
@@ -1090,11 +1196,94 @@ function sortCells(cells: StatusMatrixCell[]): StatusMatrixCell[] {
   );
 }
 
+function hasConsoleUpgradeEvidenceCandidate(cell: StatusMatrixCell): boolean {
+  if (!cell.report || cell.error) {
+    return false;
+  }
+
+  if (cell.health !== 'ready' && cell.health !== 'partial') {
+    return false;
+  }
+
+  return Boolean(
+    cell.report.scopeManagedEvidence?.ledger ||
+    cell.report.scopeManagedEvidence?.tracking ||
+    cell.report.scopeManagedEvidence?.sharedNativeRef ||
+    cell.report.scopeInitialized === 'yes' ||
+    cell.report.generatedArtifacts.length > 0 ||
+    cell.report.managedArtifacts?.length,
+  );
+}
+
+async function resolveConsoleLocationDiagnostics(options: {
+  cell: StatusMatrixCell;
+  currentPlugin?: PluginMeta;
+  ledger: InstalledLedger;
+}): Promise<PluginConsoleLocationDiagnostics | undefined> {
+  const { cell, currentPlugin, ledger } = options;
+  if (!currentPlugin || !hasConsoleUpgradeEvidenceCandidate(cell)) {
+    return undefined;
+  }
+
+  if (cell.report?.currentCatalog?.available !== true) {
+    return undefined;
+  }
+
+  const scopeRecord = getStatusScopeRecord(
+    ledger,
+    cell.pluginName,
+    cell.platform,
+    cell.scope,
+    cell.projectKey,
+  );
+  if (!scopeRecord?.resolvedVersion) {
+    return { upgradeState: 'unknown' };
+  }
+
+  if (scopeRecord.resolvedVersion !== currentPlugin.manifest.version) {
+    return { upgradeState: 'available' };
+  }
+
+  const snapshot = scopeRecord.lifecycleConfigSnapshot;
+  if (!snapshot?.bundleFingerprint) {
+    return { upgradeState: 'unknown' };
+  }
+
+  try {
+    const currentFingerprint = await calculatePluginBundleFingerprint(currentPlugin.rootDir);
+    return {
+      upgradeState: currentFingerprint === snapshot.bundleFingerprint ? 'current' : 'available',
+    };
+  } catch {
+    return { upgradeState: 'unknown' };
+  }
+}
+
+function createStatusJsonPayload(options: {
+  matrix: StatusMatrixReport;
+  friendlySummaries: FriendlyStatusSummary[];
+  consoleItems: PluginConsoleItem[];
+}): StatusJsonPayload {
+  return {
+    ok: true,
+    command: 'status',
+    ...options.matrix,
+    friendlySummaries: options.friendlySummaries,
+    consoleItems: options.consoleItems,
+  };
+}
+
 export async function statusCommand(
   pluginNames: string[],
   rawOptions: RawStatusCommandOptions,
   runtime: StatusCommandRuntime = {},
-): Promise<{ reports: StatusReport[]; output: string; matrix: StatusMatrixReport }> {
+): Promise<{
+  reports: StatusReport[];
+  output: string;
+  matrix: StatusMatrixReport;
+  friendlySummaries: FriendlyStatusSummary[];
+  consoleItems: PluginConsoleItem[];
+}> {
   const options = normalizeStatusCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
@@ -1112,8 +1301,17 @@ export async function statusCommand(
 
   const reportsByKey = createReportsByKey();
   const cells: StatusMatrixCell[] = [];
+  const pluginMetaByName: Record<string, PluginConsolePluginMeta> = {};
+  const locationDiagnosticsByKey: Record<string, PluginConsoleLocationDiagnostics> = {};
 
   for (const candidate of candidates) {
+    const currentPlugin = candidate.target.currentPlugin ?? candidate.target.plugin;
+    pluginMetaByName[candidate.pluginName] ??= {
+      title: currentPlugin.manifest.name,
+      description: currentPlugin.manifest.description,
+      version: currentPlugin.manifest.version,
+    };
+
     if (candidate.evidence.readErrors.length > 0) {
       cells.push({
         pluginName: candidate.pluginName,
@@ -1167,7 +1365,7 @@ export async function statusCommand(
       });
 
       upsertReport(reportsByKey, candidate, status);
-      cells.push({
+      const cell: StatusMatrixCell = {
         pluginName: candidate.pluginName,
         platform: candidate.platform,
         scope: candidate.scope,
@@ -1179,7 +1377,17 @@ export async function statusCommand(
         evidenceSources: candidate.evidence.sources,
         ...runtimeHealth,
         disabledReason: candidate.disabledReason,
+      };
+      cells.push(cell);
+
+      const consoleDiagnostics = await resolveConsoleLocationDiagnostics({
+        cell,
+        currentPlugin: candidate.target.currentPlugin,
+        ledger,
       });
+      if (consoleDiagnostics) {
+        locationDiagnosticsByKey[createPluginConsoleLocationKey(cell)] = consoleDiagnostics;
+      }
     } catch (error) {
       if (isCodexProjectStatusFatalError(error)) {
         throw error;
@@ -1231,21 +1439,27 @@ export async function statusCommand(
     cells: sortedCells,
     reports,
   };
-
+  const consoleItems = createPluginConsoleItems(matrix, {
+    pluginMetaByName,
+    locationDiagnosticsByKey,
+  });
+  const friendlySummaries = buildFriendlySummaries(matrix, consoleItems);
+  const jsonPayload = createStatusJsonPayload({
+    matrix,
+    friendlySummaries,
+    consoleItems,
+  });
   const humanOutput = options.verbose
-    ? [
-        formatDefaultStatusOutput(matrix),
-        '',
-        '诊断详情',
-        formatStatusOutput(detection, reports),
-      ].join('\n').trimEnd()
-    : formatDefaultStatusOutput(matrix);
+    ? formatVerboseStatusOutput(matrix, reports, friendlySummaries)
+    : formatFriendlyStatusOutput(friendlySummaries);
 
   return {
     reports,
     matrix,
+    friendlySummaries,
+    consoleItems,
     output: options.json
-      ? formatStatusJsonPayload(matrix, options.verbose)
+      ? formatStatusJsonPayload(jsonPayload, options.verbose)
       : humanOutput,
   };
 }

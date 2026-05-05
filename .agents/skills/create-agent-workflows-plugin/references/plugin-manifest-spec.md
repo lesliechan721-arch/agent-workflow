@@ -184,11 +184,14 @@
 - `target` 首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`。
 - `states` 首版支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
 - `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
+- 配置写入、主控制台配置向导和 refresh-only 动作共用同一条 dynamic artifact apply / tracking 写回路径。`config set/unset/reset --json` 会返回稳定的 `artifactRefresh`；refresh-only 不修改 config store，只重跑当前 location target 可定位的 tracked artifact refresh。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project write safety preflight。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
 `ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。
+
+status 和控制台会把 dynamic artifact 的 refresh failed、drift、missing 投影成友好状态和下一步；disabled by config 不算问题。写动作必须基于明确的 location target：同一插件出现在多个位置时，可以汇总展示，但不能把“多个位置”当成隐式批量写目标。安装、升级、卸载、配置保存、refresh-only 和 cleanup 都必须先明确 platform / scope / project root。
 
 ## 路径约定
 
@@ -312,9 +315,15 @@ codex:
 
 Codex scope 对作者的影响：
 
-- `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。
+- `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache 和 AW 受管记录都健康时才显示为已安装；enabled-only、cache-only、breadcrumb-only 不算已安装，recovery breadcrumb 会投影为 native incomplete 并给出 repair / cleanup 动作。
 - `--scope project` 只写 repo-managed artifacts，不调用 native marketplace add / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`。缺少 `codex` 可执行文件时，repo-managed project 安装仍可进行。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
+
+CLI 入口和输出对作者的影响：
+
+- `aw` 主命令是唯一交互入口；配置向导只存在于主控制台。脚本化配置请使用 `aw config set/unset/reset`，读配置使用 `aw config list/get`。
+- 子命令面向脚本调用；写命令加 `--json` 时 stdout 是单一 JSON receipt，默认输出只展示友好完成状态和下一步。需要诊断时使用 `--verbose`、`--debug` 或 `status --json`。
+- 插件 README、示例和测试断言不要依赖默认输出里的内部词，也不要把默认输出当机器协议解析。
 
 ## interface block
 

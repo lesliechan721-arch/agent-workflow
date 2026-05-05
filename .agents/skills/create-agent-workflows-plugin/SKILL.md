@@ -73,7 +73,7 @@ plugins/<name>/
 
 ### 场景 E：Codex 动态 Artifact 插件
 
-插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role，并在 `aw config set/configure/unset/reset` 后自动刷新。
+插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role，并在 `aw config set/unset/reset` 或主控制台配置向导保存后自动刷新。
 
 ```text
 plugins/<name>/
@@ -120,10 +120,18 @@ plugins/<name>/
 
 ### Codex scope 提醒
 
-- Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。
+- Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。`aw status` 只有在 enabled config、active materialized cache 和 AW 受管记录都健康时才把它投影为已安装；enabled-only、cache-only、breadcrumb-only 都会显示为需要修复或清理的异常状态。
 - Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace add 或 app-server RPC，也不会改用户级 config/cache。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可用。
 - 面向 Codex project 的插件必须有 repo-managed surface。纯 native-only 插件不能 project 安装；包含 `apps` 的插件 project scope 会 fail fast，请引导用户使用 `--scope user` 或拆分插件。
 - 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 recovery breadcrumb 触发 repair install；breadcrumb-only uninstall 不运行 uninstall lifecycle。
+
+### CLI 入口与输出合同
+
+- `aw` 主命令是唯一交互入口；TTY 下进入插件控制台，配置向导也只在这里出现。脚本和文档示例不要再使用子命令交互 flag。
+- 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。
+- `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
+- 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、recovery breadcrumb、ledger、healthSource、tracking 或 config/script health 等内部词。
+- `aw status` 默认输出使用友好状态投影；`aw status --json` 保留旧矩阵字段，并追加 `friendlySummaries` 和 `consoleItems`。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle 或修复动作。
 
 ## 脚手架脚本
 
@@ -162,13 +170,15 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
 - Codex 动态 artifact 插件必须显式声明 `marketplace.policy.products: ["CODEX"]`；`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
-- `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh 写路径执行，`aw status` 不执行 renderer。
+- `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。
+- dynamic artifact 刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
+- 写动作必须来自明确的 location target。插件出现在多个位置时，控制台和脚本 receipt 可以汇总状态，但不能把“多个位置”当成隐式批量写目标；执行安装、升级、卸载、配置、refresh-only 或 cleanup 前都要明确 platform/scope/project 位置。
 - 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
 - 插件内 Node 脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 - lifecycle 支持 Node 和受控 shell 文件，不支持内联 shell 命令；Windows 优先写 Node 入口，或单独提供 `.ps1` / `.cmd`。
 - Node lifecycle/helper/test 默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时声明 `scripts.node.packageRoot`，提交 `package.json` 和 `pnpm-lock.yaml`，并只使用 registry-backed 依赖；运行时依赖离线随 bundle 携带。
 - manifest build 只能通过 `scripts.node.build` 显式触发，并运行在隔离 staging 目录；不要期待 `package.json` scripts 或 npm lifecycle 自动执行，也不要依赖源码树被回写。
-- Codex user native 成功状态需要 enabled config 和 materialized cache 同时存在；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。
+- Codex user native 成功状态需要 enabled config、active materialized cache 和 AW 受管记录同时健康；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，recovery breadcrumb 会投影为 native incomplete 而不是普通已安装。
 
 ## 脚本测试入口
 

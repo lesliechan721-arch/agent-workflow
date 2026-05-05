@@ -23,7 +23,10 @@ describe('command runtime', () => {
       },
     });
 
-    await expect(prompt.confirm!({ message: '继续吗？', defaultValue: true })).resolves.toBe(true);
+    await expect(prompt.confirm!({ message: '继续吗？', defaultValue: true })).resolves.toEqual({
+      cancelled: false,
+      value: true,
+    });
 
     expect(output.join('')).toContain('继续吗？');
   });

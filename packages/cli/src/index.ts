@@ -9,9 +9,12 @@ import { Command, CommanderError } from 'commander';
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
 import {
+  formatInteractiveConsoleUnavailableMessage,
+  runConsoleController,
+} from './commands/console.js';
+import {
   createCliExecutionContext,
   emitCommandEvent,
-  validateCliConfigPromptResult,
   type CliExecutionContext,
   type CliExecutionContextInput,
   type CliIo,
@@ -20,11 +23,6 @@ import {
 import { statusCommand } from './commands/status.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
-import {
-  createInteractiveInstallPlan,
-  createInteractiveUninstallPlan,
-  createInteractiveUpgradePlan,
-} from './commands/interactive.js';
 import {
   resolveConfigReadResolution,
   resolveConfigWriteScope,
@@ -35,29 +33,32 @@ import {
   parseSkillTriggerPreference,
 } from './commands/options.js';
 import {
-  type CatalogResolution,
-  CommandWarningError,
-  type GeneratedArtifact,
   isCommandWarningError,
-  type NativePluginsByPlatform,
-  type SkippedUpgradeTarget,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
-import { resolveAwHome, resolveCliPackageRoot } from './utils/paths.js';
+import {
+  buildCommandReceiptJson,
+  buildInitReceiptJson,
+  renderCommandReceipt,
+  renderInitReceipt,
+  type CliCommandExecutionGroup,
+  type CliCommandResult,
+} from './output/command-receipt.js';
+import { resolveCliPackageRoot } from './utils/paths.js';
 import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
-import { refreshArtifactsAfterConfigWrite } from './utils/artifact-refresh.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigValue,
-  coercePluginConfigUpdates,
-  patchPluginConfigStore,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
-  resetPluginConfigStore,
   resolveEffectivePluginConfig,
   summarizeEffectivePluginConfig,
   type PluginConfigIssue,
 } from './utils/plugin-config.js';
+import {
+  applyPluginConfigWrite,
+  resetPluginConfigWithHelper,
+} from './utils/plugin-config-write.js';
 import type { PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
@@ -76,8 +77,12 @@ function writeLine(write: (text: string) => void, line: string): void {
   write(`${line}\n`);
 }
 
-function writeWarnings(write: (text: string) => void, warnings: string[]): void {
-  for (const warning of formatWarnings(warnings)) {
+function writeWarnings(
+  write: (text: string) => void,
+  warnings: string[],
+  options: { actionableOnly?: boolean } = {},
+): void {
+  for (const warning of formatWarnings(warnings, options)) {
     writeLine(write, warning);
   }
 }
@@ -91,264 +96,6 @@ function resolveCliVersion(): string {
     throw new Error('Unable to resolve @yiliang/aw version from package.json.');
   }
   return packageJson.version;
-}
-
-interface CliMarketplaceReceipt {
-  rootDir: string;
-  changed: boolean;
-  mode?: 'readOnly' | 'runtimeWritable';
-  catalog: CatalogResolution;
-}
-
-function mergeMarketplaceReceipts(
-  results: Array<{ marketplace?: CliMarketplaceReceipt }>,
-): CliMarketplaceReceipt | undefined {
-  const receipts = results
-    .map((result) => result.marketplace)
-    .filter((receipt): receipt is CliMarketplaceReceipt => Boolean(receipt));
-  if (receipts.length === 0) {
-    return undefined;
-  }
-
-  return {
-    rootDir: receipts[0].rootDir,
-    changed: receipts.some((receipt) => receipt.changed),
-    mode: receipts.some((receipt) => receipt.mode === 'runtimeWritable')
-      ? 'runtimeWritable'
-      : receipts[0].mode,
-    catalog: receipts.find((receipt) => receipt.catalog.source === 'local')?.catalog ?? receipts[0].catalog,
-  };
-}
-
-function mergeCommandResults(
-  results: Array<{
-    platforms: string[];
-    plugins: string[];
-    warnings: string[];
-    skipped?: SkippedUpgradeTarget[];
-    nativePlugins?: NativePluginsByPlatform;
-    repoManagedArtifacts?: GeneratedArtifact[];
-    marketplace?: CliMarketplaceReceipt;
-  }>,
-): {
-  platforms: string[];
-  plugins: string[];
-  warnings: string[];
-  skipped: SkippedUpgradeTarget[];
-  nativePlugins: NativePluginsByPlatform;
-  repoManagedArtifacts: GeneratedArtifact[];
-  marketplace?: CliMarketplaceReceipt;
-} {
-  const nativePlugins: NativePluginsByPlatform = {};
-  const repoManagedArtifacts: GeneratedArtifact[] = [];
-  const repoManagedArtifactKeys = new Set<string>();
-  for (const result of results) {
-    for (const [platform, pluginNames] of Object.entries(result.nativePlugins ?? {}) as Array<[keyof NativePluginsByPlatform, string[] | undefined]>) {
-      if (!pluginNames || pluginNames.length === 0) {
-        continue;
-      }
-      nativePlugins[platform] ??= [];
-      for (const pluginName of pluginNames) {
-        if (!nativePlugins[platform].includes(pluginName)) {
-          nativePlugins[platform].push(pluginName);
-        }
-      }
-    }
-    for (const artifact of result.repoManagedArtifacts ?? []) {
-      const key = [
-        artifact.platform,
-        artifact.kind,
-        artifact.path,
-        artifact.artifactKey ?? '',
-      ].join('\0');
-      if (repoManagedArtifactKeys.has(key)) {
-        continue;
-      }
-      repoManagedArtifactKeys.add(key);
-      repoManagedArtifacts.push(artifact);
-    }
-  }
-
-  return {
-    platforms: [...new Set(results.flatMap((result) => result.platforms))],
-    plugins: [...new Set(results.flatMap((result) => result.plugins))],
-    warnings: results.flatMap((result) => result.warnings),
-    skipped: results.flatMap((result) => result.skipped ?? []),
-    nativePlugins,
-    repoManagedArtifacts,
-    marketplace: mergeMarketplaceReceipts(results),
-  };
-}
-
-interface CliCommandResult {
-  platforms: string[];
-  plugins: string[];
-  warnings: string[];
-  skipped?: SkippedUpgradeTarget[];
-  nativePlugins?: NativePluginsByPlatform;
-  repoManagedArtifacts?: GeneratedArtifact[];
-  marketplace?: CliMarketplaceReceipt;
-}
-
-interface CliCommandReceipt {
-  result: CliCommandResult;
-  scopes: string[];
-}
-
-const PLATFORM_LABELS: Record<string, string> = {
-  codex: 'Codex',
-  claude: 'Claude Code',
-};
-
-function formatList(values: string[]): string {
-  const unique = [...new Set(values)].filter(Boolean);
-  return unique.length > 0 ? unique.join(', ') : '无';
-}
-
-function formatPlatforms(platforms: string[]): string {
-  return formatList(platforms.map((platform) => PLATFORM_LABELS[platform] ?? platform));
-}
-
-function formatScopes(scopes: string[]): string {
-  return formatList(scopes.map((scope) => `${scope} scope`));
-}
-
-function formatCatalogReceipt(
-  catalog: CatalogResolution,
-  mode: CliMarketplaceReceipt['mode'] = 'runtimeWritable',
-): string {
-  if (catalog.source === 'local') {
-    return mode === 'readOnly'
-      ? `本地插件目录（${catalog.rootDir}）`
-      : `本地 marketplace（${catalog.rootDir}）`;
-  }
-
-  return `embedded catalog（${catalog.rootDir}${catalog.reason ? `，${catalog.reason}` : ''}）`;
-}
-
-function formatCodexProjectArtifactSurfaces(
-  artifacts: GeneratedArtifact[] | undefined,
-): string | undefined {
-  const surfaces = new Set<string>();
-  for (const artifact of artifacts ?? []) {
-    if (artifact.platform !== 'codex') {
-      continue;
-    }
-    switch (artifact.kind) {
-      case 'skill':
-        surfaces.add('.agents/skills');
-        break;
-      case 'mcpServer':
-      case 'instruction':
-        surfaces.add('.codex/config.toml');
-        break;
-      case 'permission':
-        surfaces.add('.codex/rules');
-        break;
-      case 'hook':
-        surfaces.add('.codex/hooks.json');
-        break;
-      case 'agent':
-        surfaces.add('.codex/agents');
-        break;
-    }
-  }
-
-  if (surfaces.size === 0) {
-    return undefined;
-  }
-  surfaces.add('.codex/.agent-workflows-manifest.json');
-  return [...surfaces].join('、');
-}
-
-function repoManagedReceiptVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
-  return action === 'install'
-    ? '已写入'
-    : action === 'uninstall'
-      ? '已清理'
-      : '已刷新';
-}
-
-function commandVerb(action: 'install' | 'uninstall' | 'upgrade'): string {
-  return action === 'install' ? '已安装' : action === 'uninstall' ? '已卸载' : '已升级';
-}
-
-function commandNoun(action: 'install' | 'uninstall' | 'upgrade'): string {
-  return action === 'install' ? '安装' : action === 'uninstall' ? '卸载' : '升级';
-}
-
-function writeCommandReceipt(
-  write: (text: string) => void,
-  action: 'install' | 'uninstall' | 'upgrade',
-  receipt: CliCommandReceipt,
-  context: CliExecutionContext,
-): void {
-  const { result, scopes } = receipt;
-  const awHome = resolveAwHome(context.env);
-  const firstPlugin = result.plugins[0];
-  const pluginList = formatList(result.plugins);
-  const platformList = formatPlatforms(result.platforms);
-  const scopeList = formatScopes(scopes);
-  const skipped = result.skipped ?? [];
-
-  if (action === 'upgrade' && result.plugins.length === 0 && skipped.length > 0) {
-    writeLine(
-      write,
-      `未升级任何插件，已跳过 ${skipped.length} 个目标：${formatPlatforms(result.platforms)} / ${scopeList}。`,
-    );
-  } else {
-    writeLine(write, `${commandVerb(action)} ${pluginList}：${platformList} / ${scopeList}。`);
-  }
-
-  if (action === 'install' || action === 'upgrade') {
-    if (result.marketplace) {
-      writeLine(write, `使用插件目录：${formatCatalogReceipt(result.marketplace.catalog, result.marketplace.mode)}。`);
-      if (result.marketplace.catalog.source === 'local' && result.marketplace.mode !== 'readOnly') {
-        writeLine(
-          write,
-          `${result.marketplace.changed ? '已同步' : '已复用'}本地 marketplace：${result.marketplace.rootDir}。`,
-        );
-      }
-    }
-    const codexNativePlugins = result.nativePlugins?.codex ?? [];
-    if (codexNativePlugins.length > 0) {
-      writeLine(write, `已确认 Codex marketplace 注册：${awHome}。`);
-      writeLine(
-        write,
-        `已通过 Codex app-server 完成原生插件安装并确认启用：${codexNativePlugins.map((plugin) => `${plugin}@aw`).join(', ')}。`,
-      );
-    }
-    if ((result.nativePlugins?.claude ?? []).length > 0) {
-      writeLine(write, `已确认 Claude Code marketplace 和插件状态。`);
-    }
-    const codexProjectArtifacts = formatCodexProjectArtifactSurfaces(result.repoManagedArtifacts);
-    if (codexProjectArtifacts) {
-      writeLine(write, `${repoManagedReceiptVerb(action)} Codex project repo-managed artifacts：${codexProjectArtifacts}。`);
-    }
-  } else {
-    const codexProjectArtifacts = formatCodexProjectArtifactSurfaces(result.repoManagedArtifacts);
-    if (codexProjectArtifacts) {
-      writeLine(write, `${repoManagedReceiptVerb(action)} Codex project repo-managed artifacts：${codexProjectArtifacts}。`);
-    } else {
-      writeLine(write, '已清理匹配的受管状态和生成产物。');
-    }
-  }
-
-  const platformFlag = result.platforms.length === 1 ? ` -p ${result.platforms[0]}` : '';
-  const statusTarget = firstPlugin ? ` ${firstPlugin}` : '';
-  if (action === 'upgrade' && skipped.length > 0) {
-    writeLine(write, `已跳过 ${skipped.length} 个目标：`);
-    for (const entry of skipped) {
-      writeLine(
-        write,
-        `- ${PLATFORM_LABELS[entry.platform] ?? entry.platform} / ${entry.scope} scope / ${entry.plugin} [${entry.code}] ${entry.reason}`,
-      );
-    }
-  }
-  writeLine(
-    write,
-    `完成。下一步：运行 aw status${statusTarget}${platformFlag} 查看${commandNoun(action)}后的状态。`,
-  );
 }
 
 function resolveCommandReceiptExitCode(
@@ -366,7 +113,6 @@ interface RawDiagnosticsOptions {
   verbose?: boolean;
   debug?: boolean;
   logFile?: string;
-  interactive?: boolean;
 }
 
 interface RawConfigOptions extends RawDiagnosticsOptions {
@@ -390,32 +136,31 @@ function toCliDiagnosticsOptions(
   };
 }
 
-function shouldCreateInteractiveInstallPlan(
-  pluginNames: string[],
-  options: { platform: string; requestedSkillTrigger?: unknown },
-  context: CliExecutionContext,
-  forcePrompt: boolean,
-): boolean {
-  if (forcePrompt) {
-    return true;
+function assertInstallPluginsProvided(pluginNames: string[]): void {
+  if (pluginNames.length > 0) {
+    return;
   }
-  if (!context.interactive) {
-    return false;
-  }
-  if (pluginNames.length === 0 || options.platform === 'auto') {
-    return true;
-  }
-
-  return !options.requestedSkillTrigger &&
-    typeof context.prompt.selectSkillTrigger === 'function';
+  throw new Error(
+    'install 命令至少需要一个插件名。运行 `aw` 打开交互控制台，或运行 `aw install <plugin>`。',
+  );
 }
 
-function shouldCreateInteractiveExistingPlan(
-  pluginNames: string[],
-  context: CliExecutionContext,
-  forcePrompt: boolean,
-): boolean {
-  return forcePrompt || (context.interactive && pluginNames.length === 0);
+function assertUninstallPluginsProvided(pluginNames: string[]): void {
+  if (pluginNames.length > 0) {
+    return;
+  }
+  throw new Error(
+    'uninstall 命令至少需要一个插件名。运行 `aw` 打开交互控制台，或运行 `aw uninstall <plugin>`。',
+  );
+}
+
+function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean): void {
+  if (pluginNames.length > 0 || upgradeAll) {
+    return;
+  }
+  throw new Error(
+    'upgrade 命令至少需要一个插件名，或传入 `--all`。运行 `aw` 打开交互控制台，或运行 `aw upgrade <plugin>` / `aw upgrade --all`。',
+  );
 }
 
 async function runActionWithContext<T>(
@@ -661,23 +406,6 @@ async function resolveConfigForRead(options: {
   };
 }
 
-async function refreshArtifactsForConfigWrite(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  changedKeys?: string[];
-  resetAllTrackedKeys?: boolean;
-  context: CliExecutionContext;
-}) {
-  return refreshArtifactsAfterConfigWrite({
-    plugin: options.plugin,
-    commandScope: options.scope,
-    cwd: options.context.cwd,
-    env: options.context.env,
-    changedKeys: options.changedKeys,
-    resetAllTrackedKeys: options.resetAllTrackedKeys,
-  });
-}
-
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
@@ -696,7 +424,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       cwd,
       env,
       io,
-      interactive: rawOptions.interactive ?? options.interactive,
+      interactive: options.interactive,
       diagnostics: toCliDiagnosticsOptions(commandName, rawOptions, options.diagnostics),
     });
 
@@ -715,19 +443,23 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('init')
     .option('-f, --force', 'refresh the local marketplace bundle', false)
+    .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (rawOptions: { force?: boolean } & RawDiagnosticsOptions) => {
+    .action(async (rawOptions: { force?: boolean; json?: boolean } & RawDiagnosticsOptions) => {
       const context = createActionContext('init', rawOptions);
       const result = await runActionWithContext(context, () =>
         initCommand({ force: rawOptions.force, env: context.env }),
       );
-      writeLine(
-        io.stdout,
-        `${result.changed ? 'Initialized' : 'Reused'} local marketplace at ${result.rootDir}.`,
-      );
-      writeWarnings(io.stderr, result.warnings);
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
+      } else {
+        for (const line of renderInitReceipt(result)) {
+          writeLine(io.stdout, line);
+        }
+      }
+      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
     });
 
   program
@@ -737,8 +469,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('-i, --interactive', 'prompt for missing install choices')
-    .option('--no-interactive', 'disable interactive prompts')
+    .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
@@ -750,6 +481,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           skillTrigger?: string;
           scriptTimeout?: string;
+          json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('install', rawOptions);
@@ -760,6 +492,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               cwd,
               ...rawOptions,
             });
+            assertInstallPluginsProvided(plugins ?? []);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -767,39 +500,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 options: commandOptions,
               },
             });
-            const forcePrompt = rawOptions.interactive === true;
-            const plan = shouldCreateInteractiveInstallPlan(
-              plugins ?? [],
-              commandOptions,
-              context,
-              forcePrompt,
-            )
-              ? await createInteractiveInstallPlan(
-                  plugins ?? [],
-                  commandOptions,
-                  context,
-                  forcePrompt,
-                )
-              : null;
-            if (!plan) {
-              return {
-                result: await installCommand(plugins ?? [], commandOptions, context),
-                scopes: [commandOptions.scope],
-              };
-            }
-
-            const results = [];
-            for (const group of plan.groups) {
-              results.push(await installCommand(group.pluginNames, group.options, context));
-            }
+            const result = await installCommand(plugins ?? [], commandOptions, context);
             return {
-              result: mergeCommandResults(results),
-              scopes: plan.groups.map((group) => group.options.scope),
+              result,
+              groups: [{
+                scope: commandOptions.scope,
+                platforms: result.platforms,
+                plugins: result.plugins,
+              }],
             };
           },
         );
-        writeCommandReceipt(io.stdout, 'install', receipt, context);
-        writeWarnings(io.stderr, receipt.result.warnings);
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, buildCommandReceiptJson('install', receipt));
+        } else {
+          for (const line of renderCommandReceipt('install', receipt)) {
+            writeLine(io.stdout, line);
+          }
+        }
+        writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
         commandExitState.exitCode = resolveCommandReceiptExitCode('install', receipt.result);
       },
     );
@@ -810,14 +529,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('-i, --interactive', 'prompt for missing uninstall choices')
-    .option('--no-interactive', 'disable interactive prompts')
+    .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (
       plugins: string[],
-      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string } & RawDiagnosticsOptions,
+      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string; json?: boolean } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('uninstall', rawOptions);
       const receipt = await runActionWithContext(
@@ -827,6 +545,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             cwd,
             ...rawOptions,
           });
+          assertUninstallPluginsProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',
             data: {
@@ -834,38 +553,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               options: commandOptions,
             },
           });
-          const forcePrompt = rawOptions.interactive === true;
-          const plan = shouldCreateInteractiveExistingPlan(
-            plugins ?? [],
-            context,
-            forcePrompt,
-          )
-            ? await createInteractiveUninstallPlan(
-                plugins ?? [],
-                commandOptions,
-                context,
-                forcePrompt,
-              )
-            : null;
-          if (!plan) {
-            return {
-              result: await uninstallCommand(plugins ?? [], commandOptions, context),
-              scopes: [commandOptions.scope],
-            };
-          }
-
-          const results = [];
-          for (const group of plan.groups) {
-            results.push(await uninstallCommand(group.pluginNames, group.options, context));
-          }
+          const result = await uninstallCommand(plugins ?? [], commandOptions, context);
           return {
-            result: mergeCommandResults(results),
-            scopes: plan.groups.map((group) => group.options.scope),
+            result,
+            groups: [{
+              scope: commandOptions.scope,
+              platforms: result.platforms,
+              plugins: result.plugins,
+            }],
           };
         },
       );
-      writeCommandReceipt(io.stdout, 'uninstall', receipt, context);
-      writeWarnings(io.stderr, receipt.result.warnings);
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, buildCommandReceiptJson('uninstall', receipt));
+      } else {
+        for (const line of renderCommandReceipt('uninstall', receipt)) {
+          writeLine(io.stdout, line);
+        }
+      }
+      writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
       commandExitState.exitCode = resolveCommandReceiptExitCode('uninstall', receipt.result);
     });
 
@@ -877,8 +583,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('-i, --interactive', 'prompt for missing upgrade choices')
-    .option('--no-interactive', 'disable interactive prompts')
+    .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
@@ -891,6 +596,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           skillTrigger?: string;
           scriptTimeout?: string;
+          json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('upgrade', rawOptions);
@@ -901,6 +607,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               cwd,
               ...rawOptions,
             });
+            assertUpgradeRequestProvided(plugins ?? [], commandOptions.all === true);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -908,38 +615,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 options: commandOptions,
               },
             });
-            const forcePrompt = rawOptions.interactive === true;
-            const plan = shouldCreateInteractiveExistingPlan(
-              plugins ?? [],
-              context,
-              forcePrompt,
-            )
-              ? await createInteractiveUpgradePlan(
-                  plugins ?? [],
-                  commandOptions,
-                  context,
-                  forcePrompt,
-                )
-              : null;
-            if (!plan) {
-              return {
-                result: await upgradeCommand(plugins ?? [], commandOptions, context),
-                scopes: [commandOptions.scope],
-              };
-            }
-
-            const results = [];
-            for (const group of plan.groups) {
-              results.push(await upgradeCommand(group.pluginNames, group.options, context));
-            }
+            const result = await upgradeCommand(plugins ?? [], commandOptions, context);
             return {
-              result: mergeCommandResults(results),
-              scopes: plan.groups.map((group) => group.options.scope),
+              result,
+              groups: [{
+                scope: commandOptions.scope,
+                platforms: result.platforms,
+                plugins: result.plugins,
+              }],
             };
           },
         );
-        writeCommandReceipt(io.stdout, 'upgrade', receipt, context);
-        writeWarnings(io.stderr, receipt.result.warnings);
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, buildCommandReceiptJson('upgrade', receipt));
+        } else {
+          for (const line of renderCommandReceipt('upgrade', receipt)) {
+            writeLine(io.stdout, line);
+          }
+        }
+        writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
         commandExitState.exitCode = resolveCommandReceiptExitCode('upgrade', receipt.result);
       },
     );
@@ -1040,152 +734,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const plugin = await loadConfigManifest(pluginName, context);
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
-        const updates = await coercePluginConfigUpdates({
-          schema: plugin.manifest.config!.schema,
-          updates: { [key]: inputValue },
-          cwd: context.cwd,
-        });
-        await patchPluginConfigStore({
-          pluginName,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          updates,
-        });
-        const effective = await resolveEffectivePluginConfig({
-          pluginName,
-          manifest: plugin.manifest,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const artifactRefresh = await refreshArtifactsForConfigWrite({
+        const writeReceipt = await applyPluginConfigWrite({
           plugin,
+          pluginName,
           scope,
-          changedKeys: [key],
-          context,
+          cwd: context.cwd,
+          env: context.env,
+          request: {
+            updates: { [key]: inputValue },
+          },
         });
         return {
           ok: true,
           command: 'config:set',
-          plugin: pluginName,
-          scope,
-          updatedKeys: [key],
-          effective: summarizeEffectivePluginConfig(effective),
-          artifactRefresh,
+          ...writeReceipt,
         };
       });
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, `已写入 ${receipt.plugin}.${key} (${receipt.scope})。`);
-        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
-      }
-    });
-
-  config
-    .command('configure')
-    .argument('<plugin>')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-i, --interactive', 'prompt for config values')
-    .option('--no-interactive', 'disable interactive prompts')
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
-      const context = createActionContext('config:configure', rawOptions);
-      const receipt = await runActionWithContext(context, async () => {
-        if (!context.interactive || !context.prompt.configurePlugin) {
-          throw new Error(
-            `Interactive config is not available. Run \`aw config set ${pluginName} <key> <value>\` for each required key.`,
-          );
-        }
-        const plugin = await loadConfigManifest(pluginName, context);
-        const effective = await resolveEffectivePluginConfig({
-          pluginName,
-          manifest: plugin.manifest,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const explicitScope = rawOptions.scope === undefined
-          ? undefined
-          : resolveConfigWriteScope(rawOptions.scope);
-        const allowedScopes: Scope[] = explicitScope ? [explicitScope] : ['user', 'project'];
-        const promptSchema = Object.fromEntries(Object.entries(plugin.manifest.config!.schema).map(([schemaKey, field]) => [
-          schemaKey,
-          {
-            type: field.type === 'enum' ? 'string' : field.type,
-            label: field.title ?? schemaKey,
-            description: field.description,
-            required: field.required,
-            sensitive: field.sensitive,
-            default: field.default,
-            enum: field.type === 'enum' ? field.values : undefined,
-            min: field.min,
-            max: field.max,
-          },
-        ]));
-        const promptResult = validateCliConfigPromptResult(
-          {
-            allowedScopes,
-            schema: promptSchema,
-          },
-          await context.prompt.configurePlugin({
-            pluginName,
-            schema: promptSchema,
-            initialScope: explicitScope ?? 'user',
-            allowedScopes,
-            currentValues: effective.values,
-            requiredKeys: effective.issues
-              .filter((issue) => issue.type === 'missing-required' || issue.type === 'invalid-config')
-              .map((issue) => issue.key),
-          }),
-        );
-        if (promptResult.cancelled) {
-          throw new Error(`Config setup for ${pluginName} was cancelled.`);
-        }
-        const scope = promptResult.selectedScope;
-        if (!allowedScopes.includes(scope)) {
-          throw new Error(`Unsupported config scope "${scope}".`);
-        }
-        const updates = await coercePluginConfigUpdates({
-          schema: plugin.manifest.config!.schema,
-          updates: promptResult.updates,
-          cwd: context.cwd,
-        });
-        await patchPluginConfigStore({
-          pluginName,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          updates,
-        });
-        const nextEffective = await resolveEffectivePluginConfig({
-          pluginName,
-          manifest: plugin.manifest,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const artifactRefresh = await refreshArtifactsForConfigWrite({
-          plugin,
-          scope,
-          changedKeys: promptResult.updatedKeys,
-          context,
-        });
-        return {
-          ok: true,
-          command: 'config:configure',
-          plugin: pluginName,
-          scope,
-          updatedKeys: promptResult.updatedKeys,
-          effective: summarizeEffectivePluginConfig(nextEffective),
-          artifactRefresh,
-        };
-      });
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, receipt);
-      } else {
-        writeLine(io.stdout, `已更新 ${receipt.plugin} 配置 (${receipt.scope})。`);
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -1214,35 +782,22 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           env: context.env,
         });
         const existed = Object.hasOwn(store.values, key);
-        await patchPluginConfigStore({
-          pluginName,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          updates: {},
-          removeKeys: [key],
-        });
-        const effective = await resolveEffectivePluginConfig({
-          pluginName,
-          manifest: plugin.manifest,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const artifactRefresh = await refreshArtifactsForConfigWrite({
+        const writeReceipt = await applyPluginConfigWrite({
           plugin,
+          pluginName,
           scope,
-          changedKeys: existed ? [key] : [],
-          context,
+          cwd: context.cwd,
+          env: context.env,
+          request: {
+            removeKeys: [key],
+          },
         });
         return {
           ok: true,
           command: 'config:unset',
-          plugin: pluginName,
-          scope,
+          ...writeReceipt,
           removedKey: key,
           existed,
-          effective: summarizeEffectivePluginConfig(effective),
-          artifactRefresh,
         };
       });
       if (rawOptions.json) {
@@ -1259,8 +814,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('reset')
     .argument('<plugin>')
     .option('-s, --scope <scope>', 'project or user')
-    .option('-i, --interactive', 'prompt for confirmation')
-    .option('--no-interactive', 'disable interactive prompts')
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -1278,55 +831,33 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           env: context.env,
         });
         if (store.exists && !rawOptions.yes) {
-          if (!context.interactive || !context.prompt.confirm) {
-            throw new Error(
-              `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope} --yes\` to delete this store.`,
-            );
-          }
-          const confirmed = await context.prompt.confirm({
-            message: `Delete ${scope} config for ${pluginName}?`,
-            defaultValue: false,
-          });
-          if (!confirmed) {
-            throw new Error(`Config reset for ${pluginName} was cancelled.`);
+          throw new Error(
+            `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope} --yes\` to delete this store.`,
+          );
+        }
+        let plugin: PluginMeta | undefined;
+        try {
+          plugin = await loadConfigManifest(pluginName, context);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (
+            !message.startsWith(`Unknown plugin "${pluginName}".`) &&
+            message !== `Plugin "${pluginName}" does not declare an AW config schema.`
+          ) {
+            throw error;
           }
         }
-        const reset = await resetPluginConfigStore({
+        const resetReceipt = await resetPluginConfigWithHelper({
           pluginName,
           scope,
           cwd: context.cwd,
           env: context.env,
+          plugin,
         });
-        let artifactRefresh: Awaited<ReturnType<typeof refreshArtifactsForConfigWrite>> = {
-          attempted: false,
-          status: 'skipped' as const,
-          triggerKeys: [],
-          artifacts: [],
-        };
-        if (reset.deleted) {
-          try {
-            const plugin = await loadConfigManifest(pluginName, context);
-            artifactRefresh = await refreshArtifactsForConfigWrite({
-              plugin,
-              scope,
-              resetAllTrackedKeys: true,
-              context,
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (!message.startsWith(`Unknown plugin "${pluginName}".`)) {
-              throw error;
-            }
-          }
-        }
         return {
           ok: true,
           command: 'config:reset',
-          plugin: pluginName,
-          scope,
-          existed: reset.existed,
-          deleted: reset.deleted,
-          artifactRefresh,
+          ...resetReceipt,
         };
       });
       if (rawOptions.json) {
@@ -1403,6 +934,25 @@ export async function runCli(
   };
 
   try {
+    if (argv.length === 0) {
+      const context = createCliExecutionContext({
+        ...options,
+        io,
+        diagnostics: {
+          ...options.diagnostics,
+          commandName: 'console',
+          metadata: {
+            ...options.diagnostics?.metadata,
+            rawArgv: argv,
+          },
+        },
+      });
+      if (!context.interactive) {
+        writeLine(io.stderr, formatInteractiveConsoleUnavailableMessage(context));
+        return 1;
+      }
+      return await runActionWithContext(context, () => runConsoleController(context));
+    }
     const program = buildProgram({
       ...options,
       io,

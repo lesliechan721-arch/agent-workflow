@@ -87,9 +87,6 @@ aw config set <plugin> apiKey sk-test
 aw config set <plugin> maxFiles 20 --value-json
 aw config set <plugin> enabled true --value-json --scope project
 
-aw config configure <plugin>
-aw config configure <plugin> --scope project
-
 aw config unset <plugin> apiKey --scope user
 aw config reset <plugin> --scope project --yes
 ```
@@ -99,12 +96,20 @@ aw config reset <plugin> --scope project --yes
 - `list` 展示 schema key 的来源、required/default 状态和配置问题。
 - `get` 不带 key 时按 `key=value` 输出所有可见配置；带 key 时只输出该值。敏感值在 AW CLI 输出中会显示为 `[redacted]`。
 - `--json` 控制命令输出格式；`--value-json` 只用于 `set`，表示把传入的 `<value>` 当 JSON literal 解析，适合 number、boolean，以及需要保留 JSON 字符串语义的值。
-- `configure` 是交互式配置入口；不传 `--scope` 时可在 `user` 和 `project` 之间选择。
-- 插件只要能从当前 catalog 解析，即使还没有安装，也可以先用 `set` 或 `configure` 预配置。
+- 交互式配置向导只在 `aw` 主控制台中提供；脚本化写配置只使用 `set`、`unset` 和 `reset`。
+- 插件只要能从当前 catalog 解析，即使还没有安装，也可以先用 `set` 预配置。
 - `unset` 删除某一层 store 中的单个 key，不会删除其它 key。
-- `reset` 删除整个 scope store。目标 store 存在时需要 `--yes` 或交互确认；目标 store 不存在时是 no-op。
+- `reset` 删除整个 scope store。目标 store 存在时脚本化调用需要 `--yes`；目标 store 不存在时是 no-op。
 - `reset` 不需要当前 catalog 里仍有这个插件，因此可以用来清理已卸载或已从 catalog 移除的插件残留配置。
 - `aw uninstall` 默认保留 AW config；需要清理时显式运行 `aw config reset <plugin> -s user|project --yes`。
+
+### 输出分层和 receipt
+
+默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。内部诊断词，例如 marketplace、app-server、RPC、cache、recovery breadcrumb、ledger、healthSource、tracking、config/script health 等，不应出现在默认成功输出里；需要诊断时使用 `--verbose` 或 `--debug`。
+
+所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt，可直接 `JSON.parse`。`init/install/uninstall/upgrade/config set/unset/reset --json` 至少包含 `ok`、`command`、`warnings`、`nextSteps`；安装、卸载、升级会按实际结果补充 `plugins`、`targets`、`actions`、`artifacts`、`native` 等字段；配置写命令会返回 `updatedKeys` / `removedKeys` 和稳定的 `artifactRefresh`。`config list/get --json` 保留既有数据结构，同时包含稳定的 `ok` 和 `command`。
+
+`aw status` 是只读投影：默认输出是友好摘要，`aw status --verbose` 在诊断小节展示内部字段，`aw status --json` 保留旧矩阵字段并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
 
 ## 标准配置 Helper
 
@@ -202,7 +207,11 @@ renderer stdout 必须只输出 JSON：
 
 renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。写盘、回滚、tracking、status 和 uninstall 都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入刷新 user target，并在当前 repo 安装了 project target 时刷新当前 repo；project config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project，tracking 会用 `refreshReach` 记录本次刷新范围和其它已知 project target 是否可能 stale。refresh 失败不会回滚已经写入的 config store，但 `lastRefresh` 会记录失败摘要，`aw status` 和 JSON receipt 会显示 recent refresh failed。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入刷新 user target，并在当前 repo 安装了 project target 时刷新当前 repo；project config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project，tracking 会用 `refreshReach` 记录本次刷新范围和其它已知 project target 是否可能 stale。refresh 失败不会回滚已经写入的 config store，但 `lastRefresh` 会记录失败摘要，`aw status`、`aw status --json.consoleItems` 和 JSON receipt 会把它投影为 recent refresh failed / `artifactRefreshFailed`，并给出重新应用配置的下一步。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
+
+refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 tracking 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 tracked refresh keys。成功后更新对应 artifact 的 `lastRefresh` 和 tracking 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 tracking 诊断；没有可定位 tracked dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
+
+动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.codex/config.toml`、`.codex/agents/*.toml`、tracking 或 ledger。
 
 ## Lifecycle
 
@@ -262,7 +271,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - 不依赖当前 marketplace 中的同名插件；`uninstall` 可能使用安装时快照里的 historical bundle。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
-`aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或修复 bundle。常见状态包括：
+`aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或修复 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。常见底层状态包括：
 
 | 维度 | 状态 |
 |------|------|

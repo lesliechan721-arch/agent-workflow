@@ -270,24 +270,16 @@ describe('static Codex extensions compatibility', () => {
     )).resolves.toBe(0);
     expect(setCapture.readStderr()).toBe('');
 
-    const configureCapture = createCapturedCliIo();
+    const secondSetCapture = createCapturedCliIo();
     await expect(runCli(
-      ['config', 'configure', 'extensions-only', '-s', 'project'],
+      ['config', 'set', 'extensions-only', 'mode', 'guided', '-s', 'project'],
       {
         cwd: repoRoot,
         env,
-        io: configureCapture.io,
-        prompt: {
-          configurePlugin: async () => ({
-            selectedScope: 'project',
-            updates: { mode: 'guided' },
-            updatedKeys: ['mode'],
-            cancelled: false,
-          }),
-        },
+        io: secondSetCapture.io,
       },
     )).resolves.toBe(0);
-    expect(configureCapture.readStderr()).toBe('');
+    expect(secondSetCapture.readStderr()).toBe('');
 
     const unsetCapture = createCapturedCliIo();
     await expect(runCli(

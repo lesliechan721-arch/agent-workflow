@@ -2,13 +2,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { PluginManifestSource } from '../../src/types.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
+  createPluginConfigFormModel,
   patchPluginConfigStore,
   preflightRequiredPluginConfigs,
   readPluginConfigStore,
@@ -16,6 +15,7 @@ import {
   resolveAwProjectRoot,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
+  toCliConfigPromptOptions,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 
@@ -349,25 +349,67 @@ describe('plugin config store', () => {
     ));
   });
 
-  it('deduplicates required config preflight by plugin and schema identity', async () => {
+  it('builds a reusable config form model without exposing sensitive current values', async () => {
     const root = await makeTempRoot('aw-plugin-config-');
     const cwd = path.join(root, 'repo');
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     await fs.ensureDir(cwd);
     const manifest = createManifest();
-    const configurePlugin = vi.fn(async () => ({
-      selectedScope: 'user' as const,
-      updates: { token: 'secret' },
-      updatedKeys: ['token'],
-      cancelled: false,
-    }));
-    const context = createCommandExecutionContext({
+
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'user',
+      cwd,
       env,
-      interactive: true,
-      prompt: {
-        configurePlugin,
+      values: {
+        token: 'super-secret',
+        retries: 2,
       },
     });
+
+    const effective = await resolveEffectivePluginConfig({
+      manifest,
+      cwd,
+      env,
+    });
+    const formModel = createPluginConfigFormModel({
+      manifest,
+      effective,
+      initialScope: 'user',
+    });
+    const promptOptions = toCliConfigPromptOptions(formModel);
+
+    expect(formModel.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'token',
+        sensitive: true,
+        configured: true,
+        currentValue: undefined,
+      }),
+      expect.objectContaining({
+        key: 'retries',
+        configured: true,
+        currentValue: 2,
+      }),
+    ]));
+    expect(promptOptions.currentValues).toEqual({
+      retries: 2,
+      mode: 'safe',
+      enabled: true,
+    });
+    expect(promptOptions.configuredKeys).toEqual(expect.arrayContaining(['token', 'retries', 'mode', 'enabled']));
+    expect(promptOptions.currentValues?.token).toBeUndefined();
+  });
+
+  it('deduplicates required config preflight by plugin and schema identity without prompting or writing config', async () => {
+    const root = await makeTempRoot('aw-plugin-config-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const manifest = createManifest();
+    const context = {
+      env,
+    };
 
     await expect(preflightRequiredPluginConfigs({
       targets: [
@@ -378,17 +420,10 @@ describe('plugin config store', () => {
       defaultScope: 'user',
       context,
       interactive: true,
-    })).resolves.toMatchObject({
-      checked: 1,
-      prompted: 1,
-      written: [
-        {
-          pluginName: manifest.name,
-          scope: 'user',
-          updatedKeys: ['token'],
-        },
-      ],
-    });
-    expect(configurePlugin).toHaveBeenCalledTimes(1);
+    })).rejects.toThrow(
+      'configurable-plugin requires valid AW config before install/upgrade: token. ' +
+        'Run `aw config set configurable-plugin token <value> -s user`, or open `aw` to complete setup.',
+    );
+    await expect(fs.pathExists(path.join(env.AW_HOME!, 'plugin-config', manifest.name, 'config.json'))).resolves.toBe(false);
   });
 });
