@@ -6,7 +6,7 @@
 
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
 - **`smoke/`** — 专门验证真实 `pnpm build` 和 `pnpm pack:cli` 产物，不进入常规 `pnpm test`
-- **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 staging 临时 bundle，但不是 `aw` 客户端子命令
+- **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
 - **`fixtures/repo-template/`** — 含 `.codex/`、`.claude/` 等完整项目结构示例
 - **`fixtures/codex-config/`** — Codex 配置示例
 - **`fixtures/codex-project-repo-managed/`** — Codex project scope repo-managed fixture 矩阵，覆盖 skills-only、mcp-only、slashCommands-only、skills+MCP、apps 拒绝和 quoted-key MCP
@@ -77,9 +77,9 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 `scripts.node` 相关测试要保持分层。unit/integration 默认使用 build-free synthetic embedded root，不运行 package manager、不执行 manifest build、不扫描真实 production dependency closure。真实 `pnpm install --frozen-lockfile --ignore-scripts`、manifest build、production `node_modules` 复制、runtime dependency install script 拒绝和 bundle layout 验收进入 smoke 或 opt-in runner，例如 `pnpm test:smoke:plugin-scripts`。
 
-`pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。`--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
+`pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 会先准备 staging source，再从 build 后 staging manifest 解析最终支持平台：`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能在最终 `marketplace.policy.products` 允许的平台内缩小目标，不能把单平台插件强行测到不支持的平台；`both` 只适用于同时支持 Claude 和 Codex 的插件。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。双平台插件的 `--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
 
-公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法示例生成 Claude `commands/*.md` 与 Codex manual-only skill；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败。
+公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法双平台示例生成 Claude `commands/*.md` 与 Codex manual-only skill；单平台插件只生成支持平台的命令产物；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、支持 Codex 时 Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败，Claude-only 插件不受 Codex forbidden syntax 限制。
 
 `upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。10 个稳定 code（`scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`trackingIntegrityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
 

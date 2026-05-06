@@ -730,6 +730,53 @@ describe('adapter status helpers', () => {
         ],
       },
     });
+    const claudeOnlyDynamicArtifactsPlugin = makePluginMeta({
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+          products: ['CLAUDE'],
+        },
+      },
+      skills: './skills',
+      config: {
+        schema: {
+          enableLightweightInstruction: {
+            type: 'boolean',
+            default: true,
+          },
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+          modelReasoningEffort: {
+            type: 'enum',
+            values: ['low', 'medium', 'high', 'xhigh'],
+            default: 'medium',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.developerInstructionsBlock',
+            projectManagedKind: 'instruction',
+            states: ['present', 'disabled'],
+            refreshKeys: [
+              'enableLightweightInstruction',
+              'explorerModel',
+              'modelReasoningEffort',
+            ],
+            requiresCodexProjectConfig: true,
+          },
+        ],
+      },
+    });
     const hybridPlugin = makePluginMeta({
       skills: './skills',
       extensions: {
@@ -784,6 +831,10 @@ describe('adapter status helpers', () => {
       'agent',
     ]);
     expect(pluginDeclaresCodexProjectConfigBackedArtifacts(dynamicArtifactsPlugin)).toBe(true);
+    expect(requiresCodexNativePlugin(claudeOnlyDynamicArtifactsPlugin, 'user')).toBe(false);
+    expect(hasCodexProjectManagedArtifacts(claudeOnlyDynamicArtifactsPlugin)).toBe(false);
+    expect(getCodexProjectManagedKinds(claudeOnlyDynamicArtifactsPlugin)).toEqual([]);
+    expect(pluginDeclaresCodexProjectConfigBackedArtifacts(claudeOnlyDynamicArtifactsPlugin)).toBe(false);
     expect(requiresNativePlugin(nativeHookOnlyPlugin)).toBe(false);
     expect(hasRepoManagedArtifacts(nativeHookOnlyPlugin)).toBe(true);
     expect(requiresNativePlugin(hybridPlugin)).toBe(true);

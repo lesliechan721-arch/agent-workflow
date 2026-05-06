@@ -3,8 +3,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 
-import type { PlatformName, PluginManifestSource, TemplateVarByPlatform } from '../types.js';
+import type {
+  PlatformName,
+  PluginManifestSource,
+  SupportedPlatformSet,
+  TemplateVarByPlatform,
+} from '../types.js';
 import { applyFileRules } from './file-rules.js';
+import { resolveSupportedPlatforms } from './platform-support.js';
 import { renderTemplate } from './template-engine.js';
 
 const SLASH_COMMAND_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -38,7 +44,7 @@ export interface ResolvedSlashCommandAsset {
 export interface ResolvedSlashCommand {
   name: string;
   sourceRelativePath: string;
-  claude: {
+  claude?: {
     allowedTools?: string | string[];
     argumentHint?: string;
     body: string;
@@ -46,7 +52,7 @@ export interface ResolvedSlashCommand {
     model?: string;
     shell?: string;
   };
-  codex: {
+  codex?: {
     assets: ResolvedSlashCommandAsset[];
     body: string;
     description: string;
@@ -64,6 +70,10 @@ export interface ResolvedSlashCommand {
 export interface ResolvedSlashCommands {
   commands: ResolvedSlashCommand[];
   rootRelativePath: string;
+}
+
+export interface ResolveSlashCommandsOptions {
+  targetPlatforms: SupportedPlatformSet;
 }
 
 function ensureTrailingNewline(value: string): string {
@@ -357,6 +367,7 @@ function parseRenderedSlashCommand(
   commandName: string,
   commandPath: string,
   content: string,
+  platform: PlatformName,
 ): ResolvedSlashCommand {
   const { body, frontmatter } = parseMarkdownFrontmatter(content, commandBaseField(commandPath));
 
@@ -379,57 +390,32 @@ function parseRenderedSlashCommand(
     `${commandBaseField(commandPath)} frontmatter.description`,
   );
 
-  const claudeBlock = frontmatter.claude === undefined
-    ? {}
-    : ensureObject(frontmatter.claude, `${commandBaseField(commandPath)} frontmatter.claude`);
-  ensureAllowedKeys(
-    claudeBlock,
-    `${commandBaseField(commandPath)} frontmatter.claude`,
-    ['description', 'allowed-tools', 'model', 'argument-hint', 'shell'],
-  );
-
-  const shell = ensureOptionalString(
-    claudeBlock.shell,
-    `${commandBaseField(commandPath)} frontmatter.claude.shell`,
-  );
-  if (shell !== undefined && !CLAUDE_SHELLS.has(shell.toLowerCase())) {
-    throw new Error(
-      `Invalid ${commandBaseField(commandPath)} frontmatter.claude.shell: expected "bash" or "powershell".`,
-    );
-  }
-
-  const codexBlock = frontmatter.codex === undefined
-    ? {}
-    : ensureObject(frontmatter.codex, `${commandBaseField(commandPath)} frontmatter.codex`);
-  if ('policy' in codexBlock) {
-    throw new Error(
-      `Invalid ${commandBaseField(commandPath)} frontmatter.codex.policy: generated slashCommands skills are always manual-only.`,
-    );
-  }
-  ensureAllowedKeys(
-    codexBlock,
-    `${commandBaseField(commandPath)} frontmatter.codex`,
-    CODEX_ALLOWED_FIELDS,
-  );
-
-  const codexDescription =
-    ensureOptionalString(
-      codexBlock.description,
-      `${commandBaseField(commandPath)} frontmatter.codex.description`,
-    ) ?? sharedDescription;
-  const codexInterface = normalizeCodexInterfaceBlock(
-    pluginRoot,
-    slashCommandsRoot,
-    commandName,
-    commandPath,
-    codexDescription,
-    codexBlock.interface,
-  );
-
-  return {
+  const command: ResolvedSlashCommand = {
     name: commandName,
     sourceRelativePath: commandPath,
-    claude: {
+  };
+
+  if (platform === 'claude') {
+    const claudeBlock = frontmatter.claude === undefined
+      ? {}
+      : ensureObject(frontmatter.claude, `${commandBaseField(commandPath)} frontmatter.claude`);
+    ensureAllowedKeys(
+      claudeBlock,
+      `${commandBaseField(commandPath)} frontmatter.claude`,
+      ['description', 'allowed-tools', 'model', 'argument-hint', 'shell'],
+    );
+
+    const shell = ensureOptionalString(
+      claudeBlock.shell,
+      `${commandBaseField(commandPath)} frontmatter.claude.shell`,
+    );
+    if (shell !== undefined && !CLAUDE_SHELLS.has(shell.toLowerCase())) {
+      throw new Error(
+        `Invalid ${commandBaseField(commandPath)} frontmatter.claude.shell: expected "bash" or "powershell".`,
+      );
+    }
+
+    command.claude = {
       allowedTools: ensureAllowedTools(
         claudeBlock['allowed-tools'],
         `${commandBaseField(commandPath)} frontmatter.claude.allowed-tools`,
@@ -449,8 +435,39 @@ function parseRenderedSlashCommand(
         `${commandBaseField(commandPath)} frontmatter.claude.model`,
       ),
       shell,
-    },
-    codex: {
+    };
+  }
+
+  if (platform === 'codex') {
+    const codexBlock = frontmatter.codex === undefined
+      ? {}
+      : ensureObject(frontmatter.codex, `${commandBaseField(commandPath)} frontmatter.codex`);
+    if ('policy' in codexBlock) {
+      throw new Error(
+        `Invalid ${commandBaseField(commandPath)} frontmatter.codex.policy: generated slashCommands skills are always manual-only.`,
+      );
+    }
+    ensureAllowedKeys(
+      codexBlock,
+      `${commandBaseField(commandPath)} frontmatter.codex`,
+      CODEX_ALLOWED_FIELDS,
+    );
+
+    const codexDescription =
+      ensureOptionalString(
+        codexBlock.description,
+        `${commandBaseField(commandPath)} frontmatter.codex.description`,
+      ) ?? sharedDescription;
+    const codexInterface = normalizeCodexInterfaceBlock(
+      pluginRoot,
+      slashCommandsRoot,
+      commandName,
+      commandPath,
+      codexDescription,
+      codexBlock.interface,
+    );
+
+    command.codex = {
       assets: codexInterface.assets,
       body,
       description: codexDescription,
@@ -462,8 +479,10 @@ function parseRenderedSlashCommand(
         iconSmall: codexInterface.iconSmall,
         shortDescription: codexInterface.shortDescription,
       },
-    },
-  };
+    };
+  }
+
+  return command;
 }
 
 function listExplicitSkillNames(
@@ -484,11 +503,13 @@ function listExplicitSkillNames(
 export async function resolveSlashCommands(
   pluginRoot: string,
   manifest: PluginManifestSource,
+  options?: ResolveSlashCommandsOptions,
 ): Promise<ResolvedSlashCommands | undefined> {
   const slashCommandsRoot = manifest.slashCommands;
   if (!slashCommandsRoot) {
     return undefined;
   }
+  const targetPlatforms = options?.targetPlatforms ?? resolveSupportedPlatforms(manifest);
 
   const absoluteRoot = path.join(pluginRoot, stripDotSlash(slashCommandsRoot));
   const rootStats = await fs.stat(absoluteRoot).catch(() => null);
@@ -556,52 +577,52 @@ export async function resolveSlashCommands(
     const sourceRelativePath = normalizeRelativePath(
       path.join(stripDotSlash(slashCommandsRoot), entry.name),
     );
-    const claudeRendered = renderSlashCommandSource(
-      manifest,
-      sourceRelativePath,
-      rawContent,
-      'claude',
-    );
-    const codexRendered = renderSlashCommandSource(
-      manifest,
-      sourceRelativePath,
-      rawContent,
-      'codex',
-    );
-
-    const forbiddenSyntax = detectCodexForbiddenSyntax(codexRendered);
-    if (forbiddenSyntax) {
-      throw new Error(
-        `Invalid ${commandBaseField(sourceRelativePath)}: Codex render still contains Claude-only syntax "${forbiddenSyntax}".`,
-      );
-    }
-
-    const claudeResolved = parseRenderedSlashCommand(
-      pluginRoot,
-      slashCommandsRoot,
-      commandName,
-      sourceRelativePath,
-      claudeRendered,
-    );
-    const codexResolved = parseRenderedSlashCommand(
-      pluginRoot,
-      slashCommandsRoot,
-      commandName,
-      sourceRelativePath,
-      codexRendered,
-    );
-
-    commands.push({
+    const command: ResolvedSlashCommand = {
       name: commandName,
       sourceRelativePath,
-      claude: claudeResolved.claude,
-      codex: {
-        assets: codexResolved.codex.assets,
-        body: codexResolved.codex.body,
-        description: codexResolved.codex.description,
-        interface: codexResolved.codex.interface,
-      },
-    });
+    };
+
+    if (targetPlatforms.has('claude')) {
+      const claudeRendered = renderSlashCommandSource(
+        manifest,
+        sourceRelativePath,
+        rawContent,
+        'claude',
+      );
+      command.claude = parseRenderedSlashCommand(
+        pluginRoot,
+        slashCommandsRoot,
+        commandName,
+        sourceRelativePath,
+        claudeRendered,
+        'claude',
+      ).claude;
+    }
+
+    if (targetPlatforms.has('codex')) {
+      const codexRendered = renderSlashCommandSource(
+        manifest,
+        sourceRelativePath,
+        rawContent,
+        'codex',
+      );
+      const forbiddenSyntax = detectCodexForbiddenSyntax(codexRendered);
+      if (forbiddenSyntax) {
+        throw new Error(
+          `Invalid ${commandBaseField(sourceRelativePath)}: Codex render still contains Claude-only syntax "${forbiddenSyntax}".`,
+        );
+      }
+      command.codex = parseRenderedSlashCommand(
+        pluginRoot,
+        slashCommandsRoot,
+        commandName,
+        sourceRelativePath,
+        codexRendered,
+        'codex',
+      ).codex;
+    }
+
+    commands.push(command);
   }
 
   if (commands.length === 0) {
@@ -617,6 +638,10 @@ export async function resolveSlashCommands(
 }
 
 export function renderClaudeSlashCommand(command: ResolvedSlashCommand): string {
+  if (!command.claude) {
+    throw new Error(`Missing Claude slashCommand payload for "${command.name}".`);
+  }
+
   const frontmatter: Record<string, string | string[] | boolean> = {
     description: command.claude.description,
     'disable-model-invocation': true,
@@ -640,10 +665,18 @@ export function renderClaudeSlashCommand(command: ResolvedSlashCommand): string 
 }
 
 export function renderCodexSlashCommandSkillMarkdown(command: ResolvedSlashCommand): string {
+  if (!command.codex) {
+    throw new Error(`Missing Codex slashCommand payload for "${command.name}".`);
+  }
+
   return ensureTrailingNewline(command.codex.body);
 }
 
 export function renderCodexSlashCommandOpenAiYaml(command: ResolvedSlashCommand): string {
+  if (!command.codex) {
+    throw new Error(`Missing Codex slashCommand payload for "${command.name}".`);
+  }
+
   const interfaceBlock: Record<string, string> = {
     display_name: command.codex.interface.displayName,
     short_description: command.codex.interface.shortDescription,

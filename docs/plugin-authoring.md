@@ -11,6 +11,7 @@
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 ledger snapshot 都以它作为 renderer 执行前的真值
+- `marketplace.policy.products` 是插件最终支持平台的来源；它不仅控制安装和升级门禁，也会参与 build 裁剪、platform manifest/runtime 生成、平台 marketplace 过滤和 `pnpm plugin:test` 平台选择
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -18,12 +19,12 @@
 
 ## Bundle Contract
 
-`pnpm build` 会把每个源码插件打包到 `packages/cli/plugins-dist/plugins/<name>/`，并生成两份 platform manifest：
+`pnpm build` 会把每个源码插件打包到 `packages/cli/plugins-dist/plugins/<name>/`。所有插件都会保留 AW 源码 manifest 副本 `.agents-plugin/plugin.json`；平台 manifest 和 runtime 目录只在插件最终支持的平台上生成：
 
-- `.claude-plugin/plugin.json`：Claude Code 原生 plugin manifest，可包含 skills、MCP、generated commands、output styles、hooks、agents 等平台能力
-- `.codex-plugin/plugin.json`：Codex 原生 plugin manifest，可包含 skills、MCP、apps 等平台能力
+- 支持 Claude 时生成 `.claude-plugin/plugin.json` 和 `claude/**`，其中可包含 skills、MCP、generated commands、output styles、hooks、agents 等平台能力。
+- 支持 Codex 时生成 `.codex-plugin/plugin.json` 和 `codex/**`，其中可包含 skills、MCP、apps 等平台能力。
 
-根级 marketplace 也会生成两份镜像：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。CLI 读取时会校验两份 marketplace 内容一致；本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
+根级 marketplace 仍有两份：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两者共享 owner/interface 等根级元数据，但 entries 会按插件最终支持平台过滤；AW current catalog 仍扫描 `plugins/<name>/.agents-plugin/plugin.json`，因此不能把某个平台 marketplace 当作全部插件清单。本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
 
 AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
 
@@ -31,7 +32,7 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
 
 ## Public Slash Commands
 
-`slashCommands` 用一份 Markdown 源码同时生成 Claude 原生 slash command 和 Codex manual-only skill。源码目录通常写成 `"slashCommands": "./slash-commands"`。
+`slashCommands` 用一份 Markdown 源码生成目标平台的手动命令入口。源码目录通常写成 `"slashCommands": "./slash-commands"`。
 
 ```text
 plugins/<name>/
@@ -75,9 +76,9 @@ codex:
 - Codex 图标资源只能写 `./assets/...`，源文件必须位于 `slash-commands/assets/`，不能用绝对路径、`../`、反斜杠或其它目录。build 只复制被 frontmatter 引用的资源到对应 generated skill 的 `assets/`。
 - Codex 生成 skill 的 `policy.allow_implicit_invocation` 固定为 `false`。作者不能在 `codex.policy` 覆盖它；这类 skill 只能由用户显式 `$command-name` 或结构化 skill mention 调用。
 - 复杂、可复用的流程仍应放在源码 `skills/` 中；公共 `slashCommands` 适合作为手动快捷入口，不应替代实际 skill 工作流。
-- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
+- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法。该校验只在插件支持 Codex、需要生成 Codex manual-only skill 时执行；Claude-only 插件不会因为 Codex forbidden syntax 被拦截。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
 
-构建结果中，Claude bundle 会得到 generated `claude/commands/<name>.md`，Codex bundle 会得到 generated `codex/skills/<name>/SKILL.md` 和 `agents/openai.yaml`。原始 `slash-commands/` 不作为 runtime 目录发布。
+构建结果只包含支持平台的命令产物：支持 Claude 时生成 `claude/commands/<name>.md`；支持 Codex 时生成 `codex/skills/<name>/SKILL.md` 和 `agents/openai.yaml`。原始 `slash-commands/` 不作为 runtime 目录发布。
 
 完整字段和生成规则见 `.agents/skills/create-agent-workflows-plugin/references/slash-commands.md`。
 
@@ -127,6 +128,8 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 ## Dynamic Artifacts
 
 动态 artifact 适合“内容由配置决定，但写盘仍必须由 AW 管理”的场景。插件用 manifest 的 `artifacts.targets` 声明安装前能力真值，再用 `scripts.artifacts.render` 返回当前 scope 的 `ArtifactPlan`。安装、升级、交互式候选、project write safety preflight、status current catalog 和 ledger `capabilitySnapshot.projectManagedKinds` 都读取 `artifacts.targets`，不能等 renderer 执行后才推断插件能力。
+
+首版动态 artifact target 只支持 Codex。声明 `artifacts.targets` 的插件必须支持 Codex，可以是 Codex-only，也可以是双平台插件中的 Codex target；Claude-only 插件声明动态 target 会在 manifest/build 校验时失败。
 
 ```json
 {
@@ -178,17 +181,21 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 ```bash
 pnpm plugin:test <plugin>
-pnpm plugin:test <plugin> --platform both --scope project
+pnpm plugin:test <plugin> --platform codex --scope project
+pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:test --all
 ```
 
-它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，再在隔离 `AW_HOME`、受管临时 project root 和平台 home/temp 环境中运行 `scripts.tests.node` 匹配到的 Node 测试。测试进程的 `cwd` 是临时 project root；`AW_PLUGIN_CONTEXT.sourceRoot` 指向原始插件源码根，适合测试需要读取源码 fixture 的场景，但运行时 import 仍应命中临时 bundle。没有匹配测试时是 skipped/no-op，退出码为 0；`--platform both` 会为 Codex 和 Claude 分别复制独立可写 bundle。
+它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，并从 build 后 staging manifest 解析最终支持平台。`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能缩小到最终 `products` 允许的平台，不能越过 build 裁剪。`both` 只适用于同时支持 Claude 和 Codex 的插件。
+
+测试会在隔离 `AW_HOME`、受管临时 project root 和平台 home/temp 环境中运行 `scripts.tests.node` 匹配到的 Node 测试。测试进程的 `cwd` 是临时 project root；`AW_PLUGIN_CONTEXT.sourceRoot` 指向原始插件源码根，适合测试需要读取源码 fixture 的场景，但运行时 import 仍应命中临时 bundle。没有匹配测试时是 skipped/no-op，退出码为 0；双平台插件使用 `--platform both` 时，Codex 和 Claude 两轮会分别复制独立可写 bundle。
 
 ## Hook Contract
 
 - `extensions.hooks` 只放跨平台公共事件：`before_tool`、`after_tool`、`session_start`。
 - 公共 `session_start` 只表示 `startup / resume / clear`。Claude compact 场景请写 `extensions.nativeHooks.claude[]`，事件为 `SessionStart`，matcher 为 `compact`。
-- `extensions.nativeHooks.<agent>` 用平台原生事件名，例如 Claude `Notification`、`SessionEnd`、`PreCompact`，Codex `UserPromptSubmit`、`Stop`。完整 allowlist 以 `packages/cli/src/utils/hooks-contract.ts` 为准。
+- `extensions.nativeHooks.<platform>` 用平台原生事件名，例如 Claude `Notification`、`SessionEnd`、`PreCompact`，Codex `UserPromptSubmit`、`Stop`。完整 allowlist 以 `packages/cli/src/utils/hooks-contract.ts` 为准。
+- 不支持某个平台时，不能声明该平台的 `extensions.nativeHooks.<platform>`；公共 extension 条目里，unsupported platform 的非空 `agentOverrides.<platform>` 也会 fail fast。`agentOverrides.<unsupportedPlatform> = null` 合法，表示明确排除该平台。
 - matcherless 原生事件不要写 `matcher`；`agentOverrides` 只用于公共 extension 条目，不用于 `nativeHooks`。
 - 公共 `session_stop` 已移除；Claude `Stop` / `SessionEnd`、Codex `Stop` 都应写到对应平台的 `nativeHooks`。
 
@@ -221,7 +228,7 @@ pnpm plugin:test --all
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
 - **Codex user scope**：使用 native plugin / marketplace 平面。AW 先注册 `~/.codex/config.toml [marketplaces.aw]`，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache；安装后必须同时看到 enabled config 与 active cache。作者不能依赖“只写 config”的旧行为。
 - **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 native marketplace add / app-server RPC；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.codex/.agent-workflows-manifest.json`。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可工作并且不能产生用户级 native 副作用。
-- **Codex project installability**：纯 native-only 插件不能以 project scope 安装；包含 `apps` 的插件在 Codex project scope 会 fail fast。面向项目安装的插件至少要提供 repo-managed surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
+- **Apps 与 Codex project installability**：`apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时失败。包含 `apps` 的 Codex 插件在 project scope 会 fail fast；纯 native-only 插件也不能以 project scope 安装。面向项目安装的插件至少要提供 repo-managed surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
 - **共享 runtime**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 可能因不同 scope 的 `--skill-trigger` 偏好出现 sibling drift；Codex project scope 不参与共享 runtime 选举，只改当前仓库 repo skill。
 - **Tracking identity**：tracking manifest 中的 `GeneratedArtifact.path` 必须是绝对路径；`kind: "skill"` 和 `kind: "mcpServer"` 必须写 `artifactKey`。MCP `artifactKey` 使用 rendered `.mcp.json` 的原始 server key，包含点号、空格或 Unicode 时仍按 TOML quoted key 写入 `.codex/config.toml`，例如 `[mcp_servers."acme.tools v1"]`。

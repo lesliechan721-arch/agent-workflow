@@ -238,6 +238,15 @@ describe('Codex project installability', () => {
     });
     expect(getCodexProjectInstallability(createPlugin({
       skills: './skills',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+          products: ['CODEX', 'CLAUDE'],
+        },
+      },
       config: {
         schema: {
           enableLightweightInstruction: {
@@ -287,6 +296,44 @@ describe('Codex project installability', () => {
     }))).toMatchObject({
       installable: true,
       managedKinds: ['skill', 'instruction', 'agent'],
+    });
+    expect(getCodexProjectInstallability(createPlugin({
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+          products: ['CLAUDE'],
+        },
+      },
+      skills: './skills',
+      config: {
+        schema: {
+          enableLightweightInstruction: {
+            type: 'boolean',
+            default: true,
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'lightweight-instruction',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.developerInstructionsBlock',
+            projectManagedKind: 'instruction',
+            states: ['present', 'disabled'],
+            refreshKeys: ['enableLightweightInstruction'],
+            requiresCodexProjectConfig: true,
+          },
+        ],
+      },
+    }))).toMatchObject({
+      installable: false,
+      managedKinds: [],
+      reason: expect.stringContaining('没有任何 Codex project-managed kind'),
     });
   });
 

@@ -2,7 +2,7 @@
 
 `buildConfig` 是 `.agents-plugin/plugin.json` 中的构建阶段配置，控制 `pnpm build` 时如何生成平台 bundle。包含三个子系统：`templates`（模板渲染）、`fileRules`（平台文件规则）和 `manifestOverrides`（平台 manifest 覆盖）。
 
-`buildConfig` 只描述构建阶段行为，不是给平台私有字段开的通用出口。
+`buildConfig` 只描述构建阶段行为，不是给平台私有字段开的通用出口。`marketplace.policy.products` 会先解析出插件最终支持平台；`fileRules.<platform>` 和 `manifestOverrides.<platform>` 只能用于支持的平台。比如 `products=["CODEX"]` 的插件不能声明 `buildConfig.fileRules.claude` 或 `buildConfig.manifestOverrides.claude`，即使对应内容看起来只是额外文件或空覆盖也会 fail fast。
 
 ## templates
 
@@ -113,6 +113,7 @@ Codex bundle 中渲染为：
 - 未声明 `fileRules` 时，只复制 manifest 声明的能力路径、生成产物和 AW runtime 脚本依赖闭包
 - `exclude` 只影响同一个 `fileRules` 规则组选出的额外文件，不会排除 manifest 已声明的能力路径
 - 原始 `slash-commands/` 源目录只作为生成输入，即使被 `fileRules` 命中也不会原样进入平台 bundle
+- 只能声明插件支持平台的规则；unsupported platform 的 `fileRules` 会在 build/校验阶段失败
 
 ### 典型用法
 
@@ -138,6 +139,8 @@ Codex bundle 中渲染为：
 ## manifestOverrides
 
 向特定平台的 runtime manifest 注入额外字段。这些字段不在源码 manifest 的顶层，而是通过 `manifestOverrides` 间接声明。
+
+只能覆盖插件支持平台的 runtime manifest。Claude-only 能力必须放在 `manifestOverrides.claude`，但插件也必须支持 Claude；Codex-only 或 Claude-only 的不匹配覆盖都会在 build/校验阶段失败。
 
 ### 允许的键
 

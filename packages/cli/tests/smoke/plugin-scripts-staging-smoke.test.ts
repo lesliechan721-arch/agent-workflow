@@ -81,4 +81,42 @@ describe('plugin scripts staging smoke', () => {
       },
     });
   }, 120_000);
+
+  it('fails fast for an explicitly unsupported platform after the staging manifest rewrites products', async () => {
+    const root = repoRoot();
+    const tempRepo = await makeTempRepo();
+    await writeNodeScriptFixture(tempRepo);
+
+    await expect(
+      execFileAsync(
+        'pnpm',
+        ['plugin:test', 'git-commit', '--platform', 'claude', '--test-name', 'staged smoke generated test'],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            AW_PLUGIN_TEST_REPO_ROOT: tempRepo,
+            NO_COLOR: '1',
+          },
+          maxBuffer: 30 * 1024 * 1024,
+          timeout: 120_000,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('Cannot run plugin tests for "git-commit" with --platform=claude'),
+    });
+
+    await expect(
+      fs.readJson(path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      marketplace: {
+        policy: {
+          products: ['CLAUDE'],
+        },
+      },
+    });
+    await expect(
+      fs.pathExists(path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'generated.test.mjs')),
+    ).resolves.toBe(false);
+  }, 120_000);
 });

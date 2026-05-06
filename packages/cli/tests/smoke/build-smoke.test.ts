@@ -56,9 +56,20 @@ describe('build smoke', () => {
         },
       },
     });
-    await expect(
+    const [claudeMarketplace, codexMarketplace] = await Promise.all([
+      fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
-    ).resolves.toMatchObject({
+    ]);
+    expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'git-commit',
+    ]);
+    expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'codex-explore',
+      'git-commit',
+    ]);
+    expect(codexMarketplace).toMatchObject({
+      owner: claudeMarketplace.owner,
+      interface: claudeMarketplace.interface,
       plugins: expect.arrayContaining([
         expect.objectContaining({
           name: 'codex-explore',
@@ -111,11 +122,12 @@ describe('build smoke', () => {
     ].map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
     }));
-
-    const { validateBundleLayout } = (await import(
-      '../../src/utils/bundle-layout.js'
-    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
-    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', '.claude-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', 'claude')),
+    ).resolves.toBe(false);
   });
 
   it('starts the real dist entry and reads the bundled plugins-dist', async () => {
@@ -411,10 +423,21 @@ describe('build smoke', () => {
         },
       },
     });
+    const [claudeMarketplace, codexMarketplace] = await Promise.all([
+      fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
+      fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
+    ]);
+    expect(claudeMarketplace.plugins).toEqual([]);
+    expect(codexMarketplace.plugins).toEqual([
+      expect.objectContaining({
+        name: 'git-commit',
+        description: 'Built smoke description',
+        source: './plugins/git-commit',
+        policy: expect.objectContaining({
+          products: ['CODEX'],
+        }),
+      }),
+    ]);
 
-    const { validateBundleLayout } = (await import(
-      '../../src/utils/bundle-layout.js'
-    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
-    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   }, 120_000);
 });

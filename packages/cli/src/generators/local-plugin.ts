@@ -10,12 +10,14 @@ import { buildGeneratedName } from './shared.js';
 import { applyFileRules } from '../utils/file-rules.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
+  assertManifestPlatformSupport,
   createBundleSourceManifest,
   createPlatformManifestBase,
   normalizePluginRelativePath,
   readPluginManifest,
 } from '../utils/manifest.js';
 import { writeJsonFile } from '../utils/json.js';
+import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import { scanNodeImportContract } from '../utils/plugin-script-contract.js';
@@ -36,6 +38,11 @@ import type {
 const execFileAsync = promisify(execFile);
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const INSTALL_SCRIPT_NAMES = ['preinstall', 'install', 'postinstall', 'prepare'] as const;
+const PLATFORM_ORDER: readonly PlatformName[] = ['claude', 'codex'];
+const PLATFORM_MANIFEST_DIRS: Readonly<Record<PlatformName, string>> = {
+  claude: '.claude-plugin',
+  codex: '.codex-plugin',
+};
 
 export type PluginBundleBuildMode = 'build-free' | 'staging' | 'prepared';
 
@@ -707,9 +714,8 @@ export async function prepareLocalPluginBundleSource(
 
 export interface LocalPluginBundleResult {
   outputRoot: string;
-  claudeManifest: PlatformPluginManifest;
-  codexManifest: PlatformPluginManifest;
   plugin: PluginMeta;
+  platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>>;
 }
 
 export async function bundleLocalPlugin(
@@ -723,88 +729,101 @@ export async function bundleLocalPlugin(
   };
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
   plugin = buildPlugin.plugin;
+  assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
 
   await fs.remove(outputRoot);
   await fs.ensureDir(outputRoot);
 
   try {
-    const claudeFiles = new Set<string>();
-    const codexFiles = new Set<string>();
+    const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
+    const platformFiles: Partial<Record<PlatformName, Set<string>>> = {};
+    const platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>> = {};
     const buildConfig = plugin.manifest.buildConfig;
     const templatePatterns = buildConfig?.templates?.include ?? [];
     const templateVars = buildConfig?.templates?.vars ?? {};
-    const resolvedSlashCommands = await resolveSlashCommands(plugin.rootDir, plugin.manifest);
+    const resolvedSlashCommands = await resolveSlashCommands(plugin.rootDir, plugin.manifest, {
+      targetPlatforms: supportedPlatforms,
+    });
 
-    const claudeManifest = createPlatformManifestBase(plugin);
-    const codexManifest = createPlatformManifestBase(plugin);
-
-    claudeManifest.skills = await addDeclaredPathFiles(
-      plugin,
-      'claude',
-      plugin.manifest.skills,
-      claudeFiles,
-    );
-    codexManifest.skills = await addDeclaredPathFiles(
-      plugin,
-      'codex',
-      plugin.manifest.skills,
-      codexFiles,
-    );
-
-    claudeManifest.mcpServers = await addDeclaredPathFiles(
-      plugin,
-      'claude',
-      plugin.manifest.mcpServers,
-      claudeFiles,
-    );
-    codexManifest.mcpServers = await addDeclaredPathFiles(
-      plugin,
-      'codex',
-      plugin.manifest.mcpServers,
-      codexFiles,
-    );
-    codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
-
-    const claudeOverrides = buildConfig?.manifestOverrides?.claude;
-    claudeManifest.outputStyles = await addDeclaredPathFiles(
-      plugin,
-      'claude',
-      claudeOverrides?.outputStyles,
-      claudeFiles,
-    );
-    claudeManifest.lspServers = await addDeclaredLspServerFiles(plugin, claudeOverrides?.lspServers, claudeFiles);
-    claudeManifest.userConfig = claudeOverrides?.userConfig;
-    claudeManifest.channels = claudeOverrides?.channels;
-
-    const hooksArtifact = renderResolvedHooksArtifact(
-      resolvePlatformHookDefinitions(plugin.manifest, 'claude'),
-      'claude',
-    );
-    if (hooksArtifact) {
-      const hooksPath = path.join(outputRoot, 'claude', 'hooks', 'hooks.json');
-      await writeJsonFile(hooksPath, hooksArtifact.content);
-      claudeManifest.hooks = './claude/hooks/hooks.json';
+    for (const platform of PLATFORM_ORDER) {
+      if (!supportedPlatforms.has(platform)) {
+        continue;
+      }
+      platformFiles[platform] = new Set<string>();
+      platformManifests[platform] = createPlatformManifestBase(plugin);
     }
 
-    const claudeAgents = resolvePlatformEntries<AgentDefinition>(
-      plugin.manifest.extensions?.agents,
-      'claude',
-    );
-    if (claudeAgents.length > 0) {
-      claudeManifest.agents = [];
-      for (const agent of claudeAgents) {
-        const generatedName = buildGeneratedName(plugin.manifest.name, agent.name);
-        const relativePath = `./claude/agents/${generatedName}.md`;
-        claudeManifest.agents.push(relativePath);
-        await writeTextFile(
-          path.join(outputRoot, stripDotSlash(relativePath)),
-          renderClaudeAgentContent(agent),
-        );
+    for (const platform of PLATFORM_ORDER) {
+      const manifest = platformManifests[platform];
+      const files = platformFiles[platform];
+      if (!manifest || !files) {
+        continue;
+      }
+
+      manifest.skills = await addDeclaredPathFiles(
+        plugin,
+        platform,
+        plugin.manifest.skills,
+        files,
+      );
+      manifest.mcpServers = await addDeclaredPathFiles(
+        plugin,
+        platform,
+        plugin.manifest.mcpServers,
+        files,
+      );
+    }
+
+    const codexManifest = platformManifests.codex;
+    const codexFiles = platformFiles.codex;
+    if (codexManifest && codexFiles) {
+      codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
+    }
+
+    const claudeManifest = platformManifests.claude;
+    const claudeFiles = platformFiles.claude;
+    if (claudeManifest && claudeFiles) {
+      const claudeOverrides = buildConfig?.manifestOverrides?.claude;
+      claudeManifest.outputStyles = await addDeclaredPathFiles(
+        plugin,
+        'claude',
+        claudeOverrides?.outputStyles,
+        claudeFiles,
+      );
+      claudeManifest.lspServers = await addDeclaredLspServerFiles(plugin, claudeOverrides?.lspServers, claudeFiles);
+      claudeManifest.userConfig = claudeOverrides?.userConfig;
+      claudeManifest.channels = claudeOverrides?.channels;
+
+      const hooksArtifact = renderResolvedHooksArtifact(
+        resolvePlatformHookDefinitions(plugin.manifest, 'claude'),
+        'claude',
+      );
+      if (hooksArtifact) {
+        const hooksPath = path.join(outputRoot, 'claude', 'hooks', 'hooks.json');
+        await writeJsonFile(hooksPath, hooksArtifact.content);
+        claudeManifest.hooks = './claude/hooks/hooks.json';
+      }
+
+      const claudeAgents = resolvePlatformEntries<AgentDefinition>(
+        plugin.manifest.extensions?.agents,
+        'claude',
+      );
+      if (claudeAgents.length > 0) {
+        claudeManifest.agents = [];
+        for (const agent of claudeAgents) {
+          const generatedName = buildGeneratedName(plugin.manifest.name, agent.name);
+          const relativePath = `./claude/agents/${generatedName}.md`;
+          claudeManifest.agents.push(relativePath);
+          await writeTextFile(
+            path.join(outputRoot, stripDotSlash(relativePath)),
+            renderClaudeAgentContent(agent),
+          );
+        }
       }
     }
 
     const sourceFiles = await listFilesRecursively(plugin.rootDir);
-    if (buildConfig?.fileRules?.claude) {
+    if (claudeFiles && buildConfig?.fileRules?.claude) {
       for (const filePath of applyFileRules(
         sourceFiles,
         buildConfig.fileRules.claude.include,
@@ -825,7 +844,7 @@ export async function bundleLocalPlugin(
         claudeFiles.add(filePath);
       }
     }
-    if (buildConfig?.fileRules?.codex) {
+    if (codexFiles && buildConfig?.fileRules?.codex) {
       for (const filePath of applyFileRules(
         sourceFiles,
         buildConfig.fileRules.codex.include,
@@ -847,54 +866,57 @@ export async function bundleLocalPlugin(
       }
     }
 
-    for (const filePath of claudeFiles) {
-      await copyFileWithTemplateSupport(
-        plugin.rootDir,
-        outputRoot,
-        filePath,
-        'claude',
-        templatePatterns,
-        templateVars,
-      );
-    }
-
-    for (const filePath of codexFiles) {
-      await copyFileWithTemplateSupport(
-        plugin.rootDir,
-        outputRoot,
-        filePath,
-        'codex',
-        templatePatterns,
-        templateVars,
-      );
+    for (const platform of PLATFORM_ORDER) {
+      const files = platformFiles[platform];
+      if (!files) {
+        continue;
+      }
+      for (const filePath of files) {
+        await copyFileWithTemplateSupport(
+          plugin.rootDir,
+          outputRoot,
+          filePath,
+          platform,
+          templatePatterns,
+          templateVars,
+        );
+      }
     }
 
     if (resolvedSlashCommands) {
-      claudeManifest.commands = './claude/commands';
-      codexManifest.skills ??= './codex/skills';
+      if (claudeManifest) {
+        claudeManifest.commands = './claude/commands';
+      }
+      if (codexManifest) {
+        codexManifest.skills ??= './codex/skills';
+      }
 
       for (const command of resolvedSlashCommands.commands) {
-        await writeTextFile(
-          path.join(outputRoot, 'claude', 'commands', `${command.name}.md`),
-          renderClaudeSlashCommand(command),
-        );
-        await writeTextFile(
-          path.join(outputRoot, 'codex', 'skills', command.name, 'SKILL.md'),
-          renderCodexSlashCommandSkillMarkdown(command),
-        );
-        await writeTextFile(
-          path.join(outputRoot, 'codex', 'skills', command.name, 'agents', 'openai.yaml'),
-          renderCodexSlashCommandOpenAiYaml(command),
-        );
-
-        for (const asset of command.codex.assets) {
-          await copySlashCommandAsset(
-            plugin.rootDir,
-            outputRoot,
-            command.name,
-            asset.sourceRelativePath,
-            asset.generatedRelativePath,
+        if (claudeManifest && command.claude) {
+          await writeTextFile(
+            path.join(outputRoot, 'claude', 'commands', `${command.name}.md`),
+            renderClaudeSlashCommand(command),
           );
+        }
+        if (codexManifest && command.codex) {
+          await writeTextFile(
+            path.join(outputRoot, 'codex', 'skills', command.name, 'SKILL.md'),
+            renderCodexSlashCommandSkillMarkdown(command),
+          );
+          await writeTextFile(
+            path.join(outputRoot, 'codex', 'skills', command.name, 'agents', 'openai.yaml'),
+            renderCodexSlashCommandOpenAiYaml(command),
+          );
+
+          for (const asset of command.codex.assets) {
+            await copySlashCommandAsset(
+              plugin.rootDir,
+              outputRoot,
+              command.name,
+              asset.sourceRelativePath,
+              asset.generatedRelativePath,
+            );
+          }
         }
       }
     }
@@ -908,14 +930,21 @@ export async function bundleLocalPlugin(
       path.join(outputRoot, '.agents-plugin', 'plugin.json'),
       createBundleSourceManifest(plugin),
     );
-    await writeJsonFile(path.join(outputRoot, '.claude-plugin', 'plugin.json'), claudeManifest);
-    await writeJsonFile(path.join(outputRoot, '.codex-plugin', 'plugin.json'), codexManifest);
+    for (const platform of PLATFORM_ORDER) {
+      const manifest = platformManifests[platform];
+      if (!manifest) {
+        continue;
+      }
+      await writeJsonFile(
+        path.join(outputRoot, PLATFORM_MANIFEST_DIRS[platform], 'plugin.json'),
+        manifest,
+      );
+    }
 
     return {
       outputRoot,
-      claudeManifest,
-      codexManifest,
       plugin,
+      platformManifests,
     };
   } finally {
     await buildPlugin.cleanup();

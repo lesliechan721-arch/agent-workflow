@@ -73,6 +73,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
   const manifest = await fs.readJson(manifestPath);
 
   manifest.marketplace.policy.products = ['CLAUDE'];
+  delete manifest.apps;
   manifest.scripts = {
     lifecycle: {
       install: {
@@ -95,6 +96,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
   };
 
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(pluginRoot, '.app.json'));
   await fs.ensureDir(scriptsRoot);
   await fs.writeJson(
     path.join(scriptsRoot, 'package.json'),

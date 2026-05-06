@@ -416,10 +416,62 @@ function validateManifestLightweight(manifest) {
   }
 
   validateExtensionsLightweight(manifest.extensions);
+  validatePlatformFieldSupport(manifest);
 }
 
 function normalizeManifestProductToken(value) {
   return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function resolveSupportedPlatforms(manifest) {
+  const products = manifest.marketplace?.policy?.products;
+  if (!Array.isArray(products) || products.length === 0) {
+    return new Set(['claude', 'codex']);
+  }
+
+  const supported = new Set();
+  for (const product of products) {
+    const normalized = normalizeManifestProductToken(product);
+    if (normalized === 'CLAUDE') supported.add('claude');
+    if (normalized === 'CODEX') supported.add('codex');
+  }
+
+  return supported;
+}
+
+function supportsManifestPlatform(manifest, platform) {
+  return resolveSupportedPlatforms(manifest).has(platform);
+}
+
+function formatManifestProductsForError(manifest) {
+  const products = manifest.marketplace?.policy?.products;
+  if (!Array.isArray(products) || products.length === 0) {
+    return 'marketplace.policy.products=[]';
+  }
+
+  const normalized = [...new Set(products.map(normalizeManifestProductToken))];
+  return `marketplace.policy.products=[${normalized.join(', ')}]`;
+}
+
+function platformProductName(platform) {
+  return platform === 'claude' ? 'CLAUDE' : 'CODEX';
+}
+
+function pluginNameForError(manifest) {
+  return typeof manifest.name === 'string' && manifest.name.trim()
+    ? manifest.name.trim()
+    : '<unknown>';
+}
+
+function assertPlatformFieldSupported(manifest, fieldPath, requiredPlatform) {
+  if (supportsManifestPlatform(manifest, requiredPlatform)) return;
+  error(
+    `Invalid plugin "${pluginNameForError(manifest)}": ${fieldPath} requires ${platformProductName(requiredPlatform)} support, but ${formatManifestProductsForError(manifest)}.`,
+  );
+}
+
+function hasNonEmptyOverride(value) {
+  return isRecord(value) && Object.keys(value).length > 0;
 }
 
 function validateManifestPolicyProducts(products) {
@@ -442,6 +494,63 @@ function validateManifestPolicyProducts(products) {
       error(`${fieldName} must be one of "CODEX" or "CLAUDE"`);
     }
   }
+}
+
+function validatePlatformFieldSupport(manifest) {
+  if (manifest.buildConfig?.fileRules?.claude !== undefined) {
+    assertPlatformFieldSupported(manifest, 'buildConfig.fileRules.claude', 'claude');
+  }
+  if (manifest.buildConfig?.fileRules?.codex !== undefined) {
+    assertPlatformFieldSupported(manifest, 'buildConfig.fileRules.codex', 'codex');
+  }
+  if (manifest.buildConfig?.manifestOverrides?.claude !== undefined) {
+    assertPlatformFieldSupported(manifest, 'buildConfig.manifestOverrides.claude', 'claude');
+  }
+  if (manifest.buildConfig?.manifestOverrides?.codex !== undefined) {
+    assertPlatformFieldSupported(manifest, 'buildConfig.manifestOverrides.codex', 'codex');
+  }
+  if (manifest.apps) {
+    assertPlatformFieldSupported(manifest, 'apps', 'codex');
+  }
+
+  if (Array.isArray(manifest.extensions?.nativeHooks?.claude) && manifest.extensions.nativeHooks.claude.length > 0) {
+    assertPlatformFieldSupported(manifest, 'extensions.nativeHooks.claude', 'claude');
+  }
+  if (Array.isArray(manifest.extensions?.nativeHooks?.codex) && manifest.extensions.nativeHooks.codex.length > 0) {
+    assertPlatformFieldSupported(manifest, 'extensions.nativeHooks.codex', 'codex');
+  }
+
+  for (const [fieldName, entries] of [
+    ['extensions.instructions', manifest.extensions?.instructions],
+    ['extensions.permissions', manifest.extensions?.permissions],
+    ['extensions.hooks', manifest.extensions?.hooks],
+    ['extensions.agents', manifest.extensions?.agents],
+  ]) {
+    if (!Array.isArray(entries)) continue;
+    entries.forEach((entry, index) => {
+      if (!isRecord(entry.agentOverrides)) return;
+      for (const platform of ['claude', 'codex']) {
+        if (hasNonEmptyOverride(entry.agentOverrides[platform])) {
+          assertPlatformFieldSupported(
+            manifest,
+            `${fieldName}[${index}].agentOverrides.${platform}`,
+            platform,
+          );
+        }
+      }
+    });
+  }
+
+  if (!Array.isArray(manifest.artifacts?.targets)) return;
+  manifest.artifacts.targets.forEach((target, index) => {
+    if (target?.platform === 'claude' || target?.platform === 'codex') {
+      assertPlatformFieldSupported(
+        manifest,
+        `artifacts.targets[${index}].platform`,
+        target.platform,
+      );
+    }
+  });
 }
 
 function isTemplateAsset(manifest, relativePath) {
@@ -861,15 +970,11 @@ function validateSkillFrontmatter(fm, skillName, targetsClaude) {
 }
 
 function isCodexTargeted(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  if (!Array.isArray(products)) return true;
-  return products.some((product) => normalizeManifestProductToken(product) === 'CODEX');
+  return supportsManifestPlatform(manifest, 'codex');
 }
 
 function isClaudeTargeted(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  if (!Array.isArray(products)) return true;
-  return products.some((product) => normalizeManifestProductToken(product) === 'CLAUDE');
+  return supportsManifestPlatform(manifest, 'claude');
 }
 
 function targetedPlatforms(manifest) {
@@ -1562,14 +1667,6 @@ function validateArtifactsConfigLightweight(manifest) {
   if (!Array.isArray(artifacts.targets)) {
     error('artifacts.targets must be an array');
     return [];
-  }
-
-  const products = manifest.marketplace?.policy?.products;
-  const normalizedProducts = Array.isArray(products)
-    ? products.map(normalizeManifestProductToken)
-    : [];
-  if (!normalizedProducts.includes('CODEX') || normalizedProducts.includes('CLAUDE')) {
-    error('artifacts.targets with Codex targets must declare marketplace.policy.products as Codex-only');
   }
 
   const seen = new Set();
@@ -2270,7 +2367,7 @@ function validateSlashCommandAssetReference(commandRoot, commandRelativePath, va
   }
 }
 
-function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, frontmatter) {
+function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, frontmatter, platform) {
   const fieldName = `${commandRelativePath} frontmatter`;
   const fm = expectRecord(frontmatter, fieldName);
   if (!fm) return;
@@ -2284,7 +2381,7 @@ function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, front
   validateAllowedKeys(fm, fieldName, ['description', 'claude', 'codex']);
   validateNonEmptyString(fm.description, `${fieldName}.description`, MAX_SKILL_DESCRIPTION_LEN);
 
-  if (fm.claude !== undefined) {
+  if (platform === 'claude' && fm.claude !== undefined) {
     const claudeBlock = expectRecord(fm.claude, `${fieldName}.claude`);
     if (claudeBlock) {
       validateAllowedKeys(claudeBlock, `${fieldName}.claude`, [
@@ -2329,7 +2426,7 @@ function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, front
     }
   }
 
-  if (fm.codex !== undefined) {
+  if (platform === 'codex' && fm.codex !== undefined) {
     const codexBlock = expectRecord(fm.codex, `${fieldName}.codex`);
     if (codexBlock) {
       if (codexBlock.policy !== undefined) {
@@ -2398,6 +2495,7 @@ function validateSlashCommands(pluginDir, manifest) {
   }
 
   if (!manifest.slashCommands) return;
+  const targetPlatforms = resolveSupportedPlatforms(manifest);
 
   const slashCommandsRoot = path.join(pluginDir, manifest.slashCommands);
   const stats = fs.statSync(slashCommandsRoot, { throwIfNoEntry: false });
@@ -2473,25 +2571,21 @@ function validateSlashCommands(pluginDir, manifest) {
 
     const absolutePath = path.join(slashCommandsRoot, fileName);
     const rawContent = fs.readFileSync(absolutePath, 'utf8');
-    const renderedClaude = renderTemplateForPlatform(
-      manifest,
-      commandRelativePath,
-      rawContent,
-      'claude',
-    );
-    const renderedCodex = renderTemplateForPlatform(
-      manifest,
-      commandRelativePath,
-      rawContent,
-      'codex',
-    );
+    for (const platform of ['claude', 'codex']) {
+      if (!targetPlatforms.has(platform)) continue;
+      const rendered = renderTemplateForPlatform(
+        manifest,
+        commandRelativePath,
+        rawContent,
+        platform,
+      );
+      if (platform === 'codex') {
+        const codexForbiddenSyntax = detectCodexSlashCommandForbiddenSyntax(rendered);
+        if (codexForbiddenSyntax) {
+          error(`${commandRelativePath} Codex render still contains Claude-only syntax "${codexForbiddenSyntax}"`);
+        }
+      }
 
-    const codexForbiddenSyntax = detectCodexSlashCommandForbiddenSyntax(renderedCodex);
-    if (codexForbiddenSyntax) {
-      error(`${commandRelativePath} Codex render still contains Claude-only syntax "${codexForbiddenSyntax}"`);
-    }
-
-    for (const [platform, rendered] of [['claude', renderedClaude], ['codex', renderedCodex]]) {
       let frontmatter;
       try {
         frontmatter = parseFrontmatter(rendered, `${commandRelativePath} (${platform} render)`);
@@ -2503,7 +2597,7 @@ function validateSlashCommands(pluginDir, manifest) {
         error(`${commandRelativePath} (${platform} render) is missing YAML frontmatter`);
         continue;
       }
-      validateSlashCommandFrontmatter(slashCommandsRoot, commandRelativePath, frontmatter);
+      validateSlashCommandFrontmatter(slashCommandsRoot, commandRelativePath, frontmatter, platform);
     }
   }
 }
@@ -2535,6 +2629,7 @@ async function validatePluginDir(pluginDir) {
     } catch (e) {
       error(e.message);
     }
+    validatePlatformFieldSupport(manifest);
   } else {
     warn(
       'CLI 未构建（packages/cli/dist/ 不存在），仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',

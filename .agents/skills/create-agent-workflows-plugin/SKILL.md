@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Create Agent Workflows Plugin
 
-在当前仓库创建或维护同时支持 Codex 和 Claude Code 的双平台插件。这里描述的是 `agent-workflows` 源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle 和本地 marketplace 镜像由 CLI 自动生成。
+在当前仓库创建或维护 agent-workflows 插件。插件默认同时支持 Codex 和 Claude Code，也可以通过 `marketplace.policy.products` 收窄到单个平台。这里描述的是源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle 和本地 marketplace 镜像由 CLI 自动生成。
 
 ## 快速开始
 
@@ -88,15 +88,15 @@ plugins/<name>/
 
 | 能力 | 平台 | 配置位置 | 细节 |
 |------|------|----------|------|
-| Skills | 双平台 | `skills/`、`SKILL.md`、`agents/openai.yaml` | `references/skills-and-triggers.md` |
-| Extensions | 双平台 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
+| Skills | 默认双平台，可收窄 | `skills/`、`SKILL.md`、`agents/openai.yaml` | `references/skills-and-triggers.md` |
+| Extensions | 默认双平台，可收窄 | `extensions.instructions` / `permissions` / `hooks` / `nativeHooks` / `agents` | `references/extensions-spec.md` |
 | Dynamic Artifacts | Codex | `artifacts.targets`、`scripts.artifacts.render` | `references/plugin-manifest-spec.md`、`references/aw-scripts-config-lifecycle.md` |
-| MCP Servers | 双平台 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
+| MCP Servers | 默认双平台，可收窄 | `.mcp.json` + manifest `mcpServers` | `references/mcp-and-apps.md` |
 | Apps | Codex | `.app.json` + manifest `apps` | `references/mcp-and-apps.md` |
-| Public Slash Commands | 双平台 | `slashCommands`、`slash-commands/`、`slash-commands/assets/` | `references/slash-commands.md` |
+| Public Slash Commands | 默认双平台，可收窄 | `slashCommands`、`slash-commands/`、`slash-commands/assets/` | `references/slash-commands.md` |
 | Claude 专属能力 | Claude | `output-styles/`、`buildConfig.manifestOverrides.claude` | `references/claude-only-capabilities.md` |
-| Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
-| AW Scripts / Config / Lifecycle | 双平台 | `scripts` / `config`、`scripts/aw-config.mjs`、`scripts/lifecycle.mjs`、`scripts/**/*.test.mjs` | `references/aw-scripts-config-lifecycle.md` |
+| Build Config | 支持平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
+| AW Scripts / Config / Lifecycle | 支持平台 | `scripts` / `config`、`scripts/aw-config.mjs`、`scripts/lifecycle.mjs`、`scripts/**/*.test.mjs` | `references/aw-scripts-config-lifecycle.md` |
 
 插件不需要包含所有能力；先按场景选组合，再打开对应参考文档补字段细节。
 
@@ -157,7 +157,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--with-mcp` / `--with-apps`：创建 `.mcp.json` / `.app.json` 存根；细节见 `references/mcp-and-apps.md`
 - `--with-config-api`：添加 AW 自管 `config.schema`、标准 `scripts.helpers.config` helper 和 Node 脚本测试样板
 - `--with-lifecycle`：添加 Node lifecycle 样板和 Node 脚本测试样板
-- 默认省略 `marketplace.policy.products`，让插件保持双平台可安装；声明后 `aw install` / 显式 `aw upgrade` 会拦截不匹配的平台
+- 默认省略 `marketplace.policy.products`，让插件保持双平台；声明后该字段会同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择
 - 默认不生成 `skillTriggers`，因此新 skill 不允许安装时覆盖触发策略；确实需要时再在 manifest 里显式添加 `allowInstallOverride`
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
 
@@ -165,11 +165,14 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
+- 所有插件在 bundle 中都会保留 `.agents-plugin/plugin.json`；`.claude-plugin/`、`.codex-plugin/`、`claude/`、`codex/` 只在支持平台存在。
+- `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置。
 - 手动触发命令只使用公共 `slashCommands`。
-- `slashCommands` 的 Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
+- `slashCommands` 只为支持平台生成 Claude commands / Codex manual-only skills；Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
-- Codex 动态 artifact 插件必须显式声明 `marketplace.policy.products: ["CODEX"]`；`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
+- Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
+- Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。
 - `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。
 - dynamic artifact 刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
 - 写动作必须来自明确的 location target。插件出现在多个位置时，控制台和脚本 receipt 可以汇总状态，但不能把“多个位置”当成隐式批量写目标；执行安装、升级、卸载、配置、refresh-only 或 cleanup 前都要明确 platform/scope/project 位置。
@@ -184,11 +187,12 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 ```bash
 pnpm plugin:test <plugin>
-pnpm plugin:test <plugin> --platform both --scope project
+pnpm plugin:test <plugin> --platform codex --scope project
+pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:test --all
 ```
 
-`pnpm plugin:test` 会先编译 CLI，再运行已编译 runner。它会为目标插件准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。没有匹配测试时是 skipped/no-op，退出码为 0；单插件模式不会被其它插件的坏 manifest 或测试失败阻断。`--platform both` 会分 Codex/Claude 两轮复制独立可写 bundle。测试中的 `AW_PLUGIN_CONTEXT.sourceRoot` 指向原始源码根，适合读取源码 fixture；实际运行时入口和 helper 应从临时 bundle import。更完整的 context、helper 和 config store 规则见 `references/aw-scripts-config-lifecycle.md`。
+`pnpm plugin:test` 会先编译 CLI，再运行已编译 runner。它会先准备 staging source，并用 build 后 staging manifest 的 `products` 解析最终支持平台；`auto` 使用完整支持平台集合，显式 `claude` / `codex` / `both` 不能越过最终支持平台，`both` 只适用于双平台插件。runner 会为目标插件准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。没有匹配测试时是 skipped/no-op，退出码为 0；单插件模式不会被其它插件的坏 manifest 或测试失败阻断。双平台插件使用 `--platform both` 时，会分 Codex/Claude 两轮复制独立可写 bundle。测试中的 `AW_PLUGIN_CONTEXT.sourceRoot` 指向原始源码根，适合读取源码 fixture；实际运行时入口和 helper 应从临时 bundle import。更完整的 context、helper 和 config store 规则见 `references/aw-scripts-config-lifecycle.md`。
 
 更细的能力矩阵、平台差异、命令结果填充和长 checklist 都在下方参考文档里，按场景加载即可。
 

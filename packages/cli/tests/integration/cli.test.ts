@@ -21,6 +21,8 @@ import type {
 } from '../../src/types.js';
 import { upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import { attachGeneratedArtifactsToError } from '../../src/utils/generated-artifacts.js';
+import { validateLocalMarketplaceLayout } from '../../src/utils/local-marketplace.js';
+import { resolveCatalogPlugins } from '../../src/utils/plugin-catalog.js';
 import { readTrackingManifest } from '../../src/utils/tracking.js';
 import type {
   NativeCliInvocation,
@@ -675,6 +677,27 @@ describe('CLI integration', () => {
     });
   });
 
+  it('keeps single-platform plugins in the local current catalog after aw init --force', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => addNativeHookOnlyPlugin(workspaceRepoRoot, 'prompt-guard'),
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+
+    const { catalog, plugins } = await resolveCatalogPlugins(undefined, process.env);
+    expect(catalog.source).toBe('local');
+    expect(plugins.map((plugin) => plugin.manifest.name)).toContain('prompt-guard');
+
+    const claudeMarketplace = await fs.readJson(path.join(awHome, '.claude-plugin', 'marketplace.json'));
+    expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name)).not.toContain('prompt-guard');
+  });
+
   it('keeps status read-only when ~/.aw is stale and falls back to the embedded catalog', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -1204,6 +1227,51 @@ describe('CLI integration', () => {
     ).resolves.toMatchObject({
       platforms: ['codex'],
       plugins: ['prompt-guard'],
+    });
+  });
+
+  it('shows single-platform current catalog plugins in status while keeping auto scoped to supported platforms', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const result = await statusCommand(
+      ['prompt-guard'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'auto',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'prompt-guard': {
+              currentCatalogAvailable: true,
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.matrix.summaries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginName: 'prompt-guard',
+      }),
+    ]));
+    expect(result.matrix.cells).toHaveLength(1);
+    expect(result.matrix.cells[0]).toMatchObject({
+      pluginName: 'prompt-guard',
+      platform: 'codex',
+      scope: 'project',
+      healthSource: 'currentCatalog',
     });
   });
 

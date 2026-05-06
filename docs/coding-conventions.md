@@ -32,7 +32,7 @@ TypeScript + ESM，2 空格缩进，NodeNext 导入风格，本地模块导入�
 - **`CatalogCompatibility`** — `'current' | 'missing' | 'capabilityChanged'`，判定 plugin 是否需要重新安装
 - **`ScopeInitializedState`** — `'yes' | 'no' | 'unknown'`，表示当前 scope 是否能被 ledger、tracking 或平台 fallback 证明为已初始化
 - **`HookEvent`** — `'before_tool' | 'after_tool' | 'session_start'`；公共 hook 不包含平台原生事件全集，也不再包含 `session_stop`
-- **Hook 类型边界**：`HookDefinition` 表示公共 hooks；`NativeHookDefinition` / `NativeHooksByPlatform` 表示 `extensions.nativeHooks.<agent>`；`RenderedHookGroup` 表示最终 artifact group，`matcher` 可选；`TrackedHookGroupIdentity` 是 tracking/status/drift 使用的 canonical identity，不能和 rendered artifact 类型混用；`CodexSharedHookGroup` 保留 `.codex/hooks.json` 原始 group，用于无损保留外部配置
+- **Hook 类型边界**：`HookDefinition` 表示公共 hooks；`NativeHookDefinition` / `NativeHooksByPlatform` 表示 `extensions.nativeHooks.<platform>`；`RenderedHookGroup` 表示最终 artifact group，`matcher` 可选；`TrackedHookGroupIdentity` 是 tracking/status/drift 使用的 canonical identity，不能和 rendered artifact 类型混用；`CodexSharedHookGroup` 保留 `.codex/hooks.json` 原始 group，用于无损保留外部配置
 - **Artifact 类型边界**：manifest target、renderer plan、validated plan、target apply 输出和 tracking record 不要混用。plan 内部 `kind = "codexRole"` 只表示动态 role artifact；Codex project capability snapshot 应写 `projectManagedKind = "agent"`，不要把内部 kind 泄漏出去
 - **`RepoManagedSessionStateReport`** — status 输出里用于说明 repo-managed instructions/rules/hooks/agents/skills/MCP 当前是否可见，以及是否被 trust、external layer、missing/drift/orphan/unknown 状态影响。summary 中 `not_applicable` 表示当前 manifest / historical evidence 没声明该 kind，`absent` 只表示声明或期望存在但当前 scope 没有受管项
 - **`SkippedUpgradeTarget`** — `upgrade --all` target-level skipped 结果，包含稳定 `code`。部分成功部分 skipped 时 CLI exit code 仍为 `0`；全部 skipped 且无成功升级时为 `1`

@@ -1,4 +1,5 @@
 export type PlatformName = 'codex' | 'claude';
+export type SupportedPlatformSet = ReadonlySet<PlatformName>;
 export type PlatformSelection = PlatformName | 'auto' | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';

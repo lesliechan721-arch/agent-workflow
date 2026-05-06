@@ -26,6 +26,11 @@ export {
   scanNodeImportContract,
 } from '../src/utils/plugin-script-contract.js';
 export {
+  formatMarketplaceProductsForError,
+  formatSupportedPlatforms,
+  resolveSupportedPlatforms,
+} from '../src/utils/platform-support.js';
+export {
   resolveAwHome,
   resolveCliPackageRoot,
 } from '../src/utils/paths.js';
