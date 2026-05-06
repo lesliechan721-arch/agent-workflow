@@ -1,25 +1,73 @@
-# 平台专属插件构建物需求 Spec Review
+# 平台专属插件构建物实现代码审查报告
 
-日期：2026-05-06
+审查时间：2026-05-06  
+审查范围：`main(c09b05da2475f4a00867801e582ef2d470243ee9)...HEAD(f74066815f686bcfed6ab4c09e2abe3b3aa6189d)`  
+对照文档：
+
+- 计划：`docs/dev/plans/platform-specific-plugin-bundles.md`
+- Spec：`docs/dev/specs/platform-specific-plugin-bundles.md`
+- 测试规范：`docs/testing.md`
 
 ## Findings
 
-本轮未发现新的需求缺口、逻辑漏洞，或当前基线下无法落地的实现阻塞。
+本轮最终复审未发现新的实现问题、计划偏差或会阻塞交付的测试缺口。
 
-## 已修复项确认
+## 已关闭问题
 
-- 上一轮遗留的 `bundleLocalPlugin()` 返回合同问题已经补齐。spec 现在不仅要求磁盘产物按平台裁剪，也明确把返回值改成 `platformManifests`，并同步约束调用方、测试和实施顺序，见 `platform-specific-plugin-bundles.md:122-154`、`platform-specific-plugin-bundles.md:373-379`、`platform-specific-plugin-bundles.md:513-516`。
-- `pnpm plugin:test` 的平台判定时机已经修正。spec 现在明确要求先执行 `prepareLocalPluginBundleSource(..., { buildMode: "staging" })`，再基于 build 后 staging manifest 校验 `--platform`，并在 `bundleLocalPlugin()` 之前 fail fast，见 `platform-specific-plugin-bundles.md:178-195`、`platform-specific-plugin-bundles.md:411-413`、`platform-specific-plugin-bundles.md:513-514`。
-- 平台 marketplace 的过滤真值已经收口到最终 staging manifest。spec 明确要求 `bundlePlugins()` 不能再按 source manifest 直接过滤，并补了 build 改写 `marketplace.policy.products` 的测试要求，见 `platform-specific-plugin-bundles.md:278-310`、`platform-specific-plugin-bundles.md:397-402`、`platform-specific-plugin-bundles.md:517`。
-- `slashCommands` 的单平台生成与校验规则已经补齐。Claude-only、Codex-only、双平台三种行为、Codex forbidden syntax 只在生成 Codex 产物时校验、以及作者工具回归范围，现在都写清楚了，见 `platform-specific-plugin-bundles.md:197-207`、`platform-specific-plugin-bundles.md:384-389`、`platform-specific-plugin-bundles.md:422`、`platform-specific-plugin-bundles.md:466-468`。
-- “两份 marketplace 必须完全镜像”和“每个插件恒定双 platform manifest”的旧 contract 已经从 spec 主线移除，bundle layout 也改成按 `.agents-plugin/plugin.json` 解析平台支持集合再校验，见 `platform-specific-plugin-bundles.md:280-310`、`platform-specific-plugin-bundles.md:312-325`、`platform-specific-plugin-bundles.md:390-402`、`platform-specific-plugin-bundles.md:518`。
-- 动态 artifacts 的作者 contract 已按“target 平台必须属于插件支持平台集合”重写，不再继续保留“Codex target 必须 Codex-only 插件”这个旧限制，并且同步纳入作者工具与参考文档更新范围，见 `platform-specific-plugin-bundles.md:231-242`、`platform-specific-plugin-bundles.md:461`、`platform-specific-plugin-bundles.md:480-483`、`platform-specific-plugin-bundles.md:514`。
-- 文档和作者工具的同步范围这次也已经补全，覆盖公开文档、架构文档、作者技能参考和 `validate_plugin.js`，没有再留下“实现改了、参考资料没改”的明显缺口，见 `platform-specific-plugin-bundles.md:414-423`、`platform-specific-plugin-bundles.md:435-483`。
+### 1. unsupported platform 上的 `agentOverrides.<platform> = {}` 误判已经关闭
+
+- 代码位置：
+  - `packages/cli/src/utils/manifest.ts:174`
+  - `packages/cli/src/utils/manifest.ts:186`
+- 回归测试：
+  - `packages/cli/tests/unit/manifest.test.ts:1405`
+
+当前实现会先剔除 override 对象里的 `undefined` 字段，再判断它是否真的“非空”。因此：
+
+- `{}` 会被视为 no-op，不再误判成 unsupported platform 冲突
+- 非空 override 仍然会按原规则 fail fast
+- `null` 继续保持合法
+
+这一项已经和计划 / spec 保持一致。
+
+### 2. bundle layout 的跨平台路径绕过与 symlink 变体已经关闭
+
+- 代码位置：
+  - `packages/cli/src/utils/bundle-layout.ts:29`
+  - `packages/cli/src/utils/bundle-layout.ts:53`
+  - `packages/cli/src/utils/bundle-layout.ts:499`
+- 回归测试：
+  - `packages/cli/tests/unit/bundle-layout.test.ts:283`
+  - `packages/cli/tests/unit/bundle-layout.test.ts:319`
+
+当前实现现在有两层保护：
+
+- 先校验规范化后的路径仍留在目标平台子树内，拦住 `./claude/../codex/...`、`./codex/../claude/...` 这类绕过
+- 再对真实目标做 `realpath` 校验，确保 symlink 解析后仍然留在插件根目录和对应平台子树内
+
+因此，跨平台引用和 symlink 变体都已经被拦住。
+
+## 测试覆盖
+
+本轮复审确认，这条需求直接相关的测试已经覆盖到位，包括：
+
+- 平台支持集合、manifest 冲突、marketplace / layout 过滤、slash command 单平台渲染等 unit tests
+- `plugin-test-runner`、`discovery`、`cli`、`authoring-tools` 等 integration tests
+- `pnpm test:smoke:build`
+- `tests/smoke/pack-smoke.test.ts`
+- `tests/smoke/plugin-scripts-staging-smoke.test.ts`
+- 本轮新增的 `bundle-layout` symlink 回归用例
+
+复审代理在最终一轮额外验证了这些检查，结果均通过：
+
+- `pnpm build`
+- 相关 7 个 unit / integration suites，共 137 个测试
+- `tests/integration/authoring-tools.test.ts`，29 个测试
+- `pnpm test:smoke:build`，5 个测试
+- `tests/smoke/pack-smoke.test.ts` 与 `tests/smoke/plugin-scripts-staging-smoke.test.ts`，共 4 个测试
 
 ## 结论
 
-这版 spec 已经是合理、正确且可落地的。它把当前真正分叉的几条主路径都收拢到了同一套平台支持语义上：`bundleLocalPlugin()`、`bundlePlugins()`、`validateBundleLayout()`、`readMarketplaceManifest()`、`pnpm plugin:test`、作者工具校验和文档合同都被纳入范围，而且和当前代码基线的改动入口能够一一对应上。
+这轮平台专属插件 bundle 实现现在可以通过最终 review。
 
-从实现角度看，改动面也比较清晰，主要集中在 `packages/cli/src/generators/local-plugin.ts`、`packages/cli/scripts/bundle-plugins.ts`、`packages/cli/src/utils/bundle-layout.ts`、`packages/cli/src/utils/marketplace.ts`、`packages/cli/scripts/test-plugin-scripts.ts`、`packages/cli/src/utils/manifest.ts`，以及 `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js`。spec 给出的实施顺序也是合适的，我这轮没有看到明显更优、且风险更低的替代方案。
-
-剩余风险主要不在 spec 本身，而在实现时是否把测试和文档同步做完整。只要按文档里列出的 unit / integration / smoke / pack 覆盖面一起推进，这轮需求可以在当前基线上稳定落地。
+我没有看到新的实现缺陷，也没有看到和计划 / spec 不一致的偏航。剩余风险主要是常规维护层面的，例如未来如果需要在不支持 symlink 的环境运行这组单测，可能要再做测试适配；但这不影响当前功能交付结论。

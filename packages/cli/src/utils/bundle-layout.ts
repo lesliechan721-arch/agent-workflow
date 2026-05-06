@@ -17,6 +17,15 @@ import { scanNodeImportContract } from './plugin-script-contract.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 
+function isPathInsideOrEqual(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
 function assertRelativeBundlePath(
   pluginRoot: string,
   relativePath: string,
@@ -33,7 +42,40 @@ function assertRelativeBundlePath(
     throw new Error(`Invalid ${fieldName}: path escapes plugin root.`);
   }
 
+  const expectedRoot = path.resolve(pluginRoot, expectedPrefix);
+  if (!isPathInsideOrEqual(expectedRoot, resolved)) {
+    throw new Error(`Invalid ${fieldName}: path must stay inside "${expectedPrefix}".`);
+  }
+
   return resolved;
+}
+
+async function assertRealBundlePath(
+  pluginRoot: string,
+  resolvedPath: string,
+  fieldName: string,
+  expectedPrefix: string,
+): Promise<string> {
+  const realPluginRoot = await fs.realpath(pluginRoot);
+
+  let realResolvedPath: string;
+  try {
+    realResolvedPath = await fs.realpath(resolvedPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ${fieldName}: unable to resolve symlinks (${message}).`);
+  }
+
+  if (!isPathInsideOrEqual(realPluginRoot, realResolvedPath)) {
+    throw new Error(`Invalid ${fieldName}: resolved target escapes plugin root.`);
+  }
+
+  const expectedRoot = path.resolve(realPluginRoot, stripDotSlash(expectedPrefix));
+  if (!isPathInsideOrEqual(expectedRoot, realResolvedPath)) {
+    throw new Error(`Invalid ${fieldName}: resolved target must stay inside "${expectedPrefix}".`);
+  }
+
+  return realResolvedPath;
 }
 
 async function assertBundlePathExists(
@@ -46,6 +88,7 @@ async function assertBundlePathExists(
   if (!(await fs.pathExists(resolved))) {
     throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
   }
+  await assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
 }
 
 function stripDotSlash(value: string): string {
@@ -78,7 +121,8 @@ async function assertMcpArtifact(
   if (!(await fs.pathExists(resolved))) {
     throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
   }
-  const content = await assertJsonObjectFile(resolved, fieldName);
+  const realResolved = await assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
+  const content = await assertJsonObjectFile(realResolved, fieldName);
   if (!content.mcpServers || typeof content.mcpServers !== 'object' || Array.isArray(content.mcpServers)) {
     throw new Error(`Invalid ${fieldName}: expected top-level "mcpServers" object.`);
   }
@@ -94,7 +138,8 @@ async function assertAppsArtifact(
   if (!(await fs.pathExists(resolved))) {
     throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
   }
-  const content = await assertJsonObjectFile(resolved, fieldName);
+  const realResolved = await assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
+  const content = await assertJsonObjectFile(realResolved, fieldName);
   if (!content.apps || typeof content.apps !== 'object' || Array.isArray(content.apps)) {
     throw new Error(`Invalid ${fieldName}: expected top-level "apps" object.`);
   }
@@ -118,7 +163,8 @@ async function assertClaudeHooksArtifact(
   if (!(await fs.pathExists(resolved))) {
     throw new Error(`Invalid claude.hooks: "${relativePath}" does not exist in bundle.`);
   }
-  const content = await assertJsonObjectFile(resolved, 'claude.hooks');
+  const realResolved = await assertRealBundlePath(pluginRoot, resolved, 'claude.hooks', './claude/');
+  const content = await assertJsonObjectFile(realResolved, 'claude.hooks');
   validateRenderedClaudeHooksContent(content, 'claude.hooks');
 }
 

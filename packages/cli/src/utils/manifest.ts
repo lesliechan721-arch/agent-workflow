@@ -177,6 +177,12 @@ function hasNonEmptyPlatformOverride(
   return value !== null && value !== undefined && Object.keys(value).length > 0;
 }
 
+function omitUndefinedValues<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>;
+}
+
 function assertAgentOverridePlatformsSupported(options: {
   pluginName: string;
   manifest: PluginManifestSource;
@@ -1415,10 +1421,12 @@ function normalizePlatformAgentOverrides<T>(
       continue;
     }
 
-    output[platform] = normalizer(
-      assertObject(entry, `${fieldName}.${platform}`),
-      `${fieldName}.${platform}`,
-    );
+    output[platform] = omitUndefinedValues(
+      normalizer(
+        assertObject(entry, `${fieldName}.${platform}`),
+        `${fieldName}.${platform}`,
+      ) as Record<string, unknown>,
+    ) as Partial<T>;
   }
 
   return output;

@@ -1402,7 +1402,7 @@ describe('manifest utils', () => {
     );
   });
 
-  it('rejects unsupported native hooks and non-empty agent overrides, but allows null unsupported overrides', async () => {
+  it('rejects unsupported native hooks and non-empty agent overrides, but allows empty or null unsupported overrides', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -1441,6 +1441,25 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'Invalid plugin "git-commit": extensions.instructions[0].agentOverrides.codex requires CODEX support, but marketplace.policy.products=[CLAUDE].',
     );
+
+    manifest.extensions.instructions[0].agentOverrides = {
+      codex: {},
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        extensions: {
+          instructions: [
+            {
+              name: 'commit-policy',
+              agentOverrides: {
+                codex: {},
+              },
+            },
+          ],
+        },
+      },
+    });
 
     manifest.extensions.instructions[0].agentOverrides = {
       codex: null,

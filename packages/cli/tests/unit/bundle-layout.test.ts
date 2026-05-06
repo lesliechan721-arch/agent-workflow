@@ -45,6 +45,11 @@ async function writeFixturePluginManifest(
   );
 }
 
+async function replaceFileWithSymlink(linkPath: string, targetPath: string): Promise<void> {
+  await fs.remove(linkPath);
+  await fs.symlink(path.relative(path.dirname(linkPath), targetPath), linkPath, 'file');
+}
+
 async function updateFixturePluginManifest(
   repoRoot: string,
   updater: (manifest: Record<string, any>) => void,
@@ -272,6 +277,78 @@ describe('bundle layout validation', () => {
 
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
       'unexpected Codex bundle files for unsupported platform',
+    );
+  });
+
+  it('rejects Claude manifest artifact paths that normalize into the Codex subtree', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'codex', '.mcp.json')),
+    ).resolves.toBe(true);
+
+    manifest.mcpServers = './claude/../codex/.mcp.json';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid claude.mcpServers: path must stay inside "./claude/".',
+    );
+  });
+
+  it('rejects Codex manifest artifact paths that normalize into the Claude subtree', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    await expect(
+      fs.pathExists(path.join(pluginRoot, 'claude', '.mcp.json')),
+    ).resolves.toBe(true);
+
+    manifest.mcpServers = './codex/../claude/.mcp.json';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid codex.mcpServers: path must stay inside "./codex/".',
+    );
+  });
+
+  it('rejects Claude manifest artifact symlinks that point into the Codex subtree', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const linkPath = path.join(pluginRoot, 'claude', 'linked-mcp.json');
+    const targetPath = path.join(pluginRoot, 'codex', '.mcp.json');
+
+    await replaceFileWithSymlink(linkPath, targetPath);
+
+    manifest.mcpServers = './claude/linked-mcp.json';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid claude.mcpServers: resolved target must stay inside "./claude/".',
+    );
+  });
+
+  it('rejects Codex manifest artifact symlinks that point into the Claude subtree', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const linkPath = path.join(pluginRoot, 'codex', 'linked-mcp.json');
+    const targetPath = path.join(pluginRoot, 'claude', '.mcp.json');
+
+    await replaceFileWithSymlink(linkPath, targetPath);
+
+    manifest.mcpServers = './codex/linked-mcp.json';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid codex.mcpServers: resolved target must stay inside "./codex/".',
     );
   });
 
