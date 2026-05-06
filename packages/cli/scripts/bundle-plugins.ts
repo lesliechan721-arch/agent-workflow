@@ -15,6 +15,7 @@ import {
   discoverPlugins,
   readMarketplaceSourceMeta,
 } from '../src/utils/manifest.js';
+import type { PlatformName, PluginMeta } from '../src/types.js';
 
 export interface BundlePluginsOptions {
   repoRoot?: string;
@@ -50,6 +51,10 @@ export async function bundlePlugins(
   ]);
 
   const bundledPlugins = [];
+  const bundledPluginsByPlatform: Record<PlatformName, PluginMeta[]> = {
+    claude: [],
+    codex: [],
+  };
   for (const plugin of plugins) {
     const result = await bundleLocalPlugin(
       plugin,
@@ -60,11 +65,22 @@ export async function bundlePlugins(
       },
     );
     bundledPlugins.push(result.plugin);
+
+    for (const platform of ['claude', 'codex'] as const) {
+      if (result.platformManifests[platform]) {
+        bundledPluginsByPlatform[platform].push(result.plugin);
+      }
+    }
   }
 
-  const marketplace = createMarketplaceManifest(sourceMeta, bundledPlugins);
-  await writeJsonFile(path.join(outputRoot, '.claude-plugin', 'marketplace.json'), marketplace);
-  await writeJsonFile(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json'), marketplace);
+  await writeJsonFile(
+    path.join(outputRoot, '.claude-plugin', 'marketplace.json'),
+    createMarketplaceManifest(sourceMeta, bundledPluginsByPlatform.claude),
+  );
+  await writeJsonFile(
+    path.join(outputRoot, '.agents', 'plugins', 'marketplace.json'),
+    createMarketplaceManifest(sourceMeta, bundledPluginsByPlatform.codex),
+  );
 
   return {
     outputRoot,

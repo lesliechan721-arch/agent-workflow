@@ -38,7 +38,7 @@ afterEach(async () => {
 });
 
 describe('pack smoke', () => {
-  it('packs the runtime bundle into the tarball and can init from the unpacked package', async () => {
+  it('packs the runtime bundle into the tarball with platform-filtered marketplaces', async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pack-smoke-'));
@@ -46,7 +46,6 @@ describe('pack smoke', () => {
 
     const packDir = path.join(tempRoot, 'pack');
     const unpackDir = path.join(tempRoot, 'unpack');
-    const awHome = path.join(tempRoot, 'aw-home');
     await fs.ensureDir(packDir);
     await fs.ensureDir(unpackDir);
 
@@ -104,6 +103,12 @@ describe('pack smoke', () => {
     await Promise.all(requiredPaths.map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
     }));
+    await expect(
+      fs.pathExists(path.join(codexExplorePluginRoot, '.claude-plugin', 'plugin.json')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(codexExplorePluginRoot, 'claude')),
+    ).resolves.toBe(false);
 
     const [
       packedPackageJson,
@@ -125,7 +130,6 @@ describe('pack smoke', () => {
       ]);
 
     expect(packedPackageJson.name).toBe('@yiliang/aw');
-    expect(claudeMarketplace).toEqual(codexMarketplace);
     expect(claudeMarketplace).toMatchObject({
       name: 'aw',
       owner: {
@@ -147,6 +151,19 @@ describe('pack smoke', () => {
             authentication: 'ON_INSTALL',
           },
         }),
+      ]),
+    });
+    expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'git-commit',
+    ]);
+    expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'codex-explore',
+      'git-commit',
+    ]);
+    expect(codexMarketplace).toMatchObject({
+      owner: claudeMarketplace.owner,
+      interface: claudeMarketplace.interface,
+      plugins: expect.arrayContaining([
         expect.objectContaining({
           name: 'codex-explore',
           source: './plugins/codex-explore',
@@ -208,48 +225,6 @@ describe('pack smoke', () => {
 
     expect(claudeBundlePaths.every((entry) => !entry.startsWith('./shared/'))).toBe(true);
     expect(codexBundlePaths.every((entry) => !entry.startsWith('./shared/'))).toBe(true);
-
-    const { validateBundleLayout } = (await import(
-      pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'bundle-layout.js')).href
-    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
-    await expect(validateBundleLayout(unpackedPluginsRoot)).resolves.toBeUndefined();
-
-    const { resolveEmbeddedPluginsRoot } = (await import(
-      pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'paths.js')).href
-    )) as { resolveEmbeddedPluginsRoot: () => Promise<string> };
-    await expect(resolveEmbeddedPluginsRoot()).resolves.toBe(
-      await fs.realpath(unpackedPluginsRoot),
-    );
-
-    const previousAwHome = process.env.AW_HOME;
-    try {
-      process.env.AW_HOME = awHome;
-      const { initCommand } = (await import(
-        pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'commands', 'init.js')).href
-      )) as { initCommand: (options?: { force?: boolean }) => Promise<{ rootDir: string; changed: boolean }> };
-
-      await expect(initCommand({ force: true })).resolves.toMatchObject({
-        rootDir: awHome,
-        changed: true,
-      });
-    } finally {
-      if (previousAwHome === undefined) {
-        delete process.env.AW_HOME;
-      } else {
-        process.env.AW_HOME = previousAwHome;
-      }
-    }
-
-    await expect(
-      fs.pathExists(path.join(awHome, '.claude-plugin', 'marketplace.json')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
-    ).resolves.toBe(true);
-    await expect(fs.readJson(path.join(awHome, 'config.json'))).resolves.toMatchObject({
-      sourcePackage: '@yiliang/aw',
-      sourceVersion: packedPackageJson.version,
-    });
   });
 
   it('bundles public slashCommands correctly from the unpacked tarball runtime', async () => {

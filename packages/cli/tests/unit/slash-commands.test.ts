@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { resolveSupportedPlatforms } from '../../src/utils/platform-support.js';
 import { resolveSlashCommands } from '../../src/utils/slash-commands.js';
+import type { PlatformName, SupportedPlatformSet } from '../../src/types.js';
 
 const tempDirs: string[] = [];
 
@@ -45,6 +47,10 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
+function targetPlatforms(...platforms: PlatformName[]): SupportedPlatformSet {
+  return new Set(platforms);
+}
+
 describe('slashCommands source and bundle contract', () => {
   it('resolves and bundles public slashCommands into Claude commands and Codex manual-only skills', async () => {
     const pluginRoot = fixturePath(
@@ -53,7 +59,9 @@ describe('slashCommands source and bundle contract', () => {
       'slashCommands-only',
     );
     const plugin = await readPluginManifest(pluginRoot);
-    const resolved = await resolveSlashCommands(pluginRoot, plugin.manifest);
+    const resolved = await resolveSlashCommands(pluginRoot, plugin.manifest, {
+      targetPlatforms: resolveSupportedPlatforms(plugin.manifest),
+    });
 
     expect(resolved).toMatchObject({
       rootRelativePath: './slash-commands',
@@ -99,8 +107,8 @@ describe('slashCommands source and bundle contract', () => {
     tempDirs.push(path.dirname(outputRoot));
     const bundled = await bundleLocalPlugin(plugin, outputRoot);
 
-    expect(bundled.claudeManifest.commands).toBe('./claude/commands');
-    expect(bundled.codexManifest.skills).toBe('./codex/skills');
+    expect(bundled.platformManifests.claude?.commands).toBe('./claude/commands');
+    expect(bundled.platformManifests.codex?.skills).toBe('./codex/skills');
     await expect(
       fs.pathExists(path.join(outputRoot, 'slash-commands', 'review.md')),
     ).resolves.toBe(false);
@@ -145,6 +153,45 @@ describe('slashCommands source and bundle contract', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'codex', 'skills', 'review', 'assets', 'review-64.svg')),
     ).resolves.toBe(true);
+  });
+
+  it('returns only the requested platform payloads from resolveSlashCommands', async () => {
+    const pluginRoot = fixturePath(
+      'codex-project-repo-managed',
+      'plugins',
+      'slashCommands-only',
+    );
+    const plugin = await readPluginManifest(pluginRoot);
+
+    const claudeOnly = await resolveSlashCommands(pluginRoot, plugin.manifest, {
+      targetPlatforms: targetPlatforms('claude'),
+    });
+    expect(claudeOnly?.commands).toHaveLength(1);
+    expect(claudeOnly?.commands[0]?.claude).toBeDefined();
+    expect(claudeOnly?.commands[0]?.codex).toBeUndefined();
+
+    const codexOnly = await resolveSlashCommands(pluginRoot, plugin.manifest, {
+      targetPlatforms: targetPlatforms('codex'),
+    });
+    expect(codexOnly?.commands).toHaveLength(1);
+    expect(codexOnly?.commands[0]?.claude).toBeUndefined();
+    expect(codexOnly?.commands[0]?.codex).toBeDefined();
+    expect(codexOnly?.commands[0]?.codex?.assets).toEqual([
+      {
+        sourceRelativePath: 'slash-commands/assets/review-16.svg',
+        generatedRelativePath: './assets/review-16.svg',
+      },
+      {
+        sourceRelativePath: 'slash-commands/assets/review-64.svg',
+        generatedRelativePath: './assets/review-64.svg',
+      },
+    ]);
+
+    const dualPlatform = await resolveSlashCommands(pluginRoot, plugin.manifest, {
+      targetPlatforms: targetPlatforms('claude', 'codex'),
+    });
+    expect(dualPlatform?.commands[0]?.claude).toBeDefined();
+    expect(dualPlatform?.commands[0]?.codex).toBeDefined();
   });
 
   it('fails fast when slash-commands exists without a slashCommands manifest declaration', async () => {
@@ -217,6 +264,130 @@ describe('slashCommands source and bundle contract', () => {
     await expect(readPluginManifest(leakedSyntaxPluginRoot)).rejects.toThrow(
       'Codex render still contains Claude-only syntax "$ARGUMENTS"',
     );
+  });
+
+  it('does not run Codex-only slashCommand validation for Claude-only targets', async () => {
+    const pluginRoot = await createTempPlugin(
+      {
+        name: 'slash-command-claude-only',
+        version: '0.1.0',
+        description: 'claude only slash commands',
+        slashCommands: './slash-commands',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+            products: ['CLAUDE'],
+          },
+        },
+        buildConfig: {
+          templates: {
+            include: ['slash-commands/*.md'],
+            vars: {
+              codexLeak: {
+                claude: false,
+                codex: true,
+              },
+            },
+          },
+        },
+      },
+      {
+        'slash-commands/review.md': [
+          '---',
+          'description: Review the repo.',
+          'codex:',
+          '  policy:',
+          '    allow_implicit_invocation: true',
+          '---',
+          '',
+          '# Review',
+          '',
+          '{{#if codexLeak}}Use $ARGUMENTS to filter the scope.{{/if}}',
+          '{{#unless codexLeak}}Keep the review broad.{{/unless}}',
+        ].join('\n'),
+      },
+    );
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const resolved = await resolveSlashCommands(pluginRoot, plugin.manifest, {
+      targetPlatforms: targetPlatforms('claude'),
+    });
+    expect(resolved?.commands[0]?.claude?.body).toContain('Keep the review broad.');
+    expect(resolved?.commands[0]?.codex).toBeUndefined();
+  });
+
+  it('still validates Codex render and frontmatter for Codex-only targets', async () => {
+    const forbiddenSyntaxPluginRoot = await createTempPlugin(
+      {
+        name: 'slash-command-codex-only-forbidden',
+        version: '0.1.0',
+        description: 'codex only slash commands',
+        slashCommands: './slash-commands',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+            products: ['CODEX'],
+          },
+        },
+      },
+      {
+        'slash-commands/review.md': [
+          '---',
+          'description: Review the repo.',
+          '---',
+          '',
+          'Use $ARGUMENTS to narrow the review.',
+        ].join('\n'),
+      },
+    );
+    const forbiddenSyntaxPlugin = await readPluginManifest(forbiddenSyntaxPluginRoot, { mode: 'bundle' });
+    await expect(
+      resolveSlashCommands(forbiddenSyntaxPluginRoot, forbiddenSyntaxPlugin.manifest, {
+        targetPlatforms: targetPlatforms('codex'),
+      }),
+    ).rejects.toThrow('Codex render still contains Claude-only syntax "$ARGUMENTS"');
+
+    const invalidFrontmatterPluginRoot = await createTempPlugin(
+      {
+        name: 'slash-command-codex-only-frontmatter',
+        version: '0.1.0',
+        description: 'codex only slash commands',
+        slashCommands: './slash-commands',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+            products: ['CODEX'],
+          },
+        },
+      },
+      {
+        'slash-commands/review.md': [
+          '---',
+          'description: Review the repo.',
+          'codex:',
+          '  policy:',
+          '    allow_implicit_invocation: true',
+          '---',
+          '',
+          '# Review',
+        ].join('\n'),
+      },
+    );
+    const invalidFrontmatterPlugin = await readPluginManifest(invalidFrontmatterPluginRoot, { mode: 'bundle' });
+    await expect(
+      resolveSlashCommands(invalidFrontmatterPluginRoot, invalidFrontmatterPlugin.manifest, {
+        targetPlatforms: targetPlatforms('codex'),
+      }),
+    ).rejects.toThrow('frontmatter.codex.policy');
   });
 
   it('rejects nested command directories, root non-Markdown files, and skill name conflicts', async () => {

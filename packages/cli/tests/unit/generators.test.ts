@@ -177,13 +177,16 @@ describe('local-plugin generator', () => {
 
     const result = await bundleLocalPlugin(plugin, outputRoot);
 
-    expect(result.claudeManifest).toMatchObject({
-      skills: './claude/skills',
-      hooks: './claude/hooks/hooks.json',
-      agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
-    });
-    expect(result.codexManifest).toMatchObject({
-      skills: './codex/skills',
+    expect(Object.keys(result.platformManifests).sort()).toEqual(['claude', 'codex']);
+    expect(result.platformManifests).toMatchObject({
+      claude: {
+        skills: './claude/skills',
+        hooks: './claude/hooks/hooks.json',
+        agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
+      },
+      codex: {
+        skills: './codex/skills',
+      },
     });
 
     await expect(
@@ -216,6 +219,103 @@ describe('local-plugin generator', () => {
         ],
       },
     });
+  });
+
+  it('generates only Codex bundle outputs for Codex-only plugins and removes stale Claude outputs', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    manifest.marketplace.policy.products = ['CODEX'];
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+    await fs.outputFile(path.join(outputRoot, '.claude-plugin', 'plugin.json'), '{"stale":true}\n', 'utf8');
+    await fs.outputFile(path.join(outputRoot, 'claude', 'stale.txt'), 'stale\n', 'utf8');
+
+    const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    expect(Object.keys(result.platformManifests)).toEqual(['codex']);
+    expect(result.platformManifests.codex).toMatchObject({
+      skills: './codex/skills',
+      mcpServers: './codex/.mcp.json',
+      apps: './codex/.app.json',
+    });
+    expect(result.platformManifests.claude).toBeUndefined();
+    await expect(fs.pathExists(path.join(outputRoot, '.codex-plugin', 'plugin.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills', 'commit', 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, '.claude-plugin'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(outputRoot, 'claude'))).resolves.toBe(false);
+  });
+
+  it('generates only Claude bundle outputs for Claude-only plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    manifest.marketplace.policy.products = ['CLAUDE'];
+    delete manifest.apps;
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await fs.remove(path.join(pluginRoot, '.app.json'));
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+
+    const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    expect(Object.keys(result.platformManifests)).toEqual(['claude']);
+    expect(result.platformManifests.claude).toMatchObject({
+      skills: './claude/skills',
+      mcpServers: './claude/.mcp.json',
+      agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
+    });
+    expect(result.platformManifests.codex).toBeUndefined();
+    await expect(fs.pathExists(path.join(outputRoot, '.claude-plugin', 'plugin.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, 'claude', 'skills', 'commit', 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(outputRoot, '.codex-plugin'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(outputRoot, 'codex'))).resolves.toBe(false);
+  });
+
+  it('bundles slashCommands only for the final supported platforms', async () => {
+    const pluginRoot = fixturePath(
+      'codex-project-repo-managed',
+      'plugins',
+      'slashCommands-only',
+    );
+
+    const claudeOnlyPlugin = await readPluginManifest(pluginRoot);
+    claudeOnlyPlugin.manifest.marketplace.policy.products = ['CLAUDE'];
+    const claudeOutputRoot = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-claude-bundle-')),
+      'bundle',
+    );
+    tempDirs.push(path.dirname(claudeOutputRoot));
+    const claudeResult = await bundleLocalPlugin(claudeOnlyPlugin, claudeOutputRoot);
+
+    expect(Object.keys(claudeResult.platformManifests)).toEqual(['claude']);
+    await expect(
+      fs.readFile(path.join(claudeOutputRoot, 'claude', 'commands', 'review.md'), 'utf8'),
+    ).resolves.toContain('argument-hint: "[path]"');
+    await expect(fs.pathExists(path.join(claudeOutputRoot, 'codex'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(claudeOutputRoot, '.codex-plugin'))).resolves.toBe(false);
+
+    const codexOnlyPlugin = await readPluginManifest(pluginRoot);
+    codexOnlyPlugin.manifest.marketplace.policy.products = ['CODEX'];
+    const codexOutputRoot = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-codex-bundle-')),
+      'bundle',
+    );
+    tempDirs.push(path.dirname(codexOutputRoot));
+    const codexResult = await bundleLocalPlugin(codexOnlyPlugin, codexOutputRoot);
+
+    expect(Object.keys(codexResult.platformManifests)).toEqual(['codex']);
+    await expect(
+      fs.readFile(path.join(codexOutputRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('Run `git status` and `git diff` yourself');
+    await expect(
+      fs.pathExists(path.join(codexOutputRoot, 'codex', 'skills', 'review', 'assets', 'review-16.svg')),
+    ).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(codexOutputRoot, 'claude'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(codexOutputRoot, '.claude-plugin'))).resolves.toBe(false);
   });
 
   it('renders Claude agents with frontmatter and Codex agents as valid role-file TOML', () => {
@@ -462,6 +562,39 @@ describe('local-plugin generator', () => {
     await expect(
       bundleLocalPlugin(plugin, path.join(repoRoot, 'out', 'git-commit')),
     ).rejects.toThrow('build-free mode');
+  });
+
+  it('rejects unsupported platform build fields before writing bundle outputs', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const plugin = await readPluginManifest(pluginRoot);
+
+    plugin.manifest.marketplace = {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'ON_INSTALL',
+        products: ['CODEX'],
+      },
+    };
+    plugin.manifest.buildConfig = {
+      manifestOverrides: {
+        claude: {
+          userConfig: {
+            theme: 'dark',
+          },
+        },
+      },
+    };
+
+    await expect(
+      bundleLocalPlugin(plugin, path.join(repoRoot, 'out', 'git-commit'), {
+        buildMode: 'prepared',
+      }),
+    ).rejects.toThrow(
+      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+    );
   });
 
   it('uses the staging manifest as the marketplace and bundle truth without modifying source', async () => {

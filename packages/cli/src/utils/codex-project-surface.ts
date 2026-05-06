@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { readRenderedCodexMcpServersFile } from './codex-config.js';
 import { resolvePlatformHookDefinitions } from './hooks-contract.js';
+import { supportsPlatform } from './platform-support.js';
 import { resolvePlatformEntries } from './platform-entries.js';
 
 export interface NormalizedCodexCapabilitySnapshot {
@@ -49,6 +50,10 @@ const CODEX_PROJECT_MANAGED_KIND_SET = new Set<CodexProjectManagedKind>(
 
 function trimDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
+}
+
+function pluginSupportsCodex(plugin: PluginMeta): boolean {
+  return supportsPlatform(plugin.manifest, 'codex');
 }
 
 export function normalizeCodexProjectManagedKinds(
@@ -103,6 +108,10 @@ export function codexCapabilitySnapshotHasRepoManagedArtifacts(
 }
 
 export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boolean {
+  if (!pluginSupportsCodex(plugin)) {
+    return false;
+  }
+
   if (scope === 'project') {
     return false;
   }
@@ -119,6 +128,10 @@ export function getCodexDynamicArtifactTargets(
   plugin: PluginMeta,
   options: { scope?: Scope; requiresCodexProjectConfig?: boolean } = {},
 ): PluginArtifactTargetDefinition[] {
+  if (!pluginSupportsCodex(plugin)) {
+    return [];
+  }
+
   return (plugin.manifest.artifacts?.targets ?? []).filter((target) => {
     if (target.platform !== 'codex') {
       return false;
@@ -148,6 +161,10 @@ function addCodexDynamicProjectManagedKinds(
 }
 
 export function getCodexProjectManagedKinds(plugin: PluginMeta): CodexProjectManagedKind[] {
+  if (!pluginSupportsCodex(plugin)) {
+    return [];
+  }
+
   const kinds = new Set<CodexProjectManagedKind>();
   if (plugin.manifest.skills || plugin.manifest.slashCommands) {
     kinds.add('skill');
@@ -183,6 +200,10 @@ export function hasRepoManagedArtifacts(plugin: PluginMeta): boolean {
 export function pluginDeclaresCodexProjectConfigBackedArtifacts(
   plugin: PluginMeta,
 ): boolean {
+  if (!pluginSupportsCodex(plugin)) {
+    return false;
+  }
+
   return Boolean(
     plugin.manifest.mcpServers ||
       resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex').length > 0 ||

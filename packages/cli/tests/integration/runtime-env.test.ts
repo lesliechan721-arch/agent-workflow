@@ -53,6 +53,7 @@ async function removePluginFromLocalMarketplace(
   awHome: string,
   pluginName: string,
 ): Promise<void> {
+  await fs.remove(path.join(awHome, 'plugins', pluginName));
   for (const manifestPath of [
     path.join(awHome, '.claude-plugin', 'marketplace.json'),
     path.join(awHome, '.agents', 'plugins', 'marketplace.json'),

@@ -197,6 +197,45 @@ describe('artifact plan validation', () => {
     });
   });
 
+  it('accepts Codex dynamic artifact declarations on dual-platform manifests and keeps Claude plans empty', () => {
+    const baseManifest = createManifest();
+    const manifest = createManifest({
+      marketplace: {
+        ...baseManifest.marketplace,
+        policy: {
+          ...baseManifest.marketplace.policy,
+          products: ['CODEX', 'CLAUDE'],
+        },
+      },
+    });
+
+    const validatedCodex = validateArtifactPlan({
+      manifest,
+      plan: createPresentPlan(),
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    });
+    expect(validatedCodex.artifacts.map((artifact) => artifact.target)).toEqual([
+      'codex.developerInstructionsBlock',
+      'codex.agentRole',
+    ]);
+
+    const validatedClaude = validateArtifactPlan({
+      manifest,
+      plan: {
+        version: 1,
+        artifacts: [],
+      },
+      platform: 'claude',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    });
+    expect(validatedClaude.artifacts).toEqual([]);
+  });
+
   it('rejects unknown targets, refresh keys, states, declarations, and project write surfaces', () => {
     const manifest = createManifest();
     const unknownTargetPlan = createPresentPlan();

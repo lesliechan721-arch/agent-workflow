@@ -9,6 +9,7 @@ import {
   buildCommandCandidates,
   discoverManagedPluginNames,
 } from '../../src/commands/discovery.js';
+import { initCommand } from '../../src/commands/init.js';
 import { statusCommand } from '../../src/commands/status.js';
 import type { InstalledLedger } from '../../src/types.js';
 import {
@@ -73,6 +74,45 @@ async function makeWorkspace(): Promise<{
   };
 }
 
+async function makeWorkspaceWithMutator(
+  mutateRepo: (repoRoot: string) => Promise<void>,
+): Promise<{
+  repoRoot: string;
+  awHome: string;
+  codexHome: string;
+  claudeHome: string;
+  env: NodeJS.ProcessEnv;
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-discovery-'));
+  tempDirs.push(root);
+
+  const repoRoot = path.join(root, 'repo');
+  await fs.copy(fixturePath('repo-template'), repoRoot);
+  await mutateRepo(repoRoot);
+  await fs.ensureDir(path.join(repoRoot, '.git'));
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+  const env = {
+    ...process.env,
+    AW_HOME: path.join(root, 'aw-home'),
+    AW_CODEX_HOME: path.join(root, 'codex-home'),
+    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+    AW_FORCE_CODEX_AVAILABLE: '1',
+    AW_FORCE_CLAUDE_AVAILABLE: '1',
+    PATH: '',
+  } as NodeJS.ProcessEnv;
+
+  return {
+    repoRoot,
+    awHome: env.AW_HOME!,
+    codexHome: env.AW_CODEX_HOME!,
+    claudeHome: env.AW_CLAUDE_HOME!,
+    env,
+  };
+}
+
 function scopeRecord(capabilitySnapshot: Record<string, unknown>) {
   return {
     managed: true,
@@ -80,6 +120,42 @@ function scopeRecord(capabilitySnapshot: Record<string, unknown>) {
     resolvedVersion: '0.1.0',
     capabilitySnapshot,
   };
+}
+
+async function addCodexOnlyNativeHookPlugin(
+  repoRoot: string,
+  pluginName = 'prompt-guard',
+): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      name: pluginName,
+      version: '0.1.0',
+      description: 'Codex native hook only test plugin',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX'],
+        },
+      },
+      extensions: {
+        nativeHooks: {
+          codex: [
+            {
+              event: 'UserPromptSubmit',
+              command: `echo ${pluginName} prompt`,
+            },
+          ],
+        },
+      },
+    },
+    { spaces: 2 },
+  );
 }
 
 async function writeCodexActiveCache(
@@ -145,6 +221,34 @@ describe('managed plugin discovery', () => {
       selectable: true,
     });
     expect(candidates[0].target.source).toBe('historical');
+  });
+
+  it('keeps single-platform plugins visible in current catalog after aw init --force', async () => {
+    const { repoRoot, env } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => addCodexOnlyNativeHookPlugin(workspaceRepoRoot),
+    );
+    await initCommand({ force: true, env });
+
+    const discovered = await discoverManagedPluginNames({
+      cwd: repoRoot,
+      pluginNames: ['prompt-guard'],
+      env,
+    });
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      pluginName: 'prompt-guard',
+      currentCatalog: {
+        catalog: {
+          source: 'local',
+        },
+        currentPlugin: {
+          manifest: {
+            name: 'prompt-guard',
+          },
+        },
+      },
+    });
   });
 
   it('anchors Codex project tracking evidence to the repo root when discovery runs from a subdirectory', async () => {
@@ -229,6 +333,56 @@ describe('managed plugin discovery', () => {
     expect(candidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
     expect(candidates[0].target.plugin.manifest.mcpServers).toBe('./historical-mcp.json');
     expect(candidates[0].target.plugin.manifest.extensions).toBeUndefined();
+  });
+
+  it('keeps upgrade and uninstall diagnostics when historical evidence points to a now-unsupported platform', async () => {
+    const { repoRoot, env } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => addCodexOnlyNativeHookPlugin(workspaceRepoRoot),
+    );
+    await initCommand({ force: true, env });
+
+    const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
+    const ledger: InstalledLedger = {
+      ...createAvailableLedger(),
+      plugins: {
+        'prompt-guard': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            claude: {
+              projectScopes: {
+                [claudeProjectKey]: scopeRecord({
+                  managedExtensions: ['hooks'],
+                }),
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, env);
+
+    for (const command of ['upgrade', 'uninstall'] as const) {
+      const candidates = await buildCommandCandidates({
+        command,
+        cwd: repoRoot,
+        scopeFilter: 'project',
+        platformFilter: 'claude',
+        pluginNames: ['prompt-guard'],
+        env,
+      });
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({
+        command,
+        pluginName: 'prompt-guard',
+        platform: 'claude',
+        scope: 'project',
+        selectable: false,
+        disabledReason: '插件当前目录不支持 CLAUDE。',
+      });
+      expect(candidates[0].target.source).toBe('historical');
+      expect(candidates[0].target.currentPlugin?.manifest.name).toBe('prompt-guard');
+    }
   });
 
   it('reuses artifact-aware historical fallback for Codex dynamic uninstall candidates', async () => {

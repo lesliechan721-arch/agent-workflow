@@ -36,12 +36,27 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
-async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string }> {
+async function updateFixturePluginManifest(
+  repoRoot: string,
+  updater: (manifest: Record<string, any>) => void,
+): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  updater(manifest);
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function makeWorkspace(
+  manifestUpdater?: (manifest: Record<string, any>) => void,
+): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-local-marketplace-'));
   tempDirs.push(root);
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  if (manifestUpdater) {
+    await updateFixturePluginManifest(repoRoot, manifestUpdater);
+  }
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
   const awHome = path.join(root, 'aw-home');
@@ -99,6 +114,32 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('refreshes ~/.aw from platform-filtered embedded bundles without breaking layout validation', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+    });
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+    await expect(
+      fs.pathExists(path.join(awHome, 'plugins', 'git-commit', '.claude-plugin')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(awHome, 'plugins', 'git-commit', 'claude')),
+    ).resolves.toBe(false);
+
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# changed for filtered refresh\n',
+      'utf8',
+    );
+    await ensureLocalMarketplace(process.env);
+
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
   it('initializes ~/.aw from the embedded bundle and preserves a valid ledger on refresh', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;

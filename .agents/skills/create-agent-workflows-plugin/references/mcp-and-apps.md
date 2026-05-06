@@ -158,7 +158,7 @@ plugins/<name>/
 }
 ```
 
-路径规则与 `mcpServers` 相同。
+路径规则与 `mcpServers` 相同。`apps` 是 Codex 能力，因此插件必须支持 Codex；`marketplace.policy.products` 如果收窄为 `["CLAUDE"]`，再声明 `apps` 就是矛盾配置，会在 manifest/build 校验阶段失败。
 
 ### 文件格式
 
@@ -194,7 +194,7 @@ plugins/<name>/
 
 - `.mcp.json` 中的 `mcpServers` 配置透传到 Claude runtime manifest
 - Claude Code 原生支持 MCP 服务器的启动和生命周期管理
-- `.app.json` 当前不被 Claude 读取
+- `.app.json` 当前不被 Claude 读取；Claude-only 插件不能声明 `apps`
 
 ### Codex
 
@@ -209,6 +209,7 @@ plugins/<name>/
 - `.mcp.json` 和 `.app.json` 是独立的 JSON 文件，不嵌入 `plugin.json`
 - 文件存在时必须在 manifest 中声明对应字段，反之亦然
 - 路径字段只能是单个字符串，不能是数组或对象
+- `apps` 要求插件最终支持 Codex；`products=["CLAUDE"] + apps` 不是“Claude 忽略 app”，而是直接失败
 - Codex project scope 写入 MCP 时会完整透传 string / boolean / number / array / object；`null` 因 TOML 无等价表示会在写入前失败
 - 脚手架脚本支持 `--with-mcp` 和 `--with-apps` 标志；`--with-apps` 会生成带示例 connector id 的最小文件，作者需要替换成真实 id
 - `.mcp.json` 和 `.app.json` 作为模板化 JSON 原生资产走同一套规则：命中 `buildConfig.templates` 时源码层不强制 raw JSON 可解析，最终渲染产物必须分别满足 `mcpServers` 对象和 `apps.*.id` 非空字符串。详见 `references/build-config-spec.md`

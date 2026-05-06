@@ -761,7 +761,7 @@ async function createTargetForEvidence(
   evidence: DiscoveryEvidenceSummary,
 ): Promise<ResolvedPluginTarget> {
   const currentPlugin = record.currentCatalog?.currentPlugin;
-  if (currentPlugin) {
+  if (currentPlugin && pluginSupportsPlatform(currentPlugin, evidence.platform)) {
     return {
       pluginName: record.pluginName,
       plugin: currentPlugin,
@@ -771,7 +771,7 @@ async function createTargetForEvidence(
     };
   }
 
-  return createHistoricalPluginTarget(
+  const historicalTarget = await createHistoricalPluginTarget(
     evidence.executionCwd,
     evidence.scope,
     record.pluginName,
@@ -790,6 +790,16 @@ async function createTargetForEvidence(
         ),
     },
   );
+
+  if (!currentPlugin) {
+    return historicalTarget;
+  }
+
+  return {
+    ...historicalTarget,
+    currentPlugin,
+    embeddedPlugin: record.currentCatalog?.embeddedPlugin,
+  };
 }
 
 function evidenceHasActionableSource(evidence: DiscoveryEvidenceSummary): boolean {
@@ -952,7 +962,11 @@ export async function resolveDiscoveredPluginTargets(
         continue;
       }
       const target = await createTargetForEvidence(context.env, record, evidence);
-      if (target.currentPlugin && !pluginSupportsPlatform(target.currentPlugin, evidence.platform)) {
+      if (
+        target.source === 'currentCatalog' &&
+        target.currentPlugin &&
+        !pluginSupportsPlatform(target.currentPlugin, evidence.platform)
+      ) {
         continue;
       }
       targets.push({

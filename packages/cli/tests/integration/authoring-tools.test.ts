@@ -79,12 +79,58 @@ async function runValidatePlugin(pluginDir: string) {
   });
 }
 
+async function writeSourcePlugin(
+  root: string,
+  name: string,
+  manifest: Record<string, unknown>,
+  files: Record<string, string | Record<string, unknown>> = {},
+): Promise<{ pluginDir: string; manifestPath: string }> {
+  const pluginDir = path.join(root, name);
+  const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+
+  await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    const absolutePath = path.join(pluginDir, relativePath);
+    await fs.ensureDir(path.dirname(absolutePath));
+    if (typeof content === 'string') {
+      await fs.writeFile(absolutePath, content, 'utf8');
+    } else {
+      await fs.writeJson(absolutePath, content, { spaces: 2 });
+    }
+  }
+
+  return { pluginDir, manifestPath };
+}
+
+function createBaseManifest(
+  name: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    name,
+    version: '0.1.0',
+    description: `${name} test plugin.`,
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+      },
+    },
+    ...extra,
+  };
+}
+
 async function writeDynamicArtifactPlugin(
   root: string,
   options: {
     rendererRoleKey?: string;
     includeRoleKey?: boolean;
     omitSkillPolicy?: boolean;
+    products?: string[] | null;
   } = {},
 ): Promise<{ pluginDir: string; manifestPath: string }> {
   const pluginDir = path.join(root, 'dynamic-authoring-test');
@@ -106,7 +152,7 @@ async function writeDynamicArtifactPlugin(
       policy: {
         installation: 'AVAILABLE',
         authentication: 'NONE',
-        products: ['CODEX'],
+        ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
       },
     },
     scripts: {
@@ -223,6 +269,42 @@ async function writeDynamicArtifactPlugin(
   );
 
   return { pluginDir, manifestPath };
+}
+
+async function writeSlashCommandPlugin(
+  root: string,
+  options: {
+    name: string;
+    products?: string[] | null;
+    commandFileName?: string;
+    commandContent: string;
+  },
+): Promise<{ pluginDir: string; manifestPath: string }> {
+  const { name, commandFileName = 'review.md', commandContent } = options;
+  return writeSourcePlugin(
+    root,
+    name,
+    createBaseManifest(name, {
+      slashCommands: './slash-commands',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
+        },
+      },
+      interface: {
+        displayName: name,
+        shortDescription: `${name} slash command fixture`,
+        capabilities: ['Slash Commands'],
+      },
+    }),
+    {
+      [path.posix.join('slash-commands', commandFileName)]: commandContent,
+    },
+  );
 }
 
 afterEach(async () => {
@@ -977,14 +1059,17 @@ describe('authoring tools', () => {
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).toContain('`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集');
     expect(extensionsSpecDoc).toContain('公共 `session_start` 只覆盖 `startup / resume / clear`');
-    expect(extensionsSpecDoc).toContain('`extensions.nativeHooks.<agent>`');
+    expect(extensionsSpecDoc).toContain('`extensions.nativeHooks.<platform>`');
     expect(extensionsSpecDoc).toContain('matcherless 事件不要写 `matcher`');
     expect(extensionsSpecDoc).toContain('`agentOverrides` 不用于 `nativeHooks`');
     expect(extensionsSpecDoc).toContain('`session_stop` 已从公共 hook 中移除');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
-    expect(slashCommandsDoc).toContain('公共 `slashCommands` 是源码层唯一的跨平台手动命令作者入口');
-    expect(slashCommandsDoc).toContain('Claude runtime 得到 generated `claude/commands/<name>.md`');
+    expect(slashCommandsDoc).toMatch(/公共 `slashCommands` 是源码层唯一的(?:跨平台)?手动命令作者入口/);
+    expect(
+      slashCommandsDoc.includes('Claude runtime 得到 generated `claude/commands/<name>.md`')
+      || slashCommandsDoc.includes('支持 Claude 时得到原生 `/command`'),
+    ).toBe(true);
     expect(slashCommandsDoc).toContain('Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`');
     expect(claudeOnlyDoc).toContain('公共 `slashCommands` 不是 Claude 专属能力');
     expect(claudeOnlyDoc).not.toContain('## 公共 slashCommands');
@@ -1351,6 +1436,37 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.js validates artifact target platforms against supported products', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
+    tempDirs.push(tempRoot);
+
+    const omittedProducts = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'omitted-products'),
+      { products: null },
+    );
+    await expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const emptyProducts = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'empty-products'),
+      { products: [] },
+    );
+    await expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const claudeOnly = await writeDynamicArtifactPlugin(
+      path.join(tempRoot, 'claude-only-products'),
+      { products: ['claude'] },
+    );
+    await expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'artifacts.targets[0].platform requires CODEX support',
+      ),
+    });
+  });
+
   it('validate_plugin.js rejects dynamic role metadata and skill trigger policy mistakes', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-role-'));
     tempDirs.push(tempRoot);
@@ -1518,6 +1634,149 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.js enforces platform-scoped authoring contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-platform-conflicts-'));
+    tempDirs.push(tempRoot);
+
+    const cases: Array<{
+      name: string;
+      products: string[];
+      extra: Record<string, unknown>;
+      files?: Record<string, string | Record<string, unknown>>;
+      expected?: string;
+    }> = [
+      {
+        name: 'codex-only-file-rules',
+        products: ['codex'],
+        extra: {
+          buildConfig: {
+            fileRules: {
+              claude: {
+                include: ['skills/**'],
+              },
+            },
+          },
+        },
+        expected: 'buildConfig.fileRules.claude requires CLAUDE support',
+      },
+      {
+        name: 'claude-only-manifest-overrides',
+        products: ['claude'],
+        extra: {
+          buildConfig: {
+            manifestOverrides: {
+              codex: {},
+            },
+          },
+        },
+        expected: 'buildConfig.manifestOverrides.codex requires CODEX support',
+      },
+      {
+        name: 'claude-only-apps',
+        products: ['claude'],
+        extra: {
+          apps: './.app.json',
+        },
+        files: {
+          '.app.json': {
+            apps: {
+              example: {
+                id: 'replace-with-real-connector-id',
+              },
+            },
+          },
+        },
+        expected: 'apps requires CODEX support',
+      },
+      {
+        name: 'claude-only-native-hooks',
+        products: ['claude'],
+        extra: {
+          extensions: {
+            nativeHooks: {
+              codex: [
+                {
+                  event: 'Stop',
+                  command: 'echo codex stop',
+                },
+              ],
+            },
+          },
+        },
+        expected: 'extensions.nativeHooks.codex requires CODEX support',
+      },
+      {
+        name: 'claude-only-agent-overrides',
+        products: ['claude'],
+        extra: {
+          extensions: {
+            hooks: [
+              {
+                event: 'before_tool',
+                matcher: '*',
+                command: 'echo shared hook',
+                agentOverrides: {
+                  codex: {
+                    command: 'echo codex-only hook',
+                  },
+                },
+              },
+            ],
+          },
+        },
+        expected: 'extensions.hooks[0].agentOverrides.codex requires CODEX support',
+      },
+      {
+        name: 'claude-only-null-agent-overrides',
+        products: ['claude'],
+        extra: {
+          extensions: {
+            hooks: [
+              {
+                event: 'before_tool',
+                matcher: '*',
+                command: 'echo shared hook',
+                agentOverrides: {
+                  codex: null,
+                },
+              },
+            ],
+          },
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { pluginDir } = await writeSourcePlugin(
+        tempRoot,
+        testCase.name,
+        createBaseManifest(testCase.name, {
+          marketplace: {
+            category: 'workflow',
+            strict: true,
+            policy: {
+              installation: 'AVAILABLE',
+              authentication: 'NONE',
+              products: testCase.products,
+            },
+          },
+          ...testCase.extra,
+        }),
+        testCase.files,
+      );
+
+      if (testCase.expected) {
+        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining(testCase.expected),
+        });
+      } else {
+        await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      }
+    }
+  });
+
   it('validate_plugin.js passes on the reference code-review example', async () => {
     const scriptPath = path.join(
       repoRoot(),
@@ -1586,6 +1845,93 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('codex.interface.icon_small'),
+    });
+  });
+
+  it('validate_plugin.js scopes slashCommands validation to the final supported platforms', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-products-'));
+    tempDirs.push(tempRoot);
+
+    const pluginDir = path.join(tempRoot, 'slash-commands-products');
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'slash-commands'));
+    await fs.writeJson(manifestPath, {
+      name: 'slash-commands-products',
+      version: '0.1.0',
+      description: 'Test plugin for slash command platform gating.',
+      slashCommands: './slash-commands',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CLAUDE'],
+        },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'slash-commands', 'review.md'),
+      [
+        '---',
+        'description: Review the repository state.',
+        'claude:',
+        '  argument-hint: "[path]"',
+        '---',
+        '',
+        'Use $ARGUMENTS to narrow the review scope.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.marketplace.policy.products = ['CODEX'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('Codex render still contains Claude-only syntax "$ARGUMENTS"'),
+    });
+  });
+
+  it('validate_plugin.js only validates slash command frontmatter for supported platforms', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-frontmatter-'));
+    tempDirs.push(tempRoot);
+
+    const codexOnly = await writeSlashCommandPlugin(path.join(tempRoot, 'codex-only'), {
+      name: 'slash-codex-only',
+      products: ['codex'],
+      commandContent: [
+        '---',
+        'description: Validate Codex-only slash command rendering.',
+        'claude:',
+        '  shell: fish',
+        'codex:',
+        '  description: Manual Codex workflow.',
+        '---',
+        '',
+        '# Review',
+        '',
+        'Run `git status` and summarize the current change set.',
+      ].join('\n'),
+    });
+
+    await expect(runValidatePlugin(codexOnly.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const manifest = await fs.readJson(codexOnly.manifestPath);
+    manifest.marketplace.policy.products = ['claude', 'codex'];
+    await fs.writeJson(codexOnly.manifestPath, manifest, { spaces: 2 });
+
+    await expect(runValidatePlugin(codexOnly.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'slash-commands/review.md frontmatter.claude.shell must be "bash" or "powershell"',
+      ),
     });
   });
 

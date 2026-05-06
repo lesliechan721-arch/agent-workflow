@@ -64,11 +64,21 @@ import {
   DEFAULT_SLASH_COMMANDS_PATH,
   resolveSlashCommands,
 } from './slash-commands.js';
+import {
+  formatMarketplaceProductsForError,
+  normalizeMarketplaceProductToken,
+  resolveSupportedPlatforms,
+  supportsPlatform,
+} from './platform-support.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
+  claude: 'CLAUDE',
+  codex: 'CODEX',
+};
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -130,10 +140,6 @@ function normalizeComparableStringArray(value: string[] | undefined): string[] |
   return [...new Set(value.map((entry) => entry.trim()).filter(Boolean))];
 }
 
-function normalizeManifestProductToken(value: string): string {
-  return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
-}
-
 function normalizeMarketplaceProducts(value: unknown, fieldName: string): string[] | undefined {
   if (value === undefined) {
     return undefined;
@@ -141,13 +147,144 @@ function normalizeMarketplaceProducts(value: unknown, fieldName: string): string
 
   const products = ensureStringArray(value, fieldName);
   for (const [index, product] of products.entries()) {
-    const normalized = normalizeManifestProductToken(product);
+    const normalized = normalizeMarketplaceProductToken(product);
     if (!MANIFEST_POLICY_PRODUCTS.has(normalized)) {
       throw new Error(`Invalid ${fieldName}[${index}]: expected one of "CODEX" or "CLAUDE".`);
     }
   }
 
   return normalizeComparableStringArray(products);
+}
+
+export function assertPlatformFieldSupported(options: {
+  pluginName: string;
+  manifest: PluginManifestSource;
+  fieldPath: string;
+  requiredPlatform: PlatformName;
+}): void {
+  if (supportsPlatform(options.manifest, options.requiredPlatform)) {
+    return;
+  }
+
+  throw new Error(
+    `Invalid plugin "${options.pluginName}": ${options.fieldPath} requires ${PLATFORM_PRODUCT_BY_NAME[options.requiredPlatform]} support, but ${formatMarketplaceProductsForError(options.manifest)}.`,
+  );
+}
+
+function hasNonEmptyPlatformOverride(
+  value: Record<string, unknown> | null | undefined,
+): boolean {
+  return value !== null && value !== undefined && Object.keys(value).length > 0;
+}
+
+function assertAgentOverridePlatformsSupported(options: {
+  pluginName: string;
+  manifest: PluginManifestSource;
+  fieldPath: string;
+  agentOverrides: PlatformAgentOverrides<unknown> | undefined;
+}): void {
+  for (const platform of ['claude', 'codex'] as const) {
+    if (
+      hasNonEmptyPlatformOverride(
+        options.agentOverrides?.[platform] as Record<string, unknown> | null | undefined,
+      )
+    ) {
+      assertPlatformFieldSupported({
+        pluginName: options.pluginName,
+        manifest: options.manifest,
+        fieldPath: `${options.fieldPath}.agentOverrides.${platform}`,
+        requiredPlatform: platform,
+      });
+    }
+  }
+}
+
+export function assertManifestPlatformSupport(
+  pluginName: string,
+  manifest: PluginManifestSource,
+): void {
+  if (manifest.buildConfig?.fileRules?.claude !== undefined) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'buildConfig.fileRules.claude',
+      requiredPlatform: 'claude',
+    });
+  }
+  if (manifest.buildConfig?.fileRules?.codex !== undefined) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'buildConfig.fileRules.codex',
+      requiredPlatform: 'codex',
+    });
+  }
+  if (manifest.buildConfig?.manifestOverrides?.claude !== undefined) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'buildConfig.manifestOverrides.claude',
+      requiredPlatform: 'claude',
+    });
+  }
+  if (manifest.buildConfig?.manifestOverrides?.codex !== undefined) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'buildConfig.manifestOverrides.codex',
+      requiredPlatform: 'codex',
+    });
+  }
+  if (manifest.apps) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'apps',
+      requiredPlatform: 'codex',
+    });
+  }
+
+  if ((manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'extensions.nativeHooks.claude',
+      requiredPlatform: 'claude',
+    });
+  }
+  if ((manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0) {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: 'extensions.nativeHooks.codex',
+      requiredPlatform: 'codex',
+    });
+  }
+
+  for (const [fieldName, entries] of [
+    ['extensions.instructions', manifest.extensions?.instructions],
+    ['extensions.permissions', manifest.extensions?.permissions],
+    ['extensions.hooks', manifest.extensions?.hooks],
+    ['extensions.agents', manifest.extensions?.agents],
+  ] as const) {
+    entries?.forEach((entry, index) => {
+      assertAgentOverridePlatformsSupported({
+        pluginName,
+        manifest,
+        fieldPath: `${fieldName}[${index}]`,
+        agentOverrides: entry.agentOverrides,
+      });
+    });
+  }
+
+  manifest.artifacts?.targets?.forEach((target, index) => {
+    assertPlatformFieldSupported({
+      pluginName,
+      manifest,
+      fieldPath: `artifacts.targets[${index}].platform`,
+      requiredPlatform: target.platform,
+    });
+  });
 }
 
 export function normalizePluginRelativePath(
@@ -1741,6 +1878,8 @@ export function validatePluginManifest(
     manifest.artifacts = normalizeArtifacts(input.artifacts, 'artifacts', manifest.config);
   }
 
+  assertManifestPlatformSupport(manifest.name, manifest);
+
   return manifest;
 }
 
@@ -1871,7 +2010,9 @@ export async function validateSourcePluginManifest(
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillTriggerPolicies(pluginRoot, manifest),
-    resolveSlashCommands(pluginRoot, manifest),
+    resolveSlashCommands(pluginRoot, manifest, {
+      targetPlatforms: resolveSupportedPlatforms(manifest),
+    }),
   ]);
   return manifest;
 }

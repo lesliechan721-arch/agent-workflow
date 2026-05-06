@@ -29,11 +29,87 @@ async function readManifest(repoRoot: string): Promise<Record<string, unknown>> 
   return fs.readJson(path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'));
 }
 
+function pluginRoot(repoRoot: string): string {
+  return path.join(repoRoot, 'plugins', 'git-commit');
+}
+
+function pluginManifestPath(repoRoot: string): string {
+  return path.join(pluginRoot(repoRoot), '.agents-plugin', 'plugin.json');
+}
+
+function pluginScriptPath(repoRoot: string, fileName: string): string {
+  return path.join(pluginRoot(repoRoot), 'scripts', fileName);
+}
+
 async function writeManifest(repoRoot: string, manifest: Record<string, unknown>): Promise<void> {
-  await fs.writeJson(
-    path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
-    manifest,
-    { spaces: 2 },
+  await fs.writeJson(pluginManifestPath(repoRoot), manifest, { spaces: 2 });
+}
+
+async function configureTestManifest(options: {
+  repoRoot: string;
+  products?: string[];
+  testEntries: string[];
+  buildPath?: string;
+}): Promise<void> {
+  const manifest = await readManifest(options.repoRoot);
+  const marketplace = manifest.marketplace as Record<string, unknown>;
+  const policy = marketplace.policy as Record<string, unknown>;
+  policy.products = options.products;
+  if (options.products && !options.products.includes('CODEX')) {
+    delete manifest.apps;
+    await fs.remove(path.join(pluginRoot(options.repoRoot), '.app.json'));
+  }
+  manifest.scripts = {
+    tests: {
+      node: options.testEntries,
+    },
+    ...(options.buildPath
+      ? {
+          node: {
+            build: {
+              runner: 'node',
+              path: options.buildPath,
+            },
+          },
+        }
+      : {}),
+  };
+  await writeManifest(options.repoRoot, manifest);
+}
+
+async function writeNodeTestFile(repoRoot: string, fileName: string, source: string): Promise<void> {
+  await fs.outputFile(pluginScriptPath(repoRoot, fileName), source, 'utf8');
+}
+
+async function writePlatformProbeTest(repoRoot: string, fileName: string): Promise<void> {
+  await writeNodeTestFile(
+    repoRoot,
+    fileName,
+    [
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import { readFile } from "node:fs/promises";',
+      'test("platform probe", async () => {',
+      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      '  assert.equal(context.platform, process.env.AW_PLUGIN_PLATFORM);',
+      '  console.log(`platform=${context.platform}`);',
+      '});',
+    ].join('\n'),
+  );
+}
+
+async function writeProductRewriteBuild(repoRoot: string, fileName: string, products: string[]): Promise<void> {
+  await writeNodeTestFile(
+    repoRoot,
+    fileName,
+    [
+      'import { readFile, writeFile } from "node:fs/promises";',
+      '',
+      'const manifestUrl = new URL("../.agents-plugin/plugin.json", import.meta.url);',
+      'const manifest = JSON.parse(await readFile(manifestUrl, "utf8"));',
+      `manifest.marketplace.policy.products = ${JSON.stringify(products)};`,
+      'await writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\\n`, "utf8");',
+    ].join('\n'),
   );
 }
 
@@ -265,6 +341,185 @@ describe('plugin script test runner', () => {
     expect(output.readStdout()).toContain('git-commit / codex: passed');
     expect(output.readStdout()).toContain('git-commit / claude: passed');
     expect(output.readStderr()).toBe('');
+  });
+
+  it('uses the staging manifest supported platforms for --platform auto on codex-only plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStdout()).not.toContain('git-commit / claude');
+    expect(output.readStderr()).toBe('');
+  });
+
+  it('uses the staging manifest supported platforms for --platform auto on claude-only plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CLAUDE'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / claude: passed');
+    expect(output.readStdout()).not.toContain('git-commit / codex');
+    expect(output.readStderr()).toBe('');
+  });
+
+  it('uses the full staging manifest supported platform set for --platform auto on dual-platform plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX', 'CLAUDE'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStdout()).toContain('git-commit / claude: passed');
+    expect(output.readStderr()).toBe('');
+  });
+
+  it('fails fast for unsupported explicit platform selections before runtime bundling', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/missing-platform-probe.test.mjs'],
+    });
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'claude'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(output.readStdout()).toBe('');
+    expect(output.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=claude');
+    expect(output.readStderr()).toContain('marketplace.policy.products=[CODEX]');
+    expect(output.readStderr()).toContain('supported platforms=codex');
+    expect(output.readStderr()).not.toContain('missing-platform-probe');
+  });
+
+  it('rejects --platform both for codex-only plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(output.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=both');
+    expect(output.readStderr()).toContain('marketplace.policy.products=[CODEX]');
+    expect(output.readStderr()).toContain('supported platforms=codex');
+  });
+
+  it('rejects unsupported explicit codex and both selections for claude-only plugins', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CLAUDE'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+
+    const codexOutput = captureOutput();
+    const codexExitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      stdout: codexOutput.stdout,
+      stderr: codexOutput.stderr,
+    });
+    expect(codexExitCode).toBe(1);
+    expect(codexOutput.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=codex');
+    expect(codexOutput.readStderr()).toContain('marketplace.policy.products=[CLAUDE]');
+    expect(codexOutput.readStderr()).toContain('supported platforms=claude');
+
+    const bothOutput = captureOutput();
+    const bothExitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
+      repoRoot,
+      stdout: bothOutput.stdout,
+      stderr: bothOutput.stderr,
+    });
+    expect(bothExitCode).toBe(1);
+    expect(bothOutput.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=both');
+    expect(bothOutput.readStderr()).toContain('marketplace.policy.products=[CLAUDE]');
+    expect(bothOutput.readStderr()).toContain('supported platforms=claude');
+  });
+
+  it('uses the staging manifest products when source and staging products differ', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      products: ['CLAUDE'],
+      testEntries: ['./scripts/platform-probe.test.mjs'],
+      buildPath: './scripts/rewrite-products.mjs',
+    });
+    await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
+    await writeProductRewriteBuild(repoRoot, 'rewrite-products.mjs', ['CODEX']);
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStdout()).not.toContain('git-commit / claude');
+    expect(output.readStderr()).toBe('');
+    await expect(readManifest(repoRoot)).resolves.toMatchObject({
+      marketplace: {
+        policy: {
+          products: ['CLAUDE'],
+        },
+      },
+    });
   });
 
   it('rejects undeclared bare package imports in tests without scripts.node', async () => {

@@ -344,12 +344,15 @@ POSIX 运行时会使用隔离 `HOME` / `TMPDIR`；Windows 运行时会使用隔
 
 ```bash
 pnpm plugin:test <plugin>
-pnpm plugin:test <plugin> --platform both --scope project
+pnpm plugin:test <plugin> --platform codex --scope project
+pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:test <plugin> --test-name "reads config"
 pnpm plugin:test --all
 ```
 
-`pnpm plugin:test` 会先编译 CLI，再准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。无匹配测试时是 skipped/no-op，退出码为 0。
+`pnpm plugin:test` 会先编译 CLI，再用 staging 模式准备 source，并从 build 后 staging manifest 解析最终支持平台。`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能在最终 `marketplace.policy.products` 允许的平台内缩小目标，不能越过 build 裁剪。`both` 只适用于同时支持 Claude 和 Codex 的插件，单平台插件显式传 `both` 会 fail fast。
+
+校验通过后，runner 会准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。无匹配测试时是 skipped/no-op，退出码为 0。
 
 测试进程的 `process.cwd()`、`AW_PLUGIN_CONTEXT.cwd` 和 helper fallback 看到的是同一个隔离项目根，不是源码仓库。测试中需要读源码 fixture 时用 `AW_PLUGIN_CONTEXT.sourceRoot`；运行 helper/lifecycle 时应从临时 bundle 里的相对路径 import 或执行，不要从 `sourceRoot` 直接 import runtime 文件。
 

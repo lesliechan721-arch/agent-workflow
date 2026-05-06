@@ -11,6 +11,8 @@ import {
   collectSensitivePluginConfigValues,
   coercePluginConfigValue,
   discoverPlugins,
+  formatMarketplaceProductsForError,
+  formatSupportedPlatforms,
   prepareLocalPluginBundleSource,
   readPluginManifest,
   redactPluginScriptOutput,
@@ -18,6 +20,7 @@ import {
   resolveCliPackageRoot,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
+  resolveSupportedPlatforms,
   scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from './plugin-staging.js';
@@ -56,6 +59,16 @@ interface PreparedPluginTestBundle {
   cleanup(): Promise<void>;
 }
 
+interface StagedPluginTestBundleSource {
+  pluginName: string;
+  sourceRoot: string;
+  baselineRoot: string;
+  bundleRoot: string;
+  stagedPlugin: PluginMeta;
+  manifest: PluginManifestSource;
+  cleanup(): Promise<void>;
+}
+
 interface NodeTestResult {
   exitCode: number | null;
   stdout: string;
@@ -64,6 +77,7 @@ interface NodeTestResult {
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const REPO_ROOT_ENV = 'AW_PLUGIN_TEST_REPO_ROOT';
+const TEST_PLATFORM_ORDER: readonly PlatformName[] = ['codex', 'claude'];
 
 function resolveRepoRoot(): string {
   return path.resolve(resolveCliPackageRoot(), '..', '..');
@@ -193,20 +207,19 @@ async function findSourcePlugin(repoRoot: string, pluginName: string): Promise<P
   return readPluginManifest(pluginRoot);
 }
 
-async function preparePluginTestBundle(
+async function stagePluginTestBundleSource(
   plugin: PluginMeta,
-): Promise<PreparedPluginTestBundle> {
+): Promise<StagedPluginTestBundleSource> {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-test-bundle-'));
   const prepared = await prepareLocalPluginBundleSource(plugin, { buildMode: 'staging' });
-  const bundleRoot = path.join(tempRoot, 'bundle');
   try {
-    const result = await bundleLocalPlugin(prepared.plugin, bundleRoot, { buildMode: 'prepared' });
     return {
-      pluginName: result.plugin.manifest.name,
+      pluginName: prepared.plugin.manifest.name,
       sourceRoot: plugin.rootDir,
       baselineRoot: prepared.plugin.rootDir,
-      bundleRoot,
-      manifest: result.plugin.manifest,
+      bundleRoot: path.join(tempRoot, 'bundle'),
+      stagedPlugin: prepared.plugin,
+      manifest: prepared.plugin.manifest,
       cleanup: async () => {
         await prepared.cleanup();
         await fs.remove(tempRoot);
@@ -219,29 +232,52 @@ async function preparePluginTestBundle(
   }
 }
 
-function inferPlatforms(
+async function buildPreparedPluginTestBundle(
+  staged: StagedPluginTestBundleSource,
+): Promise<PreparedPluginTestBundle> {
+  const result = await bundleLocalPlugin(staged.stagedPlugin, staged.bundleRoot, { buildMode: 'prepared' });
+  return {
+    pluginName: result.plugin.manifest.name,
+    sourceRoot: staged.sourceRoot,
+    baselineRoot: staged.baselineRoot,
+    bundleRoot: staged.bundleRoot,
+    manifest: result.plugin.manifest,
+    cleanup: staged.cleanup,
+  };
+}
+
+function platformSelectionError(options: {
+  pluginName: string;
+  selection: PluginTestPlatformSelection;
+  manifest: PluginManifestSource;
+}): Error {
+  const supportedPlatforms = resolveSupportedPlatforms(options.manifest);
+  return new Error(
+    `Cannot run plugin tests for "${options.pluginName}" with --platform=${options.selection}: staging manifest ${formatMarketplaceProductsForError(options.manifest)} resolves to supported platforms=${formatSupportedPlatforms(supportedPlatforms)}.`,
+  );
+}
+
+function resolveSelectedPlatforms(
   manifest: PluginManifestSource,
   selection: PluginTestPlatformSelection,
+  pluginName: string,
 ): PlatformName[] {
-  if (selection === 'codex' || selection === 'claude') {
-    return [selection];
+  const supportedPlatforms = resolveSupportedPlatforms(manifest);
+  if (selection === 'auto') {
+    return TEST_PLATFORM_ORDER.filter((platform) => supportedPlatforms.has(platform));
   }
+
   if (selection === 'both') {
+    if (!supportedPlatforms.has('codex') || !supportedPlatforms.has('claude')) {
+      throw platformSelectionError({ pluginName, selection, manifest });
+    }
     return ['codex', 'claude'];
   }
 
-  const products = new Set(
-    (manifest.marketplace.policy.products ?? []).map((product) =>
-      product.trim().toUpperCase().replace(/[\s-]+/g, '_'),
-    ),
-  );
-  if (products.size === 1 && products.has('CODEX')) {
-    return ['codex'];
+  if (!supportedPlatforms.has(selection)) {
+    throw platformSelectionError({ pluginName, selection, manifest });
   }
-  if (products.size === 1 && products.has('CLAUDE')) {
-    return ['claude'];
-  }
-  return ['codex', 'claude'];
+  return [selection];
 }
 
 function resolveRelativeImport(importer: string, specifier: string): string | null {
@@ -649,9 +685,14 @@ async function runOnePlugin(options: {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
-  const prepared = await preparePluginTestBundle(options.plugin);
+  const staged = await stagePluginTestBundleSource(options.plugin);
   try {
-    const platforms = inferPlatforms(prepared.manifest, options.parsed.platform);
+    const platforms = resolveSelectedPlatforms(
+      staged.manifest,
+      options.parsed.platform,
+      staged.pluginName,
+    );
+    const prepared = await buildPreparedPluginTestBundle(staged);
     let exitCode = 0;
     for (const platform of platforms) {
       const platformExitCode = await runPreparedPluginTests({
@@ -669,7 +710,7 @@ async function runOnePlugin(options: {
     }
     return exitCode;
   } finally {
-    await prepared.cleanup();
+    await staged.cleanup();
   }
 }
 

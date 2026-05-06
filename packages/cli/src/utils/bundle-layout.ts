@@ -4,36 +4,18 @@ import fs from 'fs-extra';
 
 import type {
   MarketplaceManifest,
+  PlatformName,
   PlatformPluginManifest,
   PluginLifecycleScriptEntry,
   PluginManifestSource,
 } from '../types.js';
 import { validatePluginManifest } from './manifest.js';
 import { readJsonFile } from './json.js';
+import { resolveSupportedPlatforms } from './platform-support.js';
 import { validateRenderedClaudeHooksContent } from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
-
-function normalizeComparableValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeComparableValue(entry));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, normalizeComparableValue(entry)]),
-    );
-  }
-
-  return value;
-}
-
-function serializeComparableValue(value: unknown): string {
-  return JSON.stringify(normalizeComparableValue(value));
-}
 
 function assertRelativeBundlePath(
   pluginRoot: string,
@@ -387,51 +369,153 @@ async function validateAwRuntimeLayout(
   await validateRuntimeBareImportResolvesInBundle(pluginRoot, manifest, scan.bareSpecifiers);
 }
 
-export async function validateBundleLayout(rootDir: string): Promise<void> {
-  const claudeMarketplacePath = path.join(rootDir, '.claude-plugin', 'marketplace.json');
-  const codexMarketplacePath = path.join(rootDir, '.agents', 'plugins', 'marketplace.json');
-  const [claudeMarketplace, codexMarketplace] = await Promise.all([
-    readJsonFile<MarketplaceManifest>(claudeMarketplacePath),
-    readJsonFile<MarketplaceManifest>(codexMarketplacePath),
-  ]);
+function formatPlatformLabel(platform: PlatformName): string {
+  return platform === 'claude' ? 'Claude' : 'Codex';
+}
 
-  if (serializeComparableValue(claudeMarketplace) !== serializeComparableValue(codexMarketplace)) {
-    throw new Error('Marketplace mirrors are inconsistent.');
+function formatPluginNameList(pluginNames: Iterable<string>): string {
+  const sorted = [...new Set(pluginNames)].sort();
+  return sorted.length > 0 ? sorted.join(', ') : '(none)';
+}
+
+async function readMarketplaceManifestFromBundle(
+  rootDir: string,
+  platform: PlatformName,
+): Promise<MarketplaceManifest> {
+  const manifestPath = path.join(
+    rootDir,
+    platform === 'claude'
+      ? '.claude-plugin/marketplace.json'
+      : '.agents/plugins/marketplace.json',
+  );
+  const manifest = await readJsonFile<unknown>(manifestPath);
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error(`Invalid ${formatPlatformLabel(platform)} marketplace manifest: expected an object.`);
   }
 
-  if (claudeMarketplace.name !== 'aw') {
-    throw new Error('Invalid marketplace name: expected "aw".');
+  const marketplace = manifest as MarketplaceManifest;
+  if (marketplace.name !== 'aw') {
+    throw new Error(`Invalid ${formatPlatformLabel(platform)} marketplace manifest.name: expected "aw".`);
+  }
+  if (!Array.isArray(marketplace.plugins)) {
+    throw new Error(
+      `Invalid ${formatPlatformLabel(platform)} marketplace manifest.plugins: expected an array.`,
+    );
   }
 
-  for (const pluginEntry of claudeMarketplace.plugins) {
+  return marketplace;
+}
+
+async function listBundledPluginNames(rootDir: string): Promise<string[]> {
+  const pluginsRoot = path.join(rootDir, 'plugins');
+  const entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function validateMarketplaceEntriesForPlatform(
+  marketplace: MarketplaceManifest,
+  platform: PlatformName,
+  expectedPluginNames: ReadonlySet<string>,
+): void {
+  const platformLabel = formatPlatformLabel(platform);
+  const marketplacePluginNames = new Set<string>();
+
+  for (const pluginEntry of marketplace.plugins) {
     if (pluginEntry.source !== `./plugins/${pluginEntry.name}`) {
       throw new Error(
         `Invalid marketplace source for "${pluginEntry.name}": expected "./plugins/${pluginEntry.name}".`,
       );
     }
+    if (marketplacePluginNames.has(pluginEntry.name)) {
+      throw new Error(`Invalid ${platformLabel} marketplace entries: duplicate plugin "${pluginEntry.name}".`);
+    }
+    marketplacePluginNames.add(pluginEntry.name);
+  }
 
-    const pluginRoot = path.join(rootDir, 'plugins', pluginEntry.name);
-    const requiredFiles = [
-      path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
-      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
-      path.join(pluginRoot, '.codex-plugin', 'plugin.json'),
-    ];
+  if (marketplacePluginNames.size !== expectedPluginNames.size) {
+    throw new Error(
+      `Invalid ${platformLabel} marketplace entries: expected supported plugins [${formatPluginNameList(expectedPluginNames)}], received [${formatPluginNameList(marketplacePluginNames)}].`,
+    );
+  }
 
-    for (const requiredFile of requiredFiles) {
-      if (!(await fs.pathExists(requiredFile))) {
-        throw new Error(`Invalid bundle layout: missing "${requiredFile}".`);
-      }
+  for (const pluginName of expectedPluginNames) {
+    if (!marketplacePluginNames.has(pluginName)) {
+      throw new Error(
+        `Invalid ${platformLabel} marketplace entries: expected supported plugins [${formatPluginNameList(expectedPluginNames)}], received [${formatPluginNameList(marketplacePluginNames)}].`,
+      );
+    }
+  }
+}
+
+export async function validateBundleLayout(rootDir: string): Promise<void> {
+  const [claudeMarketplace, codexMarketplace, bundledPluginNames] = await Promise.all([
+    readMarketplaceManifestFromBundle(rootDir, 'claude'),
+    readMarketplaceManifestFromBundle(rootDir, 'codex'),
+    listBundledPluginNames(rootDir),
+  ]);
+  const supportedPluginNamesByPlatform: Record<PlatformName, Set<string>> = {
+    claude: new Set<string>(),
+    codex: new Set<string>(),
+  };
+
+  for (const pluginName of bundledPluginNames) {
+    const pluginRoot = path.join(rootDir, 'plugins', pluginName);
+    const sourceManifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    if (!(await fs.pathExists(sourceManifestPath))) {
+      throw new Error(
+        `Invalid bundle layout: plugin "${pluginName}" is missing .agents-plugin/plugin.json.`,
+      );
     }
 
-    const [sourceManifest, claudeManifest, codexManifest] = await Promise.all([
-      readJsonFile<unknown>(path.join(pluginRoot, '.agents-plugin', 'plugin.json')),
-      readJsonFile<PlatformPluginManifest>(path.join(pluginRoot, '.claude-plugin', 'plugin.json')),
-      readJsonFile<PlatformPluginManifest>(path.join(pluginRoot, '.codex-plugin', 'plugin.json')),
-    ]);
+    const sourceManifest = validatePluginManifest(
+      pluginRoot,
+      await readJsonFile<unknown>(sourceManifestPath),
+    );
+    await validateAwRuntimeLayout(pluginRoot, sourceManifest);
 
-    const normalizedSourceManifest = validatePluginManifest(pluginRoot, sourceManifest);
-    await validateAwRuntimeLayout(pluginRoot, normalizedSourceManifest);
-    await validateClaudeManifest(pluginRoot, claudeManifest);
-    await validateCodexManifest(pluginRoot, codexManifest);
+    const supportedPlatforms = resolveSupportedPlatforms(sourceManifest);
+    for (const platform of ['claude', 'codex'] as const) {
+      const platformLabel = formatPlatformLabel(platform);
+      const manifestDir = path.join(pluginRoot, `.${platform}-plugin`);
+      const manifestPath = path.join(manifestDir, 'plugin.json');
+      const runtimeDir = path.join(pluginRoot, platform);
+
+      if (supportedPlatforms.has(platform)) {
+        supportedPluginNamesByPlatform[platform].add(pluginName);
+        if (!(await fs.pathExists(manifestPath))) {
+          throw new Error(
+            `Invalid bundle layout: missing supported ${platformLabel} manifest for plugin "${pluginName}".`,
+          );
+        }
+
+        const platformManifest = await readJsonFile<PlatformPluginManifest>(manifestPath);
+        if (platform === 'claude') {
+          await validateClaudeManifest(pluginRoot, platformManifest);
+        } else {
+          await validateCodexManifest(pluginRoot, platformManifest);
+        }
+        continue;
+      }
+
+      if ((await fs.pathExists(manifestDir)) || (await fs.pathExists(runtimeDir))) {
+        throw new Error(
+          `Invalid bundle layout: unexpected ${platformLabel} bundle files for unsupported platform in plugin "${pluginName}".`,
+        );
+      }
+    }
   }
+
+  validateMarketplaceEntriesForPlatform(
+    claudeMarketplace,
+    'claude',
+    supportedPluginNamesByPlatform.claude,
+  );
+  validateMarketplaceEntriesForPlatform(
+    codexMarketplace,
+    'codex',
+    supportedPluginNamesByPlatform.codex,
+  );
 }

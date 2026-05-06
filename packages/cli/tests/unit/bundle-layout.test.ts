@@ -45,6 +45,39 @@ async function writeFixturePluginManifest(
   );
 }
 
+async function updateFixturePluginManifest(
+  repoRoot: string,
+  updater: (manifest: Record<string, any>) => void,
+): Promise<void> {
+  const manifest = await readFixturePluginManifest(repoRoot);
+  updater(manifest);
+  await writeFixturePluginManifest(repoRoot, manifest);
+}
+
+async function createEmbeddedRootFromFixture(
+  updater?: (manifest: Record<string, any>) => void,
+): Promise<{ repoRoot: string; embeddedRoot: string }> {
+  const repoRoot = await makeTempRepo();
+  if (updater) {
+    await updateFixturePluginManifest(repoRoot, updater);
+  }
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  return { repoRoot, embeddedRoot };
+}
+
+async function createClaudeOnlyEmbeddedRoot(): Promise<{ repoRoot: string; embeddedRoot: string }> {
+  const repoRoot = await makeTempRepo();
+  await updateFixturePluginManifest(repoRoot, (manifest) => {
+    manifest.marketplace.policy.products = ['CLAUDE'];
+    delete manifest.apps;
+  });
+  await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', '.app.json'));
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  return { repoRoot, embeddedRoot };
+}
+
 function createFakeStagingRunner(): PluginStagingRunner {
   return {
     async installPackageRoot(packageRoot) {
@@ -122,6 +155,143 @@ afterEach(async () => {
 });
 
 describe('bundle layout validation', () => {
+  it('accepts platform-filtered marketplaces that match supported plugin sets', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+    });
+
+    await expect(
+      fs.pathExists(path.join(embeddedRoot, 'plugins', 'git-commit', '.claude-plugin')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(embeddedRoot, 'plugins', 'git-commit', 'claude')),
+    ).resolves.toBe(false);
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+  });
+
+  it('rejects plugin directories that are missing .agents-plugin/plugin.json', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+
+    await fs.remove(
+      path.join(embeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'missing .agents-plugin/plugin.json',
+    );
+  });
+
+  it('rejects missing supported Claude manifests', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+
+    await fs.remove(
+      path.join(embeddedRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json'),
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'missing supported Claude manifest',
+    );
+  });
+
+  it('rejects missing supported Codex manifests', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+
+    await fs.remove(
+      path.join(embeddedRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json'),
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'missing supported Codex manifest',
+    );
+  });
+
+  it('rejects unexpected Claude bundle manifests for unsupported plugins', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+    });
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+
+    await fs.outputJson(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      {
+        name: 'git-commit',
+        version: '0.1.0',
+        description: 'unexpected claude manifest',
+      },
+      { spaces: 2 },
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'unexpected Claude bundle files for unsupported platform',
+    );
+  });
+
+  it('rejects unexpected Claude runtime directories for unsupported plugins', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+    });
+
+    await fs.outputFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'claude', 'ghost.txt'),
+      'unexpected',
+      'utf8',
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'unexpected Claude bundle files for unsupported platform',
+    );
+  });
+
+  it('rejects unexpected Codex bundle manifests for unsupported plugins', async () => {
+    const { embeddedRoot } = await createClaudeOnlyEmbeddedRoot();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+
+    await fs.outputJson(
+      path.join(pluginRoot, '.codex-plugin', 'plugin.json'),
+      {
+        name: 'git-commit',
+        version: '0.1.0',
+        description: 'unexpected codex manifest',
+      },
+      { spaces: 2 },
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'unexpected Codex bundle files for unsupported platform',
+    );
+  });
+
+  it('rejects unexpected Codex runtime directories for unsupported plugins', async () => {
+    const { embeddedRoot } = await createClaudeOnlyEmbeddedRoot();
+
+    await fs.outputFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'ghost.txt'),
+      'unexpected',
+      'utf8',
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'unexpected Codex bundle files for unsupported platform',
+    );
+  });
+
+  it('rejects marketplace entries that do not match supported plugin sets', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+    });
+    const claudeMarketplacePath = path.join(embeddedRoot, '.claude-plugin', 'marketplace.json');
+    const codexMarketplace = await fs.readJson(
+      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
+    );
+    const claudeMarketplace = await fs.readJson(claudeMarketplacePath);
+    claudeMarketplace.plugins = codexMarketplace.plugins;
+    await fs.writeJson(claudeMarketplacePath, claudeMarketplace, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid Claude marketplace entries',
+    );
+  });
+
   it('accepts bundle source manifests with skillTriggers without requiring a source skills directory', async () => {
     const repoRoot = await makeTempRepo();
     const manifestPath = path.join(

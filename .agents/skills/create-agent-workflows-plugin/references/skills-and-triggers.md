@@ -1,6 +1,6 @@
 # Skills 能力与触发配置
 
-Skills 是插件向用户或模型暴露的可调用工作流。每个 skill 是一组 Markdown 指令 + 平台元数据，由 CLI 按平台分发到对应目录。
+Skills 是插件向用户或模型暴露的可调用工作流。每个 skill 是一组 Markdown 指令 + 平台元数据，由 CLI 按插件最终支持平台分发到对应目录。
 
 ## Skill 目录结构
 
@@ -69,7 +69,7 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 
 ## agents/openai.yaml 规范
 
-此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确限制为非 Codex 产品，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台；安装和显式升级时，CLI 会按这个字段拦截不匹配的平台。
+此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确排除 Codex，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台；build 会裁掉 Codex platform manifest/runtime，安装和显式升级也会按这个字段拦截不匹配的平台。
 
 ### 完整字段
 
@@ -226,6 +226,8 @@ aw install <plugin> --skill-trigger default
 `allowInstallOverride` 只是覆盖许可，不代表默认策略。省略 `skillTriggers` 或写 `allowInstallOverride: false` 时，CLI 会保留该 skill 的默认触发配置，并在用户显式传入 `manual|auto` 时提示 warning。
 
 本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；不同 project/scope 选择不同偏好时，最近成功写入的受管记录会成为当前共享策略，其他 scope 可能在 `aw status` 中看到 drift。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
+
+`marketplace.policy.products` 也会影响 bundle 裁剪：Claude-only 插件只生成 Claude skill 产物，不生成 Codex bundle，也不要求 `agents/openai.yaml`；Codex-only 插件只生成 Codex skill 产物，不生成 Claude platform manifest/runtime。省略或空 `products` 时才按双平台 skill 处理。
 
 ### `skillTriggerApplicability`
 

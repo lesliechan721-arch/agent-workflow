@@ -3,11 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
 import { readJsonFile } from '../../src/utils/json.js';
+import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const tempDirs: string[] = [];
 
@@ -28,25 +30,59 @@ async function makeTempRepo(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.resetModules();
+  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('marketplace bundle', () => {
-  it('keeps marketplace mirrors in sync and fixes source paths to ./plugins/<plugin>', async () => {
-    const repoRoot = await makeTempRepo();
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(embeddedRoot);
+async function addCodexOnlyFixture(repoRoot: string): Promise<void> {
+  await fs.copy(
+    fixturePath('codex-project-repo-managed', 'plugins', 'skills-only'),
+    path.join(repoRoot, 'plugins', 'skills-only'),
+  );
+}
 
-    const [claudeMarketplace, codexMarketplace] = await Promise.all([
-      readJsonFile(path.join(embeddedRoot, '.claude-plugin', 'marketplace.json')),
-      readJsonFile(path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json')),
+async function addClaudeOnlyFixture(repoRoot: string): Promise<void> {
+  const pluginName = 'git-commit-claude-only';
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), pluginRoot);
+
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.name = pluginName;
+  manifest.description = 'Claude-only marketplace fixture';
+  manifest.apps = undefined;
+  manifest.marketplace.policy.products = ['CLAUDE'];
+  if (manifest.interface) {
+    manifest.interface.displayName = 'Git Commit Claude Only';
+  }
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(pluginRoot, '.app.json'));
+}
+
+describe('marketplace bundle', () => {
+  it('filters marketplace entries by platform while preserving shared root metadata', async () => {
+    const repoRoot = await makeTempRepo();
+    await Promise.all([
+      addCodexOnlyFixture(repoRoot),
+      addClaudeOnlyFixture(repoRoot),
     ]);
 
-    expect(codexMarketplace).toEqual(claudeMarketplace);
+    const outputRoot = path.join(repoRoot, 'out');
+    await bundlePlugins({ repoRoot, outputRoot });
+
+    const [claudeMarketplace, codexMarketplace] = await Promise.all([
+      readJsonFile(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
+      readJsonFile(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
+    ]);
+
     expect(claudeMarketplace).toMatchObject({
       name: 'aw',
       owner: {
         name: 'Leslie Chan',
+      },
+      interface: {
+        displayName: 'Agent Workflows',
       },
       plugins: [
         {
@@ -55,8 +91,131 @@ describe('marketplace bundle', () => {
           category: 'workflow',
           strict: true,
         },
+        {
+          name: 'git-commit-claude-only',
+          source: './plugins/git-commit-claude-only',
+          policy: {
+            products: ['CLAUDE'],
+          },
+        },
       ],
     });
+    expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'git-commit',
+      'git-commit-claude-only',
+    ]);
+    expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'git-commit',
+      'skills-only',
+    ]);
+    expect(codexMarketplace.owner).toEqual(claudeMarketplace.owner);
+    expect(codexMarketplace.interface).toEqual(claudeMarketplace.interface);
+    expect(codexMarketplace.plugins).toContainEqual(
+      expect.objectContaining({
+        name: 'skills-only',
+        source: './plugins/skills-only',
+        policy: expect.objectContaining({
+          products: ['CODEX'],
+        }),
+      }),
+    );
+    expect(claudeMarketplace.plugins.find((plugin: { name: string }) => plugin.name === 'skills-only')).toBeUndefined();
+    expect(codexMarketplace.plugins.find((plugin: { name: string }) => plugin.name === 'git-commit-claude-only')).toBeUndefined();
+  });
+
+  it('uses the staged final manifest to filter platform marketplaces', async () => {
+    const repoRoot = await makeTempRepo();
+    await writeNodeScriptFixture(repoRoot);
+
+    const outputRoot = path.join(repoRoot, 'out');
+    await bundlePlugins({
+      repoRoot,
+      outputRoot,
+      buildMode: 'staging',
+    });
+
+    await expect(
+      readJsonFile(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
+    ).resolves.toMatchObject({
+      plugins: [],
+    });
+    await expect(
+      readJsonFile(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
+    ).resolves.toMatchObject({
+      plugins: [
+        {
+          name: 'git-commit',
+          description: 'Built smoke description',
+          policy: {
+            products: ['CODEX'],
+          },
+          source: './plugins/git-commit',
+        },
+      ],
+    });
+  });
+
+  it('reads only the target platform marketplace and validates its root metadata', async () => {
+    const catalogRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-marketplace-read-'));
+    tempDirs.push(catalogRoot);
+    await fs.ensureDir(path.join(catalogRoot, '.claude-plugin'));
+    await fs.writeJson(path.join(catalogRoot, '.claude-plugin', 'marketplace.json'), {
+      name: 'aw',
+      owner: {
+        name: 'Leslie Chan',
+        url: 'https://github.com/LeslieChan/agent-workflows',
+      },
+      interface: {
+        displayName: 'Agent Workflows',
+      },
+      plugins: [],
+    }, { spaces: 2 });
+
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCurrentCatalog: async () => ({
+        rootDir: catalogRoot,
+        source: 'embedded',
+      }),
+    }));
+
+    const { readMarketplaceManifest } = await import('../../src/utils/marketplace.js');
+    await expect(
+      readMarketplaceManifest(process.cwd(), 'claude'),
+    ).resolves.toMatchObject({
+      path: path.join(catalogRoot, '.claude-plugin', 'marketplace.json'),
+      manifest: {
+        name: 'aw',
+        plugins: [],
+      },
+    });
+  });
+
+  it('rejects invalid target marketplace root metadata without reading the other platform mirror', async () => {
+    const catalogRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-marketplace-invalid-'));
+    tempDirs.push(catalogRoot);
+    await fs.ensureDir(path.join(catalogRoot, '.claude-plugin'));
+    await fs.writeJson(path.join(catalogRoot, '.claude-plugin', 'marketplace.json'), {
+      name: 'aw',
+      owner: {
+        name: 'Leslie Chan',
+      },
+      interface: {
+        displayName: 'Agent Workflows',
+      },
+      plugins: [],
+    }, { spaces: 2 });
+
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCurrentCatalog: async () => ({
+        rootDir: catalogRoot,
+        source: 'embedded',
+      }),
+    }));
+
+    const { readMarketplaceManifest } = await import('../../src/utils/marketplace.js');
+    await expect(readMarketplaceManifest(process.cwd(), 'claude')).rejects.toThrow(
+      'Invalid claude marketplace manifest.owner.url: expected a non-empty string.',
+    );
   });
 
   it('validates the generated embedded root layout', async () => {

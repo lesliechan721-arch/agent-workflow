@@ -63,6 +63,12 @@ import {
 } from '../utils/paths.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
+  formatMarketplaceProductsForError,
+  formatSupportedPlatforms,
+  supportsPlatform,
+  resolveSupportedPlatforms,
+} from '../utils/platform-support.js';
+import {
   canExecuteCodexProjectWithoutNative,
   listExecutablePlatformsForTargets,
   resolveEvidenceFirstAutoPlatform,
@@ -201,23 +207,13 @@ const PLATFORM_DISPLAY_BY_NAME: Record<PlatformName, string> = {
   claude: 'Claude Code',
 };
 
-function normalizeProductToken(value: string): string {
-  return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
-}
-
 export function formatPolicyProducts(plugin: PluginMeta): string {
   const products = plugin.manifest.marketplace.policy.products;
   return products && products.length > 0 ? products.join(', ') : '未限制';
 }
 
 export function pluginSupportsPlatform(plugin: PluginMeta, platform: PlatformName): boolean {
-  const products = plugin.manifest.marketplace.policy.products;
-  if (!products || products.length === 0) {
-    return true;
-  }
-
-  const normalizedProducts = new Set(products.map((product) => normalizeProductToken(product)));
-  return normalizedProducts.has(PLATFORM_PRODUCT_BY_NAME[platform]);
+  return supportsPlatform(plugin.manifest, platform);
 }
 
 export function assertPluginsSupportPlatforms(
@@ -239,7 +235,7 @@ export function assertPluginsSupportPlatforms(
 
   const details = unsupported
     .map(({ plugin, platform }) =>
-      `${plugin.manifest.name} -> ${PLATFORM_DISPLAY_BY_NAME[platform]} (marketplace.policy.products=[${formatPolicyProducts(plugin)}], 需要 ${PLATFORM_PRODUCT_BY_NAME[platform]})`,
+      `${plugin.manifest.name} -> ${PLATFORM_DISPLAY_BY_NAME[platform]} (${formatMarketplaceProductsForError(plugin.manifest)}, 实际支持平台=${formatSupportedPlatforms(resolveSupportedPlatforms(plugin.manifest))}, 需要 ${PLATFORM_PRODUCT_BY_NAME[platform]})`,
     )
     .join('；');
   throw new Error(`插件不支持目标平台：${details}`);

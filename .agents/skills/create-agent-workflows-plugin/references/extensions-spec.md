@@ -8,6 +8,8 @@
 
 对 Codex 来说，extensions 是 project scope 的 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest，不会调用 Codex native marketplace 或 app-server RPC。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
 
+`marketplace.policy.products` 会限制 extensions 能生成的平台。公共 `instructions`、`permissions`、`hooks` 和 `agents` 会复制到所有支持平台；不支持的平台不能声明 `nativeHooks.<platform>`，也不能在公共 extension 条目中提供非空 `agentOverrides.<platform>`。如果只是想明确排除 unsupported platform，`agentOverrides.<unsupportedPlatform> = null` 是合法的。
+
 ## 整体结构
 
 ```json
@@ -208,6 +210,8 @@
 
 `nativeHooks` 只允许 `claude` 和 `codex` 两个 key。每条 native hook 首版只支持同步 `command` handler，结构是 `{ "event": "...", "matcher"?: "...", "command": "..." }`。
 
+`nativeHooks.<platform>` 要求插件支持对应平台。比如 `products=["CODEX"]` 的插件不能声明 `nativeHooks.claude`，`products=["CLAUDE"]` 的插件不能声明 `nativeHooks.codex`；这类冲突会在 manifest/build 校验阶段 fail fast。
+
 `matcher` 不是所有原生事件都有语义。matcherless 事件不要写 `matcher`；CLI 会在 source manifest 校验阶段拒绝这类字段。例如 Codex `UserPromptSubmit` / `Stop` 以及 Claude `UserPromptSubmit` / `Stop` 都不接受 matcher。
 
 `agentOverrides` 不用于 `nativeHooks`。如果一个 hook 是平台独享事件，直接写在对应平台数组里；如果是可移植公共事件，写在 `extensions.hooks`，再用 `agentOverrides` 做平台排除或字段覆盖。
@@ -303,10 +307,12 @@ developer_instructions = """请检查这次提交是否符合提交规范，并�
 | `{ ... }` | 用对象中的字段覆盖默认值，未出现的字段保持默认 |
 | 省略 | 使用默认值 |
 
+非空对象只能用于插件支持的平台。对 unsupported platform，`null` 仍可作为显式排除标记；非空覆盖会失败，因为 build 不会生成该平台 artifact，也不能把能力带到被 `products` 排除的平台。
+
 ### 使用场景
 
 - 某个公共 hook 只在 Claude 上有意义 → Codex 侧设为 `null`
-- 某个原生 hook 只在 Claude 或 Codex 上有意义 → 写入 `extensions.nativeHooks.<agent>`，不要使用 `agentOverrides`
+- 某个原生 hook 只在 Claude 或 Codex 上有意义 → 写入 `extensions.nativeHooks.<platform>`，不要使用 `agentOverrides`
 - 同一 instruction 在两个平台用不同措辞 → 分别覆盖 `content`
 - 某个 agent 的 `tools` 只有 Claude 支持 → Claude 侧覆盖 `tools`，Codex 侧省略
 

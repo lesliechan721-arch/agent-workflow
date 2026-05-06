@@ -83,6 +83,18 @@ async function writeScriptFixture(pluginRoot: string): Promise<void> {
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
 }
 
+function createMarketplaceWithProducts(products: string[]) {
+  return {
+    category: 'workflow',
+    strict: true,
+    policy: {
+      installation: 'AVAILABLE',
+      authentication: 'ON_INSTALL',
+      products,
+    },
+  };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -793,6 +805,98 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('duplicate artifact id + target');
   });
 
+  it('rejects unsupported platform build fields and apps declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+
+    manifest.marketplace = createMarketplaceWithProducts(['CODEX']);
+    manifest.buildConfig = {
+      fileRules: {
+        claude: {
+          include: ['docs/**'],
+          exclude: [],
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": buildConfig.fileRules.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+    );
+
+    manifest.buildConfig = {
+      manifestOverrides: {
+        claude: {
+          userConfig: {
+            theme: 'dark',
+          },
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+    );
+
+    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    manifest.buildConfig = undefined;
+    manifest.apps = './.app.json';
+    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} }, { spaces: 2 });
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": apps requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+    );
+  });
+
+  it('rejects unsupported Codex artifact targets and keeps dual-platform targets valid', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    const validTarget = {
+      id: 'lightweight-instruction',
+      platform: 'codex',
+      scopes: ['user', 'project'],
+      target: 'codex.developerInstructionsBlock',
+      projectManagedKind: 'instruction',
+      states: ['present', 'disabled'],
+      refreshKeys: ['enabled', 'model'],
+      requiresCodexProjectConfig: true,
+    };
+
+    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    delete manifest.apps;
+    await fs.remove(path.join(pluginRoot, '.app.json'));
+    manifest.config = {
+      schema: {
+        enabled: {
+          type: 'boolean',
+          default: true,
+        },
+        model: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+      },
+    };
+    manifest.artifacts = {
+      targets: [validTarget],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": artifacts.targets[0].platform requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+    );
+
+    manifest.marketplace = createMarketplaceWithProducts(['CODEX', 'CLAUDE']);
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        artifacts: {
+          targets: [expect.objectContaining(validTarget)],
+        },
+      },
+    });
+  });
+
   it('scans Node import contracts for relative closures and undeclared bare specifiers', () => {
     expect(
       scanNodeImportContract({
@@ -1296,6 +1400,66 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'duplicate codex hook',
     );
+  });
+
+  it('rejects unsupported native hooks and non-empty agent overrides, but allows null unsupported overrides', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    delete manifest.apps;
+    await fs.remove(path.join(pluginRoot, '.app.json'));
+    manifest.extensions.nativeHooks = {
+      codex: [
+        {
+          event: 'UserPromptSubmit',
+          command: 'echo codex prompt',
+        },
+      ],
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": extensions.nativeHooks.codex requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+    );
+
+    manifest.extensions.nativeHooks = undefined;
+    manifest.extensions.instructions = [
+      {
+        name: 'commit-policy',
+        title: '提交规范',
+        content: '保持提交规范。',
+        agentOverrides: {
+          codex: {
+            title: 'Codex 提交规范',
+          },
+        },
+      },
+    ];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid plugin "git-commit": extensions.instructions[0].agentOverrides.codex requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+    );
+
+    manifest.extensions.instructions[0].agentOverrides = {
+      codex: null,
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        extensions: {
+          instructions: [
+            {
+              name: 'commit-policy',
+              agentOverrides: {
+                codex: null,
+              },
+            },
+          ],
+        },
+      },
+    });
   });
 
   it('accepts Rust-regex-only valid Codex native hook matchers in source manifests', async () => {

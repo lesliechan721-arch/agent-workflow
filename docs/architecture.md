@@ -24,7 +24,12 @@ Embedded Runtime Bundle（npm 包内）
   packages/cli/plugins-dist/
   ├── .claude-plugin/marketplace.json
   ├── .agents/plugins/marketplace.json
-  └── plugins/<name>/{.agents-plugin,.claude-plugin,.codex-plugin,...}
+  └── plugins/<name>/
+      ├── .agents-plugin/plugin.json
+      ├── .claude-plugin/plugin.json  （支持 Claude 时存在）
+      ├── .codex-plugin/plugin.json   （支持 Codex 时存在）
+      ├── claude/**                   （支持 Claude 时存在）
+      └── codex/**                    （支持 Codex 时存在）
 
           ↓ make pack / make local-install（生成并验证 `.release/tarballs/*.tgz`）
           ↓ make beta-release VERSION=x.y.z-beta.n / make release VERSION=x.y.z
@@ -47,7 +52,8 @@ npm Registry
 三层各有职责，互不替代：
 
 - 仓库源码层是插件作者维护的唯一输入，不手写平台 runtime manifest。
-- `packages/cli/plugins-dist/` 是 `pnpm build` 产物，会随 npm 包发布，不手改。
+- `packages/cli/plugins-dist/` 是 `pnpm build` 产物，会随 npm 包发布，不手改。每个插件都必须保留 `.agents-plugin/plugin.json`；`.claude-plugin/`、`.codex-plugin/`、`claude/`、`codex/` 只在 `marketplace.policy.products` 解析出的支持平台上出现。
+- 根级 `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json` 共享根级元数据，但插件 entries 按支持平台过滤，不要求两边插件列表完全一致。AW current catalog 仍通过 `plugins/<name>/.agents-plugin/plugin.json` 看到全部插件。
 - `~/.aw/` 是本机 marketplace 镜像和安装账本。需要 native plugin runtime 时，`aw init`、`aw install`、`aw upgrade` 会按需同步；纯 Codex project repo-managed 路径只读使用 catalog，不会为了项目产物初始化或修复共享 runtime。
 - `native-recovery/codex/user/<plugin>@aw.json` 是 Codex user native 写入后的恢复面包屑。它只记录 AW 已经观察到 native side effect 的事实和后续失败阶段，独立于 `installed.json`，`aw init --force` 和 marketplace refresh 必须保留。
 - `plugin-config/` 和 `plugin-install-snapshots/` 是 AW 自管运行时状态。local marketplace refresh 会保留它们；它们不参与 bundle fingerprint，也不会被当作插件源码。
@@ -80,7 +86,7 @@ Codex user native 写入后，AW 会先落 `native-recovery/codex/user/<plugin>@
 
 ## Plugin Scripts and Config
 
-`.agents-plugin/plugin.json` 中的 `scripts` / `config` / `artifacts.targets` 是 AW CLI contract，不会写入 Claude/Codex platform manifest。`artifacts.targets` 是动态 artifact 的安装前能力真值，统一进入 installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot。`pnpm build` 使用 staging 模式处理显式 `scripts.node.build`，build 后重新读取 staging manifest 作为 marketplace entry、bundle source manifest、platform manifest base、runtime 文件收集和 `pnpm plugin:test` 的真值。源码树不被修改。
+`.agents-plugin/plugin.json` 中的 `scripts` / `config` / `artifacts.targets` 是 AW CLI contract，不会写入 Claude/Codex platform manifest。`artifacts.targets` 是动态 artifact 的安装前能力真值，统一进入 installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot。`pnpm build` 使用 staging 模式处理显式 `scripts.node.build`，build 后重新读取 staging manifest 作为 marketplace entry、bundle source manifest、platform manifest base、runtime 文件收集和 `pnpm plugin:test` 的真值；`marketplace.policy.products` 也以这份 staging manifest 为准参与平台裁剪。源码树不被修改。
 
 发布 bundle 只保留运行时需要的 lifecycle/helper/artifact renderer 入口、这些 Node 入口的静态相对依赖闭包、`scripts.node.packageRoot` 的 `package.json` / `pnpm-lock.yaml` / production `node_modules`。测试文件、test-only helper、build 入口和 dev-only 模块不进入发布 runtime bundle。运行时 lifecycle 和 artifact renderer 离线执行，不安装依赖，不回退到宿主或仓库根 `node_modules`。
 

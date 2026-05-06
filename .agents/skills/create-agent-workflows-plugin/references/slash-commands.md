@@ -1,6 +1,6 @@
 # 公共 Slash Commands
 
-公共 `slashCommands` 是源码层唯一的跨平台手动命令作者入口。插件作者维护一份 `slash-commands/*.md` 源文件；构建后 Claude 得到原生 `/command`，Codex 得到 manual-only generated skill。
+公共 `slashCommands` 是源码层唯一的手动命令作者入口。插件作者维护一份 `slash-commands/*.md` 源文件；构建时只为插件支持的平台生成产物：支持 Claude 时得到原生 `/command`，支持 Codex 时得到 manual-only generated skill。
 
 ## 目录结构
 
@@ -82,8 +82,8 @@ Claude-only 字段不能放在顶层。Codex block 只允许 `description` 和 `
 
 构建后：
 
-- Claude runtime 得到 generated `claude/commands/<name>.md`，用户通过 `/command-name` 触发。
-- Codex runtime 得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。
+- 支持 Claude 的插件得到 generated `claude/commands/<name>.md`，用户通过 `/command-name` 触发。
+- 支持 Codex 的插件得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。
 - 原始 `slash-commands/` 源目录不作为 runtime 目录发布。
 
 Claude generated command 会固定写入 `disable-model-invocation: true`。Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此只能由用户显式 `$command-name` 或结构化 skill mention 调用。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并按 `kind: "skill"` + `artifactKey: "<name>"` tracking。
@@ -97,11 +97,11 @@ Claude 侧支持这些 slash command 参数：
 
 命令文件正文还可以在 Claude 渲染结果中使用命令结果填充语法（`` !`command` `` 和 `` ```! ``），完整规则见 `references/claude-only-capabilities.md` § 命令结果填充。
 
-这些动态参数和命令结果填充只允许出现在 Claude 渲染结果中。Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 语法；需要平台差异时，用 `buildConfig.templates` 包住 Claude-only 段落。
+这些动态参数和命令结果填充只允许出现在 Claude 渲染结果中。Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 语法；这项 forbidden syntax 校验只在插件支持 Codex、需要生成 Codex skill 时执行。Claude-only 插件不会因为正文中保留 Claude 参数或命令结果填充而失败。需要平台差异时，用 `buildConfig.templates` 包住 Claude-only 段落。
 
 ## 模板渲染
 
-`slash-commands/*.md` 支持 `buildConfig.templates`。构建时会先按目标平台渲染模板，再分别解析 Claude / Codex frontmatter 和正文。
+`slash-commands/*.md` 支持 `buildConfig.templates`。构建时会先按目标支持平台渲染模板，再解析该平台需要的 frontmatter 和正文；不支持的平台不会生成产物，也不会执行该平台专属校验。
 
 ```json
 {

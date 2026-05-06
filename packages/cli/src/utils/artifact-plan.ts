@@ -13,6 +13,7 @@ import type {
   Scope,
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
+import { assertPlatformFieldSupported } from './manifest.js';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
@@ -115,7 +116,13 @@ function getDeclaredTargets(options: {
 }): Map<string, PluginArtifactTargetDefinition> {
   const output = new Map<string, PluginArtifactTargetDefinition>();
 
-  for (const target of options.manifest.artifacts?.targets ?? []) {
+  for (const [index, target] of (options.manifest.artifacts?.targets ?? []).entries()) {
+    assertPlatformFieldSupported({
+      pluginName: options.manifest.name,
+      manifest: options.manifest,
+      fieldPath: `artifacts.targets[${index}].platform`,
+      requiredPlatform: target.platform,
+    });
     if (target.platform !== options.platform || !target.scopes.includes(options.scope)) {
       continue;
     }

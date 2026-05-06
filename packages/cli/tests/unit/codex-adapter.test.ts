@@ -111,6 +111,23 @@ async function copyRepoManagedFixturePlugin(
   );
 }
 
+async function removePluginFromEmbeddedCatalog(
+  embeddedRoot: string,
+  pluginName: string,
+): Promise<void> {
+  await fs.remove(path.join(embeddedRoot, 'plugins', pluginName));
+  for (const manifestPath of [
+    path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'),
+    path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
+  ]) {
+    const manifest = await fs.readJson(manifestPath);
+    manifest.plugins = (manifest.plugins ?? []).filter(
+      (entry: { name?: string }) => entry.name !== pluginName,
+    );
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  }
+}
+
 function resolveCodexNativeCacheVersionPath(
   env: NodeJS.ProcessEnv,
   pluginName: string,
@@ -3056,16 +3073,7 @@ describe('CodexAdapter', () => {
     const artifacts = await adapter.installExtensions(plugin, 'user');
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
 
-    for (const manifestPath of [
-      path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'),
-      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
-    ]) {
-      const manifest = await fs.readJson(manifestPath);
-      manifest.plugins = (manifest.plugins ?? []).filter(
-        (entry: { name?: string }) => entry.name !== plugin.manifest.name,
-      );
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    }
+    await removePluginFromEmbeddedCatalog(embeddedRoot, plugin.manifest.name);
 
     const status = await adapter.status(plugin, 'user');
 
@@ -3132,16 +3140,7 @@ describe('CodexAdapter', () => {
       },
     ]);
 
-    for (const manifestPath of [
-      path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'),
-      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
-    ]) {
-      const manifest = await fs.readJson(manifestPath);
-      manifest.plugins = (manifest.plugins ?? []).filter(
-        (entry: { name?: string }) => entry.name !== plugin.manifest.name,
-      );
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    }
+    await removePluginFromEmbeddedCatalog(embeddedRoot, plugin.manifest.name);
 
     const status = await adapter.status(plugin, 'user');
 

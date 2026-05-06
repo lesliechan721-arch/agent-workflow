@@ -1,6 +1,6 @@
 # plugin.json 完整规范
 
-`plugins/<name>/.agents-plugin/plugin.json` 是唯一需要手动维护的 manifest。运行时平台 manifest（`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json`）和 marketplace manifest 由 `pnpm build` 生成，不要手改。
+`plugins/<name>/.agents-plugin/plugin.json` 是唯一需要手动维护的 manifest。运行时平台 manifest（`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json`）和 marketplace manifest 由 `pnpm build` 生成，不要手改。所有插件的 bundle 都保留 `.agents-plugin/plugin.json`；平台 manifest 和 runtime 目录只在插件支持的平台上存在。
 
 ## 顶层字段
 
@@ -120,7 +120,7 @@
 
 ## artifacts.targets block
 
-`artifacts.targets` 声明动态 artifact 的安装前能力真值。installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot 都读这个静态声明，不能等 renderer 执行后再推断插件能力。只要声明 Codex 动态 target，`marketplace.policy.products` 应显式收窄为 `["CODEX"]`。
+`artifacts.targets` 声明动态 artifact 的安装前能力真值。installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot 都读这个静态声明，不能等 renderer 执行后再推断插件能力。首版 target 只支持 Codex，因此声明动态 target 的插件必须支持 Codex；可以是 `products=["CODEX"]` 的 Codex-only 插件，也可以是省略 `products` 或显式声明双产品的双平台插件。Claude-only 插件声明任何 `artifacts.targets` 都会失败。
 
 最小示例：
 
@@ -253,9 +253,9 @@ codex:
 - Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
 - `codex.interface.icon_small` / `icon_large` 只能写 `./assets/...`；源文件必须位于 `slashCommands` 根目录下的 `assets/`，不能是绝对路径、`../`、反斜杠、其它目录或非普通文件。build 只复制被引用资源到对应 generated skill 的 `assets/`。
 - Codex generated skill 固定 manual-only：`policy.allow_implicit_invocation: false`。`codex.policy` 不可配置，写了会失败。
-- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法；需要差异内容时，用 `buildConfig.templates` 按平台渲染。
+- Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法；这项校验只在插件支持 Codex、需要生成 Codex manual-only skill 时执行。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
 
-构建后 Claude runtime 得到 generated `claude/commands/<name>.md`；Codex runtime 得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，仍按 `kind: "skill"` + `artifactKey: "<name>"` tracking。
+构建后只为支持平台生成命令产物：支持 Claude 时得到 generated `claude/commands/<name>.md`；支持 Codex 时得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，仍按 `kind: "skill"` + `artifactKey: "<name>"` tracking。
 
 ## skillTriggers block
 
@@ -308,12 +308,13 @@ codex:
   - `"NONE"`：无需认证
   - `"ON_INSTALL"`：安装时认证
   - `"ON_USE"`：使用时认证
-- `products`：省略时不限制平台；声明后只在指定产品中可用。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台，`--platform auto` 会先过滤不匹配的平台再推断目标。脚手架默认省略该字段，让插件保持双平台可安装；只有明确要限制平台时才添加。
+- `products`：省略或空数组时表示同时支持 Claude 和 Codex；声明后只支持指定产品。这个字段不只是安装门禁，还参与 `pnpm build` 的 platform manifest/runtime 裁剪、平台 marketplace entries 过滤和 `pnpm plugin:test` 平台选择。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台，`--platform auto` 会先过滤不匹配的平台再推断目标。脚手架默认省略该字段，让插件保持双平台；只有明确要限制平台时才添加。
 
 Codex scope 对作者的影响：
 
 - `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。
 - `--scope project` 只写 repo-managed artifacts，不调用 native marketplace add / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`。缺少 `codex` 可执行文件时，repo-managed project 安装仍可进行。
+- `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时报错。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
 
 ## interface block
@@ -332,7 +333,7 @@ Codex scope 对作者的影响：
 
 `plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 marketplace manifest。创建单个插件时通常不要改它。
 
-`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。
+`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。AW current catalog 仍扫描每个插件的 `.agents-plugin/plugin.json`，不会把某个平台 marketplace 当作全部插件清单。
 
 ## 三层分发模型
 
@@ -345,10 +346,10 @@ Codex scope 对作者的影响：
 Embedded Runtime Bundle（npm 包内唯一运行时真值）
   packages/cli/plugins-dist/plugins/<name>/
   ├── .agents-plugin/plugin.json     源 manifest 副本
-  ├── .claude-plugin/plugin.json     Claude runtime manifest
-  ├── .codex-plugin/plugin.json      Codex runtime manifest
-  ├── claude/                        Claude 平台文件
-  └── codex/                         Codex 平台文件
+  ├── .claude-plugin/plugin.json     支持 Claude 时存在
+  ├── .codex-plugin/plugin.json      支持 Codex 时存在
+  ├── claude/                        支持 Claude 时存在
+  └── codex/                         支持 Codex 时存在
            │
            │  aw init / 安装流程
            ▼

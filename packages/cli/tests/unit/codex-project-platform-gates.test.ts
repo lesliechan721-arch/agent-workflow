@@ -748,4 +748,48 @@ describe('Codex project platform gates', () => {
     expect(claude.installPluginCalls).toEqual([]);
     expect(claude.installExtensionsCalls).toEqual([]);
   });
+
+  it('keeps Codex dynamic-artifact preflight scoped off the Claude project branch for dual-platform plugins', async () => {
+    const workspace = await makeCodexProjectWorkspace(['dynamic-artifacts']);
+    const manifestPath = path.join(
+      workspace.repoRoot,
+      'plugins',
+      'dynamic-artifacts',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath);
+    manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const dualPlatformEmbeddedRoot = await createSyntheticEmbeddedRoot(workspace.repoRoot);
+    tempDirs.push(dualPlatformEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(dualPlatformEmbeddedRoot);
+
+    const codex = new GateAdapter('codex', workspace.repoRoot);
+    const claude = new GateAdapter('claude', workspace.repoRoot);
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+
+    await expect(
+      installCommand(
+        ['dynamic-artifacts'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'claude',
+        },
+        {
+          env: workspace.env,
+          adapters: { codex, claude },
+        },
+      ),
+    ).resolves.toMatchObject({
+      platforms: ['claude'],
+      plugins: ['dynamic-artifacts'],
+    });
+
+    expect(codex.installPluginCalls).toEqual([]);
+    expect(codex.installExtensionsCalls).toEqual([]);
+    expect(claude.installExtensionsCalls).toEqual(['dynamic-artifacts']);
+  });
 });
