@@ -34,7 +34,8 @@ aw install git-commit -p codex -s project
 
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
-| `git-commit` | 在用户要求提交当前改动时触发 Conventional Commits 提交流程 | Codex / Claude Code |
+| `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
+| `codex-explore` | 为 Codex 提供只读代码库探索流程 | Codex |
 
 ## 开发
 

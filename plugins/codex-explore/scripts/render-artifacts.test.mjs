@@ -100,7 +100,7 @@ async function testPresentInstructionAndRole() {
   assert.equal(role.state, 'present');
   assert.equal(role.roleKey, 'codex-explorer');
   assert.deepEqual(role.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
-  assert.equal(role.content.registration.description, 'Read-only codebase exploration role for Codex Explore.');
+  assert.equal(role.content.registration.description, 'Codex Explore 只读代码库探索 role。');
   assert.equal('config_file' in role.content.registration, false);
   assert.equal(role.content.roleFile.name, 'codex-explorer');
   assert.equal(role.content.roleFile.model, 'gpt-5.4');

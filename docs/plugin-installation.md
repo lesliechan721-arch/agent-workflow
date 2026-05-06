@@ -255,7 +255,8 @@ Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己 tracking 到
 
 | 插件名 | 描述 | 支持平台 |
 |--------|------|----------|
-| `git-commit` | 用户要求提交时自动触发 skill，按 Conventional Commits 规范完成 git 提交 | Codex / Claude Code |
+| `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
+| `codex-explore` | 为 Codex 提供只读代码库探索流程 | Codex |
 
 查看完整列表：
 

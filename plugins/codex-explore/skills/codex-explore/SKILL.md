@@ -8,7 +8,7 @@ metadata:
 
 # Codex Explore
 
-这是手动 `$codex-explore` workflow。只有用户显式调用 `$codex-explore`，或安装时把该 skill 改为 auto trigger 后，主 agent 才应按这里的完整流程委派专用探索角色。
+这是手动 `$codex-explore` workflow。只有用户显式调用 `$codex-explore`，或安装时允许该 skill 自动触发后，主 agent 才应按这里的完整流程委派专用 explorer。
 
 ## 何时使用
 

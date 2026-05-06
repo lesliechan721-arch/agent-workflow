@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const LIGHTWEIGHT_INSTRUCTION_ID = 'lightweight-instruction';
 const CODEX_EXPLORER_ROLE_ID = 'codex-explorer-role';
 const CODEX_EXPLORER_ROLE_KEY = 'codex-explorer';
-const ROLE_DESCRIPTION = 'Read-only codebase exploration role for Codex Explore.';
+const ROLE_DESCRIPTION = 'Codex Explore 只读代码库探索 role。';
 const LIGHTWEIGHT_REFRESH_KEYS = [
   'enableLightweightInstruction',
   'explorerModel',
@@ -94,7 +94,7 @@ function renderLightweightInstruction({ explorerModel, modelReasoningEffort }) {
 
 function renderRoleInstructions() {
   return trimBlock(`
-    你是 Codex Explore 的专用只读探索角色，只回答主 agent 明确交给你的代码库问题。
+    你是 Codex Explore 的专用只读探索 role，只回答主 agent 明确交给你的代码库问题。
 
     只读边界：
     - 不要创建、编辑、移动、删除、格式化或回退文件。

@@ -636,7 +636,7 @@ describe('codex-explore integration acceptance', () => {
     );
     expect(config.snapshot.agents['codex-explorer']).toEqual({
       key: 'codex-explorer',
-      description: 'Read-only codebase exploration role for Codex Explore.',
+      description: 'Codex Explore 只读代码库探索 role。',
       configFile: 'agents/aw-codex-explore-codex-explorer.toml',
     });
     expect(roleContent).toContain('name = "codex-explorer"');

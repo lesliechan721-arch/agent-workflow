@@ -1,9 +1,9 @@
 ---
 name: commit
-description: 当用户要求提交当前改动、生成或执行 git commit 时，按 Conventional Commits 规范检查当前工作区变更，草拟中文 commit message，并直接完成一次 git 提交。
+description: 当用户要求提交当前改动、生成或执行 git commit 时，按约定式提交规范检查当前工作区变更，草拟中文 commit message，并直接完成一次 Git 提交。
 user-invocable: true
 metadata:
-  short-description: 可自动触发的 Conventional Commits 提交流程
+  short-description: 约定式 Git 提交流程
 {{#if claudeCommandOutputFill}}
 allowed-tools:
   - Bash(git status *)
@@ -14,7 +14,7 @@ shell: bash
 
 # Commit
 
-这个 skill 用来在用户提出提交诉求时，按 Conventional Commits 规范自动完成一次 git 提交。
+这个 skill 用来在用户提出提交诉求时，按约定式提交规范直接完成一次 Git 提交。
 
 {{#if claudeCommandOutputFill}}
 ## 当前 Git 快照
