@@ -213,6 +213,10 @@ function writeActions(actions: PluginConsoleAction[]): PluginConsoleAction[] {
   );
 }
 
+function actionKinds(actions: PluginConsoleAction[]): string[] {
+  return actions.map((action) => action.kind);
+}
+
 function reasonFixture(reason: PluginConsoleReasonCode): StatusMatrixCell {
   switch (reason) {
     case 'nativeIncomplete':
@@ -460,6 +464,22 @@ describe('console-model', () => {
     expect(needsAction.statusLabel).toBe('需要处理');
     expect(partial.statusLabel).toBe('部分可用');
     expect(external.statusLabel).toBe('由其它来源管理');
+  });
+
+  it('keeps not-installed and external location actions narrow', () => {
+    const notInstalled = singleItem(cell({
+      report: report({
+        currentCatalog: {
+          rootDir: '/catalog/demo-plugin',
+          source: 'local',
+          available: true,
+        },
+      }),
+    }));
+    const external = singleItem(reasonFixture('externalOwnership'));
+
+    expect(actionKinds(notInstalled.locations[0].actions)).toEqual(['openInstallWizard']);
+    expect(actionKinds(external.locations[0].actions)).toEqual([]);
   });
 
   it('maps every required reason code and keeps friendly prose clean', () => {

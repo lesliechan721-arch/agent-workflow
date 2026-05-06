@@ -698,12 +698,10 @@ function buildLocationActions(
     actions.push(action('openInstallWizard', '安装', target, {
       ...(disabledInstallReason ? { disabledReason: disabledInstallReason } : {}),
     }));
-    actions.push(diagnose);
     return actions;
   }
 
   if (status === 'external') {
-    actions.push(diagnose);
     return actions;
   }
 

@@ -400,6 +400,77 @@ describe('console controller', () => {
     }));
   });
 
+  it('can clear an existing optional field even when its current value is invalid', async () => {
+    const configPlugin = plugin({
+      schema: {
+        retries: { type: 'number' },
+      },
+    });
+    statusCommand
+      .mockResolvedValueOnce({ consoleItems: [item({
+        status: 'needsAction',
+        statusLabel: '需要处理',
+        locations: [location({
+          scope: 'project',
+          locationLabel: 'Codex（当前项目）',
+          status: 'needsAction',
+          statusLabel: '需要处理',
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'project' } }],
+        })],
+      })] })
+      .mockResolvedValueOnce({ consoleItems: [item()] });
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{ pluginName: 'git-commit', plugin: configPlugin, currentPlugin: configPlugin }],
+    });
+    resolveEffectivePluginConfig.mockResolvedValue({
+      pluginName: 'git-commit',
+      projectRoot: '/workspace',
+      values: {},
+      redactedValues: {},
+      sources: { retries: 'project' },
+      issues: [{
+        type: 'invalid-config',
+        key: 'retries',
+        source: 'project',
+        message: 'Config "retries" must be a number.',
+      }],
+      ignoredUnknownKeys: [],
+      schema: configPlugin.manifest.config!.schema,
+      stores: {
+        user: { path: '', exists: true, values: {} },
+        project: { path: '', exists: true, values: { retries: 'many' } },
+      },
+    });
+    readPluginConfigStore.mockResolvedValue({
+      path: '',
+      exists: true,
+      values: { retries: 'many' },
+    });
+    applyPluginConfigWrite.mockResolvedValue({
+      updatedKeys: [],
+      removedKeys: ['retries'],
+      artifactRefresh: { status: 'succeeded' },
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'openConfigWizard' },
+      { method: 'select', value: 'project' },
+      { method: 'select', value: 'clear' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(applyPluginConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'project',
+      request: {
+        updates: {},
+        removeKeys: ['retries'],
+      },
+    }));
+  });
+
   it('shows skipped reapply refresh feedback', async () => {
     const consoleItem = item({
       locations: [location({

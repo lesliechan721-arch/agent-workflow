@@ -486,7 +486,7 @@ async function promptFullConfigSubmission(
 
   for (const field of form.fields) {
     const state = fieldStates[field.key];
-    const needsFix = form.requiredKeys.includes(field.key) || Boolean(state.issueMessage);
+    const needsFix = field.required && (form.requiredKeys.includes(field.key) || Boolean(state.issueMessage));
     if (needsFix) {
       const value = await promptFieldValue(context, effective.projectRoot, field, true);
       if (value === null) {
