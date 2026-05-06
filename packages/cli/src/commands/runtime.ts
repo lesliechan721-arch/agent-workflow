@@ -204,6 +204,7 @@ export interface CliExecutionContextInput extends CommandExecutionContextInput {
   cwd?: string;
   io?: Partial<CliIo>;
   stdin?: NodeJS.ReadableStream;
+  stdout?: { isTTY?: boolean };
   promptOutputSink?: CliPromptOutputSink;
   consoleDriver?: CliConsoleDriver;
 }
@@ -1084,8 +1085,12 @@ export function createCliExecutionContext(
     ...input.io,
   };
   const stdin = input.stdin ?? process.stdin;
+  const stdout = input.stdout ?? process.stdout;
   const promptOutputSink = input.promptOutputSink ?? process.stderr;
-  const isTty = Boolean((stdin as { isTTY?: boolean }).isTTY && promptOutputSink.isTTY);
+  const stdinIsTty = Boolean((stdin as { isTTY?: boolean }).isTTY);
+  const stdoutIsTty = Boolean(stdout.isTTY);
+  const promptOutputIsTty = Boolean(promptOutputSink.isTTY);
+  const isTty = stdinIsTty && stdoutIsTty && promptOutputIsTty;
   const isCi = isTruthy(env.CI);
   const hasInjectedPrompt = Boolean(input.prompt);
   const requestedInteractive = input.interactive ?? (hasInjectedPrompt ? true : isTty);
@@ -1098,7 +1103,9 @@ export function createCliExecutionContext(
       awHome: resolveAwHome(env),
       isTty,
       isCi,
-      promptOutputIsTty: Boolean(promptOutputSink.isTTY),
+      stdinIsTty,
+      stdoutIsTty,
+      promptOutputIsTty,
       interactiveRequested: requestedInteractive,
       interactiveEnabled: interactive,
     },

@@ -603,7 +603,7 @@ describe('cli entry integration', () => {
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
-    expect(capture.readStdout()).toContain('已重置 git-commit 的 user 配置。');
+    expect(capture.readStdout()).toContain('已重置 git-commit 的个人配置。');
     await expect(fs.pathExists(userConfigPath)).resolves.toBe(false);
 
     await fs.outputJson(projectConfigPath, { token: 'project-secret' }, { spaces: 2 });

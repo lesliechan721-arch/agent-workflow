@@ -665,6 +665,7 @@ describe('console-model', () => {
     expect(refreshFailed.locations[0].reasonCodes).toContain('artifactRefreshFailed');
     expect(refreshFailed.locations[0].actions.map((action) => action.kind)).toContain('reapplyConfigRefresh');
     expect(drifted.locations[0].reasonCodes).toContain('artifactDrift');
+    expect(drifted.locations[0].actions.find((action) => action.kind === 'repairInstall')?.label).toBe('重新安装/升级');
     expect(missing.locations[0].reasonCodes).toContain('artifactDrift');
     expect(disabledByConfig.status).toBe('installed');
     expect(disabledByConfig.locations[0].reasonCodes).not.toContain('artifactDrift');

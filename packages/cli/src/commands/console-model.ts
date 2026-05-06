@@ -742,7 +742,10 @@ function buildLocationActions(
     reasons.includes('artifactDrift') ||
     reasons.includes('catalogCapabilityChanged')
   ) {
-    actions.push(action('repairInstall', reasons.includes('catalogCapabilityChanged') ? '重新安装/升级' : '修复安装', target));
+    const repairLabel = reasons.includes('catalogCapabilityChanged') || reasons.includes('artifactDrift')
+      ? '重新安装/升级'
+      : '修复安装';
+    actions.push(action('repairInstall', repairLabel, target));
   }
 
   if (

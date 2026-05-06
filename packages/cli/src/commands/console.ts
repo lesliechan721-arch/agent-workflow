@@ -8,6 +8,7 @@ import type {
 import {
   createInstallWizardDecision,
   type ConsoleRequiredConfigPrompt,
+  type ConsoleWriteWizardOperation,
 } from './console-wizard.js';
 import {
   type PluginConsoleAction,
@@ -156,6 +157,37 @@ function renderResultWithWarnings(
   return friendlyWarnings.length > 0
     ? [...lines, '', ...friendlyWarnings]
     : lines;
+}
+
+function configScopeLabel(scope: Scope): string {
+  return scope === 'user' ? '个人' : '当前项目';
+}
+
+function artifactRefreshStatusLabel(status: 'succeeded' | 'failed' | 'skipped'): string {
+  switch (status) {
+    case 'succeeded':
+      return '已更新';
+    case 'failed':
+      return '刷新失败';
+    case 'skipped':
+      return '无需更新';
+  }
+}
+
+function artifactRefreshLine(status: 'succeeded' | 'failed' | 'skipped'): string {
+  return `相关项目文件：${artifactRefreshStatusLabel(status)}`;
+}
+
+function repairInstallOperation(location: PluginConsoleLocation): ConsoleWriteWizardOperation {
+  if (
+    location.status === 'upgradeAvailable' ||
+    location.reasonCodes.includes('artifactDrift') ||
+    location.reasonCodes.includes('catalogCapabilityChanged')
+  ) {
+    return 'upgrade';
+  }
+
+  return 'install';
 }
 
 function commandResultLines(
@@ -587,10 +619,10 @@ async function runConfigWizardAction(
     },
   });
   const lines = [
-    `已保存 ${item.pluginName} 的${submission.scope === 'user' ? '个人' : '当前项目'}配置。`,
+    `已保存 ${item.pluginName} 的${configScopeLabel(submission.scope)}配置。`,
     `更新字段：${receipt.updatedKeys.length > 0 ? receipt.updatedKeys.join('、') : '无'}`,
     `清空字段：${receipt.removedKeys.length > 0 ? receipt.removedKeys.join('、') : '无'}`,
-    `artifact refresh：${receipt.artifactRefresh.status}`,
+    artifactRefreshLine(receipt.artifactRefresh.status),
   ];
   if (receipt.artifactRefresh.status === 'failed' && receipt.artifactRefresh.error) {
     lines.push(`失败原因：${receipt.artifactRefresh.error}`);
@@ -680,7 +712,9 @@ async function runInstallLikeAction(options: {
 
   const decision = await createInstallWizardDecision({
     intent,
-    repairOperation: defaultLocation.status === 'upgradeAvailable' ? 'upgrade' : 'install',
+    ...(intent === 'repairInstall'
+      ? { repairOperation: repairInstallOperation(selectedLocation) }
+      : {}),
     targets: prepared.targets,
     platforms: [selectedLocation.platform],
     cwd: context.cwd,
@@ -788,7 +822,7 @@ async function runReapplyAction(
     env: context.env,
   });
   const lines = [
-    `artifact refresh：${receipt.status}`,
+    artifactRefreshLine(receipt.status),
     ...(receipt.status === 'skipped'
       ? ['没有需要重新应用的项目文件']
       : []),

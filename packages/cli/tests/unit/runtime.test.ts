@@ -31,14 +31,17 @@ describe('command runtime', () => {
     expect(output.join('')).toContain('继续吗？');
   });
 
-  it('treats prompt interactivity as stdin TTY plus output sink TTY, independent from stdout', async () => {
+  it('treats prompt interactivity as stdin, stdout, and prompt output TTY', async () => {
     const { createCliExecutionContext } = await import('../../src/commands/runtime.js');
     const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+    const stdout = new PassThrough() as PassThrough & { isTTY?: boolean };
     stdin.isTTY = true;
+    stdout.isTTY = true;
     const output: string[] = [];
 
     const context = createCliExecutionContext({
       stdin,
+      stdout,
       promptOutputSink: {
         isTTY: true,
         write: (text) => output.push(text),
@@ -54,8 +57,42 @@ describe('command runtime', () => {
     expect(context.interactive).toBe(true);
     expect(context.isTty).toBe(true);
     expect(context.diagnostics.metadata).toMatchObject({
+      stdinIsTty: true,
+      stdoutIsTty: true,
       promptOutputIsTty: true,
       interactiveEnabled: true,
+    });
+  });
+
+  it('disables default interactivity when stdout is not a TTY', async () => {
+    const { createCliExecutionContext } = await import('../../src/commands/runtime.js');
+    const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+    const stdout = new PassThrough() as PassThrough & { isTTY?: boolean };
+    stdin.isTTY = true;
+    stdout.isTTY = false;
+
+    const context = createCliExecutionContext({
+      stdin,
+      stdout,
+      promptOutputSink: {
+        isTTY: true,
+        write: vi.fn(),
+      },
+      env: {
+        AW_HOME: '/tmp/aw-home',
+      } as NodeJS.ProcessEnv,
+      diagnostics: {
+        commandName: 'console',
+      },
+    });
+
+    expect(context.isTty).toBe(false);
+    expect(context.interactive).toBe(false);
+    expect(context.diagnostics.metadata).toMatchObject({
+      stdinIsTty: true,
+      stdoutIsTty: false,
+      promptOutputIsTty: true,
+      interactiveEnabled: false,
     });
   });
 

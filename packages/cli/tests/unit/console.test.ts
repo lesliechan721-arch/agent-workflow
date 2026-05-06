@@ -219,6 +219,58 @@ describe('console controller', () => {
     }));
   });
 
+  it('dispatches repairInstall through upgrade semantics for drifted locations', async () => {
+    statusCommand
+      .mockResolvedValueOnce({ consoleItems: [item({
+        status: 'needsAction',
+        statusLabel: '需要处理',
+        locations: [location({
+          status: 'needsAction',
+          statusLabel: '需要处理',
+          reasonCodes: ['artifactDrift'],
+          actions: [{ kind: 'repairInstall', label: '重新安装/升级', target: { platform: 'codex', scope: 'user' } }],
+        })],
+      })] })
+      .mockResolvedValueOnce({ consoleItems: [item()] });
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [{ pluginName: 'git-commit', plugin: plugin() }],
+    });
+    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('fixed');
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'upgrade',
+    });
+    upgradeCommand.mockResolvedValue({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'repairInstall' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(createInstallWizardDecision).toHaveBeenCalledWith(expect.objectContaining({
+      intent: 'repairInstall',
+      repairOperation: 'upgrade',
+    }));
+    expect(upgradeCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        scope: 'user',
+        platform: 'codex',
+      }),
+      context,
+    );
+    expect(installCommand).not.toHaveBeenCalled();
+  });
+
   it('forces multi-location selection before uninstalling and uses the chosen location target', async () => {
     statusCommand
       .mockResolvedValueOnce({ consoleItems: [item({

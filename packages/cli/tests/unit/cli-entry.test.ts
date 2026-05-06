@@ -1082,8 +1082,113 @@ describe('cli entry', () => {
     expect(readStderr()).toContain('fatal install error');
   });
 
-  it.todo('P0 baseline: default status and error copy should avoid internal terms like healthSource and scope prose');
-  it.todo('P0 baseline: dynamic artifact refresh failed default copy should be rewritten without leaking internal fields');
+  it('P0 baseline: default status and error copy should avoid internal terms like healthSource and scope prose', async () => {
+    const statusCommand = vi.fn(async () => ({
+      reports: [],
+      output: [
+        '插件状态',
+        '- git-commit',
+        '  状态：需要处理',
+        '  位置：Codex（个人）',
+        '  下一步：查看详情：aw status git-commit --verbose',
+      ].join('\n'),
+    }));
+    vi.doMock('../../src/commands/status.js', () => ({
+      statusCommand,
+    }));
+
+    const { runCli } = await import('../../src/index.js');
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['status', 'git-commit'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io: capture.io,
+      },
+    )).toBe(0);
+
+    const statusProse = capture.readStdout().replace(/`[^`]*`/g, '');
+    expect(statusProse).toContain('位置：Codex（个人）');
+    expect(statusProse).not.toMatch(/healthSource|artifactRefresh|user scope|project scope|\bscope\b/i);
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['install'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io: capture.io,
+      },
+    )).toBe(1);
+
+    const errorProse = capture.readStderr().replace(/`[^`]*`/g, '');
+    expect(errorProse).toContain('install 命令至少需要一个插件名');
+    expect(errorProse).not.toMatch(/healthSource|artifactRefresh|user scope|project scope|\bscope\b/i);
+  });
+
+  it('P0 baseline: dynamic artifact refresh failed default copy should be rewritten without leaking internal fields', async () => {
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string' },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config-write.js', () => ({
+      applyPluginConfigWrite: vi.fn(async () => ({
+        plugin: 'git-commit',
+        scope: 'user',
+        updatedKeys: ['token'],
+        removedKeys: [],
+        effective: {},
+        artifactRefresh: {
+          attempted: true,
+          status: 'failed',
+          triggerKeys: ['token'],
+          artifacts: [],
+          error: 'render failed',
+        },
+      })),
+      resetPluginConfigWithHelper: vi.fn(),
+    }));
+
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'token', 'secret'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    const combinedOutput = `${readStdout()}\n${readStderr()}`;
+    expect(exitCode).toBe(0);
+    expect(readStdout()).toBe('已写入 git-commit.token（个人配置）。\n');
+    expect(readStderr()).toContain('配置已保存，但相关项目文件刷新失败：render failed');
+    expect(combinedOutput).not.toMatch(/artifact refresh|artifactRefresh|\(user\)|\buser\b|\bscope\b/i);
+  });
 
   it('threads injected native runner, prompt, reporter, and debug logger through one context', async () => {
     const nativeCliRunner = vi.fn(async () => ({

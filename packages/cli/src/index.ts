@@ -233,6 +233,10 @@ function writeJsonReceipt(write: (text: string) => void, payload: unknown): void
   writeLine(write, JSON.stringify(payload, null, 2));
 }
 
+function configScopeLabel(scope: Scope): string {
+  return scope === 'user' ? '个人' : '当前项目';
+}
+
 function writeArtifactRefreshNotice(
   write: (text: string) => void,
   artifactRefresh: {
@@ -247,7 +251,7 @@ function writeArtifactRefreshNotice(
 
   writeLine(
     write,
-    `配置已保存，但 artifact refresh 失败：${artifactRefresh.error ?? '请运行 aw status 检查详细诊断。'}`,
+    `配置已保存，但相关项目文件刷新失败：${artifactRefresh.error ?? '请运行 aw status 检查详细诊断。'}`,
   );
 }
 
@@ -753,7 +757,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
-        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key} (${receipt.scope})。`);
+        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configScopeLabel(receipt.scope)}配置）。`);
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -804,8 +808,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.existed
-          ? `已删除 ${receipt.plugin}.${receipt.removedKey} (${receipt.scope})。`
-          : `${receipt.plugin}.${receipt.removedKey} (${receipt.scope}) 原本不存在。`);
+          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configScopeLabel(receipt.scope)}配置）。`
+          : `${receipt.plugin}.${receipt.removedKey}（${configScopeLabel(receipt.scope)}配置）原本不存在。`);
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -864,8 +868,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.deleted
-          ? `已重置 ${receipt.plugin} 的 ${receipt.scope} 配置。`
-          : `${receipt.plugin} 没有可重置的 ${receipt.scope} 配置。`);
+          ? `已重置 ${receipt.plugin} 的${configScopeLabel(receipt.scope)}配置。`
+          : `${receipt.plugin} 没有可重置的${configScopeLabel(receipt.scope)}配置。`);
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
