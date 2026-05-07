@@ -729,8 +729,8 @@ describe('local-plugin generator', () => {
         ],
       },
     });
-    expect(result.claudeManifest).not.toHaveProperty('dependencies');
-    expect(result.codexManifest).not.toHaveProperty('dependencies');
+    expect(result.platformManifests.claude).not.toHaveProperty('dependencies');
+    expect(result.platformManifests.codex).not.toHaveProperty('dependencies');
     await expect(
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'plugin.json')),
     ).resolves.not.toHaveProperty('dependencies');
