@@ -49,6 +49,9 @@ export type PluginConsoleReasonCode =
   | 'nativeIncomplete'
   | 'nativeResidue'
   | 'missingRecord'
+  | 'dependencyMissing'
+  | 'dependencyProtected'
+  | 'autoDependencyRemovable'
   | 'upgradeEvidenceUnknown'
   | 'artifactRefreshFailed'
   | 'artifactDrift'
@@ -140,6 +143,7 @@ const REASON_PRIORITY: Record<PluginConsoleReasonCode, number> = {
   nativeIncomplete: 95,
   nativeResidue: 94,
   missingRecord: 93,
+  dependencyMissing: 92,
   unreadableConfig: 92,
   trackingIdentityBroken: 91,
   roleOrMcpConflict: 90,
@@ -150,8 +154,10 @@ const REASON_PRIORITY: Record<PluginConsoleReasonCode, number> = {
   artifactDrift: 85,
   requiredConfigMissing: 84,
   invalidConfig: 83,
+  dependencyProtected: 70,
   projectVisibilityBlocked: 60,
   sessionVisibilityLimited: 59,
+  autoDependencyRemovable: 21,
   catalogUnavailable: 20,
 };
 
@@ -346,6 +352,15 @@ function collectReasonCodes(
   if (cell.config === 'invalid-config') {
     reasons.add('invalidConfig');
   }
+  if ((report?.dependencies?.missing.length ?? 0) > 0) {
+    reasons.add('dependencyMissing');
+  }
+  if ((report?.dependencies?.dependents.length ?? 0) > 0) {
+    reasons.add('dependencyProtected');
+  }
+  if (report?.dependencies?.autoRemovable) {
+    reasons.add('autoDependencyRemovable');
+  }
   if (hasUnreadableConfigSignal(cell)) {
     reasons.add('unreadableConfig');
   }
@@ -428,7 +443,9 @@ function installedEvidenceHealthy(cell: StatusMatrixCell, reasons: PluginConsole
   const blockingReasons = reasons.filter((reason) =>
     reason !== 'catalogUnavailable' &&
     reason !== 'projectVisibilityBlocked' &&
-    reason !== 'sessionVisibilityLimited',
+    reason !== 'sessionVisibilityLimited' &&
+    reason !== 'dependencyProtected' &&
+    reason !== 'autoDependencyRemovable',
   );
   if (blockingReasons.length > 0) {
     return false;
@@ -467,6 +484,7 @@ function computeLocationStatus(
     reason === 'nativeIncomplete' ||
     reason === 'nativeResidue' ||
     reason === 'missingRecord' ||
+    reason === 'dependencyMissing' ||
     reason === 'upgradeEvidenceUnknown' ||
     reason === 'artifactRefreshFailed' ||
     reason === 'artifactDrift' ||
@@ -568,6 +586,24 @@ function buildReasonCopy(
         issueSummary: '插件已经存在，但 AW 缺少完整安装记录。',
         detailHints: ['通常需要重新补齐安装，让 AW 能重新接管这个位置。'],
         nextSteps: ['先执行修复安装，再重新查看状态。'],
+      };
+    case 'dependencyMissing':
+      return {
+        issueSummary: '这个安装位置当前还缺少依赖插件。',
+        detailHints: ['状态页里的依赖区分“当前安装缺失”和“catalog 已变化”这两类情况。'],
+        nextSteps: ['先补齐缺失依赖，再重新检查状态。'],
+      };
+    case 'dependencyProtected':
+      return {
+        issueSummary: '当前还有其它插件在依赖它。',
+        detailHints: ['直接卸载会破坏依赖它的安装位置，所以这里先保持保护状态。'],
+        nextSteps: ['先处理依赖它的插件，再决定是否卸载。'],
+      };
+    case 'autoDependencyRemovable':
+      return {
+        issueSummary: '这个自动依赖目前已经闲置。',
+        detailHints: ['确认没有手动使用它之后，可以直接清理这个位置。'],
+        nextSteps: ['确认不再需要后，执行清理自动依赖。'],
       };
     case 'upgradeEvidenceUnknown':
       return {
@@ -685,9 +721,18 @@ function buildLocationActions(
   const diagnose = action('diagnoseCommand', '查看诊断命令', target, {
     command: baseStatusCommand(cell),
   });
-  const uninstall = action('runUninstall', '卸载', target, {
+  const dependencyProtected = (cell.report?.dependencies?.dependents.length ?? 0) > 0;
+  const autoRemovable = cell.report?.dependencies?.autoRemovable === true;
+  const uninstall = action('runUninstall', autoRemovable ? '清理自动依赖' : '卸载', target, {
     destructive: true,
-    confirmText: `确定要卸载 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的安装吗？`,
+    confirmText: autoRemovable
+      ? `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的自动依赖安装吗？`
+      : `确定要卸载 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的安装吗？`,
+    ...(dependencyProtected
+      ? {
+          disabledReason: `当前还有 ${cell.report?.dependencies?.dependents.length ?? 0} 个依赖它的安装位置，暂时不能直接卸载。`,
+        }
+      : {}),
   });
   const actions: PluginConsoleAction[] = [];
   const configSupported = supportsConfigAction(cell);
@@ -736,13 +781,16 @@ function buildLocationActions(
 
   if (
     reasons.includes('missingRecord') ||
+    reasons.includes('dependencyMissing') ||
     reasons.includes('upgradeEvidenceUnknown') ||
     reasons.includes('artifactDrift') ||
     reasons.includes('catalogCapabilityChanged')
   ) {
-    const repairLabel = reasons.includes('catalogCapabilityChanged') || reasons.includes('artifactDrift')
-      ? '重新安装/升级'
-      : '修复安装';
+    const repairLabel = reasons.includes('dependencyMissing')
+      ? '补齐依赖'
+      : (reasons.includes('catalogCapabilityChanged') || reasons.includes('artifactDrift')
+        ? '重新安装/升级'
+        : '修复安装');
     actions.push(action('repairInstall', repairLabel, target));
   }
 
@@ -769,6 +817,7 @@ function buildLocationActions(
     !reasons.includes('unmanagedArtifactConflict') &&
     !reasons.includes('unreadableConfig') &&
     !reasons.includes('nativeResidue') &&
+    !reasons.includes('dependencyProtected') &&
     !actions.some((existing) => existing.kind === 'repairInstall')
   ) {
     actions.push(action('repairInstall', '修复安装', target));

@@ -148,6 +148,48 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
+  it('rejects bundle source manifests whose dependencies cannot be resolved in the current catalog', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readFixturePluginManifest(repoRoot);
+    manifest.dependencies = {
+      plugins: [
+        {
+          name: 'missing-helper',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'current catalog is missing plugin "missing-helper"',
+    );
+  });
+
+  it('rejects platform manifests that accidentally keep AW-managed dependencies fields', async () => {
+    const repoRoot = await makeTempRepo();
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const codexManifestPath = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const codexManifest = await fs.readJson(codexManifestPath);
+    codexManifest.dependencies = {
+      plugins: [{ name: 'shared-helper' }],
+    };
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid codex manifest: unknown field "dependencies".',
+    );
+  });
+
   it('rejects bundles missing lifecycle, helper, or runtime sibling files', async () => {
     const repoRoot = await makeTempRepo();
     await writeRuntimeScriptFixture(repoRoot);

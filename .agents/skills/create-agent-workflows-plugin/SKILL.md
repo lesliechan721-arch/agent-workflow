@@ -97,6 +97,7 @@ plugins/<name>/
 | Claude 专属能力 | Claude | `output-styles/`、`buildConfig.manifestOverrides.claude` | `references/claude-only-capabilities.md` |
 | Build Config | 双平台 | `buildConfig.templates` / `fileRules` / `manifestOverrides` | `references/build-config-spec.md` |
 | AW Scripts / Config / Lifecycle | 双平台 | `scripts` / `config`、`scripts/aw-config.mjs`、`scripts/lifecycle.mjs`、`scripts/**/*.test.mjs` | `references/aw-scripts-config-lifecycle.md` |
+| Plugin Dependencies | 双平台 | `.agents-plugin/plugin.json` 顶层 `dependencies.plugins` | `references/plugin-manifest-spec.md` |
 
 插件不需要包含所有能力；先按场景选组合，再打开对应参考文档补字段细节。
 
@@ -114,6 +115,7 @@ plugins/<name>/
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
    - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；renderer 只输出 `ArtifactPlan`，不要直接写 `.codex/config.toml`、`.codex/agents/*.toml`、tracking 或 ledger
+   - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件，不写版本范围、外部来源或 platform override
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
 8. **测试**：插件内 Node 脚本用 `pnpm plugin:test <plugin>`；改到 manifest、bundle 或安装逻辑时，再运行相关 `pnpm test:*`。
@@ -129,9 +131,10 @@ plugins/<name>/
 
 - `aw` 主命令是唯一交互入口；TTY 下进入插件控制台，配置向导也只在这里出现。脚本和文档示例不要再使用子命令交互 flag。
 - 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。
+- `aw install`、显式 `aw upgrade` 和 `aw upgrade --all` 会自动解析并安装/升级缺失依赖；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后清理引用归零的自动依赖。文档和示例里不要要求用户手动按顺序安装普通依赖，除非该依赖需要用户先单独配置或选择特殊安装选项。
 - `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
 - 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、recovery breadcrumb、ledger、healthSource、tracking 或 config/script health 等内部词。
-- `aw status` 默认输出使用友好状态投影；`aw status --json` 保留旧矩阵字段，并追加 `friendlySummaries` 和 `consoleItems`。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle 或修复动作。
+- `aw status` 默认输出使用友好状态投影；`aw status --json` 保留旧矩阵字段，并追加 `friendlySummaries`、`consoleItems` 和每个位置的 `dependencies` 投影。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作或依赖自动清理。
 
 ## 脚手架脚本
 
@@ -164,6 +167,9 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 ## 最小检查
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
+- `dependencies.plugins` 只允许 `name`、`target`、`inheritInstallOptions`、`when`。`when.platforms` 只能写 `codex` / `claude`，`target.scope` 只能写 `user` / `project`；不要写 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、`platform` 或 `target.platform`。
+- 依赖字段只保留在 source/runtime `.agents-plugin/plugin.json`；平台原生 manifest 和 marketplace manifest 不包含 `dependencies`。
+- user scope 父插件不能依赖 project scope 插件；project scope 父插件省略 `target.scope` 时优先当前 project，必要时可复用健康 user scope。显式 `target.scope` 时按声明固定选址。
 - `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
 - 手动触发命令只使用公共 `slashCommands`。
 - `slashCommands` 的 Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。

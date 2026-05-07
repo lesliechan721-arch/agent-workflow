@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as commonModule from '../../src/commands/common.js';
 import {
   installCommand,
   installTargetsOnPlatforms,
 } from '../../src/commands/install.js';
+import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
 import type {
   GeneratedArtifact,
+  InstalledLedger,
   PlatformAdapter,
   PlatformName,
   PluginMeta,
@@ -27,9 +30,14 @@ import {
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   resolveCodexProjectKey,
+  resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  createDependencyPluginManifest,
+  createPluginDependencyScenarioFixtures,
+} from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
 
@@ -69,6 +77,209 @@ async function makeWorkspace(): Promise<{
   };
 }
 
+async function writeSyntheticPlugin(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<PluginMeta> {
+  const pluginRoot = path.join(repoRoot, 'plugins', String(manifest.name));
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+  return readPluginManifest(pluginRoot);
+}
+
+interface GraphTestPluginState {
+  scopeInitialized?: 'yes' | 'no' | 'unknown';
+  nativeInstalled?: boolean;
+  marketplaceRegistered?: boolean;
+  externalOwnership?: boolean;
+  failInstallExtensions?: boolean;
+  failUninstall?: boolean;
+  artifactPath?: string;
+}
+
+class GraphTestAdapter implements PlatformAdapter {
+  installOrder: string[] = [];
+  uninstallOrder: string[] = [];
+
+  constructor(
+    readonly name: PlatformName,
+    private readonly cwd: string,
+    private readonly env: NodeJS.ProcessEnv,
+    readonly states: Record<string, GraphTestPluginState> = {},
+  ) {}
+
+  private stateFor(pluginName: string): GraphTestPluginState {
+    this.states[pluginName] ??= {};
+    return this.states[pluginName];
+  }
+
+  private trackingDir(scope: Scope): string {
+    if (this.name === 'claude') {
+      return scope === 'project'
+        ? path.join(this.cwd, '.claude')
+        : path.join(this.cwd, '.claude-user');
+    }
+    return resolveCodexPaths(this.cwd, scope, this.env).trackingDir;
+  }
+
+  async detect(): Promise<boolean> {
+    return true;
+  }
+
+  async installPlugin(plugin: PluginMeta): Promise<void> {
+    const state = this.stateFor(plugin.manifest.name);
+    state.nativeInstalled = true;
+    state.marketplaceRegistered = true;
+  }
+
+  async uninstallPlugin(plugin: PluginMeta): Promise<void> {
+    const state = this.stateFor(plugin.manifest.name);
+    if (state.failUninstall) {
+      throw new Error(`simulated uninstall failure for ${plugin.manifest.name}`);
+    }
+    state.nativeInstalled = false;
+  }
+
+  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+    const state = this.stateFor(plugin.manifest.name);
+    this.installOrder.push(plugin.manifest.name);
+    if (state.failInstallExtensions) {
+      throw new Error(`simulated installExtensions failure for ${plugin.manifest.name}`);
+    }
+
+    const trackingDir = this.trackingDir(scope);
+    const artifactPath = path.join(trackingDir, `${plugin.manifest.name}.${this.name}.txt`);
+    await fs.ensureDir(path.dirname(artifactPath));
+    await fs.writeFile(artifactPath, `${this.name}:${plugin.manifest.name}`, 'utf8');
+    state.scopeInitialized = 'yes';
+    state.artifactPath = artifactPath;
+
+    return [{
+      path: artifactPath,
+      kind: 'instruction',
+      platform: this.name,
+      artifactKey: `${plugin.manifest.name}.${this.name}`,
+    }];
+  }
+
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    _scope: Scope,
+    _generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void> {
+    const state = this.stateFor(plugin.manifest.name);
+    this.uninstallOrder.push(plugin.manifest.name);
+    if (state.failUninstall) {
+      throw new Error(`simulated uninstall failure for ${plugin.manifest.name}`);
+    }
+    if (state.artifactPath) {
+      await fs.remove(state.artifactPath).catch(() => undefined);
+    }
+    state.artifactPath = undefined;
+    state.scopeInitialized = 'no';
+  }
+
+  async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    await this.installPlugin(plugin);
+    await this.installExtensions(plugin, scope);
+  }
+
+  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    const state = this.stateFor(plugin.manifest.name);
+    const generatedArtifacts = state.artifactPath
+      ? [{
+          path: state.artifactPath,
+          exists: await fs.pathExists(state.artifactPath),
+          kind: 'instruction' as const,
+          artifactKey: `${plugin.manifest.name}.${this.name}`,
+        }]
+      : [];
+
+    return {
+      platform: this.name,
+      scope,
+      initialized:
+        state.scopeInitialized === 'yes' ||
+        state.nativeInstalled === true,
+      plugins: [{
+        pluginName: plugin.manifest.name,
+        native: {
+          marketplaceRegistered: state.marketplaceRegistered === true,
+          pluginAvailable: true,
+          pluginInstalled: state.nativeInstalled === true,
+          version: plugin.manifest.version,
+        },
+        generatedArtifacts,
+        driftWarnings: [],
+        ledgerStateStatus: 'available',
+        ledgerStateReason: null,
+        scopeInitialized: state.scopeInitialized ?? 'no',
+        catalogCompatibility: 'current',
+        externalOwnership: state.externalOwnership
+          ? {
+              present: true,
+              marketplace: 'third-party',
+              details: '同名插件已由外部 marketplace 管理。',
+            }
+          : undefined,
+        platformRuntimeEvidence: {
+          present: false,
+        },
+        platformNativeFallbackEvidence: {
+          present: false,
+        },
+        scopeManagedEvidence: {
+          ledger: state.scopeInitialized === 'yes',
+          tracking: generatedArtifacts.length > 0,
+          sharedNativeRef: state.nativeInstalled === true,
+        },
+        currentCatalog: {
+          rootDir: '/synthetic',
+          source: 'embedded',
+          available: true,
+        },
+        artifactsInitialized: generatedArtifacts.every((artifact) => artifact.exists),
+        repoManagedSessionState: {
+          instructions: generatedArtifacts.length > 0 ? 'visible' : 'absent',
+          rules: 'not_applicable',
+          hooks: 'not_applicable',
+          agents: 'not_applicable',
+          diagnostics: [],
+        },
+        projectTrust: 'not_applicable',
+      }],
+    };
+  }
+}
+
+function createPreparedTargets(
+  explicitTargets: ResolvedPluginTarget[],
+  ledger: InstalledLedger,
+) {
+  return {
+    ledger,
+    warnings: [],
+    targets: explicitTargets,
+  };
+}
+
+function mockCatalogTargets(options: {
+  explicitTargets: ResolvedPluginTarget[];
+  allTargets: ResolvedPluginTarget[];
+  ledger: InstalledLedger;
+}): void {
+  vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockResolvedValue(
+    createPreparedTargets(options.explicitTargets, options.ledger),
+  );
+  vi.spyOn(commonModule, 'loadPluginTargetsForCommand').mockResolvedValue(
+    options.allTargets,
+  );
+}
+
 class FakeCodexAdapter implements PlatformAdapter {
   readonly name: PlatformName = 'codex';
   nativeInstalled = false;
@@ -99,7 +310,7 @@ class FakeCodexAdapter implements PlatformAdapter {
   async uninstallExtensions(): Promise<void> {}
 
   async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    await this.installPlugin(plugin, scope);
+    await this.installPlugin(plugin);
   }
 
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
@@ -518,5 +729,414 @@ describe('install command P5 snapshot and ledger semantics', () => {
     ).rejects.toThrow(
       '请先恢复该插件到当前 catalog，或运行 `aw uninstall git-commit -p codex -s user` 清理 Codex native 残留。',
     );
+  });
+
+  it('auto-installs missing dependencies, writes parent edges after success, and exposes receipt metadata', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const childPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'same-scope-child',
+    }));
+    const parentPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'same-scope-parent',
+      dependencies: [{ name: childPlugin.manifest.name }],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const explicitTarget = {
+      pluginName: parentPlugin.manifest.name,
+      plugin: parentPlugin,
+      currentPlugin: parentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const dependencyTarget = {
+      pluginName: childPlugin.manifest.name,
+      plugin: childPlugin,
+      currentPlugin: childPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env);
+    const result = await installCommand(
+      [parentPlugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new GraphTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(result.plugins).toEqual([parentPlugin.manifest.name]);
+    expect(codex.installOrder).toEqual([
+      childPlugin.manifest.name,
+      parentPlugin.manifest.name,
+    ]);
+
+    const ledger = await readInstalledLedger(env);
+    expect(ledger.plugins[childPlugin.manifest.name]?.platforms.codex?.userScope).toMatchObject({
+      installSource: {
+        kind: 'dependency',
+        explicitlyRequested: false,
+        allowsUnusedCleanup: true,
+      },
+      dependencyEdges: [],
+    });
+    expect(ledger.plugins[parentPlugin.manifest.name]?.platforms.codex?.userScope).toMatchObject({
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+        allowsUnusedCleanup: false,
+      },
+      dependencyEdges: [{
+        dependency: {
+          plugin: childPlugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: childPlugin.manifest.name,
+        },
+      }],
+    });
+
+    const receipt = buildCommandReceiptJson('install', {
+      result,
+      groups: [{
+        scope: 'user',
+        platforms: result.platforms,
+        plugins: result.plugins,
+      }],
+    });
+    expect(receipt).toMatchObject({
+      command: 'install',
+      targets: expect.arrayContaining([
+        expect.objectContaining({
+          plugin: parentPlugin.manifest.name,
+          requested: true,
+        }),
+        expect.objectContaining({
+          plugin: childPlugin.manifest.name,
+          requested: false,
+          dependencyOf: [{
+            plugin: parentPlugin.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }],
+        }),
+      ]),
+      actions: expect.arrayContaining([
+        expect.objectContaining({
+          plugin: parentPlugin.manifest.name,
+          type: 'install',
+        }),
+        expect.objectContaining({
+          plugin: childPlugin.manifest.name,
+          type: 'installDependency',
+        }),
+      ]),
+    });
+  });
+
+  it('does not reinstall an already satisfied dependency, but still writes the parent edge', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const childPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'existing-child',
+    }));
+    const parentPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'existing-parent',
+      dependencies: [{ name: childPlugin.manifest.name }],
+    }));
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [childPlugin.manifest.name]: {
+          lastResolvedVersion: childPlugin.manifest.version,
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+                updatedAt: '2026-05-06T00:00:00.000Z',
+                resolvedVersion: childPlugin.manifest.version,
+                capabilitySnapshot: {
+                  requiresNativePlugin: true,
+                  hasRepoManagedArtifacts: false,
+                  projectManagedKinds: [],
+                },
+                installSource: {
+                  kind: 'explicit',
+                  explicitlyRequested: true,
+                  allowsUnusedCleanup: false,
+                },
+                dependencyEdges: [],
+              },
+            },
+          },
+        },
+      },
+    }, env);
+
+    const explicitTarget = {
+      pluginName: parentPlugin.manifest.name,
+      plugin: parentPlugin,
+      currentPlugin: parentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const dependencyTarget = {
+      pluginName: childPlugin.manifest.name,
+      plugin: childPlugin,
+      currentPlugin: childPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env, {
+      [childPlugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    const result = await installCommand(
+      [parentPlugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new GraphTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(result.receiptActions).toEqual([]);
+    expect(codex.installOrder).toEqual([parentPlugin.manifest.name]);
+    expect((await readInstalledLedger(env)).plugins[parentPlugin.manifest.name]?.platforms.codex?.userScope?.dependencyEdges)
+      .toEqual([
+        expect.objectContaining({
+          dependency: expect.objectContaining({
+            plugin: childPlugin.manifest.name,
+          }),
+        }),
+      ]);
+  });
+
+  it('keeps --platform auto based on explicit targets only, without letting dependencies influence platform selection', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const childPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'claude-only-child',
+      products: ['claude'],
+    }));
+    const parentPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'auto-parent',
+      dependencies: [{
+        name: childPlugin.manifest.name,
+        when: {
+          platforms: ['claude'],
+        },
+      }],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const explicitTarget = {
+      pluginName: parentPlugin.manifest.name,
+      plugin: parentPlugin,
+      currentPlugin: parentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const dependencyTarget = {
+      pluginName: childPlugin.manifest.name,
+      plugin: childPlugin,
+      currentPlugin: childPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env, {
+      [parentPlugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    const result = await installCommand(
+      [parentPlugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'auto',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new GraphTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(result.platforms).toEqual(['codex']);
+    expect(codex.installOrder).toEqual([parentPlugin.manifest.name]);
+    expect((await readInstalledLedger(env)).plugins[childPlugin.manifest.name]).toBeUndefined();
+  });
+
+  it('fails graph preflight on dependency required config without writing state', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const childPlugin = await writeSyntheticPlugin(repoRoot, {
+      ...createDependencyPluginManifest({
+        name: 'config-child',
+      }),
+      config: {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+          },
+        },
+      },
+    });
+    const parentPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'config-parent',
+      dependencies: [{ name: childPlugin.manifest.name }],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const explicitTarget = {
+      pluginName: parentPlugin.manifest.name,
+      plugin: parentPlugin,
+      currentPlugin: parentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const dependencyTarget = {
+      pluginName: childPlugin.manifest.name,
+      plugin: childPlugin,
+      currentPlugin: childPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env);
+
+    await expect(
+      installCommand(
+        [parentPlugin.manifest.name],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex,
+            claude: new GraphTestAdapter('claude', repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow(/config-child.*token/);
+
+    expect(codex.installOrder).toEqual([]);
+    expect((await readInstalledLedger(env)).plugins).toEqual({});
+  });
+
+  it('rolls back newly auto-installed dependencies when the parent install fails before committing edges', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const childPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'rollback-child',
+    }));
+    const parentPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'rollback-parent',
+      dependencies: [{ name: childPlugin.manifest.name }],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const explicitTarget = {
+      pluginName: parentPlugin.manifest.name,
+      plugin: parentPlugin,
+      currentPlugin: parentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const dependencyTarget = {
+      pluginName: childPlugin.manifest.name,
+      plugin: childPlugin,
+      currentPlugin: childPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env, {
+      [parentPlugin.manifest.name]: {
+        failInstallExtensions: true,
+      },
+    });
+
+    await expect(
+      installCommand(
+        [parentPlugin.manifest.name],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex,
+            claude: new GraphTestAdapter('claude', repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow(/rollback-parent/);
+
+    expect(codex.installOrder).toEqual([
+      childPlugin.manifest.name,
+      parentPlugin.manifest.name,
+    ]);
+    const ledger = await readInstalledLedger(env);
+    expect(ledger.plugins[parentPlugin.manifest.name]).toBeUndefined();
+    expect(ledger.plugins[childPlugin.manifest.name]).toBeUndefined();
   });
 });

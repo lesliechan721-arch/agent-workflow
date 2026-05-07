@@ -16,12 +16,27 @@
 - CLI 命令入口：`tests/integration/cli-entry.test.ts` 覆盖 commander 参数、stdout/stderr 和退出码
 - 命令编排与平台行为：`tests/integration/cli.test.ts`、`upgrade-command.test.ts`、`skill-trigger-command.test.ts`
 - 作者工具：`tests/integration/authoring-tools.test.ts` 覆盖脚手架、校验脚本和作者文档关键约定
+- 插件依赖：`plugin-dependency-fixtures.test.ts`、`plugin-dependency-graph.test.ts`、`plugin-dependency-planner.test.ts`、`status-dependencies.test.ts` 和相关命令测试覆盖 manifest 合同、ledger edge、location-aware planner、自动安装、升级、卸载清理和 status 投影
 - Runtime 环境变量：`tests/integration/runtime-env.test.ts` 覆盖 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 等路径覆写
 - 插件配置与脚本：`plugin-config.test.ts`、`plugin-scripts.test.ts`、`plugin-lifecycle-command.test.ts` 覆盖 AW config、lifecycle context/runner、status health 和命令接入
 
 ## Regression Contracts
 
 CLI entry 测试优先通过 `CliRuntimeOptions` 注入 fake native runner、fake adapters、fake prompt、reporter 和 debug logger。不要为了普通集成测试依赖真实 `codex` 或 `claude` 可执行文件；只有明确验证 PATH 查找时才创建 stub binary。
+
+插件依赖测试优先从纯函数层锁住行为，再接命令层。manifest 和作者工具 parity fixture 要覆盖合法 `dependencies.plugins`、未知字段、自依赖、非法 `when.platforms`、同名依赖平台条件重叠、非法 `target.scope`、`target.platform` 拒绝、`inheritInstallOptions` 类型，以及 catalog-level dependency reference validator。build smoke 需要断言 runtime `.agents-plugin/plugin.json` 保留 `dependencies`，`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和平台 marketplace manifest 不包含 `dependencies`。
+
+planner 单测不要依赖真实 adapter 写文件，只用 catalog manifest、installed snapshot manifest、ledger fixture 和 health fixture。必须覆盖循环链路错误、缺失 catalog 依赖、平台 products 不匹配、当前 platform 不生效 entry 被过滤、直接依赖顺序稳定、多路径指向同一 location 只规划一次写入但保留多条 dependent edge，以及 install / upgrade / uninstall / status 共享 location identity。所有断言都应使用完整 `PluginLocation` 或 `serializePluginLocation()`，不能只按插件名判断。
+
+location-aware scope 规则要有专门矩阵：user 父插件只能被 user scope 依赖满足；user 父插件遇到生效的 `target.scope: "project"` 要在写前失败；project 父插件省略 `target.scope` 时优先当前 project，允许 fallback 到健康 user；显式 `target.scope: "user"` 不能被 project 满足；显式 `target.scope: "project"` 不能 fallback user；其它历史 project 不能满足当前 project 依赖。Codex project 自动依赖还要复用 project installability，覆盖 native-only、`apps` 和缺少 repo-managed surface 的拒绝路径。
+
+ledger 依赖图测试要断言只持久化 outgoing `dependencyEdges` 和 `installSource`。incoming dependents index、`dependents`、ref-count 和 `autoRemovable` 都必须从图上现算，不能落盘。重复 install、重复 upgrade、install 后 upgrade 要确认同一 dependent location + dependency location 只保留 canonical edge；显式安装一个 auto dependency 后要把 explicit 保留标记写回，父插件卸载不能自动删除它。ledger degraded、缺少 dependency metadata、edge 不完整或 tracking identity 损坏时，自动清理必须 fail closed。
+
+写命令测试要覆盖拓扑顺序和失败收口：`install` 先完成 graph-level preflight，再依赖优先写入；已满足依赖不重复安装但刷新父插件 edge；缺 required config 的自动依赖要指向依赖插件和 key；`inheritInstallOptions: true` 只影响自动安装依赖，冲突时 fail fast；父插件失败时未被成功 edge 引用的新 auto dependency 要回滚，已被其它成功 dependent 引用的不能误删。`upgrade <plugin>` 必须先处理依赖再升级父插件；`upgrade --all` 只以 explicit 保留安装为根，不把孤立 auto dependency 当根，旧 edge 中已不需要的 auto dependency 不阻塞父插件升级。
+
+uninstall 依赖测试要覆盖仍有 incoming dependent 时拒绝卸载、同命令卸载完整 dependent 集合、父插件卸载后反向拓扑清理引用归零的 auto dependency、explicit 保留的自动依赖不清理，以及 cleanup action 在 receipt 中使用 `uninstallAutoDependency`。跨 scope 和跨 platform 场景要断言 Codex / Claude、user / 当前 project / 历史 project 互不串线。
+
+status 和控制台依赖投影测试要保持只读：不得创建 `~/.aw`、不得修复 ledger、不得运行 renderer/lifecycle、不得执行自动清理。`aw status --json` 要锁住 `dependencies.declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift`；当前 platform 不生效的 entry 只进入 `declared`，纯 catalog drift 不打坏 ready，缺失当前健康层依赖进入 `needsAttention`，可清理 auto dependency 只展示下一步动作。
 
 主控制台测试默认必须使用 fake prompt / fake console driver，且断言不会访问真实 stdin。窄例外只允许放在专门验证 readline prompt harness、TTY sink 或隐藏敏感输入的测试里；这类测试必须显式隔离 stdin/stdout/stderr，并证明 `--json` stdout 仍是单一可解析 JSON。`runCli([])` 在 TTY 环境进入控制台；非 TTY、`CI=true` 或 prompt 不可用时不能挂起，必须返回清晰错误、可复制命令示例和 `--json` 提示。子命令即使注入 fake prompt 也不能 prompt。
 

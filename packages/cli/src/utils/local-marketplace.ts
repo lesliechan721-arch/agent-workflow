@@ -4,10 +4,12 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  InstalledDependencyEdge,
   CodexSharedNativeRefs,
   GeneratedArtifact,
   InstalledLedger,
   InstalledLedgerPluginPlatforms,
+  InstalledScopeInstallSource,
   LedgerStateReason,
   LocalMarketplaceConfig,
   PlatformName,
@@ -47,6 +49,23 @@ function isSkillTriggerPreference(value: unknown): boolean {
   return value === 'default' || value === 'manual' || value === 'auto';
 }
 
+function isScope(value: unknown): value is Scope {
+  return value === 'user' || value === 'project';
+}
+
+function isPlatformName(value: unknown): value is PlatformName {
+  return value === 'codex' || value === 'claude';
+}
+
+function isUniquePlatformNameArray(value: unknown): value is PlatformName[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => isPlatformName(entry)) &&
+    new Set(value).size === value.length
+  );
+}
+
 function isInstalledScopeInstallOptions(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
@@ -61,6 +80,80 @@ function isInstalledScopeInstallOptions(value: unknown): boolean {
     value.skillTriggerPreference === undefined ||
     isSkillTriggerPreference(value.skillTriggerPreference)
   );
+}
+
+function isInstalledScopeInstallSource(value: unknown): value is InstalledScopeInstallSource {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const allowedKeys = new Set(['kind', 'explicitlyRequested', 'allowsUnusedCleanup']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+
+  return (
+    (value.kind === 'explicit' || value.kind === 'dependency') &&
+    typeof value.explicitlyRequested === 'boolean' &&
+    typeof value.allowsUnusedCleanup === 'boolean'
+  );
+}
+
+function isPluginLocation(value: unknown): boolean {
+  if (!isRecord(value) || !isScope(value.scope) || !isPlatformName(value.platform) || typeof value.plugin !== 'string') {
+    return false;
+  }
+
+  if (value.scope === 'user') {
+    return value.projectKey === undefined || value.projectKey === null;
+  }
+
+  return typeof value.projectKey === 'string';
+}
+
+function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.name !== 'string') {
+    return false;
+  }
+
+  const allowedKeys = new Set(['name', 'target', 'inheritInstallOptions', 'when']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+
+  const validTarget =
+    value.target === undefined ||
+    (
+      isRecord(value.target) &&
+      Object.keys(value.target).every((key) => key === 'scope') &&
+      (value.target.scope === undefined || isScope(value.target.scope))
+    );
+  const validWhen =
+    value.when === undefined ||
+    (
+      isRecord(value.when) &&
+      Object.keys(value.when).every((key) => key === 'platforms') &&
+      isUniquePlatformNameArray(value.when.platforms)
+    );
+
+  return (
+    validTarget &&
+    validWhen &&
+    (value.inheritInstallOptions === undefined || typeof value.inheritInstallOptions === 'boolean')
+  );
+}
+
+function isInstalledDependencyEdge(value: unknown): value is InstalledDependencyEdge {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const allowedKeys = new Set(['dependency', 'declaration']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+
+  return isPluginLocation(value.dependency) && isInstalledDependencyEdgeDeclaration(value.declaration);
 }
 
 function isLifecycleConfigSnapshotMetadata(value: unknown): boolean {
@@ -92,8 +185,27 @@ function isLifecycleConfigSnapshotMetadata(value: unknown): boolean {
   );
 }
 
-function isInstalledScopeRecord(value: unknown): boolean {
+function isInstalledScopeRecord(
+  value: unknown,
+  options: { requireDependencyMetadata?: boolean } = {},
+): boolean {
   if (!isRecord(value)) {
+    return false;
+  }
+
+  const allowedKeys = new Set([
+    'managed',
+    'updatedAt',
+    'resolvedVersion',
+    'capabilitySnapshot',
+    'projectKey',
+    'installSource',
+    'dependencyEdges',
+    'installOptions',
+    'skillTriggerWriteOrder',
+    'lifecycleConfigSnapshot',
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     return false;
   }
 
@@ -107,6 +219,21 @@ function isInstalledScopeRecord(value: unknown): boolean {
   }
 
   if (value.installOptions !== undefined && !isInstalledScopeInstallOptions(value.installOptions)) {
+    return false;
+  }
+
+  if (value.installSource !== undefined && !isInstalledScopeInstallSource(value.installSource)) {
+    return false;
+  }
+
+  if (
+    value.dependencyEdges !== undefined &&
+    (!Array.isArray(value.dependencyEdges) || value.dependencyEdges.some((edge) => !isInstalledDependencyEdge(edge)))
+  ) {
+    return false;
+  }
+
+  if (options.requireDependencyMetadata && (value.installSource === undefined || value.dependencyEdges === undefined)) {
     return false;
   }
 
@@ -128,7 +255,10 @@ function isInstalledScopeRecord(value: unknown): boolean {
   );
 }
 
-function isClaudePlatformRecord(value: unknown): boolean {
+function isClaudePlatformRecord(
+  value: unknown,
+  options: { requireDependencyMetadata?: boolean } = {},
+): boolean {
   if (!isRecord(value)) {
     return false;
   }
@@ -136,9 +266,9 @@ function isClaudePlatformRecord(value: unknown): boolean {
   const { userScope, projectScopes, lastRequestedScope, lastRequestedAt } = value;
 
   return (
-    (userScope === undefined || isInstalledScopeRecord(userScope)) &&
+    (userScope === undefined || isInstalledScopeRecord(userScope, options)) &&
     (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry)))) &&
+      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry, options)))) &&
     (lastRequestedScope === undefined ||
       lastRequestedScope === 'project' ||
       lastRequestedScope === 'user') &&
@@ -146,7 +276,10 @@ function isClaudePlatformRecord(value: unknown): boolean {
   );
 }
 
-function isCodexPlatformRecord(value: unknown): boolean {
+function isCodexPlatformRecord(
+  value: unknown,
+  options: { requireDependencyMetadata?: boolean } = {},
+): boolean {
   if (!isRecord(value)) {
     return false;
   }
@@ -160,9 +293,9 @@ function isCodexPlatformRecord(value: unknown): boolean {
       isStringArray(sharedNativeRefs.projects));
 
   return (
-    (userScope === undefined || isInstalledScopeRecord(userScope)) &&
+    (userScope === undefined || isInstalledScopeRecord(userScope, options)) &&
     (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry)))) &&
+      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry, options)))) &&
     sharedNativeRefsValid &&
     (lastRequestedScope === undefined ||
       lastRequestedScope === 'project' ||
@@ -171,11 +304,14 @@ function isCodexPlatformRecord(value: unknown): boolean {
   );
 }
 
-function isInstalledLedgerPluginPlatforms(value: unknown): value is InstalledLedgerPluginPlatforms {
+function isInstalledLedgerPluginPlatforms(
+  value: unknown,
+  options: { requireDependencyMetadata?: boolean } = {},
+): value is InstalledLedgerPluginPlatforms {
   return (
     isRecord(value) &&
-    (value.claude === undefined || isClaudePlatformRecord(value.claude)) &&
-    (value.codex === undefined || isCodexPlatformRecord(value.codex))
+    (value.claude === undefined || isClaudePlatformRecord(value.claude, options)) &&
+    (value.codex === undefined || isCodexPlatformRecord(value.codex, options))
   );
 }
 
@@ -194,7 +330,10 @@ export function normalizeSharedNativeRefs(value: unknown): CodexSharedNativeRefs
   };
 }
 
-export function validateInstalledLedger(rawValue: unknown): InstalledLedger | null {
+export function validateInstalledLedger(
+  rawValue: unknown,
+  options: { requireDependencyMetadata?: boolean } = {},
+): InstalledLedger | null {
   if (!isRecord(rawValue)) {
     return null;
   }
@@ -226,13 +365,19 @@ export function validateInstalledLedger(rawValue: unknown): InstalledLedger | nu
     if (
       !isRecord(pluginRecord) ||
       typeof pluginRecord.lastResolvedVersion !== 'string' ||
-      !isInstalledLedgerPluginPlatforms(pluginRecord.platforms)
+      !isInstalledLedgerPluginPlatforms(pluginRecord.platforms, options)
     ) {
       return null;
     }
   }
 
   return rawValue as unknown as InstalledLedger;
+}
+
+export function hasInstalledLedgerDependencyMetadata(
+  ledger: InstalledLedger | null,
+): boolean {
+  return ledger !== null && validateInstalledLedger(ledger, { requireDependencyMetadata: true }) !== null;
 }
 
 function createDegradedLedger(reason: LedgerStateReason): InstalledLedger {

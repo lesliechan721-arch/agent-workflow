@@ -18,6 +18,8 @@ export interface CliCommandResult {
   plugins: string[];
   warnings: string[];
   skipped?: SkippedUpgradeTarget[];
+  receiptTargets?: ReceiptTarget[];
+  receiptActions?: CliCommandReceiptAction[];
   nativePlugins?: NativePluginsByPlatform;
   repoManagedArtifacts?: GeneratedArtifact[];
   marketplace?: CliMarketplaceReceipt;
@@ -42,14 +44,25 @@ export interface CliInitReceipt {
 
 export type CliReceiptCommand = 'install' | 'uninstall' | 'upgrade';
 
+export interface CliCommandReceiptAction {
+  type: 'installDependency' | 'upgradeDependency' | 'uninstallAutoDependency';
+  plugin: string;
+  platform: string;
+  scope: Scope;
+  requested?: boolean;
+  dependencyOf?: ReceiptTarget[];
+}
+
 interface ReceiptTarget {
   plugin: string;
   platform: string;
   scope: Scope;
+  requested?: boolean;
+  dependencyOf?: ReceiptTarget[];
 }
 
 interface ReceiptAction extends ReceiptTarget {
-  type: CliReceiptCommand;
+  type: CliReceiptCommand | CliCommandReceiptAction['type'];
   status: 'succeeded';
 }
 
@@ -182,20 +195,34 @@ function sanitizeHumanText(text: string): string {
 }
 
 function dedupeTargets(targets: ReceiptTarget[]): ReceiptTarget[] {
-  const seen = new Set<string>();
-  const entries: ReceiptTarget[] = [];
+  const entries = new Map<string, ReceiptTarget>();
   for (const target of targets) {
     const key = `${target.plugin}\0${target.platform}\0${target.scope}`;
-    if (seen.has(key)) {
+    const existing = entries.get(key);
+    if (!existing) {
+      entries.set(key, {
+        ...target,
+        ...(target.dependencyOf
+          ? {
+              dependencyOf: dedupeTargets(target.dependencyOf),
+            }
+          : {}),
+      });
       continue;
     }
-    seen.add(key);
-    entries.push(target);
+    existing.requested = existing.requested === true || target.requested === true;
+    if (target.dependencyOf && target.dependencyOf.length > 0) {
+      existing.dependencyOf = dedupeTargets([...(existing.dependencyOf ?? []), ...target.dependencyOf]);
+    }
   }
-  return entries;
+  return [...entries.values()];
 }
 
 function collectSucceededTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
+  if (receipt.result.receiptTargets && receipt.result.receiptTargets.length > 0) {
+    return dedupeTargets(receipt.result.receiptTargets);
+  }
+
   const targets: ReceiptTarget[] = [];
   for (const group of receipt.groups) {
     for (const plugin of uniqueStrings(group.plugins)) {
@@ -211,11 +238,55 @@ function collectSucceededTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
   return dedupeTargets(targets);
 }
 
+function collectReceiptActions(
+  command: CliReceiptCommand,
+  receipt: CliCommandReceipt,
+): ReceiptAction[] {
+  const explicitTargets = collectSucceededTargets(receipt).filter((target) =>
+    command === 'install' || command === 'upgrade'
+      ? target.requested !== false
+      : true,
+  );
+  const explicitActions = explicitTargets.map((target) => ({
+    ...target,
+    type: command,
+    status: 'succeeded' as const,
+  }));
+  const extraActions = (receipt.result.receiptActions ?? []).map((action) => ({
+    ...action,
+    status: 'succeeded' as const,
+  }));
+  return [...explicitActions, ...extraActions];
+}
+
+function collectAffectedPlugins(options: {
+  command: CliReceiptCommand;
+  receipt: CliCommandReceipt;
+  targets: ReceiptTarget[];
+  actions: ReceiptAction[];
+}): string[] {
+  if (options.command === 'upgrade') {
+    return uniqueStrings(options.targets.map((target) => target.plugin));
+  }
+
+  return uniqueStrings([
+    ...options.receipt.result.plugins,
+    ...options.targets.map((target) => target.plugin),
+    ...options.actions.map((action) => action.plugin),
+  ]);
+}
+
 function mapSkippedTargets(skipped: SkippedUpgradeTarget[]): ReceiptTarget[] {
   return skipped.map((entry) => ({
     plugin: entry.plugin,
     platform: entry.platform,
     scope: entry.scope,
+    ...(entry.requested !== undefined ? { requested: entry.requested } : {}),
+    ...(entry.dependencyOf
+      ? {
+          dependencyOf: entry.dependencyOf,
+        }
+      : {}),
   }));
 }
 
@@ -288,11 +359,14 @@ export function buildCommandReceiptJson(
 ): CommandReceiptJson {
   const warnings = [...new Set(receipt.result.warnings)];
   const nextSteps = buildCommandNextSteps(receipt.result);
-  const actions = collectSucceededTargets(receipt).map((target) => ({
-    ...target,
-    type: command,
-    status: 'succeeded' as const,
-  }));
+  const succeededTargets = collectSucceededTargets(receipt);
+  const actions = collectReceiptActions(command, receipt);
+  const plugins = collectAffectedPlugins({
+    command,
+    receipt,
+    targets: succeededTargets,
+    actions,
+  });
   const artifacts = collectArtifacts(receipt.result.repoManagedArtifacts);
   const native = collectNativeSummary(receipt.result);
 
@@ -300,8 +374,8 @@ export function buildCommandReceiptJson(
     return {
       ok: true,
       command,
-      plugins: uniqueStrings(receipt.result.plugins),
-      targets: actions.map(({ plugin, platform, scope }) => ({ plugin, platform, scope })),
+      plugins,
+      targets: succeededTargets,
       actions,
       artifacts,
       native,
@@ -314,8 +388,8 @@ export function buildCommandReceiptJson(
     return {
       ok: true,
       command,
-      plugins: uniqueStrings(receipt.result.plugins),
-      targets: actions.map(({ plugin, platform, scope }) => ({ plugin, platform, scope })),
+      plugins,
+      targets: succeededTargets,
       actions,
       artifacts,
       native,
@@ -324,14 +398,27 @@ export function buildCommandReceiptJson(
     };
   }
 
-  const upgraded = actions.map(({ plugin, platform, scope }) => ({ plugin, platform, scope }));
+  const upgraded = dedupeTargets(actions.map((action) => ({
+    plugin: action.plugin,
+    platform: action.platform,
+    scope: action.scope,
+    ...(action.requested !== undefined ? { requested: action.requested } : {}),
+    ...(action.dependencyOf
+      ? {
+          dependencyOf: action.dependencyOf,
+        }
+      : {}),
+  })));
   const skipped = receipt.result.skipped ?? [];
+  const targets = receipt.result.receiptTargets
+    ? dedupeTargets(receipt.result.receiptTargets)
+    : dedupeTargets([...upgraded, ...mapSkippedTargets(skipped)]);
   return {
     ok: true,
     command,
     upgraded,
     skipped,
-    targets: dedupeTargets([...upgraded, ...mapSkippedTargets(skipped)]),
+    targets,
     actions,
     artifacts,
     native,
@@ -423,10 +510,35 @@ export function renderCommandReceipt(
     return lines;
   }
 
-  const plugins = formatChineseList(payload.plugins);
+  const explicitPlugins = payload.command === 'install'
+    ? formatChineseList(
+        payload.targets
+          .filter((target) => target.requested !== false)
+          .map((target) => target.plugin),
+      )
+    : formatChineseList(payload.targets.map((target) => target.plugin));
+  const plugins = explicitPlugins === '无'
+    ? formatChineseList(payload.plugins)
+    : explicitPlugins;
   lines.push(`${payload.command === 'install' ? '已安装' : '已卸载'} ${plugins}。`);
+  if (payload.command === 'install') {
+    const autoDependencyTargets = payload.actions.filter((action) => action.type === 'installDependency');
+    if (autoDependencyTargets.length > 0) {
+      lines.push(
+        `已自动安装依赖：${formatChineseList(autoDependencyTargets.map((target) => target.plugin))}。`,
+      );
+    }
+  }
   if (payload.targets.length > 0) {
     lines.push(`目标：${formatTargetSummary(payload.targets)}。`);
+  }
+  if (payload.command === 'uninstall') {
+    const autoDependencyTargets = payload.actions.filter((action) => action.type === 'uninstallAutoDependency');
+    if (autoDependencyTargets.length > 0) {
+      lines.push(
+        `已自动清理不再需要的依赖：${formatChineseList(autoDependencyTargets.map((target) => target.plugin))}。`,
+      );
+    }
   }
   if (artifacts) {
     lines.push(`${payload.command === 'install' ? '已更新' : '已清理'}项目文件：${artifacts}。`);

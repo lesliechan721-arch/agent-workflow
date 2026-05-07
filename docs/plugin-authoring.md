@@ -11,6 +11,7 @@
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 ledger snapshot 都以它作为 renderer 执行前的真值
+- `dependencies.plugins` 声明 AW 插件之间的直接依赖；安装、升级、卸载和 status 都会用同一套 location-aware planner 解释它
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -28,6 +29,41 @@
 AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
 
 `scripts.artifacts.render` 和 `artifacts.targets` 也保留在 AW runtime bundle 的源码 manifest 中，但不会写入 Claude/Codex 原生 manifest。平台 manifest 只接收平台能识别的静态能力；动态 artifact 由 AW 在写路径里渲染、校验和落盘。
+
+`dependencies.plugins` 同样只属于 AW runtime manifest。build 后的 `.agents-plugin/plugin.json` 会保留依赖声明并再次校验；`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和两份 marketplace manifest 都不会包含 `dependencies`。
+
+## Plugin Dependencies
+
+插件可在 `.agents-plugin/plugin.json` 顶层声明对其它 AW 插件的直接依赖：
+
+```json
+{
+  "dependencies": {
+    "plugins": [
+      {
+        "name": "review-shared-tools",
+        "target": { "scope": "user" },
+        "when": { "platforms": ["codex"] },
+        "inheritInstallOptions": true
+      }
+    ]
+  }
+}
+```
+
+字段规则：
+
+- `dependencies` 只允许 `plugins`；`dependencies.plugins` 必须是数组，空数组等价于无依赖但会收到作者工具 warning。
+- 每个 entry 只允许 `name`、`target`、`inheritInstallOptions`、`when`。
+- `name` 使用和插件名相同的小写短横线格式，不能指向自己，且必须能在当前 AW catalog 中解析。
+- `when.platforms` 只允许非空的 `codex` / `claude` 数组；省略 `when` 表示两个平台都生效。同一 manifest 内，同名依赖的平台条件不能重叠。
+- `target.scope` 只允许 `user` 或 `project`。不支持 `target.platform`，依赖永远跟随父插件本次安装或升级时已经确定的平台。
+- `inheritInstallOptions` 只能是 boolean。省略或 `false` 时，依赖不会继承父插件的 `--skill-trigger` 等插件级安装选项；设为 `true` 时只对需要自动安装的依赖生效，多个父插件给同一依赖传入冲突选项会 fail fast。
+- 首版不支持 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、跨 marketplace 依赖、外部 URL/npm/git/local path 依赖或 dependency entry 覆盖 platform。
+
+scope 选择是 location-aware 的。父插件安装到 `user` scope 时，只能依赖同平台的 `user` scope 健康安装；如果当前平台生效的依赖写了 `target.scope: "project"`，命令会在写入前失败。父插件安装到 `project` scope 且依赖省略 `target.scope` 时，AW 会优先选择当前 project，当前 project 缺失或不健康时可复用 user scope；显式 `target.scope: "user"` 只看 user，显式 `target.scope: "project"` 只看当前 project，不做 fallback。
+
+用户安装或升级父插件时，缺失依赖会自动安装。显式 `upgrade <plugin>` 会先处理依赖再升级父插件；`upgrade --all` 只把用户显式保留的安装作为根，不会把孤立自动依赖当作根。卸载父插件时，仍被其它插件依赖的位置会受到保护；父插件卸载成功后，未被显式保留且引用归零的自动依赖会被反向拓扑自动清理。
 
 ## Public Slash Commands
 

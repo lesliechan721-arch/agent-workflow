@@ -9,7 +9,9 @@ import type {
   InstalledScopeRecord,
   LifecycleConfigSnapshotMetadata,
   PlatformName,
+  PluginLocation,
   PluginStatusReport,
+  PluginStatusDependencies,
   RepoManagedProjectItemReport,
   PluginManifestSource,
   PluginMeta,
@@ -22,6 +24,22 @@ import type {
 import { detectEnvironment } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { readPluginManifest } from '../utils/manifest.js';
+import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
+import {
+  iterateInstalledScopeRecords,
+} from '../utils/plugin-dependency-graph.js';
+import {
+  projectPluginDependencyStatus,
+  type PluginDependencyPlannerHealthState,
+  type PluginDependencyPlannerHealthRecord,
+  type PluginDependencyPlannerInstalledRecord,
+  type PluginDependencyPlannerState,
+  type PluginDependencyStatusProjection,
+} from '../utils/plugin-dependency-planner.js';
+import {
+  normalizePluginLocation,
+  serializePluginLocation,
+} from '../utils/plugin-dependency-location.js';
 import { resolveEffectivePluginConfig, type PluginConfigIssue } from '../utils/plugin-config.js';
 import {
   calculatePluginBundleFingerprint,
@@ -169,6 +187,15 @@ function getStatusScopeRecord(
   return projectKey
     ? platformRecord.projectScopes?.[projectKey] as InstalledScopeRecord<Record<string, unknown>> | undefined
     : undefined;
+}
+
+function cellLocation(cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope' | 'projectKey'>): PluginLocation {
+  return normalizePluginLocation({
+    plugin: cell.pluginName,
+    platform: cell.platform,
+    scope: cell.scope,
+    projectKey: cell.projectKey ?? null,
+  });
 }
 
 async function loadSnapshotPlugin(
@@ -370,6 +397,7 @@ async function resolveStatusRuntimeHealth(options: {
   healthSource: StatusHealthSource;
   config: StatusConfigHealth;
   scripts: StatusScriptHealth;
+  plugin?: PluginMeta;
   configSources?: string[];
   configIssues?: PluginConfigIssue[];
   healthWarnings?: string[];
@@ -382,6 +410,7 @@ async function resolveStatusRuntimeHealth(options: {
   });
   return {
     healthSource: source.healthSource,
+    plugin: source.plugin,
     ...config,
     scripts: await resolveScriptHealth(source.plugin),
     ...(source.warnings.length > 0 ? { healthWarnings: source.warnings } : {}),
@@ -478,6 +507,29 @@ function hasManagedRepoEvidence(plugin: PluginStatusReport): boolean {
   return hasScopeManagedEvidence(plugin) || getRepoManagedProjectItems(plugin).some((item) => item.tracked);
 }
 
+function flattenStatusDiagnostics(cell: StatusMatrixCell): string[] {
+  const report = cell.report;
+  return [
+    cell.error ?? '',
+    ...(cell.healthWarnings ?? []),
+    ...(cell.configIssues ?? []).map((issue) => issue.message),
+    ...(report?.driftWarnings ?? []),
+    ...(report?.managedArtifacts ?? []).flatMap((artifact) => artifact.diagnostics),
+    ...(report?.repoManagedSessionState?.diagnostics ?? []),
+    ...(report?.repoManagedSessionState?.items ?? []).flatMap((item) => item.diagnostics),
+  ].filter((message) => message.trim().length > 0);
+}
+
+function hasTrackingIdentityIssue(cell: StatusMatrixCell): boolean {
+  const report = cell.report;
+  const diagnostics = flattenStatusDiagnostics(cell);
+  return Boolean(
+    report?.repoManagedSessionState?.items?.some((item) =>
+      item.state === 'unknown' && item.diagnostics.some((message) => /tracking|roleKey/i.test(message))) ||
+    diagnostics.some((message) => /tracking identity|tracking manifest|roleKey/i.test(message)),
+  );
+}
+
 function isReadySkillsOnlyProjectStatus(plugin: PluginStatusReport): boolean {
   return Array.isArray(plugin.projectManagedKinds) &&
     plugin.projectManagedKinds.length > 0 &&
@@ -500,8 +552,13 @@ function hasNativeRecovery(plugin: PluginStatusReport): boolean {
   return plugin.native.recovery?.present === true;
 }
 
+function hasDependencyHealthDowngrade(plugin: PluginStatusReport): boolean {
+  return (plugin.dependencies?.missing.length ?? 0) > 0;
+}
+
 function hasGeneralHealthDowngrade(plugin: PluginStatusReport): boolean {
   return (
+    hasDependencyHealthDowngrade(plugin) ||
     hasManagedArtifactIssues(plugin) ||
     (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
     plugin.catalogCompatibility === 'missing' ||
@@ -617,6 +674,145 @@ function combineHealth(healths: StatusHealth[]): StatusHealth {
   }
 
   return meaningful.sort((left, right) => HEALTH_SEVERITY[right] - HEALTH_SEVERITY[left])[0];
+}
+
+function resolvePlannerHealthState(
+  cell: StatusMatrixCell | undefined,
+  scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined,
+): PluginDependencyPlannerHealthState {
+  if (!cell?.report) {
+    return scopeRecord?.managed === true ? 'repairRequired' : 'missing';
+  }
+
+  const { report } = cell;
+  if (report.externalOwnership?.present) {
+    return hasManagedRepoEvidence(report) || hasRuntimeEvidence(report)
+      ? 'external'
+      : 'externalOnly';
+  }
+
+  if (
+    cell.platform === 'codex' &&
+    cell.scope === 'user' &&
+    report.native.requiresNativePlugin === true
+  ) {
+    const hasManagedEvidence = hasScopeManagedEvidence(report);
+    if (report.native.recovery?.present && !hasManagedEvidence) {
+      return 'breadcrumbOnly';
+    }
+    if (report.native.pluginInstalled && report.native.pluginEnabled !== true && !hasManagedEvidence) {
+      return 'cacheOnly';
+    }
+    if (!report.native.pluginInstalled && report.native.pluginEnabled === true && !hasManagedEvidence) {
+      return 'enabledOnly';
+    }
+  }
+
+  if (hasTrackingIdentityIssue(cell)) {
+    return 'trackingBroken';
+  }
+
+  if (cell.health === 'ready') {
+    return 'healthy';
+  }
+  if (cell.health === 'notInstalled') {
+    return 'missing';
+  }
+  if (cell.health === 'unknown' || cell.health === 'partial' || cell.health === 'needsAttention') {
+    return 'repairRequired';
+  }
+
+  return 'degraded';
+}
+
+function mapDependencyHealthSource(
+  source: PluginDependencyStatusProjection['healthSource'],
+): PluginStatusDependencies['healthSource'] {
+  switch (source) {
+    case 'installedSnapshot':
+      return 'installSnapshot';
+    case 'currentCatalogFallback':
+      return 'currentCatalog';
+    case 'none':
+    default:
+      return 'none';
+  }
+}
+
+function mapDependencyResolvedSource(
+  source: PluginDependencyStatusProjection['resolved'][number]['source'],
+): PluginStatusDependencies['resolved'][number]['source'] {
+  return source === 'installedSnapshot' ? 'installSnapshot' : 'currentCatalog';
+}
+
+function buildDependencyStatusProjectionByLocation(
+  projections: PluginDependencyStatusProjection[],
+): Record<string, PluginStatusDependencies> {
+  const rawByKey = new Map(
+    projections.map((projection) => [serializePluginLocation(projection.location), projection] as const),
+  );
+  const memo = new Map<string, boolean>();
+  const inFlight = new Set<string>();
+
+  const isHealthy = (location: PluginLocation): boolean => {
+    const key = serializePluginLocation(location);
+    if (memo.has(key)) {
+      return memo.get(key) ?? false;
+    }
+    if (inFlight.has(key)) {
+      memo.set(key, false);
+      return false;
+    }
+
+    inFlight.add(key);
+    const projection = rawByKey.get(key);
+    if (!projection) {
+      inFlight.delete(key);
+      memo.set(key, false);
+      return false;
+    }
+
+    if (projection.missing.length > 0) {
+      inFlight.delete(key);
+      memo.set(key, false);
+      return false;
+    }
+
+    const healthy = projection.satisfied.every((entry) => isHealthy(entry.location));
+    inFlight.delete(key);
+    memo.set(key, healthy);
+    return healthy;
+  };
+
+  return Object.fromEntries(
+    projections.map((projection) => {
+      const satisfied = projection.satisfied.filter((entry) => isHealthy(entry.location));
+      const transitivelyMissing = projection.satisfied
+        .filter((entry) => !isHealthy(entry.location))
+        .map((entry) => ({
+          declaration: entry.declaration,
+          expectedLocation: entry.location,
+          reason: '依赖插件当前安装不健康，或它自身仍缺少健康依赖。',
+        }));
+
+      const mapped: PluginStatusDependencies = {
+        healthSource: mapDependencyHealthSource(projection.healthSource),
+        declared: projection.declared,
+        resolved: projection.resolved.map((entry) => ({
+          declaration: entry.declaration,
+          source: mapDependencyResolvedSource(entry.source),
+        })),
+        satisfied,
+        missing: [...projection.missing, ...transitivelyMissing],
+        dependents: projection.dependents,
+        autoInstalled: projection.autoInstalled,
+        autoRemovable: projection.autoRemovable,
+        catalogDrift: projection.catalogDrift,
+      };
+
+      return [serializePluginLocation(projection.location), mapped];
+    }),
+  );
 }
 
 function describeEvidenceSource(source: string): string {
@@ -863,6 +1059,51 @@ function describeRuntimeHealth(cell: StatusMatrixCell): string {
   return `config=${cell.config}${sourceSummary}，scripts=${cell.scripts}，healthSource=${source}`;
 }
 
+function describeDependencies(plugin: PluginStatusReport | undefined): string | undefined {
+  const dependencies = plugin?.dependencies;
+  if (!dependencies) {
+    return undefined;
+  }
+
+  const source = {
+    installSnapshot: 'install snapshot',
+    currentCatalog: 'current catalog',
+    historical: 'historical evidence',
+    none: 'none',
+  }[dependencies.healthSource];
+  const parts = [
+    `source=${source}`,
+    `declared=${dependencies.declared.length}`,
+    `resolved=${dependencies.resolved.length}`,
+    `satisfied=${dependencies.satisfied.length}`,
+    `missing=${dependencies.missing.length}`,
+  ];
+  if (dependencies.dependents.length > 0) {
+    parts.push(`dependents=${dependencies.dependents.length}`);
+  }
+  if (dependencies.autoInstalled) {
+    parts.push('autoInstalled=yes');
+  }
+  if (dependencies.autoRemovable) {
+    parts.push('autoRemovable=yes');
+  }
+  if (dependencies.catalogDrift.kind !== 'none') {
+    parts.push(`catalogDrift=${dependencies.catalogDrift.kind}`);
+  }
+
+  const details: string[] = [];
+  if (dependencies.missing.length > 0) {
+    details.push(`缺失：${dependencies.missing.map((entry) => entry.declaration.name).join(', ')}`);
+  }
+  if (dependencies.autoRemovable) {
+    details.push('当前自动依赖已不再被其它插件使用，可按需清理。');
+  }
+
+  return details.length > 0
+    ? `dependencies：${parts.join('，')}；${details.join('；')}`
+    : `dependencies：${parts.join('，')}`;
+}
+
 function describeCell(cell: StatusMatrixCell): string {
   if (cell.error) {
     return `读取失败：${cell.error}`;
@@ -878,6 +1119,7 @@ function describeCell(cell: StatusMatrixCell): string {
     describeNative(cell.report, cell.platform, cell.scope),
     describeCatalog(cell.report),
     describeRuntimeHealth(cell),
+    describeDependencies(cell.report),
     describeSkillTrigger(cell.report),
   ].filter(Boolean);
 
@@ -919,6 +1161,12 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
   );
   if (orphanItem) {
     return `先处理未受管的 ${formatRepoManagedItemLabel(orphanItem)}，再决定是重新受管还是手动保留。`;
+  }
+  if ((cell.report?.dependencies?.missing.length ?? 0) > 0) {
+    return `先补齐 ${cell.pluginName} 当前安装缺失的依赖，再重新检查状态。`;
+  }
+  if (cell.report?.dependencies?.autoRemovable) {
+    return `${cell.pluginName} 是当前已闲置的自动依赖；确认没人再用后，可运行 aw uninstall ${cell.pluginName}${suffix} 清理。`;
   }
   if (cell.report?.catalogCompatibility === 'missing') {
     return `当前插件目录缺失；如需清理历史状态，运行 aw uninstall ${cell.pluginName}${suffix}`;
@@ -1289,22 +1537,67 @@ export async function statusCommand(
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
   const requestedPlugins = pluginNames.length > 0 ? pluginNames : undefined;
-  const ledger = await readInstalledLedger(env);
-  const candidates = await buildCommandCandidates({
-    command: 'status',
-    cwd: options.cwd,
-    scopeFilter: options.scope,
-    platformFilter: options.platform,
-    pluginNames: requestedPlugins,
-    env,
-  });
+  const [
+    ledger,
+    { plugins: catalogPlugins },
+    visibleCandidates,
+  ] = await Promise.all([
+    readInstalledLedger(env),
+    resolveCatalogPlugins(undefined, env),
+    buildCommandCandidates({
+      command: 'status',
+      cwd: options.cwd,
+      scopeFilter: options.scope,
+      platformFilter: options.platform,
+      pluginNames: requestedPlugins,
+      env,
+    }),
+  ]);
+  const hiddenCandidateFetches = new Map<string, Promise<CommandCandidate[]>>();
+  for (const platform of new Set(visibleCandidates.map((candidate) => candidate.platform))) {
+    hiddenCandidateFetches.set(
+      `${platform}:user`,
+      buildCommandCandidates({
+        command: 'status',
+        cwd: options.cwd,
+        platformFilter: platform,
+        scopeFilter: 'user',
+        env,
+      }),
+    );
+    if (visibleCandidates.some((candidate) => candidate.platform === platform && candidate.scope === 'project')) {
+      hiddenCandidateFetches.set(
+        `${platform}:project`,
+        buildCommandCandidates({
+          command: 'status',
+          cwd: options.cwd,
+          platformFilter: platform,
+          scopeFilter: 'project',
+          env,
+        }),
+      );
+    }
+  }
+  const hiddenCandidateGroups = await Promise.all(hiddenCandidateFetches.values());
+  const allDiscoveredCandidates = hiddenCandidateGroups.flat();
+  const visibleCandidateIds = new Set(visibleCandidates.map((candidate) => candidate.id));
+  const candidates = new Map<string, CommandCandidate>();
+  for (const candidate of visibleCandidates) {
+    candidates.set(candidate.id, candidate);
+  }
+  for (const candidate of allDiscoveredCandidates) {
+    candidates.set(candidate.id, candidate);
+  }
 
   const reportsByKey = createReportsByKey();
   const cells: StatusMatrixCell[] = [];
+  const allCellsByLocation = new Map<string, StatusMatrixCell>();
+  const healthPluginByLocation = new Map<string, PluginMeta>();
   const pluginMetaByName: Record<string, PluginConsolePluginMeta> = {};
   const locationDiagnosticsByKey: Record<string, PluginConsoleLocationDiagnostics> = {};
 
-  for (const candidate of candidates) {
+  for (const candidate of candidates.values()) {
+    const isVisible = visibleCandidateIds.has(candidate.id);
     const currentPlugin = candidate.target.currentPlugin ?? candidate.target.plugin;
     pluginMetaByName[candidate.pluginName] ??= {
       title: currentPlugin.manifest.name,
@@ -1313,7 +1606,7 @@ export async function statusCommand(
     };
 
     if (candidate.evidence.readErrors.length > 0) {
-      cells.push({
+      const cell: StatusMatrixCell = {
         pluginName: candidate.pluginName,
         platform: candidate.platform,
         scope: candidate.scope,
@@ -1327,7 +1620,11 @@ export async function statusCommand(
         scripts: 'not_declared',
         disabledReason: candidate.disabledReason,
         error: candidate.evidence.readErrors.join('；'),
-      });
+      };
+      allCellsByLocation.set(serializePluginLocation(cellLocation(cell)), cell);
+      if (isVisible) {
+        cells.push(cell);
+      }
       continue;
     }
 
@@ -1348,7 +1645,7 @@ export async function statusCommand(
         candidate.evidence.sources.length > 0 ||
         pluginHasAnyDiscoveryEvidence;
 
-      if (requestedPlugins === undefined && !hasEvidence && !pluginHasAnyDiscoveryEvidence) {
+      if (!isVisible && !hasEvidence && !pluginHasAnyDiscoveryEvidence) {
         continue;
       }
 
@@ -1363,8 +1660,8 @@ export async function statusCommand(
         cwd: candidate.executionCwd,
         env,
       });
+      const { plugin: healthPlugin, ...runtimeHealthForCell } = runtimeHealth;
 
-      upsertReport(reportsByKey, candidate, status);
       const cell: StatusMatrixCell = {
         pluginName: candidate.pluginName,
         platform: candidate.platform,
@@ -1375,25 +1672,34 @@ export async function statusCommand(
         health: resolvePluginHealth(pluginStatus, candidate.platform, candidate.scope),
         report: pluginStatus,
         evidenceSources: candidate.evidence.sources,
-        ...runtimeHealth,
+        ...runtimeHealthForCell,
         disabledReason: candidate.disabledReason,
       };
-      cells.push(cell);
+      const locationKey = serializePluginLocation(cellLocation(cell));
+      allCellsByLocation.set(locationKey, cell);
+      if (healthPlugin && runtimeHealth.healthSource === 'installSnapshot') {
+        healthPluginByLocation.set(locationKey, healthPlugin);
+      }
 
-      const consoleDiagnostics = await resolveConsoleLocationDiagnostics({
-        cell,
-        currentPlugin: candidate.target.currentPlugin,
-        ledger,
-      });
-      if (consoleDiagnostics) {
-        locationDiagnosticsByKey[createPluginConsoleLocationKey(cell)] = consoleDiagnostics;
+      if (isVisible) {
+        upsertReport(reportsByKey, candidate, status);
+        cells.push(cell);
+
+        const consoleDiagnostics = await resolveConsoleLocationDiagnostics({
+          cell,
+          currentPlugin: candidate.target.currentPlugin,
+          ledger,
+        });
+        if (consoleDiagnostics) {
+          locationDiagnosticsByKey[createPluginConsoleLocationKey(cell)] = consoleDiagnostics;
+        }
       }
     } catch (error) {
       if (isCodexProjectStatusFatalError(error)) {
         throw error;
       }
 
-      cells.push({
+      const cell: StatusMatrixCell = {
         pluginName: candidate.pluginName,
         platform: candidate.platform,
         scope: candidate.scope,
@@ -1407,7 +1713,68 @@ export async function statusCommand(
         scripts: 'not_declared',
         disabledReason: candidate.disabledReason,
         error: statusErrorMessage(error),
-      });
+      };
+      allCellsByLocation.set(serializePluginLocation(cellLocation(cell)), cell);
+      if (isVisible) {
+        cells.push(cell);
+      }
+    }
+  }
+
+  const plannerInstalledRecords: PluginDependencyPlannerInstalledRecord[] = iterateInstalledScopeRecords(ledger)
+    .map(({ location, record }) => {
+      const locationKey = serializePluginLocation(location);
+      const healthCell = allCellsByLocation.get(locationKey);
+      const snapshotManifest = healthCell?.healthSource === 'installSnapshot'
+        ? healthPluginByLocation.get(locationKey)?.manifest
+        : undefined;
+      return {
+        location,
+        resolvedVersion: record.resolvedVersion,
+        installSource: record.installSource,
+        dependencyEdges: record.dependencyEdges,
+        installOptions: record.installOptions,
+        snapshotManifest,
+      };
+    });
+  const plannerHealthRecords: PluginDependencyPlannerHealthRecord[] = iterateInstalledScopeRecords(ledger)
+    .map(({ location, record }) => {
+      const locationKey = serializePluginLocation(location);
+      return {
+        location,
+        state: resolvePlannerHealthState(
+          allCellsByLocation.get(locationKey),
+          record as InstalledScopeRecord<Record<string, unknown>>,
+        ),
+        visible: true,
+        managedByAw: record.managed === true,
+      };
+    });
+  const plannerState: PluginDependencyPlannerState = {
+    currentCatalogByPlugin: Object.fromEntries(
+      catalogPlugins.map((plugin) => [plugin.manifest.name, plugin.manifest] as const),
+    ),
+    installedRecords: plannerInstalledRecords,
+    healthRecords: plannerHealthRecords,
+  };
+  const dependenciesByLocation = buildDependencyStatusProjectionByLocation(
+    projectPluginDependencyStatus({ state: plannerState }),
+  );
+
+  for (const cell of allCellsByLocation.values()) {
+    if (!cell.report) {
+      continue;
+    }
+    const dependencies = dependenciesByLocation[serializePluginLocation(cellLocation(cell))];
+    if (!dependencies) {
+      continue;
+    }
+    cell.report.dependencies = dependencies;
+    if (
+      dependencies.missing.length > 0 &&
+      (cell.health === 'ready' || cell.health === 'partial')
+    ) {
+      cell.health = 'needsAttention';
     }
   }
 

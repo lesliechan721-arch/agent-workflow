@@ -128,6 +128,8 @@ const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'agent',
 };
+const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const PLUGIN_DEPENDENCY_PLATFORMS = new Set(['codex', 'claude']);
 let yamlParser = null;
 
 function error(msg) {
@@ -321,7 +323,7 @@ function parseFrontmatter(content, sourceName) {
   return parseYaml(match[1], sourceName);
 }
 
-async function tryLoadCliValidator() {
+async function tryLoadCliManifestTools() {
   const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
   const modulePath = path.join(
     repoRoot,
@@ -337,7 +339,9 @@ async function tryLoadCliValidator() {
   if (!moduleSource.includes('skillTriggers')) return null;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
-    return mod.validateSourcePluginManifest ?? null;
+    return {
+      validateSourcePluginManifest: mod.validateSourcePluginManifest ?? null,
+    };
   } catch {
     return null;
   }
@@ -364,6 +368,7 @@ function validateManifestLightweight(manifest) {
     'apps',
     'marketplace',
     'interface',
+    'dependencies',
     'extensions',
     'buildConfig',
     'scripts',
@@ -380,6 +385,8 @@ function validateManifestLightweight(manifest) {
   if (manifest.name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.name)) {
     error(`manifest name "${manifest.name}" is not lowercase-hyphen-case`);
   }
+
+  validateManifestDependenciesLightweight(manifest.name, manifest.dependencies);
 
   if (manifest.marketplace) {
     const mp = manifest.marketplace;
@@ -416,6 +423,103 @@ function validateManifestLightweight(manifest) {
   }
 
   validateExtensionsLightweight(manifest.extensions);
+}
+
+function normalizeDependencyPlatforms(entry) {
+  if (!entry.when || !Array.isArray(entry.when.platforms)) {
+    return ['codex', 'claude'];
+  }
+  return entry.when.platforms;
+}
+
+function validateManifestDependenciesLightweight(pluginName, dependencies) {
+  if (dependencies === undefined) return;
+
+  const record = expectRecord(dependencies, 'dependencies');
+  if (!record) return;
+  validateAllowedKeys(record, 'dependencies', ['plugins']);
+
+  if (!Array.isArray(record.plugins)) {
+    error('dependencies.plugins must be an array');
+    return;
+  }
+
+  if (record.plugins.length === 0) {
+    warn('dependencies.plugins 为空；可以删除整个 dependencies block。');
+  }
+
+  const seen = new Map();
+  record.plugins.forEach((rawEntry, index) => {
+    const fieldName = `dependencies.plugins[${index}]`;
+    const entry = expectRecord(rawEntry, fieldName);
+    if (!entry) return;
+    validateAllowedKeys(entry, fieldName, ['name', 'target', 'inheritInstallOptions', 'when']);
+    let platformsForOverlap = ['codex', 'claude'];
+
+    const name = validateManifestString(entry.name, `${fieldName}.name`);
+    if (name && !PLUGIN_NAME_PATTERN.test(name)) {
+      error(`${fieldName}.name must use lowercase-hyphen-case`);
+    }
+    if (name && pluginName && name === pluginName) {
+      error(`${fieldName}.name: plugin "${pluginName}" cannot depend on itself.`);
+    }
+
+    if (entry.target !== undefined) {
+      const target = expectRecord(entry.target, `${fieldName}.target`);
+      if (target) {
+        validateAllowedKeys(target, `${fieldName}.target`, ['scope']);
+        if (typeof target.scope !== 'string' || (target.scope !== 'user' && target.scope !== 'project')) {
+          error(`${fieldName}.target.scope must be "user" or "project"`);
+        }
+      }
+    }
+
+    if (entry.inheritInstallOptions !== undefined && typeof entry.inheritInstallOptions !== 'boolean') {
+      error(`${fieldName}.inheritInstallOptions must be a boolean`);
+    }
+
+    if (entry.when !== undefined) {
+      const when = expectRecord(entry.when, `${fieldName}.when`);
+      if (when) {
+        validateAllowedKeys(when, `${fieldName}.when`, ['platforms']);
+        if (!Array.isArray(when.platforms)) {
+          error(`${fieldName}.when.platforms must be an array`);
+          platformsForOverlap = [];
+        } else if (when.platforms.length === 0) {
+          error(`${fieldName}.when.platforms must contain at least one platform`);
+          platformsForOverlap = [];
+        } else {
+          const platforms = [];
+          let invalidPlatforms = false;
+          when.platforms.forEach((platform, platformIndex) => {
+            const platformField = `${fieldName}.when.platforms[${platformIndex}]`;
+            if (typeof platform !== 'string' || !PLUGIN_DEPENDENCY_PLATFORMS.has(platform)) {
+              error(`${platformField} must be "codex" or "claude"`);
+              invalidPlatforms = true;
+              return;
+            }
+            if (platforms.includes(platform)) {
+              error(`${platformField} duplicate platform "${platform}"`);
+              invalidPlatforms = true;
+              return;
+            }
+            platforms.push(platform);
+          });
+          platformsForOverlap = invalidPlatforms ? [] : platforms;
+        }
+      }
+    }
+
+    if (!name) return;
+    for (const platform of platformsForOverlap) {
+      const platformKey = `${name}::${platform}`;
+      if (seen.has(platformKey)) {
+        error(`${fieldName}.when.platforms overlaps with dependencies.plugins[${seen.get(platformKey)}] for plugin "${name}" on platform "${platform}"`);
+        continue;
+      }
+      seen.set(platformKey, index);
+    }
+  });
 }
 
 function normalizeManifestProductToken(value) {
@@ -932,6 +1036,52 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
       );
     }
   }
+}
+
+function findCurrentCatalogPluginsDir(pluginDir) {
+  const parentDir = path.dirname(pluginDir);
+  return path.basename(parentDir) === 'plugins' ? parentDir : null;
+}
+
+function collectCurrentCatalogPluginNames(pluginsDir) {
+  const pluginNames = new Set();
+  for (const entry of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifestPath = path.join(pluginsDir, entry.name, '.agents-plugin', 'plugin.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      if (manifest && typeof manifest.name === 'string' && manifest.name.trim() !== '') {
+        pluginNames.add(manifest.name);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return pluginNames;
+}
+
+function validateCatalogDependencyReferences(pluginDir, manifest) {
+  const dependencies = manifest.dependencies?.plugins;
+  if (!Array.isArray(dependencies) || dependencies.length === 0) {
+    return;
+  }
+
+  const pluginsDir = findCurrentCatalogPluginsDir(pluginDir);
+  if (!pluginsDir) {
+    warn('当前插件目录不在 "<catalog>/plugins/<name>" 结构下，跳过 dependencies.plugins 的 catalog 存在性校验。');
+    return;
+  }
+
+  const pluginNames = collectCurrentCatalogPluginNames(pluginsDir);
+  dependencies.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
+      return;
+    }
+    if (!pluginNames.has(entry.name)) {
+      error(`Invalid dependencies.plugins[${index}].name for plugin "${manifest.name}": current catalog is missing plugin "${entry.name}".`);
+    }
+  });
 }
 
 function validateSkillTriggers(pluginDir, manifest) {
@@ -2528,10 +2678,10 @@ async function validatePluginDir(pluginDir) {
     return;
   }
 
-  const cliValidate = await tryLoadCliValidator();
-  if (cliValidate) {
+  const cliManifestTools = await tryLoadCliManifestTools();
+  if (cliManifestTools?.validateSourcePluginManifest) {
     try {
-      await cliValidate(pluginDir, manifest);
+      await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
     } catch (e) {
       error(e.message);
     }
@@ -2546,6 +2696,7 @@ async function validatePluginDir(pluginDir) {
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
+  validateCatalogDependencyReferences(pluginDir, manifest);
   validateSkillTriggers(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);

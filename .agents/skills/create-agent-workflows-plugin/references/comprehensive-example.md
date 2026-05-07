@@ -7,7 +7,7 @@
 ```text
 code-review/
 ├── .agents-plugin/
-│   └── plugin.json              # 完整 manifest：skills + slashCommands + MCP + extensions + buildConfig + scripts/config
+│   └── plugin.json              # 完整 manifest：skills + slashCommands + MCP + dependencies + extensions + buildConfig + scripts/config
 ├── review-skills/
 │   └── review-workflow/
 │       ├── SKILL.md             # 轻量审查工作流（含模板变量 {{platformName}}）
@@ -41,6 +41,7 @@ code-review/
 | Native Hooks | `extensions.nativeHooks.codex` — Codex 原生 UserPromptSubmit，无 matcher |
 | Agents | `extensions.agents` — review-summarizer 报告生成器 |
 | MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${REVIEW_SERVICE_API_KEY}` 环境变量 |
+| Plugin Dependencies | `dependencies.plugins` — Codex 平台下自动确保 user scope 的 `git-commit` 可用 |
 | Public Slash Commands | `slash-commands/review.md` — 一份公共源码同时生成 Claude `/review` 和 Codex manual-only 入口 skill |
 | Output Styles | `output-styles/` — Claude 专属审查报告格式 |
 | Template 渲染 | `buildConfig.templates` — SKILL.md 和 `slash-commands/*.md` 中按平台渲染 `{{platformName}}`、`{{#if supportsCommands}}` |
@@ -51,6 +52,25 @@ code-review/
 | agentOverrides | hooks 中的 before_tool 条目通过 `"codex": null` 排除 Codex 平台 |
 
 示例不再使用 Claude 原生 `userConfig` 承载共享配置。跨平台配置统一写在 AW `config.schema`；Claude-only `userConfig` 只应在确实需要 Claude Code 原生能力时使用，详见 `references/claude-only-capabilities.md`。
+
+示例 manifest 还包含一个带平台条件和 scope target 的依赖：
+
+```json
+{
+  "dependencies": {
+    "plugins": [
+      {
+        "name": "git-commit",
+        "target": { "scope": "user" },
+        "when": { "platforms": ["codex"] },
+        "inheritInstallOptions": true
+      }
+    ]
+  }
+}
+```
+
+这表示 `code-review` 安装或升级到 Codex 时需要 `git-commit`，并且依赖位置固定为 user scope；Claude 安装不会展开这条依赖。若用户安装 `code-review -p codex -s project`，AW 会优先写当前项目的 `code-review`，同时自动确保 Codex user scope 下的 `git-commit` 健康。`inheritInstallOptions: true` 只影响自动安装 `git-commit` 时可继承的插件级安装选项；如果用户已经显式安装过该依赖，父插件卸载不会自动删除它。
 
 ## 构建产物预览
 
@@ -64,9 +84,13 @@ code-review/
 
 **两个平台 runtime bundle 都不包含**：`scripts.tests.node` 测试入口和 test-only helper
 
+**平台原生 manifest 都不包含**：`dependencies`。依赖声明只保留在 runtime `.agents-plugin/plugin.json`，由 AW CLI 的 dependency planner 解释。
+
 **Codex bundle 不包含**：output-styles/、Claude-only manifest overrides、extensions 衍生产物（均在安装时生成）
 
 **安装/升级时执行**：`scripts.lifecycle.install` / `scripts.lifecycle.upgrade` 会收到 `AW_PLUGIN_CONTEXT`，其中包含 effective config、config sources、平台、scope、bundle root 和生成 artifacts。失败会阻断命令。
+
+**依赖规划顺序**：安装或升级 `code-review` 时，AW 会先按当前 platform 过滤依赖。Codex 路径会先检查 / 自动安装 `git-commit`，再写入或升级 `code-review`；Claude 路径不会处理该依赖。`aw status --json` 会把这条声明放入 `dependencies.declared`，只有 Codex 位置会进入 `resolved` / `satisfied` / `missing`。
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 ledger 里的安装快照，避免当前 marketplace 已刷新时误用新版脚本。`aw uninstall` 默认保留 AW config，清理残留配置需要显式运行 `aw config reset code-review -s user|project --yes`。
 

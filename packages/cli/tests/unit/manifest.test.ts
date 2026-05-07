@@ -10,6 +10,8 @@ import {
   createPlatformManifestBase,
   readMarketplaceSourceMeta,
   readPluginManifest,
+  validatePluginDependencyReferences,
+  validatePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
   resolveLifecycleScriptForOs,
@@ -19,6 +21,10 @@ import {
   CLAUDE_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
 } from '../../src/utils/hooks-contract.js';
+import {
+  createDependencySiblingManifest,
+  pluginDependencyValidatorParityCases,
+} from '../support/plugin-dependency-validator-parity.js';
 
 const tempDirs: string[] = [];
 
@@ -1442,6 +1448,49 @@ describe('manifest utils', () => {
           },
         },
       });
+    }
+  });
+
+  it('keeps CLI manifest validation in sync with dependency parity fixtures', () => {
+    for (const testCase of pluginDependencyValidatorParityCases) {
+      const manifest = testCase.manifest;
+      if (!testCase.expectedError) {
+        const plugin = {
+          rootDir: '/tmp/plugins/dependency-parent',
+          manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
+          manifest: validatePluginManifest('/tmp/plugins/dependency-parent', manifest),
+        };
+        const siblings = (testCase.siblingPluginNames ?? []).map((name) => ({
+          rootDir: `/tmp/plugins/${name}`,
+          manifestPath: `/tmp/plugins/${name}/.agents-plugin/plugin.json`,
+          manifest: validatePluginManifest(`/tmp/plugins/${name}`, createDependencySiblingManifest(name)),
+        }));
+
+        expect(() => validatePluginDependencyReferences([plugin, ...siblings])).not.toThrow();
+        continue;
+      }
+
+      if (testCase.expectedError.includes('current catalog is missing plugin')) {
+        const plugin = {
+          rootDir: '/tmp/plugins/dependency-parent',
+          manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
+          manifest: validatePluginManifest('/tmp/plugins/dependency-parent', manifest),
+        };
+        const siblings = (testCase.siblingPluginNames ?? []).map((name) => ({
+          rootDir: `/tmp/plugins/${name}`,
+          manifestPath: `/tmp/plugins/${name}/.agents-plugin/plugin.json`,
+          manifest: validatePluginManifest(`/tmp/plugins/${name}`, createDependencySiblingManifest(name)),
+        }));
+
+        expect(() => validatePluginDependencyReferences([plugin, ...siblings])).toThrow(
+          testCase.expectedError,
+        );
+        continue;
+      }
+
+      expect(() => validatePluginManifest('/tmp/plugins/dependency-parent', manifest)).toThrow(
+        testCase.expectedError,
+      );
     }
   });
 });

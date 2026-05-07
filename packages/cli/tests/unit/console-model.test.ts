@@ -141,6 +141,7 @@ function report(overrides: Partial<PluginStatusReport> & {
     skillTriggerRuntimeState: overrides.skillTriggerRuntimeState,
     skillTriggerDrift: overrides.skillTriggerDrift,
     projectManagedKinds: overrides.projectManagedKinds,
+    dependencies: overrides.dependencies,
   };
 }
 
@@ -781,6 +782,104 @@ describe('console-model', () => {
       expect(item.locations[0].actions.map((action) => action.kind)).toContain('runUninstall');
       expect(item.locations[0].actions.map((action) => action.kind)).toContain('diagnoseCommand');
     }
+  });
+
+  it('surfaces dependency reasons without turning catalog drift into a hard failure', () => {
+    const dependencyMissing = singleItem(cell({
+      report: report({
+        native: native({
+          pluginInstalled: true,
+          pluginEnabled: true,
+        }),
+        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
+        scopeInitialized: 'yes',
+        scopeManagedEvidence: { ledger: true, tracking: true },
+        dependencies: {
+          healthSource: 'currentCatalog',
+          declared: [{ name: 'helper-plugin' }],
+          resolved: [{ declaration: { name: 'helper-plugin' }, source: 'currentCatalog' }],
+          satisfied: [],
+          missing: [{ declaration: { name: 'helper-plugin' }, reason: 'missing helper' }],
+          dependents: [],
+          autoInstalled: false,
+          autoRemovable: false,
+          catalogDrift: {
+            kind: 'snapshotMissing',
+            snapshotDependencies: [],
+            currentDependencies: ['helper-plugin'],
+          },
+        },
+      }),
+    }));
+    const autoRemovable = singleItem(cell({
+      report: report({
+        native: native({
+          pluginInstalled: true,
+          pluginEnabled: true,
+        }),
+        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
+        scopeInitialized: 'yes',
+        scopeManagedEvidence: { ledger: true, tracking: true },
+        dependencies: {
+          healthSource: 'installSnapshot',
+          declared: [],
+          resolved: [],
+          satisfied: [],
+          missing: [],
+          dependents: [],
+          autoInstalled: true,
+          autoRemovable: true,
+          catalogDrift: {
+            kind: 'none',
+            snapshotDependencies: [],
+            currentDependencies: [],
+          },
+        },
+      }),
+    }));
+    const protectedDependency = singleItem(cell({
+      report: report({
+        native: native({
+          pluginInstalled: true,
+          pluginEnabled: true,
+        }),
+        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
+        scopeInitialized: 'yes',
+        scopeManagedEvidence: { ledger: true, tracking: true },
+        dependencies: {
+          healthSource: 'installSnapshot',
+          declared: [],
+          resolved: [],
+          satisfied: [],
+          missing: [],
+          dependents: [{ plugin: 'parent-plugin', platform: 'codex', scope: 'user', projectKey: null }],
+          autoInstalled: true,
+          autoRemovable: false,
+          catalogDrift: {
+            kind: 'none',
+            snapshotDependencies: [],
+            currentDependencies: [],
+          },
+        },
+      }),
+    }));
+
+    expect(dependencyMissing.status).toBe('needsAction');
+    expect(dependencyMissing.locations[0].reasonCodes).toContain('dependencyMissing');
+    expect(dependencyMissing.locations[0].actions.find((action) => action.kind === 'repairInstall')?.label).toBe('补齐依赖');
+
+    expect(autoRemovable.status).toBe('installed');
+    expect(autoRemovable.locations[0].reasonCodes).toContain('autoDependencyRemovable');
+    expect(autoRemovable.locations[0].actions.find((action) => action.kind === 'runUninstall')?.label).toBe('清理自动依赖');
+
+    const protectedAction = protectedDependency.locations[0].actions.find((action) => action.kind === 'runUninstall');
+    expect(protectedDependency.status).toBe('installed');
+    expect(protectedDependency.locations[0].reasonCodes).toContain('dependencyProtected');
+    expect(protectedAction?.disabledReason).toContain('暂时不能直接卸载');
+
+    sanitizeAndAssertProse(dependencyMissing);
+    sanitizeAndAssertProse(autoRemovable);
+    sanitizeAndAssertProse(protectedDependency);
   });
 
   it('enforces the action contract', () => {

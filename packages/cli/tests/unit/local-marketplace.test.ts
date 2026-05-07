@@ -15,6 +15,7 @@ import {
   calculateBundleFingerprint,
   createAvailableLedger,
   ensureLocalMarketplace,
+  hasInstalledLedgerDependencyMetadata,
   initializeLocalMarketplace,
   readInstalledLedger,
   validateLocalMarketplaceLayout,
@@ -209,6 +210,106 @@ describe('local marketplace', () => {
     expect(
       (preservedLedger as InstalledLedger).plugins['git-commit'].platforms.codex?.sharedNativeRefs,
     ).toBeUndefined();
+  });
+
+  it('preserves dependency metadata across local marketplace refreshes', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['workflow-pack'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-05-06T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installSource: {
+              kind: 'explicit',
+              explicitlyRequested: true,
+              allowsUnusedCleanup: false,
+            },
+            dependencyEdges: [
+              {
+                dependency: {
+                  plugin: 'git-commit',
+                  platform: 'codex',
+                  scope: 'user',
+                  projectKey: null,
+                },
+                declaration: {
+                  name: 'git-commit',
+                  target: {
+                    scope: 'user',
+                  },
+                  when: {
+                    platforms: ['codex'],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    };
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-05-06T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: true,
+            },
+            installSource: {
+              kind: 'dependency',
+              explicitlyRequested: false,
+              allowsUnusedCleanup: true,
+            },
+            dependencyEdges: [],
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# changed with dependency metadata\n',
+      'utf8',
+    );
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    const preservedLedger = await readInstalledLedger(process.env);
+    expect(hasInstalledLedgerDependencyMetadata(preservedLedger)).toBe(true);
+    expect(preservedLedger.plugins['workflow-pack']?.platforms.codex?.userScope).toMatchObject({
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+        allowsUnusedCleanup: false,
+      },
+      dependencyEdges: [
+        {
+          dependency: {
+            plugin: 'git-commit',
+            platform: 'codex',
+            scope: 'user',
+            projectKey: null,
+          },
+          declaration: {
+            name: 'git-commit',
+          },
+        },
+      ],
+    });
   });
 
   it('preserves AW-managed plugin config during local marketplace rebuilds', async () => {

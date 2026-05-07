@@ -21,6 +21,11 @@ import type {
 } from '../../src/types.js';
 import { upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import { attachGeneratedArtifactsToError } from '../../src/utils/generated-artifacts.js';
+import {
+  createAvailableLedger,
+  readInstalledLedger,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
 import { readTrackingManifest } from '../../src/utils/tracking.js';
 import type {
   NativeCliInvocation,
@@ -32,6 +37,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
 
@@ -416,6 +422,19 @@ async function addRequiredConfigSchemaToGitCommit(repoRoot: string): Promise<voi
     },
   };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function addDependencyFixturePlugin(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', String(manifest.name));
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
 }
 
 async function addGitCommitReviewSkill(repoRoot: string): Promise<void> {
@@ -956,7 +975,7 @@ describe('CLI integration', () => {
       'git-commit requires valid AW config before install/upgrade: token. Run `aw config set git-commit token <value> -s user`, or open `aw` to complete setup.',
     );
 
-    expect(states).toEqual({});
+    expect(Object.values(states)).toEqual([]);
     expect(configureCalls).toEqual([]);
     await expect(fs.readJson(
       path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
@@ -967,6 +986,121 @@ describe('CLI integration', () => {
     await expect(fs.pathExists(
       path.join(repoRoot, '.codex', 'config.toml'),
     )).resolves.toBe(false);
+  });
+
+  it('auto-installs declared dependencies before the parent plugin and writes dependency metadata', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (root) => {
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'workflow-child',
+        }));
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'workflow-parent',
+          dependencies: [{ name: 'workflow-child' }],
+        }));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const states: Record<string, FakePluginState> = {};
+    const result = await installCommand(
+      ['workflow-parent'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, states),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.receiptActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'workflow-child',
+        type: 'installDependency',
+      }),
+    ]));
+
+    const ledger = await fs.readJson(path.join(awHome, 'installed.json'));
+    expect(ledger.plugins['workflow-child'].platforms.codex.userScope.installSource).toMatchObject({
+      kind: 'dependency',
+      explicitlyRequested: false,
+    });
+    expect(ledger.plugins['workflow-parent'].platforms.codex.userScope.dependencyEdges).toEqual([
+      expect.objectContaining({
+        dependency: expect.objectContaining({
+          plugin: 'workflow-child',
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        }),
+        declaration: expect.objectContaining({
+          name: 'workflow-child',
+        }),
+      }),
+    ]);
+  });
+
+  it('fails install preflight when a dependency is missing required config and leaves state untouched', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (root) => {
+        await addDependencyFixturePlugin(root, {
+          ...createDependencyPluginManifest({
+            name: 'config-child',
+          }),
+          config: {
+            schema: {
+              token: {
+                type: 'string',
+                required: true,
+              },
+            },
+          },
+        });
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'config-parent',
+          dependencies: [{ name: 'config-child' }],
+        }));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+
+    const states: Record<string, FakePluginState> = {};
+    await expect(installCommand(
+      ['config-parent'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, states),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    )).rejects.toThrow(
+      'config-child requires valid AW config before install/upgrade: token. Run `aw config set config-child token <value> -s user`, or open `aw` to complete setup.',
+    );
+
+    expect(Object.values(states)).toEqual([]);
+    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
+      plugins: {},
+    });
   });
 
   it('reports unknown status targets as notInstalled instead of throwing', async () => {
@@ -1507,6 +1641,12 @@ describe('CLI integration', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: {
+                kind: 'explicit',
+                explicitlyRequested: true,
+                allowsUnusedCleanup: false,
+              },
+              dependencyEdges: [],
             },
           },
           sharedNativeRefs: {
@@ -1575,6 +1715,169 @@ describe('CLI integration', () => {
         },
       ],
     });
+  });
+
+  it('auto-cleans unused dependency chains during uninstall and reports uninstallAutoDependency actions', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const parentArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-parent.codex.txt');
+    const childArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-child.codex.txt');
+    const grandchildArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-grandchild.codex.txt');
+    await Promise.all([
+      fs.outputFile(parentArtifactPath, 'parent', 'utf8'),
+      fs.outputFile(childArtifactPath, 'child', 'utf8'),
+      fs.outputFile(grandchildArtifactPath, 'grandchild', 'utf8'),
+    ]);
+
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          'cleanup-parent': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {},
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [{
+                    dependency: {
+                      plugin: 'cleanup-child',
+                      platform: 'codex',
+                      scope: 'user',
+                      projectKey: null,
+                    },
+                    declaration: {
+                      name: 'cleanup-child',
+                    },
+                  }],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+          'cleanup-child': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {},
+                  installSource: {
+                    kind: 'dependency',
+                    explicitlyRequested: false,
+                    allowsUnusedCleanup: true,
+                  },
+                  dependencyEdges: [{
+                    dependency: {
+                      plugin: 'cleanup-grandchild',
+                      platform: 'codex',
+                      scope: 'user',
+                      projectKey: null,
+                    },
+                    declaration: {
+                      name: 'cleanup-grandchild',
+                    },
+                  }],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+          'cleanup-grandchild': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {},
+                  installSource: {
+                    kind: 'dependency',
+                    explicitlyRequested: false,
+                    allowsUnusedCleanup: true,
+                  },
+                  dependencyEdges: [],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      process.env,
+    );
+
+    const result = await uninstallCommand(
+      ['cleanup-parent'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'cleanup-parent': {
+              scopeInitialized: 'yes',
+              artifactPath: parentArtifactPath,
+            },
+            'cleanup-child': {
+              scopeInitialized: 'yes',
+              artifactPath: childArtifactPath,
+            },
+            'cleanup-grandchild': {
+              scopeInitialized: 'yes',
+              artifactPath: grandchildArtifactPath,
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.receiptActions).toEqual([
+      {
+        type: 'uninstallAutoDependency',
+        plugin: 'cleanup-child',
+        platform: 'codex',
+        scope: 'user',
+      },
+      {
+        type: 'uninstallAutoDependency',
+        plugin: 'cleanup-grandchild',
+        platform: 'codex',
+        scope: 'user',
+      },
+    ]);
+    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
+      plugins: {},
+    });
+    await expect(fs.pathExists(parentArtifactPath)).resolves.toBe(false);
+    await expect(fs.pathExists(childArtifactPath)).resolves.toBe(false);
+    await expect(fs.pathExists(grandchildArtifactPath)).resolves.toBe(false);
   });
 
   it('keeps Claude user ledger untouched when uninstalling only project scope', async () => {

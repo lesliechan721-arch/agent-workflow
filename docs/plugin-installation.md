@@ -71,6 +71,8 @@ aw install [插件名...] [-s project|user] [-p codex|claude|both|auto] [-t defa
 aw install git-commit another-plugin -p claude
 ```
 
+如果目标插件声明了 `dependencies.plugins`，`aw install` 会在写入任何状态前先解析完整依赖图。缺失依赖会自动安装；已经健康满足的依赖不会重复安装，但父插件的依赖引用会刷新。默认输出会说明哪些插件是自动依赖，`--json` receipt 中自动依赖 target 会带 `requested: false` 和 `dependencyOf`。
+
 ---
 
 ### `aw uninstall`
@@ -80,6 +82,8 @@ aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [--scr
 ```
 
 参数与 `install` 相同。卸载会清理当前 scope 里 AW 管理的平台原生注册、repo-managed artifacts、tracking manifest 和 ledger 记录，但默认保留 AW 自管配置；需要删除配置时运行 `aw config reset <插件名> --yes`，或在 `aw` 主控制台里进入配置流程。Codex project scope 只清理当前仓库里 AW 追踪到的 repo-managed artifacts，不会删除用户级 Codex native plugin 状态。`--json` receipt 会包含清理动作、native 结果、artifact 结果、warnings 和 next steps。
+
+如果目标仍被其它已安装插件依赖，`aw uninstall` 会拒绝单独卸载，并提示先卸载依赖它的插件。父插件成功卸载后，AW 会反向检查自动依赖：只有由依赖自动安装、未被用户显式保留、允许引用归零后清理，并且当前没有其它插件引用的位置，才会自动卸载。ledger degraded、依赖 metadata 不完整或 tracking identity 损坏时，自动清理会保守跳过。
 
 ---
 
@@ -91,7 +95,9 @@ aw upgrade [插件名...] [-a|--all] [-s project|user] [-p codex|claude|both|aut
 
 - 指定插件名，或用 `-a, --all` 升级当前 scope 下所有已管理的插件
 - 显式升级某个插件时可传 `-t, --skill-trigger` 调整 skill 触发偏好；`upgrade --all` 不接受这个参数，会按各 scope 的 ledger 记录恢复
+- 显式升级会先安装缺失依赖、再升级已安装依赖，最后升级用户指定的父插件；父插件失败时不会提交失败父插件的依赖引用
 - 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
+- `upgrade --all` 只把用户显式保留的安装作为根，从 current catalog 展开依赖图；孤立 auto dependency 不会被当作用户目标，旧 edge 中已经不再需要的自动依赖不会阻塞父插件升级
 - `upgrade --all` 只处理 `catalogCompatibility=current` 且 scope 已初始化的插件；缺失、能力变更、外部 marketplace 管理、tracking 损坏、项目配置不可读或 install options 无法恢复时会把对应 target 放入 `skipped[]`
 - `upgrade --all` 的默认输出会同时展示成功和跳过摘要；部分成功部分跳过时退出码为 `0`，全部 target 都 skipped 且没有成功升级时退出码为 `1`
 - `--json` receipt 包含 `upgraded`、`skipped`、`targets`、`actions`、`native`、`artifacts`、`warnings` 和 `nextSteps`
@@ -181,6 +187,8 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 友好状态投影由 status、主控制台和 JSON 共用。默认输出会过滤内部术语，例如 marketplace、app-server、RPC、cache、recovery breadcrumb、repo-managed、ledger、healthSource、artifactRefresh、sessionVisibility、projectTrust、tracking、config/script health 等；可复制命令、argv、flag、JSON 字段和类型名保留真实技术标识。
 
 `--verbose` 会展开诊断字段，包括平台检测、native marketplace/plugin 状态、scope 初始化状态、ledger 状态、catalog 兼容性、managed evidence、skill trigger ledger/runtime/drift、config/script health、generated artifacts、session state 和 drift warnings。Codex project scope 的默认状态面板以 repo-managed evidence 为主；用户级 native marketplace 注册缺失不会覆盖正常的 repo-managed installed signal。动态 artifact 会单独展示 instruction / role 等 artifact health，常见状态包括 healthy、disabled by config、block missing、content drift、config digest stale 和 recent refresh failed。user 配置写入没有扫描历史项目时，`refreshReach` 会说明本次已刷新 user / 当前 project，以及其它已知 project target 是否可能仍 stale。`healthSource` 表示健康真值来自 `installSnapshot`、`currentCatalog`、`historical` 或 `none`。`status` 只读，不会执行 lifecycle、不会执行 artifact renderer、不会刷新 marketplace、不会启动 `codex app-server`、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+
+依赖状态也只读展示。`status --json` 中每个位置的 `dependencies` 会包含 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable` 和 `catalogDrift`。`missing` 表示当前健康层确实缺依赖；`catalogDrift` 表示 current catalog 和安装快照的依赖声明不同，不会单独把旧安装判成缺失依赖。`autoRemovable=true` 是只读投影，表示该位置是未显式保留的自动依赖且当前没有其它插件引用；status 和主控制台不会因此自动删除它。
 
 `status --json` 顶层保留既有 `detection`、`summaries`、`cells`、`reports`，并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`。`consoleItems[].locations[].actions[]` 是主控制台可执行动作来源；多位置汇总项不会携带隐式批量写动作，所有写动作都必须带明确 `target`，删除、覆盖或 cleanup 动作还必须带 `destructive: true` 和 `confirmText`。
 
@@ -305,6 +313,20 @@ aw install git-commit -t default
 aw uninstall git-commit
 aw install git-commit -t default
 ```
+
+依赖功能依赖完整的 `installSource` 和 `dependencyEdges` metadata。若 ledger 缺少这些字段或 edge 不完整，依赖相关安装、升级、卸载保护和自动清理会 fail closed；先用 `aw status --verbose` 看具体位置，再通过重新安装或显式升级受影响插件补齐记录。
+
+### 自动依赖无法安装或升级
+
+自动依赖和显式目标使用同一套 preflight。常见失败原因包括：依赖插件不在当前 AW catalog、依赖插件不支持父插件当前 platform、user scope 父插件声明了 project scope 依赖、Codex project scope 依赖没有 repo-managed surface、依赖缺少 required config，或多个父插件通过 `inheritInstallOptions: true` 给同一个自动依赖传入冲突安装选项。
+
+处理时先运行：
+
+```bash
+aw status <插件名> --verbose
+```
+
+缺配置时按提示对依赖插件运行 `aw config set <依赖插件> <key> <value> -s <scope>`；scope 不匹配时需要改用合适的 `--scope` 安装父插件，或由插件作者调整 `target.scope`。如果自动依赖需要特殊 skill trigger，建议先显式安装该依赖，再安装父插件。
 
 ### 插件安装后 AI 看不到 instructions
 

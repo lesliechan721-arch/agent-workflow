@@ -164,4 +164,120 @@ describe('cli entry JSON stdout harness', () => {
       });
     }
   });
+
+  it('keeps install --json stdout parseable when warnings and diagnostics go to stderr', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-install-json-'));
+    tempDirs.push(tempDir);
+
+    const installCommand = vi.fn(async (
+      plugins: string[],
+      options: { json?: boolean; verbose?: boolean },
+      context: {
+        diagnostics: {
+          verbose: boolean;
+          debug: boolean;
+        };
+        reporter: {
+          notice: (notice: {
+            level: 'info';
+            message: string;
+            identity: string;
+            target: 'stderr';
+          }) => void | Promise<void>;
+        };
+      },
+    ) => {
+      await context.reporter.notice({
+        level: 'info',
+        message: `install-diagnostic:${plugins.join(',')}:${context.diagnostics.debug ? 'debug' : 'nodebug'}`,
+        identity: 'install-diagnostic',
+        target: 'stderr',
+      });
+
+      return {
+        plugins,
+        platforms: ['codex'],
+        warnings: ['dependency warning，请运行 `aw status workflow-parent -p codex`。'],
+        receiptTargets: [
+          {
+            plugin: 'workflow-parent',
+            platform: 'codex',
+            scope: 'user',
+            requested: true,
+          },
+          {
+            plugin: 'workflow-child',
+            platform: 'codex',
+            scope: 'user',
+            requested: false,
+            dependencyOf: [{
+              plugin: 'workflow-parent',
+              platform: 'codex',
+              scope: 'user',
+            }],
+          },
+        ],
+        receiptActions: [{
+          type: 'installDependency',
+          plugin: 'workflow-child',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      };
+    });
+    vi.doMock('../../src/commands/install.js', () => ({
+      installCommand,
+    }));
+
+    const result = await runCliEntry(
+      [
+        'install',
+        'workflow-parent',
+        '--platform',
+        'codex',
+        '--json',
+        '--verbose',
+        '--debug',
+        '--log-file',
+        path.join(tempDir, 'install-debug.log'),
+      ],
+      {
+        cwd: tempDir,
+        env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain('install-diagnostic:');
+    expect(result.stdout).not.toContain('注意：dependency warning');
+    expect(result.stdout).not.toContain('调试：');
+    expect(result.stderr).toContain('install-diagnostic:workflow-parent:debug');
+    expect(result.stderr).toContain('注意：dependency warning，请运行 `aw status workflow-parent -p codex`。');
+    expect(result.stderr).toContain('调试日志：');
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: true,
+      command: 'install',
+      plugins: ['workflow-parent', 'workflow-child'],
+      targets: [
+        {
+          plugin: 'workflow-parent',
+          platform: 'codex',
+          scope: 'user',
+          requested: true,
+        },
+        {
+          plugin: 'workflow-child',
+          platform: 'codex',
+          scope: 'user',
+          requested: false,
+          dependencyOf: [{
+            plugin: 'workflow-parent',
+            platform: 'codex',
+            scope: 'user',
+          }],
+        },
+      ],
+      warnings: ['dependency warning，请运行 `aw status workflow-parent -p codex`。'],
+    });
+  });
 });
