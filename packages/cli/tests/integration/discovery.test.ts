@@ -181,6 +181,113 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 describe('managed plugin discovery', () => {
+  it('recognizes auto-installed and dependency-protected uninstall candidates from ledger edges', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const ledger: InstalledLedger = {
+      ...createAvailableLedger(),
+      plugins: {
+        'orphan-child': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                ...scopeRecord({
+                  requiresNativePlugin: false,
+                  hasRepoManagedArtifacts: false,
+                }),
+                installSource: {
+                  kind: 'dependency',
+                  explicitlyRequested: false,
+                  allowsUnusedCleanup: true,
+                },
+                dependencyEdges: [],
+              },
+            },
+          },
+        },
+        'protected-parent': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                ...scopeRecord({
+                  requiresNativePlugin: false,
+                  hasRepoManagedArtifacts: false,
+                }),
+                installSource: {
+                  kind: 'explicit',
+                  explicitlyRequested: true,
+                  allowsUnusedCleanup: false,
+                },
+                dependencyEdges: [{
+                  dependency: {
+                    plugin: 'protected-child',
+                    platform: 'codex',
+                    scope: 'user',
+                    projectKey: null,
+                  },
+                  declaration: {
+                    name: 'protected-child',
+                  },
+                }],
+              },
+            },
+          },
+        },
+        'protected-child': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                ...scopeRecord({
+                  requiresNativePlugin: false,
+                  hasRepoManagedArtifacts: false,
+                }),
+                installSource: {
+                  kind: 'dependency',
+                  explicitlyRequested: false,
+                  allowsUnusedCleanup: true,
+                },
+                dependencyEdges: [],
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, env);
+
+    const candidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['orphan-child', 'protected-child'],
+      env,
+    });
+    const orphan = candidates.find((entry) => entry.pluginName === 'orphan-child');
+    const protectedChild = candidates.find((entry) => entry.pluginName === 'protected-child');
+
+    expect(orphan?.dependencyStatus).toMatchObject({
+      autoInstalled: true,
+      autoRemovable: true,
+      dependents: [],
+    });
+    expect(orphan?.selectable).toBe(true);
+
+    expect(protectedChild?.dependencyStatus).toMatchObject({
+      autoInstalled: true,
+      autoRemovable: false,
+      dependents: [{
+        plugin: 'protected-parent',
+        platform: 'codex',
+        scope: 'user',
+      }],
+    });
+    expect(protectedChild?.selectable).toBe(false);
+    expect(protectedChild?.disabledReason).toContain('不能直接卸载');
+  });
+
   it('lists current-catalog-missing plugins from project ledger evidence without inventing user evidence', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const codexProjectKey = await resolveCodexProjectKey(repoRoot);

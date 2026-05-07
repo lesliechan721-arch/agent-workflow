@@ -62,6 +62,7 @@ import {
   resolveCodexProjectKey,
 } from '../utils/paths.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import {
   formatMarketplaceProductsForError,
   formatSupportedPlatforms,
@@ -805,7 +806,6 @@ export async function resolveInstallOptionsForTargets(
 ): Promise<Map<string, ResolvedInstallOptions>> {
   const scopeKeys = await resolveScopeKeys(options.cwd, options.scope);
   const resolved = new Map<string, ResolvedInstallOptions>();
-  const requestedPreference = options.requestedSkillTrigger;
   const env = options.env ?? process.env;
   const ledgerTrust: ResolvedInstallOptions['ledgerTrust'] =
     ledger.ledgerState.status === 'available' ? 'available' : 'degraded';
@@ -814,101 +814,179 @@ export async function resolveInstallOptionsForTargets(
     const scopeIdentity = getScopeIdentity(platform, options.scope, scopeKeys);
 
     for (const target of targets) {
-      const skillTriggerPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
-      const applicability = await resolveSkillTriggerApplicabilityForPlugin(
-        skillTriggerPlugin,
+      const nextOptions = await resolveInstallOptionsForResolvedTarget({
+        mode,
+        target,
         platform,
-      );
-      const scopeRecord = getInstalledScopeRecordForTarget(
+        scope: options.scope,
+        requestedSkillTrigger: options.requestedSkillTrigger,
+        cwd: options.cwd,
+        env,
         ledger,
-        target.pluginName,
-        platform,
-        options.scope,
         scopeKeys,
-      );
-      const isManagedTarget = scopeRecord?.managed === true;
-      const trackingManagedEvidence = platform === 'codex' && options.scope === 'project'
-        ? await hasTrackingManagedEvidenceForTarget(
-            options.cwd,
-            options.scope,
-            platform,
-            target.pluginName,
-            env,
-          )
-        : false;
-
-      let nextOptions: ResolvedInstallOptions;
-      if (applicability === 'none' || applicability === 'fixed') {
-        nextOptions = {
-          applicability,
-          ledgerTrust,
-        };
-      } else if (requestedPreference) {
-        nextOptions = {
-          applicability: 'overridable',
-          skillTriggerPreference: requestedPreference,
-          skillTriggerSource: 'cli',
-          ledgerTrust,
-        };
-      } else if (platform === 'codex' && options.scope === 'project') {
-        if (ledger.ledgerState.status === 'available' && hasRecoverableLedgerSkillTriggerPreference(scopeRecord)) {
-          nextOptions = {
-            applicability: 'overridable',
-            skillTriggerPreference: scopeRecord!.installOptions!.skillTriggerPreference!,
-            skillTriggerSource: 'ledger',
-            ledgerTrust,
-          };
-        } else if (isManagedTarget || trackingManagedEvidence) {
-          const message = ledger.ledgerState.status === 'available'
-            ? `${target.pluginName} 在 ${platform} (${options.scope}) 的 skill trigger 偏好无法从当前 scope ledger 安全恢复；tracking 只能证明 repo artifact 归属，请显式传入 \`--skill-trigger default|manual|auto\`。`
-            : `${target.pluginName} 在 ${platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`;
-          throw new CommandWarningError(message);
-        } else {
-          nextOptions = {
-            applicability: 'overridable',
-            skillTriggerPreference: 'default',
-            skillTriggerSource: 'default',
-            ledgerTrust,
-          };
-        }
-      } else if (mode === 'install') {
-        if (ledger.ledgerState.status === 'available') {
-          nextOptions = {
-            applicability: 'overridable',
-            ...resolveLedgerBackedPreference(scopeRecord),
-            ledgerTrust,
-          };
-        } else if (isManagedTarget) {
-          throw new CommandWarningError(
-            `${target.pluginName} 在 ${platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`,
-          );
-        } else {
-          nextOptions = {
-            applicability: 'overridable',
-            skillTriggerPreference: 'default',
-            skillTriggerSource: 'default',
-            ledgerTrust,
-          };
-        }
-      } else {
-        if (ledger.ledgerState.status === 'available') {
-          nextOptions = {
-            applicability: 'overridable',
-            ...resolveLedgerBackedPreference(scopeRecord),
-            ledgerTrust,
-          };
-        } else {
-          throw new CommandWarningError(
-            `${target.pluginName} 在 ${platform} (${options.scope}) 的 skill trigger 偏好无法从 degraded installed.json 安全恢复，请显式传入 \`--skill-trigger default|manual|auto\`。`,
-          );
-        }
-      }
-
+        ledgerTrust,
+      });
       resolved.set(
         createResolvedInstallOptionsKey(platform, target.pluginName, scopeIdentity),
         nextOptions,
       );
     }
+  }
+
+  return resolved;
+}
+
+export interface ResolvedInstallOptionsLocationRequest {
+  location: {
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    projectKey: string | null;
+  };
+  target: ResolvedPluginTarget;
+  requestedSkillTrigger?: InstallCommandOptions['requestedSkillTrigger'];
+}
+
+async function resolveInstallOptionsForResolvedTarget(options: {
+  mode: 'install' | 'upgrade' | 'upgrade-all';
+  target: ResolvedPluginTarget;
+  platform: PlatformName;
+  scope: Scope;
+  requestedSkillTrigger?: InstallCommandOptions['requestedSkillTrigger'];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  ledger: InstalledLedger;
+  scopeKeys: Record<PlatformName, string | undefined>;
+  ledgerTrust: ResolvedInstallOptions['ledgerTrust'];
+}): Promise<ResolvedInstallOptions> {
+  const skillTriggerPlugin = options.target.embeddedPlugin ?? options.target.currentPlugin ?? options.target.plugin;
+  const applicability = await resolveSkillTriggerApplicabilityForPlugin(
+    skillTriggerPlugin,
+    options.platform,
+  );
+  const scopeRecord = getInstalledScopeRecordForTarget(
+    options.ledger,
+    options.target.pluginName,
+    options.platform,
+    options.scope,
+    options.scopeKeys,
+  );
+  const isManagedTarget = scopeRecord?.managed === true;
+  const trackingManagedEvidence = options.platform === 'codex' && options.scope === 'project'
+    ? await hasTrackingManagedEvidenceForTarget(
+        options.cwd,
+        options.scope,
+        options.platform,
+        options.target.pluginName,
+        options.env,
+      )
+    : false;
+
+  if (applicability === 'none' || applicability === 'fixed') {
+    return {
+      applicability,
+      ledgerTrust: options.ledgerTrust,
+    };
+  }
+
+  if (options.requestedSkillTrigger) {
+    return {
+      applicability: 'overridable',
+      skillTriggerPreference: options.requestedSkillTrigger,
+      skillTriggerSource: 'cli',
+      ledgerTrust: options.ledgerTrust,
+    };
+  }
+
+  if (options.platform === 'codex' && options.scope === 'project') {
+    if (options.ledger.ledgerState.status === 'available' && hasRecoverableLedgerSkillTriggerPreference(scopeRecord)) {
+      return {
+        applicability: 'overridable',
+        skillTriggerPreference: scopeRecord!.installOptions!.skillTriggerPreference!,
+        skillTriggerSource: 'ledger',
+        ledgerTrust: options.ledgerTrust,
+      };
+    }
+    if (isManagedTarget || trackingManagedEvidence) {
+      const message = options.ledger.ledgerState.status === 'available'
+        ? `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 的 skill trigger 偏好无法从当前 scope ledger 安全恢复；tracking 只能证明 repo artifact 归属，请显式传入 \`--skill-trigger default|manual|auto\`。`
+        : `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`;
+      throw new CommandWarningError(message);
+    }
+    return {
+      applicability: 'overridable',
+      skillTriggerPreference: 'default',
+      skillTriggerSource: 'default',
+      ledgerTrust: options.ledgerTrust,
+    };
+  }
+
+  if (options.mode === 'install') {
+    if (options.ledger.ledgerState.status === 'available') {
+      return {
+        applicability: 'overridable',
+        ...resolveLedgerBackedPreference(scopeRecord),
+        ledgerTrust: options.ledgerTrust,
+      };
+    }
+    if (isManagedTarget) {
+      throw new CommandWarningError(
+        `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`,
+      );
+    }
+    return {
+      applicability: 'overridable',
+      skillTriggerPreference: 'default',
+      skillTriggerSource: 'default',
+      ledgerTrust: options.ledgerTrust,
+    };
+  }
+
+  if (options.ledger.ledgerState.status === 'available') {
+    return {
+      applicability: 'overridable',
+      ...resolveLedgerBackedPreference(scopeRecord),
+      ledgerTrust: options.ledgerTrust,
+    };
+  }
+
+  throw new CommandWarningError(
+    `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 的 skill trigger 偏好无法从 degraded installed.json 安全恢复，请显式传入 \`--skill-trigger default|manual|auto\`。`,
+  );
+}
+
+export async function resolveInstallOptionsForLocationTargets(
+  mode: 'install' | 'upgrade' | 'upgrade-all',
+  requests: ResolvedInstallOptionsLocationRequest[],
+  options: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+  },
+  ledger: InstalledLedger,
+): Promise<Map<string, ResolvedInstallOptions>> {
+  const env = options.env ?? process.env;
+  const ledgerTrust: ResolvedInstallOptions['ledgerTrust'] =
+    ledger.ledgerState.status === 'available' ? 'available' : 'degraded';
+  const scopeKeysByScope = new Map<Scope, Record<PlatformName, string | undefined>>();
+  const resolved = new Map<string, ResolvedInstallOptions>();
+
+  for (const request of requests) {
+    const scopeKeys = scopeKeysByScope.get(request.location.scope) ??
+      await resolveScopeKeys(options.cwd, request.location.scope);
+    scopeKeysByScope.set(request.location.scope, scopeKeys);
+    const nextOptions = await resolveInstallOptionsForResolvedTarget({
+      mode,
+      target: request.target,
+      platform: request.location.platform,
+      scope: request.location.scope,
+      requestedSkillTrigger: request.requestedSkillTrigger,
+      cwd: options.cwd,
+      env,
+      ledger,
+      scopeKeys,
+      ledgerTrust,
+    });
+    resolved.set(serializePluginLocation(request.location), nextOptions);
   }
 
   return resolved;

@@ -16,6 +16,7 @@
 | `apps` | string | 否 | 单个路径，`./` 开头，指向 `.app.json` |
 | `marketplace` | object | 是 | 见下方 marketplace block |
 | `interface` | object | 否 | 见下方 interface block |
+| `dependencies` | object | 否 | AW 自管插件依赖声明，只允许 `dependencies.plugins` |
 | `extensions` | object | 否 | 详见 `references/extensions-spec.md` |
 | `buildConfig` | object | 否 | 详见 `references/build-config-spec.md` |
 | `scripts` | object | 否 | AW 管理的 lifecycle、config helper、Node package 和测试入口声明 |
@@ -23,6 +24,58 @@
 | `artifacts` | object | 否 | 动态 artifact 静态能力声明，首版用于 Codex developer instructions / agent role |
 
 不允许出现上表以外的顶层字段。
+
+## dependencies block
+
+`dependencies` 用来声明 AW 插件之间的直接依赖。它只保留在 source manifest 和运行时 bundle 的 `.agents-plugin/plugin.json` 中，不会写入 `.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 或 marketplace manifest。
+
+示例：
+
+```json
+{
+  "dependencies": {
+    "plugins": [
+      {
+        "name": "git-commit"
+      },
+      {
+        "name": "codex-explore",
+        "target": {
+          "scope": "user"
+        },
+        "when": {
+          "platforms": ["codex"]
+        },
+        "inheritInstallOptions": true
+      }
+    ]
+  }
+}
+```
+
+规则：
+
+- `dependencies` 存在时只允许 `plugins` 字段。
+- `dependencies.plugins` 必须是数组。空数组等价于无依赖，但构建和作者工具会提示删除空 block。
+- 每个 entry 只允许 `name`、`target`、`inheritInstallOptions`、`when`。
+- `name` 必须使用和 manifest `name` 一样的小写短横线格式，且不能依赖自己。
+- 第一版不支持 `version`、`range`、`platform`、`marketplace`、`source`、`optional`、`dev`、`peer` 等字段；`target.platform` 也不允许。
+- `target` 存在时只允许 `scope`，值只能是 `user` 或 `project`。
+- `when` 存在时只允许 `platforms`，值必须是非空数组，元素只能是 `codex` 或 `claude`，且不能重复。
+- 省略 `when` 等价于依赖同时对 `codex` 和 `claude` 生效。
+- `inheritInstallOptions` 只能是 boolean；省略时按 `false` 处理。
+- 同一 manifest 内，同名直接依赖的平台条件不能重叠；例如一个 entry 省略 `when` 后，不能再为同名插件追加 `codex` 或 `claude` 条目。
+- dependency `name` 必须能在当前 AW catalog 中解析到插件。这个检查发生在 catalog 解析完成后，不要求单个 manifest normalizer 持有全 catalog 上下文。
+
+安装语义：
+
+- 依赖永远跟随父插件本次已确定的 platform；`when.platforms` 只决定 entry 是否对当前 platform 生效，不能改写依赖安装 platform。
+- `target.scope` 只约束依赖 location。父插件安装到 `user` scope 时，只能依赖同 platform 的 `user` scope 健康安装；如果生效 entry 写了 `target.scope: "project"`，命令会在写入前失败。
+- 父插件安装到 `project` scope 且 entry 省略 `target.scope` 时，AW 优先选择当前 project scope；当前 project 缺失或不健康时，可复用健康的 user scope 安装。
+- 显式 `target.scope: "user"` 只检查 / 安装 user scope；显式 `target.scope: "project"` 只检查 / 安装当前 project scope，不 fallback 到 user scope，也不会扫描其它历史 project。
+- `inheritInstallOptions: true` 只用于自动安装依赖时继承父插件本次插件级安装选项，例如允许覆盖的 skill trigger 偏好；省略或 `false` 不继承。多个父插件给同一自动依赖传入冲突选项时，本次命令 fail fast。
+- `aw install` 会自动安装缺失依赖；显式 `aw upgrade <plugin>` 会先安装缺失依赖、再升级已安装依赖、最后升级父插件；`aw upgrade --all` 只以用户显式保留的安装为根；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后自动清理引用归零且未显式保留的 auto dependency。
+- `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable` 和 `catalogDrift`。`autoRemovable` 不是 manifest 或 ledger 字段。
 
 ## scripts / config block
 

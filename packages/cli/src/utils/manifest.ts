@@ -24,6 +24,8 @@ import type {
   PluginConfigSchema,
   PluginArtifactRenderScriptEntry,
   PluginArtifactsConfig,
+  PluginDependenciesConfig,
+  PluginDependencyEntry,
   PluginArtifactTargetDefinition,
   PluginInterfaceMeta,
   PluginLifecycleScriptEntry,
@@ -74,11 +76,13 @@ import {
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
+const PLUGIN_DEPENDENCY_PLATFORMS = new Set<PlatformName>(['codex', 'claude']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
   claude: 'CLAUDE',
   codex: 'CODEX',
 };
+const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -293,6 +297,14 @@ export function assertManifestPlatformSupport(
   });
 }
 
+function ensurePluginName(value: unknown, fieldName: string): string {
+  const name = ensureString(value, fieldName);
+  if (!PLUGIN_NAME_PATTERN.test(name)) {
+    throw new Error(`Invalid ${fieldName}: expected lowercase hyphen-case.`);
+  }
+  return name;
+}
+
 export function normalizePluginRelativePath(
   pluginRoot: string,
   value: string,
@@ -387,6 +399,121 @@ function normalizeMarketplaceMeta(
     strict: input.strict,
     policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
   };
+}
+
+function normalizePluginDependencyPlatforms(
+  value: unknown,
+  fieldName: string,
+): PlatformName[] {
+  const platforms = ensureStringArray(value, fieldName);
+  if (platforms.length === 0) {
+    throw new Error(`Invalid ${fieldName}: expected at least one platform.`);
+  }
+
+  const normalized: PlatformName[] = [];
+  for (const [index, platform] of platforms.entries()) {
+    if (!PLUGIN_DEPENDENCY_PLATFORMS.has(platform as PlatformName)) {
+      throw new Error(`Invalid ${fieldName}[${index}]: expected "codex" or "claude".`);
+    }
+    if (normalized.includes(platform as PlatformName)) {
+      throw new Error(`Invalid ${fieldName}[${index}]: duplicate platform "${platform}".`);
+    }
+    normalized.push(platform as PlatformName);
+  }
+
+  return normalized;
+}
+
+function normalizePluginDependencyEntry(
+  pluginName: string,
+  value: unknown,
+  fieldName: string,
+): PluginDependencyEntry {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['name', 'target', 'inheritInstallOptions', 'when']);
+
+  const dependencyName = ensurePluginName(input.name, `${fieldName}.name`);
+  if (dependencyName === pluginName) {
+    throw new Error(`Invalid ${fieldName}.name: plugin "${pluginName}" cannot depend on itself.`);
+  }
+
+  const entry: PluginDependencyEntry = {
+    name: dependencyName,
+  };
+
+  if (input.target !== undefined) {
+    const target = assertObject(input.target, `${fieldName}.target`);
+    assertAllowedKeys(target, `${fieldName}.target`, ['scope']);
+
+    const scope = ensureString(target.scope, `${fieldName}.target.scope`);
+    if (scope !== 'user' && scope !== 'project') {
+      throw new Error(`Invalid ${fieldName}.target.scope: expected "user" or "project".`);
+    }
+
+    entry.target = { scope };
+  }
+
+  if (input.inheritInstallOptions !== undefined) {
+    if (typeof input.inheritInstallOptions !== 'boolean') {
+      throw new Error(`Invalid ${fieldName}.inheritInstallOptions: expected a boolean.`);
+    }
+    entry.inheritInstallOptions = input.inheritInstallOptions;
+  }
+
+  if (input.when !== undefined) {
+    const when = assertObject(input.when, `${fieldName}.when`);
+    assertAllowedKeys(when, `${fieldName}.when`, ['platforms']);
+    entry.when = {
+      platforms: normalizePluginDependencyPlatforms(when.platforms, `${fieldName}.when.platforms`),
+    };
+  }
+
+  return entry;
+}
+
+function normalizedDependencyPlatforms(entry: PluginDependencyEntry): PlatformName[] {
+  return entry.when?.platforms ? [...entry.when.platforms] : ['codex', 'claude'];
+}
+
+function validateOverlappingPluginDependencies(
+  entries: PluginDependencyEntry[],
+  fieldName: string,
+): void {
+  const seenByPlugin = new Map<string, Map<PlatformName, number>>();
+
+  for (const [index, entry] of entries.entries()) {
+    const seenPlatforms = seenByPlugin.get(entry.name) ?? new Map<PlatformName, number>();
+    for (const platform of normalizedDependencyPlatforms(entry)) {
+      const existingIndex = seenPlatforms.get(platform);
+      if (existingIndex !== undefined) {
+        throw new Error(
+          `Invalid ${fieldName}[${index}].when.platforms: overlaps with ${fieldName}[${existingIndex}] for plugin "${entry.name}" on platform "${platform}".`,
+        );
+      }
+      seenPlatforms.set(platform, index);
+    }
+    seenByPlugin.set(entry.name, seenPlatforms);
+  }
+}
+
+function normalizePluginDependencies(
+  pluginName: string,
+  value: unknown,
+  fieldName: string,
+): PluginDependenciesConfig {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['plugins']);
+
+  if (!Array.isArray(input.plugins)) {
+    throw new Error(`Invalid ${fieldName}.plugins: expected an array.`);
+  }
+
+  const plugins = input.plugins.map((entry, index) =>
+    normalizePluginDependencyEntry(pluginName, entry, `${fieldName}.plugins[${index}]`),
+  );
+  validateOverlappingPluginDependencies(plugins, `${fieldName}.plugins`);
+
+  return { plugins };
 }
 
 function normalizeSkillTriggerPolicies(
@@ -1808,6 +1935,7 @@ export function validatePluginManifest(
     'apps',
     'marketplace',
     'interface',
+    'dependencies',
     'extensions',
     'artifacts',
     'buildConfig',
@@ -1864,6 +1992,14 @@ export function validatePluginManifest(
 
   if (input.interface !== undefined) {
     manifest.interface = normalizePluginInterface(input.interface, 'interface');
+  }
+
+  if (input.dependencies !== undefined) {
+    manifest.dependencies = normalizePluginDependencies(
+      manifest.name,
+      input.dependencies,
+      'dependencies',
+    );
   }
 
   if (input.extensions !== undefined) {
@@ -2076,6 +2212,22 @@ export async function discoverPlugins(repoRoot: string): Promise<PluginMeta[]> {
   return discoverPluginsInDirectory(path.join(repoRoot, 'plugins'));
 }
 
+export function validatePluginDependencyReferences(
+  plugins: readonly PluginMeta[],
+): void {
+  const pluginNames = new Set(plugins.map((plugin) => plugin.manifest.name));
+
+  for (const plugin of plugins) {
+    for (const [index, dependency] of (plugin.manifest.dependencies?.plugins ?? []).entries()) {
+      if (!pluginNames.has(dependency.name)) {
+        throw new Error(
+          `Invalid dependencies.plugins[${index}].name for plugin "${plugin.manifest.name}": current catalog is missing plugin "${dependency.name}".`,
+        );
+      }
+    }
+  }
+}
+
 function selectPlugins(plugins: PluginMeta[], pluginNames?: string[]): PluginMeta[] {
   if (!pluginNames || pluginNames.length === 0) {
     return plugins;
@@ -2107,6 +2259,7 @@ export async function resolvePluginsFromCatalog(
     path.join(catalogRoot, 'plugins'),
     { mode: 'bundle' },
   );
+  validatePluginDependencyReferences(plugins);
   return selectPlugins(plugins, pluginNames);
 }
 
@@ -2148,6 +2301,9 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
 
   return {
     ...plugin.manifest,
+    dependencies: plugin.manifest.dependencies
+      ? structuredClone(plugin.manifest.dependencies)
+      : undefined,
     skillTriggers: plugin.manifest.skillTriggers
       ? structuredClone(plugin.manifest.skillTriggers)
       : undefined,

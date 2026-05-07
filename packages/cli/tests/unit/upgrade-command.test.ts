@@ -1,0 +1,655 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import * as commonModule from '../../src/commands/common.js';
+import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
+import type {
+  GeneratedArtifact,
+  InstalledDependencyEdge,
+  InstalledLedger,
+  PlatformAdapter,
+  PlatformName,
+  PluginMeta,
+  ResolvedPluginTarget,
+  Scope,
+  StatusReport,
+} from '../../src/types.js';
+import {
+  createAvailableLedger,
+  readInstalledLedger,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import { resolveCodexPaths } from '../../src/utils/paths.js';
+import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
+
+const tempDirs: string[] = [];
+
+async function makeWorkspace(): Promise<{
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-upgrade-unit-'));
+  tempDirs.push(root);
+  const repoRoot = path.join(root, 'repo');
+  await fs.ensureDir(path.join(repoRoot, 'plugins'));
+
+  return {
+    repoRoot,
+    env: {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    },
+  };
+}
+
+async function writeSyntheticPlugin(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<PluginMeta> {
+  const pluginRoot = path.join(repoRoot, 'plugins', String(manifest.name));
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+  return readPluginManifest(pluginRoot);
+}
+
+function createResolvedTarget(plugin: PluginMeta): ResolvedPluginTarget {
+  return {
+    pluginName: plugin.manifest.name,
+    plugin,
+    currentPlugin: plugin,
+    embeddedPlugin: undefined,
+    source: 'currentCatalog',
+  };
+}
+
+function mockCatalogTargets(options: {
+  explicitTargets: ResolvedPluginTarget[];
+  allTargets: ResolvedPluginTarget[];
+  ledger: InstalledLedger;
+}): void {
+  vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockResolvedValue({
+    ledger: options.ledger,
+    warnings: [],
+    targets: options.explicitTargets,
+  });
+  vi.spyOn(commonModule, 'loadPluginTargetsForCommand').mockResolvedValue(
+    options.allTargets,
+  );
+}
+
+function createInstallSource(kind: 'explicit' | 'dependency') {
+  return kind === 'explicit'
+    ? {
+        kind,
+        explicitlyRequested: true,
+        allowsUnusedCleanup: false,
+      }
+    : {
+        kind,
+        explicitlyRequested: false,
+        allowsUnusedCleanup: true,
+      };
+}
+
+function createManagedCodexUserRecord(options: {
+  version?: string;
+  installSource?: 'explicit' | 'dependency';
+  dependencyEdges?: InstalledDependencyEdge[];
+}) {
+  return {
+    managed: true,
+    updatedAt: '2026-05-06T00:00:00.000Z',
+    resolvedVersion: options.version ?? '0.1.0',
+    capabilitySnapshot: {
+      requiresNativePlugin: true,
+      hasRepoManagedArtifacts: false,
+      projectManagedKinds: [],
+    },
+    installSource: createInstallSource(options.installSource ?? 'explicit'),
+    dependencyEdges: options.dependencyEdges ?? [],
+  };
+}
+
+interface UpgradeAdapterState {
+  scopeInitialized?: 'yes' | 'no' | 'unknown';
+  nativeInstalled?: boolean;
+  marketplaceRegistered?: boolean;
+  failInstallExtensions?: boolean;
+  artifactPath?: string;
+}
+
+class UpgradeTestAdapter implements PlatformAdapter {
+  readonly installOrder: string[] = [];
+  readonly uninstallOrder: string[] = [];
+
+  constructor(
+    readonly name: PlatformName,
+    private readonly cwd: string,
+    private readonly env: NodeJS.ProcessEnv,
+    private readonly states: Record<string, UpgradeAdapterState> = {},
+  ) {}
+
+  private stateFor(pluginName: string): UpgradeAdapterState {
+    this.states[pluginName] ??= {};
+    return this.states[pluginName];
+  }
+
+  private trackingDir(scope: Scope): string {
+    if (this.name === 'claude') {
+      return scope === 'project'
+        ? path.join(this.cwd, '.claude')
+        : path.join(this.cwd, '.claude-user');
+    }
+    return resolveCodexPaths(this.cwd, scope, this.env).trackingDir;
+  }
+
+  async detect(): Promise<boolean> {
+    return true;
+  }
+
+  async installPlugin(plugin: PluginMeta): Promise<void> {
+    const state = this.stateFor(plugin.manifest.name);
+    state.nativeInstalled = true;
+    state.marketplaceRegistered = true;
+  }
+
+  async uninstallPlugin(plugin: PluginMeta): Promise<void> {
+    this.stateFor(plugin.manifest.name).nativeInstalled = false;
+  }
+
+  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+    const state = this.stateFor(plugin.manifest.name);
+    this.installOrder.push(plugin.manifest.name);
+    if (state.failInstallExtensions) {
+      throw new Error(`simulated installExtensions failure for ${plugin.manifest.name}`);
+    }
+
+    const trackingDir = this.trackingDir(scope);
+    const artifactPath = path.join(trackingDir, `${plugin.manifest.name}.${this.name}.txt`);
+    await fs.ensureDir(path.dirname(artifactPath));
+    await fs.writeFile(artifactPath, `${this.name}:${plugin.manifest.name}`, 'utf8');
+    state.scopeInitialized = 'yes';
+    state.artifactPath = artifactPath;
+
+    return [{
+      path: artifactPath,
+      kind: 'instruction',
+      platform: this.name,
+      artifactKey: `${plugin.manifest.name}.${this.name}`,
+    }];
+  }
+
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    _scope: Scope,
+    _generatedArtifacts?: GeneratedArtifact[],
+  ): Promise<void> {
+    const state = this.stateFor(plugin.manifest.name);
+    this.uninstallOrder.push(plugin.manifest.name);
+    if (state.artifactPath) {
+      await fs.remove(state.artifactPath).catch(() => undefined);
+    }
+    state.artifactPath = undefined;
+    state.scopeInitialized = 'no';
+  }
+
+  async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    await this.installPlugin(plugin);
+    await this.installExtensions(plugin, scope);
+  }
+
+  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    const state = this.stateFor(plugin.manifest.name);
+    const generatedArtifacts = state.artifactPath
+      ? [{
+          path: state.artifactPath,
+          exists: await fs.pathExists(state.artifactPath),
+          kind: 'instruction' as const,
+          artifactKey: `${plugin.manifest.name}.${this.name}`,
+        }]
+      : [];
+
+    return {
+      platform: this.name,
+      scope,
+      initialized:
+        state.scopeInitialized === 'yes' ||
+        state.nativeInstalled === true,
+      plugins: [{
+        pluginName: plugin.manifest.name,
+        native: {
+          marketplaceRegistered: state.marketplaceRegistered === true,
+          pluginAvailable: true,
+          pluginInstalled: state.nativeInstalled === true,
+          version: plugin.manifest.version,
+        },
+        generatedArtifacts,
+        driftWarnings: [],
+        ledgerStateStatus: 'available',
+        ledgerStateReason: null,
+        scopeInitialized: state.scopeInitialized ?? 'no',
+        catalogCompatibility: 'current',
+        platformRuntimeEvidence: {
+          present: false,
+        },
+        platformNativeFallbackEvidence: {
+          present: false,
+        },
+        scopeManagedEvidence: {
+          ledger: state.scopeInitialized === 'yes',
+          tracking: generatedArtifacts.length > 0,
+          sharedNativeRef: state.nativeInstalled === true,
+        },
+        currentCatalog: {
+          rootDir: '/synthetic',
+          source: 'embedded',
+          available: true,
+        },
+        artifactsInitialized: generatedArtifacts.every((artifact) => artifact.exists),
+        repoManagedSessionState: {
+          instructions: generatedArtifacts.length > 0 ? 'visible' : 'absent',
+          rules: 'not_applicable',
+          hooks: 'not_applicable',
+          agents: 'not_applicable',
+          diagnostics: [],
+        },
+        projectTrust: 'not_applicable',
+      }],
+    };
+  }
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe('upgrade command dependency graph', () => {
+  it('installs missing dependencies, upgrades existing dependencies, and preserves receipt dependency metadata', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const existingChild = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'existing-upgrade-child',
+    }));
+    const missingChild = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'missing-upgrade-child',
+    }));
+    const parent = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'upgrade-parent',
+      dependencies: [
+        { name: existingChild.manifest.name },
+        { name: missingChild.manifest.name },
+      ],
+    }));
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [existingChild.manifest.name]: {
+          lastResolvedVersion: existingChild.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: existingChild.manifest.version,
+              }),
+            },
+          },
+        },
+        [parent.manifest.name]: {
+          lastResolvedVersion: parent.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: parent.manifest.version,
+                dependencyEdges: [{
+                  dependency: {
+                    plugin: existingChild.manifest.name,
+                    platform: 'codex',
+                    scope: 'user',
+                    projectKey: null,
+                  },
+                  declaration: {
+                    name: existingChild.manifest.name,
+                  },
+                }],
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const explicitTarget = createResolvedTarget(parent);
+    const existingDependencyTarget = createResolvedTarget(existingChild);
+    const missingDependencyTarget = createResolvedTarget(missingChild);
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [
+        explicitTarget,
+        existingDependencyTarget,
+        missingDependencyTarget,
+      ],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [existingChild.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+      [parent.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    const result = await upgradeCommand(
+      [parent.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new UpgradeTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(codex.installOrder).toEqual([
+      existingChild.manifest.name,
+      missingChild.manifest.name,
+      parent.manifest.name,
+    ]);
+
+    const ledger = await readInstalledLedger(env);
+    expect(ledger.plugins[missingChild.manifest.name]?.platforms.codex?.userScope).toMatchObject({
+      installSource: {
+        kind: 'dependency',
+        explicitlyRequested: false,
+        allowsUnusedCleanup: true,
+      },
+    });
+    expect(ledger.plugins[parent.manifest.name]?.platforms.codex?.userScope?.dependencyEdges).toEqual([
+      {
+        dependency: {
+          plugin: existingChild.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: existingChild.manifest.name,
+        },
+      },
+      {
+        dependency: {
+          plugin: missingChild.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: missingChild.manifest.name,
+        },
+      },
+    ]);
+
+    const receipt = buildCommandReceiptJson('upgrade', {
+      result,
+      groups: [{
+        scope: 'user',
+        platforms: result.platforms,
+        plugins: result.plugins,
+      }],
+    });
+    expect(receipt).toMatchObject({
+      command: 'upgrade',
+      targets: expect.arrayContaining([
+        expect.objectContaining({
+          plugin: parent.manifest.name,
+          requested: true,
+        }),
+        expect.objectContaining({
+          plugin: existingChild.manifest.name,
+          requested: false,
+          dependencyOf: [{
+            plugin: parent.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }],
+        }),
+        expect.objectContaining({
+          plugin: missingChild.manifest.name,
+          requested: false,
+          dependencyOf: [{
+            plugin: parent.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }],
+        }),
+      ]),
+      actions: expect.arrayContaining([
+        expect.objectContaining({
+          plugin: parent.manifest.name,
+          type: 'upgrade',
+        }),
+        expect.objectContaining({
+          plugin: existingChild.manifest.name,
+          type: 'upgradeDependency',
+          requested: false,
+        }),
+        expect.objectContaining({
+          plugin: missingChild.manifest.name,
+          type: 'installDependency',
+          requested: false,
+        }),
+      ]),
+    });
+  });
+
+  it('keeps old dependency refs until the parent upgrade succeeds and rolls back new auto dependencies on failure', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const oldChild = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'old-upgrade-child',
+    }));
+    const newChild = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'new-upgrade-child',
+    }));
+    const parent = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'failing-upgrade-parent',
+      dependencies: [{ name: newChild.manifest.name }],
+    }));
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [oldChild.manifest.name]: {
+          lastResolvedVersion: oldChild.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: oldChild.manifest.version,
+              }),
+            },
+          },
+        },
+        [parent.manifest.name]: {
+          lastResolvedVersion: parent.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: parent.manifest.version,
+                dependencyEdges: [{
+                  dependency: {
+                    plugin: oldChild.manifest.name,
+                    platform: 'codex',
+                    scope: 'user',
+                    projectKey: null,
+                  },
+                  declaration: {
+                    name: oldChild.manifest.name,
+                  },
+                }],
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const explicitTarget = createResolvedTarget(parent);
+    const newDependencyTarget = createResolvedTarget(newChild);
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, newDependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [oldChild.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+      [parent.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+        failInstallExtensions: true,
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [parent.manifest.name],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex,
+            claude: new UpgradeTestAdapter('claude', repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow('simulated installExtensions failure for failing-upgrade-parent');
+
+    expect(codex.installOrder).toEqual([
+      newChild.manifest.name,
+      parent.manifest.name,
+    ]);
+    expect(codex.uninstallOrder).toContain(newChild.manifest.name);
+
+    const ledger = await readInstalledLedger(env);
+    expect(ledger.plugins[parent.manifest.name]?.platforms.codex?.userScope?.dependencyEdges).toEqual([
+      {
+        dependency: {
+          plugin: oldChild.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: oldChild.manifest.name,
+        },
+      },
+    ]);
+    expect(ledger.plugins[newChild.manifest.name]).toBeUndefined();
+  });
+
+  it('preflights dependency required config before any upgrade write and points to the dependency plugin', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const configuredChild = await writeSyntheticPlugin(repoRoot, {
+      ...createDependencyPluginManifest({
+        name: 'config-required-child',
+      }),
+      config: {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+            sensitive: true,
+          },
+        },
+      },
+    });
+    const parent = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'config-parent',
+      dependencies: [{ name: configuredChild.manifest.name }],
+    }));
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [parent.manifest.name]: {
+          lastResolvedVersion: parent.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: parent.manifest.version,
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const explicitTarget = createResolvedTarget(parent);
+    const dependencyTarget = createResolvedTarget(configuredChild);
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget, dependencyTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [parent.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [parent.manifest.name],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex,
+            claude: new UpgradeTestAdapter('claude', repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'config-required-child requires valid AW config before install/upgrade: token.',
+    );
+
+    expect(codex.installOrder).toEqual([]);
+  });
+});

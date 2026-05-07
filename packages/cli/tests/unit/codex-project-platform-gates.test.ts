@@ -327,6 +327,12 @@ async function seedCodexProjectManagedEvidence(
               hasRepoManagedArtifacts: true,
               projectManagedKinds: [managedKind],
             },
+            installSource: {
+              kind: 'explicit',
+              explicitlyRequested: true,
+              allowsUnusedCleanup: false,
+            },
+            dependencyEdges: [],
           },
         },
         sharedNativeRefs: {

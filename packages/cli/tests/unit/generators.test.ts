@@ -689,6 +689,96 @@ describe('local-plugin generator', () => {
     ).rejects.toThrow('build changed plugin name');
   });
 
+  it('preserves dependencies only in the bundle source manifest and filters them from platform manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    manifest.dependencies = {
+      plugins: [
+        {
+          name: 'shared-helper',
+          target: {
+            scope: 'user',
+          },
+          when: {
+            platforms: ['codex'],
+          },
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    await expect(
+      fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            target: {
+              scope: 'user',
+            },
+            when: {
+              platforms: ['codex'],
+            },
+          },
+        ],
+      },
+    });
+    expect(result.claudeManifest).not.toHaveProperty('dependencies');
+    expect(result.codexManifest).not.toHaveProperty('dependencies');
+    await expect(
+      fs.readJson(path.join(outputRoot, '.claude-plugin', 'plugin.json')),
+    ).resolves.not.toHaveProperty('dependencies');
+    await expect(
+      fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
+    ).resolves.not.toHaveProperty('dependencies');
+  });
+
+  it('revalidates staging manifests after scripts.node.build rewrites dependencies', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'export {};\n', 'utf8');
+    await fs.writeJson(
+      path.join(pluginRoot, 'scripts', 'build-output.json'),
+      {
+        dependencies: {
+          plugins: [
+            {
+              name: 'shared-helper',
+              version: '^1.0.0',
+            },
+          ],
+        },
+      },
+      { spaces: 2 },
+    );
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    await expect(
+      bundleLocalPlugin(plugin, path.join(repoRoot, 'out', 'git-commit'), {
+        buildMode: 'staging',
+        stagingRunner: createFakeStagingRunner(),
+      }),
+    ).rejects.toThrow('unknown field "version"');
+  });
+
   it('copies lifecycle selectors, helper/runtime closure, and production package files into the bundle', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

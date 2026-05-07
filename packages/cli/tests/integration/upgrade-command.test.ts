@@ -26,6 +26,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -144,6 +145,62 @@ async function removeProjectManagedKindsFromGitCommit(repoRoot: string): Promise
 
 async function removeGitCommitFromCatalog(repoRoot: string): Promise<void> {
   await fs.remove(path.join(repoRoot, 'plugins', 'git-commit'));
+}
+
+async function writeSyntheticPluginManifest(
+  repoRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', String(manifest.name));
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    manifest,
+    { spaces: 2 },
+  );
+}
+
+function createInstallSource(kind: 'explicit' | 'dependency') {
+  return kind === 'explicit'
+    ? {
+        kind,
+        explicitlyRequested: true,
+        allowsUnusedCleanup: false,
+      }
+    : {
+        kind,
+        explicitlyRequested: false,
+        allowsUnusedCleanup: true,
+      };
+}
+
+function createManagedCodexUserScopeRecord(options: {
+  version?: string;
+  installSource?: 'explicit' | 'dependency';
+  dependencyEdges?: Array<{
+    dependency: {
+      plugin: string;
+      platform: 'codex';
+      scope: 'user';
+      projectKey: null;
+    };
+    declaration: {
+      name: string;
+    };
+  }>;
+}) {
+  return {
+    managed: true,
+    updatedAt: '2026-05-06T00:00:00.000Z',
+    resolvedVersion: options.version ?? '0.1.0',
+    capabilitySnapshot: {
+      requiresNativePlugin: true,
+      hasRepoManagedArtifacts: false,
+      projectManagedKinds: [],
+    },
+    installSource: createInstallSource(options.installSource ?? 'explicit'),
+    dependencyEdges: options.dependencyEdges ?? [],
+  };
 }
 
 interface FakePluginState {
@@ -371,6 +428,8 @@ async function writeCodexProjectManagedLedgerRecord(options: {
             installOptions: options.installOptions ?? {
               skillTriggerPreference: 'default',
             },
+            installSource: createInstallSource('explicit'),
+            dependencyEdges: [],
           },
         },
         lastRequestedScope: 'project',
@@ -485,7 +544,7 @@ describe('upgrade command coverage', () => {
     expect(codex.extensionInstallCalls).toEqual([]);
   });
 
-  it('skips breadcrumb-only Codex user targets during upgrade --all and suggests repair or cleanup', async () => {
+  it('ignores breadcrumb-only Codex user candidates during upgrade --all root selection', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspace();
     const env = {
       ...process.env,
@@ -530,15 +589,7 @@ describe('upgrade command coverage', () => {
     ).resolves.toMatchObject({
       platforms: ['codex'],
       plugins: [],
-      skipped: [
-        expect.objectContaining({
-          platform: 'codex',
-          scope: 'user',
-          plugin: 'git-commit',
-          code: 'repairRequired',
-          reason: expect.stringContaining('请先运行 aw install git-commit -p codex -s user 修复'),
-        }),
-      ],
+      skipped: [],
     });
 
     expect(codex.installCalls).toEqual([]);
@@ -711,6 +762,8 @@ describe('upgrade command coverage', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
           sharedNativeRefs: {
@@ -821,7 +874,7 @@ describe('upgrade command coverage', () => {
     expect(codex.extensionInstallCalls).toEqual([]);
   });
 
-  it('returns scopeNotInitialized for legacy project candidates without scope evidence', async () => {
+  it('ignores legacy project candidates without explicit retained install source during upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -853,14 +906,7 @@ describe('upgrade command coverage', () => {
     );
 
     expect(result.plugins).toEqual([]);
-    expect(result.skipped).toEqual([
-      expect.objectContaining({
-        platform: 'codex',
-        scope: 'project',
-        plugin: 'git-commit',
-        code: 'scopeNotInitialized',
-      }),
-    ]);
+    expect(result.skipped).toEqual([]);
   });
 
   it('returns stable skipped codes for Codex project upgrade --all target preflight cases', async () => {
@@ -932,17 +978,6 @@ describe('upgrade command coverage', () => {
           catalogCompatibility: 'current' as const,
         },
         code: 'trackingIntegrityError',
-      },
-      {
-        title: 'installOptionsUnavailable',
-        setup: async (repoRoot: string) => {
-          await writeCodexProjectTrackingRecord({ repoRoot });
-        },
-        adapterState: {
-          currentCatalogAvailable: true,
-          catalogCompatibility: 'current' as const,
-        },
-        code: 'installOptionsUnavailable',
       },
       {
         title: 'catalogNotCurrent',
@@ -1088,6 +1123,8 @@ describe('upgrade command coverage', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
           lastRequestedScope: 'project',
@@ -1102,6 +1139,8 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 managedExtensions: ['instructions'],
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
           lastRequestedScope: 'project',
@@ -1153,6 +1192,124 @@ describe('upgrade command coverage', () => {
     ]);
   });
 
+  it('keeps both platform-specific project roots when upgrade --all runs from a subdirectory', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    const nestedCwd = path.join(repoRoot, 'packages', 'workspace-child');
+    await fs.ensureDir(nestedCwd);
+    await fs.writeFile(
+      path.join(repoRoot, 'pnpm-workspace.yaml'),
+      'packages:\n  - plugins/*\n',
+      'utf8',
+    );
+
+    const [codexProjectKey, claudeProjectKey] = await Promise.all([
+      resolveCodexProjectKey(nestedCwd),
+      resolveClaudeProjectKey(nestedCwd),
+    ]);
+    expect(codexProjectKey).not.toBe(claudeProjectKey);
+
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [codexProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-29T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+              installOptions: {
+                skillTriggerPreference: 'default',
+              },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [codexProjectKey],
+          },
+        },
+        claude: {
+          projectScopes: {
+            [claudeProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-29T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                managedExtensions: ['instructions'],
+              },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    const codex = new FakeAdapter('codex', nestedCwd, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new FakeAdapter('claude', nestedCwd, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    const result = await upgradeCommand(
+      [],
+      {
+        all: true,
+        cwd: nestedCwd,
+        scope: 'project',
+        platform: 'both',
+      },
+      {
+        adapters: {
+          codex,
+          claude,
+        },
+      },
+    );
+
+    expect(result.receiptTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'project',
+        requested: true,
+      }),
+      expect.objectContaining({
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'project',
+        requested: true,
+      }),
+    ]));
+    expect(codex.extensionInstallCalls).toEqual(['git-commit']);
+    expect(claude.extensionInstallCalls).toEqual(['git-commit']);
+  });
+
   it('auto-infers the only managed platform for upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
@@ -1183,6 +1340,8 @@ describe('upgrade command coverage', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
         },
@@ -1295,6 +1454,8 @@ describe('upgrade command coverage', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
           sharedNativeRefs: {
@@ -1311,6 +1472,8 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 managedExtensions: ['instructions', 'permissions', 'hooks'],
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
         },
@@ -1389,6 +1552,8 @@ describe('upgrade command coverage', () => {
               installOptions: {
                 skillTriggerPreference: 'default',
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
           sharedNativeRefs: {
@@ -1405,6 +1570,8 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 managedExtensions: ['instructions', 'permissions', 'hooks'],
               },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
             },
           },
         },
@@ -1449,5 +1616,260 @@ describe('upgrade command coverage', () => {
 
     expect(codex.installCalls).toEqual([]);
     expect(claude.installCalls).toEqual([]);
+  });
+
+  it('does not treat unreachable auto dependencies as upgrade --all roots and keeps dependency receipt metadata', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => {
+        await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
+          name: 'upgrade-all-root',
+          products: ['codex'],
+          dependencies: [{ name: 'reachable-auto-dep' }],
+        }));
+        await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
+          name: 'reachable-auto-dep',
+          products: ['codex'],
+        }));
+        await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
+          name: 'orphan-auto-dep',
+          products: ['codex'],
+        }));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    const ledger = createAvailableLedger();
+    ledger.plugins['upgrade-all-root'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createManagedCodexUserScopeRecord({
+            installSource: 'explicit',
+            dependencyEdges: [{
+              dependency: {
+                plugin: 'reachable-auto-dep',
+                platform: 'codex',
+                scope: 'user',
+                projectKey: null,
+              },
+              declaration: {
+                name: 'reachable-auto-dep',
+              },
+            }],
+          }),
+        },
+      },
+    };
+    ledger.plugins['reachable-auto-dep'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createManagedCodexUserScopeRecord({
+            installSource: 'dependency',
+          }),
+        },
+      },
+    };
+    ledger.plugins['orphan-auto-dep'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createManagedCodexUserScopeRecord({
+            installSource: 'dependency',
+          }),
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'upgrade-all-root': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+      'reachable-auto-dep': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+      'orphan-auto-dep': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    const result = await upgradeCommand(
+      [],
+      {
+        all: true,
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex,
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.plugins).toEqual(['upgrade-all-root']);
+    expect(result.receiptTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'upgrade-all-root',
+        requested: true,
+      }),
+      expect.objectContaining({
+        plugin: 'reachable-auto-dep',
+        requested: false,
+        dependencyOf: [{
+          plugin: 'upgrade-all-root',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      }),
+    ]));
+    expect(result.receiptTargets?.some((target) => target.plugin === 'orphan-auto-dep')).toBe(false);
+    expect(result.receiptActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'reachable-auto-dep',
+        type: 'upgradeDependency',
+      }),
+    ]));
+    expect(codex.extensionInstallCalls).toEqual([
+      'reachable-auto-dep',
+      'upgrade-all-root',
+    ]);
+  });
+
+  it('skips capability-changed dependencies during upgrade --all and propagates the skip to explicit parents', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (workspaceRepoRoot) => {
+        await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
+          name: 'skip-root',
+          products: ['codex'],
+          dependencies: [{ name: 'capability-changed-dep' }],
+        }));
+        await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
+          name: 'capability-changed-dep',
+          products: ['codex'],
+        }));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    const ledger = createAvailableLedger();
+    ledger.plugins['skip-root'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createManagedCodexUserScopeRecord({
+            installSource: 'explicit',
+            dependencyEdges: [{
+              dependency: {
+                plugin: 'capability-changed-dep',
+                platform: 'codex',
+                scope: 'user',
+                projectKey: null,
+              },
+              declaration: {
+                name: 'capability-changed-dep',
+              },
+            }],
+          }),
+        },
+      },
+    };
+    ledger.plugins['capability-changed-dep'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createManagedCodexUserScopeRecord({
+            installSource: 'dependency',
+          }),
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'skip-root': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+      'capability-changed-dep': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'capabilityChanged',
+      },
+    });
+
+    const result = await upgradeCommand(
+      [],
+      {
+        all: true,
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex,
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+
+    expect(result.plugins).toEqual([]);
+    expect(result.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'capability-changed-dep',
+        code: 'capabilityChanged',
+        requested: false,
+        dependencyOf: [{
+          plugin: 'skip-root',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      }),
+      expect.objectContaining({
+        plugin: 'skip-root',
+        code: 'dependencySkipped',
+        requested: true,
+      }),
+    ]));
+    expect(result.receiptTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'skip-root',
+        requested: true,
+      }),
+      expect.objectContaining({
+        plugin: 'capability-changed-dep',
+        requested: false,
+        dependencyOf: [{
+          plugin: 'skip-root',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      }),
+    ]));
+    expect(codex.installCalls).toEqual([]);
   });
 });

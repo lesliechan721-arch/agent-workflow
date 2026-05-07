@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  hasInstalledLedgerDependencyMetadata,
   normalizeSharedNativeRefs,
   resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
@@ -205,6 +206,63 @@ describe('installed ledger', () => {
     });
   });
 
+  it('accepts dependency metadata in strict mode', () => {
+    const ledger = validateInstalledLedger({
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'workflow-pack': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+                updatedAt: '2026-05-06T00:00:00.000Z',
+                resolvedVersion: '0.1.0',
+                capabilitySnapshot: {
+                  requiresNativePlugin: true,
+                },
+                installSource: {
+                  kind: 'explicit',
+                  explicitlyRequested: true,
+                  allowsUnusedCleanup: false,
+                },
+                dependencyEdges: [
+                  {
+                    dependency: {
+                      plugin: 'git-commit',
+                      platform: 'codex',
+                      scope: 'user',
+                      projectKey: null,
+                    },
+                    declaration: {
+                      name: 'git-commit',
+                      target: {
+                        scope: 'user',
+                      },
+                      inheritInstallOptions: true,
+                      when: {
+                        platforms: ['codex'],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    }, {
+      requireDependencyMetadata: true,
+    });
+
+    expect(ledger?.plugins['workflow-pack']?.platforms.codex?.userScope?.dependencyEdges).toHaveLength(1);
+  });
+
   it('rejects malformed lifecycle config snapshot metadata', () => {
     expect(
       validateInstalledLedger({
@@ -239,6 +297,121 @@ describe('installed ledger', () => {
                       source: 'remote',
                     },
                   },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('fails closed in strict mode when dependency metadata is missing', () => {
+    const legacyLedger = validateInstalledLedger({
+      version: 1,
+      ledgerState: {
+        status: 'available',
+        degradedAt: null,
+        reason: null,
+      },
+      plugins: {
+        'git-commit': {
+          lastResolvedVersion: '0.1.0',
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+                updatedAt: '2026-04-25T00:00:00.000Z',
+                resolvedVersion: '0.1.0',
+                capabilitySnapshot: {
+                  requiresNativePlugin: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(legacyLedger).not.toBeNull();
+    expect(validateInstalledLedger(legacyLedger, { requireDependencyMetadata: true })).toBeNull();
+    expect(hasInstalledLedgerDependencyMetadata(legacyLedger)).toBe(false);
+  });
+
+  it('rejects persisted dependents-style fields and malformed dependency locations', () => {
+    expect(
+      validateInstalledLedger({
+        version: 1,
+        ledgerState: {
+          status: 'available',
+          degradedAt: null,
+          reason: null,
+        },
+        plugins: {
+          'workflow-pack': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [],
+                  autoRemovable: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).toBeNull();
+
+    expect(
+      validateInstalledLedger({
+        version: 1,
+        ledgerState: {
+          status: 'available',
+          degradedAt: null,
+          reason: null,
+        },
+        plugins: {
+          'workflow-pack': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: true,
+                  },
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [
+                    {
+                      dependency: {
+                        plugin: 'git-commit',
+                        platform: 'codex',
+                        scope: 'user',
+                        projectKey: '/should-not-exist',
+                      },
+                      declaration: {
+                        name: 'git-commit',
+                      },
+                    },
+                  ],
                 },
               },
             },

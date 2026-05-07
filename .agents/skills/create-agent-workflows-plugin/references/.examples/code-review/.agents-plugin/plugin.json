@@ -10,6 +10,20 @@
     }
   },
   "mcpServers": "./.mcp.json",
+  "dependencies": {
+    "plugins": [
+      {
+        "name": "git-commit",
+        "target": {
+          "scope": "user"
+        },
+        "when": {
+          "platforms": ["codex"]
+        },
+        "inheritInstallOptions": true
+      }
+    ]
+  },
   "marketplace": {
     "category": "workflow",
     "tags": ["code-review", "quality", "ci"],

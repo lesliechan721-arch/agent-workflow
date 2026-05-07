@@ -80,6 +80,26 @@ describe('manifest coverage', () => {
         shortDescription: 'Covers manifest branches',
         capabilities: ['Skills', 'Hooks'],
       },
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            target: {
+              scope: 'user',
+            },
+            inheritInstallOptions: true,
+            when: {
+              platforms: ['codex'],
+            },
+          },
+          {
+            name: 'shared-helper',
+            when: {
+              platforms: ['claude'],
+            },
+          },
+        ],
+      },
       extensions: {
         instructions: [
           {
@@ -201,6 +221,26 @@ describe('manifest coverage', () => {
         displayName: 'Demo Plugin',
         shortDescription: 'Covers manifest branches',
         capabilities: ['Skills', 'Hooks'],
+      },
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            target: {
+              scope: 'user',
+            },
+            inheritInstallOptions: true,
+            when: {
+              platforms: ['codex'],
+            },
+          },
+          {
+            name: 'shared-helper',
+            when: {
+              platforms: ['claude'],
+            },
+          },
+        ],
       },
       buildConfig: {
         templates: {
@@ -449,6 +489,13 @@ describe('manifest coverage', () => {
         interface: {
           displayName: 'Bundle Demo',
         },
+        dependencies: {
+          plugins: [
+            {
+              name: 'shared-helper',
+            },
+          ],
+        },
         extensions: {
           instructions: [
             {
@@ -512,6 +559,9 @@ describe('manifest coverage', () => {
     if (bundleSource.skillTriggers?.review) {
       bundleSource.skillTriggers.review.allowInstallOverride = false;
     }
+    if (bundleSource.dependencies?.plugins[0]) {
+      bundleSource.dependencies.plugins[0].name = 'mutated-helper';
+    }
 
     expect(entry).toMatchObject({
       name: 'bundle-demo',
@@ -571,6 +621,20 @@ describe('manifest coverage', () => {
         allowInstallOverride: true,
       },
     });
+    expect(plugin.manifest.dependencies).toEqual({
+      plugins: [
+        {
+          name: 'shared-helper',
+        },
+      ],
+    });
+    expect(bundleSource.dependencies).toEqual({
+      plugins: [
+        {
+          name: 'mutated-helper',
+        },
+      ],
+    });
     expect(bundleSource.skillTriggers).toEqual({
       review: {
         allowInstallOverride: false,
@@ -585,6 +649,7 @@ describe('manifest coverage', () => {
         displayName: 'Bundle Demo',
       },
     });
+    expect(createPlatformManifestBase(plugin)).not.toHaveProperty('dependencies');
   });
 
   it('preserves nativeHooks through the embedded bundle catalog', async () => {

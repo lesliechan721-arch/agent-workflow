@@ -81,6 +81,14 @@ function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
 
+function warnEmptyPluginDependencies(plugin: PluginMeta): void {
+  if (plugin.manifest.dependencies?.plugins.length === 0) {
+    console.warn(
+      `[WARN] Plugin "${plugin.manifest.name}" declares an empty dependencies.plugins block; remove it to keep the manifest clean.`,
+    );
+  }
+}
+
 function toPlatformRelativePath(value: string, platform: PlatformName): string {
   return `./${platform}/${stripDotSlash(value)}`;
 }
@@ -730,6 +738,7 @@ export async function bundleLocalPlugin(
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
   plugin = buildPlugin.plugin;
   assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
+  warnEmptyPluginDependencies(plugin);
 
   await fs.remove(outputRoot);
   await fs.ensureDir(outputRoot);

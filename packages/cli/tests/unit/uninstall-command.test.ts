@@ -32,6 +32,10 @@ import {
 import * as skillTriggerPreferencesModule from '../../src/utils/skill-trigger-preferences.js';
 import * as trackingModule from '../../src/utils/tracking.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
+import {
+  buildCommandReceiptJson,
+  renderCommandReceipt,
+} from '../../src/output/command-receipt.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -304,6 +308,260 @@ describe('uninstall command coverage', () => {
         platform: 'codex',
       }),
     ).rejects.toThrow('uninstall 命令至少需要一个插件名。');
+  });
+
+  it('blocks explicit uninstall when another installed dependent still references the target', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          'git-commit': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                  },
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+          'workflow-pack': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                  },
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [{
+                    dependency: {
+                      plugin: 'git-commit',
+                      platform: 'codex',
+                      scope: 'user',
+                      projectKey: null,
+                    },
+                    declaration: {
+                      name: 'git-commit',
+                    },
+                  }],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    await expect(
+      uninstallCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex: new FakeAdapter('codex', [
+              makeStatusReport('codex', 'user', [
+                makePluginStatus('git-commit', {
+                  scopeInitialized: 'yes',
+                  scopeManagedEvidence: {
+                    ledger: true,
+                    tracking: false,
+                    sharedNativeRef: false,
+                  },
+                }),
+              ]),
+              makeStatusReport('codex', 'user', [
+                makePluginStatus('workflow-pack', {
+                  scopeInitialized: 'yes',
+                  scopeManagedEvidence: {
+                    ledger: true,
+                    tracking: false,
+                    sharedNativeRef: false,
+                  },
+                }),
+              ]),
+            ]),
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow(/workflow-pack/);
+  });
+
+  it('fails closed when a visible dependent record is missing dependency metadata', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await localMarketplaceModule.writeInstalledLedger(
+      {
+        ...localMarketplaceModule.createAvailableLedger(),
+        plugins: {
+          'git-commit': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                  },
+                  installSource: {
+                    kind: 'explicit',
+                    explicitlyRequested: true,
+                    allowsUnusedCleanup: false,
+                  },
+                  dependencyEdges: [],
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+          'workflow-pack': {
+            lastResolvedVersion: '0.1.0',
+            platforms: {
+              codex: {
+                userScope: {
+                  managed: true,
+                  updatedAt: '2026-05-06T00:00:00.000Z',
+                  resolvedVersion: '0.1.0',
+                  capabilitySnapshot: {
+                    requiresNativePlugin: false,
+                  },
+                },
+                sharedNativeRefs: {
+                  user: false,
+                  projects: [],
+                },
+              },
+            },
+          },
+        },
+      },
+      env,
+    );
+
+    const codex = new FakeAdapter('codex', [
+      makeStatusReport('codex', 'user', [
+        makePluginStatus('git-commit', {
+          scopeInitialized: 'yes',
+          scopeManagedEvidence: {
+            ledger: true,
+            tracking: false,
+            sharedNativeRef: false,
+          },
+        }),
+      ]),
+      makeStatusReport('codex', 'user', [
+        makePluginStatus('workflow-pack', {
+          scopeInitialized: 'yes',
+          scopeManagedEvidence: {
+            ledger: true,
+            tracking: false,
+            sharedNativeRef: false,
+          },
+        }),
+      ]),
+    ]);
+
+    await expect(
+      uninstallCommand(
+        ['git-commit'],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', [makeStatusReport('claude', 'user', [])]),
+          },
+          env,
+        },
+      ),
+    ).rejects.toThrow(/缺失 dependency metadata.*workflow-pack/);
+
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(codex.uninstallExtensionsCalls).toEqual([]);
+  });
+
+  it('adds uninstallAutoDependency receipt actions and readable auto-cleanup summaries', () => {
+    const receipt = {
+      result: {
+        platforms: ['codex'],
+        plugins: ['cleanup-parent'],
+        warnings: [],
+        receiptActions: [{
+          type: 'uninstallAutoDependency' as const,
+          plugin: 'cleanup-child',
+          platform: 'codex',
+          scope: 'user' as const,
+        }],
+      },
+      groups: [{
+        scope: 'user' as const,
+        platforms: ['codex'],
+        plugins: ['cleanup-parent'],
+      }],
+    };
+
+    expect(buildCommandReceiptJson('uninstall', receipt)).toMatchObject({
+      actions: expect.arrayContaining([
+        {
+          type: 'uninstall',
+          plugin: 'cleanup-parent',
+          platform: 'codex',
+          scope: 'user',
+          status: 'succeeded',
+        },
+        {
+          type: 'uninstallAutoDependency',
+          plugin: 'cleanup-child',
+          platform: 'codex',
+          scope: 'user',
+          status: 'succeeded',
+        },
+      ]),
+    });
+    expect(renderCommandReceipt('uninstall', receipt)).toContain(
+      '已自动清理不再需要的依赖：cleanup-child。',
+    );
   });
 
   it('refuses historical uninstall when tracked skill or MCP identity is missing artifactKey', async () => {

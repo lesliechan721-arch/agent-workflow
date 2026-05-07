@@ -25,6 +25,11 @@ import {
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import {
+  buildIncomingDependencyIndex,
+  canAutoCleanupScopeRecord,
+} from '../utils/plugin-dependency-graph.js';
+import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
 import {
   resolveClaudePaths,
@@ -135,6 +140,16 @@ export interface CommandCandidate {
   compatiblePlatforms?: PlatformName[];
   evidence: DiscoveryEvidenceSummary;
   evidenceByPlatformScope: Record<string, DiscoveryEvidenceSummary>;
+  dependencyStatus?: {
+    autoInstalled: boolean;
+    autoRemovable: boolean;
+    dependents: Array<{
+      plugin: string;
+      platform: PlatformName;
+      scope: Scope;
+      projectKey?: string;
+    }>;
+  };
 }
 
 export interface DiscoveryOptions {
@@ -381,6 +396,15 @@ function getScopeLedgerRecord(
         ClaudeCapabilitySnapshot | CodexCapabilitySnapshot
       > | undefined
     : undefined;
+}
+
+function createCandidateLocation(target: Pick<CommandCandidate, 'pluginName' | 'platform' | 'scope' | 'projectKey'>) {
+  return {
+    plugin: target.pluginName,
+    platform: target.platform,
+    scope: target.scope,
+    projectKey: target.scope === 'user' ? null : (target.projectKey ?? null),
+  } as const;
 }
 
 function isCodexSnapshot(
@@ -853,10 +877,48 @@ function hasUnrecoverableHistoricalCodexRoleIdentity(
   );
 }
 
+function resolveCandidateDependencyStatus(
+  ledger: InstalledLedger,
+  target: Pick<CommandCandidate, 'pluginName' | 'platform' | 'scope' | 'projectKey'>,
+) {
+  const ledgerRecord = ledger.plugins[target.pluginName];
+  const scopeRecord = getScopeLedgerRecord(
+    ledgerRecord,
+    target.platform,
+    target.scope,
+    target.projectKey,
+  );
+  if (!scopeRecord) {
+    return undefined;
+  }
+
+  const incomingIndex = buildIncomingDependencyIndex(ledger);
+  const location = createCandidateLocation(target);
+  const locationKey = serializePluginLocation(location);
+  const dependents = (incomingIndex.incomingDependentsByLocation[locationKey] ?? []).map((entry) => ({
+    plugin: entry.dependent.plugin,
+    platform: entry.dependent.platform,
+    scope: entry.dependent.scope,
+    ...(entry.dependent.projectKey ? { projectKey: entry.dependent.projectKey } : {}),
+  }));
+
+  return {
+    autoInstalled: scopeRecord.installSource?.kind === 'dependency',
+    autoRemovable: canAutoCleanupScopeRecord({
+      ledger,
+      location,
+      record: scopeRecord,
+      incomingIndex,
+    }),
+    dependents,
+  };
+}
+
 function resolveCandidateDisabledReason(
   command: 'status' | 'uninstall' | 'upgrade',
   target: ResolvedPluginTarget,
   evidence: DiscoveryEvidenceSummary,
+  dependencyStatus: CommandCandidate['dependencyStatus'] | undefined,
 ): string | undefined {
   if (command === 'status') {
     return undefined;
@@ -882,6 +944,18 @@ function resolveCandidateDisabledReason(
 
   if (evidence.trackingIntegrityErrors.length > 0) {
     return 'tracking manifest 中的 skill/mcpServer 缺少 artifactKey，无法安全清理。';
+  }
+
+  if (
+    command === 'uninstall' &&
+    dependencyStatus &&
+    dependencyStatus.dependents.length > 0
+  ) {
+    const firstDependent = dependencyStatus.dependents[0];
+    const dependentLabel = `${firstDependent.plugin} (${firstDependent.platform}/${firstDependent.scope})`;
+    return dependencyStatus.dependents.length === 1
+      ? `当前仍被 ${dependentLabel} 依赖，不能直接卸载。`
+      : `当前仍被 ${dependentLabel} 等 ${dependencyStatus.dependents.length} 个安装位置依赖，不能直接卸载。`;
   }
 
   if (
@@ -1093,6 +1167,7 @@ export async function buildCommandCandidates(
     ...options,
     includeCurrentCatalog: true,
   });
+  const ledger = await readInstalledLedger(options.env ?? process.env);
   const candidates: CommandCandidate[] = [];
   const requestedNames = options.pluginNames ?? options.names;
 
@@ -1116,10 +1191,17 @@ export async function buildCommandCandidates(
     ) {
       continue;
     }
+    const dependencyStatus = resolveCandidateDependencyStatus(ledger, {
+      pluginName: discovered.pluginName,
+      platform: discovered.platform,
+      scope: discovered.scope,
+      projectKey: discovered.projectKey,
+    });
     const disabledReason = resolveCandidateDisabledReason(
       options.command,
       discovered.target,
       discovered.evidence,
+      dependencyStatus,
     );
     const candidate: CommandCandidate = {
       id: createCandidateId(options.command, discovered),
@@ -1133,6 +1215,7 @@ export async function buildCommandCandidates(
       target: discovered.target,
       selectable: disabledReason === undefined,
       disabledReason,
+      ...(dependencyStatus ? { dependencyStatus } : {}),
       evidence: discovered.evidence,
       evidenceByPlatformScope: discovered.evidenceByPlatformScope,
     };

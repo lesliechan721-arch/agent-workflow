@@ -318,6 +318,25 @@ export interface SkillTriggerPolicy {
   allowInstallOverride: boolean;
 }
 
+export interface PluginDependencyWhen {
+  platforms: PlatformName[];
+}
+
+export interface PluginDependencyTarget {
+  scope: Scope;
+}
+
+export interface PluginDependencyEntry {
+  name: string;
+  target?: PluginDependencyTarget;
+  inheritInstallOptions?: boolean;
+  when?: PluginDependencyWhen;
+}
+
+export interface PluginDependenciesConfig {
+  plugins: PluginDependencyEntry[];
+}
+
 export interface PluginManifestSource {
   name: string;
   version: string;
@@ -329,6 +348,7 @@ export interface PluginManifestSource {
   apps?: string;
   marketplace: PluginMarketplaceMeta;
   interface?: PluginInterfaceMeta;
+  dependencies?: PluginDependenciesConfig;
   extensions?: PluginExtensions;
   artifacts?: PluginArtifactsConfig;
   buildConfig?: BuildConfig;
@@ -649,6 +669,54 @@ export interface CurrentCatalogStatus {
   reason?: string;
 }
 
+export type PluginStatusDependencyHealthSource =
+  | 'installSnapshot'
+  | 'currentCatalog'
+  | 'historical'
+  | 'none';
+export type PluginStatusDependencyResolvedSource =
+  | 'installSnapshot'
+  | 'currentCatalog';
+export type PluginStatusDependencyCatalogDriftKind =
+  | 'none'
+  | 'snapshotMissing'
+  | 'currentCatalogMissing'
+  | 'dependenciesChanged';
+
+export interface PluginStatusDependencyResolvedEntry {
+  declaration: PluginDependencyEntry;
+  source: PluginStatusDependencyResolvedSource;
+}
+
+export interface PluginStatusDependencySatisfiedEntry {
+  declaration: PluginDependencyEntry;
+  location: PluginLocation;
+}
+
+export interface PluginStatusDependencyMissingEntry {
+  declaration: PluginDependencyEntry;
+  expectedLocation?: PluginLocation;
+  reason: string;
+}
+
+export interface PluginStatusDependencyCatalogDrift {
+  kind: PluginStatusDependencyCatalogDriftKind;
+  snapshotDependencies: string[];
+  currentDependencies: string[];
+}
+
+export interface PluginStatusDependencies {
+  healthSource: PluginStatusDependencyHealthSource;
+  declared: PluginDependencyEntry[];
+  resolved: PluginStatusDependencyResolvedEntry[];
+  satisfied: PluginStatusDependencySatisfiedEntry[];
+  missing: PluginStatusDependencyMissingEntry[];
+  dependents: PluginLocation[];
+  autoInstalled: boolean;
+  autoRemovable: boolean;
+  catalogDrift: PluginStatusDependencyCatalogDrift;
+}
+
 export interface PluginStatusReport {
   pluginName: string;
   native: NativePluginStatus;
@@ -675,6 +743,7 @@ export interface PluginStatusReport {
   currentCatalog?: CurrentCatalogStatus;
   activeLocalBundle?: string | null;
   artifactsInitialized?: boolean;
+  dependencies?: PluginStatusDependencies;
 }
 
 export interface StatusReport {
@@ -704,6 +773,8 @@ export interface UpgradeCommandOptions extends CommandOptions {
 export type SkippedUpgradeCode =
   | 'scopeNotInitialized'
   | 'repairRequired'
+  | 'dependencySkipped'
+  | 'capabilityChanged'
   | 'codexProjectUserConfigUnreadable'
   | 'externalOwnershipUnknown'
   | 'externalOwnershipPresent'
@@ -721,6 +792,12 @@ export interface SkippedUpgradeTarget {
   plugin: string;
   reason: string;
   code: SkippedUpgradeCode;
+  requested?: boolean;
+  dependencyOf?: Array<{
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+  }>;
 }
 
 export interface UpgradeCommandResult {
@@ -730,6 +807,29 @@ export interface UpgradeCommandResult {
   skipped: SkippedUpgradeTarget[];
   nativePlugins: NativePluginsByPlatform;
   repoManagedArtifacts: GeneratedArtifact[];
+  receiptTargets?: Array<{
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    requested?: boolean;
+    dependencyOf?: Array<{
+      plugin: string;
+      platform: PlatformName;
+      scope: Scope;
+    }>;
+  }>;
+  receiptActions?: Array<{
+    type: 'installDependency' | 'upgradeDependency';
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    requested?: boolean;
+    dependencyOf?: Array<{
+      plugin: string;
+      platform: PlatformName;
+      scope: Scope;
+    }>;
+  }>;
   marketplace?: {
     rootDir: string;
     source: CatalogResolution['source'];
@@ -891,12 +991,43 @@ export interface LifecycleConfigSnapshotMetadata {
   };
 }
 
+export interface PluginLocation {
+  plugin: string;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey: string | null;
+}
+
+export interface InstalledScopeInstallSource {
+  kind: 'explicit' | 'dependency';
+  explicitlyRequested: boolean;
+  allowsUnusedCleanup: boolean;
+}
+
+export interface InstalledDependencyEdgeDeclaration {
+  name: string;
+  target?: {
+    scope?: Scope;
+  };
+  inheritInstallOptions?: boolean;
+  when?: {
+    platforms?: PlatformName[];
+  };
+}
+
+export interface InstalledDependencyEdge {
+  dependency: PluginLocation;
+  declaration: InstalledDependencyEdgeDeclaration;
+}
+
 export interface InstalledScopeRecord<TCapabilitySnapshot> {
   managed: boolean;
   updatedAt: string;
   resolvedVersion: string;
   capabilitySnapshot: TCapabilitySnapshot;
   projectKey?: string;
+  installSource?: InstalledScopeInstallSource;
+  dependencyEdges?: InstalledDependencyEdge[];
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerWriteOrder?: number;
   lifecycleConfigSnapshot?: LifecycleConfigSnapshotMetadata;

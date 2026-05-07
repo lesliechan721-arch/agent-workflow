@@ -5,11 +5,15 @@ import fs from 'fs-extra';
 import type {
   MarketplaceManifest,
   PlatformName,
+  PluginMeta,
   PlatformPluginManifest,
   PluginLifecycleScriptEntry,
   PluginManifestSource,
 } from '../types.js';
-import { validatePluginManifest } from './manifest.js';
+import {
+  validatePluginDependencyReferences,
+  validatePluginManifest,
+} from './manifest.js';
 import { readJsonFile } from './json.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 import { validateRenderedClaudeHooksContent } from './rendered-contract.js';
@@ -172,6 +176,27 @@ async function validateClaudeManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
 ): Promise<void> {
+  const input = manifest as unknown as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (![
+      'name',
+      'version',
+      'description',
+      'skills',
+      'mcpServers',
+      'interface',
+      'agents',
+      'hooks',
+      'commands',
+      'outputStyles',
+      'lspServers',
+      'userConfig',
+      'channels',
+    ].includes(key)) {
+      throw new Error(`Invalid claude manifest: unknown field "${key}".`);
+    }
+  }
+
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
   }
@@ -232,6 +257,21 @@ async function validateCodexManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
 ): Promise<void> {
+  const input = manifest as unknown as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (![
+      'name',
+      'version',
+      'description',
+      'skills',
+      'mcpServers',
+      'apps',
+      'interface',
+    ].includes(key)) {
+      throw new Error(`Invalid codex manifest: unknown field "${key}".`);
+    }
+  }
+
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');
   }
@@ -448,7 +488,6 @@ async function readMarketplaceManifestFromBundle(
       `Invalid ${formatPlatformLabel(platform)} marketplace manifest.plugins: expected an array.`,
     );
   }
-
   return marketplace;
 }
 
@@ -478,6 +517,9 @@ function validateMarketplaceEntriesForPlatform(
     if (marketplacePluginNames.has(pluginEntry.name)) {
       throw new Error(`Invalid ${platformLabel} marketplace entries: duplicate plugin "${pluginEntry.name}".`);
     }
+    if (Object.hasOwn(pluginEntry as unknown as Record<string, unknown>, 'dependencies')) {
+      throw new Error(`Invalid marketplace entry for "${pluginEntry.name}": unknown field "dependencies".`);
+    }
     marketplacePluginNames.add(pluginEntry.name);
   }
 
@@ -506,6 +548,7 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
     claude: new Set<string>(),
     codex: new Set<string>(),
   };
+  const pluginMetas: PluginMeta[] = [];
 
   for (const pluginName of bundledPluginNames) {
     const pluginRoot = path.join(rootDir, 'plugins', pluginName);
@@ -520,6 +563,11 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
       pluginRoot,
       await readJsonFile<unknown>(sourceManifestPath),
     );
+    pluginMetas.push({
+      rootDir: pluginRoot,
+      manifestPath: sourceManifestPath,
+      manifest: sourceManifest,
+    });
     await validateAwRuntimeLayout(pluginRoot, sourceManifest);
 
     const supportedPlatforms = resolveSupportedPlatforms(sourceManifest);
@@ -564,4 +612,5 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
     'codex',
     supportedPluginNamesByPlatform.codex,
   );
+  validatePluginDependencyReferences(pluginMetas);
 }
