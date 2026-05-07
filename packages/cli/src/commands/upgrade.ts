@@ -1921,8 +1921,8 @@ async function runUpgradeAll(
     state: plannerState,
     platforms,
     scope: options.scope,
-    projectKey: options.scope === 'project'
-      ? (scopeKeys.codex ?? scopeKeys.claude ?? null)
+    projectKeysByPlatform: options.scope === 'project'
+      ? projectKeysByPlatform
       : undefined,
     initialSkipped: rootSkips,
   });
@@ -2075,8 +2075,8 @@ async function runUpgradeAll(
       state: plannerState,
       platforms,
       scope: options.scope,
-      projectKey: options.scope === 'project'
-        ? (scopeKeys.codex ?? scopeKeys.claude ?? null)
+      projectKeysByPlatform: options.scope === 'project'
+        ? projectKeysByPlatform
         : undefined,
       initialSkipped: [...rootSkips, ...dependencySkips],
     });

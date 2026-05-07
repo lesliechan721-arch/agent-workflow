@@ -690,6 +690,101 @@ describe('plugin dependency planner', () => {
     ]);
   });
 
+  it('does not reintroduce legacy records without explicit retention as upgrade-all roots', () => {
+    const explicitRootLocation = createDependencyPluginLocation({
+      plugin: 'explicit-root',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const legacyRootLocation = createDependencyPluginLocation({
+      plugin: 'legacy-root',
+      platform: 'codex',
+      scope: 'user',
+    });
+
+    const plan = planPluginDependencyUpgradeAll({
+      state: {
+        currentCatalogByPlugin: {
+          'explicit-root': createDependencyPluginManifest({ name: 'explicit-root' }),
+          'legacy-root': createDependencyPluginManifest({ name: 'legacy-root' }),
+        },
+        installedRecords: [
+          {
+            location: explicitRootLocation,
+            installSource: plannerInstallSource('explicit'),
+            dependencyEdges: [],
+          },
+          {
+            location: legacyRootLocation,
+            dependencyEdges: [],
+          },
+        ],
+        healthRecords: [
+          { location: explicitRootLocation, state: 'healthy' },
+          { location: legacyRootLocation, state: 'healthy' },
+        ],
+      },
+      platforms: ['codex'],
+      scope: 'user',
+    });
+
+    expect(plan.roots).toEqual([explicitRootLocation]);
+    expect(plan.writeOrder).toEqual([explicitRootLocation]);
+    expect(plan.topologicalOrder).toEqual([explicitRootLocation]);
+  });
+
+  it('keeps both platform-specific project roots during upgrade-all when Codex and Claude project keys differ', () => {
+    const codexProjectKey = '/workspace/repo';
+    const claudeProjectKey = '/workspace/repo/packages/cli';
+    const codexRootLocation = createDependencyPluginLocation({
+      plugin: 'shared-project-root',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: codexProjectKey,
+    });
+    const claudeRootLocation = createDependencyPluginLocation({
+      plugin: 'shared-project-root',
+      platform: 'claude',
+      scope: 'project',
+      projectKey: claudeProjectKey,
+    });
+
+    const plan = planPluginDependencyUpgradeAll({
+      state: {
+        currentCatalogByPlugin: {
+          'shared-project-root': withProjectSurface(createDependencyPluginManifest({
+            name: 'shared-project-root',
+          })),
+        },
+        installedRecords: [
+          {
+            location: codexRootLocation,
+            installSource: plannerInstallSource('explicit'),
+            dependencyEdges: [],
+          },
+          {
+            location: claudeRootLocation,
+            installSource: plannerInstallSource('explicit'),
+            dependencyEdges: [],
+          },
+        ],
+        healthRecords: [
+          { location: codexRootLocation, state: 'healthy' },
+          { location: claudeRootLocation, state: 'healthy' },
+        ],
+      },
+      platforms: ['codex', 'claude'],
+      scope: 'project',
+      projectKeysByPlatform: {
+        codex: codexProjectKey,
+        claude: claudeProjectKey,
+      },
+    });
+
+    expect(plan.roots).toEqual([claudeRootLocation, codexRootLocation]);
+    expect(plan.writeOrder).toEqual([claudeRootLocation, codexRootLocation]);
+  });
+
   it('protects uninstall when dependents remain and auto-cleans unused dependency chains', () => {
     const child = createDependencyPluginManifest({
       name: 'cleanup-child',
@@ -842,7 +937,7 @@ describe('plugin dependency planner', () => {
     expect(explicitKeepPlan.uninstallOrder).toEqual([parentLocation]);
   });
 
-  it('skips risky auto cleanup when dependency metadata is incomplete or tracking identity is broken', () => {
+  it('fails closed for uninstall protection when visible dependency metadata is incomplete', () => {
     const parentLocation = createDependencyPluginLocation({
       plugin: 'cleanup-parent',
       platform: 'codex',
@@ -878,7 +973,23 @@ describe('plugin dependency planner', () => {
       },
       requested: [parentLocation],
     });
+    expect(incompleteMetadataPlan.incompleteMetadataLocations).toEqual([childLocation]);
+    expect(incompleteMetadataPlan.blocked).toEqual([]);
+    expect(incompleteMetadataPlan.uninstallOrder).toEqual([]);
     expect(incompleteMetadataPlan.autoCleanup).toEqual([]);
+  });
+
+  it('skips risky auto cleanup when tracking identity is broken', () => {
+    const parentLocation = createDependencyPluginLocation({
+      plugin: 'cleanup-parent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const childLocation = createDependencyPluginLocation({
+      plugin: 'cleanup-child',
+      platform: 'codex',
+      scope: 'user',
+    });
 
     const trackingBrokenPlan = planPluginDependencyUninstall({
       state: {
@@ -905,6 +1016,7 @@ describe('plugin dependency planner', () => {
       },
       requested: [parentLocation],
     });
+    expect(trackingBrokenPlan.incompleteMetadataLocations).toEqual([]);
     expect(trackingBrokenPlan.autoCleanup).toEqual([]);
   });
 

@@ -1192,6 +1192,124 @@ describe('upgrade command coverage', () => {
     ]);
   });
 
+  it('keeps both platform-specific project roots when upgrade --all runs from a subdirectory', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    const nestedCwd = path.join(repoRoot, 'packages', 'workspace-child');
+    await fs.ensureDir(nestedCwd);
+    await fs.writeFile(
+      path.join(repoRoot, 'pnpm-workspace.yaml'),
+      'packages:\n  - plugins/*\n',
+      'utf8',
+    );
+
+    const [codexProjectKey, claudeProjectKey] = await Promise.all([
+      resolveCodexProjectKey(nestedCwd),
+      resolveClaudeProjectKey(nestedCwd),
+    ]);
+    expect(codexProjectKey).not.toBe(claudeProjectKey);
+
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          projectScopes: {
+            [codexProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-29T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                requiresNativePlugin: true,
+                hasRepoManagedArtifacts: true,
+              },
+              installOptions: {
+                skillTriggerPreference: 'default',
+              },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
+            },
+          },
+          sharedNativeRefs: {
+            user: false,
+            projects: [codexProjectKey],
+          },
+        },
+        claude: {
+          projectScopes: {
+            [claudeProjectKey]: {
+              managed: true,
+              updatedAt: '2026-04-29T00:00:00.000Z',
+              resolvedVersion: '0.1.0',
+              capabilitySnapshot: {
+                managedExtensions: ['instructions'],
+              },
+              installSource: createInstallSource('explicit'),
+              dependencyEdges: [],
+            },
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+
+    const codex = new FakeAdapter('codex', nestedCwd, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new FakeAdapter('claude', nestedCwd, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+      },
+    });
+
+    const result = await upgradeCommand(
+      [],
+      {
+        all: true,
+        cwd: nestedCwd,
+        scope: 'project',
+        platform: 'both',
+      },
+      {
+        adapters: {
+          codex,
+          claude,
+        },
+      },
+    );
+
+    expect(result.receiptTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'project',
+        requested: true,
+      }),
+      expect.objectContaining({
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'project',
+        requested: true,
+      }),
+    ]));
+    expect(codex.extensionInstallCalls).toEqual(['git-commit']);
+    expect(claude.extensionInstallCalls).toEqual(['git-commit']);
+  });
+
   it('auto-infers the only managed platform for upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;

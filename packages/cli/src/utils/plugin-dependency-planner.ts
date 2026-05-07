@@ -145,7 +145,7 @@ export interface PluginDependencyUpgradeAllOptions {
   state: PluginDependencyPlannerState;
   platforms: PlatformName[];
   scope: Scope;
-  projectKey?: string | null;
+  projectKeysByPlatform?: Partial<Record<PlatformName, string | null>>;
   initialSkipped?: PluginDependencyUpgradeAllSkipInput[];
 }
 
@@ -168,6 +168,7 @@ export interface PluginDependencyUninstallBlock {
 export interface PluginDependencyUninstallPlan {
   requested: PluginLocation[];
   blocked: PluginDependencyUninstallBlock[];
+  incompleteMetadataLocations: PluginLocation[];
   uninstallOrder: PluginLocation[];
   autoCleanup: PluginLocation[];
 }
@@ -326,6 +327,13 @@ function normalizeInstalledDependencyEdge(edge: InstalledDependencyEdge): Instal
   };
 }
 
+function hasCompleteDependencyMetadata(record: {
+  installSource?: InstalledScopeInstallSource;
+  dependencyEdges?: InstalledDependencyEdge[];
+}): boolean {
+  return Boolean(record.installSource && record.dependencyEdges);
+}
+
 function buildPlannerIndexes(state: PluginDependencyPlannerState): PlannerIndexes {
   const installedByLocation = new Map<string, NormalizedInstalledRecord>();
   const healthByLocation = new Map<string, NormalizedHealthRecord>();
@@ -350,7 +358,7 @@ function buildPlannerIndexes(state: PluginDependencyPlannerState): PlannerIndexe
       installSource: record.installSource ? clone(record.installSource) : undefined,
     });
 
-    if (!record.installSource || !record.dependencyEdges) {
+    if (!hasCompleteDependencyMetadata(record)) {
       dependencyMetadataComplete = false;
     }
 
@@ -1011,7 +1019,7 @@ function isLocationInScope(options: {
   location: PluginLocation;
   platform: PlatformName;
   scope: Scope;
-  projectKey?: string | null;
+  projectKeysByPlatform?: Partial<Record<PlatformName, string | null>>;
 }): boolean {
   if (options.location.platform !== options.platform || options.location.scope !== options.scope) {
     return false;
@@ -1019,7 +1027,7 @@ function isLocationInScope(options: {
   if (options.scope === 'user') {
     return true;
   }
-  return options.location.projectKey === (options.projectKey ?? null);
+  return options.location.projectKey === (options.projectKeysByPlatform?.[options.platform] ?? null);
 }
 
 function isAccessibleAutoCleanupLocation(
@@ -1095,10 +1103,24 @@ function canAutoRemoveRecord(options: {
   return (options.incomingIndex.get(options.locationKey) ?? []).length === 0;
 }
 
+function collectVisibleIncompleteDependencyMetadataLocations(options: {
+  indexes: PlannerIndexes;
+  visibleKeys: Set<string>;
+}): PluginLocation[] {
+  return [...options.indexes.installedByLocation.entries()]
+    .filter(([locationKey, record]) => (
+      options.visibleKeys.has(locationKey) &&
+      !hasCompleteDependencyMetadata(record)
+    ))
+    .map(([, record]) => record.location)
+    .sort(comparePluginLocations);
+}
+
 export function planPluginDependencyUpgradeAll(
   options: PluginDependencyUpgradeAllOptions,
 ): PluginDependencyUpgradeAllPlan {
   const indexes = buildPlannerIndexes(options.state);
+  const requestedProjectKeysByPlatform = options.projectKeysByPlatform ?? {};
   const projectKeysByPlatform = new Map<PlatformName, string | null>();
   const candidateRoots = [...indexes.installedByLocation.values()]
     .filter((record) =>
@@ -1106,13 +1128,16 @@ export function planPluginDependencyUpgradeAll(
         location: record.location,
         platform,
         scope: options.scope,
-        projectKey: options.projectKey,
+        projectKeysByPlatform: requestedProjectKeysByPlatform,
       })),
     )
     .sort((left, right) => comparePluginLocations(left.location, right.location));
 
   for (const platform of options.platforms) {
-    projectKeysByPlatform.set(platform, options.scope === 'project' ? (options.projectKey ?? null) : null);
+    projectKeysByPlatform.set(
+      platform,
+      options.scope === 'project' ? (requestedProjectKeysByPlatform[platform] ?? null) : null,
+    );
   }
 
   const initialSkipsByKey = new Map<string, PluginDependencyUpgradeAllSkip>();
@@ -1126,7 +1151,7 @@ export function planPluginDependencyUpgradeAll(
   }
 
   const roots = candidateRoots
-    .filter((record) => record.installSource?.explicitlyRequested !== false)
+    .filter((record) => record.installSource?.explicitlyRequested === true)
     .map((record) => record.location);
   const plan = createWritePlan({
     mode: 'upgrade',
@@ -1275,6 +1300,25 @@ export function planPluginDependencyUninstall(options: {
   const indexes = buildPlannerIndexes(options.state);
   const requested = options.requested.map((location) => normalizePluginLocation(location));
   const requestedKeys = new Set(requested.map((location) => serializePluginLocation(location)));
+  const visibleKeys = new Set<string>(requestedKeys);
+  for (const [locationKey, health] of indexes.healthByLocation.entries()) {
+    if (health.visible) {
+      visibleKeys.add(locationKey);
+    }
+  }
+  const incompleteMetadataLocations = collectVisibleIncompleteDependencyMetadataLocations({
+    indexes,
+    visibleKeys,
+  });
+  if (incompleteMetadataLocations.length > 0) {
+    return {
+      requested,
+      blocked: [],
+      incompleteMetadataLocations,
+      uninstallOrder: [],
+      autoCleanup: [],
+    };
+  }
   const incomingIndex = buildIncomingIndexFromEdges(
     indexes.installedByLocation,
     new Map<string, InstalledDependencyEdge[]>(),
@@ -1293,6 +1337,7 @@ export function planPluginDependencyUninstall(options: {
     return {
       requested,
       blocked,
+      incompleteMetadataLocations: [],
       uninstallOrder: [],
       autoCleanup: [],
     };
@@ -1349,6 +1394,7 @@ export function planPluginDependencyUninstall(options: {
   return {
     requested,
     blocked: [],
+    incompleteMetadataLocations: [],
     uninstallOrder: [
       ...requested,
       ...topoSortLocations({
