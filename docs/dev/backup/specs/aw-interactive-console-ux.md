@@ -41,7 +41,7 @@
 
 ### CLI 入口
 
-- [packages/cli/src/index.ts](../../../packages/cli/src/index.ts) 当前只注册子命令，直接运行 `aw` 会显示 help 并返回非 0。
+- [packages/cli/src/index.ts](../../../../packages/cli/src/index.ts) 当前只注册子命令，直接运行 `aw` 会显示 help 并返回非 0。
 - `install`、`uninstall`、`upgrade` 的参数是 `[plugins...]`，缺插件名时会在 CLI runtime 里尝试进入交互计划。
 - `config configure` 和 `config reset` 仍会调用 prompt；`config configure` 本身没有非交互语义。
 - `init`、`install`、`uninstall`、`upgrade` 还没有 JSON receipt；`status` 和多数 `config` 子命令已有 JSON。
@@ -49,14 +49,14 @@
 
 ### 交互实现
 
-- [packages/cli/src/commands/runtime.ts](../../../packages/cli/src/commands/runtime.ts) 的 `createReadlinePrompt()` 基于 `readline/promises`，`select` / `multiSelect` 会打印编号列表，要求用户输入编号或逗号分隔的编号。
-- [packages/cli/src/commands/interactive.ts](../../../packages/cli/src/commands/interactive.ts) 已有 install/uninstall/upgrade 的候选构建和分组 dispatch，但它服务子命令 prompt，不适合作为新的主入口控制台直接复用。
+- [packages/cli/src/commands/runtime.ts](../../../../packages/cli/src/commands/runtime.ts) 的 `createReadlinePrompt()` 基于 `readline/promises`，`select` / `multiSelect` 会打印编号列表，要求用户输入编号或逗号分隔的编号。
+- [packages/cli/src/commands/interactive.ts](../../../../packages/cli/src/commands/interactive.ts) 已有 install/uninstall/upgrade 的候选构建和分组 dispatch，但它服务子命令 prompt，不适合作为新的主入口控制台直接复用。
 - 当前 prompt 接口包括 `selectScope`、`selectPlatform`、`selectPlugins`、`selectUpgradeMode`、`selectSkillTrigger`、`configurePlugin`。新设计可以保留其中的测试注入思路，但默认实现需要换成 TUI 控制器。
 
 ### 状态与候选发现
 
-- [packages/cli/src/commands/discovery.ts](../../../packages/cli/src/commands/discovery.ts) 已能从 current catalog、AW 安装记录、tracking manifest、Codex native config/cache/recovery、Claude settings/runtime evidence 合并候选。
-- [packages/cli/src/commands/status.ts](../../../packages/cli/src/commands/status.ts) 已有状态矩阵和 JSON 结构，但默认文案仍把矩阵细节直接展开，包含 `healthSource`、`config`、`scripts`、证据来源、`repo-managed`、`artifact` health、session visibility 等内部字段。
+- [packages/cli/src/commands/discovery.ts](../../../../packages/cli/src/commands/discovery.ts) 已能从 current catalog、AW 安装记录、tracking manifest、Codex native config/cache/recovery、Claude settings/runtime evidence 合并候选。
+- [packages/cli/src/commands/status.ts](../../../../packages/cli/src/commands/status.ts) 已有状态矩阵和 JSON 结构，但默认文案仍把矩阵细节直接展开，包含 `healthSource`、`config`、`scripts`、证据来源、`repo-managed`、`artifact` health、session visibility 等内部字段。
 - Codex user native 状态已拆成 `pluginEnabled`、`pluginInstalled`、`configEntryPresent`、`cacheStatus`、`native.recovery`。友好投影不能再把 enabled config 当成“已安装”。
 - Codex dynamic artifact 状态已进入 tracking/status；友好投影需要把 instruction / role artifact 映射成用户能理解的“轻量指令”“探索角色”“项目文件”等表达。
 - 这些能力应保留为内部数据源，再投影成用户友好的 `PluginConsoleItem` / `PluginFriendlyStatus`，避免 UI 和默认输出直接暴露底层字段。
@@ -568,7 +568,7 @@ session visibility 必须完整映射，不能只处理 project trust：
 
 安全预检失败时，TUI 必须直接展示可理解的失败说明，不调用配置向导、不创建 user/project config store，也不写 native state、repo-managed artifacts、tracking 或 ledger。
 
-当前 [commands/interactive.ts](../../../packages/cli/src/commands/interactive.ts) 可以删除，或只保留测试辅助逻辑；CLI 子命令不再调用它。
+当前 [commands/interactive.ts](../../../../packages/cli/src/commands/interactive.ts) 可以删除，或只保留测试辅助逻辑；CLI 子命令不再调用它。
 
 ### Prompt 抽象
 
