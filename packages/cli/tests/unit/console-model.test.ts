@@ -7,7 +7,11 @@ import {
   type PluginConsoleLocationDiagnostics,
   type PluginConsoleReasonCode,
 } from '../../src/commands/console-model.js';
-import type { StatusMatrixCell, StatusMatrixReport } from '../../src/commands/status.js';
+import type {
+  StatusMatrixCell,
+  StatusMatrixInstallState,
+  StatusMatrixReport,
+} from '../../src/commands/status.js';
 import type {
   ManagedArtifactStatus,
   NativePluginStatus,
@@ -157,6 +161,33 @@ function cell(overrides: Partial<StatusMatrixCell> = {}): StatusMatrixCell {
     config: 'configured',
     scripts: 'declared',
     report: report(),
+    ...overrides,
+  };
+}
+
+function installState(overrides: Partial<StatusMatrixInstallState> = {}): StatusMatrixInstallState {
+  return {
+    kind: 'installed',
+    summary: '当前安装状态正常。',
+    nextSteps: [],
+    findings: [],
+    issueCodes: [],
+    autoInstalled: false,
+    unusedDependencyHint: false,
+    dependents: [],
+    repairAvailable: true,
+    cleanupAvailable: false,
+    adoptExistingAvailable: false,
+    currentCatalogAvailable: true,
+    catalogDrift: false,
+    upgradeAvailable: false,
+    dynamicDiagnosticUnavailable: false,
+    nativeTransactionKind: 'none',
+    sharedRuntimeOwnerPresent: false,
+    sharedRuntimeNeedsTakeover: false,
+    sharedRuntimeParticipatesInOwner: false,
+    sharedRuntimeSemanticDelta: 'noChange',
+    sharedRuntimeOwnerConflict: false,
     ...overrides,
   };
 }
@@ -880,6 +911,138 @@ describe('console-model', () => {
     sanitizeAndAssertProse(dependencyMissing);
     sanitizeAndAssertProse(autoRemovable);
     sanitizeAndAssertProse(protectedDependency);
+  });
+
+  it('maps adopt-existing and owner conflict actions from install-state projection', () => {
+    const adoptable = singleItem(cell({
+      scope: 'project',
+      projectKey: '/workspace',
+      installState: installState({
+        kind: 'adoptable',
+        summary: '发现了一份可认领的已有项目安装。',
+        nextSteps: ['aw repair demo-plugin --platform codex --scope project --adopt-existing'],
+        adoptExistingAvailable: true,
+      }),
+      report: undefined,
+    }));
+    const ownerConflict = singleItem(cell({
+      installState: installState({
+        kind: 'needsRepair',
+        summary: '共享触发策略当前由另一个安装位置控制。',
+        nextSteps: ['aw repair demo-plugin --platform codex --scope user --takeover-shared-runtime'],
+        issueCodes: ['artifactMissing'],
+        sharedRuntimeOwnerPresent: true,
+        sharedRuntimeNeedsTakeover: true,
+        sharedRuntimeParticipatesInOwner: true,
+        sharedRuntimeSemanticDelta: 'change',
+        sharedRuntimeOwnerConflict: true,
+      }),
+      report: undefined,
+    }));
+
+    expect(adoptable.status).toBe('needsAction');
+    expect(adoptable.locations[0].reasonCodes).toContain('adoptExisting');
+    expect(adoptable.locations[0].actions.find((entry) => entry.label === '认领现有安装')?.command).toEqual([
+      'aw',
+      'repair',
+      'demo-plugin',
+      '--platform',
+      'codex',
+      '--scope',
+      'project',
+      '--adopt-existing',
+    ]);
+
+    expect(ownerConflict.locations[0].reasonCodes).toContain('ownerConflict');
+    expect(ownerConflict.locations[0].actions.find((entry) => entry.label === '接管共享触发策略')?.command).toEqual([
+      'aw',
+      'repair',
+      'demo-plugin',
+      '--platform',
+      'codex',
+      '--scope',
+      'user',
+      '--takeover-shared-runtime',
+    ]);
+    expect(ownerConflict.locations[0].actions.map((entry) => entry.kind)).not.toContain('repairInstall');
+  });
+
+  it('suppresses owner conflict for Codex project repo-local trigger locations', () => {
+    const item = singleItem(cell({
+      scope: 'project',
+      projectKey: '/workspace',
+      installState: installState({
+        kind: 'adoptable',
+        summary: '发现了一份可认领的已有项目安装。',
+        nextSteps: ['aw repair demo-plugin --platform codex --scope project --adopt-existing'],
+        adoptExistingAvailable: true,
+        sharedRuntimeOwnerPresent: true,
+        sharedRuntimeNeedsTakeover: true,
+        sharedRuntimeParticipatesInOwner: false,
+        sharedRuntimeSemanticDelta: 'noChange',
+        sharedRuntimeOwnerConflict: false,
+      }),
+      report: undefined,
+    }));
+
+    expect(item.locations[0].reasonCodes).toContain('adoptExisting');
+    expect(item.locations[0].reasonCodes).not.toContain('ownerConflict');
+    expect(item.locations[0].actions.find((entry) => entry.label === '认领现有安装')?.command).toEqual([
+      'aw',
+      'repair',
+      'demo-plugin',
+      '--platform',
+      'codex',
+      '--scope',
+      'project',
+      '--adopt-existing',
+    ]);
+  });
+
+  it('distinguishes retained auto dependencies from unused cleanup suggestions in install-state projection', () => {
+    const removable = singleItem(cell({
+      installState: installState({
+        summary: '这个自动依赖目前已经闲置。',
+        findings: ['这个目标是自动装上的依赖，现在看起来已经没人再依赖它了。'],
+        autoInstalled: true,
+        unusedDependencyHint: true,
+      }),
+      report: undefined,
+    }));
+    const retained = singleItem(cell({
+      installState: installState({
+        summary: '当前安装状态正常。',
+        autoInstalled: true,
+        unusedDependencyHint: false,
+      }),
+      report: undefined,
+    }));
+
+    expect(removable.locations[0].reasonCodes).toContain('autoDependencyRemovable');
+    expect(removable.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.label).toBe('清理自动依赖');
+    expect(retained.locations[0].reasonCodes).not.toContain('autoDependencyRemovable');
+    expect(retained.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.label).toBe('卸载');
+    expect(retained.locations[0].detailHints).toEqual(
+      expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
+    );
+  });
+
+  it('keeps dependency-protected uninstall disabled in install-state projection', () => {
+    const item = singleItem(cell({
+      installState: installState({
+        dependents: [{
+          plugin: 'parent-plugin',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      }),
+      report: undefined,
+    }));
+
+    expect(item.locations[0].reasonCodes).toContain('dependencyProtected');
+    expect(item.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.disabledReason).toContain(
+      'parent-plugin (codex/user)',
+    );
   });
 
   it('enforces the action contract', () => {

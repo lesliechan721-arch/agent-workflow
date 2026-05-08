@@ -1343,66 +1343,12 @@ export function planPluginDependencyUninstall(options: {
     };
   }
 
-  const projectKeysByPlatform = new Map<PlatformName, string | null>();
-  for (const location of requested) {
-    if (location.scope === 'project' && location.projectKey) {
-      projectKeysByPlatform.set(location.platform, location.projectKey);
-    } else if (!projectKeysByPlatform.has(location.platform)) {
-      projectKeysByPlatform.set(location.platform, null);
-    }
-  }
-
-  const removalKeys = new Set<string>(requestedKeys);
-  const autoCleanup: PluginLocation[] = [];
-  while (true) {
-    const simulatedIncoming = buildIncomingIndexFromEdges(
-      indexes.installedByLocation,
-      new Map<string, InstalledDependencyEdge[]>(),
-      removalKeys,
-    );
-    const nextCandidate = [...indexes.installedByLocation.entries()]
-      .filter(([locationKey, record]) => (
-        !removalKeys.has(locationKey) &&
-        isAccessibleAutoCleanupLocation(record.location, projectKeysByPlatform) &&
-        canAutoRemoveRecord({
-          record,
-          indexes,
-          locationKey,
-          incomingIndex: simulatedIncoming,
-        })
-      ))
-      .map(([locationKey, record]) => ({ locationKey, location: record.location }))
-      .sort((left, right) => comparePluginLocations(left.location, right.location))[0];
-
-    if (!nextCandidate) {
-      break;
-    }
-
-    removalKeys.add(nextCandidate.locationKey);
-    autoCleanup.push(nextCandidate.location);
-  }
-
-  const autoCleanupEdgesByDependent = new Map<string, InstalledDependencyEdge[]>();
-  for (const location of autoCleanup) {
-    const locationKey = serializePluginLocation(location);
-    autoCleanupEdgesByDependent.set(
-      locationKey,
-      indexes.installedByLocation.get(locationKey)?.dependencyEdges ?? [],
-    );
-  }
-
   return {
     requested,
     blocked: [],
     incompleteMetadataLocations: [],
-    uninstallOrder: [
-      ...requested,
-      ...topoSortLocations({
-        nodes: autoCleanup,
-        edgesByDependent: autoCleanupEdgesByDependent,
-      }).reverse(),
-    ],
-    autoCleanup,
+    uninstallOrder: [...requested],
+    autoCleanup: [],
   };
 }
 

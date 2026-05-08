@@ -6,7 +6,7 @@
 
 `extensions.*` 适合简单静态产物：内容固定，或只需要通过 `buildConfig.templates` 做平台差异渲染。需要根据 AW config 动态开启/关闭、刷新内容、诊断 stale / failed refresh，或管理 Codex role registration 时，不要把逻辑塞进 lifecycle；改用 `artifacts.targets` + `scripts.artifacts.render`，详见 `references/plugin-manifest-spec.md` 和 `references/aw-scripts-config-lifecycle.md`。
 
-对 Codex 来说，extensions 是 project scope 的 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest，不会调用 Codex native marketplace 或 app-server RPC。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
+对 Codex 来说，extensions 是 project scope 的 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/`，并同步维护本机 install record 和可提交的 project artifact shared identity，不会调用 Codex native marketplace 或 app-server RPC。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
 
 `marketplace.policy.products` 会限制 extensions 能生成的平台。公共 `instructions`、`permissions`、`hooks` 和 `agents` 会复制到所有支持平台；不支持的平台不能声明 `nativeHooks.<platform>`，也不能在公共 extension 条目中提供非空 `agentOverrides.<platform>`。如果只是想明确排除 unsupported platform，`agentOverrides.<unsupportedPlatform> = null` 是合法的。
 

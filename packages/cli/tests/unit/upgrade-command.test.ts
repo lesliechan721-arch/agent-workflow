@@ -23,6 +23,7 @@ import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
@@ -72,6 +73,26 @@ function createResolvedTarget(plugin: PluginMeta): ResolvedPluginTarget {
     embeddedPlugin: undefined,
     source: 'currentCatalog',
   };
+}
+
+async function readInstallRecord(options: {
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+  plugin: string;
+  platform?: PlatformName;
+  scope?: Scope;
+  projectKey?: string;
+}) {
+  return readInstallRecordForLocation({
+    cwd: options.repoRoot,
+    location: {
+      plugin: options.plugin,
+      platform: options.platform ?? 'codex',
+      scope: options.scope ?? 'user',
+      ...(options.scope === 'project' ? { projectKey: options.projectKey } : {}),
+    },
+    env: options.env,
+  });
 }
 
 function mockCatalogTargets(options: {
@@ -277,6 +298,70 @@ afterEach(async () => {
 });
 
 describe('upgrade command dependency graph', () => {
+  it('marks explicitly upgraded auto dependencies as requested while preserving dependency kind', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'upgraded-auto-dependency',
+    }));
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [plugin.manifest.name]: {
+          lastResolvedVersion: plugin.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: plugin.manifest.version,
+                installSource: 'dependency',
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const explicitTarget = createResolvedTarget(plugin);
+    mockCatalogTargets({
+      explicitTargets: [explicitTarget],
+      allTargets: [explicitTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [plugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    await upgradeCommand(
+      [plugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new UpgradeTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect((await readInstalledLedger(env)).plugins[plugin.manifest.name]?.platforms.codex?.userScope).toMatchObject({
+      installSource: {
+        kind: 'dependency',
+        explicitlyRequested: true,
+        allowsUnusedCleanup: false,
+      },
+      dependencyEdges: [],
+    });
+  });
+
   it('installs missing dependencies, upgrades existing dependencies, and preserves receipt dependency metadata', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const existingChild = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
@@ -378,38 +463,54 @@ describe('upgrade command dependency graph', () => {
       parent.manifest.name,
     ]);
 
-    const ledger = await readInstalledLedger(env);
-    expect(ledger.plugins[missingChild.manifest.name]?.platforms.codex?.userScope).toMatchObject({
-      installSource: {
-        kind: 'dependency',
-        explicitlyRequested: false,
-        allowsUnusedCleanup: true,
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: missingChild.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          installSource: {
+            kind: 'dependency',
+            explicitlyRequested: false,
+          },
+        },
       },
     });
-    expect(ledger.plugins[parent.manifest.name]?.platforms.codex?.userScope?.dependencyEdges).toEqual([
-      {
-        dependency: {
-          plugin: existingChild.manifest.name,
-          platform: 'codex',
-          scope: 'user',
-          projectKey: null,
-        },
-        declaration: {
-          name: existingChild.manifest.name,
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: parent.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          dependencyEdges: [
+            {
+              dependency: {
+                plugin: existingChild.manifest.name,
+                platform: 'codex',
+                scope: 'user',
+              },
+              declaration: {
+                name: existingChild.manifest.name,
+              },
+            },
+            {
+              dependency: {
+                plugin: missingChild.manifest.name,
+                platform: 'codex',
+                scope: 'user',
+              },
+              declaration: {
+                name: missingChild.manifest.name,
+              },
+            },
+          ],
         },
       },
-      {
-        dependency: {
-          plugin: missingChild.manifest.name,
-          platform: 'codex',
-          scope: 'user',
-          projectKey: null,
-        },
-        declaration: {
-          name: missingChild.manifest.name,
-        },
-      },
-    ]);
+    });
 
     const receipt = buildCommandReceiptJson('upgrade', {
       result,
@@ -651,5 +752,29 @@ describe('upgrade command dependency graph', () => {
     );
 
     expect(codex.installOrder).toEqual([]);
+  });
+
+  it('rejects upgrade --all takeover before any write', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+
+    await expect(
+      upgradeCommand(
+        [],
+        {
+          all: true,
+          takeoverSharedRuntime: true,
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex: new UpgradeTestAdapter('codex', repoRoot, env),
+            claude: new UpgradeTestAdapter('claude', repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
   });
 });

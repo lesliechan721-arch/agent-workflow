@@ -138,6 +138,22 @@ function createLegacyMaterializationTarget(options: {
       };
 }
 
+export function classifySharedSkillTriggerRuntimeTarget(
+  target: SkillTriggerMaterializationTarget,
+): SharedSkillTriggerRuntimeTargetKind {
+  if (target.platform === 'codex' && target.scope === 'project' && target.kind === 'repoSkill') {
+    return 'repoLocalCodexProject';
+  }
+
+  return 'sharedRuntime';
+}
+
+export function participatesInSharedSkillTriggerRuntimeOwner(
+  target: SkillTriggerMaterializationTarget,
+): boolean {
+  return classifySharedSkillTriggerRuntimeTarget(target) === 'sharedRuntime';
+}
+
 function normalizeYamlError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -208,6 +224,19 @@ export type SkillTriggerMaterializationTarget =
   | { platform: 'codex'; scope: 'user'; kind: 'localMarketplaceRuntime'; root: string }
   | { platform: 'codex'; scope: 'project'; kind: 'repoSkill'; root: string }
   | { platform: 'claude'; scope: Scope; kind: 'localMarketplaceRuntime'; root: string };
+
+export type SharedSkillTriggerRuntimeTargetKind = 'sharedRuntime' | 'repoLocalCodexProject';
+
+export interface SharedSkillTriggerRuntimeSemanticsAssessment {
+  pluginName: string;
+  platform: PlatformName;
+  locationScope: Scope;
+  targetKind: SharedSkillTriggerRuntimeTargetKind;
+  participatesInSharedRuntimeOwner: boolean;
+  semanticDelta: 'change' | 'noChange' | 'unknown';
+  currentRuntimeSignature: SkillTriggerSignatureResult | null;
+  plannedRuntimeSignature: SkillTriggerSignatureResult | null;
+}
 
 export interface SkillTriggerMaterializationRollbackHandle {
   committed: boolean;
@@ -935,6 +964,63 @@ export async function readCurrentSkillTriggerRuntimeSignature(options: {
     options.pluginName,
     options.platform,
   );
+}
+
+export async function assessSharedSkillTriggerRuntimeSemantics(options: {
+  pluginName: string;
+  platform: PlatformName;
+  locationScope: Scope;
+  preference: SkillTriggerPreference;
+  embeddedRoot: string;
+  target: SkillTriggerMaterializationTarget;
+}): Promise<SharedSkillTriggerRuntimeSemanticsAssessment> {
+  const targetKind = classifySharedSkillTriggerRuntimeTarget(options.target);
+  if (targetKind === 'repoLocalCodexProject') {
+    return {
+      pluginName: options.pluginName,
+      platform: options.platform,
+      locationScope: options.locationScope,
+      targetKind,
+      participatesInSharedRuntimeOwner: false,
+      semanticDelta: 'noChange',
+      currentRuntimeSignature: null,
+      plannedRuntimeSignature: null,
+    };
+  }
+
+  const [plannedRuntimeSignature, currentRuntimeSignature] = await Promise.all([
+    buildSkillTriggerMaterializationSignature({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      preference: options.preference,
+      embeddedRoot: options.embeddedRoot,
+    }),
+    readCurrentSkillTriggerRuntimeSignature({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      embeddedRoot: options.embeddedRoot,
+      target: options.target,
+    }),
+  ]);
+
+  const semanticDelta = plannedRuntimeSignature.status === 'known'
+    && currentRuntimeSignature.status === 'known'
+    && plannedRuntimeSignature.signature === currentRuntimeSignature.signature
+    ? 'noChange'
+    : plannedRuntimeSignature.status === 'known' && currentRuntimeSignature.status === 'known'
+      ? 'change'
+      : 'unknown';
+
+  return {
+    pluginName: options.pluginName,
+    platform: options.platform,
+    locationScope: options.locationScope,
+    targetKind,
+    participatesInSharedRuntimeOwner: true,
+    semanticDelta,
+    currentRuntimeSignature,
+    plannedRuntimeSignature,
+  };
 }
 
 function getSkillTriggerScopeRecord(options: {

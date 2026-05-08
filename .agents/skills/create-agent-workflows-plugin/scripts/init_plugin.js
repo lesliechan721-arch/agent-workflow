@@ -217,7 +217,7 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     plugin: { name: '${pluginName}' },
     config: {
       values: { apiKey: 'test-key', mode: 'strict' },
-      sources: { apiKey: 'user', mode: 'project' },
+      sources: { apiKey: 'user', mode: 'projectShared' },
       schema: {
         apiKey: { type: 'string', sensitive: true, required: true },
         mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' }
@@ -226,7 +226,8 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     paths: {
       configStores: {
         user: join(tempDir, 'missing-user.json'),
-        project: join(tempDir, 'missing-project.json')
+        project: join(tempDir, 'missing-project.json'),
+        projectLocal: join(tempDir, 'missing-project-local.json')
       }
     }
   }), 'utf8');

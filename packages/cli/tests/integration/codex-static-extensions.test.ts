@@ -200,20 +200,14 @@ describe('static Codex extensions compatibility', () => {
       scopeInitialized: 'yes',
       artifactsInitialized: true,
       repoManagedSessionState: {
-        instructions: 'projectTrustUnknown',
-        rules: 'projectTrustUnknown',
-        hooks: 'projectTrustUnknown',
-        agents: 'projectTrustUnknown',
+        instructions: 'not_applicable',
+        rules: 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
       },
     });
     expect(report?.managedArtifacts ?? []).toEqual([]);
-    expect(report?.generatedArtifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'instruction' }),
-      expect.objectContaining({ kind: 'permission' }),
-      expect.objectContaining({ kind: 'hook' }),
-      expect.objectContaining({ kind: 'agent' }),
-    ]));
-    expect(report?.generatedArtifacts.every((artifact) => artifact.target === undefined)).toBe(true);
+    expect(report?.generatedArtifacts ?? []).toEqual([]);
     expect(report?.driftWarnings.join('\n') ?? '').not.toContain('config digest');
     expect(report?.driftWarnings.join('\n') ?? '').not.toContain('refresh');
 

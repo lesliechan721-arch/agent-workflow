@@ -1,6 +1,6 @@
 # Agent Workflows
 
-Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；CLI 会把仓库内插件打包成 embedded bundle / 本机 marketplace，并按平台和 scope 安装到对应位置。
+Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；CLI 会把仓库内插件打包成 embedded bundle / 本机 runtime，并按平台和 scope 安装到对应位置。
 
 ## 快速使用
 
@@ -11,7 +11,7 @@ aw install git-commit
 aw status
 ```
 
-直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、重新应用配置和诊断。`install`、`uninstall`、`upgrade`、`config`、`status` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
+直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、修复、清理、重新应用配置和诊断。`install`、`uninstall`、`upgrade`、`config`、`status`、`diagnose`、`repair`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
 
 ```bash
 aw
@@ -19,7 +19,7 @@ aw
 
 脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --json` 保留矩阵字段并追加 `friendlySummaries` 和 `consoleItems`。
 
-`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 是 repo-managed：不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 tracking manifest。
+`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`，并维护可提交的 project artifact identity metadata。
 
 常用短选项示例：
 
@@ -28,7 +28,20 @@ aw install git-commit -p codex -s user
 aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本地 marketplace。纯 Codex project repo-managed 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex marketplace。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
+`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本机 runtime。纯 Codex project 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex runtime。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
+
+常用排障命令：
+
+```bash
+aw diagnose git-commit --verbose
+aw repair git-commit -p codex -s project
+aw repair git-commit -p codex -s project --adopt-existing
+aw cleanup git-commit -p codex -s project --yes
+aw reinstall git-commit -p codex -s user
+aw config set git-commit commitStyle conventional -s user
+aw config unset git-commit commitStyle -s user
+aw config reset git-commit -s user --yes
+```
 
 ## 当前插件
 

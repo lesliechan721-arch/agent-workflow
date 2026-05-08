@@ -62,16 +62,19 @@ plugins/<name>/
 
 `config.schema` 是 AW config 的唯一真值。首版支持 `string`、`number`、`boolean`、`enum`、`file`、`directory`。字段可声明 `title`、`description`、`default`、`required`、`sensitive`；`enum` 用 `values`，`number` 可用 `min` / `max`。
 
-配置有两层 store：
+配置有三层 store：
 
 | scope | 路径 |
 |------|------|
 | `user` | `<AW_HOME>/plugin-config/<plugin>/config.json` |
-| `project` | `<repo-or-workspace-root>/.agent-workflows/plugin-config/<plugin>/config.json` |
+| `project shared` | `<repo-or-workspace-root>/.agent-workflows/plugin-config/<plugin>/config.json` |
+| `project local` | `<repo-or-workspace-root>/.agent-workflows/plugin-config.local/<plugin>/config.json` |
 
-读取 effective config 的顺序是 `manifest default < user < project`。写命令默认写 `user`；读命令默认读 effective。`project` scope 是平台中立的 AW 项目配置，同一个仓库里的 Claude 和 Codex 安装默认读到同一份项目配置。
+project shared config 是平台中立的 AW 项目配置，同一个仓库里的 Claude 和 Codex 安装默认读到同一份项目配置，并且它是 repo-visible project artifacts 的唯一共享配置输入。project local config 是本机私有覆盖层，默认应被 ignore，只影响本机读命令、lifecycle 和 helper，不触发 repo-visible artifact refresh。
 
-`file` / `directory` 类型写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘。每次读取 effective config 都会重新校验路径存在且类型正确；路径失效时，`aw status` 显示 `invalid-config`，lifecycle 和 helper 会 fail closed。
+读取 project effective config 的顺序是 `manifest default < user < project shared < project local`。写命令默认写 `user`；`aw config set --scope project` 写 project shared store，`aw config set --scope project --local` 写 project local store；读命令默认读 effective。
+
+`file` / `directory` 类型写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘。每次读取本机 effective config 都会重新校验路径存在且类型正确；路径失效时，lifecycle 和 helper 会 fail closed。路径型 key 不能写入 project shared config，也不能进入 project artifact render config、digest、stale 判断或 refresh；需要项目内本机路径时，用 `--scope project --local`。
 
 `sensitive: true` 表示 AW CLI、status、lifecycle 输出、debug log 和插件测试失败摘要要脱敏；它不是系统 keychain 或加密存储承诺。插件自己的脚本如果读取了原始值，不能把它打印到 stdout、stderr 或日志里。
 
@@ -86,9 +89,11 @@ aw config get <plugin> --scope user --json
 aw config set <plugin> apiKey sk-test
 aw config set <plugin> maxFiles 20 --value-json
 aw config set <plugin> enabled true --value-json --scope project
+aw config set <plugin> workspaceDir ./tmp --scope project --local
 
 aw config unset <plugin> apiKey --scope user
 aw config reset <plugin> --scope project --yes
+aw config list <plugin> --scope project --local
 ```
 
 要点：
@@ -98,6 +103,8 @@ aw config reset <plugin> --scope project --yes
 - `--json` 控制命令输出格式；`--value-json` 只用于 `set`，表示把传入的 `<value>` 当 JSON literal 解析，适合 number、boolean，以及需要保留 JSON 字符串语义的值。
 - 交互式配置向导只在 `aw` 主控制台中提供；脚本化写配置只使用 `set`、`unset` 和 `reset`。
 - 插件只要能从当前 catalog 解析，即使还没有安装，也可以先用 `set` 预配置。
+- `aw config set --scope project` 会写 project shared config；如果 key 是 `file` / `directory` 类型，命令会在写入前失败，请改用 user store 或 `--scope project --local`。
+- `aw config get/list --scope project` 必须区分 project shared、project local 和最终 effective value；project local 覆盖不表示 repo-visible project artifacts 会刷新。
 - `unset` 删除某一层 store 中的单个 key，不会删除其它 key。
 - `reset` 删除整个 scope store。目标 store 存在时脚本化调用需要 `--yes`；目标 store 不存在时是 no-op。
 - `reset` 不需要当前 catalog 里仍有这个插件，因此可以用来清理已卸载或已从 catalog 移除的插件残留配置。
@@ -105,7 +112,7 @@ aw config reset <plugin> --scope project --yes
 
 ### 输出分层和 receipt
 
-默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。内部诊断词，例如 marketplace、app-server、RPC、cache、recovery breadcrumb、ledger、healthSource、tracking、config/script health 等，不应出现在默认成功输出里；需要诊断时使用 `--verbose` 或 `--debug`。
+默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。内部诊断词，例如 marketplace、app-server、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等，不应出现在默认成功输出里；需要诊断时使用 `--verbose` 或 `--debug`。
 
 所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt，可直接 `JSON.parse`。`init/install/uninstall/upgrade/config set/unset/reset --json` 至少包含 `ok`、`command`、`warnings`、`nextSteps`；安装、卸载、升级会按实际结果补充 `plugins`、`targets`、`actions`、`artifacts`、`native` 等字段；配置写命令会返回 `updatedKeys` / `removedKeys` 和稳定的 `artifactRefresh`。`config list/get --json` 保留既有数据结构，同时包含稳定的 `ok` 和 `command`。
 
@@ -120,6 +127,7 @@ node scripts/aw-config.mjs get apiKey
 node scripts/aw-config.mjs json
 node scripts/aw-config.mjs get mode --scope user
 node scripts/aw-config.mjs json --scope project
+node scripts/aw-config.mjs json --scope project-local
 ```
 
 helper 的读取路径分两种：
@@ -138,7 +146,7 @@ helper 的读取路径分两种：
 - `codex.developerInstructionsBlock`：写入当前 scope 的 Codex AW managed developer instructions block。
 - `codex.agentRole`：写入 role layer 文件，并在当前 scope Codex config 中注册 `[agents.<roleKey>]`。
 
-manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`。`artifacts.targets` 是安装前能力真值，负责 installability、project preflight、status current catalog 和 ledger snapshot；renderer 只负责根据当前 config 输出 `ArtifactPlan`。
+manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`。`artifacts.targets` 是安装前能力真值，负责 installability、project preflight、status current catalog、install record artifact identity 和 project artifact shared identity；renderer 只负责根据当前 config 输出 `ArtifactPlan`。
 
 ```json
 {
@@ -164,8 +172,9 @@ renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路�
 artifact render config 和 `aw config get/list` 的 effective config 不同：
 
 - user scope artifact 只按 `schema default < user store` 渲染。
-- project scope artifact 按 `schema default < user store < 当前 project store` 渲染。
+- project scope artifact 只按 `schema default < project shared store` 中可共享的非路径 key 渲染。
 - project config 不会影响 user artifact 的内容、digest、stale 判断或 refresh 结果。
+user store、project local store 和 `file` / `directory` key 只影响本机 effective config、lifecycle 或 helper，不进入 repo-visible artifact truth。
 
 renderer stdout 必须只输出 JSON：
 
@@ -205,13 +214,13 @@ renderer stdout 必须只输出 JSON：
 
 `disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
 
-renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。写盘、回滚、tracking、status 和 uninstall 都集中在 AW target apply。
+renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入刷新 user target，并在当前 repo 安装了 project target 时刷新当前 repo；project config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project，tracking 会用 `refreshReach` 记录本次刷新范围和其它已知 project target 是否可能 stale。refresh 失败不会回滚已经写入的 config store，但 `lastRefresh` 会记录失败摘要，`aw status`、`aw status --json.consoleItems` 和 JSON receipt 会把它投影为 recent refresh failed / `artifactRefreshFailed`，并给出重新应用配置的下一步。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入只刷新 user-scope dynamic artifacts；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
 
-refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 tracking 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 tracked refresh keys。成功后更新对应 artifact 的 `lastRefresh` 和 tracking 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 tracking 诊断；没有可定位 tracked dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
+refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 diagnostic cache；没有可定位 dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
 
-动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.codex/config.toml`、`.codex/agents/*.toml`、tracking 或 ledger。
+动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.codex/config.toml`、`.codex/agents/*.toml`、install record、diagnostic cache 或 project artifact identity。
 
 ## Lifecycle
 
@@ -268,7 +277,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - 不改写源码树和 generated bundle。
 - 写入 AW 受管状态前先创建目录，已有内容按可重复执行处理。
 - 清理操作允许目标不存在。
-- 不依赖当前 marketplace 中的同名插件；`uninstall` 可能使用安装时快照里的 historical bundle。
+- 不依赖当前 marketplace 中的同名插件；`uninstall` 会优先使用安装时保存的 historical lifecycle runtime。这个 runtime 只保留安全卸载所需的 bundle 引用，不是完整 install snapshot，也不能当作生成 artifacts 或依赖边的 current catalog。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
 `aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或修复 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。常见底层状态包括：
@@ -277,7 +286,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 |------|------|
 | config | `configured`、`missing-required`、`invalid-config`、`no-schema` |
 | scripts | `declared`、`not_declared`、`missing-from-bundle`、`unsupported-on-current-os` |
-| healthSource | `installSnapshot`、`currentCatalog`、`historical`、`none` |
+| healthSource | `installRecord`、`currentCatalog`、`historicalLifecycle`、`none` |
 
 ## 运行时 Context
 
@@ -311,10 +320,10 @@ const context = await readAwContext();
 | `paths.awHome` | 当前 AW home |
 | `paths.codexHome` / `paths.claudeHome` | 平台 home，lifecycle context 提供 |
 | `paths.manifestPath` | 当前 bundle manifest 路径，lifecycle context 提供 |
-| `paths.configStores.user/project` | user/project raw store 路径，有 config schema 时提供 |
+| `paths.configStores.user/project/projectLocal` | user、project shared、project local raw store 路径，有 config schema 时提供 |
 | `config.schema` | 当前 schema |
 | `config.values` | 已校验的 effective values |
-| `config.sources` | 每个 key 的来源：`default`、`user`、`project`、`missing` |
+| `config.sources` | 每个 key 的来源：`default`、`user`、`projectShared`、`projectLocal`、`missing` |
 | `config.issues` | 配置问题，lifecycle 正常执行前应为空 |
 | `script.runner`、`script.path`、`script.args`、`script.source` | 当前脚本解析结果；`pnpm plugin:test` 中 `script.path` 可为 `null` |
 | `artifacts` | install/upgrade 过程中生成的 managed artifacts |
@@ -386,7 +395,7 @@ test('config helper reads AW_PLUGIN_CONTEXT', async () => {
     plugin: { name: 'example-plugin' },
     config: {
       values: { apiKey: 'test-key', mode: 'strict' },
-      sources: { apiKey: 'user', mode: 'project' },
+      sources: { apiKey: 'user', mode: 'projectShared' },
       schema: {
         apiKey: { type: 'string', sensitive: true, required: true },
         mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' }

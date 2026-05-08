@@ -8,6 +8,9 @@ import { Command, CommanderError } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
+import { repairCommand } from './commands/repair.js';
+import { cleanupCommand } from './commands/cleanup.js';
+import { reinstallCommand } from './commands/reinstall.js';
 import {
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
@@ -21,13 +24,19 @@ import {
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
 import { statusCommand } from './commands/status.js';
+import { diagnoseCommand } from './commands/diagnose.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
+  normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
+  resolveConfigProjectLayer,
   resolveConfigWriteScope,
   normalizeCommandOptions,
+  normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
+  normalizeRepairCommandOptions,
+  normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
   parseSkillTriggerPreference,
@@ -41,7 +50,6 @@ import {
   buildInitReceiptJson,
   renderCommandReceipt,
   renderInitReceipt,
-  type CliCommandExecutionGroup,
   type CliCommandResult,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
@@ -52,6 +60,8 @@ import {
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveEffectivePluginConfig,
+  resolveProjectScopedPluginConfigView,
+  resolveProjectLocalPluginConfigView,
   summarizeEffectivePluginConfig,
   type PluginConfigIssue,
 } from './utils/plugin-config.js';
@@ -120,6 +130,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   json?: boolean;
   valueJson?: boolean;
   yes?: boolean;
+  local?: boolean;
 }
 
 function toCliDiagnosticsOptions(
@@ -161,6 +172,27 @@ function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean
   throw new Error(
     'upgrade 命令至少需要一个插件名，或传入 `--all`。运行 `aw` 打开交互控制台，或运行 `aw upgrade <plugin>` / `aw upgrade --all`。',
   );
+}
+
+function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (pluginNames.length > 0 || dependencyIndex) {
+    return;
+  }
+  throw new Error('repair 命令至少需要一个插件名，或显式传入 --dependency-index。');
+}
+
+function assertCleanupRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (dependencyIndex || pluginNames.length === 1) {
+    return;
+  }
+  throw new Error('cleanup 命令当前只支持单个插件目标。');
+}
+
+function assertReinstallRequestProvided(pluginNames: string[]): void {
+  if (pluginNames.length === 1) {
+    return;
+  }
+  throw new Error('reinstall 命令当前只支持单个插件目标。');
 }
 
 async function runActionWithContext<T>(
@@ -237,6 +269,50 @@ function configScopeLabel(scope: Scope): string {
   return scope === 'user' ? '个人' : '当前项目';
 }
 
+function configLayerLabel(scope: Scope, projectLayer: 'shared' | 'local' = 'shared'): string {
+  if (scope === 'user') {
+    return '个人';
+  }
+  return projectLayer === 'local' ? '当前项目（本机私有覆盖）' : '当前项目';
+}
+
+function renderCleanupResult(result: {
+  plugins: string[];
+  platforms: string[];
+  retiredEntries?: Array<{ location: unknown; recordPath: string }>;
+}): string[] {
+  if (result.retiredEntries) {
+    const lines = [`已退休 ${result.retiredEntries.length} 条 dependency index stale 引用。`];
+    for (const entry of result.retiredEntries) {
+      lines.push(`- ${entry.recordPath}`);
+    }
+    return lines;
+  }
+
+  return [
+    `已完成 ${result.plugins.join('、')} 的 cleanup。`,
+    ...(result.platforms.length > 0 ? [`目标：${result.platforms.join('、')}。`] : []),
+  ];
+}
+
+function buildCleanupReceiptJson(result: {
+  plugins: string[];
+  platforms: string[];
+  warnings: string[];
+  repoManagedArtifacts: unknown[];
+  retiredEntries?: Array<{ location: unknown; recordPath: string }>;
+}): Record<string, unknown> {
+  return {
+    ok: true,
+    command: 'cleanup',
+    plugins: result.plugins,
+    platforms: result.platforms,
+    retiredEntries: result.retiredEntries ?? [],
+    warnings: [...new Set(result.warnings)],
+    repoManagedArtifacts: result.repoManagedArtifacts,
+  };
+}
+
 function writeArtifactRefreshNotice(
   write: (text: string) => void,
   artifactRefresh: {
@@ -261,6 +337,8 @@ function formatConfigIssueRepairHint(
 ): string {
   const sourceScope = issue.source === 'user' || issue.source === 'project'
     ? ` -s ${issue.source}`
+    : issue.source === 'projectLocal'
+      ? ' -s project --local'
     : '';
   const setCommand = `aw config set ${pluginName} ${issue.key} <value>${sourceScope}`;
 
@@ -285,17 +363,92 @@ function formatConfigIssues(
   ].join('。'));
 }
 
+type LocalProjectConfigView = Awaited<ReturnType<typeof resolveProjectLocalPluginConfigView>>;
+type ProjectScopedConfigView = Awaited<ReturnType<typeof resolveProjectScopedPluginConfigView>>;
+type EffectiveConfigView = Awaited<ReturnType<typeof resolveEffectivePluginConfig>>;
+type ScopedConfigView = Awaited<ReturnType<typeof resolveConfigForRead>>;
+
+function isLocalProjectConfigView(value: ScopedConfigView): value is LocalProjectConfigView {
+  return 'localStore' in value;
+}
+
+function isProjectScopedConfigView(value: ScopedConfigView): value is ProjectScopedConfigView {
+  return 'entries' in value && 'repoVisibleArtifactConfig' in value && !('localStore' in value);
+}
+
+function writeProjectLocalConfigNotice(write: (text: string) => void): void {
+  writeLine(write, '当前显示的是当前项目的本机私有覆盖层，不作为 repo-visible artifact 渲染输入。');
+}
+
+function writeProjectScopedConfigNotice(write: (text: string) => void): void {
+  writeLine(
+    write,
+    '当前显示的是项目作用域的五层视图：manifest default < user < project shared < project local < effective；repo-visible artifact 仍只使用 project shared truth。',
+  );
+}
+
+function renderLayerValue(value: string | number | boolean | '[redacted]' | undefined): string {
+  return value === undefined ? '<unset>' : renderPluginConfigValueForDisplay(value);
+}
+
+function writeProjectScopedConfigEntry(
+  write: (text: string) => void,
+  key: string,
+  entry: ProjectScopedConfigView['entries'][string],
+): void {
+  writeLine(
+    write,
+    `${key}: effective=${entry.effectiveSource} ${renderLayerValue(entry.effectiveValue)}; ` +
+    `shared=${renderLayerValue(entry.projectSharedValue)}; local=${renderLayerValue(entry.projectLocalValue)}; ` +
+    `repo-visible=${entry.repoVisibleArtifactSource} ${renderLayerValue(entry.repoVisibleArtifactValue)}`,
+  );
+  if (
+    entry.effectiveSource === 'user' ||
+    entry.effectiveSource === 'projectLocal' ||
+    entry.effectiveValue !== entry.repoVisibleArtifactValue
+  ) {
+    writeLine(write, `  说明：本机 effective 值不改变 repo-visible artifact；共享真值仍取 project shared 层。`);
+  }
+}
+
 function writeConfigList(
   write: (text: string) => void,
   pluginName: string,
-  resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
+  resolved: ScopedConfigView,
 ): void {
+  if (isLocalProjectConfigView(resolved)) {
+    writeProjectLocalConfigNotice(write);
+  }
+  if (isProjectScopedConfigView(resolved)) {
+    writeProjectScopedConfigNotice(write);
+    for (const key of Object.keys(resolved.schema)) {
+      writeProjectScopedConfigEntry(write, key, resolved.entries[key]!);
+    }
+    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
+      writeLine(
+        write,
+        `共享 artifact 渲染输入存在边界问题：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
+      );
+    }
+    if (resolved.issues.length > 0) {
+      writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
+    }
+    return;
+  }
   for (const [key, field] of Object.entries(resolved.schema)) {
     const source = resolved.sources[key] ?? 'missing';
-    const configured = source === 'user' || source === 'project';
-    const required = field.required ? 'required' : 'optional';
+    const configured = source === 'user' || source === 'project' || source === 'projectLocal';
+    const required = field?.required ? 'required' : 'optional';
     const fromDefault = source === 'default' ? ', default' : '';
     writeLine(write, `${key}: ${source}${configured ? ', configured' : ''}, ${required}${fromDefault}`);
+  }
+  if (isLocalProjectConfigView(resolved)) {
+    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
+      writeLine(
+        write,
+        `共享 artifact 渲染输入仍以 project shared 为准：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
+      );
+    }
   }
   if (resolved.issues.length > 0) {
     writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
@@ -305,11 +458,53 @@ function writeConfigList(
 function writeConfigGet(
   write: (text: string) => void,
   pluginName: string,
-  resolved: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>,
+  resolved: ScopedConfigView,
   key?: string,
 ): void {
+  if (isLocalProjectConfigView(resolved)) {
+    writeProjectLocalConfigNotice(write);
+  }
+  if (isProjectScopedConfigView(resolved)) {
+    writeProjectScopedConfigNotice(write);
+    if (key) {
+      const entry = resolved.entries[key];
+      if (!entry) {
+        throw new Error(`Unknown config key "${key}".`);
+      }
+      writeLine(write, `effective=${renderLayerValue(entry.effectiveValue)}`);
+      writeLine(write, `default=${renderLayerValue(entry.defaultValue)}`);
+      writeLine(write, `user=${renderLayerValue(entry.userValue)}`);
+      writeLine(write, `project shared=${renderLayerValue(entry.projectSharedValue)}`);
+      writeLine(write, `project local=${renderLayerValue(entry.projectLocalValue)}`);
+      writeLine(
+        write,
+        `repo-visible artifact truth=${entry.repoVisibleArtifactSource} ${renderLayerValue(entry.repoVisibleArtifactValue)}`,
+      );
+      if (
+        entry.effectiveSource === 'user' ||
+        entry.effectiveSource === 'projectLocal' ||
+        entry.effectiveValue !== entry.repoVisibleArtifactValue
+      ) {
+        writeLine(write, '说明：本机 effective 值不会改写 repo-visible artifact。');
+      }
+    } else {
+      for (const [entryKey, entry] of Object.entries(resolved.entries)) {
+        writeProjectScopedConfigEntry(write, entryKey, entry);
+      }
+    }
+    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
+      writeLine(
+        write,
+        `共享 artifact 渲染输入存在边界问题：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
+      );
+    }
+    if (resolved.issues.length > 0) {
+      writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
+    }
+    return;
+  }
   if (key) {
-    if (!resolved.schema[key]) {
+    if (!('schema' in resolved) || !resolved.schema[key]) {
       throw new Error(`Unknown config key "${key}".`);
     }
     const value = resolved.redactedValues[key];
@@ -328,8 +523,25 @@ async function resolveConfigForRead(options: {
   pluginName: string;
   manifest: PluginManifestSource;
   scopeOrEffective: Scope | 'effective';
+  localOnly?: boolean;
   context: CliExecutionContext;
 }) {
+  if (options.localOnly) {
+    return resolveProjectLocalPluginConfigView({
+      pluginName: options.pluginName,
+      manifest: options.manifest,
+      cwd: options.context.cwd,
+      env: options.context.env,
+    });
+  }
+  if (options.scopeOrEffective === 'project') {
+    return resolveProjectScopedPluginConfigView({
+      pluginName: options.pluginName,
+      manifest: options.manifest,
+      cwd: options.context.cwd,
+      env: options.context.env,
+    });
+  }
   const resolved = await resolveEffectivePluginConfig({
     pluginName: options.pluginName,
     manifest: options.manifest,
@@ -472,6 +684,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -484,6 +697,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           skillTrigger?: string;
+          takeoverSharedRuntime?: boolean;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -586,6 +800,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -599,6 +814,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           skillTrigger?: string;
+          takeoverSharedRuntime?: boolean;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -642,6 +858,183 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       },
     );
 
+  program
+    .command('repair')
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
+    .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
+    .option('--dependency-index', 'repair the global dependency index only', false)
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('-j, --json', 'print repair result as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        skillTrigger?: string;
+        takeoverSharedRuntime?: boolean;
+        adoptExisting?: boolean;
+        dependencyIndex?: boolean;
+        scriptTimeout?: string;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('repair', rawOptions);
+      const result = await runActionWithContext(
+        context,
+        async () => {
+          const commandOptions = normalizeRepairCommandOptions({
+            cwd,
+            ...rawOptions,
+          });
+          assertRepairRequestProvided(plugins ?? [], commandOptions.dependencyIndex);
+          await emitCommandEvent(context, {
+            type: 'options:normalized',
+            data: {
+              plugins: plugins ?? [],
+              options: commandOptions,
+            },
+          });
+          return repairCommand(plugins ?? [], commandOptions, context);
+        },
+      );
+      writeLine(io.stdout, result.output);
+      commandExitState.exitCode = 0;
+    });
+
+  program
+    .command('cleanup')
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('--force', 'remove AW-owned blocks from shared config after creating a backup', false)
+    .option('--dependency-index', 'prune or repair stale dependency index entries', false)
+    .option('--prune-stale <token>', 'retire a single stale dependency index reference')
+    .option('-y, --yes', 'confirm cleanup or prune actions', false)
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('-j, --json', 'print cleanup result as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        force?: boolean;
+        dependencyIndex?: boolean;
+        pruneStale?: string;
+        yes?: boolean;
+        scriptTimeout?: string;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('cleanup', rawOptions);
+      const result = await runActionWithContext(
+        context,
+        async () => {
+          const commandOptions = normalizeCleanupCommandOptions({
+            cwd,
+            ...rawOptions,
+          });
+          assertCleanupRequestProvided(plugins ?? [], commandOptions.dependencyIndex);
+          await emitCommandEvent(context, {
+            type: 'options:normalized',
+            data: {
+              plugins: plugins ?? [],
+              options: commandOptions,
+            },
+          });
+          return cleanupCommand(plugins ?? [], commandOptions, context);
+        },
+      );
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, buildCleanupReceiptJson(result));
+      } else {
+        for (const line of renderCleanupResult(result)) {
+          writeLine(io.stdout, line);
+        }
+      }
+      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
+      commandExitState.exitCode = 0;
+    });
+
+  program
+    .command('reinstall')
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'project or user', 'user')
+    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
+    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('-j, --json', 'print receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        skillTrigger?: string;
+        takeoverSharedRuntime?: boolean;
+        scriptTimeout?: string;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('reinstall', rawOptions);
+      const receipt = await runActionWithContext(
+        context,
+        async () => {
+          const commandOptions = normalizeReinstallCommandOptions({
+            cwd,
+            ...rawOptions,
+          });
+          assertReinstallRequestProvided(plugins ?? []);
+          await emitCommandEvent(context, {
+            type: 'options:normalized',
+            data: {
+              plugins: plugins ?? [],
+              options: commandOptions,
+            },
+          });
+          const result = await reinstallCommand(plugins ?? [], commandOptions, context);
+          return {
+            result,
+            groups: [{
+              scope: commandOptions.scope,
+              platforms: result.platforms,
+              plugins: result.plugins,
+            }],
+          };
+        },
+      );
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          ok: true,
+          command: 'reinstall',
+          receipt: buildCommandReceiptJson('install', receipt),
+        });
+      } else {
+        const lines = renderCommandReceipt('install', receipt);
+        const [firstLine, ...restLines] = lines;
+        if (firstLine) {
+          writeLine(io.stdout, firstLine.replace('已安装', '已重新安装'));
+        }
+        for (const line of restLines) {
+          writeLine(io.stdout, line);
+        }
+      }
+      writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
+      commandExitState.exitCode = resolveCommandReceiptExitCode('install', receipt.result);
+    });
+
   const config = program
     .command('config')
     .description('Manage AW plugin configuration');
@@ -650,6 +1043,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('list')
     .argument('<plugin>')
     .option('-s, --scope <scope>', 'read only project or user config')
+    .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -658,19 +1052,55 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('config:list', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
         const plugin = await loadConfigManifest(pluginName, context);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
         return resolveConfigForRead({
           pluginName,
           manifest: plugin.manifest,
           scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
+          localOnly: projectLayer === 'local',
           context,
         });
       });
       if (rawOptions.json) {
+        const projectScopedSummary = isProjectScopedConfigView(resolved)
+          ? {
+              values: resolved.redactedValues,
+              sources: resolved.sources,
+              issues: resolved.issues,
+              ignoredUnknownKeys: resolved.ignoredUnknownKeys,
+            }
+          : null;
         writeJsonReceipt(io.stdout, {
           ok: true,
           command: 'config:list',
           plugin: pluginName,
-          summary: summarizeEffectivePluginConfig(resolved),
+          scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
+          projectLayer: rawOptions.local ? 'local' : 'shared',
+          localOnly: rawOptions.local === true,
+          summary: isLocalProjectConfigView(resolved)
+            ? {
+                values: resolved.redactedValues,
+                sources: resolved.sources,
+                issues: resolved.issues,
+                ignoredUnknownKeys: resolved.ignoredUnknownKeys,
+              }
+            : isProjectScopedConfigView(resolved)
+              ? projectScopedSummary
+            : summarizeEffectivePluginConfig(resolved as EffectiveConfigView),
+          ...(isProjectScopedConfigView(resolved)
+            ? {
+                note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
+                layers: resolved.entries,
+                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
+              }
+            : {}),
+          ...(isLocalProjectConfigView(resolved)
+            ? {
+                note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
+                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
+                localStorePath: resolved.localStore.path,
+              }
+            : {}),
         });
       } else {
         writeConfigList(io.stdout, pluginName, resolved);
@@ -682,6 +1112,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('<plugin>')
     .argument('[key]')
     .option('-s, --scope <scope>', 'read only project or user config')
+    .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -690,26 +1121,62 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('config:get', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
         const plugin = await loadConfigManifest(pluginName, context);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const configForRead = await resolveConfigForRead({
           pluginName,
           manifest: plugin.manifest,
           scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
+          localOnly: projectLayer === 'local',
           context,
         });
-        if (key && !configForRead.schema[key]) {
+        if (key && !('schema' in configForRead && configForRead.schema[key])) {
           throw new Error(`Unknown config key "${key}".`);
         }
         return configForRead;
       });
       if (rawOptions.json) {
+        const projectScopedSummary = isProjectScopedConfigView(resolved)
+          ? {
+              values: resolved.redactedValues,
+              sources: resolved.sources,
+              issues: resolved.issues,
+              ignoredUnknownKeys: resolved.ignoredUnknownKeys,
+            }
+          : null;
         writeJsonReceipt(io.stdout, {
           ok: true,
           command: 'config:get',
           plugin: pluginName,
           key,
-          summary: summarizeEffectivePluginConfig(resolved),
+          scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
+          projectLayer: rawOptions.local ? 'local' : 'shared',
+          localOnly: rawOptions.local === true,
+          summary: isLocalProjectConfigView(resolved)
+            ? {
+                values: resolved.redactedValues,
+                sources: resolved.sources,
+                issues: resolved.issues,
+                ignoredUnknownKeys: resolved.ignoredUnknownKeys,
+              }
+            : isProjectScopedConfigView(resolved)
+              ? projectScopedSummary
+            : summarizeEffectivePluginConfig(resolved as EffectiveConfigView),
           value: key ? resolved.redactedValues[key] : resolved.redactedValues,
           source: key ? resolved.sources[key] : resolved.sources,
+          ...(isProjectScopedConfigView(resolved)
+            ? {
+                note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
+                layers: key ? resolved.entries[key] : resolved.entries,
+                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
+              }
+            : {}),
+          ...(isLocalProjectConfigView(resolved)
+            ? {
+                note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
+                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
+                localStorePath: resolved.localStore.path,
+              }
+            : {}),
         });
       } else {
         writeConfigGet(io.stdout, pluginName, resolved, key);
@@ -722,6 +1189,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('<key>')
     .argument('<value>')
     .option('-s, --scope <scope>', 'project or user')
+    .option('--local', 'write only the current project local override layer', false)
     .option('--value-json', 'parse value as a JSON literal', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -737,11 +1205,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(context, async () => {
         const plugin = await loadConfigManifest(pluginName, context);
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
           pluginName,
           scope,
+          projectLayer,
           cwd: context.cwd,
           env: context.env,
           request: {
@@ -757,7 +1227,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
-        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configScopeLabel(receipt.scope)}配置）。`);
+        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`);
+        if (receipt.projectLayer === 'local') {
+          writeProjectLocalConfigNotice(io.stdout);
+        }
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -767,6 +1240,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('<plugin>')
     .argument('<key>')
     .option('-s, --scope <scope>', 'project or user')
+    .option('--local', 'write only the current project local override layer', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -779,9 +1253,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           throw new Error(`Unknown config key "${key}".`);
         }
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const store = await readPluginConfigStore({
           pluginName,
           scope,
+          ...(scope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
         });
@@ -790,6 +1266,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           plugin,
           pluginName,
           scope,
+          projectLayer,
           cwd: context.cwd,
           env: context.env,
           request: {
@@ -808,8 +1285,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.existed
-          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configScopeLabel(receipt.scope)}配置）。`
-          : `${receipt.plugin}.${receipt.removedKey}（${configScopeLabel(receipt.scope)}配置）原本不存在。`);
+          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`
+          : `${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）原本不存在。`);
+        if (receipt.projectLayer === 'local') {
+          writeProjectLocalConfigNotice(io.stdout);
+        }
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -818,6 +1298,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('reset')
     .argument('<plugin>')
     .option('-s, --scope <scope>', 'project or user')
+    .option('--local', 'reset only the current project local override layer', false)
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -828,15 +1309,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(context, async () => {
         assertSafePluginConfigSegment(pluginName);
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const store = await readPluginConfigStore({
           pluginName,
           scope,
+          ...(scope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
         });
         if (store.exists && !rawOptions.yes) {
           throw new Error(
-            `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope} --yes\` to delete this store.`,
+            `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
           );
         }
         let plugin: PluginMeta | undefined;
@@ -854,6 +1337,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const resetReceipt = await resetPluginConfigWithHelper({
           pluginName,
           scope,
+          projectLayer,
           cwd: context.cwd,
           env: context.env,
           plugin,
@@ -868,8 +1352,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.deleted
-          ? `已重置 ${receipt.plugin} 的${configScopeLabel(receipt.scope)}配置。`
-          : `${receipt.plugin} 没有可重置的${configScopeLabel(receipt.scope)}配置。`);
+          ? `已重置 ${receipt.plugin} 的${configLayerLabel(receipt.scope, receipt.projectLayer)}配置。`
+          : `${receipt.plugin} 没有可重置的${configLayerLabel(receipt.scope, receipt.projectLayer)}配置。`);
+        if (receipt.projectLayer === 'local') {
+          writeProjectLocalConfigNotice(io.stdout);
+        }
         writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
       }
     });
@@ -902,6 +1389,46 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }),
           context,
         ),
+      );
+      writeLine(io.stdout, result.output);
+    });
+
+  program
+    .command('diagnose')
+    .argument('[plugins...]')
+    .option('-s, --scope <scope>', 'filter by scope')
+    .option('-p, --platform <platform>', 'filter by platform')
+    .option('--deep', 'run dynamic artifact renderer without writing diagnostic cache', false)
+    .option('-v, --verbose', 'show diagnose details and command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .option('-j, --json', 'print diagnose result as JSON', false)
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        json?: boolean;
+        deep?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('diagnose', rawOptions);
+      const result = await runActionWithContext(
+        context,
+        async () => {
+          const commandOptions = normalizeDiagnoseCommandOptions({
+            cwd,
+            ...rawOptions,
+          });
+          await emitCommandEvent(context, {
+            type: 'options:normalized',
+            data: {
+              plugins: plugins ?? [],
+              options: commandOptions,
+            },
+          });
+          return diagnoseCommand(plugins ?? [], commandOptions, context);
+        },
       );
       writeLine(io.stdout, result.output);
     });

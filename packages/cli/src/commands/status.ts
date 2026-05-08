@@ -5,9 +5,11 @@ import fs from 'fs-extra';
 
 import type {
   EnvironmentDetection,
+  GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
   LifecycleConfigSnapshotMetadata,
+  ManagedArtifactStatus,
   PlatformName,
   PluginLocation,
   PluginStatusReport,
@@ -20,7 +22,10 @@ import type {
   StatusHealthSource,
   StatusScriptHealth,
   StatusReport,
+  NativePluginStatus,
 } from '../types.js';
+import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recovery.js';
+import { readCodexNativePluginState } from '../utils/codex-native-state.js';
 import { detectEnvironment } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { readPluginManifest } from '../utils/manifest.js';
@@ -42,8 +47,14 @@ import {
 } from '../utils/plugin-dependency-location.js';
 import { resolveEffectivePluginConfig, type PluginConfigIssue } from '../utils/plugin-config.js';
 import {
+  assessSharedSkillTriggerRuntimeSemantics,
+  type SharedSkillTriggerRuntimeSemanticsAssessment,
+  type SkillTriggerMaterializationTarget,
+} from '../utils/skill-trigger-preferences.js';
+import {
   calculatePluginBundleFingerprint,
 } from '../utils/plugin-scripts.js';
+import { resolveAwHome } from '../utils/paths.js';
 import { resolveLifecycleScriptForOs } from '../utils/plugin-script-contract.js';
 import {
   createAdapters,
@@ -70,6 +81,11 @@ import {
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
 } from './options.js';
+import {
+  collectP7Locations,
+  renderStatusHumanOutput,
+  type StatusJsonPayload as P7StatusJsonPayload,
+} from './diagnose.js';
 import { isCodexProjectStatusFatalError } from './codex-project-safety.js';
 
 type StatusCommandRuntime = CommandExecutionContextInput;
@@ -100,6 +116,42 @@ export interface StatusMatrixCell {
   healthWarnings?: string[];
   disabledReason?: string;
   error?: string;
+  installState?: StatusMatrixInstallState;
+}
+
+export interface StatusMatrixInstallState {
+  kind: 'installed' | 'needsRepair' | 'adoptable' | 'residual' | 'externallyManaged' | 'notInstalled';
+  summary: string;
+  nextSteps: string[];
+  findings: string[];
+  issueCodes: string[];
+  autoInstalled: boolean;
+  unusedDependencyHint: boolean;
+  dependents: Array<{
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    projectKey?: string | null;
+  }>;
+  repairAvailable: boolean;
+  cleanupAvailable: boolean;
+  adoptExistingAvailable: boolean;
+  currentCatalogAvailable: boolean;
+  catalogDrift: boolean;
+  upgradeAvailable: boolean;
+  dynamicDiagnosticUnavailable: boolean;
+  nativeTransactionKind:
+    | 'none'
+    | 'markerOnlyInstall'
+    | 'recordInstallResidual'
+    | 'markerOnlyUninstall'
+    | 'recordUninstallResidual'
+    | 'invalid';
+  sharedRuntimeOwnerPresent: boolean;
+  sharedRuntimeNeedsTakeover: boolean;
+  sharedRuntimeParticipatesInOwner: boolean;
+  sharedRuntimeSemanticDelta: 'change' | 'noChange' | 'unknown';
+  sharedRuntimeOwnerConflict: boolean;
 }
 
 export interface StatusSummary {
@@ -1507,6 +1559,174 @@ async function resolveConsoleLocationDiagnostics(options: {
   }
 }
 
+function statusHealthFromProjectionKind(
+  kind: StatusMatrixInstallState['kind'],
+): StatusHealth {
+  switch (kind) {
+    case 'installed':
+      return 'ready';
+    case 'externallyManaged':
+      return 'external';
+    case 'notInstalled':
+      return 'notInstalled';
+    default:
+      return 'needsAttention';
+  }
+}
+
+function hasAwNativeResidueDiscoveryEvidence(
+  state: Awaited<ReturnType<typeof collectP7Locations>>['locations'][number],
+): boolean {
+  const sources = state.target.discoveryEvidence?.sources ?? [];
+  return sources.includes('codexNativeConfig') ||
+    sources.includes('codexNativeCache') ||
+    sources.includes('codexNativeRecovery') ||
+    sources.includes('codexSharedNativeRef');
+}
+
+function statusHealthForCollectedState(
+  state: Awaited<ReturnType<typeof collectP7Locations>>['locations'][number],
+  installState: StatusMatrixInstallState,
+): StatusHealth {
+  if (state.target.discoveryEvidence?.readErrors.length) {
+    return 'unknown';
+  }
+  if (
+    (installState.kind === 'externallyManaged' || installState.kind === 'notInstalled') &&
+    hasAwNativeResidueDiscoveryEvidence(state)
+  ) {
+    return 'needsAttention';
+  }
+  return statusHealthFromProjectionKind(installState.kind);
+}
+
+function createSkillTriggerMaterializationTargetForStatus(options: {
+  platform: PlatformName;
+  scope: Scope;
+  executionCwd: string;
+  env: NodeJS.ProcessEnv;
+}): SkillTriggerMaterializationTarget {
+  if (options.platform === 'codex' && options.scope === 'project') {
+    return {
+      platform: 'codex',
+      scope: 'project',
+      kind: 'repoSkill',
+      root: path.join(options.executionCwd, '.agents', 'skills'),
+    };
+  }
+
+  if (options.platform === 'codex') {
+    return {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: resolveAwHome(options.env),
+    };
+  }
+
+  return {
+    platform: 'claude',
+    scope: options.scope,
+    kind: 'localMarketplaceRuntime',
+    root: resolveAwHome(options.env),
+  };
+}
+
+async function resolveSharedRuntimeAssessmentForState(options: {
+  location: {
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    projectKey?: string | null;
+  };
+  executionCwd: string;
+  currentPlugin?: PluginMeta;
+  recordPreference?: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<SharedSkillTriggerRuntimeSemanticsAssessment | null> {
+  if (!options.currentPlugin) {
+    return null;
+  }
+
+  try {
+    return await assessSharedSkillTriggerRuntimeSemantics({
+      pluginName: options.location.plugin,
+      platform: options.location.platform,
+      locationScope: options.location.scope,
+      preference: options.recordPreference === 'manual' || options.recordPreference === 'auto'
+        ? options.recordPreference
+        : 'default',
+      embeddedRoot: path.dirname(options.currentPlugin.rootDir),
+      target: createSkillTriggerMaterializationTargetForStatus({
+        platform: options.location.platform,
+        scope: options.location.scope,
+        executionCwd: options.executionCwd,
+        env: options.env,
+      }),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function createInstallStateForCell(options: {
+  state: Awaited<ReturnType<typeof collectP7Locations>>['locations'][number];
+  env: NodeJS.ProcessEnv;
+}): Promise<StatusMatrixInstallState> {
+  const { state, env } = options;
+  const location = normalizePluginLocation({
+    plugin: state.location.plugin,
+    platform: state.location.platform,
+    scope: state.location.scope,
+    projectKey: state.location.projectKey ?? null,
+  });
+  const recordPreference = state.evidence.installRecord.read.status === 'ok'
+    ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference
+    : undefined;
+  const sharedRuntimeAssessment = await resolveSharedRuntimeAssessmentForState({
+    location,
+    executionCwd: state.target.executionCwd,
+    currentPlugin: state.target.currentPlugin,
+    recordPreference,
+    env,
+  });
+  const sharedRuntimeOwnerConflict = Boolean(
+    state.evidence.sharedRuntimeOwner.needsTakeover &&
+    sharedRuntimeAssessment?.participatesInSharedRuntimeOwner === true &&
+    sharedRuntimeAssessment.semanticDelta !== 'noChange',
+  );
+
+  return {
+    kind: state.projection.kind,
+    summary: state.summary,
+    nextSteps: state.nextSteps,
+    findings: state.findings,
+    issueCodes: state.projection.issues.map((issue) => issue.code),
+    autoInstalled: state.projection.autoInstalled,
+    unusedDependencyHint: state.projection.unusedDependencyHint,
+    dependents: state.projection.dependents.map((dependent) =>
+      normalizePluginLocation({
+        plugin: dependent.plugin,
+        platform: dependent.platform,
+        scope: dependent.scope,
+        projectKey: dependent.projectKey ?? null,
+      })),
+    repairAvailable: state.projection.repairAvailable,
+    cleanupAvailable: state.projection.cleanupAvailable,
+    adoptExistingAvailable: state.projection.adoptExistingAvailable,
+    currentCatalogAvailable: Boolean(state.target.currentPlugin),
+    catalogDrift: state.projection.catalogDrift,
+    upgradeAvailable: state.projection.upgradeAvailable,
+    dynamicDiagnosticUnavailable: state.projection.dynamicDiagnosticUnavailable,
+    nativeTransactionKind: state.projection.nativeTransactionKind,
+    sharedRuntimeOwnerPresent: state.evidence.sharedRuntimeOwner.read.status === 'ok',
+    sharedRuntimeNeedsTakeover: state.evidence.sharedRuntimeOwner.needsTakeover,
+    sharedRuntimeParticipatesInOwner: sharedRuntimeAssessment?.participatesInSharedRuntimeOwner === true,
+    sharedRuntimeSemanticDelta: sharedRuntimeAssessment?.semanticDelta ?? 'unknown',
+    sharedRuntimeOwnerConflict,
+  };
+}
+
 function createStatusJsonPayload(options: {
   matrix: StatusMatrixReport;
   friendlySummaries: FriendlyStatusSummary[];
@@ -1521,6 +1741,172 @@ function createStatusJsonPayload(options: {
   };
 }
 
+function nativeRecoverySuggestion(pluginName: string): string {
+  return `aw uninstall ${pluginName} -p codex -s user`;
+}
+
+function isHistoricalCodexRoleWithoutRecoverableIdentity(
+  artifact: GeneratedArtifact,
+): boolean {
+  return artifact.platform === 'codex' &&
+    artifact.target === 'codex.agentRole' &&
+    artifact.id !== undefined &&
+    !artifact.roleKey?.trim() &&
+    !artifact.artifactKey?.trim();
+}
+
+function createHistoricalUnavailableManagedArtifacts(
+  state: Awaited<ReturnType<typeof collectP7Locations>>['locations'][number],
+): ManagedArtifactStatus[] {
+  const historicalArtifacts = state.target.historicalArtifacts ?? [];
+  return historicalArtifacts
+    .filter((artifact) =>
+      artifact.platform === state.location.platform &&
+      isHistoricalCodexRoleWithoutRecoverableIdentity(artifact)
+    )
+    .map((artifact) => ({
+      path: artifact.path,
+      exists: false,
+      kind: artifact.kind,
+      ...(artifact.paths ? { paths: [...artifact.paths] } : {}),
+      ...(artifact.id ? { id: artifact.id } : {}),
+      ...(artifact.target ? { target: artifact.target } : {}),
+      ...(artifact.state ? { state: artifact.state } : {}),
+      ...(artifact.disabledReason ? { disabledReason: artifact.disabledReason } : {}),
+      ...(artifact.refreshKeys ? { refreshKeys: [...artifact.refreshKeys] } : {}),
+      ...(artifact.configDigest ? { configDigest: artifact.configDigest } : {}),
+      ...(artifact.contentDigest ? { contentDigest: artifact.contentDigest } : {}),
+      ...(artifact.lastRefresh ? { lastRefresh: artifact.lastRefresh } : {}),
+      ...(artifact.refreshReach ? { refreshReach: artifact.refreshReach } : {}),
+      tracked: true,
+      health: 'unavailable',
+      sessionVisibility: 'absent',
+      diagnostics: ['无法从 tracking 或静态 metadata 恢复 codex.agentRole 的真实 roleKey。'],
+    }));
+}
+
+async function createCompatNativeStatus(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  env: NodeJS.ProcessEnv;
+}): Promise<NativePluginStatus> {
+  const base: NativePluginStatus = {
+    marketplaceRegistered: false,
+    pluginAvailable: true,
+    pluginInstalled: false,
+    pluginEnabled: false,
+    recovery: {
+      present: false,
+      state: null,
+      reason: null,
+      evidenceMatches: null,
+      suggestion: null,
+    },
+  };
+
+  if (options.platform !== 'codex' || options.scope !== 'user') {
+    return base;
+  }
+
+  try {
+    const native = await readCodexNativePluginState(options.pluginName, options.env);
+    base.configPath = native.configPath;
+    base.configEntryPresent = native.configEntryPresent;
+    base.pluginEnabled = native.pluginEnabled;
+    base.pluginInstalled = native.pluginInstalled;
+    base.cacheRootPath = native.cacheRootPath;
+    base.cacheStatus = native.cacheStatus;
+    if (native.activeCacheVersion) {
+      base.activeCacheVersion = native.activeCacheVersion;
+    }
+    if (native.activeCachePath) {
+      base.activeCachePath = native.activeCachePath;
+    }
+    base.validCachePaths = native.validCachePaths;
+    base.invalidCachePaths = native.invalidCachePaths;
+    base.ignoredCacheEntries = native.ignoredCacheEntries;
+  } catch {
+    return base;
+  }
+
+  const recovery = await readCodexNativeRecoveryBreadcrumb(options.pluginName, options.env);
+  if (recovery) {
+    base.recovery = {
+      present: true,
+      state: recovery.state,
+      reason: recovery.reason,
+      evidenceMatches: Boolean(base.pluginInstalled && base.pluginEnabled),
+      suggestion: nativeRecoverySuggestion(options.pluginName),
+    };
+  }
+
+  return base;
+}
+
+async function createCompatibilityReports(options: {
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
+  env: NodeJS.ProcessEnv;
+}): Promise<StatusReport[]> {
+  const reports = new Map<string, StatusReport>();
+  for (const state of options.locations) {
+    const key = `${state.location.platform}:${state.location.scope}`;
+    const report = reports.get(key) ?? {
+      platform: state.location.platform,
+      scope: state.location.scope,
+      initialized: false,
+      scopeInitialized: state.evidence.installRecord.present ? 'yes' : 'no',
+      plugins: [],
+    };
+    report.initialized ||= state.evidence.installRecord.present ||
+      state.evidence.platform.codexNative?.anyNativeEvidence === true ||
+      Boolean(state.target.discoveryEvidence?.sources.length);
+    report.scopeInitialized = state.evidence.installRecord.present ? 'yes' : report.scopeInitialized;
+    const managedArtifacts = createHistoricalUnavailableManagedArtifacts(state);
+    report.plugins.push({
+      pluginName: state.location.plugin,
+      native: await createCompatNativeStatus({
+        pluginName: state.location.plugin,
+        platform: state.location.platform,
+        scope: state.location.scope,
+        env: options.env,
+      }),
+      generatedArtifacts: [],
+      managedArtifacts,
+      driftWarnings: [],
+      ledgerStateStatus: 'available',
+      ledgerStateReason: null,
+      scopeInitialized: state.evidence.installRecord.present ? 'yes' : 'no',
+      externalOwnership: { present: state.projection.kind === 'externallyManaged', checkState: 'known' },
+      projectTrust: state.location.scope === 'project' ? 'unknown' : 'not_applicable',
+      scopeManagedEvidence: {
+        ledger: state.target.discoveryEvidence?.sources.includes('ledger') === true || state.evidence.installRecord.present,
+        tracking: state.target.discoveryEvidence?.sources.includes('tracking') === true,
+        sharedNativeRef: state.target.discoveryEvidence?.sources.includes('codexSharedNativeRef') === true,
+      },
+      repoManagedSessionState: {
+        instructions: 'not_applicable',
+        rules: 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
+        diagnostics: [],
+        items: [],
+      },
+      currentCatalog: state.currentCatalog
+        ? {
+            rootDir: state.target.currentPlugin?.rootDir ?? '',
+            source: 'local',
+            available: true,
+          }
+        : undefined,
+      artifactsInitialized: !state.projection.dynamicDiagnosticUnavailable,
+    });
+    reports.set(key, report);
+  }
+
+  return sortReports([...reports.values()]);
+}
+
 export async function statusCommand(
   pluginNames: string[],
   rawOptions: RawStatusCommandOptions,
@@ -1532,301 +1918,210 @@ export async function statusCommand(
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleItem[];
 }> {
-  const options = normalizeStatusCommandOptions(rawOptions);
+  const collected = await collectP7Locations(pluginNames, rawOptions, runtime);
+  const options = collected.options;
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
-  const adapters = createAdapters(options.cwd, context);
   const requestedPlugins = pluginNames.length > 0 ? pluginNames : undefined;
-  const [
-    ledger,
-    { plugins: catalogPlugins },
-    visibleCandidates,
-  ] = await Promise.all([
-    readInstalledLedger(env),
-    resolveCatalogPlugins(undefined, env),
-    buildCommandCandidates({
-      command: 'status',
-      cwd: options.cwd,
-      scopeFilter: options.scope,
-      platformFilter: options.platform,
-      pluginNames: requestedPlugins,
-      env,
-    }),
-  ]);
-  const hiddenCandidateFetches = new Map<string, Promise<CommandCandidate[]>>();
-  for (const platform of new Set(visibleCandidates.map((candidate) => candidate.platform))) {
-    hiddenCandidateFetches.set(
-      `${platform}:user`,
-      buildCommandCandidates({
-        command: 'status',
-        cwd: options.cwd,
-        platformFilter: platform,
-        scopeFilter: 'user',
-        env,
-      }),
-    );
-    if (visibleCandidates.some((candidate) => candidate.platform === platform && candidate.scope === 'project')) {
-      hiddenCandidateFetches.set(
-        `${platform}:project`,
-        buildCommandCandidates({
-          command: 'status',
-          cwd: options.cwd,
-          platformFilter: platform,
-          scopeFilter: 'project',
-          env,
-        }),
-      );
-    }
-  }
-  const hiddenCandidateGroups = await Promise.all(hiddenCandidateFetches.values());
-  const allDiscoveredCandidates = hiddenCandidateGroups.flat();
-  const visibleCandidateIds = new Set(visibleCandidates.map((candidate) => candidate.id));
-  const candidates = new Map<string, CommandCandidate>();
-  for (const candidate of visibleCandidates) {
-    candidates.set(candidate.id, candidate);
-  }
-  for (const candidate of allDiscoveredCandidates) {
-    candidates.set(candidate.id, candidate);
-  }
-
-  const reportsByKey = createReportsByKey();
-  const cells: StatusMatrixCell[] = [];
-  const allCellsByLocation = new Map<string, StatusMatrixCell>();
-  const healthPluginByLocation = new Map<string, PluginMeta>();
-  const pluginMetaByName: Record<string, PluginConsolePluginMeta> = {};
-  const locationDiagnosticsByKey: Record<string, PluginConsoleLocationDiagnostics> = {};
-
-  for (const candidate of candidates.values()) {
-    const isVisible = visibleCandidateIds.has(candidate.id);
-    const currentPlugin = candidate.target.currentPlugin ?? candidate.target.plugin;
-    pluginMetaByName[candidate.pluginName] ??= {
-      title: currentPlugin.manifest.name,
-      description: currentPlugin.manifest.description,
-      version: currentPlugin.manifest.version,
-    };
-
-    if (candidate.evidence.readErrors.length > 0) {
-      const cell: StatusMatrixCell = {
-        pluginName: candidate.pluginName,
-        platform: candidate.platform,
-        scope: candidate.scope,
-        projectKey: candidate.projectKey,
-        projectRoot: candidate.projectRoot,
-        executionCwd: candidate.executionCwd,
-        health: 'unknown',
-        evidenceSources: candidate.evidence.sources,
-        healthSource: 'none',
-        config: 'no-schema',
-        scripts: 'not_declared',
-        disabledReason: candidate.disabledReason,
-        error: candidate.evidence.readErrors.join('；'),
-      };
-      allCellsByLocation.set(serializePluginLocation(cellLocation(cell)), cell);
-      if (isVisible) {
-        cells.push(cell);
-      }
-      continue;
-    }
-
-    try {
-      const status = await adapters[candidate.platform].status(
-        candidate.target.plugin,
-        candidate.scope,
-      );
-      const pluginStatus = status.plugins[0];
-      const pluginHasAnyDiscoveryEvidence = Object.values(
-        candidate.evidenceByPlatformScope,
-      ).some((evidence) => evidence.sources.length > 0);
-      const hasEvidence =
-        pluginStatus &&
-        (hasHistoricalEvidence(pluginStatus) || hasRuntimeEvidence(pluginStatus));
-      const hasHistoricalHealthEvidence =
-        Boolean(hasEvidence) ||
-        candidate.evidence.sources.length > 0 ||
-        pluginHasAnyDiscoveryEvidence;
-
-      if (!isVisible && !hasEvidence && !pluginHasAnyDiscoveryEvidence) {
-        continue;
-      }
-
-      const runtimeHealth = await resolveStatusRuntimeHealth({
-        pluginName: candidate.pluginName,
-        platform: candidate.platform,
-        scope: candidate.scope,
-        projectKey: candidate.projectKey,
-        ledger,
-        currentPlugin: candidate.target.currentPlugin,
-        hasHistoricalEvidence: hasHistoricalHealthEvidence,
-        cwd: candidate.executionCwd,
-        env,
-      });
-      const { plugin: healthPlugin, ...runtimeHealthForCell } = runtimeHealth;
-
-      const cell: StatusMatrixCell = {
-        pluginName: candidate.pluginName,
-        platform: candidate.platform,
-        scope: candidate.scope,
-        projectKey: candidate.projectKey,
-        projectRoot: candidate.projectRoot,
-        executionCwd: candidate.executionCwd,
-        health: resolvePluginHealth(pluginStatus, candidate.platform, candidate.scope),
-        report: pluginStatus,
-        evidenceSources: candidate.evidence.sources,
-        ...runtimeHealthForCell,
-        disabledReason: candidate.disabledReason,
-      };
-      const locationKey = serializePluginLocation(cellLocation(cell));
-      allCellsByLocation.set(locationKey, cell);
-      if (healthPlugin && runtimeHealth.healthSource === 'installSnapshot') {
-        healthPluginByLocation.set(locationKey, healthPlugin);
-      }
-
-      if (isVisible) {
-        upsertReport(reportsByKey, candidate, status);
-        cells.push(cell);
-
-        const consoleDiagnostics = await resolveConsoleLocationDiagnostics({
-          cell,
-          currentPlugin: candidate.target.currentPlugin,
-          ledger,
-        });
-        if (consoleDiagnostics) {
-          locationDiagnosticsByKey[createPluginConsoleLocationKey(cell)] = consoleDiagnostics;
-        }
-      }
-    } catch (error) {
-      if (isCodexProjectStatusFatalError(error)) {
-        throw error;
-      }
-
-      const cell: StatusMatrixCell = {
-        pluginName: candidate.pluginName,
-        platform: candidate.platform,
-        scope: candidate.scope,
-        projectKey: candidate.projectKey,
-        projectRoot: candidate.projectRoot,
-        executionCwd: candidate.executionCwd,
-        health: 'unknown',
-        evidenceSources: candidate.evidence.sources,
-        healthSource: 'none',
-        config: 'no-schema',
-        scripts: 'not_declared',
-        disabledReason: candidate.disabledReason,
-        error: statusErrorMessage(error),
-      };
-      allCellsByLocation.set(serializePluginLocation(cellLocation(cell)), cell);
-      if (isVisible) {
-        cells.push(cell);
-      }
-    }
-  }
-
-  const plannerInstalledRecords: PluginDependencyPlannerInstalledRecord[] = iterateInstalledScopeRecords(ledger)
-    .map(({ location, record }) => {
-      const locationKey = serializePluginLocation(location);
-      const healthCell = allCellsByLocation.get(locationKey);
-      const snapshotManifest = healthCell?.healthSource === 'installSnapshot'
-        ? healthPluginByLocation.get(locationKey)?.manifest
-        : undefined;
+  const installStates = await Promise.all(collected.locations.map((state) =>
+    createInstallStateForCell({ state, env }),
+  ));
+  const compatibilityReports = await createCompatibilityReports({
+    locations: collected.locations,
+    env,
+  });
+  const cells: StatusMatrixCell[] = collected.locations.map((state, index) => ({
+    pluginName: state.location.plugin,
+    platform: state.location.platform,
+    scope: state.location.scope,
+    ...(state.location.projectKey ? { projectKey: state.location.projectKey } : {}),
+    executionCwd: state.target.executionCwd,
+    health: statusHealthForCollectedState(state, installStates[index]!),
+    evidenceSources: [
+      state.evidence.installRecord.present ? 'record' : '',
+      state.evidence.projectSharedIdentity.present ? 'projectIdentity' : '',
+      state.evidence.dynamicDiagnostic.available ? 'dynamicDiagnostic' : '',
+    ].filter((value) => value.length > 0),
+    healthSource: state.currentCatalog ? 'currentCatalog' : 'none',
+    config: 'no-schema',
+    scripts: 'not_declared',
+    ...(state.target.discoveryEvidence?.readErrors.length
+      ? { error: state.target.discoveryEvidence.readErrors.join('\n') }
+      : {}),
+    installState: installStates[index],
+  }));
+  const summaries: StatusSummary[] = [...new Set(cells.map((cell) => cell.pluginName))]
+    .map((pluginName) => {
+      const pluginCells = cells.filter((cell) => cell.pluginName === pluginName);
+      const pluginStates = collected.locations.filter((state) => state.location.plugin === pluginName);
       return {
-        location,
-        resolvedVersion: record.resolvedVersion,
-        installSource: record.installSource,
-        dependencyEdges: record.dependencyEdges,
-        installOptions: record.installOptions,
-        snapshotManifest,
+        pluginName,
+        health: combineHealth(pluginCells.map((cell) => cell.health)),
+        cells: pluginCells.map((cell) => ({
+          platform: cell.platform,
+          scope: cell.scope,
+          health: cell.health,
+          healthSource: cell.healthSource,
+          config: cell.config,
+          scripts: cell.scripts,
+          ...(cell.projectKey ? { projectKey: cell.projectKey } : {}),
+        })),
+        nextSteps: [...new Set(pluginStates.flatMap((state) => state.nextSteps))],
       };
-    });
-  const plannerHealthRecords: PluginDependencyPlannerHealthRecord[] = iterateInstalledScopeRecords(ledger)
-    .map(({ location, record }) => {
-      const locationKey = serializePluginLocation(location);
-      return {
-        location,
-        state: resolvePlannerHealthState(
-          allCellsByLocation.get(locationKey),
-          record as InstalledScopeRecord<Record<string, unknown>>,
-        ),
-        visible: true,
-        managedByAw: record.managed === true,
-      };
-    });
-  const plannerState: PluginDependencyPlannerState = {
-    currentCatalogByPlugin: Object.fromEntries(
-      catalogPlugins.map((plugin) => [plugin.manifest.name, plugin.manifest] as const),
-    ),
-    installedRecords: plannerInstalledRecords,
-    healthRecords: plannerHealthRecords,
-  };
-  const dependenciesByLocation = buildDependencyStatusProjectionByLocation(
-    projectPluginDependencyStatus({ state: plannerState }),
-  );
-
-  for (const cell of allCellsByLocation.values()) {
-    if (!cell.report) {
-      continue;
-    }
-    const dependencies = dependenciesByLocation[serializePluginLocation(cellLocation(cell))];
-    if (!dependencies) {
-      continue;
-    }
-    cell.report.dependencies = dependencies;
-    if (
-      dependencies.missing.length > 0 &&
-      (cell.health === 'ready' || cell.health === 'partial')
-    ) {
-      cell.health = 'needsAttention';
-    }
-  }
-
-  const sortedCells = sortCells(cells);
-  const cellsByPlugin = new Map<string, StatusMatrixCell[]>();
-  for (const cell of sortedCells) {
-    cellsByPlugin.set(cell.pluginName, [...(cellsByPlugin.get(cell.pluginName) ?? []), cell]);
-  }
-
-  const summaries = [...cellsByPlugin.entries()]
-    .map(([pluginName, pluginCells]) => createSummary(pluginName, pluginCells));
-  for (const pluginName of requestedPlugins ?? []) {
-    if (!cellsByPlugin.has(pluginName)) {
-      summaries.push(createNotInstalledSummary(pluginName));
-    }
-  }
-
-  const reports = sortReports([...reportsByKey.values()]);
-  const detection = await detectEnvironment(options.cwd, env);
+    })
+    .sort((left, right) => left.pluginName.localeCompare(right.pluginName));
   const matrix: StatusMatrixReport = {
-    detection,
+    detection: collected.detection,
     filters: {
       ...(options.platform ? { platform: options.platform } : {}),
       ...(options.scope ? { scope: options.scope } : {}),
       ...(requestedPlugins ? { plugins: requestedPlugins } : {}),
     },
-    health: combineHealth(summaries.map((summary) => summary.health)),
+    health: cells.some((cell) => cell.health === 'needsAttention')
+      ? 'needsAttention'
+      : cells.some((cell) => cell.health === 'ready')
+        ? 'ready'
+        : cells.every((cell) => cell.health === 'notInstalled')
+          ? 'notInstalled'
+          : 'unknown',
     summaries,
-    cells: sortedCells,
-    reports,
+    cells: sortCells(cells),
+    reports: compatibilityReports,
   };
-  const consoleItems = createPluginConsoleItems(matrix, {
-    pluginMetaByName,
-    locationDiagnosticsByKey,
-  });
+  const consoleItems = createPluginConsoleItems(matrix);
   const friendlySummaries = buildFriendlySummaries(matrix, consoleItems);
-  const jsonPayload = createStatusJsonPayload({
-    matrix,
+  const jsonPayload: P7StatusJsonPayload & StatusMatrixReport & Pick<StatusJsonPayload, 'friendlySummaries' | 'consoleItems'> = {
+    ok: true,
+    command: 'status',
+    detection: matrix.detection,
+    filters: matrix.filters,
+    health: matrix.health,
+    summaries: matrix.summaries,
+    cells: matrix.cells,
+    reports: matrix.reports,
+    generatedAt: new Date().toISOString(),
+    locations: [],
     friendlySummaries,
     consoleItems,
+  };
+  const statusLocations: P7StatusJsonPayload['locations'] = collected.locations.map((state, index) => {
+    const installState = installStates[index]!;
+    const staleProjectReferences = state.dependencyIndexActions.filter((action) =>
+      action.type === 'staleProjectReference');
+    const dependencyIndexRecoveryMessage = state.projection.dependencyIndexCoverageTrusted
+      ? null
+      : state.projection.dependencyIndexRevisitProjectLocations.length > 0
+        ? `请回到这些位置重新运行 diagnose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+          .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
+          .join('，')}。`
+        : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
+          ? '请回到可能相关的仓库重新运行 diagnose 或 repair。'
+          : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`;
+    return {
+      plugin: state.location.plugin,
+      platform: state.location.platform,
+      scope: state.location.scope,
+      ...(state.location.projectKey ? { projectKey: state.location.projectKey } : {}),
+      summary: state.summary,
+      locationLabel: state.location.platform === 'codex'
+        ? `Codex（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`
+        : `Claude Code（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`,
+      state: state.projection.kind,
+      nextSteps: state.nextSteps,
+      record: {
+        present: state.evidence.installRecord.present,
+        status: state.evidence.installRecord.read.status,
+        path: state.evidence.installRecord.read.path,
+        sourceDrift: state.evidence.installRecord.sourceDrift,
+        sameBundleAsCatalog: state.evidence.installRecord.sameBundleAsCatalog,
+      },
+      dynamicDiagnostic: {
+        available: state.evidence.dynamicDiagnostic.available,
+        unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
+        unavailable: state.projection.dynamicDiagnosticUnavailable,
+        entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
+      },
+      dependencyIndex: {
+        status: state.evidence.dependencyIndex.inspection.status,
+        trusted: state.projection.dependencyIndexTrusted,
+        dependencyIndexTrusted: state.projection.dependencyIndexTrusted,
+        coverageTrusted: state.projection.dependencyIndexCoverageTrusted,
+        dependencyIndexCoverageReason: state.projection.dependencyIndexCoverageReasons,
+        reasons: state.projection.dependencyIndexCoverageReasons,
+        verifiedLocations: state.projection.dependencyIndexVerifiedLocations,
+        dependencyIndexVerifiedLocations: state.projection.dependencyIndexVerifiedLocations,
+        revisitProjectLocations: state.projection.dependencyIndexRevisitProjectLocations,
+        dependencyIndexRevisitLocations: state.projection.dependencyIndexRevisitProjectLocations,
+        recoverySuggestion: state.projection.dependencyIndexRecoverySuggestion,
+        dependencyIndexRecoveryMessage,
+        actions: state.dependencyIndexActions,
+        staleProjectReferences,
+      },
+      dependents: state.projection.dependents,
+      autoInstalled: state.projection.autoInstalled,
+      unusedDependencyHint: state.projection.unusedDependencyHint,
+      projectIdentity: {
+        attempted: state.evidence.projectSharedIdentity.attempted,
+        present: state.evidence.projectSharedIdentity.present,
+        readStatus: state.evidence.projectSharedIdentity.read?.status ?? 'missing',
+        sourceDrift: state.evidence.projectSharedIdentity.sourceDrift,
+      },
+      sharedOwner: {
+        present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
+        readStatus: state.evidence.sharedRuntimeOwner.read.status,
+        ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
+        ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
+        needsTakeover: installState.sharedRuntimeOwnerConflict,
+      },
+      sharedSkillTriggerOwner: {
+        present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
+        readStatus: state.evidence.sharedRuntimeOwner.read.status,
+        ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
+        ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
+        needsTakeover: installState.sharedRuntimeOwnerConflict,
+        ownerConflict: installState.sharedRuntimeOwnerConflict,
+        suppressedOwnerConflict: state.evidence.sharedRuntimeOwner.needsTakeover && !installState.sharedRuntimeOwnerConflict,
+      },
+      nativeState: {
+        transactionPresent: state.projection.nativeTransactionPresent,
+        transactionKind: state.projection.nativeTransactionKind,
+        codexNative: state.evidence.platform.codexNative,
+      },
+      nativeTransactionMarker: {
+        present: state.projection.nativeTransactionPresent,
+        status: state.projection.nativeTransactionKind,
+        recordCommitted: state.projection.nativeTransactionKind === 'recordInstallResidual',
+        markerPending: state.projection.nativeTransactionKind !== 'none',
+        needsAttention: state.projection.nativeTransactionKind !== 'none',
+        ...(state.projection.nativeTransactionKind !== 'none'
+          ? {
+              repairCommand: `aw repair ${state.location.plugin} -p ${state.location.platform} -s ${state.location.scope}`,
+              cleanupCommand: `aw cleanup ${state.location.plugin} -p ${state.location.platform} -s ${state.location.scope}`,
+            }
+          : {}),
+      },
+      catalogDrift: state.projection.catalogDrift,
+      upgradeAvailable: state.projection.upgradeAvailable,
+      repairAvailable: state.projection.repairAvailable,
+      cleanupAvailable: state.projection.cleanupAvailable,
+      adoptExistingAvailable: state.projection.adoptExistingAvailable,
+      findings: state.findings,
+      issues: state.projection.issues,
+      forceCleanup: state.forceCleanup,
+      deepDiagnose: state.deepDiagnose,
+    };
   });
-  const humanOutput = options.verbose
-    ? formatVerboseStatusOutput(matrix, reports, friendlySummaries)
-    : formatFriendlyStatusOutput(friendlySummaries);
-
+  jsonPayload.locations = statusLocations;
+  const output = options.json
+    ? JSON.stringify(jsonPayload, null, 2)
+    : options.verbose
+      ? `${renderStatusHumanOutput(collected.locations)}\n\n详细信息\n${JSON.stringify(jsonPayload, null, 2)}`
+      : renderStatusHumanOutput(collected.locations);
   return {
-    reports,
+    reports: compatibilityReports,
+    output,
     matrix,
     friendlySummaries,
     consoleItems,
-    output: options.json
-      ? formatStatusJsonPayload(jsonPayload, options.verbose)
-      : humanOutput,
   };
 }

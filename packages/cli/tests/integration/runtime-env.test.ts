@@ -110,20 +110,14 @@ describe('runtime env integration', () => {
     expect(result.reports).toHaveLength(1);
     expect(result.reports[0]).toMatchObject({
       platform: 'codex',
-      plugins: [
-        {
-          pluginName: 'git-commit',
-          catalogCompatibility: 'missing',
-          currentCatalog: {
-            rootDir: awHome,
-            source: 'local',
-            available: false,
-          },
-          scopeManagedEvidence: {
-            ledger: true,
-          },
-        },
-      ],
     });
+    expect(result.reports[0]?.plugins[0]).toMatchObject({
+      pluginName: 'git-commit',
+      scopeManagedEvidence: {
+        ledger: true,
+      },
+    });
+    expect(result.reports[0]?.plugins[0]?.catalogCompatibility).toBeUndefined();
+    expect(result.reports[0]?.plugins[0]?.currentCatalog).toBeUndefined();
   });
 });

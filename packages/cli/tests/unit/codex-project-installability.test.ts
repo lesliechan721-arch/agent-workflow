@@ -14,6 +14,7 @@ import { installCommand, installTargetsOnPlatforms } from '../../src/commands/in
 import { normalizeInstallCommandOptions } from '../../src/commands/options.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -430,7 +431,7 @@ describe('Codex project installability', () => {
     expect(codex.extensionInstallCalls).toEqual(['mcp-only:project']);
   });
 
-  it('records dynamic artifact metadata in the project capability snapshot before renderer execution', async () => {
+  it('stores project install truth in install-state and tracking files instead of installed.json snapshots', async () => {
     const workspace = await makeWorkspace(['dynamic-artifacts']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.PATH = '';
@@ -458,15 +459,54 @@ describe('Codex project installability', () => {
     expect(codex.nativeInstallCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual(['dynamic-artifacts:project']);
 
-    const ledger = await readInstalledLedger(workspace.env);
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
-    expect(
-      ledger.plugins['dynamic-artifacts'].platforms.codex?.projectScopes?.[projectKey]?.capabilitySnapshot,
-    ).toMatchObject({
-      requiresNativePlugin: false,
-      hasRepoManagedArtifacts: true,
-      projectManagedKinds: ['skill', 'instruction', 'agent'],
+    const installRecord = await readInstallRecordForLocation({
+      cwd: workspace.repoRoot,
+      env: workspace.env,
+      location: {
+        plugin: 'dynamic-artifacts',
+        platform: 'codex',
+        scope: 'project',
+        projectKey,
+      },
     });
+    expect(installRecord.status).toBe('ok');
+    if (installRecord.status !== 'ok') {
+      throw new Error(`missing install-state record: ${installRecord.path}`);
+    }
+    expect(installRecord.value.record.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: 'repo-check',
+        }),
+        expect.objectContaining({
+          kind: 'mcpServer',
+          platform: 'codex',
+          artifactKey: 'acme.tools v1',
+        }),
+      ]),
+    );
+    const ledger = await readInstalledLedger(workspace.env);
+    expect(ledger.plugins['dynamic-artifacts']).toBeUndefined();
+    const trackingRecord = (await readTrackingManifest(
+      resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).trackingDir,
+    )).plugins['dynamic-artifacts'];
+    expect(trackingRecord?.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: 'repo-check',
+        }),
+        expect.objectContaining({
+          kind: 'mcpServer',
+          platform: 'codex',
+          artifactKey: 'acme.tools v1',
+        }),
+      ]),
+    );
   });
 
   it('uses a read-only catalog for Codex project-only install without creating shared runtime', async () => {

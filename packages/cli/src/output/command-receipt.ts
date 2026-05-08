@@ -23,6 +23,7 @@ export interface CliCommandResult {
   nativePlugins?: NativePluginsByPlatform;
   repoManagedArtifacts?: GeneratedArtifact[];
   marketplace?: CliMarketplaceReceipt;
+  receiptDetails?: CliCommandReceiptDetails;
 }
 
 export interface CliCommandExecutionGroup {
@@ -45,7 +46,7 @@ export interface CliInitReceipt {
 export type CliReceiptCommand = 'install' | 'uninstall' | 'upgrade';
 
 export interface CliCommandReceiptAction {
-  type: 'installDependency' | 'upgradeDependency' | 'uninstallAutoDependency';
+  type: 'installDependency' | 'upgradeDependency';
   plugin: string;
   platform: string;
   scope: Scope;
@@ -57,8 +58,66 @@ interface ReceiptTarget {
   plugin: string;
   platform: string;
   scope: Scope;
+  projectKey?: string;
   requested?: boolean;
   dependencyOf?: ReceiptTarget[];
+}
+
+export interface ReceiptFileEntry {
+  path: string;
+  repoRelativePath?: string;
+}
+
+export interface ReceiptProjectArtifactIdentityEntry extends ReceiptFileEntry {
+  sharedIdentityId?: string;
+}
+
+export interface ReceiptProjectReferenceEntry {
+  location: ReceiptTarget;
+  recordPath: string;
+  token?: string;
+  command?: string;
+}
+
+export interface ReceiptNativeTransactionMarker {
+  status: 'none' | 'markerOnlyInstall' | 'markerOnlyUninstall' | 'recordInstallResidual';
+  recordCommitted?: boolean;
+  markerPending?: boolean;
+  needsAttention?: boolean;
+  repairCommand?: string;
+  cleanupCommand?: string;
+}
+
+export interface ReceiptDependencyIndexSummary {
+  trusted: boolean;
+  coverageReason?: string[];
+  verifiedLocations?: ReceiptTarget[];
+  revisitLocations?: ReceiptTarget[];
+  recoveryMessage?: string | null;
+  retiredEntries?: Array<{
+    location: ReceiptTarget;
+    recordPath: string;
+  }>;
+}
+
+export interface ReceiptSharedSkillTriggerOwnerSummary {
+  present: boolean;
+  needsTakeover?: boolean;
+  ownerConflict?: boolean;
+  suppressedOwnerConflict?: boolean;
+}
+
+export interface CliCommandReceiptDetails {
+  privateStateFiles?: ReceiptFileEntry[];
+  ignoredStateFiles?: ReceiptFileEntry[];
+  sharedConfigFiles?: ReceiptFileEntry[];
+  projectLocalConfigFiles?: ReceiptFileEntry[];
+  projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
+  nativeTransactionMarker?: ReceiptNativeTransactionMarker;
+  dependencyIndex?: ReceiptDependencyIndexSummary;
+  staleProjectReferences?: ReceiptProjectReferenceEntry[];
+  sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
+  adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
 }
 
 interface ReceiptAction extends ReceiptTarget {
@@ -94,6 +153,16 @@ interface ReceiptJsonBase {
   command: 'init' | CliReceiptCommand;
   warnings: string[];
   nextSteps: string[];
+  privateStateFiles?: ReceiptFileEntry[];
+  ignoredStateFiles?: ReceiptFileEntry[];
+  sharedConfigFiles?: ReceiptFileEntry[];
+  projectLocalConfigFiles?: ReceiptFileEntry[];
+  projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
+  nativeTransactionMarker?: ReceiptNativeTransactionMarker;
+  dependencyIndex?: ReceiptDependencyIndexSummary;
+  staleProjectReferences?: ReceiptProjectReferenceEntry[];
+  sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
+  adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
 }
 
 export interface InitReceiptJson extends ReceiptJsonBase {
@@ -197,7 +266,7 @@ function sanitizeHumanText(text: string): string {
 function dedupeTargets(targets: ReceiptTarget[]): ReceiptTarget[] {
   const entries = new Map<string, ReceiptTarget>();
   for (const target of targets) {
-    const key = `${target.plugin}\0${target.platform}\0${target.scope}`;
+    const key = `${target.plugin}\0${target.platform}\0${target.scope}\0${target.projectKey ?? ''}`;
     const existing = entries.get(key);
     if (!existing) {
       entries.set(key, {
@@ -236,6 +305,46 @@ function collectSucceededTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
     }
   }
   return dedupeTargets(targets);
+}
+
+type ReceiptJsonDetails = Omit<ReceiptJsonBase, 'ok' | 'command' | 'warnings' | 'nextSteps'>;
+
+function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
+  if (!result.receiptDetails) {
+    return {};
+  }
+  return {
+    ...(result.receiptDetails.privateStateFiles?.length
+      ? { privateStateFiles: result.receiptDetails.privateStateFiles }
+      : {}),
+    ...(result.receiptDetails.ignoredStateFiles?.length
+      ? { ignoredStateFiles: result.receiptDetails.ignoredStateFiles }
+      : {}),
+    ...(result.receiptDetails.sharedConfigFiles?.length
+      ? { sharedConfigFiles: result.receiptDetails.sharedConfigFiles }
+      : {}),
+    ...(result.receiptDetails.projectLocalConfigFiles?.length
+      ? { projectLocalConfigFiles: result.receiptDetails.projectLocalConfigFiles }
+      : {}),
+    ...(result.receiptDetails.projectArtifactIdentityFiles?.length
+      ? { projectArtifactIdentityFiles: result.receiptDetails.projectArtifactIdentityFiles }
+      : {}),
+    ...(result.receiptDetails.nativeTransactionMarker
+      ? { nativeTransactionMarker: result.receiptDetails.nativeTransactionMarker }
+      : {}),
+    ...(result.receiptDetails.dependencyIndex
+      ? { dependencyIndex: result.receiptDetails.dependencyIndex }
+      : {}),
+    ...(result.receiptDetails.staleProjectReferences?.length
+      ? { staleProjectReferences: result.receiptDetails.staleProjectReferences }
+      : {}),
+    ...(result.receiptDetails.sharedSkillTriggerOwner
+      ? { sharedSkillTriggerOwner: result.receiptDetails.sharedSkillTriggerOwner }
+      : {}),
+    ...(result.receiptDetails.adoptExistingLifecycleReason
+      ? { adoptExistingLifecycleReason: result.receiptDetails.adoptExistingLifecycleReason }
+      : {}),
+  };
 }
 
 function collectReceiptActions(
@@ -369,11 +478,12 @@ export function buildCommandReceiptJson(
   });
   const artifacts = collectArtifacts(receipt.result.repoManagedArtifacts);
   const native = collectNativeSummary(receipt.result);
+  const receiptDetails = buildReceiptDetails(receipt.result);
 
   if (command === 'install') {
     return {
       ok: true,
-      command,
+      command: 'install',
       plugins,
       targets: succeededTargets,
       actions,
@@ -381,13 +491,14 @@ export function buildCommandReceiptJson(
       native,
       warnings,
       nextSteps,
+      ...receiptDetails,
     };
   }
 
   if (command === 'uninstall') {
     return {
       ok: true,
-      command,
+      command: 'uninstall',
       plugins,
       targets: succeededTargets,
       actions,
@@ -395,6 +506,7 @@ export function buildCommandReceiptJson(
       native,
       warnings,
       nextSteps,
+      ...receiptDetails,
     };
   }
 
@@ -415,7 +527,7 @@ export function buildCommandReceiptJson(
     : dedupeTargets([...upgraded, ...mapSkippedTargets(skipped)]);
   return {
     ok: true,
-    command,
+    command: 'upgrade',
     upgraded,
     skipped,
     targets,
@@ -424,6 +536,7 @@ export function buildCommandReceiptJson(
     native,
     warnings,
     nextSteps,
+    ...receiptDetails,
   };
 }
 
@@ -480,11 +593,18 @@ export function renderCommandReceipt(
   const payload = buildCommandReceiptJson(command, receipt);
   const lines: string[] = [];
   const artifacts = formatArtifactSurfaces(receipt.result.repoManagedArtifacts);
+  const privateStateTouched = (payload.privateStateFiles?.length ?? 0) > 0
+    || (payload.ignoredStateFiles?.length ?? 0) > 0
+    || (payload.projectLocalConfigFiles?.length ?? 0) > 0;
+  const markerNeedsAttention = payload.nativeTransactionMarker?.needsAttention === true;
+  const sharedOwnerSuppressed = payload.sharedSkillTriggerOwner?.suppressedOwnerConflict === true;
 
   if (payload.command === 'upgrade') {
     const upgradedPlugins = formatChineseList(payload.upgraded.map((target) => target.plugin));
     if (payload.upgraded.length === 0 && payload.skipped.length > 0) {
       lines.push(`这次没有完成升级，已跳过 ${payload.skipped.length} 个目标。`);
+    } else if (markerNeedsAttention) {
+      lines.push(`主要升级已经完成，但还需要收口本机原生状态：${upgradedPlugins}。`);
     } else {
       lines.push(`已升级 ${upgradedPlugins}。`);
     }
@@ -494,6 +614,29 @@ export function renderCommandReceipt(
     if (artifacts) {
       lines.push(`已更新项目文件：${artifacts}。`);
     }
+    if ((payload.sharedConfigFiles?.length ?? 0) > 0) {
+      lines.push('已更新团队共享配置。');
+    }
+    if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
+      lines.push('已更新共享身份文件。');
+    }
+    if (privateStateTouched) {
+      lines.push('已更新 AW 本地状态。');
+    }
+    if (!payload.dependencyIndex?.trusted && payload.dependencyIndex?.recoveryMessage) {
+      lines.push(payload.dependencyIndex.recoveryMessage);
+    }
+    if ((payload.staleProjectReferences?.length ?? 0) > 0) {
+      lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
+    }
+    if (sharedOwnerSuppressed) {
+      lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有触发 shared runtime 接管。');
+    }
+    if (markerNeedsAttention && payload.nativeTransactionMarker) {
+      lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
+    } else {
+      lines.push(`下一步：${payload.nextSteps[0]}`);
+    }
     if (payload.skipped.length > 0) {
       lines.push(`未处理 ${payload.skipped.length} 个目标：`);
       for (const entry of payload.skipped) {
@@ -502,7 +645,6 @@ export function renderCommandReceipt(
         );
       }
     }
-    lines.push(`下一步：${payload.nextSteps[0]}`);
     return lines;
   }
 
@@ -520,7 +662,11 @@ export function renderCommandReceipt(
   const plugins = explicitPlugins === '无'
     ? formatChineseList(payload.plugins)
     : explicitPlugins;
-  lines.push(`${payload.command === 'install' ? '已安装' : '已卸载'} ${plugins}。`);
+  if (markerNeedsAttention && payload.command === 'install') {
+    lines.push(`主要安装已经完成，但还需要收口本机原生状态：${plugins}。`);
+  } else {
+    lines.push(`${payload.command === 'install' ? '已安装' : '已卸载'} ${plugins}。`);
+  }
   if (payload.command === 'install') {
     const autoDependencyTargets = payload.actions.filter((action) => action.type === 'installDependency');
     if (autoDependencyTargets.length > 0) {
@@ -532,19 +678,33 @@ export function renderCommandReceipt(
   if (payload.targets.length > 0) {
     lines.push(`目标：${formatTargetSummary(payload.targets)}。`);
   }
-  if (payload.command === 'uninstall') {
-    const autoDependencyTargets = payload.actions.filter((action) => action.type === 'uninstallAutoDependency');
-    if (autoDependencyTargets.length > 0) {
-      lines.push(
-        `已自动清理不再需要的依赖：${formatChineseList(autoDependencyTargets.map((target) => target.plugin))}。`,
-      );
-    }
-  }
   if (artifacts) {
     lines.push(`${payload.command === 'install' ? '已更新' : '已清理'}项目文件：${artifacts}。`);
   } else if (payload.command === 'uninstall') {
     lines.push('已清理相关文件和已安装项。');
   }
-  lines.push(`下一步：${payload.nextSteps[0]}`);
+  if ((payload.sharedConfigFiles?.length ?? 0) > 0) {
+    lines.push('已更新团队共享配置。');
+  }
+  if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
+    lines.push('已更新共享身份文件。');
+  }
+  if (privateStateTouched) {
+    lines.push('已更新 AW 本地状态。');
+  }
+  if (!payload.dependencyIndex?.trusted && payload.dependencyIndex?.recoveryMessage) {
+    lines.push(payload.dependencyIndex.recoveryMessage);
+  }
+  if ((payload.staleProjectReferences?.length ?? 0) > 0) {
+    lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
+  }
+  if (sharedOwnerSuppressed) {
+    lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有触发 shared runtime 接管。');
+  }
+  if (markerNeedsAttention && payload.nativeTransactionMarker) {
+    lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
+  } else {
+    lines.push(`下一步：${payload.nextSteps[0]}`);
+  }
   return lines;
 }

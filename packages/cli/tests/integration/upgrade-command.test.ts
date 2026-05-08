@@ -687,7 +687,7 @@ describe('upgrade command coverage', () => {
     ).rejects.toThrow('缺少安装时快照');
   });
 
-  it('uninstalls and reinstalls capability-changed plugins during explicit upgrade', async () => {
+  it('reapplies current catalog for capability-changed plugins without pre-uninstall', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -726,8 +726,8 @@ describe('upgrade command coverage', () => {
       plugins: ['git-commit'],
     });
 
-    expect(codex.uninstallCalls).toEqual(['git-commit']);
-    expect(codex.extensionUninstallCalls).toEqual(['git-commit']);
+    expect(codex.uninstallCalls).toEqual([]);
+    expect(codex.extensionUninstallCalls).toEqual([]);
     expect(codex.installCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual(['git-commit']);
   });
@@ -1752,7 +1752,7 @@ describe('upgrade command coverage', () => {
     ]);
   });
 
-  it('skips capability-changed dependencies during upgrade --all and propagates the skip to explicit parents', async () => {
+  it('upgrades capability-changed dependencies during upgrade --all without forcing explicit parent repair', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (workspaceRepoRoot) => {
         await writeSyntheticPluginManifest(workspaceRepoRoot, createDependencyPluginManifest({
@@ -1837,24 +1837,8 @@ describe('upgrade command coverage', () => {
       },
     );
 
-    expect(result.plugins).toEqual([]);
-    expect(result.skipped).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        plugin: 'capability-changed-dep',
-        code: 'capabilityChanged',
-        requested: false,
-        dependencyOf: [{
-          plugin: 'skip-root',
-          platform: 'codex',
-          scope: 'user',
-        }],
-      }),
-      expect.objectContaining({
-        plugin: 'skip-root',
-        code: 'dependencySkipped',
-        requested: true,
-      }),
-    ]));
+    expect(result.plugins).toEqual(['skip-root']);
+    expect(result.skipped).toEqual([]);
     expect(result.receiptTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         plugin: 'skip-root',
@@ -1870,6 +1854,57 @@ describe('upgrade command coverage', () => {
         }],
       }),
     ]));
+    expect(result.receiptActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'capability-changed-dep',
+        type: 'upgradeDependency',
+        requested: false,
+      }),
+    ]));
+    expect(codex.extensionInstallCalls).toEqual([
+      'capability-changed-dep',
+      'skip-root',
+    ]);
+  });
+
+  it('rejects upgrade --all takeover before evaluating roots', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    const codex = new FakeAdapter('codex', repoRoot, {
+      'git-commit': {
+        currentCatalogAvailable: true,
+        nativeInstalled: true,
+        scopeInitialized: 'yes',
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [],
+        {
+          all: true,
+          takeoverSharedRuntime: true,
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: {
+            codex,
+            claude: new FakeAdapter('claude', repoRoot, {}),
+          },
+        },
+      ),
+    ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+
     expect(codex.installCalls).toEqual([]);
+    expect(codex.extensionInstallCalls).toEqual([]);
   });
 });

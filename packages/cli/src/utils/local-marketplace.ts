@@ -15,8 +15,8 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
+import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
-import { CODEX_NATIVE_RECOVERY_DIR } from './codex-native-recovery.js';
 import {
   resolveAwHome,
   resolveCliPackageRoot,
@@ -405,9 +405,7 @@ export function createAvailableLedger(): InstalledLedger {
 }
 
 const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
-  'plugin-config',
-  'plugin-install-snapshots',
-  CODEX_NATIVE_RECOVERY_DIR,
+  ...AW_RUNTIME_STATE_PRESERVE_DIR_SET,
 ]);
 
 export function getInstalledLedgerPath(

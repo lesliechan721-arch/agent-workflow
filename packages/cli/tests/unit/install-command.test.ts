@@ -6,11 +6,12 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as commonModule from '../../src/commands/common.js';
+import * as projectBoundaryModule from '../../src/install-state/project-boundary.js';
 import {
   installCommand,
   installTargetsOnPlatforms,
 } from '../../src/commands/install.js';
-import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
+import { buildCommandReceiptJson, renderCommandReceipt } from '../../src/output/command-receipt.js';
 import type {
   GeneratedArtifact,
   InstalledLedger,
@@ -23,16 +24,25 @@ import type {
 } from '../../src/types.js';
 import { createAvailableLedger, readInstalledLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import {
-  getCodexNativeRecoveryBreadcrumbPath,
-  readCodexNativeRecoveryBreadcrumb,
-  writeCodexNativeRecoveryBreadcrumb,
-} from '../../src/utils/codex-native-recovery.js';
+  inspectGlobalDependencyIndex,
+  readDynamicArtifactDiagnosticCacheAt,
+  readInstallRecordForLocation,
+  readNativeTransactionMarker,
+  readProjectArtifactIdentityForLocator,
+  writeNativeTransactionMarker,
+} from '../../src/install-state/facade.js';
+import type { NativeTransactionMarker } from '../../src/install-state/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   resolveCodexProjectKey,
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import {
+  createProjectArtifactSharedLocator,
+  getDiagnosticCachePath,
+  getProjectArtifactSharedIdentityPath,
+} from '../../src/install-state/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
   createDependencyPluginManifest,
@@ -89,6 +99,49 @@ async function writeSyntheticPlugin(
     { spaces: 2 },
   );
   return readPluginManifest(pluginRoot);
+}
+
+async function readInstallRecord(options: {
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+  plugin: string;
+  platform?: PlatformName;
+  scope?: Scope;
+  projectKey?: string;
+}) {
+  return readInstallRecordForLocation({
+    cwd: options.repoRoot,
+    location: {
+      plugin: options.plugin,
+      platform: options.platform ?? 'codex',
+      scope: options.scope ?? 'user',
+      ...(options.scope === 'project' ? { projectKey: options.projectKey } : {}),
+    },
+    env: options.env,
+  });
+}
+
+async function readDependencyIndex(env: NodeJS.ProcessEnv) {
+  const inspection = await inspectGlobalDependencyIndex(env);
+  expect(inspection.status).toBe('ok');
+  if (inspection.status !== 'ok') {
+    throw new Error(`dependency index unavailable: ${inspection.status}`);
+  }
+  return inspection.value;
+}
+
+function makeNativeInstallMarker(pluginName: string): NativeTransactionMarker {
+  return {
+    version: 1,
+    pluginName,
+    pluginId: `${pluginName}@aw`,
+    platform: 'codex',
+    scope: 'user',
+    operation: 'install',
+    nativeWriteSucceeded: true,
+    createdAt: '2026-05-04T00:00:00.000Z',
+    updatedAt: '2026-05-04T00:00:00.000Z',
+  };
 }
 
 interface GraphTestPluginState {
@@ -430,8 +483,8 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('install command P5 snapshot and ledger semantics', () => {
-  it('repairs a breadcrumb-only Codex user install without creating snapshots before native write, then clears the breadcrumb and native-write degraded ledger', async () => {
+describe('install command P6 install-state semantics', () => {
+  it('repairs a marker-backed Codex user install without creating snapshots before native write, then clears the marker and native-write degraded ledger', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     await writeInstalledLedger({
@@ -442,20 +495,15 @@ describe('install command P5 snapshot and ledger semantics', () => {
         reason: 'operation_interrupted_after_native_write',
       },
     }, env);
-    await writeCodexNativeRecoveryBreadcrumb({
-      pluginName: plugin.manifest.name,
-      state: 'post_check_failed',
-      reason: 'native_install_post_check_failed',
-      env,
-    });
+    await writeNativeTransactionMarker(makeNativeInstallMarker(plugin.manifest.name), env);
 
-    let snapshotCopyObservedWithBreadcrumb = false;
+    let snapshotCopyObservedWithMarker = false;
     const originalCopy = fs.copy.bind(fs);
     vi.spyOn(fs, 'copy').mockImplementation(async (...args: Parameters<typeof fs.copy>) => {
       if (path.resolve(String(args[0])) === path.resolve(plugin.rootDir)) {
-        const breadcrumb = await readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, env);
-        snapshotCopyObservedWithBreadcrumb = Boolean(
-          breadcrumb && breadcrumb.state === 'pending_after_native_write',
+        const marker = await readNativeTransactionMarker(plugin.manifest.name, env);
+        snapshotCopyObservedWithMarker = Boolean(
+          marker.status === 'ok' && marker.value.operation === 'install',
         );
       }
       return originalCopy(...args);
@@ -466,12 +514,6 @@ describe('install command P5 snapshot and ledger semantics', () => {
         await expect(
           fs.pathExists(path.join(env.AW_HOME!, 'plugin-install-snapshots')),
         ).resolves.toBe(false);
-        await writeCodexNativeRecoveryBreadcrumb({
-          pluginName: currentPlugin.manifest.name,
-          state: 'pending_after_native_write',
-          reason: 'native_write_succeeded_post_steps_pending',
-          env,
-        });
       },
     });
 
@@ -501,30 +543,35 @@ describe('install command P5 snapshot and ledger semantics', () => {
       },
     );
 
-    expect(snapshotCopyObservedWithBreadcrumb).toBe(true);
-    await expect(readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, env)).resolves.toBeNull();
+    expect(snapshotCopyObservedWithMarker).toBe(true);
+    await expect(readNativeTransactionMarker(plugin.manifest.name, env)).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          pluginName: plugin.manifest.name,
+          native: {
+            pluginId: `${plugin.manifest.name}@aw`,
+          },
+        },
+      },
+    });
     await expect(readInstalledLedger(env)).resolves.toMatchObject({
       ledgerState: {
         status: 'available',
         reason: null,
       },
-      plugins: {
-        [plugin.manifest.name]: {
-          platforms: {
-            codex: {
-              userScope: {
-                lifecycleConfigSnapshot: expect.objectContaining({
-                  pluginName: plugin.manifest.name,
-                }),
-              },
-            },
-          },
-        },
-      },
+      plugins: {},
     });
   });
 
-  it('updates the breadcrumb to snapshot_write_failed when snapshot persistence fails and does not write a success ledger', async () => {
+  it('keeps the native marker when snapshot persistence fails and does not write a success record', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     await writeInstalledLedger(createAvailableLedger(), env);
@@ -538,19 +585,8 @@ describe('install command P5 snapshot and ledger semantics', () => {
     });
 
     const codex = new FakeCodexAdapter(env, {
-      onInstallPlugin: async (currentPlugin) => {
-        await writeCodexNativeRecoveryBreadcrumb({
-          pluginName: currentPlugin.manifest.name,
-          state: 'pending_after_native_write',
-          reason: 'native_write_succeeded_post_steps_pending',
-          env,
-        });
-      },
+      onInstallPlugin: async () => {},
     });
-    const reporter = {
-      event: vi.fn(async () => {}),
-      notice: vi.fn(async () => {}),
-    };
 
     await expect(
       installTargetsOnPlatforms(
@@ -573,7 +609,6 @@ describe('install command P5 snapshot and ledger semantics', () => {
             codex,
             claude: new FakeClaudeAdapter(),
           },
-          reporter,
           resolveInstallOptions: () => resolvedInstallOptions(),
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
@@ -581,22 +616,20 @@ describe('install command P5 snapshot and ledger semantics', () => {
       ),
     ).rejects.toThrow('AW 安装未完成');
 
-    expect(reporter.event).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'native:recovery',
-        data: expect.objectContaining({
-          operation: 'update',
-          phase: 'success',
-          state: 'snapshot_write_failed',
-          nativeWriteSucceeded: true,
-          recoveryBreadcrumbPersisted: true,
-        }),
-      }),
-    );
-
-    await expect(readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, env)).resolves.toMatchObject({
-      state: 'snapshot_write_failed',
-      reason: 'install_snapshot_write_failed',
+    await expect(readNativeTransactionMarker(plugin.manifest.name, env)).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        pluginName: plugin.manifest.name,
+        operation: 'install',
+        lastError: 'simulated snapshot copy failure',
+      },
+    });
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
     });
     await expect(readInstalledLedger(env)).resolves.toMatchObject({
       ledgerState: {
@@ -607,29 +640,22 @@ describe('install command P5 snapshot and ledger semantics', () => {
     });
   });
 
-  it('fails after successful install when breadcrumb cleanup fails, while preserving the successful ledger and keeping diagnostics', async () => {
+  it('fails after successful install when marker cleanup fails, while preserving the committed install record', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     await writeInstalledLedger(createAvailableLedger(), env);
 
-    const breadcrumbPath = getCodexNativeRecoveryBreadcrumbPath(plugin.manifest.name, env);
+    const markerPath = path.join(env.AW_HOME!, 'native-recovery', 'codex', 'user', `${plugin.manifest.name}@aw.json`);
     const originalRemove = fs.remove.bind(fs);
     vi.spyOn(fs, 'remove').mockImplementation(async (...args: Parameters<typeof fs.remove>) => {
-      if (path.resolve(String(args[0])) === path.resolve(breadcrumbPath)) {
-        throw new Error('simulated breadcrumb delete failure');
+      if (path.resolve(String(args[0])) === path.resolve(markerPath)) {
+        throw new Error('simulated marker delete failure');
       }
       return originalRemove(...args);
     });
 
     const codex = new FakeCodexAdapter(env, {
-      onInstallPlugin: async (currentPlugin) => {
-        await writeCodexNativeRecoveryBreadcrumb({
-          pluginName: currentPlugin.manifest.name,
-          state: 'pending_after_native_write',
-          reason: 'native_write_succeeded_post_steps_pending',
-          env,
-        });
-      },
+      onInstallPlugin: async () => {},
     });
 
     await expect(
@@ -658,26 +684,36 @@ describe('install command P5 snapshot and ledger semantics', () => {
           skipWriteSafetyPreflight: true,
         },
       ),
-    ).rejects.toThrow('删除 Codex native recovery breadcrumb 失败');
+    ).rejects.toThrow('native transaction marker 清理失败');
 
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          pluginName: plugin.manifest.name,
+        },
+      },
+    });
     await expect(readInstalledLedger(env)).resolves.toMatchObject({
       ledgerState: {
         status: 'available',
         reason: null,
       },
-      plugins: {
-        [plugin.manifest.name]: {
-          lastResolvedVersion: plugin.manifest.version,
-        },
-      },
+      plugins: {},
     });
-    await expect(readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, env)).resolves.toMatchObject({
-      state: 'cleanup_failed',
-      reason: 'install_breadcrumb_delete_failed',
+    await expect(readNativeTransactionMarker(plugin.manifest.name, env)).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        pluginName: plugin.manifest.name,
+      },
     });
   });
 
-  it('fails breadcrumb-only install when the current catalog no longer contains the plugin and suggests uninstall cleanup', async () => {
+  it('fails marker-only install when the current catalog no longer contains the plugin and suggests uninstall cleanup', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const projectKey = await resolveCodexProjectKey(repoRoot);
     await writeInstalledLedger({
@@ -703,12 +739,7 @@ describe('install command P5 snapshot and ledger semantics', () => {
         },
       },
     }, env);
-    await writeCodexNativeRecoveryBreadcrumb({
-      pluginName: 'git-commit',
-      state: 'pending_after_native_write',
-      reason: 'native_write_succeeded_post_steps_pending',
-      env,
-    });
+    await writeNativeTransactionMarker(makeNativeInstallMarker('git-commit'), env);
     await fs.remove(path.join(repoRoot, 'plugins', 'git-commit'));
     const missingEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(missingEmbeddedRoot);
@@ -785,32 +816,62 @@ describe('install command P5 snapshot and ledger semantics', () => {
       parentPlugin.manifest.name,
     ]);
 
-    const ledger = await readInstalledLedger(env);
-    expect(ledger.plugins[childPlugin.manifest.name]?.platforms.codex?.userScope).toMatchObject({
-      installSource: {
-        kind: 'dependency',
-        explicitlyRequested: false,
-        allowsUnusedCleanup: true,
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: childPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          installSource: {
+            kind: 'dependency',
+            explicitlyRequested: false,
+          },
+          dependencyEdges: [],
+        },
       },
-      dependencyEdges: [],
     });
-    expect(ledger.plugins[parentPlugin.manifest.name]?.platforms.codex?.userScope).toMatchObject({
-      installSource: {
-        kind: 'explicit',
-        explicitlyRequested: true,
-        allowsUnusedCleanup: false,
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: parentPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          installSource: {
+            kind: 'explicit',
+            explicitlyRequested: true,
+          },
+          dependencyEdges: [{
+            dependency: {
+              plugin: childPlugin.manifest.name,
+              platform: 'codex',
+              scope: 'user',
+            },
+            declaration: {
+              name: childPlugin.manifest.name,
+            },
+          }],
+        },
       },
-      dependencyEdges: [{
-        dependency: {
-          plugin: childPlugin.manifest.name,
-          platform: 'codex',
-          scope: 'user',
-          projectKey: null,
-        },
-        declaration: {
-          name: childPlugin.manifest.name,
-        },
-      }],
+    });
+    await expect(readDependencyIndex(env)).resolves.toMatchObject({
+      records: expect.arrayContaining([
+        expect.objectContaining({
+          location: expect.objectContaining({
+            plugin: parentPlugin.manifest.name,
+          }),
+          dependencyEdges: [
+            expect.objectContaining({
+              dependency: expect.objectContaining({
+                plugin: childPlugin.manifest.name,
+              }),
+            }),
+          ],
+        }),
+      ]),
     });
 
     const receipt = buildCommandReceiptJson('install', {
@@ -935,14 +996,113 @@ describe('install command P5 snapshot and ledger semantics', () => {
 
     expect(result.receiptActions).toEqual([]);
     expect(codex.installOrder).toEqual([parentPlugin.manifest.name]);
-    expect((await readInstalledLedger(env)).plugins[parentPlugin.manifest.name]?.platforms.codex?.userScope?.dependencyEdges)
-      .toEqual([
-        expect.objectContaining({
-          dependency: expect.objectContaining({
-            plugin: childPlugin.manifest.name,
-          }),
-        }),
-      ]);
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: parentPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          dependencyEdges: [
+            expect.objectContaining({
+              dependency: expect.objectContaining({
+                plugin: childPlugin.manifest.name,
+              }),
+            }),
+          ],
+        },
+      },
+    });
+  });
+
+  it('surfaces receipt file categories and suppresses shared-owner takeover copy for Codex repo-local triggers', () => {
+    const rawReceipt = {
+      result: {
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+        warnings: [],
+        receiptDetails: {
+          privateStateFiles: [{ path: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json' }],
+          ignoredStateFiles: [{ path: '/tmp/workspace/.gitignore', repoRelativePath: '.gitignore' }],
+          sharedConfigFiles: [{ path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json' }],
+          projectArtifactIdentityFiles: [{
+            path: '/tmp/workspace/.agent-workflows/project-artifacts/codex/git-commit.identity.json',
+            sharedIdentityId: 'git-commit.identity',
+          }],
+          nativeTransactionMarker: {
+            status: 'recordInstallResidual' as const,
+            recordCommitted: true,
+            markerPending: true,
+            needsAttention: true,
+            repairCommand: 'aw repair git-commit -p codex -s project',
+            cleanupCommand: 'aw cleanup git-commit -p codex -s project',
+          },
+          dependencyIndex: {
+            trusted: false,
+            coverageReason: ['indexMissing'],
+            verifiedLocations: [],
+            revisitLocations: [],
+            recoveryMessage: '请回到可能相关的仓库重新运行 diagnose 或 repair。',
+          },
+          staleProjectReferences: [{
+            location: {
+              plugin: 'git-commit',
+              platform: 'codex',
+              scope: 'project' as const,
+              projectKey: '/tmp/workspace',
+            },
+            recordPath: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json',
+          }],
+          sharedSkillTriggerOwner: {
+            present: true,
+            needsTakeover: false,
+            ownerConflict: false,
+            suppressedOwnerConflict: true,
+          },
+        },
+      },
+      groups: [{
+        scope: 'project' as const,
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+      }],
+    };
+    const receipt = buildCommandReceiptJson('install', rawReceipt);
+
+    expect(receipt).toMatchObject({
+      privateStateFiles: [{ path: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json' }],
+      ignoredStateFiles: [{ repoRelativePath: '.gitignore' }],
+      sharedConfigFiles: [{ path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json' }],
+      projectArtifactIdentityFiles: [{ sharedIdentityId: 'git-commit.identity' }],
+      nativeTransactionMarker: {
+        status: 'recordInstallResidual',
+        recordCommitted: true,
+        markerPending: true,
+        needsAttention: true,
+      },
+      dependencyIndex: {
+        trusted: false,
+        coverageReason: ['indexMissing'],
+        recoveryMessage: '请回到可能相关的仓库重新运行 diagnose 或 repair。',
+      },
+      staleProjectReferences: [{
+        recordPath: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json',
+      }],
+      sharedSkillTriggerOwner: {
+        suppressedOwnerConflict: true,
+        needsTakeover: false,
+      },
+    });
+
+    const human = renderCommandReceipt('install', rawReceipt).join('\n');
+    expect(human).toContain('主要安装已经完成，但还需要收口本机原生状态');
+    expect(human).toContain('已更新团队共享配置。');
+    expect(human).toContain('已更新共享身份文件。');
+    expect(human).toContain('已更新 AW 本地状态。');
+    expect(human).toContain('当前项目的 repo-local skill trigger 已按本地项目路径处理');
+    expect(human).not.toContain('takeoverRequired');
+    expect(human).not.toContain('ownerConflict');
   });
 
   it('keeps --platform auto based on explicit targets only, without letting dependencies influence platform selection', async () => {
@@ -1008,7 +1168,13 @@ describe('install command P5 snapshot and ledger semantics', () => {
 
     expect(result.platforms).toEqual(['codex']);
     expect(codex.installOrder).toEqual([parentPlugin.manifest.name]);
-    expect((await readInstalledLedger(env)).plugins[childPlugin.manifest.name]).toBeUndefined();
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: childPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
   });
 
   it('fails graph preflight on dependency required config without writing state', async () => {
@@ -1073,7 +1239,20 @@ describe('install command P5 snapshot and ledger semantics', () => {
     ).rejects.toThrow(/config-child.*token/);
 
     expect(codex.installOrder).toEqual([]);
-    expect((await readInstalledLedger(env)).plugins).toEqual({});
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: childPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: parentPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
   });
 
   it('rolls back newly auto-installed dependencies when the parent install fails before committing edges', async () => {
@@ -1135,8 +1314,283 @@ describe('install command P5 snapshot and ledger semantics', () => {
       childPlugin.manifest.name,
       parentPlugin.manifest.name,
     ]);
-    const ledger = await readInstalledLedger(env);
-    expect(ledger.plugins[parentPlugin.manifest.name]).toBeUndefined();
-    expect(ledger.plugins[childPlugin.manifest.name]).toBeUndefined();
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: parentPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: childPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
+
+  it('writes project shared identity for repo-visible artifacts alongside the per-plugin install record', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'project-shared-identity',
+      products: ['codex'],
+    }));
+    await fs.writeJson(
+      path.join(plugin.rootDir, '.agents-plugin', 'plugin.json'),
+      {
+        ...plugin.manifest,
+        extensions: {
+          instructions: [{
+            name: 'project-note',
+            title: 'Project Note',
+            content: 'Project managed instruction fixture.',
+            paths: ['docs/**'],
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+    const refreshedPlugin = await readPluginManifest(plugin.rootDir);
+    vi.spyOn(projectBoundaryModule, 'ensureProjectPrivateStateIgnore').mockResolvedValue({
+      status: 'alreadyIgnored',
+      targetRelativePath: '.codex/.agent-workflows',
+      ignoreFilePath: path.join(repoRoot, '.gitignore'),
+      pattern: '.codex/.agent-workflows/',
+      matchedPattern: '.codex/.agent-workflows/',
+    });
+    vi.spyOn(projectBoundaryModule, 'assertProjectArtifactIdentityPathVisible').mockResolvedValue();
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const repoVisibleArtifactPath = path.join(repoRoot, 'docs', 'git-commit.instructions.md');
+    const codex = new FakeCodexAdapter(env, {
+      onInstallExtensions: async () => {
+        await fs.ensureDir(path.dirname(repoVisibleArtifactPath));
+        await fs.writeFile(repoVisibleArtifactPath, '# install artifact\n', 'utf8');
+        return [{
+          path: repoVisibleArtifactPath,
+          kind: 'instruction',
+          platform: 'codex',
+          artifactKey: `${plugin.manifest.name}.project-doc`,
+        }];
+      },
+    });
+
+    await installTargetsOnPlatforms(
+      [{
+          pluginName: plugin.manifest.name,
+        plugin: refreshedPlugin,
+        currentPlugin: refreshedPlugin,
+        embeddedPlugin: undefined,
+        source: 'currentCatalog',
+      }],
+      ['codex'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new FakeClaudeAdapter(),
+        },
+        resolveInstallOptions: () => resolvedInstallOptions(),
+        skipConfigPreflight: true,
+        skipWriteSafetyPreflight: true,
+      },
+    );
+
+    const recordRead = await readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    expect(recordRead).toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          pluginName: plugin.manifest.name,
+          scope: 'project',
+          projectKey,
+        },
+      },
+    });
+    if (recordRead.status !== 'ok') {
+      throw new Error(`expected install record for ${plugin.manifest.name}`);
+    }
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    const identityRead = await readProjectArtifactIdentityForLocator({
+      repoRoot,
+      locator,
+      cwd: repoRoot,
+    });
+    expect(identityRead).toMatchObject({
+      status: 'ok',
+      value: {
+        locator,
+        artifacts: [
+          expect.objectContaining({
+            kind: 'instruction',
+            platform: 'codex',
+            path: 'docs/git-commit.instructions.md',
+            artifactKey: `${plugin.manifest.name}.project-doc`,
+          }),
+        ],
+      },
+    });
+    if (identityRead.status !== 'ok') {
+      throw new Error(`expected project artifact identity for ${plugin.manifest.name}`);
+    }
+
+    expect(identityRead.value.sharedIdentityId).toBe(
+      path.basename(getProjectArtifactSharedIdentityPath({ repoRoot, locator }), '.json'),
+    );
+    expect(identityRead.value.sharedIdentityId).not.toBe(recordRead.value.recordId);
+  });
+
+  it('refuses project-scope install when an adoptable shared identity already exists without a local record', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'project-adopt-existing',
+      products: ['codex'],
+    }));
+    await fs.writeJson(
+      path.join(plugin.rootDir, '.agents-plugin', 'plugin.json'),
+      {
+        ...plugin.manifest,
+        extensions: {
+          instructions: [{
+            name: 'project-note',
+            title: 'Project Note',
+            content: 'Project managed instruction fixture.',
+            paths: ['docs/**'],
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+    const refreshedPlugin = await readPluginManifest(plugin.rootDir);
+    vi.spyOn(projectBoundaryModule, 'ensureProjectPrivateStateIgnore').mockResolvedValue({
+      status: 'alreadyIgnored',
+      targetRelativePath: '.codex/.agent-workflows',
+      ignoreFilePath: path.join(repoRoot, '.gitignore'),
+      pattern: '.codex/.agent-workflows/',
+      matchedPattern: '.codex/.agent-workflows/',
+    });
+    vi.spyOn(projectBoundaryModule, 'assertProjectArtifactIdentityPathVisible').mockResolvedValue();
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    const sharedIdentityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+    await fs.ensureDir(path.dirname(sharedIdentityPath));
+    await fs.writeJson(sharedIdentityPath, {
+      version: 1,
+      sharedIdentityId: path.basename(sharedIdentityPath, '.json'),
+      locator,
+      source: {
+        pluginVersion: plugin.manifest.version,
+        manifestDigest: 'synthetic-manifest-digest',
+        bundleFingerprint: 'synthetic-bundle-fingerprint',
+      },
+      generatedAt: '2026-05-08T00:00:00.000Z',
+      artifacts: [{
+        kind: 'instruction',
+        platform: 'codex',
+        path: 'docs/existing-instructions.md',
+      }],
+    }, { spaces: 2 });
+
+    await expect(
+      installTargetsOnPlatforms(
+        [{
+          pluginName: plugin.manifest.name,
+          plugin: refreshedPlugin,
+          currentPlugin: refreshedPlugin,
+          embeddedPlugin: undefined,
+          source: 'currentCatalog',
+        }],
+        ['codex'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex: new FakeCodexAdapter(env),
+            claude: new FakeClaudeAdapter(),
+          },
+          resolveInstallOptions: () => resolvedInstallOptions(),
+          skipConfigPreflight: true,
+          skipWriteSafetyPreflight: true,
+        },
+      ),
+    ).rejects.toThrow(
+      `aw repair ${plugin.manifest.name} --platform codex --scope project --adopt-existing`,
+    );
+
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+
+    const diagnosticCachePath = getDiagnosticCachePath(
+      repoRoot,
+      {
+        plugin: plugin.manifest.name,
+        platform: 'codex',
+        scope: 'project',
+        projectKey,
+      },
+      env,
+    );
+    await expect(
+      readDynamicArtifactDiagnosticCacheAt(diagnosticCachePath, {
+        expectedLocation: {
+          plugin: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+          projectKey,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: 'unavailable',
+      code: 'missing',
+    });
+    await expect(inspectGlobalDependencyIndex(env)).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(readInstalledLedger(env)).resolves.toMatchObject({
+      ledgerState: {
+        status: 'available',
+        reason: null,
+      },
+      plugins: {},
+    });
   });
 });

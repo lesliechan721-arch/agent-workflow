@@ -1640,6 +1640,11 @@ function configSchemaKeys(manifest) {
   return isRecord(schema) ? new Set(Object.keys(schema)) : new Set();
 }
 
+function configSchemaField(manifest, key) {
+  const field = manifest.config?.schema?.[key];
+  return isRecord(field) ? field : null;
+}
+
 function defaultConfigValues(manifest) {
   const schema = manifest.config?.schema;
   const values = {};
@@ -1776,6 +1781,14 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
   for (const [refreshIndex, refreshKey] of refreshKeys.entries()) {
     if (!schemaKeys.has(refreshKey)) {
       error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
+      continue;
+    }
+    const field = configSchemaField(manifest, refreshKey);
+    if (
+      scopes.includes('project') &&
+      (field?.type === 'file' || field?.type === 'directory')
+    ) {
+      error(`${fieldName}.refreshKeys[${refreshIndex}]: project-scope repo-visible artifacts cannot depend on "${field.type}" config key "${refreshKey}"; use a portable string key or keep the path in user/project local config for lifecycle/helper code.`);
     }
   }
 

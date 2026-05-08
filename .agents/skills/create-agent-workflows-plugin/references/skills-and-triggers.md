@@ -225,13 +225,13 @@ aw install <plugin> --skill-trigger default
 
 `allowInstallOverride` 只是覆盖许可，不代表默认策略。省略 `skillTriggers` 或写 `allowInstallOverride: false` 时，CLI 会保留该 skill 的默认触发配置，并在用户显式传入 `manual|auto` 时提示 warning。
 
-本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；不同 project/scope 选择不同偏好时，最近成功写入的受管记录会成为当前共享策略，其他 scope 可能在 `aw status` 中看到 drift。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
+本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner。非 owner 安装、修复或升级如果会改变共享策略，必须让用户显式重跑并加 `--takeover-shared-runtime`。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
 
 `marketplace.policy.products` 也会影响 bundle 裁剪：Claude-only 插件只生成 Claude skill 产物，不生成 Codex bundle，也不要求 `agents/openai.yaml`；Codex-only 插件只生成 Codex skill 产物，不生成 Claude platform manifest/runtime。省略或空 `products` 时才按双平台 skill 处理。
 
 ### `skillTriggerApplicability`
 
-CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 ledger 偏好：
+CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 install record 中的本位置偏好：
 
 | 值 | 含义 |
 |----|------|
@@ -239,7 +239,7 @@ CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 
 | `fixed` | 有 skill artifact，但运行时固定；公共 `slashCommands` 生成的 Codex manual-only skill 属于这一类 |
 | `overridable` | 至少一个 skill 允许 `--skill-trigger` 覆盖 |
 
-只有 `overridable` 需要从 ledger 恢复 `skillTriggerPreference`。tracking-only evidence 不能反推出旧偏好；若 target 是 `overridable` 且缺少可恢复 install options，显式 install / upgrade 必须要求用户传 `--skill-trigger default|manual|auto`，`upgrade --all` 会把它记为 `installOptionsUnavailable`。
+只有 `overridable` 需要从 install record 恢复 `skillTriggerPreference`。project artifact identity 或现场 artifact evidence 不能反推出旧偏好；若 target 是 `overridable` 且缺少可恢复 install options，显式 install / upgrade 必须要求用户传 `--skill-trigger default|manual|auto`，`upgrade --all` 会把它记为 `installOptionsUnavailable`。
 
 ---
 

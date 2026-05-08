@@ -87,6 +87,7 @@ import {
   normalizeCommandOptions,
   type RawCommandOptions,
 } from './options.js';
+import { tryUninstallUsingInstallState } from './install-state-removal.js';
 
 type UninstallCommandRuntime = CommandExecutionContextInput & {
   skipLifecycle?: boolean;
@@ -883,6 +884,21 @@ async function uninstallTargetOnPlatform(
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
+  const installStateResult = await tryUninstallUsingInstallState({
+    target,
+    platform,
+    commandOptions: options,
+    runtime: {
+      ...runtime,
+      adapters,
+    },
+  });
+  if (installStateResult.handled) {
+    return installStateResult.result ?? {
+      warnings: [],
+      repoManagedArtifacts: [],
+    };
+  }
   const warnings: string[] = [];
   let repoManagedArtifacts: GeneratedArtifact[] = [];
 
@@ -1188,12 +1204,6 @@ export async function uninstallCommand(
   plugins: string[];
   warnings: string[];
   repoManagedArtifacts: GeneratedArtifact[];
-  receiptActions?: Array<{
-    type: 'uninstallAutoDependency';
-    plugin: string;
-    platform: string;
-    scope: CommandOptions['scope'];
-  }>;
 }> {
   const options = normalizeCommandOptions(rawOptions, {
     defaultScope: 'user',
@@ -1318,13 +1328,5 @@ export async function uninstallCommand(
       ...collectCommandWarnings(platforms, options.scope),
       ...warnings,
     ],
-    receiptActions: executions
-      .filter((execution) => execution.autoDependency)
-      .map((execution) => ({
-        type: 'uninstallAutoDependency' as const,
-        plugin: execution.location.plugin,
-        platform: execution.location.platform,
-        scope: execution.location.scope,
-      })),
   };
 }

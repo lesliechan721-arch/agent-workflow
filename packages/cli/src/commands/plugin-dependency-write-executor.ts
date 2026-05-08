@@ -1,6 +1,8 @@
 import type {
   PluginDependencyEdgePlan,
   PluginDependencyNodeAction,
+  PluginDependencyNodePlan,
+  PluginDependencyWritePlan,
 } from '../utils/plugin-dependency-planner.js';
 import type { PluginLocation } from '../types.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
@@ -21,6 +23,51 @@ export interface PluginDependencyWriteExecutorRollbackFailure {
 
 export interface PluginDependencyWriteExecutorResult<TNodeResult> {
   nodeResultsByLocation: Record<string, TNodeResult>;
+}
+
+export interface BuildPluginDependencyWriteExecutorNodesOptions {
+  plan: Pick<PluginDependencyWritePlan, 'writeOrder' | 'nodesByLocation' | 'edges'>;
+  installedRecordByLocation?: ReadonlyMap<string, unknown>;
+  isRollbackEligible?: (options: {
+    location: PluginLocation;
+    node: PluginDependencyNodePlan;
+    hasInstalledRecord: boolean;
+  }) => boolean;
+}
+
+export function buildPluginDependencyWriteExecutorNodes(
+  options: BuildPluginDependencyWriteExecutorNodesOptions,
+): PluginDependencyWriteExecutorNode[] {
+  const outgoingEdgesByDependent = new Map<string, PluginDependencyEdgePlan[]>();
+  for (const edge of options.plan.edges) {
+    const dependentKey = serializePluginLocation(edge.dependent);
+    const bucket = outgoingEdgesByDependent.get(dependentKey) ?? [];
+    bucket.push(edge);
+    outgoingEdgesByDependent.set(dependentKey, bucket);
+  }
+
+  return options.plan.writeOrder.map((location) => {
+    const key = serializePluginLocation(location);
+    const node = options.plan.nodesByLocation[key];
+    const hasInstalledRecord =
+      options.installedRecordByLocation?.has(key) ?? false;
+    const rollbackEligible = options.isRollbackEligible
+      ? options.isRollbackEligible({
+          location,
+          node,
+          hasInstalledRecord,
+        })
+      : node.action === 'installDependency' && !hasInstalledRecord;
+
+    return {
+      location,
+      action: node.action,
+      requested: node.requested,
+      rollbackEligible,
+      dependencyOf: node.dependencyOf,
+      outgoingEdges: outgoingEdgesByDependent.get(key) ?? [],
+    };
+  });
 }
 
 function normalizeErrorMessage(error: unknown): string {

@@ -49,6 +49,8 @@ export type PluginConsoleReasonCode =
   | 'nativeIncomplete'
   | 'nativeResidue'
   | 'missingRecord'
+  | 'adoptExisting'
+  | 'ownerConflict'
   | 'dependencyMissing'
   | 'dependencyProtected'
   | 'autoDependencyRemovable'
@@ -140,9 +142,11 @@ const STATUS_PRIORITY: Record<PluginConsoleStatus, number> = {
 
 const REASON_PRIORITY: Record<PluginConsoleReasonCode, number> = {
   externalOwnership: 100,
+  ownerConflict: 99,
   nativeIncomplete: 95,
   nativeResidue: 94,
   missingRecord: 93,
+  adoptExisting: 93,
   dependencyMissing: 92,
   unreadableConfig: 92,
   trackingIdentityBroken: 91,
@@ -189,6 +193,22 @@ export function createPluginConsoleLocationKey(cell: Pick<StatusMatrixCell, 'plu
 
 export function pluginConsoleLocationLabel(cell: Pick<StatusMatrixCell, 'platform' | 'scope'>): string {
   return `${LOCATION_PLATFORM_LABELS[cell.platform]}（${cell.scope === 'user' ? '个人' : '当前项目'}）`;
+}
+
+function formatCommandArgs(cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>): string[] {
+  return [
+    cell.pluginName,
+    '--platform',
+    cell.platform,
+    '--scope',
+    cell.scope,
+  ];
+}
+
+function formatDependentLabel(dependent: { plugin: string; platform: PlatformName; scope: Scope; projectKey?: string | null }): string {
+  return dependent.scope === 'project'
+    ? `${dependent.plugin} (${dependent.platform}/project)`
+    : `${dependent.plugin} (${dependent.platform}/user)`;
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -336,10 +356,99 @@ function hasArtifactDrift(report: PluginStatusReport | undefined): boolean {
   ) === true;
 }
 
+function addCodexUserNativeReasonCodes(
+  cell: StatusMatrixCell,
+  reasons: Set<PluginConsoleReasonCode>,
+): void {
+  const report = cell.report;
+  if (!isCodexUserNativeCell(cell) || !report) {
+    return;
+  }
+
+  const installed = report.native.pluginInstalled;
+  const enabled = report.native.pluginEnabled === true;
+  const recovery = report.native.recovery;
+  const scopeRecorded = report.scopeManagedEvidence?.ledger === true;
+
+  if (recovery?.present) {
+    reasons.add(recovery.evidenceMatches === false ? 'nativeResidue' : 'nativeIncomplete');
+  } else if ((installed && !enabled) || (!installed && enabled)) {
+    reasons.add('nativeResidue');
+  } else if (installed && enabled && !scopeRecorded) {
+    reasons.add('missingRecord');
+  }
+}
+
+function collectInstallStateReasonCodes(cell: StatusMatrixCell): PluginConsoleReasonCode[] {
+  const installState = cell.installState;
+  if (!installState) {
+    return [];
+  }
+
+  const reasons = new Set<PluginConsoleReasonCode>();
+  if (installState.kind === 'adoptable') {
+    reasons.add('adoptExisting');
+  }
+  if (installState.sharedRuntimeOwnerConflict) {
+    reasons.add('ownerConflict');
+  }
+  if (installState.dependents.length > 0) {
+    reasons.add('dependencyProtected');
+  }
+  if (installState.autoInstalled && installState.unusedDependencyHint) {
+    reasons.add('autoDependencyRemovable');
+  }
+  if (installState.issueCodes.includes('dependencyMissing')) {
+    reasons.add('dependencyMissing');
+  }
+  if (installState.issueCodes.includes('dynamicRefreshFailed')) {
+    reasons.add('artifactRefreshFailed');
+  }
+  if (
+    installState.issueCodes.some((code) =>
+      code === 'artifactMissing' ||
+      code === 'staticContentDrift' ||
+      code === 'dynamicContentDrift' ||
+      code === 'dynamicConfigStale' ||
+      code === 'historicalLifecycleUnavailable' ||
+      code === 'projectSharedIdentityUnavailable' ||
+      code === 'nativeEvidenceMissing' ||
+      code === 'installRecordInvalid',
+    )
+  ) {
+    reasons.add('artifactDrift');
+  }
+  if (
+    installState.nativeTransactionKind === 'markerOnlyInstall' ||
+    installState.nativeTransactionKind === 'recordInstallResidual'
+  ) {
+    reasons.add('nativeIncomplete');
+  } else if (
+    installState.kind === 'residual' ||
+    installState.nativeTransactionKind === 'markerOnlyUninstall' ||
+    installState.nativeTransactionKind === 'recordUninstallResidual'
+  ) {
+    reasons.add('nativeResidue');
+  }
+  if (installState.kind === 'externallyManaged') {
+    reasons.add('externalOwnership');
+  }
+  if (!installState.currentCatalogAvailable) {
+    reasons.add('catalogUnavailable');
+  }
+  addCodexUserNativeReasonCodes(cell, reasons);
+
+  return dedupeReasons([...reasons]);
+}
+
 function collectReasonCodes(
   cell: StatusMatrixCell,
   locationDiagnostics: PluginConsoleLocationDiagnostics | undefined,
 ): PluginConsoleReasonCode[] {
+  if (cell.installState) {
+    return collectInstallStateReasonCodes(cell);
+  }
+
   const report = cell.report;
   const reasons = new Set<PluginConsoleReasonCode>();
   const managedEvidence = hasManagedEvidence(report);
@@ -410,20 +519,8 @@ function collectReasonCodes(
     reasons.add('externalOwnership');
   }
 
-  if (isCodexUserNativeCell(cell) && report) {
-    const installed = report.native.pluginInstalled;
-    const enabled = report.native.pluginEnabled === true;
-    const recovery = report.native.recovery;
-    const scopeRecorded = report.scopeManagedEvidence?.ledger === true;
-
-    if (recovery?.present) {
-      reasons.add(recovery.evidenceMatches === false ? 'nativeResidue' : 'nativeIncomplete');
-    } else if ((installed && !enabled) || (!installed && enabled)) {
-      reasons.add('nativeResidue');
-    } else if (installed && enabled && !scopeRecorded) {
-      reasons.add('missingRecord');
-    }
-  } else if (report && runtimeEvidence && !managedEvidence && !externalOwnership) {
+  addCodexUserNativeReasonCodes(cell, reasons);
+  if (!isCodexUserNativeCell(cell) && report && runtimeEvidence && !managedEvidence && !externalOwnership) {
     reasons.add('missingRecord');
   }
 
@@ -473,6 +570,23 @@ function computeLocationStatus(
   reasons: PluginConsoleReasonCode[],
   locationDiagnostics: PluginConsoleLocationDiagnostics | undefined,
 ): PluginConsoleStatus {
+  if (cell.installState) {
+    const installState = cell.installState;
+    if (installState.kind === 'externallyManaged') {
+      return 'external';
+    }
+    if (installState.kind === 'notInstalled') {
+      return 'notInstalled';
+    }
+    if (installState.kind !== 'installed') {
+      return 'needsAction';
+    }
+    if (installState.upgradeAvailable) {
+      return 'upgradeAvailable';
+    }
+    return 'installed';
+  }
+
   const report = cell.report;
 
   if (pureExternal(report)) {
@@ -562,6 +676,114 @@ function action(
   return builtAction;
 }
 
+function buildInstallStateActions(
+  cell: StatusMatrixCell,
+  status: PluginConsoleStatus,
+  reasons: PluginConsoleReasonCode[],
+): PluginConsoleAction[] {
+  const installState = cell.installState;
+  if (!installState) {
+    return [];
+  }
+
+  const target = locationTarget(cell);
+  const commandArgs = formatCommandArgs(cell);
+  const diagnose = action('diagnoseCommand', '查看诊断命令', target, {
+    command: ['aw', 'status', ...commandArgs, '--verbose'],
+  });
+  const cleanupCommand = ['aw', 'cleanup', ...commandArgs];
+  const adoptCommand = ['aw', 'repair', ...commandArgs, '--adopt-existing'];
+  const takeoverCommand = reasons.includes('adoptExisting')
+    ? [...adoptCommand, '--takeover-shared-runtime']
+    : ['aw', 'repair', ...commandArgs, '--takeover-shared-runtime'];
+  const dependencyProtected = installState.dependents.length > 0;
+  const autoRemovable = installState.autoInstalled && installState.unusedDependencyHint;
+  const uninstall = action('runUninstall', autoRemovable ? '清理自动依赖' : '卸载', target, {
+    destructive: true,
+    confirmText: autoRemovable
+      ? `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的自动依赖安装吗？`
+      : `确定要卸载 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的安装吗？`,
+    ...(dependencyProtected
+      ? {
+          disabledReason: installState.dependents.length === 1
+            ? `当前仍被 ${formatDependentLabel(installState.dependents[0]!)} 依赖，暂时不能直接卸载。`
+            : `当前仍被 ${formatDependentLabel(installState.dependents[0]!)} 等 ${installState.dependents.length} 个安装位置依赖，暂时不能直接卸载。`,
+        }
+      : {}),
+  });
+  const actions: PluginConsoleAction[] = [];
+
+  if (status === 'notInstalled') {
+    actions.push(action('openInstallWizard', '安装', target, {
+      ...(cell.disabledReason ? { disabledReason: cell.disabledReason } : {}),
+    }));
+    return actions;
+  }
+
+  if (status === 'external') {
+    actions.push(diagnose);
+    return actions;
+  }
+
+  if (reasons.includes('adoptExisting')) {
+    actions.push(action('diagnoseCommand', '认领现有安装', target, {
+      command: reasons.includes('ownerConflict') ? takeoverCommand : adoptCommand,
+    }));
+    actions.push(diagnose);
+    return dedupeActions(actions);
+  }
+
+  if (reasons.includes('ownerConflict')) {
+    actions.push(action('diagnoseCommand', '接管共享触发策略', target, {
+      command: takeoverCommand,
+    }));
+  }
+
+  if (status === 'upgradeAvailable') {
+    actions.push(action('runUpgrade', '升级', target));
+  }
+
+  if (reasons.includes('artifactRefreshFailed')) {
+    actions.push(action('reapplyConfigRefresh', '重新应用配置', target));
+  }
+
+  if (
+    installState.repairAvailable &&
+    !reasons.includes('ownerConflict') &&
+    (
+      installState.kind === 'needsRepair' ||
+      reasons.includes('dependencyMissing') ||
+      reasons.includes('artifactDrift') ||
+      reasons.includes('nativeIncomplete')
+    )
+  ) {
+    actions.push(action(
+      'repairInstall',
+      reasons.includes('dependencyMissing') ? '补齐依赖' : '修复安装',
+      target,
+    ));
+  }
+
+  if (installState.kind === 'residual') {
+    actions.push(action('diagnoseCommand', '清理残留', target, {
+      command: cleanupCommand,
+    }));
+    actions.push(diagnose);
+    return dedupeActions(actions);
+  }
+
+  if (installState.kind === 'installed' || status === 'upgradeAvailable') {
+    actions.push(uninstall);
+  } else if (installState.cleanupAvailable && !reasons.includes('ownerConflict')) {
+    actions.push(action('diagnoseCommand', '清理后重试', target, {
+      command: cleanupCommand,
+    }));
+  }
+
+  actions.push(diagnose);
+  return dedupeActions(actions);
+}
+
 function buildReasonCopy(
   reason: PluginConsoleReasonCode,
   cell: StatusMatrixCell,
@@ -569,6 +791,12 @@ function buildReasonCopy(
   const location = pluginConsoleLocationLabel(cell);
 
   switch (reason) {
+    case 'ownerConflict':
+      return {
+        issueSummary: '共享触发策略当前由另一个安装位置控制。',
+        detailHints: ['如果这次写入会改动 shared runtime，需要用单目标命令显式接管。'],
+        nextSteps: ['先执行带 --takeover-shared-runtime 的单目标命令。'],
+      };
     case 'nativeIncomplete':
       return {
         issueSummary: 'Codex 侧已写入，但 AW 还没完成收尾。',
@@ -586,6 +814,12 @@ function buildReasonCopy(
         issueSummary: '插件已经存在，但 AW 缺少完整安装记录。',
         detailHints: ['通常需要重新补齐安装，让 AW 能重新接管这个位置。'],
         nextSteps: ['先执行修复安装，再重新查看状态。'],
+      };
+    case 'adoptExisting':
+      return {
+        issueSummary: '仓库里已有可认领的共享安装。',
+        detailHints: ['这会创建当前机器的本地 AW 状态，而不是直接清理仓库文件。'],
+        nextSteps: ['先执行认领命令，再继续管理这个位置。'],
       };
     case 'dependencyMissing':
       return {
@@ -696,6 +930,21 @@ function composeCopy(
   reasons: PluginConsoleReasonCode[],
   cell: StatusMatrixCell,
 ): { issueSummary?: string; detailHints?: string[]; nextSteps: string[] } {
+  if (cell.installState) {
+    const installState = cell.installState;
+    const detailHints = [
+      ...installState.findings,
+      ...(installState.autoInstalled && !installState.unusedDependencyHint
+        ? ['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']
+        : []),
+    ].filter((hint) => hint !== installState.summary);
+    return {
+      issueSummary: installState.summary,
+      detailHints: dedupeStrings(detailHints).slice(0, 6),
+      nextSteps: dedupeStrings(installState.nextSteps),
+    };
+  }
+
   if (reasons.length === 0) {
     return { nextSteps: [] };
   }
@@ -717,6 +966,10 @@ function buildLocationActions(
   status: PluginConsoleStatus,
   reasons: PluginConsoleReasonCode[],
 ): PluginConsoleAction[] {
+  if (cell.installState) {
+    return buildInstallStateActions(cell, status, reasons);
+  }
+
   const target = locationTarget(cell);
   const diagnose = action('diagnoseCommand', '查看诊断命令', target, {
     command: baseStatusCommand(cell),

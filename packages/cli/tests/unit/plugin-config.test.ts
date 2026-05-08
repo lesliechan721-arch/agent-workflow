@@ -14,6 +14,9 @@ import {
   resetPluginConfigStore,
   resolveAwProjectRoot,
   resolveEffectivePluginConfig,
+  resolveProjectArtifactRenderConfig,
+  resolveProjectScopedPluginConfigView,
+  resolveProjectLocalPluginConfigView,
   resolvePluginConfigStorePath,
   toCliConfigPromptOptions,
   writePluginConfigStore,
@@ -135,7 +138,12 @@ describe('plugin config store', () => {
       mode: 'default',
       enabled: 'default',
     });
-    expect(effective.ignoredUnknownKeys).toEqual([{ scope: 'user', key: 'legacy' }]);
+    expect(effective.ignoredUnknownKeys).toEqual([{
+      scope: 'user',
+      projectLayer: 'shared',
+      source: 'user',
+      key: 'legacy',
+    }]);
     await expect(readPluginConfigStore({
       pluginName: manifest.name,
       scope: 'user',
@@ -217,6 +225,120 @@ describe('plugin config store', () => {
       }))).mode & 0o777;
       expect(mode).toBe(0o600);
     }
+  });
+
+  it('layers project shared and project local config separately, and keeps repo-visible artifact config on shared truth only', async () => {
+    const root = await makeTempRoot('aw-plugin-config-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(cwd);
+    await fs.outputFile(path.join(repoRoot, 'local-config.json'), '{}\n');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const manifest = createManifest();
+    manifest.config!.schema.token.required = false;
+    manifest.config!.schema.configFile = { type: 'file', required: false };
+
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        token: 'user-secret',
+      },
+    });
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {
+        mode: 'fast',
+      },
+    });
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd,
+      env,
+      values: {
+        token: 'local-secret',
+        configFile: 'local-config.json',
+      },
+    });
+
+    const effective = await resolveEffectivePluginConfig({
+      manifest,
+      cwd,
+      env,
+    });
+    expect(effective.values).toMatchObject({
+      token: 'local-secret',
+      mode: 'fast',
+    });
+    expect(effective.sources).toMatchObject({
+      token: 'projectLocal',
+      mode: 'project',
+    });
+    expect(effective.stores.project.path).toContain('/plugin-config/');
+    expect(effective.stores.projectLocal.path).toContain('/plugin-config.local/');
+
+    const artifactConfig = await resolveProjectArtifactRenderConfig({
+      manifest,
+      cwd,
+      env,
+    });
+    expect(artifactConfig.values).toMatchObject({
+      mode: 'fast',
+      enabled: true,
+      retries: 1,
+    });
+    expect(artifactConfig.values.token).toBeUndefined();
+    expect(artifactConfig.values.configFile).toBeUndefined();
+    expect(artifactConfig.sources.mode).toBe('project');
+    expect(artifactConfig.sources.token).toBe('missing');
+    expect(artifactConfig.boundaryIssues).toEqual([]);
+
+    const localOnly = await resolveProjectLocalPluginConfigView({
+      manifest,
+      cwd,
+      env,
+    });
+    expect(localOnly.values).toMatchObject({
+      token: 'local-secret',
+    });
+    expect(localOnly.sources).toMatchObject({
+      token: 'projectLocal',
+      mode: 'missing',
+    });
+    expect(localOnly.repoVisibleArtifactConfig.values).toMatchObject({
+      mode: 'fast',
+    });
+
+    const projectView = await resolveProjectScopedPluginConfigView({
+      manifest,
+      cwd,
+      env,
+    });
+    expect(projectView.entries.token).toMatchObject({
+      userValue: '[redacted]',
+      projectLocalValue: '[redacted]',
+      effectiveValue: '[redacted]',
+      effectiveSource: 'projectLocal',
+      repoVisibleArtifactValue: undefined,
+      repoVisibleArtifactSource: 'missing',
+      repoVisibleArtifactUsesSharedTruth: true,
+    });
+    expect(projectView.entries.mode).toMatchObject({
+      defaultValue: 'safe',
+      projectSharedValue: 'fast',
+      effectiveValue: 'fast',
+      effectiveSource: 'project',
+      repoVisibleArtifactValue: 'fast',
+      repoVisibleArtifactSource: 'project',
+    });
   });
 
   it('resolves file and directory values against the AW project root and revalidates them on read', async () => {
@@ -328,6 +450,54 @@ describe('plugin config store', () => {
     await expect(fs.realpath(validConfigFile)).resolves.toBe(effective.values.configFile);
     expect(effective.sources.configFile).toBe('project');
     expect(effective.issues).toEqual([]);
+  });
+
+  it('excludes path-type config from project artifact render config and reports portable-boundary issues', async () => {
+    const root = await makeTempRoot('aw-plugin-config-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = repoRoot;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.outputFile(path.join(repoRoot, 'config.json'), '{}\n');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const manifest = createManifest();
+    manifest.config!.schema.configFile = {
+      type: 'file',
+      required: true,
+      default: 'config.json',
+    };
+
+    await writePluginConfigStore({
+      pluginName: manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {
+        mode: 'fast',
+        configFile: 'config.json',
+      },
+    });
+
+    const artifactConfig = await resolveProjectArtifactRenderConfig({
+      manifest,
+      cwd,
+      env,
+      refreshKeys: ['configFile'],
+    });
+
+    expect(artifactConfig.values.mode).toBe('fast');
+    expect(artifactConfig.values.configFile).toBeUndefined();
+    expect(artifactConfig.boundaryIssues.map((issue) => issue.reason)).toEqual(expect.arrayContaining([
+      'pathTypeDefault',
+      'pathTypeRequired',
+      'sharedPathValue',
+      'pathTypeRefreshKey',
+    ]));
+    expect(artifactConfig.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'invalid-config',
+        key: 'configFile',
+      }),
+    ]));
   });
 
   it('falls back project config root to normalized cwd outside repos and workspaces', async () => {

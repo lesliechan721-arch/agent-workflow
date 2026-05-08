@@ -763,11 +763,13 @@ export interface CommandOptions {
 
 export interface InstallCommandOptions extends CommandOptions {
   requestedSkillTrigger?: SkillTriggerPreference;
+  takeoverSharedRuntime?: boolean;
 }
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
   requestedSkillTrigger?: SkillTriggerPreference;
+  takeoverSharedRuntime?: boolean;
 }
 
 export type SkippedUpgradeCode =

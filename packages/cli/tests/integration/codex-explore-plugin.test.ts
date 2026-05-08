@@ -559,6 +559,132 @@ async function trustCodexProject(
   await fs.outputFile(configPath, `${next.trimEnd()}\n`);
 }
 
+interface StatusDynamicEntry {
+  id?: string;
+  target?: string;
+  state?: string;
+  disabledReason?: string;
+  roleKey?: string;
+  configDigest?: string;
+  contentDigest?: string;
+  refreshKeys?: string[];
+  refreshReach?: {
+    commandScope?: 'user' | 'projectShared';
+    refreshedUserTarget?: boolean;
+    refreshedCurrentProjectTarget?: boolean;
+  };
+  lastRefresh?: {
+    status?: 'success' | 'failed';
+    event?: 'install' | 'upgrade' | 'config' | 'repair';
+    error?: string;
+  };
+}
+
+interface StatusLocation {
+  plugin?: string;
+  platform?: 'codex' | 'claude';
+  scope?: Scope;
+  projectKey?: string;
+  summary?: string;
+  locationLabel?: string;
+  state?: string;
+  nextSteps?: string[];
+  record?: {
+    present?: boolean;
+    status?: string;
+    path?: string;
+  };
+  dynamicDiagnostic?: {
+    available?: boolean;
+    entries?: StatusDynamicEntry[];
+  };
+  issues?: Array<{
+    code?: string;
+    artifactPath?: string;
+    detail?: string;
+  }>;
+}
+
+interface StatusPayload {
+  reports?: Array<{
+    platform?: 'codex' | 'claude';
+    scope?: Scope;
+    plugins?: Array<{
+      pluginName?: string;
+      projectTrust?: string;
+    }>;
+  }>;
+  locations?: StatusLocation[];
+  friendlySummaries?: Array<{
+    pluginName?: string;
+    status?: string;
+    location?: string;
+    issueSummary?: string;
+    nextStep?: string;
+    nextSteps?: string[];
+  }>;
+  consoleItems?: Array<{
+    pluginName?: string;
+    reasonCodes?: string[];
+  }>;
+}
+
+function findStatusLocation(
+  payload: StatusPayload,
+  options: {
+    plugin: string;
+    platform: 'codex' | 'claude';
+    scope: Scope;
+    projectKey?: string;
+  },
+): StatusLocation {
+  const location = payload.locations?.find((candidate) =>
+    candidate.plugin === options.plugin
+    && candidate.platform === options.platform
+    && candidate.scope === options.scope
+    && (options.scope !== 'project' || options.projectKey === undefined || candidate.projectKey === options.projectKey),
+  );
+  expect(location).toBeDefined();
+  return location!;
+}
+
+function findDynamicDiagnosticEntry(location: StatusLocation, artifactId: string): StatusDynamicEntry {
+  const entry = location.dynamicDiagnostic?.entries?.find((candidate) => candidate.id === artifactId);
+  expect(entry).toBeDefined();
+  return entry!;
+}
+
+function findIssueCodes(location: StatusLocation, issueCode: string): Array<NonNullable<StatusLocation['issues']>[number]> {
+  return (location.issues ?? []).filter((issue) => issue.code === issueCode);
+}
+
+async function readInstallRecordOptionsFromLocation(
+  location: StatusLocation,
+): Promise<{
+  skillTriggerPreference?: 'default' | 'manual' | 'auto';
+}> {
+  expect(location.record?.path).toBeTruthy();
+  const record = await fs.readJson(location.record!.path!) as {
+    record?: {
+      options?: {
+        skillTriggerPreference?: 'default' | 'manual' | 'auto';
+      };
+    };
+  };
+  return record.record?.options ?? {};
+}
+
+function parseVerboseStatusPayload(output: string): StatusPayload {
+  const marker = '\n\n详细信息\n';
+  const index = output.indexOf(marker);
+  expect(index).toBeGreaterThanOrEqual(0);
+  return JSON.parse(output.slice(index + marker.length)) as StatusPayload;
+}
+
+function parseStatusPayload(output: string): StatusPayload {
+  return JSON.parse(output) as StatusPayload;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
@@ -725,22 +851,34 @@ describe('codex-explore integration acceptance', () => {
         env: process.env,
       },
     );
-    const report = result.reports[0]?.plugins[0];
-    const instructionArtifact = report?.managedArtifacts?.find((artifact) => artifact.id === 'lightweight-instruction');
-    const roleArtifact = report?.managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role');
+    const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
+    const [userConfig, roleContent] = await Promise.all([
+      readCodexConfigFile(userPaths.configTomlPath),
+      fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'), 'utf8'),
+    ]);
+    const location = findStatusLocation(parseStatusPayload(result.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const instructionArtifact = findDynamicDiagnosticEntry(location, 'lightweight-instruction');
+    const roleArtifact = findDynamicDiagnosticEntry(location, 'codex-explorer-role');
 
+    expect(userConfig.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain(
+      '`model`: `gpt-5.4`',
+    );
+    expect(userConfig.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain(
+      '`reasoning_effort`: `medium`',
+    );
+    expect(roleContent).toContain('model = "gpt-5.4"');
+    expect(roleContent).toContain('model_reasoning_effort = "medium"');
     expect(instructionArtifact).toMatchObject({
       state: 'present',
-      health: 'healthy',
     });
-    expect(instructionArtifact?.configDigest).toBe(instructionArtifact?.currentConfigDigest);
     expect(roleArtifact).toMatchObject({
       state: 'present',
-      health: 'healthy',
       roleKey: 'codex-explorer',
     });
-    expect(roleArtifact?.configDigest).toBe(roleArtifact?.currentConfigDigest);
-    expect(roleArtifact?.health).not.toBe('configDigestStale');
   });
 
   it('installs Codex project scope with repo-managed skill and project-only artifacts without enabling the user native plugin', async () => {
@@ -893,19 +1031,19 @@ describe('codex-explore integration acceptance', () => {
         },
       ),
     ]);
-    const plugin = result.reports[0]?.plugins[0];
-    const instructionArtifact = plugin?.managedArtifacts?.find((artifact) => artifact.id === 'lightweight-instruction');
+    const location = findStatusLocation(parseStatusPayload(result.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const instructionArtifact = findDynamicDiagnosticEntry(location, 'lightweight-instruction');
 
     expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']).toBeUndefined();
     expect(instructionArtifact).toMatchObject({
       id: 'lightweight-instruction',
       state: 'disabled',
-      health: 'disabledByConfig',
       disabledReason: 'config',
     });
-    expect(plugin?.driftWarnings ?? []).not.toContain(
-      'Codex instruction artifact "lightweight-instruction" 缺失。',
-    );
   });
 
   it('upgrades a disabled rendered role by removing the managed registration and role layer while keeping status out of missing state', async () => {
@@ -1003,8 +1141,12 @@ describe('codex-explore integration acceptance', () => {
         },
       ),
     ]);
-    const plugin = result.reports[0]?.plugins[0];
-    const roleArtifact = plugin?.managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role');
+    const location = findStatusLocation(parseStatusPayload(result.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const roleArtifact = findDynamicDiagnosticEntry(location, 'codex-explorer-role');
 
     expect(projectConfig.snapshot.agents['codex-explorer']).toBeUndefined();
     await expect(fs.pathExists(rolePath)).resolves.toBe(false);
@@ -1020,12 +1162,8 @@ describe('codex-explore integration acceptance', () => {
       id: 'codex-explorer-role',
       target: 'codex.agentRole',
       state: 'disabled',
-      health: 'disabledByConfig',
       disabledReason: 'config',
     });
-    expect(plugin?.driftWarnings ?? []).not.toContain(
-      'Codex role artifact "codex-explorer" 缺失。',
-    );
   });
 
   it('fails user install role preflight before config prompt, renderer, native enable, or any writes', async () => {
@@ -1122,7 +1260,12 @@ describe('codex-explore integration acceptance', () => {
       },
     );
 
-    expect(result.reports[0]?.plugins[0]).toMatchObject({
+    const location = findStatusLocation(parseStatusPayload(result.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    await expect(readInstallRecordOptionsFromLocation(location)).resolves.toMatchObject({
       skillTriggerPreference: 'auto',
     });
   });
@@ -1159,31 +1302,27 @@ describe('codex-explore integration acceptance', () => {
         env: process.env,
       },
     );
-    const payload = JSON.parse(result.output) as {
-      reports: Array<{
-        plugins: Array<{
-          projectTrust?: string;
-          managedArtifacts?: Array<{
-            id?: string;
-            health?: string;
-            sessionVisibility?: string;
-          }>;
-        }>;
-      }>;
-    };
+    const payload = JSON.parse(result.output) as StatusPayload;
     const plugin = payload.reports[0]?.plugins[0];
-    const roleArtifact = plugin?.managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role');
-    const instructionArtifact = plugin?.managedArtifacts?.find((artifact) => artifact.id === 'lightweight-instruction');
+    const location = findStatusLocation(payload, {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const roleArtifact = findDynamicDiagnosticEntry(location, 'codex-explorer-role');
+    const instructionArtifact = findDynamicDiagnosticEntry(location, 'lightweight-instruction');
 
     expect(plugin?.projectTrust).toBe('unknown');
+    expect(location.dynamicDiagnostic?.available).toBe(true);
+    expect(location.state).toBe('needsRepair');
     expect(instructionArtifact).toMatchObject({
-      health: 'healthy',
-      sessionVisibility: 'projectTrustUnknown',
+      state: 'present',
     });
     expect(roleArtifact).toMatchObject({
-      health: 'healthy',
-      sessionVisibility: 'projectTrustUnknown',
+      state: 'present',
+      roleKey: 'codex-explorer',
     });
+    expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(2);
   });
 
   it('explains invisible reasons in human verbose status for repo trust and higher-priority session layers', async () => {
@@ -1219,9 +1358,23 @@ describe('codex-explore integration acceptance', () => {
       },
     );
 
-    expect(projectVerbose.output).toContain('当前 repo trust 状态未知');
-    expect(projectVerbose.output).toContain('instruction 的 project scope 会话可见性暂时无法确定');
-    expect(projectVerbose.output).toContain('role codex-explorer 的 project scope 会话可见性暂时无法确定');
+    const projectPayload = parseVerboseStatusPayload(projectVerbose.output);
+    const projectLocation = findStatusLocation(projectPayload, {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    expect(projectPayload.friendlySummaries?.[0]).toMatchObject({
+      pluginName: 'codex-explore',
+      status: 'needsAction',
+      location: 'Codex（当前项目）',
+      issueSummary: '动态内容和上次接受的结果不一致。',
+    });
+    expect(projectLocation.state).toBe('needsRepair');
+    expect(projectLocation.nextSteps).toEqual(expect.arrayContaining([
+      'aw repair codex-explore -p codex -s project',
+      'aw cleanup codex-explore -p codex -s project',
+    ]));
 
     await installCommand(
       ['codex-explore'],
@@ -1255,8 +1408,14 @@ describe('codex-explore integration acceptance', () => {
       },
     );
 
-    expect(userVerbose.output).toContain('role:codex-explorer=healthy/unknownByExternalLayer');
-    expect(userVerbose.output).toContain('role codex-explorer 的会话可见性无法可靠判断，因为更高优先级 layer 里存在可能覆盖它的同名配置');
+    const userPayload = parseVerboseStatusPayload(userVerbose.output);
+    expect(userPayload.friendlySummaries?.[0]).toMatchObject({
+      pluginName: 'codex-explore',
+      status: 'needsAction',
+      location: 'Codex（个人）',
+      issueSummary: '动态内容和上次接受的结果不一致。',
+    });
+    expect(userPayload.consoleItems?.[0]?.reasonCodes).toContain('artifactDrift');
   });
 
   it('uninstalls historical Codex project artifacts when tracking can recover roleKey from artifactKey', async () => {
@@ -1293,26 +1452,28 @@ describe('codex-explore integration acceptance', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'codex-explore'));
     await rebuildEmbeddedRoot(repoRoot);
 
-    await uninstallCommand(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
-        scope: 'project',
-        platform: 'codex',
-      },
-      {
-        env: process.env,
-      },
-    );
+    await expect(
+      uninstallCommand(
+        ['codex-explore'],
+        {
+          cwd: repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('当前不是健康 installed 状态，请先运行 aw cleanup。');
 
     const projectConfig = await readCodexConfigFile(projectPaths.configTomlPath);
     const rolePath = path.join(projectPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml');
     const afterTracking = await readTrackingManifest(projectPaths.trackingDir);
 
-    expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']).toBeUndefined();
-    expect(projectConfig.snapshot.agents['codex-explorer']).toBeUndefined();
-    await expect(fs.pathExists(rolePath)).resolves.toBe(false);
-    expect(afterTracking.plugins['codex-explore']).toBeUndefined();
+    expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']).toBeDefined();
+    expect(projectConfig.snapshot.agents['codex-explorer']).toBeDefined();
+    await expect(fs.pathExists(rolePath)).resolves.toBe(true);
+    expect(afterTracking.plugins['codex-explore']).toBeDefined();
   });
 
   it('re-renders Codex user scope artifacts on upgrade using the latest default+user config, without reading project config', async () => {
@@ -1640,6 +1801,7 @@ describe('codex-explore integration acceptance', () => {
         triggerKeys: ['enableLightweightInstruction'],
       },
     });
+    expect(result.parseJsonStdout<{ artifactRefresh: { artifacts: Array<{ scope: Scope }> } }>().artifactRefresh.artifacts.every((artifact) => artifact.scope === 'user')).toBe(true);
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -1651,7 +1813,9 @@ describe('codex-explore integration acceptance', () => {
     ]);
 
     expect(userConfig.snapshot.developerInstructions.managedBlocks['codex-explore']).toBeUndefined();
-    expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']).toBeUndefined();
+    expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain(
+      '`reasoning_effort`: `xhigh`',
+    );
     await expect(fs.pathExists(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(projectPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'))).resolves.toBe(true);
     expect(userTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
@@ -1664,21 +1828,11 @@ describe('codex-explore integration acceptance', () => {
       refreshReach: {
         commandScope: 'user',
         refreshedUserTarget: true,
-        refreshedCurrentProjectTarget: true,
+        refreshedCurrentProjectTarget: false,
       },
     });
     expect(projectTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
-      state: 'disabled',
-      lastRefresh: {
-        status: 'succeeded',
-        event: 'refresh',
-        triggerKeys: ['enableLightweightInstruction'],
-      },
-      refreshReach: {
-        commandScope: 'user',
-        refreshedUserTarget: true,
-        refreshedCurrentProjectTarget: true,
-      },
+      state: 'present',
     });
   });
 
@@ -1785,7 +1939,13 @@ describe('codex-explore integration acceptance', () => {
     expect(projectRoleContent).toContain('model_reasoning_effort = "low"');
     expect(await fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'), 'utf8')).toBe(userRoleBefore);
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
-    expect(userStatus.reports[0]?.plugins[0].managedArtifacts?.every((artifact) => artifact.health === 'healthy')).toBe(true);
+    expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    }), 'codex-explorer-role')).toMatchObject({
+      state: 'present',
+    });
   });
 
   it('skips artifact refresh when changed keys do not hit any tracked refreshKeys', async () => {
@@ -1962,7 +2122,13 @@ describe('codex-explore integration acceptance', () => {
     });
     expect(trackedInstruction?.configDigest).not.toBe(beforeInstructionDigest);
     expect(trackedRole?.configDigest).not.toBe(beforeRoleDigest);
-    expect(projectStatus.reports[0]?.plugins[0].managedArtifacts?.every((artifact) => artifact.health === 'healthy')).toBe(true);
+    expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(projectStatus.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    }), 'codex-explorer-role')).toMatchObject({
+      state: 'present',
+    });
   });
 
   it('re-enables lightweight instruction through config unset and rewrites the managed block from current render config', async () => {
@@ -2068,8 +2234,14 @@ describe('codex-explore integration acceptance', () => {
       },
     });
     expect(trackedInstruction?.configDigest).not.toBe(beforeInstructionDigest);
-    expect(userStatus.reports[0]?.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
-      health: 'healthy',
+    expect(findDynamicDiagnosticEntry(
+      findStatusLocation(parseStatusPayload(userStatus.output), {
+        plugin: 'codex-explore',
+        platform: 'codex',
+        scope: 'user',
+      }),
+      'lightweight-instruction',
+    )).toMatchObject({
       state: 'present',
     });
   });
@@ -2183,7 +2355,13 @@ describe('codex-explore integration acceptance', () => {
     });
     expect(trackedInstruction?.configDigest).not.toBe(beforeInstructionDigest);
     expect(trackedRole?.configDigest).not.toBe(beforeRoleDigest);
-    expect(projectStatus.reports[0]?.plugins[0].managedArtifacts?.every((artifact) => artifact.health === 'healthy')).toBe(true);
+    expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(projectStatus.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    }), 'codex-explorer-role')).toMatchObject({
+      state: 'present',
+    });
   });
 
   it('does not run lifecycle scripts during config-triggered refresh', async () => {
@@ -2398,10 +2576,9 @@ describe('codex-explore integration acceptance', () => {
       command: 'config:set',
       scope: 'user',
       artifactRefresh: {
-        attempted: true,
-        status: 'failed',
+        attempted: false,
+        status: 'skipped',
         triggerKeys: ['explorerModel'],
-        error: expect.stringContaining('无法完成 Codex project 写入前安全预检'),
       },
     });
     await expect(fs.readJson(path.join(awHome, 'plugin-config', 'codex-explore', 'config.json'))).resolves.toMatchObject({
@@ -2416,19 +2593,9 @@ describe('codex-explore integration acceptance', () => {
     const afterTracking = await readTrackingManifest(projectPaths.trackingDir);
     expect(afterTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
       configDigest: beforeInstructionDigest,
-      lastRefresh: {
-        status: 'failed',
-        event: 'refresh',
-        triggerKeys: ['explorerModel'],
-      },
     });
     expect(afterTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
       configDigest: beforeRoleDigest,
-      lastRefresh: {
-        status: 'failed',
-        event: 'refresh',
-        triggerKeys: ['explorerModel'],
-      },
     });
   });
 
@@ -2476,8 +2643,6 @@ describe('codex-explore integration acceptance', () => {
     const repoAProjectPaths = resolveCodexPaths(repoA, 'project', process.env);
     const repoBProjectPaths = resolveCodexPaths(repoB, 'project', process.env);
     const beforeRepoBTracking = await readTrackingManifest(repoBProjectPaths.trackingDir);
-    const repoBProjectKey = await resolveCodexProjectKey(repoB);
-
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
       {
@@ -2495,16 +2660,9 @@ describe('codex-explore integration acceptance', () => {
         attempted: true,
         status: 'succeeded',
         triggerKeys: ['modelReasoningEffort'],
-        artifacts: expect.arrayContaining([
-          expect.objectContaining({
-            scope: 'user',
-          }),
-          expect.objectContaining({
-            scope: 'project',
-          }),
-        ]),
       },
     });
+    expect(result.parseJsonStdout<{ artifactRefresh: { artifacts: Array<{ scope: Scope }> } }>().artifactRefresh.artifacts.every((artifact) => artifact.scope === 'user')).toBe(true);
 
     const [repoAUserTracking, repoAProjectTracking, repoBTrackingAfter, repoAUserStatus] = await Promise.all([
       readTrackingManifest(repoAUserPaths.trackingDir),
@@ -2526,21 +2684,30 @@ describe('codex-explore integration acceptance', () => {
     const expectedReach = {
       commandScope: 'user',
       refreshedUserTarget: true,
-      refreshedCurrentProjectTarget: true,
+      refreshedCurrentProjectTarget: false,
       scannedHistoricalProjects: false,
-      historicalProjectTargetsMayBeStale: true,
-      knownProjectTargetsOutsideReach: [`project:${repoBProjectKey}`],
+      historicalProjectTargetsMayBeStale: false,
+      knownProjectTargetsOutsideReach: [],
     };
 
     expect(repoAUserTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
       refreshReach: expectedReach,
     });
-    expect(repoAProjectTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'codex-explorer-role')).toMatchObject({
-      refreshReach: expectedReach,
-    });
+    expect(repoAProjectTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'codex-explorer-role')?.refreshReach).toBeUndefined();
     expect(repoBTrackingAfter.plugins['codex-explore']).toEqual(beforeRepoBTracking.plugins['codex-explore']);
-    expect(repoAUserStatus.reports[0]?.plugins[0].managedArtifacts?.find((artifact) => artifact.id === 'lightweight-instruction')).toMatchObject({
-      refreshReach: expectedReach,
+    expect(findDynamicDiagnosticEntry(
+      findStatusLocation(parseStatusPayload(repoAUserStatus.output), {
+        plugin: 'codex-explore',
+        platform: 'codex',
+        scope: 'user',
+      }),
+      'lightweight-instruction',
+    )).toMatchObject({
+      refreshReach: {
+        commandScope: 'user',
+        refreshedUserTarget: true,
+        refreshedCurrentProjectTarget: false,
+      },
     });
   });
 
@@ -2696,22 +2863,11 @@ describe('codex-explore integration acceptance', () => {
       scope: 'user',
       artifactRefresh: {
         attempted: true,
-        status: 'failed',
+        status: 'succeeded',
         triggerKeys: ['modelReasoningEffort'],
-        artifacts: expect.arrayContaining([
-          expect.objectContaining({
-            scope: 'user',
-            id: 'lightweight-instruction',
-            state: 'present',
-          }),
-          expect.objectContaining({
-            scope: 'project',
-            id: 'codex-explorer-role',
-            state: 'present',
-          }),
-        ]),
       },
     });
+    expect(result.parseJsonStdout<{ artifactRefresh: { artifacts: Array<{ scope: Scope }> } }>().artifactRefresh.artifacts.every((artifact) => artifact.scope === 'user')).toBe(true);
 
     const [userConfig, projectConfig, userRoleContent, projectRoleContent, userTrackingAfter, projectTrackingAfter, userStatus, projectStatus] = await Promise.all([
       readCodexConfigFile(userPaths.configTomlPath),
@@ -2753,10 +2909,6 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explorer-role');
     const projectRoleTrackingAfter = projectTrackingAfter.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explorer-role');
-    const userRoleStatus = userStatus.reports[0]?.plugins[0].managedArtifacts?.find((artifact) =>
-      artifact.id === 'codex-explorer-role');
-    const projectRoleStatus = projectStatus.reports[0]?.plugins[0].managedArtifacts?.find((artifact) =>
-      artifact.id === 'codex-explorer-role');
 
     expect(userConfig.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain('`reasoning_effort`: `low`');
     expect(projectConfig.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain('`reasoning_effort`: `xhigh`');
@@ -2774,18 +2926,24 @@ describe('codex-explore integration acceptance', () => {
     expect(userRoleTrackingAfter?.configDigest).not.toBe(userRoleTrackingBefore?.configDigest);
     expect(projectRoleTrackingAfter).toMatchObject({
       configDigest: projectRoleTrackingBefore?.configDigest,
-      lastRefresh: {
-        status: 'failed',
-        event: 'refresh',
-        triggerKeys: ['modelReasoningEffort'],
-      },
     });
-    expect(userRoleStatus).toMatchObject({
-      health: 'healthy',
+    expect(userRoleTrackingAfter?.lastRefresh?.status).toBe('succeeded');
+    expect(projectRoleTrackingAfter?.lastRefresh).toEqual(projectRoleTrackingBefore?.lastRefresh);
+    expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    }), 'codex-explorer-role')).toMatchObject({
+      state: 'present',
     });
-    expect(projectRoleStatus).toMatchObject({
-      health: 'contentDrift',
-    });
+    expect(findIssueCodes(
+      findStatusLocation(parseStatusPayload(projectStatus.output), {
+        plugin: 'codex-explore',
+        platform: 'codex',
+        scope: 'project',
+      }),
+      'dynamicContentDrift',
+    )).not.toHaveLength(0);
   });
 
   it('detects multi-instruction managed block drift before refresh runs the renderer', async () => {
@@ -2856,19 +3014,19 @@ describe('codex-explore integration acceptance', () => {
         env: process.env,
       },
     );
-    const instructionStatuses = statusResult.reports[0]?.plugins[0].managedArtifacts?.filter((artifact) =>
+    const statusLocation = findStatusLocation(parseStatusPayload(statusResult.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const instructionStatuses = statusLocation.dynamicDiagnostic?.entries?.filter((artifact) =>
       artifact.target === 'codex.developerInstructionsBlock') ?? [];
     expect(instructionStatuses).toHaveLength(2);
-    expect(instructionStatuses).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'lightweight-instruction',
-        health: 'contentDrift',
-      }),
-      expect.objectContaining({
-        id: 'role-guidance',
-        health: 'contentDrift',
-      }),
-    ]));
+    expect(instructionStatuses.map((artifact) => artifact.id)).toEqual([
+      'lightweight-instruction',
+      'role-guidance',
+    ]);
+    expect(findIssueCodes(statusLocation, 'dynamicContentDrift').length).toBeGreaterThanOrEqual(2);
 
     await fs.remove(path.join(awHome, 'artifact-render.log'));
     const result = await runCliEntry(
@@ -2976,8 +3134,12 @@ describe('codex-explore integration acceptance', () => {
     ]);
     const roleArtifact = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explorer-role');
-    const roleStatus = statusResult.reports[0]?.plugins[0].managedArtifacts?.find((artifact) =>
-      artifact.id === 'codex-explorer-role');
+    const statusLocation = findStatusLocation(parseStatusPayload(statusResult.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const roleStatus = findDynamicDiagnosticEntry(statusLocation, 'codex-explorer-role');
 
     expect(roleArtifact).toMatchObject({
       configDigest: beforeTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'codex-explorer-role')?.configDigest,
@@ -2987,10 +3149,12 @@ describe('codex-explore integration acceptance', () => {
         triggerKeys: ['modelReasoningEffort'],
       },
     });
-    expect(roleStatus).toMatchObject({
-      health: 'contentDrift',
+    expect(findIssueCodes(statusLocation, 'dynamicContentDrift')).not.toHaveLength(0);
+    expect(roleStatus.lastRefresh).toMatchObject({
+      status: 'failed',
+      event: 'config',
+      error: expect.stringContaining('tracking contentDigest 不一致'),
     });
-    expect(roleStatus?.diagnostics?.[0]).toContain('tracking contentDigest 不一致');
   });
 
   it('keeps the config store and reports recent refresh failure when renderer returns an invalid refresh plan', async () => {
@@ -3117,8 +3281,12 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifact.id === 'codex-explorer-role');
     const instructionArtifact = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'lightweight-instruction');
-    const roleStatus = statusResult.reports[0]?.plugins[0].managedArtifacts?.find((artifact) =>
-      artifact.id === 'codex-explorer-role');
+    const statusLocation = findStatusLocation(parseStatusPayload(statusResult.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const roleStatus = findDynamicDiagnosticEntry(statusLocation, 'codex-explorer-role');
 
     expect(instructionArtifact).toMatchObject({
       configDigest: beforeTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')?.configDigest,
@@ -3136,10 +3304,12 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         triggerKeys: ['explorerModel'],
       },
     });
-    expect(roleStatus).toMatchObject({
-      health: 'recentRefreshFailed',
+    expect(findIssueCodes(statusLocation, 'dynamicRefreshFailed')).not.toHaveLength(0);
+    expect(roleStatus.lastRefresh).toMatchObject({
+      status: 'failed',
+      event: 'config',
+      error: expect.stringContaining('expected "codex-explorer" from static metadata'),
     });
-    expect(roleStatus?.diagnostics?.[0]).toContain('最近一次 refresh 失败');
   });
 
   it('rolls back already-written role artifacts when refresh apply fails mid-flight and keeps status diagnosable', async () => {
@@ -3230,8 +3400,12 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifact.id === 'lightweight-instruction');
     const roleArtifact = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explorer-role');
-    const roleStatus = statusResult.reports[0]?.plugins[0].managedArtifacts?.find((artifact) =>
-      artifact.id === 'codex-explorer-role');
+    const statusLocation = findStatusLocation(parseStatusPayload(statusResult.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const roleStatus = findDynamicDiagnosticEntry(statusLocation, 'codex-explorer-role');
 
     expect(instructionArtifact).toMatchObject({
       configDigest: beforeTracking.plugins['codex-explore']?.artifacts.find((artifact) => artifact.id === 'lightweight-instruction')?.configDigest,
@@ -3249,10 +3423,12 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         triggerKeys: ['modelReasoningEffort'],
       },
     });
-    expect(roleStatus).toMatchObject({
-      health: 'recentRefreshFailed',
+    expect(findIssueCodes(statusLocation, 'dynamicRefreshFailed')).not.toHaveLength(0);
+    expect(roleStatus.lastRefresh).toMatchObject({
+      status: 'failed',
+      event: 'config',
+      error: expect.stringContaining('forced config write failure during refresh'),
     });
-    expect(roleStatus?.diagnostics?.[0]).toContain('forced config write failure during refresh');
   });
 
   it('reinstalls capabilityChanged Codex project artifacts with new dynamic ids and role identity, and prunes old residues', async () => {

@@ -17,8 +17,9 @@ import type {
 import { resolveAwHome, resolveRepoRootSync } from './paths.js';
 
 export type PluginConfigValue = string | number | boolean;
-export type PluginConfigSource = 'default' | 'user' | 'project' | 'missing';
+export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
 export type PluginConfigIssueType = 'missing-required' | 'invalid-config';
+export type ProjectConfigStoreLayer = 'shared' | 'local';
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
@@ -29,6 +30,8 @@ export interface PluginConfigIssue {
 
 export interface IgnoredUnknownPluginConfigKey {
   scope: Scope;
+  projectLayer?: ProjectConfigStoreLayer;
+  source: Exclude<PluginConfigSource, 'default' | 'missing'>;
   key: string;
 }
 
@@ -47,7 +50,68 @@ export interface ResolvedEffectivePluginConfig {
   issues: PluginConfigIssue[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
   schema: PluginConfigSchema['schema'];
-  stores: Record<Scope, PluginConfigStore>;
+  stores: {
+    user: PluginConfigStore;
+    project: PluginConfigStore;
+    projectLocal: PluginConfigStore;
+  };
+}
+
+export interface ProjectArtifactConfigBoundaryIssue {
+  key: string;
+  source: PluginConfigSource;
+  reason:
+    | 'pathTypeDefault'
+    | 'pathTypeRequired'
+    | 'sharedPathValue'
+    | 'pathTypeRefreshKey';
+  message: string;
+}
+
+export interface ResolvedProjectArtifactRenderConfig {
+  pluginName: string;
+  projectRoot: string;
+  values: Record<string, PluginConfigValue>;
+  sources: Record<string, PluginConfigSource>;
+  issues: PluginConfigIssue[];
+  ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
+  boundaryIssues: ProjectArtifactConfigBoundaryIssue[];
+  schema: PluginConfigSchema['schema'];
+  stores: {
+    user: PluginConfigStore;
+    project: PluginConfigStore;
+    projectLocal: PluginConfigStore;
+  };
+}
+
+export interface ProjectScopedPluginConfigEntryView {
+  key: string;
+  defaultValue?: PluginConfigValue | '[redacted]';
+  userValue?: PluginConfigValue | '[redacted]';
+  projectSharedValue?: PluginConfigValue | '[redacted]';
+  projectLocalValue?: PluginConfigValue | '[redacted]';
+  effectiveValue?: PluginConfigValue | '[redacted]';
+  effectiveSource: PluginConfigSource;
+  repoVisibleArtifactValue?: PluginConfigValue | '[redacted]';
+  repoVisibleArtifactSource: PluginConfigSource;
+  repoVisibleArtifactUsesSharedTruth: boolean;
+}
+
+export interface ResolvedProjectScopedPluginConfigView {
+  pluginName: string;
+  projectRoot: string;
+  schema: PluginConfigSchema['schema'];
+  stores: {
+    user: PluginConfigStore;
+    project: PluginConfigStore;
+    projectLocal: PluginConfigStore;
+  };
+  redactedValues: Record<string, PluginConfigValue | '[redacted]'>;
+  sources: Record<string, PluginConfigSource>;
+  entries: Record<string, ProjectScopedPluginConfigEntryView>;
+  issues: PluginConfigIssue[];
+  ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
+  repoVisibleArtifactConfig: Pick<ResolvedProjectArtifactRenderConfig, 'values' | 'sources' | 'issues' | 'boundaryIssues'>;
 }
 
 export interface PluginConfigStoreReceipt {
@@ -137,13 +201,17 @@ export function resolvePluginConfigStorePath(options: {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  projectLayer?: ProjectConfigStoreLayer;
 }): string {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const root = options.scope === 'user'
     ? resolveAwHome(options.env)
     : path.join(resolveAwProjectRoot(options.cwd), '.agent-workflows');
+  const configDir = options.scope === 'project' && options.projectLayer === 'local'
+    ? 'plugin-config.local'
+    : CONFIG_DIR;
 
-  return path.join(root, CONFIG_DIR, pluginName, CONFIG_FILE);
+  return path.join(root, configDir, pluginName, CONFIG_FILE);
 }
 
 async function readStoreFile(filePath: string): Promise<Record<string, unknown>> {
@@ -159,6 +227,7 @@ export async function readPluginConfigStore(options: {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStore> {
   const filePath = resolvePluginConfigStorePath(options);
   if (!(await fs.pathExists(filePath))) {
@@ -182,6 +251,7 @@ export async function writePluginConfigStore(options: {
   cwd: string;
   values: Record<string, unknown>;
   env?: NodeJS.ProcessEnv;
+  projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStoreReceipt> {
   const filePath = resolvePluginConfigStorePath(options);
   await fs.ensureDir(path.dirname(filePath));
@@ -216,6 +286,7 @@ export async function patchPluginConfigStore(options: {
   updates: Record<string, unknown>;
   removeKeys?: string[];
   env?: NodeJS.ProcessEnv;
+  projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStoreReceipt & { updatedKeys: string[]; removedKeys: string[] }> {
   const current = await readPluginConfigStore(options);
   const next = { ...current.values };
@@ -233,6 +304,7 @@ export async function patchPluginConfigStore(options: {
     cwd: options.cwd,
     env: options.env,
     values: next,
+    projectLayer: options.projectLayer,
   });
 
   return {
@@ -247,6 +319,7 @@ export async function resetPluginConfigStore(options: {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  projectLayer?: ProjectConfigStoreLayer;
 }): Promise<ResetPluginConfigStoreReceipt> {
   const filePath = resolvePluginConfigStorePath(options);
   const existed = await fs.pathExists(filePath);
@@ -385,6 +458,20 @@ function sourceForScope(scope: Scope): PluginConfigSource {
   return scope;
 }
 
+function sourceForStoreLayer(
+  scope: Scope,
+  projectLayer: ProjectConfigStoreLayer = 'shared',
+): Exclude<PluginConfigSource, 'default' | 'missing'> {
+  if (scope === 'user') {
+    return 'user';
+  }
+  return projectLayer === 'local' ? 'projectLocal' : 'project';
+}
+
+function isPathTypeField(field: PluginConfigSchemaField): boolean {
+  return field.type === 'file' || field.type === 'directory';
+}
+
 async function applyConfigLayer(options: {
   values: Record<string, PluginConfigValue>;
   redactedValues: Record<string, PluginConfigValue | '[redacted]'>;
@@ -438,7 +525,7 @@ export async function resolveEffectivePluginConfig(options: {
   }
 
   const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [userStore, projectStore] = await Promise.all([
+  const [userStore, projectStore, projectLocalStore] = await Promise.all([
     readPluginConfigStore({
       pluginName,
       scope: 'user',
@@ -450,6 +537,13 @@ export async function resolveEffectivePluginConfig(options: {
       scope: 'project',
       cwd: options.cwd,
       env: options.env,
+    }),
+    readPluginConfigStore({
+      pluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+      projectLayer: 'local',
     }),
   ]);
 
@@ -480,13 +574,19 @@ export async function resolveEffectivePluginConfig(options: {
     });
   }
 
-  for (const [scope, store] of [
-    ['user', userStore],
-    ['project', projectStore],
+  for (const [scope, store, projectLayer] of [
+    ['user', userStore, 'shared'],
+    ['project', projectStore, 'shared'],
+    ['project', projectLocalStore, 'local'],
   ] as const) {
     for (const key of Object.keys(store.values)) {
       if (!schemaKeys.has(key)) {
-        ignoredUnknownKeys.push({ scope, key });
+        ignoredUnknownKeys.push({
+          scope,
+          projectLayer,
+          source: sourceForStoreLayer(scope, projectLayer),
+          key,
+        });
       }
     }
     await applyConfigLayer({
@@ -496,7 +596,7 @@ export async function resolveEffectivePluginConfig(options: {
       invalidIssues,
       schema,
       entries: store.values,
-      source: sourceForScope(scope),
+      source: sourceForStoreLayer(scope, projectLayer),
       projectRoot,
     });
   }
@@ -525,6 +625,7 @@ export async function resolveEffectivePluginConfig(options: {
     stores: {
       user: userStore,
       project: projectStore,
+      projectLocal: projectLocalStore,
     },
   };
 }
@@ -551,6 +652,442 @@ export async function coercePluginConfigUpdates(options: {
   }
 
   return output;
+}
+
+function createProjectArtifactBoundaryIssue(options: {
+  key: string;
+  source: PluginConfigSource;
+  reason: ProjectArtifactConfigBoundaryIssue['reason'];
+}): ProjectArtifactConfigBoundaryIssue {
+  if (options.reason === 'pathTypeDefault') {
+    return {
+      key: options.key,
+      source: options.source,
+      reason: options.reason,
+      message:
+        `Config "${options.key}" uses file/directory default value, ` +
+        'which cannot participate in repo-visible project artifact truth.',
+    };
+  }
+  if (options.reason === 'pathTypeRequired') {
+    return {
+      key: options.key,
+      source: options.source,
+      reason: options.reason,
+      message:
+        `Config "${options.key}" is a required file/directory key, ` +
+        'which is not portable enough for repo-visible project artifacts.',
+    };
+  }
+  if (options.reason === 'sharedPathValue') {
+    return {
+      key: options.key,
+      source: options.source,
+      reason: options.reason,
+      message:
+        `Config "${options.key}" is stored in project shared config as a file/directory path. ` +
+        'Use user or project local config for machine-local paths.',
+    };
+  }
+  return {
+    key: options.key,
+    source: options.source,
+    reason: options.reason,
+    message:
+      `Config "${options.key}" is declared as a refresh key for repo-visible project artifacts, ` +
+      'but file/directory config is machine-local and cannot drive shared artifact refresh.',
+  };
+}
+
+export function collectProjectArtifactConfigBoundaryIssues(options: {
+  schema: PluginConfigSchema['schema'];
+  sharedEntries?: Record<string, unknown>;
+  refreshKeys?: readonly string[];
+}): ProjectArtifactConfigBoundaryIssue[] {
+  const issues: ProjectArtifactConfigBoundaryIssue[] = [];
+  const refreshKeySet = new Set(options.refreshKeys ?? []);
+
+  for (const [key, field] of Object.entries(options.schema)) {
+    if (!isPathTypeField(field)) {
+      continue;
+    }
+    if (field.default !== undefined) {
+      issues.push(createProjectArtifactBoundaryIssue({
+        key,
+        source: 'default',
+        reason: 'pathTypeDefault',
+      }));
+    }
+    if (field.required) {
+      issues.push(createProjectArtifactBoundaryIssue({
+        key,
+        source: 'missing',
+        reason: 'pathTypeRequired',
+      }));
+    }
+    if (options.sharedEntries && Object.hasOwn(options.sharedEntries, key)) {
+      issues.push(createProjectArtifactBoundaryIssue({
+        key,
+        source: 'project',
+        reason: 'sharedPathValue',
+      }));
+    }
+    if (refreshKeySet.has(key)) {
+      issues.push(createProjectArtifactBoundaryIssue({
+        key,
+        source: 'project',
+        reason: 'pathTypeRefreshKey',
+      }));
+    }
+  }
+
+  return issues;
+}
+
+export async function resolveProjectArtifactRenderConfig(options: {
+  pluginName?: string;
+  manifest: PluginManifestSource;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  refreshKeys?: readonly string[];
+}): Promise<ResolvedProjectArtifactRenderConfig> {
+  const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
+  const schema = options.manifest.config?.schema;
+  const projectRoot = resolveAwProjectRoot(options.cwd);
+  const [userStore, projectStore, projectLocalStore] = await Promise.all([
+    readPluginConfigStore({
+      pluginName,
+      scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    readPluginConfigStore({
+      pluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    readPluginConfigStore({
+      pluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+      projectLayer: 'local',
+    }),
+  ]);
+
+  if (!schema) {
+    return {
+      pluginName,
+      projectRoot,
+      values: {},
+      sources: {},
+      issues: [],
+      ignoredUnknownKeys: [],
+      boundaryIssues: [],
+      schema: {},
+      stores: {
+        user: userStore,
+        project: projectStore,
+        projectLocal: projectLocalStore,
+      },
+    };
+  }
+
+  const values: Record<string, PluginConfigValue> = {};
+  const sources: Record<string, PluginConfigSource> = {};
+  const invalidIssues = new Map<string, PluginConfigIssue>();
+  const ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[] = [];
+  const schemaKeys = new Set(Object.keys(schema));
+  const boundaryIssues = collectProjectArtifactConfigBoundaryIssues({
+    schema,
+    sharedEntries: projectStore.values,
+    refreshKeys: options.refreshKeys,
+  });
+
+  for (const key of Object.keys(schema)) {
+    sources[key] = 'missing';
+  }
+
+  for (const key of Object.keys(projectStore.values)) {
+    if (!schemaKeys.has(key)) {
+      ignoredUnknownKeys.push({ scope: 'project', projectLayer: 'shared', source: 'project', key });
+    }
+  }
+  for (const key of Object.keys(userStore.values)) {
+    if (!schemaKeys.has(key)) {
+      ignoredUnknownKeys.push({ scope: 'user', projectLayer: 'shared', source: 'user', key });
+    }
+  }
+  for (const key of Object.keys(projectLocalStore.values)) {
+    if (!schemaKeys.has(key)) {
+      ignoredUnknownKeys.push({ scope: 'project', projectLayer: 'local', source: 'projectLocal', key });
+    }
+  }
+
+  for (const [key, field] of Object.entries(schema)) {
+    if (!isPathTypeField(field) && field.default !== undefined) {
+      await applyConfigLayer({
+        values,
+        redactedValues: {},
+        sources,
+        invalidIssues,
+        schema: { [key]: field },
+        entries: { [key]: field.default },
+        source: 'default',
+        projectRoot,
+      });
+    }
+  }
+
+  const sharedSchema = Object.fromEntries(
+    Object.entries(schema).filter(([, field]) => !isPathTypeField(field)),
+  );
+  await applyConfigLayer({
+    values,
+    redactedValues: {},
+    sources,
+    invalidIssues,
+    schema: sharedSchema,
+    entries: projectStore.values,
+    source: 'project',
+    projectRoot,
+  });
+
+  const issues = [
+    ...invalidIssues.values(),
+    ...boundaryIssues.map((issue) => ({
+      type: 'invalid-config' as const,
+      key: issue.key,
+      source: issue.source,
+      message: issue.message,
+    })),
+  ];
+  for (const [key, field] of Object.entries(schema)) {
+    if (isPathTypeField(field)) {
+      continue;
+    }
+    if (field.required && values[key] === undefined) {
+      issues.push({
+        type: 'missing-required',
+        key,
+        source: sources[key],
+        message: `Config "${key}" is required.`,
+      });
+    }
+  }
+
+  return {
+    pluginName,
+    projectRoot,
+    values,
+    sources,
+    issues,
+    ignoredUnknownKeys,
+    boundaryIssues,
+    schema,
+    stores: {
+      user: userStore,
+      project: projectStore,
+      projectLocal: projectLocalStore,
+    },
+  };
+}
+
+export async function resolveProjectLocalPluginConfigView(options: {
+  pluginName?: string;
+  manifest: PluginManifestSource;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{
+  pluginName: string;
+  projectRoot: string;
+  schema: PluginConfigSchema['schema'];
+  localStore: PluginConfigStore;
+  values: Record<string, PluginConfigValue>;
+  redactedValues: Record<string, PluginConfigValue | '[redacted]'>;
+  sources: Record<string, PluginConfigSource>;
+  issues: PluginConfigIssue[];
+  ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
+  repoVisibleArtifactConfig: Pick<ResolvedProjectArtifactRenderConfig, 'values' | 'sources' | 'issues' | 'boundaryIssues'>;
+}> {
+  const effective = await resolveEffectivePluginConfig(options);
+  const artifactConfig = await resolveProjectArtifactRenderConfig(options);
+  const values: Record<string, PluginConfigValue> = {};
+  const redactedValues: Record<string, PluginConfigValue | '[redacted]'> = {};
+  const sources: Record<string, PluginConfigSource> = {};
+  const issues: PluginConfigIssue[] = [];
+
+  for (const [key, field] of Object.entries(effective.schema)) {
+    sources[key] = 'missing';
+    if (!Object.hasOwn(effective.stores.projectLocal.values, key)) {
+      continue;
+    }
+    sources[key] = 'projectLocal';
+    try {
+      const coerced = await coercePluginConfigValue({
+        key,
+        field,
+        value: effective.stores.projectLocal.values[key],
+        projectRoot: effective.projectRoot,
+      });
+      values[key] = coerced;
+      redactedValues[key] = redactValue(field, coerced);
+    } catch (error) {
+      issues.push({
+        type: 'invalid-config',
+        key,
+        source: 'projectLocal',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    pluginName: effective.pluginName,
+    projectRoot: effective.projectRoot,
+    schema: effective.schema,
+    localStore: effective.stores.projectLocal,
+    values,
+    redactedValues,
+    sources,
+    issues,
+    ignoredUnknownKeys: effective.ignoredUnknownKeys.filter((entry) => entry.source === 'projectLocal'),
+    repoVisibleArtifactConfig: {
+      values: artifactConfig.values,
+      sources: artifactConfig.sources,
+      issues: artifactConfig.issues,
+      boundaryIssues: artifactConfig.boundaryIssues,
+    },
+  };
+}
+
+async function resolveRedactedLayerValue(options: {
+  key: string;
+  field: PluginConfigSchemaField;
+  projectRoot: string;
+  source: PluginConfigSource;
+  value: unknown;
+}): Promise<{
+  value?: PluginConfigValue | '[redacted]';
+  issue?: PluginConfigIssue;
+}> {
+  try {
+    const coerced = await coercePluginConfigValue({
+      key: options.key,
+      field: options.field,
+      value: options.value,
+      projectRoot: options.projectRoot,
+    });
+    return {
+      value: redactValue(options.field, coerced),
+    };
+  } catch (error) {
+    return {
+      issue: {
+        type: 'invalid-config',
+        key: options.key,
+        source: options.source,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+export async function resolveProjectScopedPluginConfigView(options: {
+  pluginName?: string;
+  manifest: PluginManifestSource;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ResolvedProjectScopedPluginConfigView> {
+  const effective = await resolveEffectivePluginConfig(options);
+  const artifactConfig = await resolveProjectArtifactRenderConfig(options);
+  const entries: Record<string, ProjectScopedPluginConfigEntryView> = {};
+
+  for (const [key, field] of Object.entries(effective.schema)) {
+    const entry: ProjectScopedPluginConfigEntryView = {
+      key,
+      effectiveValue: effective.redactedValues[key],
+      effectiveSource: effective.sources[key] ?? 'missing',
+      repoVisibleArtifactValue: artifactConfig.values[key] === undefined
+        ? undefined
+        : redactValue(field, artifactConfig.values[key]!),
+      repoVisibleArtifactSource: artifactConfig.sources[key] ?? 'missing',
+      repoVisibleArtifactUsesSharedTruth: true,
+    };
+
+    if (field.default !== undefined) {
+      const resolvedDefault = await resolveRedactedLayerValue({
+        key,
+        field,
+        projectRoot: effective.projectRoot,
+        source: 'default',
+        value: field.default,
+      });
+      if (resolvedDefault.value !== undefined) {
+        entry.defaultValue = resolvedDefault.value;
+      }
+    }
+
+    if (Object.hasOwn(effective.stores.user.values, key)) {
+      const resolvedUser = await resolveRedactedLayerValue({
+        key,
+        field,
+        projectRoot: effective.projectRoot,
+        source: 'user',
+        value: effective.stores.user.values[key],
+      });
+      if (resolvedUser.value !== undefined) {
+        entry.userValue = resolvedUser.value;
+      }
+    }
+
+    if (Object.hasOwn(effective.stores.project.values, key)) {
+      const resolvedProject = await resolveRedactedLayerValue({
+        key,
+        field,
+        projectRoot: effective.projectRoot,
+        source: 'project',
+        value: effective.stores.project.values[key],
+      });
+      if (resolvedProject.value !== undefined) {
+        entry.projectSharedValue = resolvedProject.value;
+      }
+    }
+
+    if (Object.hasOwn(effective.stores.projectLocal.values, key)) {
+      const resolvedLocal = await resolveRedactedLayerValue({
+        key,
+        field,
+        projectRoot: effective.projectRoot,
+        source: 'projectLocal',
+        value: effective.stores.projectLocal.values[key],
+      });
+      if (resolvedLocal.value !== undefined) {
+        entry.projectLocalValue = resolvedLocal.value;
+      }
+    }
+
+    entries[key] = entry;
+  }
+
+  return {
+    pluginName: effective.pluginName,
+    projectRoot: effective.projectRoot,
+    schema: effective.schema,
+    stores: effective.stores,
+    redactedValues: effective.redactedValues,
+    sources: effective.sources,
+    entries,
+    issues: effective.issues,
+    ignoredUnknownKeys: effective.ignoredUnknownKeys,
+    repoVisibleArtifactConfig: {
+      values: artifactConfig.values,
+      sources: artifactConfig.sources,
+      issues: artifactConfig.issues,
+      boundaryIssues: artifactConfig.boundaryIssues,
+    },
+  };
 }
 
 export function summarizeEffectivePluginConfig(

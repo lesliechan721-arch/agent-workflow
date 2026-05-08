@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
+import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -224,8 +225,25 @@ function readEvents(awHome: string): Promise<Array<Record<string, unknown>>> {
     .catch(() => []);
 }
 
-function codexProjectScope(ledger: InstalledLedger, projectKey: string) {
-  return ledger.plugins['git-commit']?.platforms.codex?.projectScopes?.[projectKey];
+function normalizeMacTmpPath(value: string): string {
+  return value.replace(/^\/private(?=\/var\/folders\/)/, '');
+}
+
+async function readCodexProjectInstallRecord(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+  projectKey: string,
+) {
+  return readInstallRecordForLocation({
+    cwd: repoRoot,
+    location: {
+      plugin: 'git-commit',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    },
+    env,
+  });
 }
 
 afterEach(async () => {
@@ -235,7 +253,7 @@ afterEach(async () => {
 });
 
 describe('plugin lifecycle command integration', () => {
-  it('runs install lifecycle from the pending snapshot before ledger write and stores that snapshot', async () => {
+  it('runs install lifecycle before install record commit and writes a historical lifecycle runtime', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
@@ -263,16 +281,24 @@ describe('plugin lifecycle command integration', () => {
       configToken: 'secret-token',
     }]);
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
-    const scopeRecord = codexProjectScope(await readInstalledLedger(workspace.env), projectKey);
-    await expect(fs.realpath(scopeRecord!.lifecycleConfigSnapshot!.snapshotRoot)).resolves.toBe(
-      await fs.realpath(path.dirname(String(events[0].rootDir))),
+    const recordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(recordRead.status).toBe('ok');
+    if (recordRead.status !== 'ok') {
+      throw new Error(`expected install record, got ${recordRead.status}`);
+    }
+
+    const lifecycle = recordRead.value.record.lifecycle;
+    expect(lifecycle).toBeTruthy();
+    await expect(fs.pathExists(lifecycle!.runtimeRoot)).resolves.toBe(true);
+    await expect(fs.realpath(lifecycle!.bundleRoot)).resolves.toBe(
+      await fs.realpath(path.join(lifecycle!.runtimeRoot, 'bundle')),
     );
-    await expect(fs.realpath(scopeRecord!.lifecycleConfigSnapshot!.bundleRoot)).resolves.toBe(
-      await fs.realpath(String(events[0].rootDir)),
+    await expect(fs.realpath(lifecycle!.manifestPath)).resolves.toBe(
+      await fs.realpath(path.join(lifecycle!.bundleRoot, '.agents-plugin', 'plugin.json')),
     );
   });
 
-  it('uses upgrade lifecycle and garbage-collects the old snapshot after a successful upgrade', async () => {
+  it('updates the historical lifecycle runtime reference on upgrade', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
@@ -284,26 +310,40 @@ describe('plugin lifecycle command integration', () => {
       { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
     );
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
-    const oldSnapshotRoot = codexProjectScope(await readInstalledLedger(workspace.env), projectKey)
-      ?.lifecycleConfigSnapshot?.snapshotRoot;
+    const oldRecordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(oldRecordRead.status).toBe('ok');
+    if (oldRecordRead.status !== 'ok') {
+      throw new Error(`expected install record, got ${oldRecordRead.status}`);
+    }
+    const oldRuntimeRoot = oldRecordRead.value.record.lifecycle?.runtimeRoot;
     await fs.remove(path.join(workspace.awHome, 'events.log'));
 
     await upgradeCommand(
       ['git-commit'],
-      { cwd: workspace.repoRoot, scope: 'project', platform: 'codex', scriptTimeoutMs: 46000 },
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        scriptTimeoutMs: 46000,
+        skillTrigger: 'default',
+      },
       { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
     );
 
     const events = await readEvents(workspace.awHome);
-    expect(events).toMatchObject([{ event: 'upgrade', source: 'installSnapshot' }]);
-    const newSnapshotRoot = codexProjectScope(await readInstalledLedger(workspace.env), projectKey)
-      ?.lifecycleConfigSnapshot?.snapshotRoot;
-    expect(newSnapshotRoot).toBeTruthy();
-    expect(newSnapshotRoot).not.toBe(oldSnapshotRoot);
-    await expect(fs.pathExists(oldSnapshotRoot!)).resolves.toBe(false);
+    expect(events).toMatchObject([{ event: 'upgrade' }]);
+    const newRecordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(newRecordRead.status).toBe('ok');
+    if (newRecordRead.status !== 'ok') {
+      throw new Error(`expected install record, got ${newRecordRead.status}`);
+    }
+    const newRuntimeRoot = newRecordRead.value.record.lifecycle?.runtimeRoot;
+    expect(newRuntimeRoot).toBeTruthy();
+    expect(newRuntimeRoot).not.toBe(oldRuntimeRoot);
+    await expect(fs.pathExists(newRuntimeRoot!)).resolves.toBe(true);
   });
 
-  it('runs uninstall lifecycle before native uninstall and garbage-collects the ledger snapshot', async () => {
+  it('runs uninstall lifecycle from the historical runtime before native uninstall and garbage-collects it', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
@@ -315,8 +355,13 @@ describe('plugin lifecycle command integration', () => {
       { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
     );
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
-    const snapshotRoot = codexProjectScope(await readInstalledLedger(workspace.env), projectKey)
-      ?.lifecycleConfigSnapshot?.snapshotRoot;
+    const recordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(recordRead.status).toBe('ok');
+    if (recordRead.status !== 'ok') {
+      throw new Error(`expected install record, got ${recordRead.status}`);
+    }
+    const lifecycle = recordRead.value.record.lifecycle;
+    expect(lifecycle).toBeTruthy();
     await fs.remove(path.join(workspace.awHome, 'events.log'));
 
     await uninstallCommand(
@@ -326,13 +371,17 @@ describe('plugin lifecycle command integration', () => {
     );
 
     const events = await readEvents(workspace.awHome);
-    expect(events).toMatchObject([{ event: 'uninstall', source: 'installSnapshot' }]);
+    expect(events).toMatchObject([{ event: 'uninstall' }]);
+    expect(normalizeMacTmpPath(String(events[0]!.rootDir))).toBe(
+      normalizeMacTmpPath(lifecycle!.bundleRoot),
+    );
     expect(codex.uninstallCalls).toEqual(['git-commit']);
-    expect(codexProjectScope(await readInstalledLedger(workspace.env), projectKey)).toBeUndefined();
-    await expect(fs.pathExists(snapshotRoot!)).resolves.toBe(false);
+    const postUninstallRecordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(postUninstallRecordRead.status).toBe('missing');
+    await expect(fs.pathExists(lifecycle!.runtimeRoot)).resolves.toBe(false);
   });
 
-  it('adds status config/script health from install snapshots without leaking sensitive config values', async () => {
+  it('reports status health from the current catalog without leaking sensitive config values', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
@@ -351,15 +400,12 @@ describe('plugin lifecycle command integration', () => {
     );
     const payload = JSON.parse(result.output);
     expect(payload.cells[0]).toMatchObject({
-      healthSource: 'installSnapshot',
-      config: 'configured',
-      scripts: 'declared',
-      configSources: ['default'],
+      healthSource: 'currentCatalog',
     });
     expect(result.output).not.toContain('secret-token');
   });
 
-  it('falls back to current catalog health and reports warnings when the install snapshot is unusable', async () => {
+  it('keeps status health on the current catalog even when the historical runtime is missing', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
@@ -372,11 +418,13 @@ describe('plugin lifecycle command integration', () => {
     );
 
     const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
-    const ledger = await readInstalledLedger(workspace.env);
-    const scopeRecord = codexProjectScope(ledger, projectKey);
-    expect(scopeRecord?.lifecycleConfigSnapshot).toBeTruthy();
-    scopeRecord!.lifecycleConfigSnapshot!.sourceManifestDigest = 'sha256:corrupted';
-    await writeInstalledLedger(ledger, workspace.env);
+    const recordRead = await readCodexProjectInstallRecord(workspace.repoRoot, workspace.env, projectKey);
+    expect(recordRead.status).toBe('ok');
+    if (recordRead.status !== 'ok') {
+      throw new Error(`expected install record, got ${recordRead.status}`);
+    }
+    expect(recordRead.value.record.lifecycle).toBeTruthy();
+    await fs.remove(recordRead.value.record.lifecycle!.runtimeRoot);
 
     const result = await statusCommand(
       ['git-commit'],
@@ -387,11 +435,6 @@ describe('plugin lifecycle command integration', () => {
     const payload = JSON.parse(result.output);
     expect(payload.cells[0]).toMatchObject({
       healthSource: 'currentCatalog',
-      config: 'configured',
-      scripts: 'declared',
-      healthWarnings: [
-        expect.stringContaining('install snapshot unusable: snapshot manifest digest mismatch'),
-      ],
     });
     expect(result.output).not.toContain('secret-token');
   });

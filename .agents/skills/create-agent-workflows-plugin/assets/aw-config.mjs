@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CONFIG_DIR = 'plugin-config';
+const LOCAL_CONFIG_DIR = 'plugin-config.local';
 const CONFIG_FILE = 'config.json';
 const SUPPORTED_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
 const REDACTED = '[redacted]';
@@ -187,7 +188,11 @@ function resolveConfigStorePath(pluginName, scope, cwd) {
   if (scope === 'user') {
     return path.join(resolveAwHome(), CONFIG_DIR, pluginName, CONFIG_FILE);
   }
-  return path.join(resolveAwProjectRoot(cwd), '.agent-workflows', CONFIG_DIR, pluginName, CONFIG_FILE);
+  const projectRoot = resolveAwProjectRoot(cwd);
+  if (scope === 'projectLocal') {
+    return path.join(projectRoot, '.agent-workflows', LOCAL_CONFIG_DIR, pluginName, CONFIG_FILE);
+  }
+  return path.join(projectRoot, '.agent-workflows', CONFIG_DIR, pluginName, CONFIG_FILE);
 }
 
 function readStore(filePath) {
@@ -322,9 +327,13 @@ function resolveFromStores({ pluginName, schema, scope, stores, projectRoot }) {
         applyLayer(state, { [key]: field }, { [key]: field.default }, 'default', projectRoot);
       }
     }
-    for (const storeScope of ['user', 'project']) {
-      collectUnknownKeys(state, schema, stores[storeScope], storeScope);
-      applyLayer(state, schema, stores[storeScope].values, storeScope, projectRoot);
+    for (const [storeKey, source] of [
+      ['user', 'user'],
+      ['project', 'projectShared'],
+      ['projectLocal', 'projectLocal'],
+    ]) {
+      collectUnknownKeys(state, schema, stores[storeKey], source);
+      applyLayer(state, schema, stores[storeKey].values, source, projectRoot);
     }
     addMissingRequiredIssues(state, schema);
   } else {
@@ -347,6 +356,7 @@ function resolveFromStores({ pluginName, schema, scope, stores, projectRoot }) {
       configStores: {
         user: stores.user.path,
         project: stores.project.path,
+        projectLocal: stores.projectLocal.path,
       },
     },
   };
@@ -417,6 +427,7 @@ function resolveFromContext(scope) {
     stores: {
       user: scope === 'user' ? store : { path: '', exists: false, values: {} },
       project: scope === 'project' ? store : { path: '', exists: false, values: {} },
+      projectLocal: scope === 'projectLocal' ? store : { path: '', exists: false, values: {} },
     },
     projectRoot: context.cwd || process.cwd(),
   });
@@ -430,6 +441,7 @@ function resolveFallback(scope) {
   const stores = {
     user: readStore(resolveConfigStorePath(pluginName, 'user', cwd)),
     project: readStore(resolveConfigStorePath(pluginName, 'project', cwd)),
+    projectLocal: readStore(resolveConfigStorePath(pluginName, 'projectLocal', cwd)),
   };
   return resolveFromStores({ pluginName, schema, scope, stores, projectRoot });
 }
@@ -456,17 +468,18 @@ function parseArgs(argv) {
     positional.push(arg);
   }
 
-  if (!['effective', 'user', 'project'].includes(scope)) {
-    fail('--scope must be effective, user, or project.');
+  if (scope === 'project-local') scope = 'projectLocal';
+  if (!['effective', 'user', 'project', 'projectLocal'].includes(scope)) {
+    fail('--scope must be effective, user, project, or project-local.');
   }
   if (command !== 'get' && command !== 'json') {
-    fail('Usage: node aw-config.mjs get <key> [--scope effective|user|project] | json [--scope effective|user|project]');
+    fail('Usage: node aw-config.mjs get <key> [--scope effective|user|project|project-local] | json [--scope effective|user|project|project-local]');
   }
   if (command === 'get' && positional.length !== 1) {
-    fail('Usage: node aw-config.mjs get <key> [--scope effective|user|project]');
+    fail('Usage: node aw-config.mjs get <key> [--scope effective|user|project|project-local]');
   }
   if (command === 'json' && positional.length !== 0) {
-    fail('Usage: node aw-config.mjs json [--scope effective|user|project]');
+    fail('Usage: node aw-config.mjs json [--scope effective|user|project|project-local]');
   }
   return { command, key: positional[0], scope };
 }

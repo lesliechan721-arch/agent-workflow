@@ -129,9 +129,7 @@ async function collectRefreshUnits(options: {
   changedKeys: string[];
   resetAllTrackedKeys: boolean;
 }): Promise<RefreshUnit[]> {
-  const candidateScopes: Scope[] = options.commandScope === 'user'
-    ? ['user', 'project']
-    : ['project'];
+  const candidateScopes: Scope[] = [options.commandScope];
   const units: RefreshUnit[] = [];
 
   for (const scope of candidateScopes) {
@@ -180,9 +178,7 @@ async function collectRefreshUnitsForReapply(options: {
   units: RefreshUnit[];
   reason?: ArtifactRefreshReceipt['reason'];
 }> {
-  const candidateScopes: Scope[] = options.commandScope === 'user'
-    ? ['user', 'project']
-    : ['project'];
+  const candidateScopes: Scope[] = [options.commandScope];
   const units: RefreshUnit[] = [];
   let sawTrackedDynamicArtifact = false;
 

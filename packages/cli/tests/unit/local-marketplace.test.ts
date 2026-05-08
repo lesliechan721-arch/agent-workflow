@@ -381,29 +381,69 @@ describe('local marketplace', () => {
     });
   });
 
-  it('preserves AW-managed plugin install snapshots during local marketplace rebuilds', async () => {
+  it('preserves install-state runtime state during local marketplace rebuilds', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
-    await fs.outputFile(
-      path.join(awHome, 'plugin-install-snapshots', 'codex', 'user', 'scope', 'git-commit', 'digest', 'bundle', 'marker.txt'),
-      'snapshot',
-      'utf8',
-    );
+    await Promise.all([
+      fs.outputJson(
+        path.join(awHome, 'dependency-index', 'index.json'),
+        {
+          version: 1,
+          updatedAt: '2026-05-07T00:00:00.000Z',
+          records: [],
+        },
+        { spaces: 2 },
+      ),
+      fs.outputFile(
+        path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
+        'runtime',
+        'utf8',
+      ),
+      fs.outputJson(
+        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
+        {
+          version: 1,
+          pluginName: 'git-commit',
+          platform: 'codex',
+          owner: {
+            plugin: 'git-commit',
+            platform: 'codex',
+            scope: 'user',
+          },
+          ownerRecordPath: '/tmp/record.json',
+          ownerRecordDigest: 'sha256:record',
+          preference: 'manual',
+          updatedAt: '2026-05-07T00:00:00.000Z',
+        },
+        { spaces: 2 },
+      ),
+    ]);
 
     await fs.writeFile(
       path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
-      '# changed for snapshot preserve\n',
+      '# changed for install-state preserve\n',
       'utf8',
     );
     await initializeLocalMarketplace({ force: true, env: process.env });
 
+    await expect(fs.readJson(
+      path.join(awHome, 'dependency-index', 'index.json'),
+    )).resolves.toMatchObject({
+      records: [],
+    });
     await expect(fs.readFile(
-      path.join(awHome, 'plugin-install-snapshots', 'codex', 'user', 'scope', 'git-commit', 'digest', 'bundle', 'marker.txt'),
+      path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
       'utf8',
-    )).resolves.toBe('snapshot');
+    )).resolves.toBe('runtime');
+    await expect(fs.readJson(
+      path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
+    )).resolves.toMatchObject({
+      pluginName: 'git-commit',
+      preference: 'manual',
+    });
   });
 
   it('preserves native recovery breadcrumbs during ensureLocalMarketplace refreshes', async () => {
@@ -552,7 +592,7 @@ describe('local marketplace', () => {
     await expect(calculateBundleFingerprint(awHome)).resolves.toMatch(/^sha256:/);
   });
 
-  it('ignores native-recovery contents when calculating bundle fingerprints', async () => {
+  it('ignores runtime state contents when calculating bundle fingerprints', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
@@ -570,37 +610,105 @@ describe('local marketplace', () => {
     const afterWrite = await calculateBundleFingerprint(awHome);
     expect(afterWrite).toBe(before);
 
-    await fs.writeFile(
-      getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
-      JSON.stringify({
-        version: 1,
-        platform: 'codex',
-        scope: 'user',
-        marketplaceName: 'aw',
-        pluginName: 'git-commit',
-        pluginId: 'git-commit@aw',
-        state: 'cleanup_failed',
-        reason: 'changed diagnostics',
-        nativeWrittenAt: '2026-05-04T09:00:00.000Z',
-        updatedAt: '2026-05-04T09:05:00.000Z',
-      }, null, 2),
-      'utf8',
-    );
+    await Promise.all([
+      fs.writeFile(
+        getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
+        JSON.stringify({
+          version: 1,
+          platform: 'codex',
+          scope: 'user',
+          marketplaceName: 'aw',
+          pluginName: 'git-commit',
+          pluginId: 'git-commit@aw',
+          state: 'cleanup_failed',
+          reason: 'changed diagnostics',
+          nativeWrittenAt: '2026-05-04T09:00:00.000Z',
+          updatedAt: '2026-05-04T09:05:00.000Z',
+        }, null, 2),
+        'utf8',
+      ),
+      fs.outputJson(
+        path.join(awHome, 'dependency-index', 'index.json'),
+        {
+          version: 1,
+          updatedAt: '2026-05-07T00:00:00.000Z',
+          records: [],
+        },
+        { spaces: 2 },
+      ),
+      fs.outputFile(
+        path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
+        'runtime changed\n',
+        'utf8',
+      ),
+      fs.outputJson(
+        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
+        {
+          version: 1,
+          pluginName: 'git-commit',
+          platform: 'codex',
+          owner: {
+            plugin: 'git-commit',
+            platform: 'codex',
+            scope: 'user',
+          },
+          ownerRecordPath: '/tmp/record.json',
+          ownerRecordDigest: 'sha256:record',
+          preference: 'manual',
+          updatedAt: '2026-05-07T00:00:00.000Z',
+        },
+        { spaces: 2 },
+      ),
+    ]);
 
     await expect(calculateBundleFingerprint(awHome)).resolves.toBe(before);
   });
 
-  it('accepts native-recovery runtime state when validating local marketplace layout', async () => {
+  it('accepts runtime state directories when validating local marketplace layout', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
-    await fs.outputFile(
-      getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
-      'not a bundle source',
-      'utf8',
-    );
+    await Promise.all([
+      fs.outputFile(
+        getCodexNativeRecoveryBreadcrumbPath('git-commit', process.env),
+        'not a bundle source',
+        'utf8',
+      ),
+      fs.outputJson(
+        path.join(awHome, 'dependency-index', 'index.json'),
+        {
+          version: 1,
+          updatedAt: '2026-05-07T00:00:00.000Z',
+          records: [],
+        },
+        { spaces: 2 },
+      ),
+      fs.outputFile(
+        path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
+        'runtime',
+        'utf8',
+      ),
+      fs.outputJson(
+        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
+        {
+          version: 1,
+          pluginName: 'git-commit',
+          platform: 'codex',
+          owner: {
+            plugin: 'git-commit',
+            platform: 'codex',
+            scope: 'user',
+          },
+          ownerRecordPath: '/tmp/record.json',
+          ownerRecordDigest: 'sha256:record',
+          preference: 'manual',
+          updatedAt: '2026-05-07T00:00:00.000Z',
+        },
+        { spaces: 2 },
+      ),
+    ]);
 
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });

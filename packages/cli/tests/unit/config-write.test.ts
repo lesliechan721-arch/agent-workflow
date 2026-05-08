@@ -1,5 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,12 +22,26 @@ import {
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import {
+  writeDynamicArtifactDiagnosticCacheAt,
+  writeInstallRecordFileAt,
+  writeProjectArtifactIdentityFileAt,
+} from '../../src/install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  getDiagnosticCachePath,
+  getInstallRecordPath,
+  getProjectArtifactSharedIdentityPath,
+} from '../../src/install-state/paths.js';
+import {
   readPluginConfigStore,
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import { writeTrackingManifest } from '../../src/utils/tracking.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -33,7 +49,15 @@ async function makeTempRoot(prefix: string): Promise<string> {
   return root;
 }
 
-function createPlugin(pluginName = 'configurable-plugin'): PluginMeta {
+async function initRepo(repoRoot: string): Promise<void> {
+  await fs.ensureDir(repoRoot);
+  await execFileAsync('git', ['init', '-q'], { cwd: repoRoot });
+}
+
+function createPlugin(
+  pluginName = 'configurable-plugin',
+  options: { withProjectDynamicTarget?: boolean } = {},
+): PluginMeta {
   return {
     rootDir: '/tmp/plugin',
     manifestPath: '/tmp/plugin/.agents-plugin/plugin.json',
@@ -69,7 +93,35 @@ function createPlugin(pluginName = 'configurable-plugin'): PluginMeta {
           },
         },
       },
+      ...(options.withProjectDynamicTarget
+        ? {
+            artifacts: {
+              targets: [{
+                id: 'project-instructions',
+                platform: 'codex' as const,
+                target: 'codex.developerInstructionsBlock' as const,
+                scopes: ['project'],
+                states: ['present'],
+                refreshKeys: ['mode'],
+                requiresCodexProjectConfig: true,
+              }],
+            },
+          }
+        : {}),
     },
+  };
+}
+
+async function materializePlugin(root: string, plugin: PluginMeta): Promise<PluginMeta> {
+  const pluginRoot = path.join(root, 'plugin');
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  await fs.ensureDir(path.dirname(manifestPath));
+  await fs.writeJson(manifestPath, plugin.manifest, { spaces: 2 });
+  await fs.outputFile(path.join(pluginRoot, 'index.js'), 'export {};\n');
+  return {
+    ...plugin,
+    rootDir: pluginRoot,
+    manifestPath,
   };
 }
 
@@ -108,14 +160,14 @@ describe('plugin config write helper', () => {
     expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
   });
 
-  it('patches once, refreshes once, preserves unknown keys, and does not copy another layer into the target store', async () => {
+  it('prewrites project shared config without refresh when the current project has no local record', async () => {
     const root = await makeTempRoot('aw-config-write-');
     const repoRoot = path.join(root, 'repo');
     const cwd = path.join(repoRoot, 'packages', 'app');
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await initRepo(repoRoot);
     await fs.ensureDir(cwd);
-    const plugin = createPlugin();
+    const plugin = await materializePlugin(root, createPlugin());
 
     await writePluginConfigStore({
       pluginName: plugin.manifest.name,
@@ -153,6 +205,7 @@ describe('plugin config write helper', () => {
     expect(receipt).toMatchObject({
       plugin: plugin.manifest.name,
       scope: 'project',
+      projectLayer: 'shared',
       updatedKeys: ['retries'],
       removedKeys: ['mode'],
       effective: {
@@ -162,12 +215,14 @@ describe('plugin config write helper', () => {
         },
       },
       artifactRefresh: {
-        attempted: true,
-        status: 'succeeded',
+        attempted: false,
+        status: 'skipped',
         triggerKeys: ['retries', 'mode'],
       },
+      configRefreshSkippedReason: 'noRefreshTarget',
+      warnings: [],
     });
-    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledTimes(1);
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
     await expect(readPluginConfigStore({
       pluginName: plugin.manifest.name,
       scope: 'project',
@@ -188,6 +243,369 @@ describe('plugin config write helper', () => {
       values: {
         token: 'user-secret',
       },
+    });
+  });
+
+  it('refreshes current project artifacts and同步写回 install-state when project shared config changes affect a local record', async () => {
+    const root = await makeTempRoot('aw-config-write-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('configurable-plugin', {
+      withProjectDynamicTarget: true,
+    }));
+
+    const projectKey = await resolveCodexProjectKey(cwd);
+    const location = {
+      plugin: plugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      projectKey,
+    };
+    const recordPath = getInstallRecordPath(cwd, location, env);
+    const recordId = path.basename(recordPath, '.json');
+    const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
+    await fs.outputFile(repoArtifactPath, '# before\n');
+
+    await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-08T01:00:00.000Z',
+          artifacts: [{
+            path: repoArtifactPath,
+            kind: 'instruction',
+            platform: 'codex',
+            id: 'project-instructions',
+            target: 'codex.developerInstructionsBlock',
+            state: 'present',
+            refreshKeys: ['mode'],
+            configDigest: 'sha256:new-config',
+            contentDigest: 'sha256:new-content',
+            lastRefresh: {
+              status: 'succeeded',
+              updatedAt: '2026-05-08T01:00:00.000Z',
+              triggerKeys: ['mode'],
+              event: 'refresh',
+            },
+            refreshReach: {
+              commandScope: 'project',
+              refreshedCurrentProjectTarget: true,
+            },
+          }],
+        },
+      },
+    });
+
+    const recordFile = {
+      version: 2 as const,
+      recordId,
+      record: {
+        pluginName: plugin.manifest.name,
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        projectKey,
+        installedAt: '2026-05-07T01:00:00.000Z',
+        updatedAt: '2026-05-07T01:00:00.000Z',
+        source: {
+          pluginVersion: plugin.manifest.version,
+          manifestDigest: 'sha256:manifest',
+          bundleFingerprint: 'sha256:bundle',
+        },
+        installSource: {
+          kind: 'explicit' as const,
+          explicitlyRequested: true,
+        },
+        artifacts: [{
+          kind: 'instruction' as const,
+          platform: 'codex' as const,
+          path: repoArtifactPath,
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock' as const,
+        }],
+        dependencyEdges: [],
+      },
+    };
+    await writeInstallRecordFileAt(recordPath, recordFile);
+    await writeDynamicArtifactDiagnosticCacheAt(
+      getDiagnosticCachePath(cwd, location, env),
+      {
+        version: 1,
+        recordId,
+        location,
+        updatedAt: '2026-05-07T01:00:00.000Z',
+        artifacts: [{
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          refreshKeys: ['mode'],
+          configDigest: 'sha256:old-config',
+          contentDigest: 'sha256:old-content',
+          lastRefresh: {
+            status: 'success',
+            at: '2026-05-07T01:00:00.000Z',
+            event: 'install',
+          },
+        }],
+      },
+      recordFile,
+    );
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    await writeProjectArtifactIdentityFileAt(
+      getProjectArtifactSharedIdentityPath({ repoRoot, locator }),
+      {
+        version: 1,
+        sharedIdentityId: path.basename(getProjectArtifactSharedIdentityPath({ repoRoot, locator }), '.json'),
+        locator,
+        source: recordFile.record.source,
+        generatedAt: '2026-05-07T01:00:00.000Z',
+        artifacts: [{
+          kind: 'instruction',
+          platform: 'codex',
+          path: '.codex/config.toml',
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          contentDigest: 'sha256:old-content',
+        }],
+      },
+    );
+
+    const receipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    });
+
+    expect(receipt.artifactRefresh).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['mode'],
+    });
+    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledTimes(1);
+
+    const updatedRecord = await fs.readJson(recordPath);
+    expect(updatedRecord.record.artifacts[0]).toMatchObject({
+      id: 'project-instructions',
+      target: 'codex.developerInstructionsBlock',
+      path: repoArtifactPath,
+    });
+
+    const updatedCache = await fs.readJson(getDiagnosticCachePath(cwd, location, env));
+    expect(updatedCache.artifacts[0]).toMatchObject({
+      id: 'project-instructions',
+      target: 'codex.developerInstructionsBlock',
+      configDigest: 'sha256:new-config',
+      contentDigest: 'sha256:new-content',
+      lastRefresh: {
+        status: 'success',
+        event: 'config',
+      },
+    });
+
+    const updatedIdentity = await fs.readJson(getProjectArtifactSharedIdentityPath({ repoRoot, locator }));
+    expect(updatedIdentity.artifacts[0]).toMatchObject({
+      path: '.codex/config.toml',
+      id: 'project-instructions',
+      target: 'codex.developerInstructionsBlock',
+      contentDigest: 'sha256:new-content',
+    });
+  });
+
+  it('preserves accepted install-state and only records refresh failure summary when config refresh fails', async () => {
+    const root = await makeTempRoot('aw-config-write-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('configurable-plugin', {
+      withProjectDynamicTarget: true,
+    }));
+
+    vi.mocked(refreshArtifactsAfterConfigWrite).mockResolvedValueOnce({
+      attempted: true,
+      status: 'failed',
+      triggerKeys: ['mode'],
+      artifacts: [],
+      error: 'render failed',
+    });
+
+    const projectKey = await resolveCodexProjectKey(cwd);
+    const location = {
+      plugin: plugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      projectKey,
+    };
+    const recordPath = getInstallRecordPath(cwd, location, env);
+    const recordId = path.basename(recordPath, '.json');
+    const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
+    await fs.outputFile(repoArtifactPath, '# before\n');
+
+    await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-08T01:00:00.000Z',
+          artifacts: [{
+            path: repoArtifactPath,
+            kind: 'instruction',
+            platform: 'codex',
+            id: 'project-instructions',
+            target: 'codex.developerInstructionsBlock',
+            state: 'present',
+            refreshKeys: ['mode'],
+            configDigest: 'sha256:new-config',
+            contentDigest: 'sha256:new-content',
+            lastRefresh: {
+              status: 'failed',
+              updatedAt: '2026-05-08T01:00:00.000Z',
+              triggerKeys: ['mode'],
+              event: 'refresh',
+              error: 'render failed',
+            },
+            refreshReach: {
+              commandScope: 'project',
+              refreshedCurrentProjectTarget: false,
+            },
+          }],
+        },
+      },
+    });
+
+    const recordFile = {
+      version: 2 as const,
+      recordId,
+      record: {
+        pluginName: plugin.manifest.name,
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        projectKey,
+        installedAt: '2026-05-07T01:00:00.000Z',
+        updatedAt: '2026-05-07T01:00:00.000Z',
+        source: {
+          pluginVersion: plugin.manifest.version,
+          manifestDigest: 'sha256:manifest',
+          bundleFingerprint: 'sha256:bundle',
+        },
+        installSource: {
+          kind: 'explicit' as const,
+          explicitlyRequested: true,
+        },
+        artifacts: [{
+          kind: 'instruction' as const,
+          platform: 'codex' as const,
+          path: repoArtifactPath,
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock' as const,
+        }],
+        dependencyEdges: [],
+      },
+    };
+    await writeInstallRecordFileAt(recordPath, recordFile);
+    await writeDynamicArtifactDiagnosticCacheAt(
+      getDiagnosticCachePath(cwd, location, env),
+      {
+        version: 1,
+        recordId,
+        location,
+        updatedAt: '2026-05-07T01:00:00.000Z',
+        artifacts: [{
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          refreshKeys: ['mode'],
+          configDigest: 'sha256:old-config',
+          contentDigest: 'sha256:old-content',
+          lastRefresh: {
+            status: 'success',
+            at: '2026-05-07T01:00:00.000Z',
+            event: 'install',
+          },
+        }],
+      },
+      recordFile,
+    );
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+    await writeProjectArtifactIdentityFileAt(
+      identityPath,
+      {
+        version: 1,
+        sharedIdentityId: path.basename(identityPath, '.json'),
+        locator,
+        source: recordFile.record.source,
+        generatedAt: '2026-05-07T01:00:00.000Z',
+        artifacts: [{
+          kind: 'instruction',
+          platform: 'codex',
+          path: '.codex/config.toml',
+          id: 'project-instructions',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          contentDigest: 'sha256:old-content',
+        }],
+      },
+    );
+
+    const beforeRecord = await fs.readJson(recordPath);
+    const beforeIdentity = await fs.readJson(identityPath);
+
+    const receipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    });
+
+    expect(receipt.artifactRefresh).toMatchObject({
+      attempted: true,
+      status: 'failed',
+      error: 'render failed',
+    });
+
+    await expect(fs.readJson(recordPath)).resolves.toEqual(beforeRecord);
+    await expect(fs.readJson(identityPath)).resolves.toEqual(beforeIdentity);
+    await expect(fs.readJson(getDiagnosticCachePath(cwd, location, env))).resolves.toMatchObject({
+      artifacts: [{
+        id: 'project-instructions',
+        target: 'codex.developerInstructionsBlock',
+        configDigest: 'sha256:old-config',
+        contentDigest: 'sha256:old-content',
+        lastRefresh: {
+          status: 'failed',
+          event: 'config',
+          error: 'render failed',
+        },
+      }],
     });
   });
 
@@ -224,6 +642,136 @@ describe('plugin config write helper', () => {
     expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
   });
 
+  it('fails before shared config write when the target path is ignored', async () => {
+    const root = await makeTempRoot('aw-config-write-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    await fs.writeFile(path.join(repoRoot, '.gitignore'), '.agent-workflows/\n', 'utf8');
+    const plugin = createPlugin();
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      request: {
+        updates: {
+          retries: '2',
+        },
+      },
+    })).rejects.toThrow('project shared config');
+
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    }))).resolves.toBe(false);
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('writes project local config into plugin-config.local, ensures ignore, and skips repo-visible refresh', async () => {
+    const root = await makeTempRoot('aw-config-write-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = createPlugin();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd,
+      env,
+      request: {
+        updates: {
+          token: 'local-secret',
+        },
+      },
+    });
+
+    expect(receipt).toMatchObject({
+      scope: 'project',
+      projectLayer: 'local',
+      updatedKeys: ['token'],
+      artifactRefresh: {
+        attempted: false,
+        status: 'skipped',
+      },
+      warnings: [],
+    });
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        token: 'local-secret',
+      },
+    });
+    await expect(fs.readFile(path.join(repoRoot, '.gitignore'), 'utf8')).resolves.toContain(
+      '.agent-workflows/plugin-config.local/',
+    );
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('blocks path-type keys from project shared config but allows them in project local config', async () => {
+    const root = await makeTempRoot('aw-config-write-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    await fs.outputFile(path.join(repoRoot, 'config.json'), '{}\n');
+    const plugin = createPlugin();
+    plugin.manifest.config!.schema.configFile = { type: 'file', required: false };
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      request: {
+        updates: {
+          configFile: 'config.json',
+        },
+      },
+    })).rejects.toThrow('cannot be written into project shared config');
+
+    const localReceipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd,
+      env,
+      request: {
+        updates: {
+          configFile: 'config.json',
+        },
+      },
+    });
+
+    expect(localReceipt.projectLayer).toBe('local');
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        configFile: await fs.realpath(path.join(repoRoot, 'config.json')),
+      },
+    });
+  });
+
   it('supports raw-store reset when the current catalog entry is missing and refuses unsafe plugin names', async () => {
     const root = await makeTempRoot('aw-config-write-');
     const cwd = path.join(root, 'repo');
@@ -248,12 +796,14 @@ describe('plugin config write helper', () => {
     });
     expect(receipt).toMatchObject({
       plugin: 'missing-plugin',
+      projectLayer: 'shared',
       existed: true,
       deleted: true,
       artifactRefresh: {
         attempted: false,
         status: 'skipped',
       },
+      warnings: [],
     });
     await expect(fs.pathExists(resolvePluginConfigStorePath({
       pluginName: 'missing-plugin',

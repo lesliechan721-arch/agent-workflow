@@ -75,7 +75,7 @@
 - 显式 `target.scope: "user"` 只检查 / 安装 user scope；显式 `target.scope: "project"` 只检查 / 安装当前 project scope，不 fallback 到 user scope，也不会扫描其它历史 project。
 - `inheritInstallOptions: true` 只用于自动安装依赖时继承父插件本次插件级安装选项，例如允许覆盖的 skill trigger 偏好；省略或 `false` 不继承。多个父插件给同一自动依赖传入冲突选项时，本次命令 fail fast。
 - `aw install` 会自动安装缺失依赖；显式 `aw upgrade <plugin>` 会先安装缺失依赖、再升级已安装依赖、最后升级父插件；`aw upgrade --all` 只以用户显式保留的安装为根；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后自动清理引用归零且未显式保留的 auto dependency。
-- `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable` 和 `catalogDrift`。`autoRemovable` 不是 manifest 或 ledger 字段。
+- `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、未使用依赖提示和 `catalogDrift`。这些都是从 install record 的 `installSource` / `dependencyEdges`、全局 dependency index 和 current catalog 推导出来的诊断结果，不是 manifest 字段，也不会写进 install record。
 
 ## scripts / config block
 
@@ -120,8 +120,8 @@
 - 发布 bundle 只复制 lifecycle/helper 入口、这些 Node 入口可静态识别的相对依赖闭包，以及 `scripts.node.packageRoot` 的 production 依赖。运行时安装/升级/卸载离线执行，不联网安装依赖，也不借用宿主或仓库根 `node_modules`。
 - `scripts.tests.node` 是开发期 Node 测试 glob，只由 `pnpm plugin:test` 使用。无匹配测试时是 skipped/no-op；test-only helper 可通过静态相对 import/require 递归复制到临时 bundle，但不会进入发布 runtime bundle。
 - `config.schema` 是 AW config 的唯一真值。`string`、`number`、`boolean`、`enum`、`file`、`directory` 为首版支持类型；字段可声明 `title`、`description`、`default`、`required`、`sensitive`，`enum` 用 `values`，`number` 可用 `min` / `max`。未知 key 不进入 helper、lifecycle context 或 effective config，只能作为脱敏诊断出现。
-- `file` / `directory` 配置值写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘；每次读取 effective config 都会重校验路径存在且类型正确。
-- AW config 分 `user` 和 `project` store，effective 读取顺序是 manifest default < user < project。配置可先于安装写入；`aw uninstall` 默认保留配置，清理用 `aw config reset <plugin>`。
+- `file` / `directory` 配置值写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘；每次读取本机 effective config 都会重校验路径存在且类型正确。这类 key 不能写入 project shared config，也不能成为 project-scope repo-visible artifact 的 render config、digest、stale 判断或 refresh 输入；需要本机路径时用 user store 或 `--scope project --local`。
+- AW config 分 user store、project shared store 和 project local store。`aw config set --scope project` 写 `.agent-workflows/plugin-config/<plugin>/config.json`，这是唯一会影响 repo-visible project artifacts 的项目配置输入；`aw config set --scope project --local` 写 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略，只影响本机读命令、lifecycle 和 helper。project scope effective 读取顺序是 manifest default < user < project shared < project local。配置可先于安装写入；`aw uninstall` 默认保留配置，清理用 `aw config reset <plugin>`。
 
 完整 lifecycle + config 示例：
 
@@ -173,7 +173,7 @@
 
 ## artifacts.targets block
 
-`artifacts.targets` 声明动态 artifact 的安装前能力真值。installability、discovery、status current catalog、Codex project write safety preflight 和 ledger capability snapshot 都读这个静态声明，不能等 renderer 执行后再推断插件能力。首版 target 只支持 Codex，因此声明动态 target 的插件必须支持 Codex；可以是 `products=["CODEX"]` 的 Codex-only 插件，也可以是省略 `products` 或显式声明双产品的双平台插件。Claude-only 插件声明任何 `artifacts.targets` 都会失败。
+`artifacts.targets` 声明动态 artifact 的安装前能力真值。installability、discovery、status current catalog、Codex project write safety preflight、install record artifact identity 和 project artifact shared identity 都读这个静态声明，不能等 renderer 执行后再推断插件能力。首版 target 只支持 Codex，因此声明动态 target 的插件必须支持 Codex；可以是 `products=["CODEX"]` 的 Codex-only 插件，也可以是省略 `products` 或显式声明双产品的双平台插件。Claude-only 插件声明任何 `artifacts.targets` 都会失败。
 
 最小示例：
 
@@ -237,12 +237,13 @@
 - `target` 首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`。
 - `states` 首版支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
 - `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
-- 配置写入、主控制台配置向导和 refresh-only 动作共用同一条 dynamic artifact apply / tracking 写回路径。`config set/unset/reset --json` 会返回稳定的 `artifactRefresh`；refresh-only 不修改 config store，只重跑当前 location target 可定位的 tracked artifact refresh。
+- 配置写入、主控制台配置向导和 refresh-only 动作共用同一条 dynamic artifact apply 路径。成功时 AW 更新必要 artifact identity、project artifact shared identity 和 dynamic diagnostic cache；失败摘要进入 diagnostic cache，不写入 install record。`config set/unset/reset --json` 会返回稳定的 `artifactRefresh`；refresh-only 不修改 config store，只重跑当前 location target 可定位的 dynamic artifact refresh。
+- 对包含 `project` scope 的 repo-visible dynamic artifact，`refreshKeys` 不能引用 `file` / `directory` 类型配置。project artifact render config 只来自 manifest default 和 project shared config 中可共享的非路径 key；user store、project local store 和路径型 key 只影响本机 effective config、lifecycle 或 helper。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project write safety preflight。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
-`ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、`.agent-workflows-manifest.json`、ledger 或其它 AW 受管文件。
+`ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。
 
 status 和控制台会把 dynamic artifact 的 refresh failed、drift、missing 投影成友好状态和下一步；disabled by config 不算问题。写动作必须基于明确的 location target：同一插件出现在多个位置时，可以汇总展示，但不能把“多个位置”当成隐式批量写目标。安装、升级、卸载、配置保存、refresh-only 和 cleanup 都必须先明确 platform / scope / project root。
 
@@ -311,7 +312,7 @@ codex:
 - Codex generated skill 固定 manual-only：`policy.allow_implicit_invocation: false`。`codex.policy` 不可配置，写了会失败。
 - Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法；这项校验只在插件支持 Codex、需要生成 Codex manual-only skill 时执行。需要差异内容时，用 `buildConfig.templates` 按平台渲染。
 
-构建后只为支持平台生成命令产物：支持 Claude 时得到 generated `claude/commands/<name>.md`；支持 Codex 时得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，仍按 `kind: "skill"` + `artifactKey: "<name>"` tracking。
+构建后只为支持平台生成命令产物：支持 Claude 时得到 generated `claude/commands/<name>.md`；支持 Codex 时得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并在 install record / project artifact shared identity 中以 `kind: "skill"` + `artifactKey: "<name>"` 记录最小 artifact identity。
 
 ## skillTriggers block
 
@@ -338,7 +339,7 @@ codex:
 - 只有声明了 `skills` 的插件才能声明 `skillTriggers`。
 - `skillTriggers` 的 key 必须对应 source `skills` 目录下真实存在的 skill 子目录。
 - 每个 entry 只允许 `allowInstallOverride`，且必须是 boolean。
-- `allowInstallOverride: true` 表示用户可用 `aw install --skill-trigger manual|auto|default` 或显式 `aw upgrade --skill-trigger ...` 覆盖该 skill 的本地 runtime 触发策略。
+- `allowInstallOverride: true` 表示用户可用 `aw install --skill-trigger manual|auto|default` 或显式 `aw upgrade --skill-trigger ...` 覆盖该 skill 的本地 runtime 触发策略。install record 只保存当前位置自己的 preference；shared runtime owner 状态只保存当前 owner replay 所需的 preference，不保存全局顺序或自动胜者列表。
 - `allowInstallOverride: false` 或省略 `skillTriggers` 表示安装时不可覆盖，始终使用 skill 默认策略。
 
 ## marketplace block
@@ -368,14 +369,14 @@ codex:
 
 Codex scope 对作者的影响：
 
-- `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache 和 AW 受管记录都健康时才显示为已安装；enabled-only、cache-only、breadcrumb-only 不算已安装，recovery breadcrumb 会投影为 native incomplete 并给出 repair / cleanup 动作。
+- `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache、native transaction 状态和 AW per-plugin record 都健康时才显示为已安装；enabled-only、cache-only 或 native transaction marker 残留不算已安装，并会给出 repair / cleanup 动作。
 - `--scope project` 只写 repo-managed artifacts，不调用 native marketplace add / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`。缺少 `codex` 可执行文件时，repo-managed project 安装仍可进行。
 - `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时报错。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
 
 CLI 入口和输出对作者的影响：
 
-- `aw` 主命令是唯一交互入口；配置向导只存在于主控制台。脚本化配置请使用 `aw config set/unset/reset`，读配置使用 `aw config list/get`。
+- `aw` 主命令是唯一交互入口；配置向导只存在于主控制台。脚本化配置请使用 `aw config set/unset/reset`，读配置使用 `aw config list/get`；不要把 `aw config configure` 写进 README、测试或脚本。
 - 子命令面向脚本调用；写命令加 `--json` 时 stdout 是单一 JSON receipt，默认输出只展示友好完成状态和下一步。需要诊断时使用 `--verbose`、`--debug` 或 `status --json`。
 - 插件 README、示例和测试断言不要依赖默认输出里的内部词，也不要把默认输出当机器协议解析。
 
@@ -416,10 +417,12 @@ Embedded Runtime Bundle（npm 包内唯一运行时真值）
            │  aw init / 安装流程
            ▼
 本地 Marketplace 镜像
-  ~/.aw/                             含 installed.json 账本
+  ~/.aw/                             AW home：config、dependency index、lifecycle runtime、per-plugin records 等
 ```
 
 三层各有职责，排查问题时先确认问题在哪一层。
+
+project scope 还会写两类项目共享文件：`.agent-workflows/plugin-config/` 是可提交的 project shared config，`.agent-workflows/project-artifacts/` 是可提交的 project artifact shared identity metadata。`.agent-workflows/plugin-config.local/` 以及平台 private state 是本机私有状态，默认应被 ignore。
 
 ## 禁止手改的文件
 

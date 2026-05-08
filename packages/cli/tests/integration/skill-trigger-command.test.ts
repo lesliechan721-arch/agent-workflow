@@ -26,6 +26,16 @@ import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import {
+  readInstallRecordFileAt,
+  readSharedSkillTriggerRuntimeOwner,
+} from '../../src/install-state/facade.js';
+import { getInstallStatePrivateRoot } from '../../src/install-state/paths.js';
+import type { InstallRecordFile } from '../../src/install-state/types.js';
+import {
+  removeCodexPluginEnabledFile,
+  upsertCodexPluginEnabledFile,
+} from '../../src/utils/codex-config.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -121,6 +131,37 @@ async function readCodexAllowImplicitInvocation(
     policy?: { allow_implicit_invocation?: boolean };
   };
   return parsed.policy?.allow_implicit_invocation === true;
+}
+
+function codexNativeManifestPath(codexHome: string, pluginName: string): string {
+  return path.join(codexHome, 'plugins', `${pluginName}@aw`, 'manifest.json');
+}
+
+function codexNativeCachePath(codexHome: string, pluginName: string): string {
+  return path.join(codexHome, 'plugins', 'cache', 'aw', pluginName);
+}
+
+async function writeCodexNativeEvidence(codexHome: string, pluginName: string): Promise<void> {
+  await upsertCodexPluginEnabledFile(
+    path.join(codexHome, 'config.toml'),
+    `${pluginName}@aw`,
+    { enabled: true },
+  );
+  await fs.outputJson(
+    codexNativeManifestPath(codexHome, pluginName),
+    { name: `${pluginName}@aw`, version: '0.1.0' },
+    { spaces: 2 },
+  );
+  await fs.ensureDir(codexNativeCachePath(codexHome, pluginName));
+}
+
+async function removeCodexNativeEvidence(codexHome: string, pluginName: string): Promise<void> {
+  await removeCodexPluginEnabledFile(
+    path.join(codexHome, 'config.toml'),
+    `${pluginName}@aw`,
+  );
+  await fs.remove(path.join(codexHome, 'plugins', `${pluginName}@aw`));
+  await fs.remove(codexNativeCachePath(codexHome, pluginName));
 }
 
 async function readRepoSkillAllowImplicitInvocation(
@@ -340,17 +381,23 @@ class FakeAdapter implements PlatformAdapter {
     return true;
   }
 
-  async installPlugin(plugin: PluginMeta): Promise<void> {
+  async installPlugin(plugin: PluginMeta, scope: 'project' | 'user'): Promise<void> {
     this.installCalls.push(plugin.manifest.name);
     const state = this.getState(plugin.manifest.name);
     if (state.failInstall) {
       throw new Error(state.failInstall);
     }
     state.nativeInstalled = true;
+    if (this.name === 'codex' && scope === 'user') {
+      await writeCodexNativeEvidence(process.env.AW_CODEX_HOME!, plugin.manifest.name);
+    }
   }
 
-  async uninstallPlugin(plugin: PluginMeta): Promise<void> {
+  async uninstallPlugin(plugin: PluginMeta, scope: 'project' | 'user'): Promise<void> {
     this.getState(plugin.manifest.name).nativeInstalled = false;
+    if (this.name === 'codex' && scope === 'user') {
+      await removeCodexNativeEvidence(process.env.AW_CODEX_HOME!, plugin.manifest.name);
+    }
   }
 
   async installExtensions(plugin: PluginMeta, _scope: 'project' | 'user'): Promise<GeneratedArtifact[]> {
@@ -451,6 +498,106 @@ function createAdapters(
     codex: new FakeAdapter('codex', codexStates),
     claude: new FakeAdapter('claude', claudeStates),
   };
+}
+
+async function readScopedInstallRecords(
+  cwd: string,
+  platform: PlatformName,
+  scope: 'user' | 'project',
+): Promise<InstallRecordFile[]> {
+  const recordsDir = path.join(
+    getInstallStatePrivateRoot(
+      cwd,
+      {
+        plugin: 'unused',
+        platform,
+        scope,
+        ...(scope === 'project' ? { projectKey: 'repo:fixture-project' } : {}),
+      },
+      process.env,
+    ),
+    'records',
+  );
+  if (!(await fs.pathExists(recordsDir))) {
+    return [];
+  }
+
+  const entries = (await fs.readdir(recordsDir))
+    .filter((entry) => entry.endsWith('.json'))
+    .sort();
+  const records: InstallRecordFile[] = [];
+  for (const entry of entries) {
+    const read = await readInstallRecordFileAt(path.join(recordsDir, entry));
+    if (read.status === 'ok') {
+      records.push(read.value);
+    }
+  }
+  return records;
+}
+
+async function findInstallRecord(options: {
+  cwd: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: 'user' | 'project';
+}): Promise<InstallRecordFile | undefined> {
+  const records = await readScopedInstallRecords(options.cwd, options.platform, options.scope);
+  return records.find((record) =>
+    record.record.pluginName === options.pluginName
+    && record.record.platform === options.platform
+    && record.record.scope === options.scope,
+  );
+}
+
+async function readInstallRecordPreference(options: {
+  cwd: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: 'user' | 'project';
+}): Promise<'default' | 'manual' | 'auto' | undefined> {
+  return (await findInstallRecord(options))?.record.options?.skillTriggerPreference;
+}
+
+function findStatusCell<T extends { matrix: { cells: Array<{ pluginName: string; platform: PlatformName; scope: string }> } }>(
+  result: T,
+  options: { pluginName: string; platform: PlatformName; scope: 'user' | 'project' },
+) {
+  const cell = result.matrix.cells.find((candidate) =>
+    candidate.pluginName === options.pluginName
+    && candidate.platform === options.platform
+    && candidate.scope === options.scope,
+  );
+  expect(cell).toBeDefined();
+  return cell!;
+}
+
+function parseVerboseStatusPayload(output: string): {
+  reports: StatusReport[];
+  friendlySummaries: Array<{ pluginName: string; status: string; location: string }>;
+  consoleItems: Array<{ pluginName: string }>;
+} {
+  const marker = '\n\n详细信息\n';
+  const index = output.indexOf(marker);
+  expect(index).toBeGreaterThanOrEqual(0);
+  return JSON.parse(output.slice(index + marker.length)) as {
+    reports: StatusReport[];
+    friendlySummaries: Array<{ pluginName: string; status: string; location: string }>;
+    consoleItems: Array<{ pluginName: string }>;
+  };
+}
+
+function findReportedPlugin(
+  payload: ReturnType<typeof parseVerboseStatusPayload>,
+  options: { pluginName: string; platform: PlatformName; scope: 'user' | 'project' },
+) {
+  const report = payload.reports.find((candidate) =>
+    candidate.platform === options.platform
+    && candidate.scope === options.scope,
+  );
+  expect(report).toBeDefined();
+  const plugin = report!.plugins.find((candidate) => candidate.pluginName === options.pluginName);
+  expect(plugin).toBeDefined();
+  return plugin!;
 }
 
 afterEach(async () => {
@@ -703,7 +850,6 @@ describe('skill trigger command integration', () => {
     const configPath = path.join(workspace.repoRoot, '.codex', 'config.toml');
     const trackingBefore = await fs.readJson(trackingPath);
     const ledgerBefore = await readInstalledLedger(process.env);
-    const configBefore = await fs.readFile(configPath, 'utf8');
     expect(await readRepoSkillAllowImplicitInvocation(workspace.repoRoot)).toBe(false);
 
     await removeEmbeddedMcpFromGitCommit(workspace.embeddedRoot);
@@ -732,18 +878,26 @@ describe('skill trigger command integration', () => {
           env: process.env,
         },
       ),
-    ).rejects.toThrow('已恢复旧安装');
+    ).resolves.toMatchObject({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+    });
 
     expect(await readRepoSkillAllowImplicitInvocation(workspace.repoRoot)).toBe(false);
-    await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(configBefore);
-    await expect(fs.readJson(trackingPath)).resolves.toEqual(trackingBefore);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('developer_instructions = """');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain('[mcp_servers.git-commit]');
+    const trackingAfter = await fs.readJson(trackingPath);
+    expect(trackingAfter.plugins['git-commit'].artifacts.map((artifact: { kind: string }) => artifact.kind)).toEqual(
+      expect.arrayContaining(['skill', 'instruction', 'permission', 'hook', 'agent']),
+    );
+    expect(trackingAfter.plugins['git-commit'].artifacts.map((artifact: { kind: string }) => artifact.kind)).not.toContain('mcpServer');
+    expect(trackingBefore.plugins['git-commit'].artifacts.map((artifact: { kind: string }) => artifact.kind)).toContain('mcpServer');
     await expect(readInstalledLedger(process.env)).resolves.toEqual(ledgerBefore);
 
     const lifecycleEvents = (await fs.readFile(lifecycleLogPath, 'utf8'))
       .trim()
       .split('\n')
       .filter(Boolean);
-    expect(lifecycleEvents).toContain('install');
     expect(lifecycleEvents).toContain('upgrade');
     expect(lifecycleEvents).not.toContain('uninstall');
   });
@@ -811,7 +965,7 @@ describe('skill trigger command integration', () => {
     );
   });
 
-  it('materializes explicit codex manual, auto, and default before native install and records write order', async () => {
+  it('materializes explicit codex manual, auto, and default before native install and stores preference in the current install record', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
 
@@ -844,11 +998,12 @@ describe('skill trigger command integration', () => {
     expect(seenDuringInstall).toEqual([false]);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
 
-    let ledger = await readInstalledLedger(process.env);
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.installOptions).toEqual({
-      skillTriggerPreference: 'manual',
-    });
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder).toBe(1);
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('manual');
 
     await installCommand(
       ['git-commit'],
@@ -864,11 +1019,12 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
-    ledger = await readInstalledLedger(process.env);
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.installOptions).toEqual({
-      skillTriggerPreference: 'auto',
-    });
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder).toBe(2);
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('auto');
 
     await installCommand(
       ['git-commit'],
@@ -884,11 +1040,12 @@ describe('skill trigger command integration', () => {
       },
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
-    ledger = await readInstalledLedger(process.env);
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.installOptions).toEqual({
-      skillTriggerPreference: 'default',
-    });
-    expect(ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder).toBe(3);
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('default');
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
   });
 
@@ -983,7 +1140,7 @@ describe('skill trigger command integration', () => {
       },
     );
 
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(await readClaudeFrontmatter(workspace.awHome)).not.toHaveProperty('disable-model-invocation');
 
     await installCommand(
@@ -1002,7 +1159,7 @@ describe('skill trigger command integration', () => {
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
   });
 
-  it('restores ledger preferences during explicit upgrade and upgrade --all', async () => {
+  it('keeps install record preferences stable during explicit upgrade and upgrade --all', async () => {
     const workspace = await makeWorkspace(async (repoRoot) => {
       await cloneFixturePlugin(repoRoot, 'git-commit', 'git-review');
     });
@@ -1069,8 +1226,20 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(false);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(true);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-review')).toBe(true);
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('default');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-review',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('default');
 
     await installCommand(
       ['git-commit'],
@@ -1106,10 +1275,8 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(false);
-    expect(await readClaudeFrontmatter(workspace.awHome)).toMatchObject({
-      'disable-model-invocation': false,
-    });
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(true);
+    expect(await readClaudeFrontmatter(workspace.awHome)).not.toHaveProperty('disable-model-invocation');
 
     await writeCodexAllowImplicitInvocation(workspace.awHome, true, 'git-commit');
     await writeCodexAllowImplicitInvocation(workspace.awHome, false, 'git-review');
@@ -1131,11 +1298,11 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(false);
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-review')).toBe(true);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(true);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-review')).toBe(false);
   });
 
-  it('warns for sibling scope drift using write order and skips equivalent default-auto rewrites', async () => {
+  it('keeps user runtime stable across Codex project installs and skips equivalent default-auto rewrites', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1171,12 +1338,18 @@ describe('skill trigger command integration', () => {
     expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
 
-    let ledger = await readInstalledLedger(process.env);
-    const userOrder = ledger.plugins['git-commit'].platforms.codex?.userScope?.skillTriggerWriteOrder;
-    const projectOrder = Object.values(
-      ledger.plugins['git-commit'].platforms.codex?.projectScopes ?? {},
-    )[0]?.skillTriggerWriteOrder;
-    expect(projectOrder).toBeGreaterThan(userOrder ?? 0);
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('manual');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'project',
+    })).toBe('auto');
 
     const equivalent = await makeWorkspace();
     configureWorkspaceEnv(equivalent);
@@ -1210,16 +1383,6 @@ describe('skill trigger command integration', () => {
     );
     expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
 
-    ledger = await readInstalledLedger(process.env);
-    const projectScope = Object.keys(ledger.plugins['git-commit'].platforms.codex?.projectScopes ?? {})[0];
-    if (projectScope) {
-      const record = ledger.plugins['git-commit'].platforms.codex?.projectScopes?.[projectScope];
-      if (record) {
-        record.updatedAt = ledger.plugins['git-commit'].platforms.codex?.userScope?.updatedAt ?? record.updatedAt;
-      }
-    }
-    await writeInstalledLedger(ledger, process.env);
-
     const repeatResult = await installCommand(
       ['git-commit'],
       {
@@ -1235,6 +1398,12 @@ describe('skill trigger command integration', () => {
     );
     expect(repeatResult.warnings.join('\n')).not.toContain('sibling scope');
     expect(await readCodexAllowImplicitInvocation(equivalent.awHome)).toBe(true);
+    expect(await readInstallRecordPreference({
+      cwd: equivalent.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'project',
+    })).toBe('manual');
   });
 
   it('does not warn for Claude default-auto sibling scopes when frontmatter relies on platform defaults', async () => {
@@ -1344,7 +1513,7 @@ describe('skill trigger command integration', () => {
     await expect(fs.pathExists(codexOpenAiYamlPath(workspace.awHome))).resolves.toBe(false);
   });
 
-  it('reports sibling drift when an explicit upgrade changes semantics after a bundle change', async () => {
+  it('requires an explicit skill trigger when a Codex project upgrade can no longer recover from current scope state', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1395,24 +1564,25 @@ describe('skill trigger command integration', () => {
     config.bundleFingerprint = await calculateBundleFingerprint(workspace.embeddedRoot);
     await fs.writeJson(configPath, config, { spaces: 2 });
 
-    const result = await upgradeCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'codex',
-      },
-      {
-        adapters: createAdapters({
-          'git-commit': {
-            scopeInitialized: 'yes',
-            managedEvidence: true,
-          },
-        }),
-        env: process.env,
-      },
-    );
-    expect(result.warnings.join('\n')).not.toContain('user (auto)');
+    await expect(
+      upgradeCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          adapters: createAdapters({
+            'git-commit': {
+              scopeInitialized: 'yes',
+              managedEvidence: true,
+            },
+          }),
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('tracking 只能证明 repo artifact 归属');
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
   });
 
@@ -1458,7 +1628,7 @@ describe('skill trigger command integration', () => {
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(result.warnings.join('\n')).not.toContain('sibling scope');
-    expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('degraded');
+    expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('available');
   });
 
   it('refuses tracking-only Codex project repeated installs without --skill-trigger, and explicit overrides do not touch ~/.aw', async () => {
@@ -1617,8 +1787,8 @@ describe('skill trigger command integration', () => {
     ).rejects.toThrow('extension install failed');
     expect(await readCodexAllowImplicitInvocation(extensionFailure.awHome)).toBe(true);
     expect((await readInstalledLedger(process.env)).ledgerState).toMatchObject({
-      status: 'degraded',
-      reason: 'operation_interrupted_after_native_write',
+      status: 'available',
+      reason: null,
     });
   });
 
@@ -1722,7 +1892,7 @@ describe('skill trigger command integration', () => {
     await writeCodexAllowImplicitInvocation(workspace.awHome, true);
 
     await initCommand({ force: true, env: process.env });
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
 
     const degraded = createDegradedLedger();
     degraded.plugins['git-commit'] = {
@@ -1804,6 +1974,13 @@ describe('skill trigger command integration', () => {
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
+    await expect(readSharedSkillTriggerRuntimeOwner({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      env: process.env,
+    })).resolves.toMatchObject({
+      status: 'ok',
+    });
 
     await uninstallCommand(
       ['git-commit'],
@@ -1825,12 +2002,39 @@ describe('skill trigger command integration', () => {
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
+    await expect(readSharedSkillTriggerRuntimeOwner({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      env: process.env,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
   });
 
   it('skips uninstall re-election under degraded ledgers', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      {
+        adapters: createAdapters({
+          'git-commit': {
+            scopeInitialized: 'yes',
+            managedEvidence: true,
+            nativeInstalled: true,
+          },
+        }),
+        env: process.env,
+      },
+    );
 
     const degraded = createDegradedLedger();
     degraded.plugins['git-commit'] = {
@@ -1854,31 +2058,31 @@ describe('skill trigger command integration', () => {
     await writeInstalledLedger(degraded, process.env);
     await writeCodexAllowImplicitInvocation(workspace.awHome, false);
 
-    const result = await uninstallCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-      },
-      {
-        adapters: createAdapters({
-          'git-commit': {
-            scopeInitialized: 'yes',
-            managedEvidence: true,
-            nativeInstalled: true,
-          },
-        }),
-        env: process.env,
-      },
-    );
-
-    expect(result.warnings.join('\n')).toContain('跳过卸载后的 skill trigger 重选');
+    await expect(
+      uninstallCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          adapters: createAdapters({
+            'git-commit': {
+              scopeInitialized: 'yes',
+              managedEvidence: true,
+              nativeInstalled: true,
+            },
+          }),
+          env: process.env,
+        },
+      ),
+    ).rejects.toThrow('缺失 dependency metadata');
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
     expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('degraded');
   });
 
-  it('shows the current scope ledger preference and matched runtime in status', async () => {
+  it('shows the current scope install record and verbose status summary', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1909,18 +2113,32 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerLedger=manual');
-    expect(result.output).toContain('skillTriggerRuntime=manual');
-    expect(result.output).toContain('skillTriggerDrift=no');
-    expect(result.reports[0].plugins[0]).toMatchObject({
-      skillTriggerPreference: 'manual',
-      skillTriggerRuntimeMatches: ['manual'],
-      skillTriggerRuntimeState: 'matched',
-      skillTriggerDrift: 'no',
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('manual');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
+    expect(payload.consoleItems[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
+    expect(findReportedPlugin(payload, {
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toMatchObject({
+      currentCatalog: expect.objectContaining({
+        source: 'local',
+        available: true,
+      }),
     });
   });
 
-  it('reports equivalent runtime candidates without false drift', async () => {
+  it('keeps verbose status available for equivalent runtime candidates', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1951,12 +2169,19 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerLedger=default');
-    expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
-    expect(result.output).toContain('skillTriggerDrift=no');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('default');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('reports Codex platform defaults as equivalent runtime candidates without false drift', async () => {
+  it('keeps verbose status available when Codex runtime relies on platform defaults', async () => {
     const cases = [
       {
         name: 'empty policy',
@@ -2008,19 +2233,20 @@ describe('skill trigger command integration', () => {
         { env: process.env },
       );
 
-      expect(result.output).toContain('skillTriggerLedger=default');
-      expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
-      expect(result.output).toContain('skillTriggerDrift=no');
-      expect(result.reports[0].plugins[0]).toMatchObject({
-        skillTriggerPreference: 'default',
-        skillTriggerRuntimeMatches: ['default', 'auto'],
-        skillTriggerRuntimeState: 'matched',
-        skillTriggerDrift: 'no',
+      expect(await readInstallRecordPreference({
+        cwd: workspace.repoRoot,
+        pluginName: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+      })).toBe('default');
+      const payload = parseVerboseStatusPayload(result.output);
+      expect(payload.friendlySummaries[0]).toMatchObject({
+        pluginName: 'git-commit',
       });
     }
   });
 
-  it('reports Claude platform defaults as equivalent runtime candidates without false drift', async () => {
+  it('keeps verbose status available when Claude runtime relies on platform defaults', async () => {
     const workspace = await makeWorkspace(writeClaudeSkillWithPlatformDefaults);
     configureWorkspaceEnv(workspace, ['claude']);
     await initCommand({ force: true, env: process.env });
@@ -2055,12 +2281,19 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerLedger=default');
-    expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
-    expect(result.output).toContain('skillTriggerDrift=no');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'claude',
+      scope: 'user',
+    })).toBe('default');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('reports skill trigger drift when runtime no longer matches the ledger preference', async () => {
+  it('keeps verbose status available when runtime no longer matches the install record preference', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -2092,13 +2325,19 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerLedger=manual');
-    expect(result.output).toContain('skillTriggerRuntime=matches(default,auto)');
-    expect(result.output).toContain('skillTriggerDrift=yes');
-    expect(result.output).toContain('skill trigger runtime 与当前 scope ledger 偏好不一致');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('manual');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('keeps multi-skill default signatures distinct when defaults are not uniform', async () => {
+  it('keeps verbose status available when multi-skill defaults are not uniform', async () => {
     const workspace = await makeWorkspace((repoRoot) =>
       addCodexSkill(repoRoot, 'git-commit', 'review', false)
     );
@@ -2131,11 +2370,19 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerRuntime=default');
-    expect(result.output).toContain('skillTriggerDrift=no');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('default');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('reports mixed runtime when different skills do not match one candidate preference', async () => {
+  it('keeps verbose status available when different skills diverge at runtime', async () => {
     const workspace = await makeWorkspace((repoRoot) =>
       addCodexSkill(repoRoot, 'git-commit', 'review', true)
     );
@@ -2169,12 +2416,19 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerLedger=auto');
-    expect(result.output).toContain('skillTriggerRuntime=mixed');
-    expect(result.output).toContain('skillTriggerDrift=yes');
+    expect(await readInstallRecordPreference({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toBe('auto');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('reports unknown skill trigger runtime and drift when the local marketplace is stale', async () => {
+  it('keeps status readable when the local marketplace fingerprint is stale', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
 
@@ -2214,14 +2468,22 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('currentCatalog=source:embedded');
-    expect(result.output).toContain('skillTriggerLedger=manual');
-    expect(result.output).toContain('skillTriggerRuntime=unknown');
-    expect(result.output).toContain('skillTriggerDrift=unknown');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(findReportedPlugin(payload, {
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toMatchObject({
+      currentCatalog: expect.objectContaining({
+        source: 'local',
+        available: true,
+        rootDir: path.join(workspace.embeddedRoot, 'plugins', 'git-commit'),
+      }),
+    });
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
   });
 
-  it('reports unknown skill trigger runtime when local marketplace layout is unhealthy', async () => {
+  it('keeps status readable when the local marketplace layout is unhealthy', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
 
@@ -2251,13 +2513,22 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('currentCatalog=source:embedded');
-    expect(result.output).toContain('skillTriggerRuntime=unknown');
-    expect(result.output).toContain('skillTriggerDrift=unknown');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(findReportedPlugin(payload, {
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toMatchObject({
+      currentCatalog: expect.objectContaining({
+        source: 'local',
+        available: true,
+        rootDir: path.join(workspace.embeddedRoot, 'plugins', 'git-commit'),
+      }),
+    });
     await expect(fs.pathExists(path.join(workspace.awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
   });
 
-  it('reports unknown skill trigger drift for degraded ledgers', async () => {
+  it('keeps status readable even when the legacy ledger is degraded', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -2295,13 +2566,18 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('ledgerState=degraded');
-    expect(result.output).toContain('skillTriggerLedger=manual');
-    expect(result.output).toContain('skillTriggerRuntime=unknown');
-    expect(result.output).toContain('skillTriggerDrift=unknown');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(findReportedPlugin(payload, {
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    })).toMatchObject({
+      ledgerStateStatus: 'available',
+    });
+    expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('degraded');
   });
 
-  it('reports unknown when trusted runtime skill files are missing or malformed', async () => {
+  it('keeps verbose status available when trusted runtime skill files are missing or malformed', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
 
@@ -2331,8 +2607,9 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(missingResult.output).toContain('skillTriggerRuntime=unknown');
-    expect(missingResult.output).toContain('skillTriggerDrift=unknown');
+    expect(parseVerboseStatusPayload(missingResult.output).friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
 
     await fs.ensureDir(path.dirname(codexOpenAiYamlPath(workspace.awHome)));
     await fs.writeFile(codexOpenAiYamlPath(workspace.awHome), 'policy: [', 'utf8');
@@ -2348,11 +2625,12 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(malformedResult.output).toContain('skillTriggerRuntime=unknown');
-    expect(malformedResult.output).toContain('skillTriggerDrift=unknown');
+    expect(parseVerboseStatusPayload(malformedResult.output).friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('reports unknown when embedded pristine skill metadata cannot produce candidate signatures', async () => {
+  it('keeps verbose status available when embedded pristine skill metadata cannot produce candidate signatures', async () => {
     const workspace = await makeWorkspace(async (repoRoot) => {
       await fs.writeFile(
         path.join(
@@ -2403,12 +2681,12 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerRuntime=unknown');
-    expect(result.output).toContain('skillTriggerDrift=unknown');
-    expect(result.output).toContain('skill trigger 候选签名无法确定');
+    expect(parseVerboseStatusPayload(result.output).friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 
-  it('keeps historical fallback skill trigger status unknown', async () => {
+  it('keeps historical fallback status readable without a current catalog entry', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -2445,13 +2723,21 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('currentCatalog=source:local,available:no');
-    expect(result.output).toContain('skillTriggerApplicability=none');
-    expect(result.output).toContain('skillTriggerRuntime=unknown');
-    expect(result.output).toContain('skillTriggerDrift=unknown');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(findReportedPlugin(payload, {
+      pluginName: 'legacy-plugin',
+      platform: 'codex',
+      scope: 'user',
+    })).toMatchObject({
+      scopeManagedEvidence: {
+        ledger: true,
+        tracking: false,
+        sharedNativeRef: false,
+      },
+    });
   });
 
-  it('uses embedded skillTriggers for status when the local manifest is tampered', async () => {
+  it('keeps verbose status available when the local manifest is tampered', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -2489,8 +2775,9 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(result.output).toContain('skillTriggerRuntime=manual');
-    expect(result.output).toContain('skillTriggerDrift=no');
-    expect(result.output).toContain('local marketplace manifest 的 skillTriggers 与 embedded manifest 不一致');
+    const payload = parseVerboseStatusPayload(result.output);
+    expect(payload.friendlySummaries[0]).toMatchObject({
+      pluginName: 'git-commit',
+    });
   });
 });

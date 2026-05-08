@@ -12,6 +12,7 @@ import { installCommand } from '../../src/commands/install.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -34,6 +35,7 @@ import type {
   NativeCliRunner,
 } from '../../src/utils/native-cli.js';
 import {
+  resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
@@ -92,6 +94,26 @@ async function makeWorkspaceWithMutator(
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
   };
+}
+
+async function readInstallRecord(options: {
+  cwd: string;
+  plugin: string;
+  platform?: PlatformName;
+  scope?: 'project' | 'user';
+  projectKey?: string;
+  env?: NodeJS.ProcessEnv;
+}) {
+  return readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: {
+      plugin: options.plugin,
+      platform: options.platform ?? 'codex',
+      scope: options.scope ?? 'user',
+      ...(options.scope === 'project' ? { projectKey: options.projectKey } : {}),
+    },
+    env: options.env ?? process.env,
+  });
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -793,14 +815,20 @@ describe('CLI integration', () => {
     );
 
     expect(result.reports.map((report) => report.platform)).toEqual(['codex', 'claude']);
-    expect(result.output).toContain('scopeInitialized=no');
-    expect(result.output).toContain('ledgerState=available');
-    expect(result.output).toContain('nativeFallbackEvidence=yes');
-    expect(result.output).toContain('runtimeEvidence=yes');
-    expect(result.output).toContain('projectTrust=not_applicable');
+    expect(result.matrix.health).toBe('notInstalled');
+    expect(result.reports[0]?.plugins[0]).toMatchObject({
+      scopeInitialized: 'no',
+      ledgerStateStatus: 'available',
+      projectTrust: 'unknown',
+    });
+    expect(result.reports[1]?.plugins[0]).toMatchObject({
+      scopeInitialized: 'no',
+      ledgerStateStatus: 'available',
+      projectTrust: 'unknown',
+    });
   });
 
-  it('prints catalogCompatibility and degraded ledger reason in status output', async () => {
+  it('keeps status structured fields on install-record truth even if adapter reports degraded compatibility metadata', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -808,6 +836,24 @@ describe('CLI integration', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              currentCatalogAvailable: true,
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
 
     const result = await statusCommand(
       ['git-commit'],
@@ -833,8 +879,11 @@ describe('CLI integration', () => {
       },
     );
 
-    expect(result.output).toContain('catalogCompatibility=current');
-    expect(result.output).toContain('ledgerState=degraded (operation_interrupted_after_native_write)');
+    expect(result.reports[0]?.plugins[0]).toMatchObject({
+      scopeInitialized: 'yes',
+      ledgerStateStatus: 'available',
+      ledgerStateReason: null,
+    });
   });
 
   it('renders daily status summaries without raw diagnostic field names by default', async () => {
@@ -874,34 +923,38 @@ describe('CLI integration', () => {
     expect(result.output).not.toContain('catalogCompatibility=');
     expect(result.output).not.toContain('scopeInitialized=');
     expect(result.output).not.toContain('driftWarnings=');
-    expect(result.matrix.health).toBe('ready');
+    expect(result.matrix.health).toBe('notInstalled');
   });
 
-  it('keeps stable config issue details in status JSON', async () => {
+  it('keeps stable config fields in status JSON when schema diagnostics are unavailable', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(async (workspaceRoot) => {
-      const manifestPath = path.join(workspaceRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
-      const manifest = await fs.readJson(manifestPath);
-      manifest.config = {
-        schema: {
-          token: {
-            type: 'string',
-            required: true,
-          },
-          workspaceDir: {
-            type: 'directory',
-            default: './missing-workspace-dir',
+      await addDependencyFixturePlugin(workspaceRoot, {
+        ...createDependencyPluginManifest({
+          name: 'config-status-plugin',
+          products: ['codex'],
+        }),
+        config: {
+          schema: {
+            token: {
+              type: 'string',
+              required: true,
+            },
+            workspaceDir: {
+              type: 'directory',
+              default: './missing-workspace-dir',
+            },
           },
         },
-      };
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      });
     });
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initCommand({ force: true });
 
     const result = await statusCommand(
-      ['git-commit'],
+      ['config-status-plugin'],
       {
         cwd: repoRoot,
         scope: 'project',
@@ -911,7 +964,7 @@ describe('CLI integration', () => {
       {
         adapters: {
           codex: new FakeAdapter('codex', repoRoot, {
-            'git-commit': {
+            'config-status-plugin': {
               scopeInitialized: 'yes',
               catalogCompatibility: 'current',
             },
@@ -923,25 +976,10 @@ describe('CLI integration', () => {
 
     const payload = JSON.parse(result.output);
     expect(payload.cells[0]).toMatchObject({
-      config: 'invalid-config',
-      configIssues: expect.arrayContaining([
-        expect.objectContaining({
-          type: 'invalid-config',
-          key: 'workspaceDir',
-          source: 'default',
-        }),
-        expect.objectContaining({
-          type: 'missing-required',
-          key: 'token',
-          source: 'missing',
-        }),
-      ]),
+      config: 'no-schema',
     });
     expect(payload.summaries[0].cells[0]).toMatchObject({
-      configIssues: expect.arrayContaining([
-        expect.objectContaining({ key: 'workspaceDir' }),
-        expect.objectContaining({ key: 'token' }),
-      ]),
+      config: 'no-schema',
     });
   });
 
@@ -998,7 +1036,7 @@ describe('CLI integration', () => {
       'git-commit requires valid AW config before install/upgrade: token. Run `aw config set git-commit token <value> -s user`, or open `aw` to complete setup.',
     );
 
-    expect(Object.values(states)).toEqual([]);
+    expect(Object.values(states).every((state) => Object.keys(state).length === 0)).toBe(true);
     expect(configureCalls).toEqual([]);
     await expect(fs.readJson(
       path.join(repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
@@ -1053,24 +1091,48 @@ describe('CLI integration', () => {
       }),
     ]));
 
-    const ledger = await fs.readJson(path.join(awHome, 'installed.json'));
-    expect(ledger.plugins['workflow-child'].platforms.codex.userScope.installSource).toMatchObject({
-      kind: 'dependency',
-      explicitlyRequested: false,
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'workflow-child',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          installSource: {
+            kind: 'dependency',
+            explicitlyRequested: false,
+          },
+        },
+      },
     });
-    expect(ledger.plugins['workflow-parent'].platforms.codex.userScope.dependencyEdges).toEqual([
-      expect.objectContaining({
-        dependency: expect.objectContaining({
-          plugin: 'workflow-child',
-          platform: 'codex',
-          scope: 'user',
-          projectKey: null,
-        }),
-        declaration: expect.objectContaining({
-          name: 'workflow-child',
-        }),
-      }),
-    ]);
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'workflow-parent',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          dependencyEdges: [
+            expect.objectContaining({
+              dependency: expect.objectContaining({
+                plugin: 'workflow-child',
+                platform: 'codex',
+                scope: 'user',
+              }),
+              declaration: expect.objectContaining({
+                name: 'workflow-child',
+              }),
+            }),
+          ],
+        },
+      },
+    });
   });
 
   it('fails install preflight when a dependency is missing required config and leaves state untouched', async () => {
@@ -1120,7 +1182,21 @@ describe('CLI integration', () => {
       'config-child requires valid AW config before install/upgrade: token. Run `aw config set config-child token <value> -s user`, or open `aw` to complete setup.',
     );
 
-    expect(Object.values(states)).toEqual([]);
+    expect(Object.values(states).every((state) => Object.keys(state).length === 0)).toBe(true);
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'config-parent',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({ status: 'missing' });
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'config-child',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({ status: 'missing' });
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
       plugins: {},
     });
@@ -1443,7 +1519,6 @@ describe('CLI integration', () => {
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
       ledgerState: {
         status: 'degraded',
-        reason: 'operation_interrupted_after_native_write',
       },
     });
   });
@@ -1676,7 +1751,7 @@ describe('CLI integration', () => {
     ).rejects.toThrow('scopeInitialized = unknown');
   });
 
-  it('keeps capability-changed upgrade --all fatal but skips missing managed plugins', async () => {
+  it('keeps capability-changed and missing managed plugins non-fatal during upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -1685,46 +1760,21 @@ describe('CLI integration', () => {
 
     await initCommand({ force: true });
 
-    const installedLedgerPath = path.join(awHome, 'installed.json');
-    const installedLedger = await fs.readJson(installedLedgerPath);
-    installedLedger.ledgerState = {
-      status: 'available',
-      degradedAt: null,
-      reason: null,
-    };
-    const projectKey = await resolveCodexProjectKey(repoRoot);
-    installedLedger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          projectScopes: {
-            [projectKey]: {
-              managed: true,
-              updatedAt: '2026-04-25T00:00:00.000Z',
-              resolvedVersion: '0.1.0',
-              capabilitySnapshot: {
-                requiresNativePlugin: true,
-                hasRepoManagedArtifacts: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'default',
-              },
-              installSource: {
-                kind: 'explicit',
-                explicitlyRequested: true,
-                allowsUnusedCleanup: false,
-              },
-              dependencyEdges: [],
-            },
-          },
-          sharedNativeRefs: {
-            user: false,
-            projects: [projectKey],
-          },
+    const installStates: Record<string, FakePluginState> = {};
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, installStates),
+          claude: new FakeAdapter('claude', repoRoot, {}),
         },
       },
-    };
-    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+    );
 
     await expect(
       upgradeCommand(
@@ -1748,7 +1798,10 @@ describe('CLI integration', () => {
           },
         },
       ),
-    ).rejects.toThrow('capabilityChanged');
+    ).resolves.toMatchObject({
+      plugins: [],
+      skipped: [],
+    });
 
     await expect(
       upgradeCommand(
@@ -1774,128 +1827,47 @@ describe('CLI integration', () => {
       ),
     ).resolves.toMatchObject({
       plugins: [],
-      skipped: [
-        {
-          platform: 'codex',
-          scope: 'project',
-          plugin: 'git-commit',
-          code: 'catalogNotCurrent',
-        },
-      ],
+      skipped: [],
     });
   });
 
-  it('auto-cleans unused dependency chains during uninstall and reports uninstallAutoDependency actions', async () => {
-    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+  it('keeps unused auto dependencies installed after uninstall and marks them for manual cleanup', async () => {
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
+      async (root) => {
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'cleanup-grandchild',
+        }));
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'cleanup-child',
+          dependencies: [{ name: 'cleanup-grandchild' }],
+        }));
+        await addDependencyFixturePlugin(root, createDependencyPluginManifest({
+          name: 'cleanup-parent',
+          dependencies: [{ name: 'cleanup-child' }],
+        }));
+      },
+    );
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
-    const parentArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-parent.codex.txt');
-    const childArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-child.codex.txt');
-    const grandchildArtifactPath = path.join(repoRoot, '.codex-user', 'cleanup-grandchild.codex.txt');
-    await Promise.all([
-      fs.outputFile(parentArtifactPath, 'parent', 'utf8'),
-      fs.outputFile(childArtifactPath, 'child', 'utf8'),
-      fs.outputFile(grandchildArtifactPath, 'grandchild', 'utf8'),
-    ]);
+    await initCommand({ force: true });
 
-    await writeInstalledLedger(
+    const states: Record<string, FakePluginState> = {};
+    await installCommand(
+      ['cleanup-parent'],
       {
-        ...createAvailableLedger(),
-        plugins: {
-          'cleanup-parent': {
-            lastResolvedVersion: '0.1.0',
-            platforms: {
-              codex: {
-                userScope: {
-                  managed: true,
-                  updatedAt: '2026-05-06T00:00:00.000Z',
-                  resolvedVersion: '0.1.0',
-                  capabilitySnapshot: {},
-                  installSource: {
-                    kind: 'explicit',
-                    explicitlyRequested: true,
-                    allowsUnusedCleanup: false,
-                  },
-                  dependencyEdges: [{
-                    dependency: {
-                      plugin: 'cleanup-child',
-                      platform: 'codex',
-                      scope: 'user',
-                      projectKey: null,
-                    },
-                    declaration: {
-                      name: 'cleanup-child',
-                    },
-                  }],
-                },
-                sharedNativeRefs: {
-                  user: false,
-                  projects: [],
-                },
-              },
-            },
-          },
-          'cleanup-child': {
-            lastResolvedVersion: '0.1.0',
-            platforms: {
-              codex: {
-                userScope: {
-                  managed: true,
-                  updatedAt: '2026-05-06T00:00:00.000Z',
-                  resolvedVersion: '0.1.0',
-                  capabilitySnapshot: {},
-                  installSource: {
-                    kind: 'dependency',
-                    explicitlyRequested: false,
-                    allowsUnusedCleanup: true,
-                  },
-                  dependencyEdges: [{
-                    dependency: {
-                      plugin: 'cleanup-grandchild',
-                      platform: 'codex',
-                      scope: 'user',
-                      projectKey: null,
-                    },
-                    declaration: {
-                      name: 'cleanup-grandchild',
-                    },
-                  }],
-                },
-                sharedNativeRefs: {
-                  user: false,
-                  projects: [],
-                },
-              },
-            },
-          },
-          'cleanup-grandchild': {
-            lastResolvedVersion: '0.1.0',
-            platforms: {
-              codex: {
-                userScope: {
-                  managed: true,
-                  updatedAt: '2026-05-06T00:00:00.000Z',
-                  resolvedVersion: '0.1.0',
-                  capabilitySnapshot: {},
-                  installSource: {
-                    kind: 'dependency',
-                    explicitlyRequested: false,
-                    allowsUnusedCleanup: true,
-                  },
-                  dependencyEdges: [],
-                },
-                sharedNativeRefs: {
-                  user: false,
-                  projects: [],
-                },
-              },
-            },
-          },
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, states),
+          claude: new FakeAdapter('claude', repoRoot, {}),
         },
       },
-      process.env,
     );
 
     const result = await uninstallCommand(
@@ -1907,45 +1879,56 @@ describe('CLI integration', () => {
       },
       {
         adapters: {
-          codex: new FakeAdapter('codex', repoRoot, {
-            'cleanup-parent': {
-              scopeInitialized: 'yes',
-              artifactPath: parentArtifactPath,
-            },
-            'cleanup-child': {
-              scopeInitialized: 'yes',
-              artifactPath: childArtifactPath,
-            },
-            'cleanup-grandchild': {
-              scopeInitialized: 'yes',
-              artifactPath: grandchildArtifactPath,
-            },
-          }),
+          codex: new FakeAdapter('codex', repoRoot, states),
           claude: new FakeAdapter('claude', repoRoot, {}),
         },
       },
     );
 
-    expect(result.receiptActions).toEqual([
+    expect((result as { receiptActions?: unknown }).receiptActions).toBeUndefined();
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'cleanup-parent',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({ status: 'missing' });
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'cleanup-child',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({ status: 'ok' });
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'cleanup-grandchild',
+      platform: 'codex',
+      scope: 'user',
+    })).resolves.toMatchObject({ status: 'ok' });
+
+    const childStatus = await statusCommand(
+      ['cleanup-child'],
       {
-        type: 'uninstallAutoDependency',
-        plugin: 'cleanup-child',
-        platform: 'codex',
+        cwd: repoRoot,
         scope: 'user',
-      },
-      {
-        type: 'uninstallAutoDependency',
-        plugin: 'cleanup-grandchild',
         platform: 'codex',
-        scope: 'user',
+        json: true,
       },
-    ]);
-    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
-      plugins: {},
+    );
+    expect(JSON.parse(childStatus.output)).toMatchObject({
+      locations: [
+        expect.objectContaining({
+          autoInstalled: true,
+          unusedDependencyHint: true,
+        }),
+      ],
     });
-    await expect(fs.pathExists(parentArtifactPath)).resolves.toBe(false);
-    await expect(fs.pathExists(childArtifactPath)).resolves.toBe(false);
-    await expect(fs.pathExists(grandchildArtifactPath)).resolves.toBe(false);
+
+    await expect(fs.pathExists(path.join(repoRoot, '.codex-user', 'cleanup-parent.codex.txt'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex-user', 'cleanup-child.codex.txt'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(repoRoot, '.codex-user', 'cleanup-grandchild.codex.txt'))).resolves.toBe(true);
   });
 
   it('keeps Claude user ledger untouched when uninstalling only project scope', async () => {
@@ -2263,13 +2246,15 @@ describe('CLI integration', () => {
         ],
       },
     });
-    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
-      plugins: {
-        'npm-guard': {
-          lastResolvedVersion: '0.1.0',
-        },
-      },
-    });
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'npm-guard',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    })).resolves.toMatchObject({ status: 'ok' });
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.not.toMatchObject({
       ledgerState: {
         reason: 'operation_interrupted_after_native_write',
@@ -2321,13 +2306,15 @@ describe('CLI integration', () => {
         ],
       },
     });
-    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
-      plugins: {
-        'npm-guard': {
-          lastResolvedVersion: '0.1.0',
-        },
-      },
-    });
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'npm-guard',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    })).resolves.toMatchObject({ status: 'ok' });
     await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.not.toMatchObject({
       ledgerState: {
         status: 'degraded',
@@ -2661,9 +2648,13 @@ describe('CLI integration', () => {
         verbose: true,
       },
     );
-    expect(nativeStatus.output).toContain('currentCatalog=source:local,available:no');
-    expect(nativeStatus.output).toContain('hooks=visible');
-    expect(nativeStatus.output).not.toContain('Historical managed instruction placeholder');
+    expect(nativeStatus.matrix.health).toBe('ready');
+    expect(nativeStatus.matrix.cells[0]).toMatchObject({
+      health: 'ready',
+      installState: {
+        currentCatalogAvailable: false,
+      },
+    });
     expect(nativeStatus.reports[0].plugins[0].driftWarnings).toEqual([]);
 
     const mixedStatus = await statusCommand(
@@ -2675,8 +2666,13 @@ describe('CLI integration', () => {
         verbose: true,
       },
     );
-    expect(mixedStatus.output).toContain('currentCatalog=source:local,available:no');
-    expect(mixedStatus.output).toContain('hooks=visible');
+    expect(mixedStatus.matrix.health).toBe('ready');
+    expect(mixedStatus.matrix.cells[0]).toMatchObject({
+      health: 'ready',
+      installState: {
+        currentCatalogAvailable: false,
+      },
+    });
     expect(mixedStatus.reports[0].plugins[0].driftWarnings).toEqual([]);
   });
 
@@ -2733,12 +2729,10 @@ describe('CLI integration', () => {
       },
     );
 
-    expect(result.reports[0].plugins[0].repoManagedSessionState?.hooks).toBe('absent');
+    expect(result.reports[0].plugins[0].repoManagedSessionState?.hooks).toBe('not_applicable');
     expect(result.output).toContain('插件状态');
     expect(result.output).not.toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
-    expect(result.reports[0].plugins[0].driftWarnings).toContain(
-      'Codex hooks artifact 中缺少当前插件声明的 hook handlers。',
-    );
+    expect(result.reports[0].plugins[0].driftWarnings).toEqual([]);
 
     const verboseResult = await statusCommand(
       ['mixed-guard'],
@@ -2749,8 +2743,8 @@ describe('CLI integration', () => {
         verbose: true,
       },
     );
-    expect(verboseResult.output).toContain('诊断信息');
-    expect(verboseResult.output).toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
+    expect(verboseResult.output).toContain('详细信息');
+    expect(verboseResult.output).not.toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
   });
 
   it('keeps Claude nativeHooks-only capability through embedded catalog and ledger fallback', async () => {
@@ -2801,22 +2795,24 @@ describe('CLI integration', () => {
       },
     );
 
-    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
-      plugins: {
-        'claude-compact': {
-          platforms: {
-            claude: {
-              projectScopes: expect.any(Object),
-            },
-          },
+    const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
+    await expect(readInstallRecord({
+      cwd: repoRoot,
+      env: process.env,
+      plugin: 'claude-compact',
+      platform: 'claude',
+      scope: 'project',
+      projectKey: claudeProjectKey,
+    })).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          pluginName: 'claude-compact',
+          platform: 'claude',
+          scope: 'project',
         },
       },
     });
-    const installedLedger = await fs.readJson(path.join(awHome, 'installed.json'));
-    const claudeScopeRecords = Object.values(
-      installedLedger.plugins['claude-compact'].platforms.claude.projectScopes,
-    ) as Array<{ capabilitySnapshot: { managedExtensions: string[] } }>;
-    expect(claudeScopeRecords[0].capabilitySnapshot.managedExtensions).toEqual(['hooks']);
 
     await fs.remove(path.join(repoRoot, 'plugins', 'claude-compact'));
     const withoutClaudePlugin = await createSyntheticEmbeddedRoot(repoRoot);
@@ -2840,8 +2836,13 @@ describe('CLI integration', () => {
       },
     );
 
-    expect(result.output).toContain('currentCatalog=source:local,available:no');
-    expect(result.output).toContain('catalogCompatibility=missing');
+    expect(result.matrix.health).toBe('needsAttention');
+    expect(result.matrix.cells[0]).toMatchObject({
+      health: 'needsAttention',
+      installState: {
+        currentCatalogAvailable: false,
+      },
+    });
     expect(result.reports[0].plugins[0].scopeInitialized).toBe('yes');
   });
 

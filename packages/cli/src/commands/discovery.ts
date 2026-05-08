@@ -53,6 +53,8 @@ import {
   pluginSupportsPlatform,
   type ResolvedPluginTarget,
 } from './common.js';
+import { collectInstallEvidence } from '../install-state/evidence.js';
+import { projectInstallState } from '../install-state/status-projection.js';
 
 const MARKETPLACE_NAME = 'aw';
 
@@ -149,6 +151,14 @@ export interface CommandCandidate {
       scope: Scope;
       projectKey?: string;
     }>;
+  };
+  installState?: {
+    kind: 'installed' | 'needsRepair' | 'adoptable' | 'residual' | 'externallyManaged' | 'notInstalled';
+    adoptExistingAvailable: boolean;
+    autoInstalled: boolean;
+    unusedDependencyHint: boolean;
+    dependencyProtected: boolean;
+    ownerConflict: boolean;
   };
 }
 
@@ -991,6 +1001,40 @@ function resolveCandidateDisabledReason(
   return undefined;
 }
 
+async function resolveCandidateInstallState(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  target: Pick<CommandCandidate, 'pluginName' | 'platform' | 'scope' | 'projectKey'>;
+}): Promise<CommandCandidate['installState']> {
+  try {
+    const location = {
+      plugin: options.target.pluginName,
+      platform: options.target.platform,
+      scope: options.target.scope,
+      ...(options.target.projectKey ? { projectKey: options.target.projectKey } : {}),
+    };
+    const evidence = await collectInstallEvidence({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+      currentCatalog: null,
+    });
+    const projection = projectInstallState(evidence);
+
+    return {
+      kind: projection.kind,
+      adoptExistingAvailable: projection.adoptExistingAvailable,
+      autoInstalled: projection.autoInstalled,
+      unusedDependencyHint: projection.unusedDependencyHint,
+      dependencyProtected: projection.dependents.length > 0,
+      ownerConflict: projection.sharedRuntimeNeedsTakeover
+        && !(options.target.platform === 'codex' && options.target.scope === 'project'),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 async function resolveCandidatePlatformsForCurrentCatalog(
   options: ResolveDiscoveredPluginTargetsOptions,
   record: DiscoveredPluginName,
@@ -1203,6 +1247,16 @@ export async function buildCommandCandidates(
       discovered.evidence,
       dependencyStatus,
     );
+    const installState = await resolveCandidateInstallState({
+      cwd: discovered.executionCwd,
+      env: options.env ?? process.env,
+      target: {
+        pluginName: discovered.pluginName,
+        platform: discovered.platform,
+        scope: discovered.scope,
+        projectKey: discovered.projectKey,
+      },
+    });
     const candidate: CommandCandidate = {
       id: createCandidateId(options.command, discovered),
       command: options.command,
@@ -1216,6 +1270,7 @@ export async function buildCommandCandidates(
       selectable: disabledReason === undefined,
       disabledReason,
       ...(dependencyStatus ? { dependencyStatus } : {}),
+      ...(installState ? { installState } : {}),
       evidence: discovered.evidence,
       evidenceByPlatformScope: discovered.evidenceByPlatformScope,
     };

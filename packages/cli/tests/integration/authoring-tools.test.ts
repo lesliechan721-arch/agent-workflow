@@ -740,14 +740,14 @@ describe('authoring tools', () => {
       configFile: expectedConfigFile,
     });
     expect(payload.sources).toMatchObject({
-      token: 'project',
-      mode: 'project',
+      token: 'projectShared',
+      mode: 'projectShared',
       configFile: 'default',
     });
     expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
       expect.arrayContaining([
         { scope: 'user', key: 'staleUserSecret' },
-        { scope: 'project', key: 'staleProjectSecret' },
+        { scope: 'projectShared', key: 'staleProjectSecret' },
       ]),
     );
 

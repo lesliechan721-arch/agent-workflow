@@ -51,12 +51,12 @@ import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
+import { SOURCE_MANIFEST_PATH } from '../utils/manifest.js';
 import {
   getCodexProjectManagedKinds,
   requiresCodexNativePlugin,
 } from '../utils/codex-project-surface.js';
 import {
-  garbageCollectLifecycleConfigSnapshots,
   persistLifecycleConfigSnapshot,
   prepareLifecycleConfigSnapshot,
   runLifecycleScript,
@@ -89,6 +89,52 @@ import {
   readCodexNativeRecoveryBreadcrumb,
   updateCodexNativeRecoveryBreadcrumb,
 } from '../utils/codex-native-recovery.js';
+import {
+  inspectGlobalDependencyIndex,
+  readInstallRecordForLocation,
+  readNativeTransactionMarker,
+  readProjectArtifactIdentityForLocator,
+  writeNativeTransactionMarker,
+} from '../install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  getInstallRecordPath,
+  getInstallStatePrivateRoot,
+  getProjectArtifactSharedIdentityPath,
+  resolveProjectScopeRepoRoot,
+} from '../install-state/paths.js';
+import {
+  assertProjectArtifactIdentityPathVisible,
+  classifyProjectBoundaryPath,
+  ensureProjectPrivateStateIgnore,
+} from '../install-state/project-boundary.js';
+import {
+  stageHistoricalLifecycleRuntime,
+} from '../install-state/runtime-state.js';
+import {
+  preflightSharedSkillTriggerRuntimeOwnerUpsert,
+} from '../install-state/shared-runtime-owner.js';
+import {
+  createDependencyIndexRefreshPostCommitAction,
+  createDynamicArtifactDiagnosticCacheWriteStage,
+  createDiagnosticCacheDeletePostCommitAction,
+  createInstallRecordDeleteStage,
+  createInstallRecordWriteStage,
+  createNativeTransactionMarkerDeletePostCommitAction,
+  createProjectArtifactIdentityWriteStage,
+  createSharedRuntimeOwnerWriteStage,
+  runInstallStateTransaction,
+  type InstallStateTransactionStage,
+} from '../install-state/transactions.js';
+import type {
+  DynamicArtifactDiagnosticCache,
+  DynamicArtifactDiagnosticEntry,
+  InstallRecordArtifact,
+  InstallRecordFile,
+  NativeTransactionMarker,
+  ProjectArtifactIdentityArtifact,
+  ProjectArtifactIdentityFile,
+} from '../install-state/types.js';
 import {
   captureArtifactRollbackState,
   collectArtifactRollbackSurfaceHints as collectTrackedArtifactRollbackSurfaceHints,
@@ -236,6 +282,297 @@ export function createUpgradeRollbackBaselineKey(
 
 function normalizeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function toInstallRecordInstallSource(
+  kind: 'explicit' | 'dependency',
+): InstallRecordFile['record']['installSource'] {
+  return {
+    kind,
+    explicitlyRequested: kind === 'explicit',
+  };
+}
+
+function toPlannerInstallSource(
+  source: InstallRecordFile['record']['installSource'] | undefined,
+): InstalledScopeRecord<Record<string, unknown>>['installSource'] | undefined {
+  if (!source) {
+    return undefined;
+  }
+  return {
+    kind: source.kind,
+    explicitlyRequested: source.explicitlyRequested,
+    allowsUnusedCleanup: source.kind === 'dependency' && source.explicitlyRequested === false,
+  };
+}
+
+function toInstallStateLocation(
+  location: PluginLocation,
+): PluginLocation {
+  return normalizePluginLocation(location);
+}
+
+function toPlannerInstalledRecordFromInstallRecord(
+  recordFile: InstallRecordFile,
+): PluginDependencyPlannerInstalledRecord {
+  const location = normalizePluginLocation({
+    plugin: recordFile.record.pluginName,
+    platform: recordFile.record.platform,
+    scope: recordFile.record.scope,
+    projectKey: recordFile.record.scope === 'project'
+      ? recordFile.record.projectKey ?? null
+      : null,
+  });
+  return {
+    location,
+    resolvedVersion: recordFile.record.source.pluginVersion,
+    installSource: toPlannerInstallSource(recordFile.record.installSource),
+    dependencyEdges: recordFile.record.dependencyEdges.map((edge) => ({
+      dependency: normalizePluginLocation({
+        ...edge.dependency,
+        projectKey: edge.dependency.projectKey ?? null,
+      }),
+      declaration: structuredClone(edge.declaration),
+    })),
+    installOptions: recordFile.record.options
+      ? structuredClone(recordFile.record.options)
+      : undefined,
+  };
+}
+
+function toInstallRecordArtifacts(
+  artifacts: readonly GeneratedArtifact[],
+): InstallRecordArtifact[] {
+  return artifacts.map((artifact) => ({
+    kind: artifact.kind,
+    platform: artifact.platform,
+    path: artifact.path,
+    ...(artifact.paths?.length ? { paths: [...artifact.paths] } : {}),
+    ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+    ...(artifact.hookGroups === undefined ? {} : { hookGroups: structuredClone(artifact.hookGroups) }),
+    ...(artifact.id === undefined ? {} : { id: artifact.id }),
+    ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
+    ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
+      ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
+      : {}),
+  }));
+}
+
+function toDynamicDiagnosticEntry(
+  artifact: GeneratedArtifact,
+  scope: Scope,
+): DynamicArtifactDiagnosticEntry | null {
+  if (!artifact.id || !artifact.target) {
+    return null;
+  }
+  const state = artifact.state ?? 'present';
+  const mappedRefreshEvent: 'install' | 'upgrade' | 'config' | 'repair' | undefined =
+    artifact.lastRefresh?.event === 'refresh'
+      ? 'config'
+      : artifact.lastRefresh?.event;
+  const mappedLastRefresh = artifact.lastRefresh?.status === 'succeeded'
+    ? {
+        status: 'success' as const,
+        at: artifact.lastRefresh.updatedAt,
+        event: mappedRefreshEvent!,
+        ...(artifact.lastRefresh.error ? { error: artifact.lastRefresh.error } : {}),
+      }
+    : artifact.lastRefresh?.status === 'failed'
+      ? {
+          status: 'failed' as const,
+          at: artifact.lastRefresh.updatedAt,
+          event: mappedRefreshEvent!,
+          ...(artifact.lastRefresh.error ? { error: artifact.lastRefresh.error } : {}),
+        }
+      : undefined;
+  return {
+    id: artifact.id,
+    target: artifact.target,
+    state,
+    ...(state === 'disabled' && artifact.disabledReason
+      ? { disabledReason: artifact.disabledReason }
+      : {}),
+    ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+    ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
+    ...(artifact.refreshKeys?.length ? { refreshKeys: [...artifact.refreshKeys] } : {}),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
+    ...(mappedLastRefresh ? { lastRefresh: mappedLastRefresh } : {}),
+    ...(artifact.refreshReach === undefined
+      ? {}
+      : {
+          refreshReach: {
+            commandScope: scope === 'project' ? 'projectShared' : 'user',
+            ...(artifact.refreshReach.refreshedUserTarget === undefined
+              ? {}
+              : { refreshedUserTarget: artifact.refreshReach.refreshedUserTarget }),
+            ...(artifact.refreshReach.refreshedCurrentProjectTarget === undefined
+              ? {}
+              : { refreshedCurrentProjectTarget: artifact.refreshReach.refreshedCurrentProjectTarget }),
+          },
+        }),
+  };
+}
+
+function createDynamicDiagnosticCacheValue(options: {
+  recordFile: InstallRecordFile;
+  location: PluginLocation;
+  artifacts: readonly GeneratedArtifact[];
+}): DynamicArtifactDiagnosticCache {
+  return {
+    version: 1,
+    recordId: options.recordFile.recordId,
+    location: toInstallStateLocation(options.location),
+    updatedAt: options.recordFile.record.updatedAt,
+    artifacts: options.artifacts
+      .map((artifact) => toDynamicDiagnosticEntry(artifact, options.location.scope))
+      .filter((artifact): artifact is DynamicArtifactDiagnosticEntry => Boolean(artifact)),
+  };
+}
+
+function toProjectArtifactIdentityArtifact(
+  artifact: GeneratedArtifact,
+  repoRoot: string,
+): ProjectArtifactIdentityArtifact {
+  const relativePath = path.relative(repoRoot, artifact.path).split(path.sep).join('/');
+  return {
+    kind: artifact.kind,
+    platform: artifact.platform,
+    path: relativePath,
+    ...(artifact.paths?.length
+      ? {
+          paths: artifact.paths.map((entryPath) =>
+            path.relative(repoRoot, entryPath).split(path.sep).join('/'),
+          ),
+        }
+      : {}),
+    ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+    ...(artifact.hookGroups === undefined ? {} : { hookGroups: structuredClone(artifact.hookGroups) }),
+    ...(artifact.id === undefined ? {} : { id: artifact.id }),
+    ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
+    ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
+      ? { ownershipMarker: artifact.artifactKey ?? relativePath }
+      : {}),
+    ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
+  };
+}
+
+function collectRepoVisibleProjectArtifacts(
+  repoRoot: string,
+  artifacts: readonly GeneratedArtifact[],
+): GeneratedArtifact[] {
+  return artifacts.filter((artifact) => {
+    if (!isPathInsideRoot(repoRoot, artifact.path)) {
+      return false;
+    }
+    const classification = classifyProjectBoundaryPath({
+      repoRoot,
+      path: artifact.path,
+    });
+    return classification.category !== 'privateState' &&
+      classification.category !== 'projectLocalConfig' &&
+      classification.category !== 'ignoredState';
+  });
+}
+
+function createNativeInstallTransactionMarker(
+  pluginName: string,
+  now: string,
+  lastError?: string,
+): NativeTransactionMarker {
+  return {
+    version: 1,
+    pluginName,
+    pluginId: `${pluginName}@aw`,
+    platform: 'codex',
+    scope: 'user',
+    operation: 'install',
+    nativeWriteSucceeded: true,
+    createdAt: now,
+    updatedAt: now,
+    ...(lastError ? { lastError } : {}),
+  };
+}
+
+function createSkillTriggerMaterializationTarget(
+  platform: PlatformName,
+  scope: Scope,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): {
+  platform: 'codex';
+  scope: 'user';
+  kind: 'localMarketplaceRuntime';
+  root: string;
+} | {
+  platform: 'codex';
+  scope: 'project';
+  kind: 'repoSkill';
+  root: string;
+} | {
+  platform: 'claude';
+  scope: Scope;
+  kind: 'localMarketplaceRuntime';
+  root: string;
+} {
+  if (platform === 'codex' && scope === 'project') {
+    return {
+      platform: 'codex',
+      scope: 'project',
+      kind: 'repoSkill',
+      root: path.join(resolveProjectScopeRepoRoot(cwd), '.agents', 'skills'),
+    };
+  }
+  if (platform === 'codex') {
+    return {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: resolveAwHome(env),
+    };
+  }
+  return {
+    platform: 'claude',
+    scope,
+    kind: 'localMarketplaceRuntime',
+    root: resolveAwHome(env),
+  };
+}
+
+function projectStatusLooksAdoptable(
+  status: PluginStatusReport | undefined,
+): boolean {
+  if (!status) {
+    return false;
+  }
+  if (
+    status.scopeManagedEvidence?.ledger ||
+    status.scopeManagedEvidence?.tracking ||
+    status.scopeManagedEvidence?.sharedNativeRef
+  ) {
+    return false;
+  }
+  const sessionState = status.repoManagedSessionState;
+  if (!sessionState) {
+    return false;
+  }
+  if (
+    sessionState.instructions === 'visible' ||
+    sessionState.rules === 'visible' ||
+    sessionState.hooks === 'visible' ||
+    sessionState.agents === 'visible'
+  ) {
+    return true;
+  }
+  return (sessionState.items ?? []).some((item) => item.state === 'visible');
 }
 
 function appendRollbackIssue(
@@ -740,12 +1077,12 @@ function wrapCodexNativeInstallFailure(
   const detail = error.message;
   if (!recoveryBreadcrumbPersisted) {
     return new Error(
-      `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断。`,
+      `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 没有持久化 native transaction marker：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请运行 \`aw status --verbose\` 查看 marker、config 和 cache 诊断。`,
     );
   }
 
   return new Error(
-    `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 安装未完成：${detail}。请运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断，必要时再运行 \`aw uninstall ${pluginName} -p codex -s user\` 清理残留。`,
+    `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 安装未完成：${detail}。请运行 \`aw status --verbose\` 查看 marker、config 和 cache 诊断，必要时再运行 \`aw uninstall ${pluginName} -p codex -s user\` 清理残留。`,
   );
 }
 
@@ -869,6 +1206,65 @@ async function installTargetOnPlatform(
     !(platform === 'codex' && options.scope === 'project')
   ) {
     throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+  }
+
+  if (options.scope === 'project') {
+    const projectKey = platform === 'claude'
+      ? await resolveClaudeProjectKey(options.cwd)
+      : await resolveCodexProjectKey(options.cwd);
+    const location = normalizePluginLocation({
+      plugin: target.currentPlugin.manifest.name,
+      platform,
+      scope: options.scope,
+      projectKey,
+    });
+    const privateStateRoot = getInstallStatePrivateRoot(
+      options.cwd,
+      toInstallStateLocation(location),
+      env,
+    );
+    const ignoreResult = await ensureProjectPrivateStateIgnore({
+      cwd: options.cwd,
+      targetPath: privateStateRoot,
+    });
+    if (ignoreResult.warning) {
+      warnings.push(ignoreResult.warning.message);
+    }
+
+    await assertProjectArtifactIdentityPathVisible({
+      cwd: options.cwd,
+      pluginName: location.plugin,
+      platform: location.platform,
+    });
+
+    const existingRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location: toInstallStateLocation(location),
+      env,
+    });
+    if (existingRecord.status !== 'ok' && projectStatusLooksAdoptable(pluginStatus)) {
+      throw new Error(
+        `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+      );
+    }
+
+    const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+    const locator = createProjectArtifactSharedLocator({
+      plugin: location.plugin,
+      platform: location.platform,
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    const sharedIdentity = await readProjectArtifactIdentityForLocator({
+      repoRoot,
+      locator,
+      cwd: options.cwd,
+    });
+    if (existingRecord.status !== 'ok' && sharedIdentity.status === 'ok') {
+      throw new Error(
+        `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+      );
+    }
   }
 
   const baselineLedger = await readInstalledLedger(env);
@@ -1057,9 +1453,12 @@ async function installTargetOnPlatform(
     if (nativeWritten) {
       recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
       if (isCodexUserNativeInstall(platform, target, options.scope)) {
-        recoveryBreadcrumbPersisted = Boolean(
-          await readCodexNativeRecoveryBreadcrumb(target.currentPlugin.manifest.name, env),
+        const marker = createNativeInstallTransactionMarker(
+          target.currentPlugin.manifest.name,
+          new Date().toISOString(),
         );
+        await writeNativeTransactionMarker(marker, env);
+        recoveryBreadcrumbPersisted = true;
       }
       await emitCommandEvent(context, {
         type: 'native:applied',
@@ -1243,21 +1642,201 @@ async function installTargetOnPlatform(
         ...conflictResult.diagnostics.filter(Boolean),
       );
     }
-    await writeInstalledLedger(nextLedger, env);
-    ledgerWritten = true;
+
+    const projectKey = options.scope === 'project'
+      ? platform === 'claude'
+        ? await resolveClaudeProjectKey(options.cwd)
+        : await resolveCodexProjectKey(options.cwd)
+      : null;
+    const location = normalizePluginLocation({
+      plugin: target.currentPlugin.manifest.name,
+      platform,
+      scope: options.scope,
+      projectKey,
+    });
+    const existingRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location: toInstallStateLocation(location),
+      env,
+    });
+    const now = new Date().toISOString();
+    const runtimeStage = await stageHistoricalLifecycleRuntime({
+      cwd: options.cwd,
+      location: toInstallStateLocation(location),
+      sourceBundleRoot: preparedLifecycleConfigSnapshot?.sourceBundleRoot ?? target.currentPlugin.rootDir,
+      pluginVersion: lifecycleConfigSnapshot.pluginVersion,
+      manifestDigest: lifecycleConfigSnapshot.sourceManifestDigest,
+      bundleFingerprint: lifecycleConfigSnapshot.bundleFingerprint,
+      events: ['install', 'upgrade', 'uninstall'],
+      createdAt: now,
+      manifestRelativePath: SOURCE_MANIFEST_PATH,
+      env,
+    });
+    const recordFile: InstallRecordFile = {
+      version: 2,
+      recordId: '',
+      record: {
+        pluginName: target.currentPlugin.manifest.name,
+        platform,
+        scope: options.scope,
+        ...(options.scope === 'project' ? { projectKey: projectKey ?? undefined } : {}),
+        installedAt: existingRecord.status === 'ok'
+          ? existingRecord.value.record.installedAt
+          : now,
+        updatedAt: now,
+        source: {
+          pluginVersion: lifecycleConfigSnapshot.pluginVersion,
+          manifestDigest: lifecycleConfigSnapshot.sourceManifestDigest,
+          bundleFingerprint: lifecycleConfigSnapshot.bundleFingerprint,
+        },
+        installSource: toInstallRecordInstallSource('explicit'),
+        ...(toInstalledScopeInstallOptions(resolvedInstallOptions)
+          ? { options: toInstalledScopeInstallOptions(resolvedInstallOptions) }
+          : {}),
+        ...(plannedNativeWrite
+          ? {
+              native: {
+                pluginId: `${target.currentPlugin.manifest.name}@aw`,
+                installedByAw: true,
+              },
+            }
+          : {}),
+        lifecycle: runtimeStage.runtimeRef,
+        artifacts: toInstallRecordArtifacts(trackedArtifacts),
+        dependencyEdges: [],
+      },
+    };
+    const recordPath = getInstallRecordPath(
+      options.cwd,
+      toInstallStateLocation(location),
+      env,
+    );
+    recordFile.recordId = path.basename(recordPath, '.json');
+    const dynamicCache = createDynamicDiagnosticCacheValue({
+      recordFile,
+      location,
+      artifacts: trackedArtifacts,
+    });
+    const transactionStages: InstallStateTransactionStage[] = [
+      runtimeStage,
+      await createInstallRecordWriteStage({
+        filePath: recordPath,
+        value: recordFile,
+      }),
+      await createDynamicArtifactDiagnosticCacheWriteStage({
+        cwd: options.cwd,
+        location: toInstallStateLocation(location),
+        value: dynamicCache,
+        currentRecord: recordFile,
+      }),
+    ];
+    if (options.scope === 'project') {
+      const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+      const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, trackedArtifacts);
+      if (repoVisibleArtifacts.length > 0) {
+        const locator = createProjectArtifactSharedLocator({
+          plugin: target.currentPlugin.manifest.name,
+          platform,
+          repoRoot,
+          projectRoot: repoRoot,
+        });
+        const identityValue: ProjectArtifactIdentityFile = {
+          version: 1,
+          sharedIdentityId: path.basename(
+            getInstallRecordPath(options.cwd, toInstallStateLocation(location), env),
+            '.json',
+          ),
+          locator,
+          source: {
+            pluginVersion: lifecycleConfigSnapshot.pluginVersion,
+            manifestDigest: lifecycleConfigSnapshot.sourceManifestDigest,
+            bundleFingerprint: lifecycleConfigSnapshot.bundleFingerprint,
+          },
+          generatedAt: now,
+          artifacts: repoVisibleArtifacts.map((artifact) =>
+            toProjectArtifactIdentityArtifact(artifact, repoRoot),
+          ),
+        };
+        identityValue.sharedIdentityId = path.basename(
+          getProjectArtifactSharedIdentityPath({ repoRoot, locator }),
+          '.json',
+        );
+        transactionStages.unshift(await createProjectArtifactIdentityWriteStage({
+          repoRoot,
+          locator,
+          value: identityValue,
+        }));
+      }
+    }
+    if (materializeSkillTriggers) {
+      const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
+        location: toInstallStateLocation(location),
+        embeddedRoot: await resolveEmbeddedPluginsRoot(),
+        target: createSkillTriggerMaterializationTarget(platform, options.scope, options.cwd, env),
+        preference: materializationPreference,
+        command: operation === 'upgrade' ? 'upgrade' : 'install',
+        takeoverSharedRuntime: options.takeoverSharedRuntime,
+        targetCount: 1,
+        env,
+      });
+      if (sharedOwnerPreflight.status === 'ok' && sharedOwnerPreflight.shouldWriteOwner) {
+        transactionStages.push(await createSharedRuntimeOwnerWriteStage({
+          recordFile,
+          recordPath,
+          env,
+        }));
+      }
+    }
+    const transactionResult = await runInstallStateTransaction({
+      stages: transactionStages,
+      postCommit: [
+        createDependencyIndexRefreshPostCommitAction({
+          mode: 'upsert',
+          recordFile,
+          recordPath,
+          env,
+        }),
+        ...(nativeWritten && recoveryBreadcrumbPersisted && isCodexUserNativeInstall(platform, target, options.scope)
+          ? [
+              createNativeTransactionMarkerDeletePostCommitAction({
+                pluginNameOrId: target.currentPlugin.manifest.name,
+                env,
+              }),
+            ]
+          : []),
+      ],
+    });
+    warnings.push(...pendingConflictWarnings);
+    for (const warning of transactionResult.warnings) {
+      if (warning.code === 'nativeMarkerDeleteFailed') {
+        throw new PostInstallCleanupError(
+          `插件 ${target.currentPlugin.manifest.name} 已安装成功，但 native transaction marker 清理失败：${warning.error ?? warning.message}。请运行 \`aw repair ${target.currentPlugin.manifest.name} --platform ${platform} --scope ${options.scope}\` 或手动清理后重试。`,
+        );
+      }
+      warnings.push(
+        `[${platform}/${target.currentPlugin.manifest.name}] ${warning.message}${warning.error ? ` ${warning.error}` : ''}`,
+      );
+    }
+    if (baselineLedger.ledgerState.status !== 'available') {
+      await writeInstalledLedger({
+        ...baselineLedger,
+        ledgerState: {
+          status: 'available',
+          degradedAt: null,
+          reason: null,
+        },
+      }, env);
+      ledgerWritten = true;
+    }
     await emitCommandEvent(context, {
       type: 'ledger:written',
       data: {
         platform,
         plugin: target.currentPlugin.manifest.name,
         scope: options.scope,
-        ledgerState: nextLedger.ledgerState.status,
+        ledgerState: 'available',
       },
     });
-    warnings.push(...pendingConflictWarnings);
-    if (operation === 'upgrade') {
-      await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
-    }
   } catch (error) {
     if (error instanceof PostInstallCleanupError && error.skipRollback) {
       throw error;
@@ -1268,18 +1847,14 @@ async function installTargetOnPlatform(
       recoveryBreadcrumbPersisted &&
       isCodexUserNativeInstall(platform, target, options.scope)
     ) {
-      const preparedMetadata = preparedLifecycleConfigSnapshot?.metadata;
-      const recoveryFailure = createRecoveryBreadcrumbFailureReason(recoveryFailureStage);
-      await updateCodexRecoveryBreadcrumbWithEvent(context, {
-        pluginName: target.currentPlugin.manifest.name,
-        scope: options.scope,
-        state: recoveryFailure.state,
-        reason: recoveryFailure.reason,
-        pluginVersion: lifecycleConfigSnapshot?.pluginVersion ?? preparedMetadata?.pluginVersion ?? null,
-        bundleFingerprint: lifecycleConfigSnapshot?.bundleFingerprint ?? preparedMetadata?.bundleFingerprint ?? null,
-        lastError: normalizeErrorMessage(error),
+      await writeNativeTransactionMarker(
+        createNativeInstallTransactionMarker(
+          target.currentPlugin.manifest.name,
+          new Date().toISOString(),
+          normalizeErrorMessage(error),
+        ),
         env,
-      }).catch(() => undefined);
+      ).catch(() => undefined);
     }
 
     await emitCommandEvent(context, {
@@ -1545,33 +2120,6 @@ async function installTargetOnPlatform(
       .catch(() => undefined);
   }
 
-  if (
-    nativeWritten &&
-    recoveryBreadcrumbPersisted &&
-    isCodexUserNativeInstall(platform, target, options.scope)
-  ) {
-    try {
-      await deleteCodexRecoveryBreadcrumbWithEvent(context, {
-        pluginName: target.currentPlugin.manifest.name,
-        scope: options.scope,
-        state: 'pending_after_native_write',
-        env,
-      });
-    } catch (error) {
-      await updateCodexRecoveryBreadcrumbWithEvent(context, {
-        pluginName: target.currentPlugin.manifest.name,
-        scope: options.scope,
-        state: 'cleanup_failed',
-        reason: 'install_breadcrumb_delete_failed',
-        lastError: normalizeErrorMessage(error),
-        env,
-      }).catch(() => undefined);
-      throw new PostInstallCleanupError(
-        `插件 ${target.currentPlugin.manifest.name} 已安装成功，但删除 Codex native recovery breadcrumb 失败：${normalizeErrorMessage(error)}。请运行 \`aw status --verbose\` 检查并手动重试清理恢复标记。`,
-      );
-    }
-  }
-
   return {
     warnings,
     nativePlugins,
@@ -1775,6 +2323,46 @@ function replaceScopeRecordDependencyEdges(
   );
 }
 
+async function updateInstallRecordForLocation(options: {
+  location: PluginLocation;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  update: (recordFile: InstallRecordFile) => InstallRecordFile;
+}): Promise<boolean> {
+  const readResult = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: toInstallStateLocation(options.location),
+    env: options.env,
+  });
+  if (readResult.status !== 'ok') {
+    return false;
+  }
+
+  const nextRecord = options.update(structuredClone(readResult.value));
+  const recordPath = getInstallRecordPath(
+    options.cwd,
+    toInstallStateLocation(options.location),
+    options.env,
+  );
+  await runInstallStateTransaction({
+    stages: [
+      await createInstallRecordWriteStage({
+        filePath: recordPath,
+        value: nextRecord,
+      }),
+    ],
+    postCommit: [
+      createDependencyIndexRefreshPostCommitAction({
+        mode: 'upsert',
+        recordFile: nextRecord,
+        recordPath,
+        env: options.env,
+      }),
+    ],
+  });
+  return true;
+}
+
 async function updateInstalledScopeRecord(
   location: PluginLocation,
   env: NodeJS.ProcessEnv,
@@ -1800,10 +2388,30 @@ function toInstalledDependencyEdges(edges: readonly PluginDependencyEdgePlan[]):
 
 export async function initializeInstalledScopeDependencyMetadata(options: {
   location: PluginLocation;
+  cwd?: string;
   requested: boolean;
   preserveExplicit: boolean;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
+  const cwd = options.cwd ?? (options.location.scope === 'project'
+    ? options.location.projectKey ?? process.cwd()
+    : process.cwd());
+  const updatedInstallRecord = await updateInstallRecordForLocation({
+    location: options.location,
+    cwd,
+    env: options.env,
+    update: (recordFile) => {
+      recordFile.record.installSource = options.requested || options.preserveExplicit
+        ? toInstallRecordInstallSource('explicit')
+        : toInstallRecordInstallSource('dependency');
+      recordFile.record.dependencyEdges = [];
+      return recordFile;
+    },
+  });
+  if (updatedInstallRecord) {
+    return;
+  }
+
   await updateInstalledScopeRecord(options.location, options.env, (record) => {
     const nextRecord = options.requested || options.preserveExplicit
       ? markScopeRecordExplicitlyRequested(record)
@@ -1819,11 +2427,77 @@ export async function initializeInstalledScopeDependencyMetadata(options: {
 export async function commitInstalledScopeDependencyEdges(
   location: PluginLocation,
   edges: readonly PluginDependencyEdgePlan[],
-  env: NodeJS.ProcessEnv,
+  cwdOrEnv: string | NodeJS.ProcessEnv,
+  envMaybe?: NodeJS.ProcessEnv,
 ): Promise<void> {
+  const cwd = typeof cwdOrEnv === 'string'
+    ? cwdOrEnv
+    : (location.scope === 'project' ? location.projectKey ?? process.cwd() : process.cwd());
+  const env = typeof cwdOrEnv === 'string' ? envMaybe! : cwdOrEnv;
+  const updatedInstallRecord = await updateInstallRecordForLocation({
+    location,
+    cwd,
+    env,
+    update: (recordFile) => {
+      recordFile.record.dependencyEdges = toInstalledDependencyEdges(edges).map((edge) => ({
+        dependency: {
+          ...edge.dependency,
+          projectKey: edge.dependency.projectKey ?? undefined,
+        },
+        declaration: structuredClone(edge.declaration),
+      }));
+      return recordFile;
+    },
+  });
+  if (updatedInstallRecord) {
+    return;
+  }
+
   await updateInstalledScopeRecord(location, env, (record) =>
     replaceScopeRecordDependencyEdges(record, toInstalledDependencyEdges(edges)),
   );
+}
+
+async function deleteInstallRecordForLocation(options: {
+  location: PluginLocation;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  const readResult = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: toInstallStateLocation(options.location),
+    env: options.env,
+  });
+  if (readResult.status !== 'ok') {
+    return false;
+  }
+
+  const recordPath = getInstallRecordPath(
+    options.cwd,
+    toInstallStateLocation(options.location),
+    options.env,
+  );
+  await runInstallStateTransaction({
+    stages: [
+      createInstallRecordDeleteStage({
+        filePath: recordPath,
+      }),
+    ],
+    postCommit: [
+      createDiagnosticCacheDeletePostCommitAction({
+        cwd: options.cwd,
+        location: toInstallStateLocation(options.location),
+        env: options.env,
+      }),
+      createDependencyIndexRefreshPostCommitAction({
+        mode: 'delete',
+        location: toInstallStateLocation(options.location),
+        recordPath,
+        env: options.env,
+      }),
+    ],
+  });
+  return true;
 }
 
 export async function ensureRollbackRemovedDependencyLocation(options: {
@@ -1843,6 +2517,10 @@ export async function ensureRollbackRemovedDependencyLocation(options: {
       trackingDir,
       removeTrackingRecordFromManifest(trackingManifest, options.location.plugin),
     );
+  }
+
+  if (await deleteInstallRecordForLocation(options)) {
+    return;
   }
 
   const ledger = await readInstalledLedger(options.env);
@@ -1886,6 +2564,26 @@ function ledgerHasIncomingDependencyReference(
   );
 }
 
+async function installRecordHasIncomingDependencyReference(options: {
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  const inspection = await inspectGlobalDependencyIndex(options.env);
+  if (inspection.status !== 'ok') {
+    return false;
+  }
+
+  const locationKey = serializePluginLocation(options.location);
+  return inspection.value.records.some((record) =>
+    record.dependencyEdges.some((edge) =>
+      serializePluginLocation(normalizePluginLocation({
+        ...edge.dependency,
+        projectKey: edge.dependency.projectKey ?? null,
+      })) === locationKey,
+    ),
+  );
+}
+
 export async function cleanupOrphanedAutoDependenciesAfterFailedInstall(options: {
   plan: PluginDependencyWritePlan;
   cwd: string;
@@ -1894,6 +2592,28 @@ export async function cleanupOrphanedAutoDependenciesAfterFailedInstall(options:
   for (const location of [...options.plan.writeOrder].reverse()) {
     const node = options.plan.nodesByLocation[serializePluginLocation(location)];
     if (node?.action !== 'installDependency') {
+      continue;
+    }
+
+    const installRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location: toInstallStateLocation(location),
+      env: options.env,
+    });
+    if (
+      installRecord.status === 'ok' &&
+      installRecord.value.record.installSource.kind === 'dependency' &&
+      installRecord.value.record.installSource.explicitlyRequested === false &&
+      !(await installRecordHasIncomingDependencyReference({
+        location,
+        env: options.env,
+      }))
+    ) {
+      await ensureRollbackRemovedDependencyLocation({
+        location,
+        cwd: options.cwd,
+        env: options.env,
+      });
       continue;
     }
 
@@ -2085,14 +2805,24 @@ export async function buildInstallPlannerContext(options: {
 
   const statusByLocation = new Map<string, PluginStatusReport>();
   const healthRecords: PluginDependencyPlannerHealthRecord[] = [];
+  const installRecordByLocation = new Map<string, InstallRecordFile>();
   for (const location of candidateLocationsByKey.values()) {
     const target = options.targetByPlugin.get(location.plugin);
     if (!target?.currentPlugin) {
       throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
     }
     const locationKey = serializePluginLocation(location);
+    const installRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location: toInstallStateLocation(location),
+      env: options.env,
+    });
+    if (installRecord.status === 'ok') {
+      installRecordByLocation.set(locationKey, installRecord.value);
+    }
     const scopeRecord = getInstalledScopeRecordForLocation(options.ledger, location);
     const shouldReadStatus =
+      installRecord.status === 'ok' ||
       Boolean(scopeRecord) ||
       (
         options.readStatusForRequestedLocations === true &&
@@ -2124,11 +2854,17 @@ export async function buildInstallPlannerContext(options: {
 
   const installedRecordByLocation = new Map<string, PluginDependencyPlannerInstalledRecord>();
   for (const location of candidateLocationsByKey.values()) {
+    const locationKey = serializePluginLocation(location);
+    const installRecord = installRecordByLocation.get(locationKey);
+    if (installRecord) {
+      installedRecordByLocation.set(locationKey, toPlannerInstalledRecordFromInstallRecord(installRecord));
+      continue;
+    }
     const scopeRecord = getInstalledScopeRecordForLocation(options.ledger, location);
     if (!scopeRecord) {
       continue;
     }
-    installedRecordByLocation.set(serializePluginLocation(location), {
+    installedRecordByLocation.set(locationKey, {
       location,
       resolvedVersion: scopeRecord.resolvedVersion,
       installSource: scopeRecord.installSource,
@@ -2298,7 +3034,12 @@ async function preflightInstallGraphWrites(options: {
     );
   }
 
+  const embeddedRoot = await resolveEmbeddedPluginsRoot();
+
   for (const { location, target, status } of writeTargets) {
+    const locationKey = serializePluginLocation(location);
+    const resolvedInstallOptions = options.resolvedInstallOptionsByLocation.get(locationKey);
+    const installedRecord = options.graphContext.installedRecordByLocation.get(locationKey);
     if (
       status?.externalOwnership?.present &&
       !(location.platform === 'codex' && location.scope === 'project')
@@ -2326,6 +3067,69 @@ async function preflightInstallGraphWrites(options: {
 
     if (!target.currentPlugin) {
       throw new Error(`Unknown plugin "${target.pluginName}".`);
+    }
+
+    if (location.scope === 'project') {
+      const privateStateRoot = getInstallStatePrivateRoot(
+        options.commandOptions.cwd,
+        toInstallStateLocation(location),
+        options.env,
+      );
+      const ignoreResult = await ensureProjectPrivateStateIgnore({
+        cwd: options.commandOptions.cwd,
+        targetPath: privateStateRoot,
+      });
+
+      await assertProjectArtifactIdentityPathVisible({
+        cwd: options.commandOptions.cwd,
+        pluginName: location.plugin,
+        platform: location.platform,
+      });
+
+      if (!installedRecord && projectStatusLooksAdoptable(status)) {
+        throw new Error(
+          `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+        );
+      }
+
+      const repoRoot = resolveProjectScopeRepoRoot(options.commandOptions.cwd);
+      const locator = createProjectArtifactSharedLocator({
+        plugin: location.plugin,
+        platform: location.platform,
+        repoRoot,
+        projectRoot: repoRoot,
+      });
+      const sharedIdentity = await readProjectArtifactIdentityForLocator({
+        repoRoot,
+        locator,
+        cwd: options.commandOptions.cwd,
+      });
+      if (!installedRecord && sharedIdentity.status === 'ok') {
+        throw new Error(
+          `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+        );
+      }
+    }
+
+    if (resolvedInstallOptions && shouldMaterializeSkillTriggers(location.platform, location.scope, resolvedInstallOptions)) {
+      const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
+        location: toInstallStateLocation(location),
+        embeddedRoot,
+        target: createSkillTriggerMaterializationTarget(
+          location.platform,
+          location.scope,
+          options.commandOptions.cwd,
+          options.env,
+        ),
+        preference: resolveMaterializationPreference(resolvedInstallOptions),
+        command: 'install',
+        takeoverSharedRuntime: options.commandOptions.takeoverSharedRuntime,
+        targetCount: options.plan.requestedRoots.length,
+        env: options.env,
+      });
+      if (sharedOwnerPreflight.status !== 'ok') {
+        throw new Error(sharedOwnerPreflight.takeoverRequired.message);
+      }
     }
   }
 }
@@ -2441,7 +3245,10 @@ export async function installCommand(
       const missingPluginMatch = /Unknown plugin "([^"]+)"\./.exec(normalizeErrorMessage(error));
       const missingPluginName = missingPluginMatch?.[1];
       if (missingPluginName) {
-        const breadcrumb = await readCodexNativeRecoveryBreadcrumb(missingPluginName, env);
+        const nativeMarker = await readNativeTransactionMarker(missingPluginName, env);
+        const breadcrumb = nativeMarker.status === 'ok'
+          ? nativeMarker.value
+          : await readCodexNativeRecoveryBreadcrumb(missingPluginName, env);
         if (breadcrumb) {
           throw new Error(
             `${missingPluginName} 当前不在 current catalog 中，无法执行 repair install。请先恢复该插件到当前 catalog，或运行 \`aw uninstall ${missingPluginName} -p codex -s user\` 清理 Codex native 残留。`,
@@ -2543,6 +3350,7 @@ export async function installCommand(
       env,
       ledger: prepared.ledger,
       projectKeysByPlatform,
+      readStatusForRequestedLocations: true,
     });
     const graphPlan = planPluginDependencyWrites({
       mode: 'install',
@@ -2625,6 +3433,7 @@ export async function installCommand(
         );
         await initializeInstalledScopeDependencyMetadata({
           location: node.location,
+          cwd: options.cwd,
           requested: node.requested,
           preserveExplicit: graphContext.installedRecordByLocation.get(key)?.installSource?.explicitlyRequested === true,
           env,
@@ -2635,6 +3444,7 @@ export async function installCommand(
         await commitInstalledScopeDependencyEdges(
           node.location,
           node.outgoingEdges,
+          options.cwd,
           env,
         );
       },

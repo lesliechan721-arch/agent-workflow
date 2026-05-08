@@ -615,6 +615,10 @@ describe('cli entry', () => {
       reports: [],
       output: JSON.stringify({ ok: true }),
     }));
+    const diagnoseCommand = vi.fn(async () => ({
+      output: JSON.stringify({ ok: true, command: 'diagnose' }),
+      payload: { ok: true, command: 'diagnose' },
+    }));
     const initCommand = vi.fn(async () => ({
       changed: true,
       rootDir: '/tmp/aw',
@@ -623,6 +627,7 @@ describe('cli entry', () => {
     vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
     vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
     vi.doMock('../../src/commands/status.js', () => ({ statusCommand }));
+    vi.doMock('../../src/commands/diagnose.js', () => ({ diagnoseCommand }));
     vi.doMock('../../src/commands/init.js', () => ({ initCommand }));
 
     const { runCli } = await import('../../src/index.js');
@@ -641,6 +646,10 @@ describe('cli entry', () => {
     )).toBe(0);
     expect(await runCli(
       ['status', '-j'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(await runCli(
+      ['diagnose', 'git-commit', '-j', '--deep'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
     )).toBe(0);
 
@@ -675,6 +684,161 @@ describe('cli entry', () => {
     );
     expect(statusCommand.mock.calls[0][1]).not.toHaveProperty('scope');
     expect(statusCommand.mock.calls[0][1]).not.toHaveProperty('platform');
+    expect(diagnoseCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        json: true,
+        deep: true,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('includes diagnose, repair, cleanup, and reinstall in CLI help output', async () => {
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['--help'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(readStdout()).toContain('diagnose');
+    expect(readStdout()).toContain('repair');
+    expect(readStdout()).toContain('cleanup');
+    expect(readStdout()).toContain('reinstall');
+    expect(readStderr()).toBe('');
+  });
+
+  it('routes repair, cleanup, and reinstall through the CLI entry with parseable JSON stdout', async () => {
+    const repairCommand = vi.fn(async () => ({
+      output: JSON.stringify({ ok: true, command: 'repair', locations: [] }),
+      payload: { ok: true, command: 'repair', locations: [] },
+    }));
+    const cleanupCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+      repoManagedArtifacts: [],
+    }));
+    const reinstallCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+    }));
+    vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
+    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand }));
+    vi.doMock('../../src/commands/reinstall.js', () => ({ reinstallCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['repair', 'git-commit', '--scope', 'project', '--platform', 'codex', '--adopt-existing', '--takeover-shared-runtime', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'repair',
+    });
+    expect(repairCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        scope: 'project',
+        platform: 'codex',
+        adoptExisting: true,
+        takeoverSharedRuntime: true,
+        json: true,
+      }),
+      expect.anything(),
+    );
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['cleanup', 'git-commit', '--scope', 'user', '--platform', 'codex', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'cleanup',
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+    });
+    expect(cleanupCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      }),
+      expect.anything(),
+    );
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['reinstall', 'git-commit', '--scope', 'user', '--platform', 'codex', '--takeover-shared-runtime', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      command: 'reinstall',
+      receipt: {
+        ok: true,
+        command: 'install',
+      },
+    });
+    expect(reinstallCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        cwd: '/tmp/workspace',
+        scope: 'user',
+        platform: 'codex',
+        takeoverSharedRuntime: true,
+        json: true,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('fails P11 illegal combinations before invoking write commands', async () => {
+    const upgradeCommand = vi.fn();
+    const cleanupCommand = vi.fn();
+    const repairCommand = vi.fn();
+    vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
+    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand }));
+    vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['upgrade', '--all', '--takeover-shared-runtime'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStderr()).toContain('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+    expect(upgradeCommand).not.toHaveBeenCalled();
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['cleanup', '--dependency-index'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStderr()).toContain('cleanup --dependency-index 目前只支持 --prune-stale <token>。');
+    expect(cleanupCommand).not.toHaveBeenCalled();
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['repair', '--dependency-index', '--adopt-existing'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStderr()).toContain('--dependency-index 不能与 --adopt-existing 一起使用。');
+    expect(repairCommand).not.toHaveBeenCalled();
   });
 
   it('fails missing install and uninstall plugin names at the entry layer with guidance', async () => {
@@ -869,6 +1033,415 @@ describe('cli entry', () => {
     expect(exitCode).toBe(1);
     expect(readStderr()).toContain('unknown command');
     expect(readStderr()).toContain('configure');
+  });
+
+  it('reads project local config with explicit human notice and no repo-visible ambiguity', async () => {
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string', sensitive: true },
+                mode: { type: 'enum', values: ['fast', 'safe'] },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
+      return {
+        ...actual,
+        resolveProjectLocalPluginConfigView: vi.fn(async () => ({
+          pluginName: 'git-commit',
+          projectRoot: '/tmp/workspace',
+          schema: {
+            token: { type: 'string', sensitive: true },
+            mode: { type: 'enum', values: ['fast', 'safe'] },
+          },
+          localStore: {
+            path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
+            exists: true,
+            values: { token: 'local-secret' },
+          },
+          values: { token: 'local-secret' },
+          redactedValues: { token: '[redacted]' },
+          sources: { token: 'projectLocal', mode: 'missing' },
+          issues: [],
+          ignoredUnknownKeys: [],
+          repoVisibleArtifactConfig: {
+            values: { mode: 'safe' },
+            sources: { token: 'missing', mode: 'project' },
+            issues: [],
+            boundaryIssues: [],
+          },
+        })),
+      };
+    });
+
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'token', '--scope', 'project', '--local'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(readStdout()).toContain('当前显示的是当前项目的本机私有覆盖层，不作为 repo-visible artifact 渲染输入。');
+    expect(readStdout()).toContain('[redacted]');
+    expect(readStderr()).toBe('');
+  });
+
+  it('prints project local config JSON with local-only metadata and separate repo-visible artifact truth', async () => {
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string', sensitive: true },
+                mode: { type: 'enum', values: ['fast', 'safe'] },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
+      return {
+        ...actual,
+        resolveProjectLocalPluginConfigView: vi.fn(async () => ({
+          pluginName: 'git-commit',
+          projectRoot: '/tmp/workspace',
+          schema: {
+            token: { type: 'string', sensitive: true },
+            mode: { type: 'enum', values: ['fast', 'safe'] },
+          },
+          localStore: {
+            path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
+            exists: true,
+            values: { token: 'local-secret' },
+          },
+          values: { token: 'local-secret' },
+          redactedValues: { token: '[redacted]' },
+          sources: { token: 'projectLocal', mode: 'missing' },
+          issues: [],
+          ignoredUnknownKeys: [],
+          repoVisibleArtifactConfig: {
+            values: { mode: 'safe' },
+            sources: { token: 'missing', mode: 'project' },
+            issues: [],
+            boundaryIssues: [],
+          },
+        })),
+      };
+    });
+
+    const { io, readStdout } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'list', 'git-commit', '--scope', 'project', '--local', '--json'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    const payload = JSON.parse(readStdout()) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      ok: true,
+      command: 'config:list',
+      plugin: 'git-commit',
+      scope: 'project',
+      projectLayer: 'local',
+      localOnly: true,
+      note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
+      localStorePath: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
+      summary: {
+        values: { token: '[redacted]' },
+        sources: { token: 'projectLocal', mode: 'missing' },
+      },
+      repoVisibleArtifactConfig: {
+        values: { mode: 'safe' },
+        sources: { token: 'missing', mode: 'project' },
+      },
+    });
+  });
+
+  it('prints project-scope config JSON with layered values and separate repo-visible artifact truth', async () => {
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string', sensitive: true },
+                mode: { type: 'enum', values: ['fast', 'safe'] },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
+      return {
+        ...actual,
+        resolveProjectScopedPluginConfigView: vi.fn(async () => ({
+          pluginName: 'git-commit',
+          projectRoot: '/tmp/workspace',
+          schema: {
+            token: { type: 'string', sensitive: true },
+            mode: { type: 'enum', values: ['fast', 'safe'] },
+          },
+          stores: {
+            user: { path: '/tmp/aw/plugin-config/git-commit/config.json', exists: true, values: { token: 'user-secret' } },
+            project: { path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json', exists: true, values: { mode: 'safe' } },
+            projectLocal: { path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json', exists: true, values: { token: 'local-secret' } },
+          },
+          redactedValues: { token: '[redacted]', mode: 'safe' },
+          sources: { token: 'projectLocal', mode: 'project' },
+          entries: {
+            token: {
+              key: 'token',
+              userValue: '[redacted]',
+              projectLocalValue: '[redacted]',
+              effectiveValue: '[redacted]',
+              effectiveSource: 'projectLocal',
+              repoVisibleArtifactSource: 'missing',
+              repoVisibleArtifactUsesSharedTruth: true,
+            },
+            mode: {
+              key: 'mode',
+              defaultValue: 'fast',
+              projectSharedValue: 'safe',
+              effectiveValue: 'safe',
+              effectiveSource: 'project',
+              repoVisibleArtifactValue: 'safe',
+              repoVisibleArtifactSource: 'project',
+              repoVisibleArtifactUsesSharedTruth: true,
+            },
+          },
+          issues: [],
+          ignoredUnknownKeys: [],
+          repoVisibleArtifactConfig: {
+            values: { mode: 'safe' },
+            sources: { token: 'missing', mode: 'project' },
+            issues: [],
+            boundaryIssues: [],
+          },
+        })),
+      };
+    });
+
+    const { io, readStdout } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'list', 'git-commit', '--scope', 'project', '--json'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    const payload = JSON.parse(readStdout()) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      ok: true,
+      command: 'config:list',
+      plugin: 'git-commit',
+      scope: 'project',
+      projectLayer: 'shared',
+      localOnly: false,
+      note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
+      summary: {
+        values: { token: '[redacted]', mode: 'safe' },
+        sources: { token: 'projectLocal', mode: 'project' },
+      },
+      layers: {
+        token: {
+          effectiveSource: 'projectLocal',
+          repoVisibleArtifactSource: 'missing',
+        },
+        mode: {
+          effectiveSource: 'project',
+          repoVisibleArtifactSource: 'project',
+        },
+      },
+      repoVisibleArtifactConfig: {
+        values: { mode: 'safe' },
+        sources: { token: 'missing', mode: 'project' },
+      },
+    });
+  });
+
+  it('passes through config refresh skipped reason in config set JSON receipts', async () => {
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string' },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config-write.js', () => ({
+      applyPluginConfigWrite: vi.fn(async () => ({
+        plugin: 'git-commit',
+        scope: 'project',
+        projectLayer: 'local',
+        updatedKeys: ['token'],
+        removedKeys: [],
+        effective: {},
+        artifactRefresh: {
+          attempted: false,
+          status: 'skipped',
+          triggerKeys: ['token'],
+          artifacts: [],
+        },
+        configRefreshSkippedReason: 'projectLocalOverride',
+        warnings: [],
+      })),
+      resetPluginConfigWithHelper: vi.fn(),
+    }));
+
+    const { io, readStdout } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'token', 'secret', '--scope', 'project', '--local', '--json'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(readStdout())).toMatchObject({
+      ok: true,
+      command: 'config:set',
+      plugin: 'git-commit',
+      configRefreshSkippedReason: 'projectLocalOverride',
+      artifactRefresh: {
+        attempted: false,
+        status: 'skipped',
+      },
+    });
+  });
+
+  it('rejects config write --local unless scope is project before any write helper runs', async () => {
+    const applyPluginConfigWrite = vi.fn();
+    vi.doMock('../../src/utils/plugin-catalog.js', () => ({
+      resolveCatalogPlugins: vi.fn(async () => ({
+        plugins: [{
+          rootDir: '/synthetic/plugin',
+          manifestPath: '/synthetic/plugin/.agents-plugin/plugin.json',
+          manifest: {
+            name: 'git-commit',
+            version: '1.0.0',
+            marketplace: {
+              category: 'test',
+              strict: false,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'NONE',
+              },
+            },
+            config: {
+              schema: {
+                token: { type: 'string' },
+              },
+            },
+          },
+        }],
+      })),
+    }));
+    vi.doMock('../../src/utils/plugin-config-write.js', () => ({
+      applyPluginConfigWrite,
+      resetPluginConfigWithHelper: vi.fn(),
+    }));
+
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'token', 'secret', '--local'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(readStderr()).toContain('`--local` 只能与 `--scope project` 一起使用');
+    expect(applyPluginConfigWrite).not.toHaveBeenCalled();
   });
 
   it('P0 baseline: default install receipts should not leak internal implementation nouns', async () => {
@@ -1080,6 +1653,39 @@ describe('cli entry', () => {
     expect(readStdout()).toBe('');
     expect(readStderr()).toContain('注意：install warning');
     expect(readStderr()).toContain('fatal install error');
+  });
+
+  it('hides non-actionable diagnostic warnings from default write-command stderr', async () => {
+    vi.doMock('../../src/commands/install.js', () => ({
+      installCommand: vi.fn(async () => ({
+        plugins: ['git-commit'],
+        platforms: ['codex'],
+        nativePlugins: {
+          codex: ['git-commit'],
+        },
+        repoManagedArtifacts: [],
+        warnings: [
+          '内部诊断：shared owner digest changed',
+          '无法自动确保 .codex/.agent-workflows 的 project private state ignore 规则。建议在 .gitignore 中追加 \".codex/.agent-workflows/\"。',
+        ],
+      })),
+    }));
+
+    const { io, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['install', 'git-commit', '--platform', 'codex'],
+      {
+        cwd: '/tmp/workspace',
+        env: {} as NodeJS.ProcessEnv,
+        io,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(readStderr()).toContain('.codex/.agent-workflows');
+    expect(readStderr()).not.toContain('shared owner digest changed');
   });
 
   it('P0 baseline: default status and error copy should avoid internal terms like healthSource and scope prose', async () => {

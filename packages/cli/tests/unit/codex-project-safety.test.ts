@@ -1413,7 +1413,7 @@ describe('Codex project safety preflight', () => {
     ).resolves.toBe(false);
   });
 
-  it('allows project uninstall to continue when user Codex config is unreadable', async () => {
+  it('fail-closes project uninstall when dependency metadata is missing even if user Codex config is unreadable', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['instructions-mcp'],
       forceCodex: false,
@@ -1425,32 +1425,22 @@ describe('Codex project safety preflight', () => {
     });
     await writeCorruptedCodexUserConfig({ env: workspace.env });
 
-    const result = await uninstallCommand(
-      ['instructions-mcp'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'codex',
-      },
-      {
-        env: workspace.env,
-      },
-    );
-
-    expect(result.warnings.join('\n')).toContain('unknown 处理');
-    await expect(readTrackingManifest(resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).trackingDir))
-      .resolves.toMatchObject({ plugins: {} });
-    await expect(readCodexConfigFile(resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).configTomlPath))
-      .resolves.toMatchObject({
-        snapshot: {
-          developerInstructions: {
-            managedBlocks: {},
-          },
+    await expect(
+      uninstallCommand(
+        ['instructions-mcp'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
         },
-      });
+        {
+          env: workspace.env,
+        },
+      ),
+    ).rejects.toThrow('缺失 dependency metadata');
   });
 
-  it('allows project uninstall to continue when external ownership is present', async () => {
+  it('fail-closes project uninstall when dependency metadata is missing even if external ownership is present', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['instructions-mcp'],
       forceCodex: false,
@@ -1466,24 +1456,22 @@ describe('Codex project safety preflight', () => {
       { enabled: true },
     );
 
-    const result = await uninstallCommand(
-      ['instructions-mcp'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'codex',
-      },
-      {
-        env: workspace.env,
-      },
-    );
-
-    expect(result.warnings.join('\n')).toContain('外部同名插件');
-    await expect(readTrackingManifest(resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).trackingDir))
-      .resolves.toMatchObject({ plugins: {} });
+    await expect(
+      uninstallCommand(
+        ['instructions-mcp'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          env: workspace.env,
+        },
+      ),
+    ).rejects.toThrow('缺失 dependency metadata');
   });
 
-  it('reports skills-only project status instead of failing when user Codex config is unreadable', async () => {
+  it('returns a read-only notInstalled projection for skills-only project status when user Codex config is unreadable', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
       forceCodex: false,
@@ -1509,21 +1497,24 @@ describe('Codex project safety preflight', () => {
       },
     );
 
+    const report = result.reports[0].plugins[0];
+
     expect(result.matrix.cells[0]).toMatchObject({
       pluginName: 'skills-only',
-      health: 'unknown',
-      report: {
-        externalOwnership: {
-          checkState: 'unknown',
-        },
-        repoManagedSessionState: {
-          skills: {
-            state: 'visible',
-          },
-          mcpServers: {
-            state: 'not_applicable',
-          },
-        },
+      health: 'notInstalled',
+    });
+    expect(report).toMatchObject({
+      pluginName: 'skills-only',
+      externalOwnership: {
+        checkState: 'known',
+      },
+      repoManagedSessionState: {
+        instructions: 'not_applicable',
+        rules: 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
+        diagnostics: [],
+        items: [],
       },
     });
   });
@@ -1559,26 +1550,26 @@ describe('Codex project safety preflight', () => {
       },
     );
 
+    const report = result.reports[0].plugins[0];
+
     expect(result.matrix.cells[0]).toMatchObject({
       health: 'ready',
-      report: {
-        projectTrust: 'not_applicable',
-        repoManagedSessionState: {
-          skills: {
-            state: 'visible',
-            visibleCount: 1,
-          },
-          mcpServers: {
-            state: 'not_applicable',
-            totalCount: 0,
-          },
-        },
+    });
+    expect(report).toMatchObject({
+      projectTrust: 'unknown',
+      repoManagedSessionState: {
+        instructions: 'not_applicable',
+        rules: 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
+        diagnostics: [],
+        items: [],
       },
     });
-    expect(result.matrix.summaries[0].nextSteps).toEqual(['查看详情：aw status skills-only --verbose']);
+    expect(result.matrix.summaries[0].nextSteps).toEqual([]);
   });
 
-  it('marks repo-managed project status as needsAttention when external ownership conflicts with repo evidence', async () => {
+  it('keeps project status ready when read-only projection ignores unrelated user external ownership', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
       forceCodex: false,
@@ -1614,23 +1605,28 @@ describe('Codex project safety preflight', () => {
       },
     );
 
+    const report = result.reports[0].plugins[0];
+
     expect(result.matrix.cells[0]).toMatchObject({
-      health: 'needsAttention',
-      report: {
-        externalOwnership: {
-          present: true,
-          checkState: 'known',
-        },
-        repoManagedSessionState: {
-          skills: {
-            state: 'visible',
-          },
-        },
+      health: 'ready',
+    });
+    expect(report).toMatchObject({
+      externalOwnership: {
+        present: false,
+        checkState: 'known',
+      },
+      repoManagedSessionState: {
+        instructions: 'not_applicable',
+        rules: 'not_applicable',
+        hooks: 'not_applicable',
+        agents: 'not_applicable',
+        diagnostics: [],
+        items: [],
       },
     });
   });
 
-  it('reports repo-managed mcp summaries and items with quoted artifact keys', async () => {
+  it('keeps read-only project status ready even when repo-managed MCP details are no longer synthesized', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['multi-mcp'],
       forceCodex: false,
@@ -1675,41 +1671,18 @@ describe('Codex project safety preflight', () => {
     );
     const report = result.reports[0].plugins[0];
 
-    expect(result.matrix.cells[0].health).toBe('needsAttention');
-    expect(report.repoManagedSessionState?.mcpServers).toMatchObject({
-      state: 'missing',
-      totalCount: 3,
-      visibleCount: 2,
-      missingCount: 1,
+    expect(result.matrix.cells[0].health).toBe('ready');
+    expect(report.repoManagedSessionState).toMatchObject({
+      instructions: 'not_applicable',
+      rules: 'not_applicable',
+      hooks: 'not_applicable',
+      agents: 'not_applicable',
+      diagnostics: [],
+      items: [],
     });
-    expect(report.repoManagedSessionState?.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'mcpServer',
-          artifactKey: 'acme.tools v1',
-          state: 'missing',
-          exists: false,
-          tracked: true,
-        }),
-        expect.objectContaining({
-          kind: 'mcpServer',
-          artifactKey: 'sibling-server',
-          state: 'visible',
-          exists: true,
-          tracked: true,
-        }),
-        expect.objectContaining({
-          kind: 'mcpServer',
-          artifactKey: 'nested/object server',
-          state: 'visible',
-          exists: true,
-          tracked: true,
-        }),
-      ]),
-    );
   });
 
-  it('reads project config for status when tracking only contains a dynamic Codex role', async () => {
+  it('treats tracking-only dynamic Codex roles as read-only notInstalled status without managed artifact synthesis', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
       forceCodex: false,
@@ -1753,35 +1726,42 @@ describe('Codex project safety preflight', () => {
       },
     );
     const report = result.reports[0].plugins[0];
-    const roleArtifact = report.managedArtifacts?.find((artifact) => artifact.id === 'codex-explorer-role');
-
-    expect(roleArtifact).toMatchObject({
-      target: 'codex.agentRole',
-      roleKey,
-      health: 'healthy',
+    expect(result.matrix.cells[0].health).toBe('notInstalled');
+    expect(report.repoManagedSessionState?.agents).toBe('not_applicable');
+    expect(report.externalOwnership).toMatchObject({
+      present: false,
+      checkState: 'known',
     });
   });
 
-  it('fails status for config-backed project targets when project Codex config is unreadable', async () => {
+  it('falls back to a read-only notInstalled projection for config-backed project status when project Codex config is unreadable', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['instructions-mcp'],
       forceCodex: false,
     });
     await writeCorruptedCodexProjectConfig({ repoRoot: workspace.repoRoot });
 
-    await expect(
-      statusCommand(
-        ['instructions-mcp'],
-        {
-          cwd: workspace.repoRoot,
-          scope: 'project',
-          platform: 'codex',
-          json: true,
-        },
-        {
-          env: workspace.env,
-        },
-      ),
-    ).rejects.toThrow('项目级 Codex 配置');
+    const result = await statusCommand(
+      ['instructions-mcp'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    expect(result.matrix.cells[0]).toMatchObject({
+      pluginName: 'instructions-mcp',
+      health: 'notInstalled',
+    });
+    expect(result.friendlySummaries[0]).toMatchObject({
+      pluginName: 'instructions-mcp',
+      status: 'notInstalled',
+      nextStep: 'aw install instructions-mcp -p codex -s project',
+    });
   });
 });

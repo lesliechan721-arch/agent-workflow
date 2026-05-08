@@ -43,7 +43,6 @@ import {
   cleanupOrphanedAutoDependenciesAfterFailedInstall,
   commitInstalledScopeDependencyEdges,
   createPluginLocationForPlatform,
-  createUpgradeRollbackBaselineKey,
   ensureRollbackRemovedDependencyLocation,
   initializeInstalledScopeDependencyMetadata,
   installTargetsOnPlatforms,
@@ -51,7 +50,6 @@ import {
   resolveProjectKeysByPlatform,
   toInstalledScopeInstallOptions,
   type InstallLocationGraphContext,
-  type UpgradeRollbackBaseline,
 } from './install.js';
 import {
   createCommandExecutionContext,
@@ -80,7 +78,6 @@ import {
   preflightCodexProjectWriteSafety,
 } from './codex-project-safety.js';
 import {
-  captureArtifactRollbackState,
   uninstallTargetsOnPlatforms,
 } from './uninstall.js';
 import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
@@ -91,6 +88,7 @@ import {
   resolveCodexProjectKey,
 } from '../utils/paths.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
+import { writeInstalledLedger } from '../utils/local-marketplace.js';
 import {
   serializePluginLocation,
   sortPluginLocations,
@@ -372,6 +370,34 @@ function collectUpgradeAllExplicitRootLocations(options: {
   }
 
   return sortPluginLocations([...locations.values()]);
+}
+
+async function preserveDependencyInstallSourceForRequestedUpgrade(options: {
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const ledger = await readInstalledLedger(options.env);
+  const pluginRecord = ledger.plugins[options.location.plugin];
+  const platformRecord = pluginRecord?.platforms[options.location.platform];
+  if (!platformRecord) {
+    throw new Error(`缺少 ${options.location.platform}/${options.location.plugin} (${options.location.scope}) 的 ledger platform record。`);
+  }
+
+  const scopeRecord = options.location.scope === 'user'
+    ? platformRecord.userScope
+    : options.location.projectKey
+      ? platformRecord.projectScopes?.[options.location.projectKey]
+      : undefined;
+  if (!scopeRecord) {
+    throw new Error(`缺少 ${options.location.platform}/${options.location.plugin} (${options.location.scope}) 的 ledger scope record。`);
+  }
+
+  scopeRecord.installSource = {
+    kind: 'dependency',
+    explicitlyRequested: true,
+    allowsUnusedCleanup: false,
+  };
+  await writeInstalledLedger(ledger, options.env);
 }
 
 function collectAccessibleInstalledLocations(options: {
@@ -869,52 +895,6 @@ function mergeNativePlugins(
   }
 }
 
-function resolveTrackingDir(
-  cwd: string,
-  platform: PlatformName,
-  scope: UpgradeCommandOptions['scope'],
-  env: NodeJS.ProcessEnv,
-): string {
-  return platform === 'claude'
-    ? resolveClaudePaths(cwd, scope, env).trackingDir
-    : resolveCodexPaths(cwd, scope, env).trackingDir;
-}
-
-async function captureUpgradeRollbackBaseline(options: {
-  platform: PlatformName;
-  target: ResolvedPluginTarget;
-  command: Pick<UpgradeCommandOptions, 'cwd' | 'scope'>;
-  env: NodeJS.ProcessEnv;
-}): Promise<UpgradeRollbackBaseline> {
-  const trackingDir = resolveTrackingDir(
-    options.command.cwd,
-    options.platform,
-    options.command.scope,
-    options.env,
-  );
-  const [ledger, trackingManifest] = await Promise.all([
-    readInstalledLedger(options.env),
-    readTrackingManifest(trackingDir),
-  ]);
-
-  return {
-    artifactRollbackState: await captureArtifactRollbackState(
-      options.platform,
-      options.target,
-      options.command.scope,
-      options.command.cwd,
-      options.env,
-    ),
-    trackingDir,
-    trackingManifest,
-    ledger,
-    degradedReasonOnRestoreFailure:
-      options.platform === 'codex' && options.command.scope === 'project'
-        ? 'capability_changed_upgrade_restore_incomplete'
-        : 'operation_interrupted_after_artifact_write',
-  };
-}
-
 async function listCodexProjectUpgradeAllNativeRunnerRequiredNames(
   cwd: string,
   ledger: InstalledLedger,
@@ -1242,12 +1222,6 @@ async function evaluateUpgradeAllTarget(options: {
     };
   }
 
-  if (pluginStatus.catalogCompatibility === 'capabilityChanged') {
-    throw new Error(
-      `${platform}/${target.pluginName}: catalogCompatibility=capabilityChanged，当前仍需要显式 upgrade 事务恢复，请改用逐插件升级。`,
-    );
-  }
-
   if (platform === 'codex' && scope === 'project') {
     const installability = getCodexProjectInstallability(target.currentPlugin);
     if (!installability.installable) {
@@ -1505,45 +1479,6 @@ async function executeUpgradeGraphPlan(options: {
 
       const operation = node.action === 'installDependency' ? 'install' : 'upgrade';
       const warnings: string[] = [];
-      let upgradeRollbackBaselines: Map<string, UpgradeRollbackBaseline> | undefined;
-      if (
-        operation === 'upgrade' &&
-        status?.catalogCompatibility === 'capabilityChanged'
-      ) {
-        if (node.location.platform === 'codex' && node.location.scope === 'project') {
-          upgradeRollbackBaselines = new Map([
-            [
-              createUpgradeRollbackBaselineKey(node.location.platform, target.pluginName),
-              await captureUpgradeRollbackBaseline({
-                platform: node.location.platform,
-                target,
-                command: {
-                  cwd: options.commandOptions.cwd,
-                  scope: node.location.scope,
-                },
-                env,
-              }),
-            ],
-          ]);
-        }
-        const uninstallResult = await uninstallTargetsOnPlatforms(
-          [target],
-          [node.location.platform],
-          {
-            cwd: options.commandOptions.cwd,
-            platform: node.location.platform,
-            scope: node.location.scope,
-            scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
-          },
-          {
-            ...context,
-            adapters,
-            skipLifecycle: true,
-            skipLifecycleSnapshotGc: true,
-          },
-        );
-        warnings.push(...uninstallResult.warnings);
-      }
 
       const installResult = await installTargetsOnPlatforms(
         [target],
@@ -1561,9 +1496,6 @@ async function executeUpgradeGraphPlan(options: {
           operation,
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
-          ...(upgradeRollbackBaselines
-            ? { upgradeRollbackBaselines }
-            : {}),
         },
       );
       await initializeInstalledScopeDependencyMetadata({
@@ -1572,6 +1504,15 @@ async function executeUpgradeGraphPlan(options: {
         preserveExplicit: options.graphContext.installedRecordByLocation.get(key)?.installSource?.explicitlyRequested === true,
         env,
       });
+      if (
+        node.requested &&
+        options.graphContext.installedRecordByLocation.get(key)?.installSource?.kind === 'dependency'
+      ) {
+        await preserveDependencyInstallSourceForRequestedUpgrade({
+          location: node.location,
+          env,
+        });
+      }
       return mergeUpgradeNodeResult(
         {
           warnings,
@@ -2049,15 +1990,6 @@ async function runUpgradeAll(
         continue;
       }
 
-      if (status.catalogCompatibility === 'capabilityChanged') {
-        dependencySkips.push({
-          location,
-          code: 'capabilityChanged',
-          reason: `${location.plugin} 当前 catalogCompatibility=capabilityChanged，需先显式升级该依赖以恢复受管状态。`,
-        });
-        continue;
-      }
-
       if (location.platform === 'codex' && location.scope === 'project') {
         const installability = getCodexProjectInstallability(target.currentPlugin);
       if (!installability.installable) {
@@ -2194,6 +2126,10 @@ export async function upgradeCommand(
 
   if (options.all && options.requestedSkillTrigger) {
     throw new Error('`upgrade --all` 首版不支持 `--skill-trigger`，请改用显式插件名逐个升级。');
+  }
+
+  if (options.all && options.takeoverSharedRuntime) {
+    throw new Error('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
   }
 
   const adapters = createAdapters(options.cwd, context);

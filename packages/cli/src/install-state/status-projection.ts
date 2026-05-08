@@ -1,0 +1,250 @@
+import type { PluginLocation } from './types.js';
+import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
+
+export type ProjectInstallStateKind =
+  | 'installed'
+  | 'needsRepair'
+  | 'adoptable'
+  | 'residual'
+  | 'externallyManaged'
+  | 'notInstalled';
+
+export interface ProjectInstallIssue {
+  code:
+    | 'installRecordInvalid'
+    | 'nativeTransactionPresent'
+    | 'artifactMissing'
+    | 'staticContentDrift'
+    | 'dynamicContentDrift'
+    | 'dynamicConfigStale'
+    | 'dynamicRefreshFailed'
+    | 'historicalLifecycleUnavailable'
+    | 'dependencyMissing'
+    | 'projectSharedIdentityUnavailable'
+    | 'nativeEvidenceMissing';
+  artifactPath?: string;
+  dependency?: PluginLocation;
+  detail?: string;
+}
+
+export interface ProjectInstallStateProjection {
+  kind: ProjectInstallStateKind;
+  issues: ProjectInstallIssue[];
+  installRecordPresent: boolean;
+  projectInstallState: ProjectInstallStateKind;
+  catalogDrift: boolean;
+  upgradeAvailable: boolean;
+  dynamicDiagnosticUnavailable: boolean;
+  dependencyIndexTrusted: boolean;
+  dependencyIndexCoverageTrusted: boolean;
+  dependencyIndexCoverageReasons: string[];
+  dependencyIndexVerifiedLocations: PluginLocation[];
+  dependencyIndexRevisitProjectLocations: PluginLocation[];
+  dependencyIndexRecoverySuggestion: string | null;
+  dependents: PluginLocation[];
+  autoInstalled: boolean;
+  unusedDependencyHint: boolean;
+  repairAvailable: boolean;
+  cleanupAvailable: boolean;
+  adoptExistingAvailable: boolean;
+  sharedRuntimeOwnerPresent: boolean;
+  sharedRuntimeNeedsTakeover: boolean;
+  nativeTransactionPresent: boolean;
+  nativeTransactionKind: InstallEvidence['nativeTransaction']['classification'];
+}
+
+function addArtifactIssue(
+  issues: ProjectInstallIssue[],
+  code: ProjectInstallIssue['code'],
+  artifact: RecordArtifactEvidence,
+  detail?: string,
+): void {
+  issues.push({
+    code,
+    artifactPath: artifact.files[0]?.path,
+    ...(detail ? { detail } : {}),
+  });
+}
+
+function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
+  const issues: ProjectInstallIssue[] = [];
+
+  if (evidence.nativeTransaction.present) {
+    issues.push({
+      code: 'nativeTransactionPresent',
+      detail: evidence.nativeTransaction.classification,
+    });
+  }
+
+  if (
+    evidence.location.scope === 'project'
+    && evidence.projectSharedIdentity.attempted
+    && evidence.projectSharedIdentity.read
+    && evidence.projectSharedIdentity.read.status !== 'ok'
+  ) {
+    issues.push({
+      code: 'projectSharedIdentityUnavailable',
+      detail: evidence.projectSharedIdentity.read.code,
+    });
+  }
+
+  for (const artifact of evidence.installRecord.artifacts) {
+    const disabledByDynamicEntry = artifact.matchedDynamicEntry?.state === 'disabled';
+    const missingFiles = artifact.files.filter((file) => !file.exists);
+    if (!disabledByDynamicEntry && missingFiles.length > 0) {
+      addArtifactIssue(issues, 'artifactMissing', artifact);
+      continue;
+    }
+
+    if (artifact.matchedDynamicEntry) {
+      const acceptedDigest = artifact.matchedDynamicEntry.contentDigest;
+      const actualDigest = artifact.files[0]?.contentDigest ?? null;
+      if (acceptedDigest && actualDigest && acceptedDigest !== actualDigest) {
+        addArtifactIssue(issues, 'dynamicContentDrift', artifact);
+      }
+
+      if (
+        evidence.location.scope === 'project'
+        && evidence.dynamicDiagnostic.available
+        && evidence.dynamicDiagnostic.entries.some((entry) =>
+          entry.matchedRecordArtifact?.artifact.path === artifact.artifact.path
+          && entry.entry.configDigest
+          && evidence.currentCatalog.provided
+        )
+      ) {
+        const matchedEntry = evidence.dynamicDiagnostic.entries.find((entry) =>
+          entry.matchedRecordArtifact?.artifact.path === artifact.artifact.path,
+        )?.entry;
+        const projectSharedRenderConfigDigest = evidence.currentCatalog.dynamicArtifacts.find((entry) =>
+          entry.id === matchedEntry?.id
+          && entry.target === matchedEntry?.target,
+        )?.configDigest;
+        if (
+          matchedEntry?.configDigest
+          && projectSharedRenderConfigDigest
+          && matchedEntry.configDigest !== projectSharedRenderConfigDigest
+        ) {
+          addArtifactIssue(issues, 'dynamicConfigStale', artifact);
+        }
+      }
+
+      if (artifact.matchedDynamicEntry.lastRefresh?.status === 'failed') {
+        addArtifactIssue(
+          issues,
+          'dynamicRefreshFailed',
+          artifact,
+          artifact.matchedDynamicEntry.lastRefresh.error,
+        );
+      }
+      continue;
+    }
+
+    const actualDigest = artifact.files[0]?.contentDigest ?? null;
+    const staticDigest =
+      (evidence.installRecord.sameBundleAsCatalog
+        ? artifact.matchedCatalogArtifact?.contentDigest
+        : null)
+      ?? artifact.matchedIdentityArtifact?.artifact.contentDigest
+      ?? null;
+    if (staticDigest && actualDigest && staticDigest !== actualDigest) {
+      addArtifactIssue(issues, 'staticContentDrift', artifact);
+    }
+  }
+
+  if (evidence.historicalLifecycle.expected && !evidence.historicalLifecycle.healthy) {
+    issues.push({
+      code: 'historicalLifecycleUnavailable',
+      detail: evidence.historicalLifecycle.path ?? undefined,
+    });
+  }
+
+  for (const dependency of evidence.dependencyIndex.projection.dependencyHealth) {
+    if (dependency.status !== 'ok') {
+      issues.push({
+        code: 'dependencyMissing',
+        dependency: dependency.dependency,
+        detail: dependency.status,
+      });
+    }
+  }
+
+  if (
+    evidence.platform.codexNative
+    && evidence.installRecord.present
+    && evidence.installRecord.read.status === 'ok'
+    && evidence.installRecord.read.value.record.native?.installedByAw
+    && !evidence.platform.codexNative.minimumSatisfied
+  ) {
+    issues.push({
+      code: 'nativeEvidenceMissing',
+      detail: evidence.platform.codexNative.pluginId,
+    });
+  }
+
+  return issues;
+}
+
+export function projectInstallState(
+  evidence: InstallEvidence,
+): ProjectInstallStateProjection {
+  const installRecordPresent = evidence.installRecord.present;
+  const issues: ProjectInstallIssue[] = [];
+
+  if (!installRecordPresent && evidence.installRecord.read.status !== 'missing') {
+    issues.push({
+      code: 'installRecordInvalid',
+      detail: 'code' in evidence.installRecord.read ? evidence.installRecord.read.code : evidence.installRecord.read.status,
+    });
+  }
+
+  const recordIssues = installRecordPresent ? collectRecordIssues(evidence) : [];
+  issues.push(...recordIssues);
+
+  let kind: ProjectInstallStateKind;
+  if (installRecordPresent) {
+    kind = issues.length > 0 ? 'needsRepair' : 'installed';
+  } else if (issues.length > 0) {
+    kind = 'needsRepair';
+  } else if (evidence.adoptable.possible) {
+    kind = 'adoptable';
+  } else if (
+    evidence.residualEvidence.privateStatePresent
+    || evidence.residualEvidence.repoVisibleArtifactPresent
+    || evidence.residualEvidence.sharedIdentityPresent
+    || evidence.residualEvidence.historicalLifecyclePresent
+    || evidence.residualEvidence.nativeMarkerPresent
+    || evidence.residualEvidence.sharedOwnerPresent
+  ) {
+    kind = 'residual';
+  } else if (evidence.platform.codexNative?.anyNativeEvidence) {
+    kind = 'externallyManaged';
+  } else {
+    kind = 'notInstalled';
+  }
+
+  return {
+    kind,
+    issues,
+    installRecordPresent,
+    projectInstallState: kind,
+    catalogDrift: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
+    upgradeAvailable: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
+    dynamicDiagnosticUnavailable: evidence.dynamicDiagnostic.dynamicDiagnosticUnavailable,
+    dependencyIndexTrusted: evidence.dependencyIndex.projection.coverage.trusted,
+    dependencyIndexCoverageTrusted: evidence.dependencyIndex.projection.coverage.coverageTrusted,
+    dependencyIndexCoverageReasons: evidence.dependencyIndex.projection.coverage.reasons,
+    dependencyIndexVerifiedLocations: evidence.dependencyIndex.projection.coverage.verifiedLocations,
+    dependencyIndexRevisitProjectLocations: evidence.dependencyIndex.projection.coverage.revisitProjectLocations,
+    dependencyIndexRecoverySuggestion: evidence.dependencyIndex.projection.coverage.recoverySuggestion,
+    dependents: evidence.dependencyIndex.projection.dependents,
+    autoInstalled: evidence.dependencyIndex.projection.autoInstalled,
+    unusedDependencyHint: evidence.dependencyIndex.projection.unusedDependencyHint,
+    repairAvailable: installRecordPresent || evidence.nativeTransaction.present,
+    cleanupAvailable: kind === 'needsRepair' || kind === 'residual',
+    adoptExistingAvailable: kind === 'adoptable',
+    sharedRuntimeOwnerPresent: evidence.sharedRuntimeOwner.read.status === 'ok',
+    sharedRuntimeNeedsTakeover: evidence.sharedRuntimeOwner.needsTakeover,
+    nativeTransactionPresent: evidence.nativeTransaction.present,
+    nativeTransactionKind: evidence.nativeTransaction.classification,
+  };
+}

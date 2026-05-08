@@ -114,7 +114,7 @@ plugins/<name>/
    - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
-   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；renderer 只输出 `ArtifactPlan`，不要直接写 `.codex/config.toml`、`.codex/agents/*.toml`、tracking 或 ledger
+   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；renderer 只输出 `ArtifactPlan`，不要直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record
    - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件，不写版本范围、外部来源或 platform override
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
@@ -122,10 +122,10 @@ plugins/<name>/
 
 ### Codex scope 提醒
 
-- Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。`aw status` 只有在 enabled config、active materialized cache 和 AW 受管记录都健康时才把它投影为已安装；enabled-only、cache-only、breadcrumb-only 都会显示为需要修复或清理的异常状态。
+- Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。`aw status` 只有在 enabled config、active materialized cache、native transaction 状态和 AW per-plugin record 都健康时才把它投影为已安装；enabled-only、cache-only 或 native transaction 残留都会显示为需要修复或清理的异常状态。
 - Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace add 或 app-server RPC，也不会改用户级 config/cache。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可用。
 - 面向 Codex project 的插件必须有 repo-managed surface。纯 native-only 插件不能 project 安装；包含 `apps` 的插件 project scope 会 fail fast，请引导用户使用 `--scope user` 或拆分插件。
-- 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 recovery breadcrumb 触发 repair install；breadcrumb-only uninstall 不运行 uninstall lifecycle。
+- 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 native transaction marker 触发 repair install；只有 verified install record 引用的 historical lifecycle runtime 才能驱动普通 uninstall lifecycle，cleanup 不运行 lifecycle。
 
 ### CLI 入口与输出合同
 
@@ -133,8 +133,8 @@ plugins/<name>/
 - 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。
 - `aw install`、显式 `aw upgrade` 和 `aw upgrade --all` 会自动解析并安装/升级缺失依赖；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后清理引用归零的自动依赖。文档和示例里不要要求用户手动按顺序安装普通依赖，除非该依赖需要用户先单独配置或选择特殊安装选项。
 - `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
-- 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、recovery breadcrumb、ledger、healthSource、tracking 或 config/script health 等内部词。
-- `aw status` 默认输出使用友好状态投影；`aw status --json` 保留旧矩阵字段，并追加 `friendlySummaries`、`consoleItems` 和每个位置的 `dependencies` 投影。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作或依赖自动清理。
+- 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等内部词。
+- `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段和每个位置的 `dependencies` 投影。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
 
 ## 脚手架脚本
 
@@ -180,14 +180,17 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
 - Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。
 - `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。
-- dynamic artifact 刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
+- dynamic artifact 的 accepted state、digest 和最近 refresh 摘要保存在 dynamic diagnostic cache，不进入 install record。刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
+- project shared config 写 `.agent-workflows/plugin-config/<plugin>/config.json`，是 repo-visible project artifacts 唯一共享配置输入；project local config 写 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略，只影响本机 effective config、lifecycle 和 helper。
+- project scope 的 private state / local config 默认应被 ignore；`.agent-workflows/plugin-config/` 和 `.agent-workflows/project-artifacts/` 是可提交的共享输入/identity，模板和示例不要默认忽略它们。
+- `file` / `directory` 类型配置只适合 user 或 project local 的本机 effective config；project shared config、project artifact render config、dynamic artifact `refreshKeys` 和 repo-visible artifact truth 不能依赖这类 realpath 值。
 - 写动作必须来自明确的 location target。插件出现在多个位置时，控制台和脚本 receipt 可以汇总状态，但不能把“多个位置”当成隐式批量写目标；执行安装、升级、卸载、配置、refresh-only 或 cleanup 前都要明确 platform/scope/project 位置。
 - 改到 manifest、bundle 或安装逻辑时，先跑 `pnpm build`，再跑相关 `pnpm test:*`。
 - 插件内 Node 脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 - lifecycle 支持 Node 和受控 shell 文件，不支持内联 shell 命令；Windows 优先写 Node 入口，或单独提供 `.ps1` / `.cmd`。
 - Node lifecycle/helper/test 默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时声明 `scripts.node.packageRoot`，提交 `package.json` 和 `pnpm-lock.yaml`，并只使用 registry-backed 依赖；运行时依赖离线随 bundle 携带。
 - manifest build 只能通过 `scripts.node.build` 显式触发，并运行在隔离 staging 目录；不要期待 `package.json` scripts 或 npm lifecycle 自动执行，也不要依赖源码树被回写。
-- Codex user native 成功状态需要 enabled config、active materialized cache 和 AW 受管记录同时健康；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，recovery breadcrumb 会投影为 native incomplete 而不是普通已安装。
+- Codex user native 成功状态需要 enabled config、active materialized cache、native transaction 状态和 AW per-plugin record 同时健康；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，native transaction marker 残留会投影为需要处理而不是普通已安装。
 
 ## 脚本测试入口
 

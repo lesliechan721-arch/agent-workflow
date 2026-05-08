@@ -199,7 +199,7 @@ plugins/<name>/
 ### Codex
 
 - Codex user scope 通过 native plugin runtime 加载 `.mcp.json`
-- Codex project scope 会把 rendered `.mcp.json` 中的每个 `mcpServers.<key>` 写入当前仓库 `.codex/config.toml [mcp_servers.*]`，并按同一个原始 key 记录 tracking `artifactKey`
+- Codex project scope 会把 rendered `.mcp.json` 中的每个 `mcpServers.<key>` 写入当前仓库 `.codex/config.toml [mcp_servers.*]`，并按同一个原始 key 在 install record / project artifact shared identity 中记录 `artifactKey`
 - 需要 TOML quoted key 的 server 会写成 `[mcp_servers."acme.tools v1"]`；这是单个 server key，不是 `[mcp_servers.acme.tools]` 的嵌套路径
 - `.app.json` 用于 Codex 应用集成，但 Codex project scope 首版不支持 apps；只要 manifest 声明 `apps`，project install/upgrade 会 fail fast，请改用 `--scope user` 或拆分插件
 - Codex 支持 `streamable_http` 和 `stdio` 两种传输方式

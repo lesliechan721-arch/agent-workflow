@@ -9,4 +9,7 @@ packages/cli/plugins-dist
 .release
 .idea
 *.tgz
-.codex/config.toml
+.agent-workflows-manifest.json
+.claude/.agent-workflows/
+.codex/.agent-workflows/
+.agent-workflows/plugin-config.local/

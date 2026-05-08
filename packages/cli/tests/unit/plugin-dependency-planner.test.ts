@@ -785,7 +785,7 @@ describe('plugin dependency planner', () => {
     expect(plan.writeOrder).toEqual([claudeRootLocation, codexRootLocation]);
   });
 
-  it('protects uninstall when dependents remain and auto-cleans unused dependency chains', () => {
+  it('protects uninstall when dependents remain and keeps unused dependency chains for explicit follow-up cleanup', () => {
     const child = createDependencyPluginManifest({
       name: 'cleanup-child',
       dependencies: [{ name: 'cleanup-grandchild' }],
@@ -856,12 +856,8 @@ describe('plugin dependency planner', () => {
       requested: [parentLocation],
     });
     expect(cleanupPlan.blocked).toEqual([]);
-    expect(cleanupPlan.autoCleanup).toEqual([childLocation, grandchildLocation]);
-    expect(cleanupPlan.uninstallOrder).toEqual([
-      parentLocation,
-      childLocation,
-      grandchildLocation,
-    ]);
+    expect(cleanupPlan.autoCleanup).toEqual([]);
+    expect(cleanupPlan.uninstallOrder).toEqual([parentLocation]);
   });
 
   it('allows uninstall when the full dependent set is requested together and preserves explicit keeps', () => {

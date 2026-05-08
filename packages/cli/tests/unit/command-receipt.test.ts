@@ -263,7 +263,7 @@ describe('command receipt output', () => {
     });
   });
 
-  it('includes auto-cleaned dependencies in uninstall JSON while keeping the human summary focused', () => {
+  it('keeps auto-cleaned dependencies in uninstall JSON while leaving the human summary concise', () => {
     const receipt = {
       result: {
         platforms: ['codex'],
@@ -321,6 +321,7 @@ describe('command receipt output', () => {
 
     const output = renderCommandReceipt('uninstall', receipt).join('\n');
     expect(output).toContain('已卸载 cleanup-parent。');
-    expect(output).toContain('已自动清理不再需要的依赖：cleanup-child、cleanup-grandchild。');
+    expect(output).toContain('已清理相关文件和已安装项。');
+    expect(output).not.toContain('已自动清理不再需要的依赖');
   });
 });

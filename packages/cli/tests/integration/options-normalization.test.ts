@@ -27,11 +27,18 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import {
+  upsertCodexMarketplaceFile,
+  upsertCodexPluginEnabledFile,
+} from '../../src/utils/codex-config.js';
+import {
   createAvailableLedger,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import {
+  resolveCodexPaths,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -146,6 +153,24 @@ function createAdapters(codex: RecordingAdapter): Record<PlatformName, PlatformA
   };
 }
 
+async function seedHealthyCodexUserNativeState(
+  workspace: Awaited<ReturnType<typeof makeWorkspace>>,
+  pluginName: string,
+  version: string,
+): Promise<void> {
+  const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
+  await upsertCodexMarketplaceFile(configPath, 'aw', {
+    source: workspace.awHome,
+    sourceType: 'local',
+  });
+  await upsertCodexPluginEnabledFile(configPath, `${pluginName}@aw`, { enabled: true });
+  await fs.outputFile(
+    path.join(workspace.codexHome, 'plugins', 'cache', 'aw', pluginName, version, 'plugin.json'),
+    '{}\n',
+    'utf8',
+  );
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -155,18 +180,19 @@ describe('command option normalization', () => {
   it('normalizes partial direct command options to user/auto without undefined property crashes', async () => {
     const workspace = await makeWorkspace();
     const codex = new RecordingAdapter('codex');
+    const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'git-commit'));
 
     await installCommand(
       ['git-commit'],
       { cwd: workspace.repoRoot } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
+    await seedHealthyCodexUserNativeState(workspace, plugin.manifest.name, plugin.manifest.version);
     await uninstallCommand(
       ['git-commit'],
       { cwd: workspace.repoRoot } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
-    const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'git-commit'));
     await writeInstalledLedger(
       await applyCodexInstallLedger(createAvailableLedger(), plugin, 'user', workspace.repoRoot),
       workspace.env,

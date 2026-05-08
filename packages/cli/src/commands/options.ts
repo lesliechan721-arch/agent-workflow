@@ -26,6 +26,7 @@ export type RawCommandOptions = {
 export type RawInstallCommandOptions = RawCommandOptions & {
   requestedSkillTrigger?: SkillTriggerPreference | string;
   skillTrigger?: SkillTriggerPreference | string;
+  takeoverSharedRuntime?: boolean;
 };
 
 export type RawUpgradeCommandOptions = RawInstallCommandOptions & {
@@ -39,6 +40,60 @@ export type RawStatusCommandOptions = {
   verbose?: boolean;
   json?: boolean;
 };
+
+export type RawDiagnoseCommandOptions = RawStatusCommandOptions & {
+  deep?: boolean;
+};
+
+export interface DiagnoseCommandOptions extends StatusCommandOptions {
+  deep?: boolean;
+}
+
+export type RawRepairCommandOptions = RawCommandOptions & {
+  adoptExisting?: boolean;
+  dependencyIndex?: boolean;
+  json?: boolean;
+  requestedSkillTrigger?: SkillTriggerPreference | string;
+  skillTrigger?: SkillTriggerPreference | string;
+  takeoverSharedRuntime?: boolean;
+};
+
+export interface RepairCommandOptions extends CommandOptions {
+  adoptExisting: boolean;
+  dependencyIndex: boolean;
+  json?: boolean;
+  requestedSkillTrigger?: SkillTriggerPreference;
+  takeoverSharedRuntime?: boolean;
+}
+
+export type RawCleanupCommandOptions = RawCommandOptions & {
+  force?: boolean;
+  dependencyIndex?: boolean;
+  pruneStale?: string;
+  yes?: boolean;
+  json?: boolean;
+};
+
+export interface CleanupCommandOptions extends CommandOptions {
+  force: boolean;
+  dependencyIndex: boolean;
+  pruneStale?: string;
+  yes: boolean;
+  json?: boolean;
+}
+
+export type RawReinstallCommandOptions = RawInstallCommandOptions & {
+  json?: boolean;
+};
+
+export interface ReinstallCommandOptions extends InstallCommandOptions {
+  json?: boolean;
+}
+
+export interface RawConfigProjectLayerOptions {
+  scope?: string;
+  local?: boolean;
+}
 
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
 export const SCRIPT_TIMEOUT_MAX_MS = 300000;
@@ -121,6 +176,18 @@ export function resolveConfigReadResolution(scope: unknown): ConfigReadResolutio
   return scope === undefined ? CONFIG_READ_DEFAULT_RESOLUTION : parseScopeValue(scope);
 }
 
+export function resolveConfigProjectLayer(
+  raw: RawConfigProjectLayerOptions = {},
+): 'shared' | 'local' {
+  if (!raw.local) {
+    return 'shared';
+  }
+  if (raw.scope !== 'project') {
+    throw new Error('`--local` 只能与 `--scope project` 一起使用。');
+  }
+  return 'local';
+}
+
 function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined): string {
   return rawCwd ?? defaultCwd ?? process.cwd();
 }
@@ -156,6 +223,7 @@ export function normalizeInstallCommandOptions(
       ...defaults,
     }),
     requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
+    takeoverSharedRuntime: raw.takeoverSharedRuntime,
   };
 }
 
@@ -163,6 +231,9 @@ export function normalizeUpgradeCommandOptions(
   raw: RawUpgradeCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): UpgradeCommandOptions {
+  if (raw.all && raw.takeoverSharedRuntime) {
+    throw new Error('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
+  }
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
@@ -171,6 +242,7 @@ export function normalizeUpgradeCommandOptions(
     }),
     all: raw.all,
     requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
+    takeoverSharedRuntime: raw.takeoverSharedRuntime,
   };
 }
 
@@ -196,4 +268,88 @@ export function normalizeStatusCommandOptions(
     verbose: raw.verbose,
     json: raw.json,
   };
+}
+
+export function normalizeDiagnoseCommandOptions(
+  raw: RawDiagnoseCommandOptions = {},
+  defaults: { cwd?: string } = {},
+): DiagnoseCommandOptions {
+  return {
+    ...normalizeStatusCommandOptions(raw, defaults),
+    deep: raw.deep === true,
+  };
+}
+
+export function normalizeRepairCommandOptions(
+  raw: RawRepairCommandOptions = {},
+  defaults: NormalizeCommandOptionsDefaults = {},
+): RepairCommandOptions {
+  if (raw.dependencyIndex && raw.adoptExisting) {
+    throw new Error('--dependency-index 不能与 --adopt-existing 一起使用。');
+  }
+  return {
+    ...normalizeCommandOptions(raw, {
+      defaultScope: 'user',
+      defaultPlatform: 'auto',
+      ...defaults,
+    }),
+    adoptExisting: raw.adoptExisting === true,
+    dependencyIndex: raw.dependencyIndex === true,
+    json: raw.json === true,
+    requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
+    takeoverSharedRuntime: raw.takeoverSharedRuntime,
+  };
+}
+
+export function normalizeCleanupCommandOptions(
+  raw: RawCleanupCommandOptions = {},
+  defaults: NormalizeCommandOptionsDefaults = {},
+): CleanupCommandOptions {
+  const normalized = {
+    ...normalizeCommandOptions(raw, {
+      defaultScope: 'user',
+      defaultPlatform: 'auto',
+      ...defaults,
+    }),
+    force: raw.force === true,
+    dependencyIndex: raw.dependencyIndex === true,
+    pruneStale: raw.pruneStale,
+    yes: raw.yes === true,
+    json: raw.json === true,
+  } satisfies CleanupCommandOptions;
+
+  if (normalized.dependencyIndex) {
+    if (!normalized.pruneStale) {
+      throw new Error('cleanup --dependency-index 目前只支持 --prune-stale <token>。');
+    }
+    if (!normalized.yes) {
+      throw new Error('cleanup --dependency-index --prune-stale 需要显式传入 --yes。');
+    }
+  }
+
+  if (!normalized.dependencyIndex && (normalized.platform === 'auto' || normalized.platform === 'both')) {
+    throw new Error('cleanup 命令需要显式指定单一平台。');
+  }
+
+  return normalized;
+}
+
+export function normalizeReinstallCommandOptions(
+  raw: RawReinstallCommandOptions = {},
+  defaults: NormalizeCommandOptionsDefaults = {},
+): ReinstallCommandOptions {
+  const normalized = {
+    ...normalizeInstallCommandOptions(raw, {
+      defaultScope: 'user',
+      defaultPlatform: 'auto',
+      ...defaults,
+    }),
+    json: raw.json === true,
+  } satisfies ReinstallCommandOptions;
+
+  if (normalized.platform === 'auto' || normalized.platform === 'both') {
+    throw new Error('reinstall 命令需要显式指定单一平台。');
+  }
+
+  return normalized;
 }

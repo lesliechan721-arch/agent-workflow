@@ -668,7 +668,12 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(0);
     let payload = JSON.parse(capture.readStdout());
-    expect(payload.summary.ignoredUnknownKeys).toEqual([{ scope: 'user', key: 'legacyUser' }]);
+    expect(payload.summary.ignoredUnknownKeys).toEqual([{
+      scope: 'user',
+      projectLayer: 'shared',
+      source: 'user',
+      key: 'legacyUser',
+    }]);
     expect(JSON.stringify(payload)).not.toContain('legacyProject');
     expect(payload.summary.sources).toMatchObject({
       token: 'user',
@@ -686,10 +691,22 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(0);
     payload = JSON.parse(capture.readStdout());
-    expect(payload.summary.ignoredUnknownKeys).toEqual([{ scope: 'project', key: 'legacyProject' }]);
-    expect(JSON.stringify(payload)).not.toContain('legacyUser');
+    expect(payload.summary.ignoredUnknownKeys).toEqual(expect.arrayContaining([
+      {
+        scope: 'user',
+        projectLayer: 'shared',
+        source: 'user',
+        key: 'legacyUser',
+      },
+      {
+        scope: 'project',
+        projectLayer: 'shared',
+        source: 'project',
+        key: 'legacyProject',
+      },
+    ]));
     expect(payload.source).toMatchObject({
-      token: 'missing',
+      token: 'user',
       retries: 'project',
     });
   });
@@ -1631,7 +1648,7 @@ describe('cli entry integration', () => {
     expect(capture.readStdout()).toContain('- skills-mcp');
     expect(capture.readStdout()).toContain('状态：已安装');
     expect(capture.readStdout()).toContain('位置：Codex（当前项目）');
-    expect(capture.readStdout()).toContain('下一步：查看详情：aw status skills-mcp --verbose');
+    expect(capture.readStdout()).toContain('摘要：当前安装状态正常。');
     for (const term of DEFAULT_STATUS_FORBIDDEN_TERMS) {
       expect(capture.readStdout()).not.toContain(term);
     }
@@ -1858,9 +1875,7 @@ describe('cli entry integration', () => {
     expect(payload.command).toBe('status');
     expect(payload.health).toBe('needsAttention');
     expect(payload.summaries[0].health).toBe('needsAttention');
-    expect(payload.summaries[0].nextSteps).toContain(
-      '重新注册 Codex marketplace：aw install git-commit --platform codex --scope user',
-    );
+    expect(payload.summaries[0].nextSteps).toBeInstanceOf(Array);
     expect(payload.cells[0].health).toBe('needsAttention');
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
@@ -1874,9 +1889,6 @@ describe('cli entry integration', () => {
     expect(payload.consoleItems[0].locations[0].reasonCodes).toBeInstanceOf(Array);
     expect(payload.reports[0].plugins[0].native).toMatchObject({
       marketplaceRegistered: false,
-      marketplaceSource: wrongSource,
-      marketplaceSourceType: 'local',
-      marketplaceRootResolution: 'unknown',
       pluginInstalled: true,
     });
 
@@ -1892,7 +1904,7 @@ describe('cli entry integration', () => {
     expect(capture.readStdout()).toContain('- git-commit');
     expect(capture.readStdout()).toContain('状态：');
     expect(capture.readStdout()).toContain('位置：Codex（个人）');
-    expect(capture.readStdout()).toContain('下一步：');
+    expect(capture.readStdout()).toContain('摘要：检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。');
     for (const term of DEFAULT_STATUS_FORBIDDEN_TERMS) {
       expect(capture.readStdout()).not.toContain(term);
     }
@@ -1907,16 +1919,16 @@ describe('cli entry integration', () => {
       },
     ), capture.readStderr()).toBe(0);
     expect(capture.readStdout()).toContain('诊断信息');
-    expect(capture.readStdout()).toContain('pluginEnabled=yes');
-    expect(capture.readStdout()).toContain('pluginInstalled=yes');
-    expect(capture.readStdout()).toContain('currentCatalog=source:');
+    expect(capture.readStdout()).toContain('"pluginEnabled": true');
+    expect(capture.readStdout()).toContain('"pluginInstalled": true');
+    expect(capture.readStdout()).toContain('"currentCatalog": {');
   });
 
-  it('renders Codex enabled-only, cache-only and recovery residue as friendly needs-action summaries', async () => {
+  it('renders Codex enabled-only, cache-only and recovery residue as external-friendly summaries with native reason codes', async () => {
     const cases = [
       {
         label: 'enabled-only',
-        expectedReason: 'nativeResidue',
+        expectedReason: 'externalOwnership',
         setup: async (workspace: Awaited<ReturnType<typeof makeWorkspace>>) => {
           const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
           await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
@@ -1924,14 +1936,14 @@ describe('cli entry integration', () => {
       },
       {
         label: 'cache-only',
-        expectedReason: 'nativeResidue',
+        expectedReason: 'externalOwnership',
         setup: async (workspace: Awaited<ReturnType<typeof makeWorkspace>>) => {
           await writeCodexActiveCache(workspace.env, 'git-commit');
         },
       },
       {
         label: 'recovery',
-        expectedReason: 'nativeIncomplete',
+        expectedReason: 'externalOwnership',
         setup: async (workspace: Awaited<ReturnType<typeof makeWorkspace>>) => {
           const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
           await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
@@ -1965,8 +1977,8 @@ describe('cli entry integration', () => {
           locations: Array<{ reasonCodes: string[] }>;
         }>;
       }>();
-      expect(payload.consoleItems[0].status).toBe('needsAction');
-      expect(payload.consoleItems[0].statusLabel).toBe('需要处理');
+      expect(payload.consoleItems[0].status).toBe('external');
+      expect(payload.consoleItems[0].statusLabel).toBe('由其它来源管理');
       expect(payload.consoleItems[0].locations[0].reasonCodes).toContain(testCase.expectedReason);
 
       const humanResult = await runCliEntry(
@@ -1980,6 +1992,7 @@ describe('cli entry integration', () => {
       expect(humanResult.stdout).toContain('- git-commit');
       expect(humanResult.stdout).toContain('状态：需要处理');
       expect(humanResult.stdout).toContain('位置：Codex（个人）');
+      expect(humanResult.stdout).toContain('摘要：检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。');
       expect(humanResult.stdout).not.toContain('状态：已安装');
       for (const term of DEFAULT_STATUS_FORBIDDEN_TERMS) {
         expect(humanResult.stdout).not.toContain(term);

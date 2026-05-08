@@ -1,0 +1,302 @@
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { cleanupCommand } from '../../src/commands/cleanup.js';
+import { createDependencyIndexPruneToken } from '../../src/install-state/transactions.js';
+import {
+  createMinimalPluginInstallStateFixtureBuilder,
+  writeMinimalPluginInstallStateFixture,
+} from '../helpers/minimal-plugin-install-state-fixtures.js';
+import {
+  refreshDependencyIndexDigestsForP2,
+  rewriteSanitizedInstallRecordForP2,
+} from '../helpers/install-state-projection-fixtures.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import type {
+  GeneratedArtifact,
+  PlatformAdapter,
+  PlatformName,
+  PluginMeta,
+  Scope,
+  StatusReport,
+} from '../../src/types.js';
+
+const tempDirs: string[] = [];
+
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
+
+async function makeBuilder() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-cleanup-'));
+  tempDirs.push(root);
+  return createMinimalPluginInstallStateFixtureBuilder(root);
+}
+
+async function ensureRepoPlugin(
+  repoRoot: string,
+  pluginName: string,
+  markerFileName = 'cleanup-should-not-run.txt',
+): Promise<PluginMeta> {
+  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  await fs.copy(
+    path.join(fixturePath('repo-template'), 'plugins', 'git-commit'),
+    pluginRoot,
+  );
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  manifest.name = pluginName;
+  manifest.scripts = {
+    lifecycle: {
+      uninstall: {
+        linux: { runner: 'node', path: './scripts/uninstall.mjs' },
+        darwin: { runner: 'node', path: './scripts/uninstall.mjs' },
+        win32: { runner: 'node', path: './scripts/uninstall.mjs' },
+      },
+    },
+  };
+  await fs.ensureDir(path.join(pluginRoot, 'scripts'));
+  await fs.writeFile(
+    path.join(pluginRoot, 'scripts', 'uninstall.mjs'),
+    `import fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(path.join(process.env.AW_HOME, '${markerFileName}'), 'ran', 'utf8');`,
+    'utf8',
+  );
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  return readPluginManifest(pluginRoot);
+}
+
+class FakeAdapter implements PlatformAdapter {
+  readonly uninstallPluginCalls: string[] = [];
+  readonly uninstallExtensionsCalls: string[] = [];
+
+  async detect(): Promise<boolean> {
+    return true;
+  }
+
+  async installPlugin(): Promise<void> {}
+
+  async uninstallPlugin(plugin: PluginMeta): Promise<void> {
+    this.uninstallPluginCalls.push(plugin.manifest.name);
+  }
+
+  async installExtensions(): Promise<GeneratedArtifact[]> {
+    return [];
+  }
+
+  async uninstallExtensions(plugin: PluginMeta): Promise<void> {
+    this.uninstallExtensionsCalls.push(plugin.manifest.name);
+  }
+
+  async upgradePlugin(): Promise<void> {}
+
+  async status(_plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    return {
+      platform: 'codex',
+      scope,
+      initialized: false,
+      plugins: [],
+    };
+  }
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe('cleanup command (P9)', () => {
+  it('rejects cleanup for healthy installed targets and points users back to uninstall', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'claude', scope: 'user' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'claude',
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          adapters: {
+            codex: new FakeAdapter(),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow(/aw uninstall/);
+  });
+
+  it('cleans record plus install-marker residuals without running uninstall lifecycle', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    await rewriteSanitizedInstallRecordForP2(path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    ));
+    await builder.writeDiagnosticCache(target);
+    await builder.writeNativeMarker(target, 'install');
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+
+    const codex = new FakeAdapter();
+    await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    await expect(fs.pathExists(path.join(builder.paths.codexHome, '.agent-workflows', 'records', `${target.recordId}.json`))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(builder.paths.codexHome, '.agent-workflows', 'diagnostics', `${target.recordId}.json`))).resolves.toBe(false);
+    await expect(fs.pathExists(lifecycle.runtimeRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'native-recovery', 'codex', 'user', `${target.pluginId}.json`))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-should-not-run.txt'))).resolves.toBe(false);
+    const index = await fs.readJson(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    expect(index.records).toEqual([]);
+    expect(codex.uninstallPluginCalls).toEqual(['git-commit']);
+  });
+
+  it('prunes stale dependency-index entries without deleting project files', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-prune-stale-')),
+      scenario: 'staleDependencyIndex',
+    });
+    tempDirs.push(fixture.paths.rootDir);
+    const indexPath = fixture.files.dependencyIndexPath;
+    const before = await fs.readJson(indexPath);
+    const digest = await fs.readFile(indexPath).then((buffer) => import('../../src/install-state/internal.js').then((mod) => mod.sha256Hex(buffer)));
+    const token = createDependencyIndexPruneToken({
+      location: fixture.target.location,
+      recordPath: fixture.files.installRecordPath,
+      indexDigest: digest,
+    });
+
+    const result = await cleanupCommand(
+      [],
+      {
+        cwd: fixture.paths.repoRoot,
+        dependencyIndex: true,
+        pruneStale: token,
+        yes: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: fixture.paths.awHome,
+          AW_CODEX_HOME: fixture.paths.codexHome,
+          AW_CLAUDE_HOME: fixture.paths.claudeHome,
+        },
+      },
+    );
+
+    expect(result.retiredEntries).toEqual([{
+      location: fixture.target.location,
+      recordPath: fixture.files.installRecordPath,
+    }]);
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: true,
+      retiredEntries: [{
+        location: {
+          plugin: fixture.target.location.plugin,
+          platform: fixture.target.location.platform,
+          scope: fixture.target.location.scope,
+        },
+        recordPath: fixture.files.installRecordPath,
+      }],
+    });
+    expect(result.output).toContain('已退休的项目引用');
+    expect(result.output).toContain(fixture.files.installRecordPath);
+    await expect(fs.pathExists(fixture.target.repoArtifactPath)).resolves.toBe(true);
+    const after = await fs.readJson(indexPath);
+    expect(before.records).toHaveLength(1);
+    expect(after.records).toEqual([]);
+  });
+
+  it('fails closed for unreadable dependency-index references instead of pruning them as stale', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-prune-unreadable-')),
+      scenario: 'unreadableDependencyIndex',
+    });
+    tempDirs.push(fixture.paths.rootDir);
+    const indexPath = fixture.files.dependencyIndexPath;
+    const digest = await fs.readFile(indexPath).then((buffer) => import('../../src/install-state/internal.js').then((mod) => mod.sha256Hex(buffer)));
+    const token = createDependencyIndexPruneToken({
+      location: fixture.target.location,
+      recordPath: fixture.files.installRecordPath,
+      indexDigest: digest,
+    });
+
+    await expect(
+      cleanupCommand(
+        [],
+        {
+          cwd: fixture.paths.repoRoot,
+          dependencyIndex: true,
+          pruneStale: token,
+          yes: true,
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: fixture.paths.awHome,
+            AW_CODEX_HOME: fixture.paths.codexHome,
+            AW_CLAUDE_HOME: fixture.paths.claudeHome,
+          },
+        },
+      ),
+    ).rejects.toThrow(/unreadable reference/);
+
+    const index = await fs.readJson(indexPath);
+    expect(index.records).toHaveLength(1);
+  });
+});

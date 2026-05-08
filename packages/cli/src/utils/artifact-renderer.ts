@@ -20,6 +20,7 @@ import type {
 import {
   coercePluginConfigValue,
   readPluginConfigStore,
+  resolveProjectArtifactRenderConfig,
   resolveAwProjectRoot,
 } from './plugin-config.js';
 import {
@@ -190,6 +191,26 @@ export async function resolveArtifactRenderConfig(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedArtifactRenderConfig> {
   const pluginName = options.pluginName ?? options.manifest.name;
+  if (options.scope === 'project') {
+    const projectConfig = await resolveProjectArtifactRenderConfig({
+      pluginName,
+      manifest: options.manifest,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    return {
+      mode: 'artifact-render',
+      targetScope: options.scope,
+      schema: Object.keys(projectConfig.schema).length > 0 ? projectConfig.schema : undefined,
+      values: projectConfig.values,
+      sources: projectConfig.sources,
+      issues: projectConfig.issues,
+      stores: {
+        user: projectConfig.stores.user,
+        project: projectConfig.stores.project,
+      },
+    };
+  }
   const schema = options.manifest.config?.schema;
   const projectRoot = resolveAwProjectRoot(options.cwd);
   const [userStore, projectStore] = await Promise.all([
@@ -254,18 +275,6 @@ export async function resolveArtifactRenderConfig(options: {
     source: 'user',
     projectRoot,
   });
-
-  if (options.scope === 'project') {
-    await applyArtifactConfigLayer({
-      values,
-      sources,
-      invalidIssues,
-      schema,
-      entries: projectStore.values,
-      source: 'project',
-      projectRoot,
-    });
-  }
 
   const issues = [...invalidIssues.values()];
   for (const [key, field] of Object.entries(schema)) {
