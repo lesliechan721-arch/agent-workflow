@@ -227,7 +227,7 @@ export async function garbageCollectHistoricalLifecycleRuntimes(options: {
 
   const referencedRuntimeRoots = new Set<string>();
   for (const recordPath of options.coverage.verifiedRecordPaths) {
-    const record = await readInstallRecordFileAt(recordPath);
+    const record = await readInstallRecordFileAt(recordPath, { env: options.env });
     if (record.status !== 'ok') {
       return {
         status: 'skipped',

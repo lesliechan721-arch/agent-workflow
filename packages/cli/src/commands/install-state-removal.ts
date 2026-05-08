@@ -176,7 +176,7 @@ async function listReadableScopedRecords(options: {
   const output: ProtectedRecordEntry[] = [];
   for (const entry of entries) {
     const recordPath = path.join(recordsDir, entry);
-    const recordRead = await readInstallRecordFileAt(recordPath);
+    const recordRead = await readInstallRecordFileAt(recordPath, { env: options.env });
     if (recordRead.status !== 'ok') {
       continue;
     }
@@ -302,7 +302,7 @@ async function removeLifecycleRuntimeGc(options: {
 
   const verifiedRecords = await Promise.all(
     inspection.value.records.map(async (entry) => {
-      const read = await readInstallRecordFileAt(entry.recordPath);
+      const read = await readInstallRecordFileAt(entry.recordPath, { env: options.env });
       return {
         path: entry.recordPath,
         value: read.status === 'ok' ? read.value : null,

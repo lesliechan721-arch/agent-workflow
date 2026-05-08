@@ -158,6 +158,10 @@ export function buildGlobalDependencyIndexRecord(options: {
 
 export async function readInstallRecordFileAt(
   filePath: string,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    awHome?: string;
+  } = {},
 ): Promise<InstallStateReadResult<InstallRecordFile>> {
   let value: unknown;
   try {
@@ -168,7 +172,11 @@ export async function readInstallRecordFileAt(
   if (value === null) {
     return { status: 'missing', path: filePath, code: 'missing', error: 'Install record file does not exist.' };
   }
-  const validated = validateInstallRecordFile(value, { expectedPath: filePath });
+  const validated = validateInstallRecordFile(value, {
+    expectedPath: filePath,
+    env: options.env,
+    awHome: options.awHome,
+  });
   if (!validated.ok) {
     return validated.code === 'unsupportedLegacyField' || validated.code === 'unsupportedVersion'
       ? unsupported(filePath, validated.code, validated.error)
@@ -180,8 +188,16 @@ export async function readInstallRecordFileAt(
 export async function writeInstallRecordFileAt(
   filePath: string,
   value: InstallRecordFile,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    awHome?: string;
+  } = {},
 ): Promise<void> {
-  const validated = validateInstallRecordFile(value, { expectedPath: filePath });
+  const validated = validateInstallRecordFile(value, {
+    expectedPath: filePath,
+    env: options.env,
+    awHome: options.awHome,
+  });
   if (!validated.ok) {
     throw new Error(validated.error);
   }
@@ -193,7 +209,10 @@ export async function readInstallRecordForLocation(options: {
   location: PluginLocation;
   env?: NodeJS.ProcessEnv;
 }): Promise<InstallStateReadResult<InstallRecordFile>> {
-  return readInstallRecordFileAt(getInstallRecordPath(options.cwd, options.location, options.env));
+  return readInstallRecordFileAt(
+    getInstallRecordPath(options.cwd, options.location, options.env),
+    { env: options.env },
+  );
 }
 
 export async function readDynamicArtifactDiagnosticCacheAt(
@@ -370,7 +389,7 @@ export async function inspectGlobalDependencyIndex(
         error: 'Referenced record file does not exist.',
       };
     }
-    const readResult = await readInstallRecordFileAt(record.recordPath);
+    const readResult = await readInstallRecordFileAt(record.recordPath, { env });
     if (readResult.status !== 'ok') {
       return {
         recordPath: record.recordPath,

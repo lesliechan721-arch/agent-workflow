@@ -101,6 +101,7 @@ import {
   getInstallRecordPath,
   getInstallStatePrivateRoot,
   getProjectArtifactSharedIdentityPath,
+  resolveProjectArtifactProjectRoot,
   resolveProjectScopeRepoRoot,
 } from '../install-state/paths.js';
 import {
@@ -1235,6 +1236,7 @@ async function installTargetOnPlatform(
       cwd: options.cwd,
       pluginName: location.plugin,
       platform: location.platform,
+      projectKey: location.projectKey,
     });
 
     const existingRecord = await readInstallRecordForLocation({
@@ -1249,11 +1251,12 @@ async function installTargetOnPlatform(
     }
 
     const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+    const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, location);
     const locator = createProjectArtifactSharedLocator({
       plugin: location.plugin,
       platform: location.platform,
       repoRoot,
-      projectRoot: repoRoot,
+      projectRoot,
     });
     const sharedIdentity = await readProjectArtifactIdentityForLocator({
       repoRoot,
@@ -1722,6 +1725,7 @@ async function installTargetOnPlatform(
       await createInstallRecordWriteStage({
         filePath: recordPath,
         value: recordFile,
+        env,
       }),
       await createDynamicArtifactDiagnosticCacheWriteStage({
         cwd: options.cwd,
@@ -1732,13 +1736,14 @@ async function installTargetOnPlatform(
     ];
     if (options.scope === 'project') {
       const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+      const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, location);
       const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, trackedArtifacts);
       if (repoVisibleArtifacts.length > 0) {
         const locator = createProjectArtifactSharedLocator({
           plugin: target.currentPlugin.manifest.name,
           platform,
           repoRoot,
-          projectRoot: repoRoot,
+          projectRoot,
         });
         const identityValue: ProjectArtifactIdentityFile = {
           version: 1,
@@ -2349,6 +2354,7 @@ async function updateInstallRecordForLocation(options: {
       await createInstallRecordWriteStage({
         filePath: recordPath,
         value: nextRecord,
+        env: options.env,
       }),
     ],
     postCommit: [
@@ -3084,6 +3090,7 @@ async function preflightInstallGraphWrites(options: {
         cwd: options.commandOptions.cwd,
         pluginName: location.plugin,
         platform: location.platform,
+        projectKey: location.projectKey,
       });
 
       if (!installedRecord && projectStatusLooksAdoptable(status)) {
@@ -3093,11 +3100,12 @@ async function preflightInstallGraphWrites(options: {
       }
 
       const repoRoot = resolveProjectScopeRepoRoot(options.commandOptions.cwd);
+      const projectRoot = resolveProjectArtifactProjectRoot(options.commandOptions.cwd, location);
       const locator = createProjectArtifactSharedLocator({
         plugin: location.plugin,
         platform: location.platform,
         repoRoot,
-        projectRoot: repoRoot,
+        projectRoot,
       });
       const sharedIdentity = await readProjectArtifactIdentityForLocator({
         repoRoot,

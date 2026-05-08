@@ -609,7 +609,9 @@ function getDependencyIndexPath(paths: MinimalPluginInstallStatePaths): string {
 }
 
 function getLifecycleRuntimeRoot(paths: MinimalPluginInstallStatePaths, target: MinimalFixtureTarget): string {
-  const scopeKey = target.location.scope === 'project' ? slugify(target.location.projectKey ?? 'project') : 'user';
+  const scopeKey = target.location.scope === 'project'
+    ? `project.${sha256(target.location.projectKey ?? '').slice(0, 16)}`
+    : 'user';
   return path.join(
     paths.awHome,
     'lifecycle-runtimes',

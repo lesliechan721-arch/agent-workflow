@@ -1,5 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
@@ -34,6 +36,7 @@ import {
 import type { NativeTransactionMarker } from '../../src/install-state/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
+  resolveClaudeProjectKey,
   resolveCodexProjectKey,
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
@@ -50,6 +53,7 @@ import {
 } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -70,6 +74,7 @@ async function makeWorkspace(): Promise<{
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  await execFileAsync('git', ['init', '-q'], { cwd: repoRoot });
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
   setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
@@ -413,43 +418,57 @@ class FakeCodexAdapter implements PlatformAdapter {
 
 class FakeClaudeAdapter implements PlatformAdapter {
   readonly name: PlatformName = 'claude';
+  nativeInstalled = false;
+
+  constructor(
+    private readonly options: {
+      onInstallPlugin?: (plugin: PluginMeta) => Promise<void> | void;
+      onInstallExtensions?: (plugin: PluginMeta) => Promise<GeneratedArtifact[]> | GeneratedArtifact[];
+    } = {},
+  ) {}
 
   async detect(): Promise<boolean> {
     return true;
   }
 
-  async installPlugin(): Promise<void> {}
-  async uninstallPlugin(): Promise<void> {}
-  async installExtensions(): Promise<GeneratedArtifact[]> {
-    return [];
+  async installPlugin(plugin: PluginMeta): Promise<void> {
+    await this.options.onInstallPlugin?.(plugin);
+    this.nativeInstalled = true;
   }
+
+  async uninstallPlugin(): Promise<void> {}
+
+  async installExtensions(plugin: PluginMeta): Promise<GeneratedArtifact[]> {
+    return await this.options.onInstallExtensions?.(plugin) ?? [];
+  }
+
   async uninstallExtensions(): Promise<void> {}
   async upgradePlugin(): Promise<void> {}
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     return {
       platform: 'claude',
       scope,
-      initialized: false,
+      initialized: this.nativeInstalled,
       plugins: [{
         pluginName: plugin.manifest.name,
         native: {
-          marketplaceRegistered: false,
+          marketplaceRegistered: this.nativeInstalled,
           pluginAvailable: true,
-          pluginInstalled: false,
+          pluginInstalled: this.nativeInstalled,
           version: plugin.manifest.version,
         },
         generatedArtifacts: [],
         driftWarnings: [],
         ledgerStateStatus: 'available',
         ledgerStateReason: null,
-        scopeInitialized: 'no',
+        scopeInitialized: this.nativeInstalled ? 'yes' : 'no',
         catalogCompatibility: 'current',
         platformRuntimeEvidence: { present: false },
         platformNativeFallbackEvidence: { present: false },
         scopeManagedEvidence: {
-          ledger: false,
+          ledger: this.nativeInstalled,
           tracking: false,
-          sharedNativeRef: false,
+          sharedNativeRef: this.nativeInstalled,
         },
         currentCatalog: {
           rootDir: '/synthetic',
@@ -1458,6 +1477,179 @@ describe('install command P6 install-state semantics', () => {
       path.basename(getProjectArtifactSharedIdentityPath({ repoRoot, locator }), '.json'),
     );
     expect(identityRead.value.sharedIdentityId).not.toBe(recordRead.value.recordId);
+  });
+
+  it('writes Claude subdirectory project shared identity for repo-visible artifacts alongside the per-plugin install record', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const projectRoot = path.join(repoRoot, 'packages', 'a');
+    await fs.ensureDir(projectRoot);
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'claude-project-shared-identity',
+      products: ['claude'],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const repoVisibleArtifactPath = path.join(projectRoot, 'docs', 'claude.instructions.md');
+    const claude = new FakeClaudeAdapter({
+      onInstallExtensions: async () => {
+        await fs.ensureDir(path.dirname(repoVisibleArtifactPath));
+        await fs.writeFile(repoVisibleArtifactPath, '# claude install artifact\n', 'utf8');
+        return [{
+          path: repoVisibleArtifactPath,
+          kind: 'instruction',
+          platform: 'claude',
+          artifactKey: `${plugin.manifest.name}.project-doc`,
+        }];
+      },
+    });
+
+    await installTargetsOnPlatforms(
+      [{
+        pluginName: plugin.manifest.name,
+        plugin,
+        currentPlugin: plugin,
+        embeddedPlugin: undefined,
+        source: 'currentCatalog',
+      }],
+      ['claude'],
+      {
+        cwd: projectRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        env,
+        adapters: {
+          codex: new FakeCodexAdapter(env),
+          claude,
+        },
+        resolveInstallOptions: () => resolvedInstallOptions(),
+        skipConfigPreflight: true,
+        skipWriteSafetyPreflight: true,
+      },
+    );
+
+    const projectKey = await resolveClaudeProjectKey(projectRoot);
+    const recordRead = await readInstallRecordForLocation({
+      cwd: projectRoot,
+      location: {
+        plugin: plugin.manifest.name,
+        platform: 'claude',
+        scope: 'project',
+        projectKey,
+      },
+      env,
+    });
+    expect(recordRead).toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          pluginName: plugin.manifest.name,
+          scope: 'project',
+          projectKey,
+        },
+      },
+    });
+    if (recordRead.status !== 'ok') {
+      throw new Error(`expected install record for ${plugin.manifest.name}`);
+    }
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'claude',
+      repoRoot,
+      projectRoot,
+    });
+    const identityRead = await readProjectArtifactIdentityForLocator({
+      repoRoot,
+      locator,
+      cwd: projectRoot,
+    });
+    expect(identityRead).toMatchObject({
+      status: 'ok',
+      value: {
+        locator,
+        artifacts: [
+          expect.objectContaining({
+            kind: 'instruction',
+            platform: 'claude',
+            path: 'packages/a/docs/claude.instructions.md',
+            artifactKey: `${plugin.manifest.name}.project-doc`,
+          }),
+        ],
+      },
+    });
+    if (identityRead.status !== 'ok') {
+      throw new Error(`expected project artifact identity for ${plugin.manifest.name}`);
+    }
+
+    const repoRootLocator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'claude',
+      repoRoot,
+      projectRoot: repoRoot,
+    });
+    await expect(readProjectArtifactIdentityForLocator({
+      repoRoot,
+      locator: repoRootLocator,
+      cwd: projectRoot,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
+
+  it('fails Claude project-scope install when the subdirectory shared identity path is ignored', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const projectRoot = path.join(repoRoot, 'packages', 'a');
+    await fs.ensureDir(projectRoot);
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'claude-project-identity-ignore',
+      products: ['claude'],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'claude',
+      repoRoot,
+      projectRoot,
+    });
+    const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+    const ignoredRelativePath = path.relative(repoRoot, identityPath).split(path.sep).join('/');
+    await fs.writeFile(path.join(repoRoot, '.gitignore'), `${ignoredRelativePath}\n`, 'utf8');
+
+    await expect(
+      installTargetsOnPlatforms(
+        [{
+          pluginName: plugin.manifest.name,
+          plugin,
+          currentPlugin: plugin,
+          embeddedPlugin: undefined,
+          source: 'currentCatalog',
+        }],
+        ['claude'],
+        {
+          cwd: projectRoot,
+          scope: 'project',
+          platform: 'claude',
+        },
+        {
+          env,
+          adapters: {
+            codex: new FakeCodexAdapter(env),
+            claude: new FakeClaudeAdapter(),
+          },
+          resolveInstallOptions: () => resolvedInstallOptions(),
+          skipConfigPreflight: true,
+          skipWriteSafetyPreflight: true,
+        },
+      ),
+    ).rejects.toMatchObject({
+      name: 'ProjectBoundaryVisibilityError',
+      code: 'projectArtifactIdentityIgnored',
+      targetRelativePath: ignoredRelativePath,
+      matchedPattern: ignoredRelativePath,
+    });
   });
 
   it('refuses project-scope install when an adoptable shared identity already exists without a local record', async () => {

@@ -24,6 +24,7 @@ import { sha256Hex, stableStringify } from './internal.js';
 import {
   createProjectArtifactSharedLocator,
   getInstallStatePrivateRoot,
+  resolveProjectArtifactProjectRoot,
   resolveProjectScopeRepoRoot,
 } from './paths.js';
 import type {
@@ -429,13 +430,14 @@ function createProjectLocator(
     return null;
   }
   const repoRoot = resolveProjectScopeRepoRoot(cwd);
+  const projectRoot = resolveProjectArtifactProjectRoot(cwd, location);
   return {
     repoRoot,
     locator: createProjectArtifactSharedLocator({
       plugin: location.plugin,
       platform: location.platform,
       repoRoot,
-      projectRoot: repoRoot,
+      projectRoot,
     }),
   };
 }
@@ -494,7 +496,7 @@ async function inspectScopedRecords(options: {
   const output: Array<{ location: PluginLocation; path: string }> = [];
   for (const entry of entries) {
     const recordPath = path.join(recordsDir, entry);
-    const result = await readInstallRecordFileAt(recordPath);
+    const result = await readInstallRecordFileAt(recordPath, { env: options.env });
     if (result.status === 'ok') {
       output.push({
         location: {
@@ -543,7 +545,11 @@ async function inspectDependencyLocation(options: {
       reason: readResult.code,
     };
   }
-  const files = await Promise.all(readResult.value.record.artifacts.map((artifact) => inspectFile(artifact.path)));
+  const files = await Promise.all(
+    readResult.value.record.artifacts.flatMap((artifact) =>
+      [artifact.path, ...(artifact.paths ?? [])].map((entryPath) => inspectFile(entryPath)),
+    ),
+  );
   if (files.some((artifact) => !artifact.exists)) {
     return {
       dependency: options.location,

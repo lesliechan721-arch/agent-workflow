@@ -8,7 +8,13 @@ import type {
   SkillTriggerPreference,
   TrackedHookGroupIdentity,
 } from '../types.js';
-import { createRecordId, createSharedIdentityId, getSharedRuntimeOwnerFileName } from './ids.js';
+import { resolveAwHome } from '../utils/paths.js';
+import {
+  createHistoricalLifecycleScopeKey,
+  createRecordId,
+  createSharedIdentityId,
+  getSharedRuntimeOwnerFileName,
+} from './ids.js';
 import {
   ensureOnlyKeys,
   fail,
@@ -497,6 +503,12 @@ export function validateProjectArtifactIdentityArtifact(
 function validateHistoricalLifecycleRuntimeRef(
   value: unknown,
   context: string,
+  options: {
+    awHome?: string;
+    env?: NodeJS.ProcessEnv;
+    location?: PluginLocation;
+    recordId?: string;
+  } = {},
 ): ValidationResult<HistoricalLifecycleRuntimeRef> {
   if (!isRecord(value)) {
     return fail('invalidLifecycleRuntime', `Invalid ${context}: expected an object.`);
@@ -544,6 +556,22 @@ function validateHistoricalLifecycleRuntimeRef(
   }
   if (!isPathInside(value.bundleRoot, value.manifestPath)) {
     return fail('invalidLifecycleRuntime', `Invalid ${context}.manifestPath: must stay within bundleRoot.`);
+  }
+  if (options.location && options.recordId) {
+    const expectedRuntimeRootBase = path.join(
+      path.resolve(options.awHome ?? resolveAwHome(options.env)),
+      'lifecycle-runtimes',
+      options.location.platform,
+      options.location.scope,
+      createHistoricalLifecycleScopeKey(options.location),
+      options.recordId,
+    );
+    if (!isPathInside(expectedRuntimeRootBase, value.runtimeRoot)) {
+      return fail(
+        'invalidLifecycleRuntime',
+        `Invalid ${context}.runtimeRoot: must stay within ${expectedRuntimeRootBase}.`,
+      );
+    }
   }
   return ok(value as unknown as HistoricalLifecycleRuntimeRef);
 }
@@ -650,12 +678,6 @@ function validateInstallRecord(
       return fail('invalidInstallRecord', `Invalid ${context}.native: expected pluginId and installedByAw.`);
     }
   }
-  if (value.lifecycle !== undefined) {
-    const lifecycle = validateHistoricalLifecycleRuntimeRef(value.lifecycle, `${context}.lifecycle`);
-    if (!lifecycle.ok) {
-      return lifecycle;
-    }
-  }
   if (!Array.isArray(value.artifacts)) {
     return fail('invalidInstallRecord', `Invalid ${context}.artifacts: expected an array.`);
   }
@@ -679,7 +701,11 @@ function validateInstallRecord(
 
 export function validateInstallRecordFile(
   value: unknown,
-  options: { expectedPath?: string } = {},
+  options: {
+    expectedPath?: string;
+    awHome?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): ValidationResult<InstallRecordFile> {
   if (!isRecord(value)) {
     return fail('invalidInstallRecordFile', 'Invalid install record file: expected an object.');
@@ -705,6 +731,21 @@ export function validateInstallRecordFile(
     ...(record.value.scope === 'project' ? { projectKey: record.value.projectKey } : {}),
   };
   const expectedRecordId = createRecordId(location);
+  if (record.value.lifecycle !== undefined) {
+    const lifecycle = validateHistoricalLifecycleRuntimeRef(
+      record.value.lifecycle,
+      'install record file.record.lifecycle',
+      {
+        awHome: options.awHome,
+        env: options.env,
+        location,
+        recordId: expectedRecordId,
+      },
+    );
+    if (!lifecycle.ok) {
+      return lifecycle;
+    }
+  }
   if (value.recordId !== expectedRecordId) {
     return fail(
       'recordIdMismatch',

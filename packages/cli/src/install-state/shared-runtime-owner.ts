@@ -230,7 +230,7 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
   }
 
   const digestVerified = await verifyOwnerRecordDigest(read.value);
-  const ownerRecordRead = await readInstallRecordFileAt(read.value.ownerRecordPath);
+  const ownerRecordRead = await readInstallRecordFileAt(read.value.ownerRecordPath, { env: options.env });
   const ownerRecordMatchesLocation = ownerRecordRead.status === 'ok'
     ? sameLocation(locationFromRecord(ownerRecordRead.value), read.value.owner)
     : false;

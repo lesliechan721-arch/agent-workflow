@@ -320,8 +320,12 @@ export async function runInstallStateTransaction(options: {
   };
 }
 
-function validateInstallRecordOrThrow(value: unknown, filePath: string): void {
-  const validated = validateInstallRecordFile(value, { expectedPath: filePath });
+function validateInstallRecordOrThrow(
+  value: unknown,
+  filePath: string,
+  env?: NodeJS.ProcessEnv,
+): void {
+  const validated = validateInstallRecordFile(value, { expectedPath: filePath, env });
   if (!validated.ok) {
     throw new Error(validated.error);
   }
@@ -434,6 +438,7 @@ export function mergeDynamicArtifactDiagnosticCache(options: {
 export function createInstallRecordWriteStage(options: {
   filePath: string;
   value: InstallRecordFile;
+  env?: NodeJS.ProcessEnv;
 }): Promise<InstallStateTransactionStage>;
 export function createInstallRecordWriteStage(options: {
   cwd: string;
@@ -457,7 +462,7 @@ export function createInstallRecordWriteStage(options: {
     label: 'install record',
     filePath,
     value: options.value,
-    validate: validateInstallRecordOrThrow,
+    validate: (value, currentFilePath) => validateInstallRecordOrThrow(value, currentFilePath, options.env),
     rollbackWarningCode: 'recordRollbackFailed',
     finalizeWarningCode: 'recordFinalizeFailed',
   });

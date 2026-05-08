@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -175,4 +176,42 @@ export function createHistoricalLifecycleRuntimePaths(options: {
 
 export function resolveProjectScopeRepoRoot(cwd: string): string {
   return resolveRepoRootSync(cwd);
+}
+
+function realpathOrResolvedSync(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function resolveProjectArtifactProjectRoot(
+  cwd: string,
+  location: Pick<PluginLocation, 'scope' | 'platform' | 'projectKey'>,
+): string {
+  const repoRoot = resolveProjectScopeRepoRoot(cwd);
+  if (location.scope !== 'project' || location.platform !== 'claude') {
+    return repoRoot;
+  }
+
+  const candidate = location.projectKey
+    ? path.resolve(location.projectKey)
+    : path.resolve(cwd);
+  const repoRootReal = realpathOrResolvedSync(repoRoot);
+  const candidateReal = realpathOrResolvedSync(candidate);
+  const relativeFromRealRepo = path.relative(repoRootReal, candidateReal);
+  if (
+    relativeFromRealRepo === ''
+    || (
+      relativeFromRealRepo !== '..'
+      && !relativeFromRealRepo.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relativeFromRealRepo)
+    )
+  ) {
+    return path.join(repoRoot, relativeFromRealRepo);
+  }
+
+  return path.resolve(cwd);
 }

@@ -289,6 +289,53 @@ describe('install-state schema', () => {
     expect(first.manifestPath.startsWith(first.bundleRoot)).toBe(true);
   });
 
+  it('rejects historical lifecycle runtime refs outside the AW lifecycle runtime root', async () => {
+    const root = await makeTempDir('aw-install-state-runtime-boundary-');
+    const awHome = path.join(root, '.aw');
+    const location = makeLocation({ projectKey: path.join(root, 'repo') });
+    const runtimePaths = createHistoricalLifecycleRuntimePaths({
+      cwd: root,
+      location,
+      manifestDigest: 'sha256:manifest',
+      bundleFingerprint: 'sha256:bundle',
+      nonce: 'nonce-a',
+      env: {
+        ...process.env,
+        AW_HOME: awHome,
+      },
+    });
+    const record = makeInstallRecordFile({
+      projectKey: location.projectKey,
+      lifecycle: {
+        runtimeRoot: runtimePaths.runtimeRoot,
+        bundleRoot: runtimePaths.bundleRoot,
+        manifestPath: runtimePaths.manifestPath,
+        pluginVersion: '1.2.3',
+        sourceManifestDigest: 'sha256:manifest',
+        bundleFingerprint: 'sha256:bundle',
+        events: ['install', 'upgrade', 'uninstall'],
+        createdAt: '2026-05-07T00:00:02.000Z',
+      },
+    });
+
+    expect(validateInstallRecordFile(record, { awHome }).ok).toBe(true);
+
+    const outsideRuntimeRoot = path.join(root, 'outside-runtime', 'runtime-a');
+    const damaged = structuredClone(record);
+    damaged.record.lifecycle = {
+      ...record.record.lifecycle!,
+      runtimeRoot: outsideRuntimeRoot,
+      bundleRoot: path.join(outsideRuntimeRoot, 'bundle'),
+      manifestPath: path.join(outsideRuntimeRoot, 'bundle', 'plugin.json'),
+    };
+    const result = validateInstallRecordFile(damaged, { awHome });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('invalidLifecycleRuntime');
+    }
+  });
+
   it('rejects unsafe project shared locators and keeps repo-stable ids across clone paths', async () => {
     const repoA = await makeTempDir('aw-install-state-repo-a-');
     const repoB = await makeTempDir('aw-install-state-repo-b-');

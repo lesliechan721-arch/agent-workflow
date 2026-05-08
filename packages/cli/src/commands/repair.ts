@@ -27,6 +27,7 @@ import { sha256Hex } from '../install-state/internal.js';
 import {
   createProjectArtifactSharedLocator,
   getInstallStatePrivateRoot,
+  resolveProjectArtifactProjectRoot,
   resolveProjectScopeRepoRoot,
 } from '../install-state/paths.js';
 import {
@@ -430,6 +431,7 @@ function createProjectIdentityFile(options: {
   plugin: PluginMeta;
   location: PluginLocation;
   repoRoot: string;
+  projectRoot: string;
   source: CurrentCatalogSource;
   artifacts: readonly GeneratedArtifact[];
   generatedAt: string;
@@ -438,7 +440,7 @@ function createProjectIdentityFile(options: {
     plugin: options.plugin.manifest.name,
     platform: options.location.platform,
     repoRoot: options.repoRoot,
-    projectRoot: options.repoRoot,
+    projectRoot: options.projectRoot,
   });
   const identityArtifacts = collectRepoVisibleProjectArtifacts(options.repoRoot, options.artifacts)
     .map((artifact) => toProjectArtifactIdentityArtifact(artifact, options.repoRoot));
@@ -612,6 +614,7 @@ async function upsertDependencyInstallSource(options: {
       await createInstallRecordWriteStage({
         filePath: read.path,
         value: nextRecord,
+        env: options.env,
       }),
     ],
     postCommit: [
@@ -792,7 +795,7 @@ async function collectVisibleInstallRecords(options: {
       .sort();
     for (const entry of entries) {
       const recordPath = path.join(recordsDir, entry);
-      const read = await readInstallRecordFileAt(recordPath);
+      const read = await readInstallRecordFileAt(recordPath, { env: options.env });
       if (read.status === 'ok') {
         output.push({
           recordFile: read.value,
@@ -894,6 +897,7 @@ async function ensureDependencyLocationHealthy(options: {
       cwd: dependencyCwd,
       pluginName: options.location.plugin,
       platform: options.location.platform,
+      projectKey: options.location.projectKey,
     });
   }
 
@@ -940,18 +944,20 @@ async function ensureDependencyLocationHealthy(options: {
   }
   if (options.location.scope === 'project') {
     const repoRoot = resolveProjectScopeRepoRoot(dependencyCwd);
+    const projectRoot = resolveProjectArtifactProjectRoot(dependencyCwd, options.location);
     stages.push(await createProjectArtifactIdentityWriteStage({
       repoRoot,
       locator: createProjectArtifactSharedLocator({
         plugin: options.location.plugin,
         platform: options.location.platform,
         repoRoot,
-        projectRoot: repoRoot,
+        projectRoot,
       }),
       value: rewriteProjectIdentityId(createProjectIdentityFile({
         plugin: dependencyPlugin,
         location: options.location,
         repoRoot,
+        projectRoot,
         source: currentSource,
         artifacts: generatedArtifacts,
         generatedAt: nextRecord.record.updatedAt,
@@ -978,6 +984,7 @@ async function ensureDependencyLocationHealthy(options: {
   stages.push(await createInstallRecordWriteStage({
     filePath: recordPath,
     value: nextRecord,
+    env: options.env,
   }));
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
@@ -1118,6 +1125,7 @@ async function repairInstalledLocation(options: {
       cwd: options.repairOptions.cwd,
       pluginName: location.plugin,
       platform: location.platform,
+      projectKey: location.projectKey,
     });
   }
 
@@ -1214,18 +1222,20 @@ async function repairInstalledLocation(options: {
   }
   if (location.scope === 'project') {
     const repoRoot = resolveProjectScopeRepoRoot(options.repairOptions.cwd);
+    const projectRoot = resolveProjectArtifactProjectRoot(options.repairOptions.cwd, location);
     stages.push(await createProjectArtifactIdentityWriteStage({
       repoRoot,
       locator: createProjectArtifactSharedLocator({
         plugin: location.plugin,
         platform: location.platform,
         repoRoot,
-        projectRoot: repoRoot,
+        projectRoot,
       }),
       value: rewriteProjectIdentityId(createProjectIdentityFile({
         plugin: currentPlugin,
         location,
         repoRoot,
+        projectRoot,
         source,
         artifacts: generatedArtifacts,
         generatedAt: nextRecord.record.updatedAt,
@@ -1429,6 +1439,7 @@ async function adoptExistingLocation(options: {
     cwd: options.repairOptions.cwd,
     pluginName: location.plugin,
     platform: location.platform,
+    projectKey: location.projectKey,
   });
   const warnings = await ensureProjectRepairPrivateState({
     cwd: options.repairOptions.cwd,
@@ -1467,6 +1478,7 @@ async function adoptExistingLocation(options: {
     requestedSkillTrigger: options.repairOptions.requestedSkillTrigger,
   });
   const repoRoot = resolveProjectScopeRepoRoot(options.repairOptions.cwd);
+  const projectRoot = resolveProjectArtifactProjectRoot(options.repairOptions.cwd, location);
   const stages = [];
   if (runtimeStage) {
     stages.push(runtimeStage);
@@ -1477,12 +1489,13 @@ async function adoptExistingLocation(options: {
       plugin: location.plugin,
       platform: location.platform,
       repoRoot,
-      projectRoot: repoRoot,
+      projectRoot,
     }),
     value: rewriteProjectIdentityId(createProjectIdentityFile({
       plugin: currentPlugin,
       location,
       repoRoot,
+      projectRoot,
       source,
       artifacts: generatedArtifacts,
       generatedAt: recordFile.record.updatedAt,
@@ -1506,6 +1519,7 @@ async function adoptExistingLocation(options: {
   stages.push(await createInstallRecordWriteStage({
     filePath: recordPath,
     value: recordFile,
+    env: options.env,
   }));
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',

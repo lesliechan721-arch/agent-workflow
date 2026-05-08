@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { collectInstallEvidence } from '../../src/install-state/evidence.js';
 import type { CurrentCatalogEvidenceInput } from '../../src/install-state/evidence.js';
+import {
+  createProjectArtifactSharedLocator,
+  createSharedIdentityId,
+  getProjectArtifactSharedIdentityPath,
+} from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
 import {
   createCurrentCatalogForTarget,
@@ -102,6 +107,66 @@ describe('projectInstallState', () => {
     expect(projection.catalogDrift).toBe(true);
     expect(projection.upgradeAvailable).toBe(true);
     expect(projection.issues).toEqual([]);
+  });
+
+  it('uses the Claude project subdirectory when reading project artifact shared identity', async () => {
+    const root = await makeTempDir('aw-install-state-claude-project-locator-');
+    const repoRoot = path.join(root, 'repo');
+    const projectA = path.join(repoRoot, 'packages', 'a');
+    const projectB = path.join(repoRoot, 'packages', 'b');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(projectA);
+    await fs.ensureDir(projectB);
+
+    async function writeIdentity(projectRoot: string) {
+      const locator = createProjectArtifactSharedLocator({
+        plugin: 'git-commit',
+        platform: 'claude',
+        repoRoot,
+        projectRoot,
+      });
+      const identity = {
+        version: 1,
+        sharedIdentityId: createSharedIdentityId(locator),
+        locator,
+        source: {
+          pluginVersion: '0.1.0',
+          manifestDigest: 'sha256:manifest',
+          bundleFingerprint: 'sha256:bundle',
+        },
+        generatedAt: '2026-05-07T00:00:00.000Z',
+        artifacts: [],
+      };
+      const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+      await fs.outputJson(identityPath, identity, { spaces: 2 });
+      return { identityPath, locator };
+    }
+
+    const identityA = await writeIdentity(projectA);
+    const identityB = await writeIdentity(projectB);
+
+    const evidence = await collectInstallEvidence({
+      cwd: projectA,
+      location: {
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'project',
+        projectKey: projectA,
+      },
+      env: {
+        ...process.env,
+        AW_HOME: path.join(root, '.aw'),
+        AW_CLAUDE_HOME: path.join(root, '.claude'),
+        HOME: root,
+      },
+    });
+
+    expect(identityA.identityPath).not.toBe(identityB.identityPath);
+    expect(evidence.projectSharedIdentity.read?.path).toBe(identityA.identityPath);
+    expect(evidence.projectSharedIdentity.read?.status).toBe('ok');
+    if (evidence.projectSharedIdentity.read?.status === 'ok') {
+      expect(evidence.projectSharedIdentity.read.value.locator.repoRelativeProjectRoot).toBe('packages/a');
+    }
   });
 
   it('keeps dynamic cache missing, broken, or detached as installed with dynamicDiagnosticUnavailable', async () => {
@@ -398,5 +463,68 @@ describe('projectInstallState', () => {
     expect(projection.kind).toBe('needsRepair');
     expect(projection.issues.some((issue) => issue.code === 'dependencyMissing')).toBe(true);
     expect(projection.unusedDependencyHint).toBe(false);
+  });
+
+  it('treats missing secondary dependency artifact paths as broken dependency health', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-dependency-secondary-path-'),
+    );
+    const dependency = builder.createTarget({
+      pluginName: 'helper-plugin',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const target = builder.createTarget({
+      pluginName: 'parent-plugin',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+
+    await builder.writeRepoArtifact(dependency);
+    const dependencyRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(dependency));
+    dependencyRecord.record.artifacts[0].paths = [
+      path.join(builder.paths.repoRoot, '.agents', 'skills', dependency.pluginSlug, 'missing-secondary.md'),
+    ];
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${dependency.recordId}.json`),
+      dependencyRecord,
+      { spaces: 2 },
+    );
+
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+    record.record.dependencyEdges = [{
+      dependency: dependency.location,
+      declaration: {
+        name: dependency.location.plugin,
+      },
+    }];
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+      record,
+      { spaces: 2 },
+    );
+    await builder.writeProjectIdentity(target);
+    await builder.writeDiagnosticCache(target);
+    await builder.writeDependencyIndex([
+      { target: dependency, record: dependencyRecord },
+      { target, record },
+    ]);
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+
+    expect(projection.kind).toBe('needsRepair');
+    expect(projection.issues).toContainEqual(expect.objectContaining({
+      code: 'dependencyMissing',
+      detail: 'missingArtifact',
+    }));
   });
 });

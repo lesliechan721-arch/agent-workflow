@@ -33,6 +33,7 @@ import {
 import {
   createProjectArtifactSharedLocator,
   getProjectArtifactSharedIdentityPath,
+  resolveProjectArtifactProjectRoot,
   resolveProjectScopeRepoRoot,
 } from '../install-state/paths.js';
 import {
@@ -388,12 +389,13 @@ async function syncCodexInstallStateAfterConfigRefresh(options: {
   if (options.refreshStatus === 'succeeded') {
     if (options.scope === 'project') {
       const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+      const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, location);
       const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, artifacts);
       const locator = createProjectArtifactSharedLocator({
         plugin: options.plugin.manifest.name,
         platform: 'codex',
         repoRoot,
-        projectRoot: repoRoot,
+        projectRoot,
       });
       if (repoVisibleArtifacts.length > 0) {
         const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });

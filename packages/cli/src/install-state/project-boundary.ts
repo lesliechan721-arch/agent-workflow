@@ -9,6 +9,7 @@ import { resolveAwProjectRoot } from '../utils/plugin-config.js';
 import {
   createProjectArtifactSharedLocator,
   getProjectArtifactSharedIdentityPath,
+  resolveProjectArtifactProjectRoot,
 } from './paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -361,13 +362,19 @@ export async function assertProjectArtifactIdentityPathVisible(options: {
   cwd: string;
   pluginName: string;
   platform: 'claude' | 'codex';
+  projectKey?: string | null;
 }): Promise<void> {
   const repoRoot = resolveAwProjectRoot(options.cwd);
+  const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, {
+    scope: 'project',
+    platform: options.platform,
+    projectKey: options.projectKey ?? null,
+  });
   const locator = createProjectArtifactSharedLocator({
     plugin: options.pluginName,
     platform: options.platform,
     repoRoot,
-    projectRoot: repoRoot,
+    projectRoot,
   });
   const targetPath = getProjectArtifactSharedIdentityPath({
     repoRoot,
