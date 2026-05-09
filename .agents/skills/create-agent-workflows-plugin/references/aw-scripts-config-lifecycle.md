@@ -6,7 +6,7 @@
 
 - 插件需要跨 Claude Code 和 Codex 共享配置，例如 API Key、模式开关、工作目录或文件路径。
 - 插件安装、升级、卸载时需要创建或清理 AW 受管状态。
-- 插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role。
+- 插件需要根据 AW config 动态生成 Codex skill、developer instructions 或 agent role。
 - Claude 命令结果填充、lifecycle 或测试脚本需要读取同一份 AW config。
 - 插件包含 Node runtime helper、lifecycle 或测试，需要用 `pnpm plugin:test` 验证。
 
@@ -141,8 +141,9 @@ helper 的读取路径分两种：
 
 ## 动态 Artifact Renderer
 
-动态 artifact 用于“产物内容或启用状态由 AW config 决定，但写盘必须由 AW 管理”的 Codex 能力。首版 target 只有：
+动态 artifact 用于“产物内容或启用状态由 AW config 决定，但写盘必须由 AW 管理”的 Codex 能力。当前 target 包括：
 
+- `codex.skill`：写入 Codex skill 目录。配置驱动的 skill 优先使用它，而不是 lifecycle 直接改 `.agents/skills/**` 或用户级 Codex runtime。
 - `codex.developerInstructionsBlock`：写入当前 scope 的 Codex AW managed developer instructions block。
 - `codex.agentRole`：写入 role layer 文件，并在当前 scope Codex config 中注册 `[agents.<roleKey>]`。
 
@@ -183,44 +184,31 @@ renderer stdout 必须只输出 JSON：
   "version": 1,
   "artifacts": [
     {
-      "id": "lightweight-instruction",
-      "kind": "instruction",
+      "id": "codex-explore-skill",
+      "kind": "skill",
       "platform": "codex",
-      "target": "codex.developerInstructionsBlock",
+      "target": "codex.skill",
       "state": "present",
-      "refreshKeys": ["enableInstruction"],
-      "content": "Use the explorer role for read-only codebase exploration."
-    },
-    {
-      "id": "codex-explorer-role",
-      "kind": "codexRole",
-      "platform": "codex",
-      "target": "codex.agentRole",
-      "state": "present",
-      "roleKey": "codex-explorer",
-      "refreshKeys": ["explorerModel"],
+      "skillKey": "codex-explore",
+      "refreshKeys": ["explorerModel", "modelReasoningEffort"],
       "content": {
-        "registration": { "description": "Read-only explorer role." },
-        "roleFile": {
-          "name": "codex-explorer",
-          "description": "Read-only explorer role.",
-          "developer_instructions": "Read only. Do not edit files."
-        }
+        "skillFile": "---\nname: codex-explore\n---\n# Codex Explore\n",
+        "openaiYaml": "policy:\n  allow_implicit_invocation: true\n"
       }
     }
   ]
 }
 ```
 
-`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.skill` 必须在 manifest 静态声明 `skillKey`，renderer plan 的 `skillKey` 必须完全一致；`present` content 只能包含 `skillFile` 和 `openaiYaml`，不能携带任意落盘路径。AW apply 阶段会按当前 `skillTriggerPreference` patch `openaiYaml`：`default` / `auto` 让 `policy.allow_implicit_invocation` 为 `true`，`manual` 改为 `false`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
 
-renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
+renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入只刷新 user-scope dynamic artifacts；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
 
 refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 diagnostic cache；没有可定位 dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
 
-动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.codex/config.toml`、`.codex/agents/*.toml`、install record、diagnostic cache 或 project artifact identity。
+动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、install record、diagnostic cache 或 project artifact identity。
 
 ## Lifecycle
 

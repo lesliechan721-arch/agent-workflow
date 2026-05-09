@@ -264,4 +264,24 @@ describe('collectInstallEvidence', () => {
     expect(evidence.adoptable.possible).toBe(true);
     expect(evidence.adoptable.source).toBe('identity');
   });
+
+  it('does not treat path-only current-catalog matches as adoptable when project identity is missing', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-evidence-path-only-'),
+      scenario: 'freshCloneProject',
+    });
+    await fs.remove(fixture.files.projectIdentityPath);
+
+    const evidence = await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    });
+
+    expect(evidence.projectSharedIdentity.read?.status).toBe('missing');
+    expect(evidence.adoptable.possible).toBe(false);
+    expect(evidence.adoptable.source).toBe('none');
+    expect(evidence.adoptable.blockers).toContain('artifactIdentityUnverifiable');
+  });
 });

@@ -44,6 +44,7 @@ import {
 } from '../utils/local-marketplace.js';
 import { generatedArtifactKindRequiresArtifactKey } from '../utils/generated-artifacts.js';
 import {
+  codexDynamicArtifactTargetRequiresProjectConfig,
   normalizeCodexCapabilitySnapshot,
   requiresCodexNativePlugin,
 } from '../utils/codex-project-surface.js';
@@ -271,17 +272,35 @@ function createHistoricalTrackingSummary(): HistoricalTrackingSummary {
 }
 
 function inferDynamicManagedKind(target: ArtifactTarget): DynamicArtifactKind {
-  return target === 'codex.agentRole' ? 'codexRole' : 'instruction';
+  if (target === 'codex.agentRole') {
+    return 'codexRole';
+  }
+  if (target === 'codex.skill') {
+    return 'skill';
+  }
+  return 'instruction';
 }
 
 function inferProjectManagedKind(target: ArtifactTarget): CodexProjectManagedKind {
-  return target === 'codex.agentRole' ? 'agent' : 'instruction';
+  if (target === 'codex.agentRole') {
+    return 'agent';
+  }
+  if (target === 'codex.skill') {
+    return 'skill';
+  }
+  return 'instruction';
 }
 
 function inferHistoricalExtensionKindFromDynamicTarget(
   target: ArtifactTarget,
-): HistoricalExtensionKind {
-  return target === 'codex.agentRole' ? 'agent' : 'instruction';
+): HistoricalManagedKind {
+  if (target === 'codex.agentRole') {
+    return 'agent';
+  }
+  if (target === 'codex.skill') {
+    return 'skill';
+  }
+  return 'instruction';
 }
 
 function resolveHistoricalTrackedRoleKey(
@@ -345,9 +364,14 @@ function appendHistoricalTrackingArtifacts(
       projectManagedKind: inferProjectManagedKind(artifactTarget),
       states,
       refreshKeys: normalizedArtifact.refreshKeys ? [...normalizedArtifact.refreshKeys] : [],
-      requiresCodexProjectConfig: true,
+      requiresCodexProjectConfig: codexDynamicArtifactTargetRequiresProjectConfig({
+        target: artifactTarget,
+      }),
       ...(artifactTarget === 'codex.agentRole' && resolvedRoleKey
         ? { roleKey: resolvedRoleKey }
+        : {}),
+      ...(artifactTarget === 'codex.skill' && normalizedArtifact.artifactKey
+        ? { skillKey: normalizedArtifact.artifactKey }
         : {}),
     });
   }

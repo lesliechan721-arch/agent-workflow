@@ -111,6 +111,7 @@ async function listSkillBackupDirs(
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
+  delete process.env.AW_CODEX_HOME;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -756,6 +757,57 @@ describe('local marketplace', () => {
         status: 'available',
       },
     });
+  });
+
+  it('does not replay manifest-declared codex.skill entries back into ~/.aw during rebuild', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
+      manifest.artifacts = {
+        targets: [{
+          id: 'commit-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'commit',
+        }],
+      };
+    });
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:00.000Z',
+            resolvedVersion: '0.1.0',
+            capabilitySnapshot: {
+              requiresNativePlugin: false,
+              hasRepoManagedArtifacts: true,
+              projectManagedKinds: ['skill'],
+            },
+            installOptions: {
+              skillTriggerPreference: 'manual',
+            },
+            skillTriggerWriteOrder: 1,
+          },
+        },
+      },
+    };
+    await writeInstalledLedger(ledger, process.env);
+    await writeCodexAllowImplicitInvocation(awHome, true);
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
+    expect(await listSkillBackupDirs(awHome)).toEqual([]);
+    expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
   });
 
   it('ignores Codex project scope records when replaying the shared runtime winner', async () => {

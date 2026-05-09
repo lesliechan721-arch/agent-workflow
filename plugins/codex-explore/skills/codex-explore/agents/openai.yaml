@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Explore"
-  short_description: "手动启动只读 explorer 调查代码库问题"
-  default_prompt: "使用 $codex-explore 调查这个代码库问题。"
+  short_description: "代码库、文档、网络和大上下文的只读探索与多源证据总结"
+  default_prompt: "使用 $codex-explore 对这个问题做只读探索，搜索并总结相关代码、文档、网络资料或用户提供的数据。"
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

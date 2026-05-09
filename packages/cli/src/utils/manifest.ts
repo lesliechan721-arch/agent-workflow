@@ -1301,17 +1301,20 @@ function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginC
 const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
+  'codex.skill',
 ]);
 
 const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
-const DYNAMIC_ARTIFACT_KINDS = new Set<DynamicArtifactKind>(['instruction', 'codexRole']);
+const DYNAMIC_ARTIFACT_KINDS = new Set<DynamicArtifactKind>(['instruction', 'codexRole', 'skill']);
 const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET: Record<ArtifactTarget, CodexProjectManagedKind> = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'agent',
+  'codex.skill': 'skill',
 };
 const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, DynamicArtifactKind> = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
+  'codex.skill': 'skill',
 };
 
 function normalizePlatformName(value: unknown, fieldName: string): PlatformName {
@@ -1421,6 +1424,12 @@ function validateCodexRoleKey(value: string, fieldName: string): void {
   }
 }
 
+function validateCodexSkillKey(value: string, fieldName: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a valid Codex skill key.`);
+  }
+}
+
 function normalizeArtifactTargetEntry(
   entry: unknown,
   fieldName: string,
@@ -1438,6 +1447,7 @@ function normalizeArtifactTargetEntry(
     'refreshKeys',
     'requiresCodexProjectConfig',
     'roleKey',
+    'skillKey',
   ]);
 
   const id = ensureString(input.id, `${fieldName}.id`);
@@ -1471,6 +1481,10 @@ function normalizeArtifactTargetEntry(
     input.roleKey === undefined
       ? undefined
       : ensureString(input.roleKey, `${fieldName}.roleKey`);
+  const skillKey =
+    input.skillKey === undefined
+      ? undefined
+      : ensureString(input.skillKey, `${fieldName}.skillKey`);
   if (target === 'codex.agentRole') {
     if (!roleKey) {
       throw new Error(`Invalid ${fieldName}.roleKey: codex.agentRole targets must declare a static roleKey.`);
@@ -1478,6 +1492,15 @@ function normalizeArtifactTargetEntry(
     validateCodexRoleKey(roleKey, `${fieldName}.roleKey`);
   } else if (roleKey !== undefined) {
     throw new Error(`Invalid ${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets.`);
+  }
+
+  if (target === 'codex.skill') {
+    if (!skillKey) {
+      throw new Error(`Invalid ${fieldName}.skillKey: codex.skill targets must declare a static skillKey.`);
+    }
+    validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
+  } else if (skillKey !== undefined) {
+    throw new Error(`Invalid ${fieldName}.skillKey: skillKey is only supported for codex.skill targets.`);
   }
 
   return {
@@ -1494,6 +1517,7 @@ function normalizeArtifactTargetEntry(
         ? undefined
         : ensureBoolean(input.requiresCodexProjectConfig, `${fieldName}.requiresCodexProjectConfig`),
     roleKey,
+    skillKey,
   };
 }
 

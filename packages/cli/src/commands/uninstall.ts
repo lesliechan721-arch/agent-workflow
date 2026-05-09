@@ -26,6 +26,12 @@ import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
+import { readProjectArtifactIdentityForLocator } from '../install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  resolveProjectArtifactProjectRoot,
+  resolveProjectScopeRepoRoot,
+} from '../install-state/paths.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { iterateInstalledScopeRecords } from '../utils/plugin-dependency-graph.js';
@@ -157,6 +163,49 @@ function resolveTrackingDir(
 
 function normalizeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function hasProjectSharedIdentityForTrackedCodexSkills(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  pluginName: string;
+  trackedArtifacts: GeneratedArtifact[];
+}): Promise<boolean> {
+  const trackedSkillArtifacts = options.trackedArtifacts.filter((artifact) =>
+    artifact.kind === 'skill' && artifact.target === 'codex.skill');
+  if (trackedSkillArtifacts.length === 0) {
+    return false;
+  }
+
+  const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+  const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, {
+    platform: 'codex',
+    scope: 'project',
+    projectKey: undefined,
+  });
+  const locator = createProjectArtifactSharedLocator({
+    plugin: options.pluginName,
+    platform: 'codex',
+    repoRoot,
+    projectRoot,
+  });
+  const identityRead = await readProjectArtifactIdentityForLocator({
+    repoRoot,
+    locator,
+    cwd: options.cwd,
+    homeDir: options.env.HOME,
+  });
+  if (identityRead.status !== 'ok') {
+    return false;
+  }
+
+  return trackedSkillArtifacts.every((artifact) =>
+    identityRead.value.artifacts.some((identityArtifact) =>
+      identityArtifact.kind === 'skill' &&
+      identityArtifact.platform === 'codex' &&
+      identityArtifact.target === 'codex.skill' &&
+      identityArtifact.artifactKey === artifact.artifactKey),
+  );
 }
 
 function appendRollbackIssue(
@@ -983,6 +1032,22 @@ async function uninstallTargetOnPlatform(
   const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
   const baselineTracking = await readTrackingManifest(trackingDir);
   const trackedArtifacts = getTrackingRecord(baselineTracking, target.pluginName)?.artifacts ?? [];
+  if (
+    platform === 'codex' &&
+    options.scope === 'project' &&
+    trackedArtifacts.some((artifact) => artifact.kind === 'skill' && artifact.target === 'codex.skill') &&
+    !(await hasProjectSharedIdentityForTrackedCodexSkills({
+      cwd: options.cwd,
+      env,
+      pluginName: target.pluginName,
+      trackedArtifacts,
+    }))
+  ) {
+    warnings.push(
+      `[${platform}/${target.pluginName}] 当前缺少可验证的 project artifact identity；uninstall 不会删除同名 repo skill。`,
+    );
+    return { warnings, repoManagedArtifacts };
+  }
   repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
   const rollbackState = managedEvidence
     ? await captureArtifactRollbackState(platform, target, options.scope, options.cwd, env)

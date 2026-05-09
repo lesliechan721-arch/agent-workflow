@@ -100,15 +100,10 @@ describe('build smoke', () => {
       artifacts: {
         targets: expect.arrayContaining([
           expect.objectContaining({
-            id: 'lightweight-instruction',
+            id: 'codex-explore-skill',
             platform: 'codex',
-            target: 'codex.developerInstructionsBlock',
-          }),
-          expect.objectContaining({
-            id: 'codex-explorer-role',
-            platform: 'codex',
-            target: 'codex.agentRole',
-            roleKey: 'codex-explorer',
+            target: 'codex.skill',
+            skillKey: 'codex-explore',
           }),
         ]),
       },
@@ -117,10 +112,14 @@ describe('build smoke', () => {
       path.join(outputRoot, 'plugins', 'codex-explore', 'scripts', 'render-artifacts.mjs'),
       path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'SKILL.md'),
       path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'roles', 'codex-explorer.md'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'instructions', 'lightweight.md'),
     ].map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
+    }));
+    await Promise.all([
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'roles', 'codex-explorer.md'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'instructions', 'lightweight.md'),
+    ].map(async (removedPath) => {
+      await expect(fs.pathExists(removedPath)).resolves.toBe(false);
     }));
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', '.claude-plugin', 'plugin.json')),

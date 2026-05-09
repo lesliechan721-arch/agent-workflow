@@ -36,10 +36,12 @@ async function maybePrepareP2RecordFiles(fixture: Awaited<ReturnType<typeof writ
 async function createProjectPluginMeta(options: {
   rootDir: string;
   pluginName: string;
+  includeDynamicInstructionTarget?: boolean;
 }): Promise<PluginMeta> {
   const pluginRoot = path.join(options.rootDir, 'catalog', options.pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const rendererPath = path.join(pluginRoot, 'scripts', 'render.mjs');
+  const includeDynamicInstructionTarget = options.includeDynamicInstructionTarget ?? true;
   const manifest = {
     name: options.pluginName,
     version: '1.0.0',
@@ -52,19 +54,27 @@ async function createProjectPluginMeta(options: {
         authentication: 'NONE',
       },
     },
-    artifacts: {
-      targets: [{
-        id: `${options.pluginName}-instruction`,
-        platform: 'codex',
-        scopes: ['project'],
-        target: 'codex.developerInstructionsBlock',
-        kind: 'instruction',
-        projectManagedKind: 'skill',
-        states: ['present', 'disabled'],
-        refreshKeys: ['sharedFlag'],
-        requiresCodexProjectConfig: true,
-      }],
-    },
+    ...(includeDynamicInstructionTarget
+      ? {
+          artifacts: {
+            targets: [{
+              id: `${options.pluginName}-instruction`,
+              platform: 'codex',
+              scopes: ['project'],
+              target: 'codex.developerInstructionsBlock',
+              kind: 'instruction',
+              projectManagedKind: 'skill',
+              states: ['present', 'disabled'],
+              refreshKeys: ['sharedFlag'],
+              requiresCodexProjectConfig: true,
+            }],
+          },
+        }
+      : {
+          artifacts: {
+            targets: [],
+          },
+        }),
     scripts: {
       artifacts: {
         render: {
@@ -281,6 +291,75 @@ describe('diagnose P7', () => {
     expect(result.output).not.toContain('动态内容与已接受摘要不一致');
     expect(result.output).not.toContain('共享渲染配置摘要已经变化');
     expect(result.output).not.toContain('最近一次动态刷新失败');
+  });
+
+  it('explains removed legacy dynamic tracking without treating the old entry as current missing capability', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-diagnose-legacy-dynamic-'),
+      scenario: 'installed',
+    });
+    await maybePrepareP2RecordFiles(fixture);
+    const currentPlugin = await createProjectPluginMeta({
+      rootDir: fixture.paths.rootDir,
+      pluginName: fixture.target.location.plugin,
+      includeDynamicInstructionTarget: false,
+    });
+    await alignFixtureSourceToPlugin({ fixture, currentPlugin });
+    await stripFixtureLifecycle(fixture);
+    const record = await fs.readJson(fixture.files.installRecordPath) as {
+      record: {
+        artifacts: Array<Record<string, unknown>>;
+      };
+    };
+    record.record.artifacts[0] = {
+      ...record.record.artifacts[0],
+      id: 'lightweight-instruction',
+    };
+    await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
+    await updateDiagnosticCache(fixture.files.diagnosticCachePath, (cache) => {
+      cache.artifacts[0]!.id = 'lightweight-instruction';
+    });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const rendererRunner = createRendererRunner();
+
+    const result = await diagnoseCommand(
+      [fixture.target.location.plugin],
+      { cwd: fixture.paths.repoRoot, json: true },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: fixture.target.location.platform,
+          scope: fixture.target.location.scope,
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+          currentPlugin,
+        }],
+        p7ArtifactRendererRunner: rendererRunner,
+      } as never,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        summary: string;
+        findings: string[];
+        issues: Array<{ code: string }>;
+        legacyDynamicTracking: Array<{
+          id: string;
+          target: string;
+        }>;
+      }>;
+    };
+    expect(rendererRunner.run).not.toHaveBeenCalled();
+    expect(payload.locations[0]?.summary).toContain('历史 dynamic tracking');
+    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status / diagnose / repair 中隐式迁移');
+    expect(payload.locations[0]?.legacyDynamicTracking).toEqual([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+      }),
+    ]);
+    expect(payload.locations[0]?.issues ?? []).toEqual([]);
   });
 
   it('keeps default project diagnose absolutely read-only when ignore rules are missing', async () => {
@@ -666,5 +745,159 @@ describe('diagnose P7', () => {
       attempted: true,
       rendered: true,
     });
+  });
+
+  it('reports codex.skill expected-tree diff sources in diagnose --deep JSON', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-diagnose-deep-skill-'),
+      scenario: 'installed',
+    });
+    await maybePrepareP2RecordFiles(fixture);
+    const currentPlugin = await createProjectPluginMeta({
+      rootDir: fixture.paths.rootDir,
+      pluginName: fixture.target.location.plugin,
+    });
+    currentPlugin.manifest.artifacts = {
+      targets: [{
+        id: 'codex-explore-skill',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        kind: 'skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: ['sharedFlag'],
+        skillKey: 'codex-explore',
+      }],
+    };
+    await fs.writeJson(currentPlugin.manifestPath, currentPlugin.manifest, { spaces: 2 });
+    await alignFixtureSourceToPlugin({ fixture, currentPlugin });
+    await stripFixtureLifecycle(fixture);
+
+    const record = await fs.readJson(fixture.files.installRecordPath) as {
+      recordId: string;
+      record: {
+        artifacts: Array<Record<string, unknown>>;
+        options?: Record<string, unknown>;
+      };
+    };
+    record.record.artifacts = [{
+      ...record.record.artifacts[0],
+      id: 'codex-explore-skill',
+      target: 'codex.skill',
+      artifactKey: 'codex-explore',
+      path: path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore'),
+      paths: [
+        path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
+        path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      ],
+    }];
+    record.record.options = {
+      ...(record.record.options ?? {}),
+      skillTriggerPreference: 'manual',
+    };
+    await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    await fs.remove(fixture.files.projectIdentityPath);
+    await fs.outputFile(
+      path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
+      '# drifted skill\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+    await fs.writeJson(fixture.files.diagnosticCachePath, {
+      version: 1,
+      recordId: record.recordId,
+      location: {
+        plugin: fixture.target.location.plugin,
+        platform: fixture.target.location.platform,
+        scope: fixture.target.location.scope,
+        projectKey: fixture.target.location.projectKey,
+      },
+      updatedAt: '2026-05-09T00:00:00.000Z',
+      artifacts: [{
+        id: 'codex-explore-skill',
+        target: 'codex.skill',
+        state: 'present',
+        artifactKey: 'codex-explore',
+        configDigest: 'sha256:cached',
+        contentDigest: 'sha256:cached-content',
+      }],
+    }, { spaces: 2 });
+
+    const rendererRunner = {
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        stdout: JSON.stringify({
+          version: 1,
+          artifacts: [{
+            id: 'codex-explore-skill',
+            platform: 'codex',
+            target: 'codex.skill',
+            kind: 'skill',
+            state: 'present',
+            skillKey: 'codex-explore',
+            refreshKeys: ['sharedFlag'],
+            content: {
+              skillFile: '# expected skill\n',
+              openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
+            },
+          }],
+        }),
+        stderr: '',
+        timedOut: false,
+      })),
+    };
+
+    const result = await diagnoseCommand(
+      [fixture.target.location.plugin],
+      { cwd: fixture.paths.repoRoot, json: true, deep: true },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: fixture.target.location.platform,
+          scope: fixture.target.location.scope,
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+          currentPlugin,
+        }],
+        p7ArtifactRendererRunner: rendererRunner,
+      } as never,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        findings: string[];
+        deepDiagnose: {
+          artifacts: Array<{
+            id: string;
+            target: string;
+            artifactKey?: string;
+            triggerPreference?: string;
+            drift?: boolean;
+            driftReasons?: string[];
+            fileDiffs?: Array<{ path: string; reason: string }>;
+          }>;
+        };
+      }>;
+    };
+    const artifact = payload.locations[0]?.deepDiagnose.artifacts.find((entry) => entry.id === 'codex-explore-skill');
+    expect(rendererRunner.run).toHaveBeenCalledTimes(1);
+    expect(artifact).toMatchObject({
+      target: 'codex.skill',
+      artifactKey: 'codex-explore',
+      drift: true,
+    });
+    expect(artifact?.triggerPreference).toEqual(expect.any(String));
+    expect(artifact?.driftReasons?.some((reason) => reason.includes('SKILL.md'))).toBe(true);
+    expect(artifact?.fileDiffs?.some((entry) => entry.path === 'SKILL.md')).toBe(true);
+    expect(payload.locations[0]?.findings.join('\n')).toContain('expected tree');
   });
 });

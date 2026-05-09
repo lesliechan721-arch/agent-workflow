@@ -248,8 +248,11 @@ export interface PluginExtensions {
 }
 
 export type ArtifactState = 'present' | 'disabled';
-export type ArtifactTarget = 'codex.developerInstructionsBlock' | 'codex.agentRole';
-export type DynamicArtifactKind = 'instruction' | 'codexRole';
+export type ArtifactTarget =
+  | 'codex.developerInstructionsBlock'
+  | 'codex.agentRole'
+  | 'codex.skill';
+export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill';
 export type ManagedArtifactId = string;
 
 export interface PluginArtifactTargetDefinition {
@@ -263,6 +266,7 @@ export interface PluginArtifactTargetDefinition {
   refreshKeys: string[];
   requiresCodexProjectConfig?: boolean;
   roleKey?: string;
+  skillKey?: string;
 }
 
 export interface PluginArtifactsConfig {
@@ -310,9 +314,20 @@ export interface CodexAgentRoleArtifact extends ArtifactPlanArtifactBase {
   };
 }
 
+export interface CodexSkillArtifact extends ArtifactPlanArtifactBase {
+  target: 'codex.skill';
+  kind: 'skill';
+  skillKey?: string;
+  content?: {
+    skillFile?: string;
+    openaiYaml?: string;
+  };
+}
+
 export type ArtifactPlanArtifact =
   | DeveloperInstructionsBlockArtifact
-  | CodexAgentRoleArtifact;
+  | CodexAgentRoleArtifact
+  | CodexSkillArtifact;
 
 export interface SkillTriggerPolicy {
   allowInstallOverride: boolean;
@@ -920,7 +935,10 @@ export interface PlatformAdapter {
     plugin: PluginMeta,
     scope: Scope,
     options?: {
-      event?: 'install' | 'upgrade';
+      event?: 'install' | 'upgrade' | 'refresh';
+      changedConfigKeys?: string[];
+      dynamicOnly?: boolean;
+      skillTriggerPreference?: SkillTriggerPreference;
     },
   ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(

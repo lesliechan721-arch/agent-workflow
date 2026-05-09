@@ -2039,8 +2039,26 @@ export async function statusCommand(
         available: state.evidence.dynamicDiagnostic.available,
         unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
         unavailable: state.projection.dynamicDiagnosticUnavailable,
+        triggerPreference: state.evidence.installRecord.read.status === 'ok'
+          ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
+          : null,
         entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
       },
+      legacyDynamicTracking: state.evidence.installRecord.artifacts
+        .filter((artifact) =>
+          state.evidence.currentCatalog.provided &&
+          state.evidence.installRecord.sameBundleAsCatalog === true &&
+          artifact.artifact.id !== undefined &&
+          artifact.artifact.target !== undefined &&
+          (artifact.artifact.id === 'lightweight-instruction' || artifact.artifact.id === 'codex-explorer-role') &&
+          !artifact.matchedCurrentDynamicArtifact)
+        .map((artifact) => ({
+          id: artifact.artifact.id!,
+          target: artifact.artifact.target!,
+          ...(artifact.artifact.artifactKey ? { artifactKey: artifact.artifact.artifactKey } : {}),
+          ...(artifact.artifact.roleKey ? { roleKey: artifact.artifact.roleKey } : {}),
+          path: artifact.artifact.path,
+        })),
       dependencyIndex: {
         status: state.evidence.dependencyIndex.inspection.status,
         trusted: state.projection.dependencyIndexTrusted,

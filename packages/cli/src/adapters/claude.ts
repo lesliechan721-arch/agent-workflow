@@ -17,6 +17,7 @@ import type {
   ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
+  SkillTriggerPreference,
   StatusReport,
 } from '../types.js';
 import { detectEnvironment } from '../utils/detect.js';
@@ -465,7 +466,12 @@ export class ClaudeAdapter implements PlatformAdapter {
   async installExtensions(
     plugin: PluginMeta,
     scope: Scope,
-    _options?: { event?: 'install' | 'upgrade' },
+    _options?: {
+      event?: 'install' | 'upgrade' | 'refresh';
+      changedConfigKeys?: string[];
+      dynamicOnly?: boolean;
+      skillTriggerPreference?: SkillTriggerPreference;
+    },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];

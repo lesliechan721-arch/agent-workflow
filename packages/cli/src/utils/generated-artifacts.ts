@@ -103,7 +103,8 @@ export function isGeneratedArtifact(value: unknown): value is GeneratedArtifact 
     (
       candidate.target === undefined ||
       candidate.target === 'codex.developerInstructionsBlock' ||
-      candidate.target === 'codex.agentRole'
+      candidate.target === 'codex.agentRole' ||
+      candidate.target === 'codex.skill'
     ) &&
     (
       candidate.state === undefined ||
@@ -158,6 +159,40 @@ export function getGeneratedArtifactIdentityKey(
       ?.map((group) => serializeTrackedHookGroupIdentity(group))
       .sort() ?? null,
   ]);
+}
+
+function getCodexDynamicSkillDesiredIdentityKey(
+  artifact: Pick<GeneratedArtifact, 'kind' | 'platform' | 'id' | 'target' | 'artifactKey'>,
+): string | null {
+  if (
+    artifact.kind !== 'skill' ||
+    artifact.platform !== 'codex' ||
+    artifact.target !== 'codex.skill' ||
+    !artifact.id ||
+    !artifact.artifactKey
+  ) {
+    return null;
+  }
+
+  return JSON.stringify([
+    artifact.platform,
+    artifact.target,
+    artifact.id,
+    artifact.artifactKey,
+  ]);
+}
+
+export function hasSameGeneratedArtifactDesiredIdentity(
+  left: GeneratedArtifact,
+  right: GeneratedArtifact,
+): boolean {
+  const leftCodexSkillKey = getCodexDynamicSkillDesiredIdentityKey(left);
+  const rightCodexSkillKey = getCodexDynamicSkillDesiredIdentityKey(right);
+  if (leftCodexSkillKey || rightCodexSkillKey) {
+    return leftCodexSkillKey !== null && leftCodexSkillKey === rightCodexSkillKey;
+  }
+
+  return getGeneratedArtifactIdentityKey(left) === getGeneratedArtifactIdentityKey(right);
 }
 
 function stableStringify(value: unknown): string {

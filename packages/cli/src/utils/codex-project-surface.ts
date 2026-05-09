@@ -48,6 +48,15 @@ const CODEX_PROJECT_MANAGED_KIND_SET = new Set<CodexProjectManagedKind>(
   CODEX_PROJECT_MANAGED_KIND_ORDER,
 );
 
+export function codexDynamicArtifactTargetRequiresProjectConfig(
+  target: Pick<PluginArtifactTargetDefinition, 'target'>,
+): boolean {
+  return (
+    target.target === 'codex.developerInstructionsBlock' ||
+    target.target === 'codex.agentRole'
+  );
+}
+
 function trimDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
@@ -141,7 +150,7 @@ export function getCodexDynamicArtifactTargets(
     }
     if (
       options.requiresCodexProjectConfig !== undefined &&
-      target.requiresCodexProjectConfig !== options.requiresCodexProjectConfig
+      codexDynamicArtifactTargetRequiresProjectConfig(target) !== options.requiresCodexProjectConfig
     ) {
       return false;
     }
@@ -221,7 +230,12 @@ export function trackingRecordTouchesCodexProjectConfig(
     trackingRecord?.artifacts.some((artifact) =>
       artifact.kind === 'instruction' ||
         artifact.kind === 'mcpServer' ||
-        (artifact.kind === 'agent' && artifact.target === 'codex.agentRole'),
+        (
+          artifact.target !== undefined &&
+          codexDynamicArtifactTargetRequiresProjectConfig({
+            target: artifact.target,
+          })
+        ),
     ),
   );
 }
@@ -243,6 +257,12 @@ export async function collectDeclaredCodexProjectSkillKeys(plugin: PluginMeta): 
     ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.slashCommands))
     : undefined;
   const keys = new Set<string>();
+
+  for (const target of getCodexDynamicArtifactTargets(plugin, { scope: 'project' })) {
+    if (target.target === 'codex.skill' && target.skillKey) {
+      keys.add(target.skillKey);
+    }
+  }
 
   for (const root of [skillRoot, codexSkillRoot]) {
     if (!root || !(await fs.pathExists(root))) {

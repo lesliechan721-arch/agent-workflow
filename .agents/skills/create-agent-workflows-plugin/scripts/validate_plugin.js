@@ -115,18 +115,24 @@ const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 300000;
 const CONFIG_FIELD_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
-const ARTIFACT_TARGETS = new Set(['codex.developerInstructionsBlock', 'codex.agentRole']);
+const ARTIFACT_TARGETS = new Set([
+  'codex.developerInstructionsBlock',
+  'codex.agentRole',
+  'codex.skill',
+]);
 const ARTIFACT_STATES = new Set(['present', 'disabled']);
 const ARTIFACT_SCOPES = new Set(['user', 'project']);
-const ARTIFACT_KINDS = new Set(['instruction', 'codexRole']);
-const ARTIFACT_PROJECT_MANAGED_KINDS = new Set(['instruction', 'agent']);
+const ARTIFACT_KINDS = new Set(['instruction', 'codexRole', 'skill']);
+const ARTIFACT_PROJECT_MANAGED_KINDS = new Set(['instruction', 'agent', 'skill']);
 const ARTIFACT_KIND_BY_TARGET = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
+  'codex.skill': 'skill',
 };
 const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'agent',
+  'codex.skill': 'skill',
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PLUGIN_DEPENDENCY_PLATFORMS = new Set(['codex', 'claude']);
@@ -1675,6 +1681,15 @@ function validateCodexRoleKey(value, fieldName) {
   return roleKey;
 }
 
+function validateCodexSkillKey(value, fieldName) {
+  const skillKey = validateManifestString(value, fieldName);
+  if (!skillKey) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(skillKey)) {
+    error(`${fieldName}: expected a valid Codex skill key`);
+  }
+  return skillKey;
+}
+
 function validateStringArray(value, fieldName, options = {}) {
   if (!Array.isArray(value)) {
     error(`${fieldName} must be an array`);
@@ -1718,6 +1733,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
     'refreshKeys',
     'requiresCodexProjectConfig',
     'roleKey',
+    'skillKey',
   ]);
 
   const id = validateArtifactId(target.id, `${fieldName}.id`);
@@ -1798,8 +1814,12 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
   ) {
     error(`${fieldName}.requiresCodexProjectConfig must be a boolean`);
   }
+  if (artifactTarget === 'codex.skill' && target.requiresCodexProjectConfig === true) {
+    error(`${fieldName}.requiresCodexProjectConfig: codex.skill writes the skill runtime and must not require Codex project config preflight`);
+  }
 
   let roleKey;
+  let skillKey;
   if (artifactTarget === 'codex.agentRole') {
     roleKey = validateCodexRoleKey(target.roleKey, `${fieldName}.roleKey`);
     if (!roleKey) {
@@ -1807,6 +1827,14 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
     }
   } else if (target.roleKey !== undefined) {
     error(`${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets`);
+  }
+  if (artifactTarget === 'codex.skill') {
+    skillKey = validateCodexSkillKey(target.skillKey, `${fieldName}.skillKey`);
+    if (!skillKey) {
+      error(`${fieldName}.skillKey: codex.skill targets must declare a static skillKey`);
+    }
+  } else if (target.skillKey !== undefined) {
+    error(`${fieldName}.skillKey: skillKey is only supported for codex.skill targets`);
   }
 
   return {
@@ -1819,6 +1847,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
     states,
     refreshKeys,
     roleKey,
+    skillKey,
   };
 }
 
@@ -1882,6 +1911,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
       'refreshKeys',
       'disabledReason',
       'roleKey',
+      'skillKey',
       'content',
     ]);
     const id = validateArtifactId(entry.id, `${fieldName}.id`);
@@ -1932,6 +1962,26 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
       }
     } else if (entry.roleKey !== undefined) {
       error(`${fieldName}.roleKey is only supported for codex.agentRole artifacts`);
+    }
+    if (declaration.target === 'codex.skill') {
+      if (entry.skillKey !== declaration.skillKey) {
+        error(`${fieldName}.skillKey: expected "${declaration.skillKey}" from static metadata`);
+      }
+      if (entry.state === 'present') {
+        if (!isRecord(entry.content)) {
+          error(`${fieldName}.content must be an object for codex.skill artifacts`);
+        } else {
+          validateAllowedKeys(entry.content, `${fieldName}.content`, ['skillFile', 'openaiYaml']);
+          if (typeof entry.content.skillFile !== 'string' || entry.content.skillFile.trim() === '') {
+            error(`${fieldName}.content.skillFile must be a non-empty string`);
+          }
+          if (typeof entry.content.openaiYaml !== 'string' || entry.content.openaiYaml.trim() === '') {
+            error(`${fieldName}.content.openaiYaml must be a non-empty string`);
+          }
+        }
+      }
+    } else if (entry.skillKey !== undefined) {
+      error(`${fieldName}.skillKey is only supported for codex.skill artifacts`);
     }
   });
 

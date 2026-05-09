@@ -113,10 +113,13 @@ function toInstallRecordArtifacts(
     ...(artifact.hookGroups === undefined ? {} : { hookGroups: structuredClone(artifact.hookGroups) }),
     ...(artifact.id === undefined ? {} : { id: artifact.id }),
     ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.state === undefined ? {} : { state: artifact.state }),
     ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
     ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
       : {}),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   }));
 }
 
@@ -208,6 +211,7 @@ function toProjectArtifactIdentityArtifact(
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
       : {}),
     ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
     ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   };
 }
@@ -326,119 +330,136 @@ function isCleanProjectPrewriteCandidate(
 
 async function syncCodexInstallStateAfterConfigRefresh(options: {
   plugin: PluginMeta;
-  scope: Scope;
+  commandScope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  refreshStatus: 'succeeded' | 'failed';
+  artifactRefresh: ArtifactRefreshReceipt;
 }): Promise<void> {
-  const location: PluginLocation = options.scope === 'project'
-    ? {
-        plugin: options.plugin.manifest.name,
-        platform: 'codex',
-        scope: 'project',
-        projectKey: await resolveCodexProjectKey(options.cwd),
-      }
-    : {
-        plugin: options.plugin.manifest.name,
-        platform: 'codex',
-        scope: 'user',
-      };
-  const recordRead = await readInstallRecordForLocation({
-    cwd: options.cwd,
-    location,
-    env: options.env,
-  });
-  if (recordRead.status !== 'ok') {
-    return;
-  }
-
-  const trackingManifest = await readTrackingManifest(
-    resolveCodexPaths(options.cwd, options.scope, options.env).trackingDir,
-  );
-  const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
-  if (!trackingRecord) {
-    return;
-  }
-
-  const updatedAt = new Date().toISOString();
-  const artifacts = trackingRecord.artifacts;
-  const currentRecord = recordRead.value;
-  const currentCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
-    cwd: options.cwd,
-    location,
-    currentRecord,
-    env: options.env,
-  });
-  const currentCache = currentCacheRead.status === 'ok' ? currentCacheRead.value : null;
-  const nextRecord: InstallRecordFile = {
-    ...structuredClone(currentRecord),
-    record: {
-      ...structuredClone(currentRecord.record),
-      updatedAt,
-      artifacts: toInstallRecordArtifacts(artifacts),
-    },
-  };
-  const nextCache = createDynamicDiagnosticCacheValue({
-    recordFile: nextRecord,
-    location,
-    artifacts,
-    updatedAt,
-  });
-
-  const stages: InstallStateTransactionStage[] = [];
-  if (options.refreshStatus === 'succeeded') {
-    if (options.scope === 'project') {
-      const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
-      const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, location);
-      const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, artifacts);
-      const locator = createProjectArtifactSharedLocator({
-        plugin: options.plugin.manifest.name,
-        platform: 'codex',
-        repoRoot,
-        projectRoot,
-      });
-      if (repoVisibleArtifacts.length > 0) {
-        const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
-        const identityValue: ProjectArtifactIdentityFile = {
-          version: 1,
-          sharedIdentityId: path.basename(identityPath, '.json'),
-          locator,
-          source: structuredClone(currentRecord.record.source),
-          generatedAt: updatedAt,
-          artifacts: repoVisibleArtifacts.map((artifact) =>
-            toProjectArtifactIdentityArtifact(artifact, repoRoot),
-          ),
-        };
-        stages.push(await createProjectArtifactIdentityWriteStage({
-          repoRoot,
-          locator,
-          value: identityValue,
-        }));
-      } else {
-        stages.push(createProjectArtifactIdentityDeleteStage({
-          repoRoot,
-          locator,
-        }));
-      }
+  const scopeStatuses = new Map<Scope, 'succeeded' | 'failed'>();
+  for (const artifact of options.artifactRefresh.artifacts) {
+    const current = scopeStatuses.get(artifact.scope);
+    if (current === 'failed') {
+      continue;
     }
-    stages.push(await createInstallRecordWriteStage({
+    scopeStatuses.set(artifact.scope, artifact.status);
+  }
+  if (scopeStatuses.size === 0) {
+    if (options.artifactRefresh.status === 'skipped') {
+      return;
+    }
+    scopeStatuses.set(options.commandScope, options.artifactRefresh.status);
+  }
+
+  for (const [scope, refreshStatus] of scopeStatuses.entries()) {
+    const location: PluginLocation = scope === 'project'
+      ? {
+          plugin: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+          projectKey: await resolveCodexProjectKey(options.cwd),
+        }
+      : {
+          plugin: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        };
+    const recordRead = await readInstallRecordForLocation({
       cwd: options.cwd,
       location,
-      value: nextRecord,
+      env: options.env,
+    });
+    if (recordRead.status !== 'ok') {
+      continue;
+    }
+
+    const trackingManifest = await readTrackingManifest(
+      resolveCodexPaths(options.cwd, scope, options.env).trackingDir,
+    );
+    const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+    if (!trackingRecord) {
+      continue;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const artifacts = trackingRecord.artifacts;
+    const currentRecord = recordRead.value;
+    const currentCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
+      cwd: options.cwd,
+      location,
+      currentRecord,
+      env: options.env,
+    });
+    const currentCache = currentCacheRead.status === 'ok' ? currentCacheRead.value : null;
+    const nextRecord: InstallRecordFile = {
+      ...structuredClone(currentRecord),
+      record: {
+        ...structuredClone(currentRecord.record),
+        updatedAt,
+        artifacts: toInstallRecordArtifacts(artifacts),
+      },
+    };
+    const nextCache = createDynamicDiagnosticCacheValue({
+      recordFile: nextRecord,
+      location,
+      artifacts,
+      updatedAt,
+    });
+
+    const stages: InstallStateTransactionStage[] = [];
+    if (refreshStatus === 'succeeded') {
+      if (scope === 'project') {
+        const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+        const projectRoot = resolveProjectArtifactProjectRoot(options.cwd, location);
+        const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, artifacts);
+        const locator = createProjectArtifactSharedLocator({
+          plugin: options.plugin.manifest.name,
+          platform: 'codex',
+          repoRoot,
+          projectRoot,
+        });
+        if (repoVisibleArtifacts.length > 0) {
+          const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+          const identityValue: ProjectArtifactIdentityFile = {
+            version: 1,
+            sharedIdentityId: path.basename(identityPath, '.json'),
+            locator,
+            source: structuredClone(currentRecord.record.source),
+            generatedAt: updatedAt,
+            artifacts: repoVisibleArtifacts.map((artifact) =>
+              toProjectArtifactIdentityArtifact(artifact, repoRoot),
+            ),
+          };
+          stages.push(await createProjectArtifactIdentityWriteStage({
+            repoRoot,
+            locator,
+            value: identityValue,
+          }));
+        } else {
+          stages.push(createProjectArtifactIdentityDeleteStage({
+            repoRoot,
+            locator,
+          }));
+        }
+      }
+      stages.push(await createInstallRecordWriteStage({
+        cwd: options.cwd,
+        location,
+        value: nextRecord,
+        env: options.env,
+      }));
+    }
+    stages.push(await createDynamicArtifactDiagnosticCacheWriteStage({
+      cwd: options.cwd,
+      location,
+      value: nextCache,
+      currentRecord,
+      currentCache,
+      mode: refreshStatus === 'succeeded' ? 'accepted' : 'refreshFailed',
       env: options.env,
     }));
-  }
-  stages.push(await createDynamicArtifactDiagnosticCacheWriteStage({
-    cwd: options.cwd,
-    location,
-    value: nextCache,
-    currentRecord,
-    currentCache,
-    mode: options.refreshStatus === 'succeeded' ? 'accepted' : 'refreshFailed',
-    env: options.env,
-  }));
 
-  await runInstallStateTransaction({ stages });
+    await runInstallStateTransaction({ stages });
+  }
 }
 
 export async function applyPluginConfigWrite(options: {
@@ -593,23 +614,6 @@ export async function applyPluginConfigWrite(options: {
     }
   }
 
-  if (options.scope === 'user' && triggerKeys.length > 0) {
-    const env = options.env ?? process.env;
-    const recordRead = await readInstallRecordForLocation({
-      cwd: options.cwd,
-      location: {
-        plugin: pluginName,
-        platform: 'codex',
-        scope: 'user',
-      },
-      env,
-    });
-    if (recordRead.status !== 'ok') {
-      shouldAttemptRefresh = false;
-      configRefreshSkippedReason = 'noRefreshTarget';
-    }
-  }
-
   if (triggerKeys.length > 0) {
     await patchPluginConfigStore({
       pluginName,
@@ -639,11 +643,13 @@ export async function applyPluginConfigWrite(options: {
     if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
       await syncCodexInstallStateAfterConfigRefresh({
         plugin: options.plugin,
-        scope: options.scope,
+        commandScope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
-        refreshStatus: artifactRefresh.status,
+        artifactRefresh,
       });
+    } else if (!artifactRefresh.attempted && options.scope === 'user') {
+      configRefreshSkippedReason = 'noRefreshTarget';
     }
   }
 
@@ -716,24 +722,23 @@ export async function resetPluginConfigWithHelper(options: {
     configRefreshSkippedReason = 'projectLocalOverride';
   } else if (reset.deleted && options.plugin) {
     const env = options.env ?? process.env;
-    const location: PluginLocation = options.scope === 'project'
-      ? {
-          plugin: pluginName,
-          platform: 'codex',
-          scope: 'project',
-          projectKey: await resolveCodexProjectKey(options.cwd),
-        }
-      : {
-          plugin: pluginName,
-          platform: 'codex',
-          scope: 'user',
-        };
-    const recordRead = await readInstallRecordForLocation({
-      cwd: options.cwd,
-      location,
-      env,
-    });
-    if (recordRead.status === 'ok') {
+    const shouldCheckProjectRecord = options.scope === 'project';
+    let hasRefreshTarget = !shouldCheckProjectRecord;
+    if (shouldCheckProjectRecord) {
+      const location: PluginLocation = {
+        plugin: pluginName,
+        platform: 'codex',
+        scope: 'project',
+        projectKey: await resolveCodexProjectKey(options.cwd),
+      };
+      const recordRead = await readInstallRecordForLocation({
+        cwd: options.cwd,
+        location,
+        env,
+      });
+      hasRefreshTarget = recordRead.status === 'ok';
+    }
+    if (hasRefreshTarget) {
       artifactRefresh = await refreshArtifactsAfterConfigWrite({
         plugin: options.plugin,
         commandScope: options.scope,
@@ -744,11 +749,13 @@ export async function resetPluginConfigWithHelper(options: {
       if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
         await syncCodexInstallStateAfterConfigRefresh({
           plugin: options.plugin,
-          scope: options.scope,
+          commandScope: options.scope,
           cwd: options.cwd,
           env,
-          refreshStatus: artifactRefresh.status,
+          artifactRefresh,
         });
+      } else if (!artifactRefresh.attempted && options.scope === 'user') {
+        configRefreshSkippedReason = 'noRefreshTarget';
       }
     } else {
       configRefreshSkippedReason = 'noRefreshTarget';

@@ -15,6 +15,7 @@ import type {
   SkillTriggerApplicability,
   SkillTriggerPreference,
 } from '../types.js';
+import { renderCodexOpenAiYamlWithAllowImplicitInvocation } from './codex-skill-staging.js';
 import { readPluginManifest } from './manifest.js';
 
 type ParsedTriggerBoolean = boolean | 'absent';
@@ -161,6 +162,7 @@ function normalizeYamlError(error: unknown): string {
 export interface SkillTriggerPolicyEntry {
   skillName: string;
   allowInstallOverride: boolean;
+  allowInstallOverrideDeclared: boolean;
   codexFilePath: string;
   claudeFilePath: string;
 }
@@ -339,6 +341,23 @@ function getSkillTriggerApplicabilityFromPolicies(
     : 'fixed';
 }
 
+function getExcludedDynamicCodexSkillKeys(options: {
+  manifest: PluginMeta['manifest'];
+  platform: PlatformName;
+}): Set<string> {
+  if (options.platform !== 'codex') {
+    return new Set();
+  }
+
+  return new Set(
+    (options.manifest.artifacts?.targets ?? [])
+      .filter((target) => target.platform === 'codex')
+      .filter((target) => target.target === 'codex.skill')
+      .map((target) => target.skillKey?.trim())
+      .filter((skillKey): skillKey is string => Boolean(skillKey)),
+  );
+}
+
 async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
   pluginRoot: string;
   pluginName: string;
@@ -347,15 +366,25 @@ async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
   platform: PlatformName;
 }): Promise<SkillTriggerPolicyResolution> {
   const manifestPolicies = options.manifest.skillTriggers ?? {};
+  const excludedDynamicSkillKeys = getExcludedDynamicCodexSkillKeys({
+    manifest: options.manifest,
+    platform: options.platform,
+  });
   const skillNames = await listSkillDirectories(
     getPlatformSkillsRoot(options.pluginRoot, options.platform),
   );
-  const policies = skillNames.map((skillName) => ({
-    skillName,
-    allowInstallOverride: manifestPolicies[skillName]?.allowInstallOverride === true,
-    codexFilePath: getCodexSkillMetadataPath(options.pluginRoot, skillName),
-    claudeFilePath: getClaudeSkillMetadataPath(options.pluginRoot, skillName),
-  }));
+  const policies = skillNames
+    .filter((skillName) => !excludedDynamicSkillKeys.has(skillName))
+    .map((skillName) => {
+      const policy = manifestPolicies[skillName];
+      return {
+        skillName,
+        allowInstallOverride: policy?.allowInstallOverride === true,
+        allowInstallOverrideDeclared: policy !== undefined && Object.hasOwn(policy, 'allowInstallOverride'),
+        codexFilePath: getCodexSkillMetadataPath(options.pluginRoot, skillName),
+        claudeFilePath: getClaudeSkillMetadataPath(options.pluginRoot, skillName),
+      };
+    });
 
   return {
     pluginName: options.pluginName,
@@ -562,29 +591,14 @@ export async function patchCodexOpenAiYaml(
     throw new Error('缺少 agents/openai.yaml。');
   }
 
-  let parsed: unknown;
-  try {
-    parsed = YAML.parse(rawContent);
-  } catch (error) {
-    throw new Error(`openai.yaml YAML 解析失败：${normalizeYamlError(error)}`);
-  }
-
-  if (!isRecord(parsed)) {
-    throw new Error('openai.yaml 根节点必须是 object。');
-  }
-
-  if (parsed.policy === undefined) {
-    parsed.policy = {};
-  } else if (!isRecord(parsed.policy)) {
-    throw new Error('openai.yaml 的 policy 必须是 object。');
-  }
-
-  const policy = parsed.policy;
-  if (!isRecord(policy)) {
-    throw new Error('openai.yaml 的 policy 必须是 object。');
-  }
-  policy.allow_implicit_invocation = preference === 'auto';
-  await fs.writeFile(filePath, YAML.stringify(parsed), 'utf8');
+  await fs.writeFile(
+    filePath,
+    renderCodexOpenAiYamlWithAllowImplicitInvocation({
+      rawContent,
+      allowImplicitInvocation: preference === 'auto',
+    }),
+    'utf8',
+  );
 }
 
 export async function patchClaudeSkillFrontmatter(
@@ -1311,6 +1325,26 @@ export async function materializeSkillTriggerPreference(options: {
   const skippedSkills: string[] = [];
   const generatedArtifacts: GeneratedArtifact[] = [];
 
+  if (resolution.policies.length === 0) {
+    return {
+      committed: false,
+      warnings,
+      summary: {
+        status: 'skipped',
+        preference,
+        patchedSkills,
+        skippedSkills,
+      },
+      rollbackHandle: {
+        committed: false,
+        targetSkillsRoot: '',
+        backupSkillsRoot: null,
+        operations: [],
+      },
+      generatedArtifacts,
+    };
+  }
+
   const patchSkill = async (skillRoot: string, policy: SkillTriggerPolicyEntry): Promise<void> => {
     if (preference === 'default') {
       return;
@@ -1318,9 +1352,11 @@ export async function materializeSkillTriggerPreference(options: {
 
     if (!policy.allowInstallOverride) {
       skippedSkills.push(policy.skillName);
-      warnings.push(
-        `${options.pluginName} 的 ${options.platform} skill ${policy.skillName} 未声明 allowInstallOverride，保留默认触发策略。`,
-      );
+      if (!policy.allowInstallOverrideDeclared) {
+        warnings.push(
+          `${options.pluginName} 的 ${options.platform} skill ${policy.skillName} 未声明 allowInstallOverride，保留默认触发策略。`,
+        );
+      }
       return;
     }
 

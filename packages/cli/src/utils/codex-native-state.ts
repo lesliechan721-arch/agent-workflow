@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -40,6 +41,15 @@ export interface CodexMarketplaceCleanupAssessment {
   blockingEvidence: CodexNativePluginState[];
 }
 
+export interface CodexNativePluginRollbackBaseline {
+  pluginName: string;
+  configPath: string;
+  configContent: string | null;
+  cacheRootPath: string;
+  cacheBackupPath: string | null;
+  cleanupRoot: string | null;
+}
+
 function buildPluginId(pluginName: string): `${string}@aw` {
   return `${pluginName}@${MARKETPLACE_NAME}`;
 }
@@ -50,6 +60,13 @@ function getCodexConfigPath(env: NodeJS.ProcessEnv): string {
 
 function getCodexMarketplaceCacheRoot(env: NodeJS.ProcessEnv): string {
   return path.join(getCodexHome(env), 'plugins', 'cache', MARKETPLACE_NAME);
+}
+
+export function getCodexNativePluginCacheRootPath(
+  pluginName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(getCodexMarketplaceCacheRoot(env), pluginName);
 }
 
 function stripMarketplaceSuffix(pluginId: string): string | null {
@@ -256,6 +273,72 @@ export async function checkCodexNativeUninstallPostCheck(
     ok: !state.configEntryPresent && !hasCodexNativeCacheEvidence(state),
     state,
   };
+}
+
+export async function captureCodexNativePluginRollbackBaseline(
+  pluginName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CodexNativePluginRollbackBaseline> {
+  const configPath = getCodexConfigPath(env);
+  const configContent = await fs.pathExists(configPath)
+    ? await fs.readFile(configPath, 'utf8')
+    : null;
+  const cacheRootPath = getCodexNativePluginCacheRootPath(pluginName, env);
+  const cacheExists = await fs.pathExists(cacheRootPath);
+  if (!cacheExists) {
+    return {
+      pluginName,
+      configPath,
+      configContent,
+      cacheRootPath,
+      cacheBackupPath: null,
+      cleanupRoot: null,
+    };
+  }
+
+  const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-codex-native-cache-${pluginName}-`));
+  const cacheBackupPath = path.join(cleanupRoot, path.basename(cacheRootPath));
+  await fs.copy(cacheRootPath, cacheBackupPath, {
+    overwrite: true,
+    errorOnExist: false,
+  });
+  return {
+    pluginName,
+    configPath,
+    configContent,
+    cacheRootPath,
+    cacheBackupPath,
+    cleanupRoot,
+  };
+}
+
+export async function restoreCodexNativePluginRollbackBaseline(
+  baseline: CodexNativePluginRollbackBaseline,
+): Promise<void> {
+  if (baseline.configContent === null) {
+    await fs.remove(baseline.configPath);
+  } else {
+    await fs.ensureDir(path.dirname(baseline.configPath));
+    await fs.writeFile(baseline.configPath, baseline.configContent, 'utf8');
+  }
+
+  await fs.remove(baseline.cacheRootPath);
+  if (baseline.cacheBackupPath && await fs.pathExists(baseline.cacheBackupPath)) {
+    await fs.ensureDir(path.dirname(baseline.cacheRootPath));
+    await fs.copy(baseline.cacheBackupPath, baseline.cacheRootPath, {
+      overwrite: true,
+      errorOnExist: false,
+    });
+  }
+}
+
+export async function disposeCodexNativePluginRollbackBaseline(
+  baseline: CodexNativePluginRollbackBaseline | undefined,
+): Promise<void> {
+  if (!baseline?.cleanupRoot) {
+    return;
+  }
+  await fs.remove(baseline.cleanupRoot).catch(() => undefined);
 }
 
 export async function assessCodexMarketplaceCleanup(

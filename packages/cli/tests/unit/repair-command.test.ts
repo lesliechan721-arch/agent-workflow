@@ -1377,4 +1377,63 @@ describe('repair command P8', () => {
     expect(human.payload.dependencyIndex?.dependencyIndexRecoveryMessage).toBe('请回到可能相关的仓库重新运行 diagnose 或 repair。');
     expect(human.output).toContain('回到可能相关的仓库重新运行 diagnose 或 repair');
   });
+
+  it('refuses to implicitly migrate legacy dynamic tracking that the current manifest no longer declares', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-repair-legacy-dynamic-'),
+      scenario: 'installed',
+    });
+    const plugin = await createPluginMeta({
+      rootDir: fixture.paths.rootDir,
+      pluginName: fixture.target.location.plugin,
+    });
+    await alignFixtureSourceToPlugin({
+      installRecordPath: fixture.files.installRecordPath,
+      projectIdentityPath: fixture.files.projectIdentityPath,
+      plugin,
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const record = await fs.readJson(fixture.files.installRecordPath) as {
+      record: {
+        artifacts: Array<Record<string, unknown>>;
+      };
+    };
+    record.record.artifacts[0] = {
+      ...record.record.artifacts[0],
+      id: 'lightweight-instruction',
+    };
+    await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const adapter = new FakeRepairAdapter();
+    await expect(repairCommand(
+      [fixture.target.location.plugin],
+      {
+        cwd: fixture.paths.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        adapters: {
+          codex: adapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: 'codex',
+          scope: 'project',
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+        p8CurrentPluginsByName: {
+          [fixture.target.location.plugin]: plugin,
+        },
+      } as never,
+    )).rejects.toThrow('当前 manifest 已移除的历史 dynamic tracking');
+    expect(adapter.installExtensions).not.toHaveBeenCalled();
+  });
 });

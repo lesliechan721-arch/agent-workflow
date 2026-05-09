@@ -60,6 +60,9 @@ function sha256(value: Buffer | string): string {
 async function writeBundlePlugin(options: {
   rootDir: string;
   pluginName?: string;
+  artifacts?: {
+    targets: Array<Record<string, unknown>>;
+  };
 }): Promise<void> {
   const pluginName = options.pluginName ?? 'git-commit';
   const pluginRoot = path.join(options.rootDir, 'plugins', pluginName);
@@ -77,6 +80,7 @@ async function writeBundlePlugin(options: {
           allowInstallOverride: true,
         },
       },
+      artifacts: options.artifacts,
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -612,6 +616,59 @@ describe('install-state shared runtime owner', () => {
       embeddedRoot,
       target: runtimeTarget,
       platform: 'claude',
+      preference: 'default',
+    });
+  });
+
+  it('does not replay manifest-declared codex.skill entries through shared runtime owner fallback', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-dynamic-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-dynamic-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-dynamic-root-');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const runtimeTarget: SkillTriggerMaterializationTarget = {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+    const ownerLocation = makeLocation({ platform: 'codex', scope: 'user' });
+    const ownerRecord = makeRecord(ownerLocation, 'manual');
+    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
+
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      artifacts: {
+        targets: [{
+          id: 'commit-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'commit',
+        }],
+      },
+    });
+    await fs.copy(embeddedRoot, marketplaceRoot);
+    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
+    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
+
+    const replay = await replaySharedSkillTriggerRuntimeFromOwner({
+      pluginName: ownerLocation.plugin,
+      platform: ownerLocation.platform,
+      embeddedRoot,
+      target: runtimeTarget,
+      env,
+    });
+
+    expect(replay.source).toBe('owner');
+    expect(replay.preference).toBe('manual');
+    expect(replay.materialization.generatedArtifacts).toEqual([]);
+    await expectRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'codex',
       preference: 'default',
     });
   });

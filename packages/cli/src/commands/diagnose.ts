@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import type { CommandExecutionContextInput } from './runtime.js';
@@ -9,7 +11,14 @@ import {
   type RawStatusCommandOptions,
 } from './options.js';
 import { detectEnvironment } from '../utils/detect.js';
-import type { GeneratedArtifact, PluginMeta, PlatformName, Scope, StatusCommandOptions } from '../types.js';
+import type {
+  GeneratedArtifact,
+  PluginMeta,
+  PlatformName,
+  Scope,
+  SkillTriggerPreference,
+  StatusCommandOptions,
+} from '../types.js';
 import type {
   CurrentCatalogArtifact,
   CurrentCatalogDynamicArtifact,
@@ -37,6 +46,10 @@ import {
   runArtifactRenderer,
 } from '../utils/artifact-renderer.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
+import {
+  createCodexSkillExpectedTree,
+  createCodexSkillStagingTreeContentDigest,
+} from '../utils/codex-skill-staging.js';
 
 export interface RawDiagnoseCommandOptions extends RawStatusCommandOptions {
   deep?: boolean;
@@ -91,11 +104,20 @@ export interface DeepDiagnoseResult {
     id: string;
     target: string;
     state: string;
+    artifactKey?: string;
+    roleKey?: string;
+    disabledReason?: string;
     configDigest: string;
     contentDigest: string;
     artifactPath?: string;
+    triggerPreference?: SkillTriggerPreference;
     actualDigest?: string | null;
     drift: boolean;
+    driftReasons?: string[];
+    fileDiffs?: Array<{
+      path: string;
+      reason: 'missing' | 'unexpected' | 'contentMismatch';
+    }>;
   }>;
 }
 
@@ -136,8 +158,16 @@ export interface StatusJsonLocation {
     available: boolean;
     unavailableReason: string | null;
     unavailable: boolean;
+    triggerPreference: SkillTriggerPreference | null;
     entries: DynamicArtifactDiagnosticEntry[];
   };
+  legacyDynamicTracking: Array<{
+    id: string;
+    target: string;
+    artifactKey?: string;
+    roleKey?: string;
+    path: string;
+  }>;
   dependencyIndex: {
     status: InstallEvidence['dependencyIndex']['inspection']['status'];
     trusted: boolean;
@@ -426,7 +456,15 @@ async function buildDynamicCatalogArtifacts(
       id: artifact.id,
       target: artifact.target,
       state: artifact.states.includes('present') ? 'present' : artifact.states[0] ?? 'present',
-      ...(artifact.roleKey ? { roleKey: artifact.roleKey } : {}),
+      ...(artifact.roleKey
+        ? {
+            roleKey: artifact.roleKey,
+            artifactKey: artifact.roleKey,
+          }
+        : {}),
+      ...(artifact.target === 'codex.skill' && artifact.skillKey
+        ? { artifactKey: artifact.skillKey }
+        : {}),
       configDigest: createArtifactConfigDigest({
         artifact: {
           id: artifact.id,
@@ -466,7 +504,17 @@ async function buildBaseCurrentCatalog(
   };
 }
 
-function mapArtifactContentDigest(artifact: ValidatedArtifactPlanArtifact): string {
+function mapArtifactContentDigest(
+  artifact: ValidatedArtifactPlanArtifact,
+  preference: 'default' | 'manual' | 'auto',
+): string {
+  if (artifact.target === 'codex.skill') {
+    return createCodexSkillStagingTreeContentDigest(createCodexSkillExpectedTree({
+      artifact,
+      preference,
+    }));
+  }
+
   if (artifact.state === 'present') {
     return createGeneratedArtifactContentDigest({
       target: artifact.target,
@@ -483,6 +531,127 @@ function mapArtifactContentDigest(artifact: ValidatedArtifactPlanArtifact): stri
   });
 }
 
+function mapActualArtifactDigest(
+  matchedRecordArtifact: InstallEvidence['installRecord']['artifacts'][number] | undefined,
+): string | null {
+  if (!matchedRecordArtifact) {
+    return null;
+  }
+  if (matchedRecordArtifact.artifact.target !== 'codex.skill') {
+    return matchedRecordArtifact.files[0]?.contentDigest ?? null;
+  }
+
+  const rootPath = matchedRecordArtifact.artifact.path;
+  const files = matchedRecordArtifact.files
+    .filter((file) => file.path !== rootPath && file.exists && file.rawContent !== null)
+    .map((file) => [
+      path.relative(rootPath, file.path).split(path.sep).join('/'),
+      file.rawContent,
+    ] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return files.length > 0
+    ? createGeneratedArtifactContentDigest(Object.fromEntries(files))
+    : null;
+}
+
+async function collectSkillTreeFileContents(rootDir: string): Promise<Record<string, string>> {
+  if (!(await fs.pathExists(rootDir))) {
+    return {};
+  }
+
+  const output = new Map<string, string>();
+  const visit = async (currentDir: string): Promise<void> => {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      output.set(
+        path.relative(rootDir, entryPath).split(path.sep).join('/'),
+        await fs.readFile(entryPath, 'utf8'),
+      );
+    }
+  };
+
+  await visit(rootDir);
+  return Object.fromEntries(output);
+}
+
+function diffSkillTrees(options: {
+  expectedFiles: Record<string, string>;
+  actualFiles: Record<string, string>;
+}): {
+  drift: boolean;
+  driftReasons: string[];
+  fileDiffs: Array<{
+    path: string;
+    reason: 'missing' | 'unexpected' | 'contentMismatch';
+  }>;
+} {
+  const allPaths = [...new Set([
+    ...Object.keys(options.expectedFiles),
+    ...Object.keys(options.actualFiles),
+  ])].sort();
+  const fileDiffs: Array<{
+    path: string;
+    reason: 'missing' | 'unexpected' | 'contentMismatch';
+  }> = [];
+  const driftReasons: string[] = [];
+
+  for (const relativePath of allPaths) {
+    const expected = options.expectedFiles[relativePath];
+    const actual = options.actualFiles[relativePath];
+    if (expected === undefined) {
+      fileDiffs.push({ path: relativePath, reason: 'unexpected' });
+      driftReasons.push(`存在未受管文件 ${relativePath}`);
+      continue;
+    }
+    if (actual === undefined) {
+      fileDiffs.push({ path: relativePath, reason: 'missing' });
+      driftReasons.push(`缺少文件 ${relativePath}`);
+      continue;
+    }
+    if (actual !== expected) {
+      fileDiffs.push({ path: relativePath, reason: 'contentMismatch' });
+      driftReasons.push(`文件内容已漂移 ${relativePath}`);
+    }
+  }
+
+  return {
+    drift: fileDiffs.length > 0,
+    driftReasons,
+    fileDiffs,
+  };
+}
+
+function collectLegacyDynamicTracking(
+  evidence: InstallEvidence,
+): StatusJsonLocation['legacyDynamicTracking'] {
+  if (!evidence.currentCatalog.provided || evidence.installRecord.sameBundleAsCatalog !== true) {
+    return [];
+  }
+  const legacyIds = new Set(['lightweight-instruction', 'codex-explorer-role']);
+
+  return evidence.installRecord.artifacts
+    .filter((artifact) =>
+      artifact.artifact.id !== undefined &&
+      artifact.artifact.target !== undefined &&
+      legacyIds.has(artifact.artifact.id) &&
+      !artifact.matchedCurrentDynamicArtifact)
+    .map((artifact) => ({
+      id: artifact.artifact.id!,
+      target: artifact.artifact.target!,
+      ...(artifact.artifact.artifactKey ? { artifactKey: artifact.artifact.artifactKey } : {}),
+      ...(artifact.artifact.roleKey ? { roleKey: artifact.artifact.roleKey } : {}),
+      path: artifact.artifact.path,
+    }));
+}
+
 async function buildDeepDiagnoseResult(options: {
   currentPlugin: PluginMeta | undefined;
   location: PluginLocation;
@@ -492,6 +661,9 @@ async function buildDeepDiagnoseResult(options: {
   currentCatalog: CurrentCatalogEvidenceInput | null;
   runtime: P7RuntimeOverrides;
 }): Promise<DeepDiagnoseResult> {
+  const triggerPreference: SkillTriggerPreference = options.evidence.installRecord.read.status === 'ok'
+    ? options.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? 'default'
+    : 'default';
   if (!options.currentPlugin) {
     return {
       attempted: true,
@@ -539,24 +711,62 @@ async function buildDeepDiagnoseResult(options: {
     manifestDigest: result.target.manifestDigest,
   });
 
-  const artifacts = validated.artifacts.map((artifact) => {
+  const artifacts = await Promise.all(validated.artifacts.map(async (artifact) => {
     const matchedRecordArtifact = options.evidence.installRecord.artifacts.find((entry) =>
       entry.artifact.id === artifact.id
       && entry.artifact.target === artifact.target,
     );
-    const actualDigest = matchedRecordArtifact?.files[0]?.contentDigest ?? null;
-    const contentDigest = mapArtifactContentDigest(artifact);
+    const contentDigest = mapArtifactContentDigest(
+      artifact,
+      triggerPreference,
+    );
+    let actualDigest = mapActualArtifactDigest(matchedRecordArtifact);
+    let drift = actualDigest !== null && actualDigest !== contentDigest;
+    let driftReasons: string[] = [];
+    let fileDiffs: DeepDiagnoseResult['artifacts'][number]['fileDiffs'];
+
+    if (artifact.target === 'codex.skill') {
+      const actualFiles = matchedRecordArtifact
+        ? await collectSkillTreeFileContents(matchedRecordArtifact.artifact.path)
+        : {};
+      actualDigest = Object.keys(actualFiles).length > 0
+        ? createGeneratedArtifactContentDigest(actualFiles)
+        : null;
+      const comparison = diffSkillTrees({
+        expectedFiles: createCodexSkillExpectedTree({
+          artifact,
+          preference: triggerPreference,
+        }).files,
+        actualFiles,
+      });
+      drift = comparison.drift;
+      driftReasons = comparison.driftReasons;
+      fileDiffs = comparison.fileDiffs;
+    } else if (drift) {
+      driftReasons = ['当前内容摘要与 renderer 输出不一致。'];
+    }
+
+    const roleKey = artifact.target === 'codex.agentRole' ? artifact.roleKey : undefined;
+
     return {
       id: artifact.id,
       target: artifact.target,
       state: artifact.state,
+      ...(roleKey ? { roleKey } : {}),
+      ...(artifact.target === 'codex.skill' && artifact.skillKey ? { artifactKey: artifact.skillKey } : {}),
+      ...(artifact.state === 'disabled' && artifact.disabledReason
+        ? { disabledReason: artifact.disabledReason }
+        : {}),
       configDigest: artifact.configDigest,
       contentDigest,
       ...(matchedRecordArtifact?.files[0]?.path ? { artifactPath: matchedRecordArtifact.files[0].path } : {}),
+      ...(artifact.target === 'codex.skill' ? { triggerPreference } : {}),
       actualDigest,
-      drift: actualDigest !== null && actualDigest !== contentDigest,
+      drift,
+      ...(driftReasons.length > 0 ? { driftReasons } : {}),
+      ...(fileDiffs && fileDiffs.length > 0 ? { fileDiffs } : {}),
     };
-  });
+  }));
 
   return {
     attempted: true,
@@ -731,6 +941,9 @@ function createSummaryText(options: {
   target: InstallStateTarget;
 }): string {
   const { evidence, projection, target } = options;
+  const legacyDynamicTracking = collectLegacyDynamicTracking(evidence);
+  const disabledCodexSkillEntries = evidence.dynamicDiagnostic.entries.filter((entry) =>
+    entry.entry.target === 'codex.skill' && entry.entry.state === 'disabled');
   if (projection.nativeTransactionKind === 'recordInstallResidual') {
     return '安装记录还在，但原生安装收尾没有完成。';
   }
@@ -748,6 +961,9 @@ function createSummaryText(options: {
   }
   if (projection.kind === 'installed' && projection.dynamicDiagnosticUnavailable) {
     return '当前安装仍可识别，但只读模式下无法确认动态内容是否还和上次接受的一致。';
+  }
+  if (legacyDynamicTracking.length > 0) {
+    return '检测到当前 manifest 已移除的历史 dynamic tracking；本轮不会在这里隐式迁移旧入口。';
   }
   if (hasIssue(projection, 'dynamicContentDrift')) {
     return '动态内容和上次接受的结果不一致。';
@@ -775,6 +991,9 @@ function createSummaryText(options: {
   }
   if (projection.kind === 'notInstalled') {
     return '当前没有找到已安装记录。';
+  }
+  if (disabledCodexSkillEntries.length > 0) {
+    return '当前安装状态正常，且 codex.skill 已按配置禁用。';
   }
   return evidence.installRecord.present ? '当前安装状态正常。' : '当前没有可处理的安装状态。';
 }
@@ -806,6 +1025,10 @@ function createFindings(options: {
 }): string[] {
   const { evidence, projection, dependencyIndexActions, deepDiagnose } = options;
   const findings: string[] = [];
+  const legacyDynamicTracking = collectLegacyDynamicTracking(evidence);
+  const codexSkillEntries = evidence.dynamicDiagnostic.entries
+    .filter((entry) => entry.entry.target === 'codex.skill')
+    .map((entry) => entry.entry);
   if (projection.nativeTransactionKind === 'recordInstallResidual') {
     findings.push('安装记录存在，且还保留着 install marker 残留。');
   } else if (projection.nativeTransactionKind === 'markerOnlyInstall' || projection.nativeTransactionKind === 'markerOnlyUninstall') {
@@ -816,12 +1039,21 @@ function createFindings(options: {
   }
   if (projection.dynamicDiagnosticUnavailable) {
     findings.push('动态诊断信息目前不可用；只读模式不会补写本地诊断数据。');
+    for (const entry of codexSkillEntries) {
+      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的诊断缓存目前不可用。`);
+    }
   }
   if (hasIssue(projection, 'dynamicContentDrift')) {
     findings.push('动态内容与已接受摘要不一致。');
+    for (const entry of codexSkillEntries) {
+      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的运行时内容与诊断缓存记录不一致。`);
+    }
   }
   if (hasIssue(projection, 'dynamicConfigStale')) {
     findings.push('共享渲染配置摘要已经变化，当前内容还没刷新。');
+    for (const entry of codexSkillEntries) {
+      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的配置摘要已经过期。`);
+    }
   }
   if (hasIssue(projection, 'dynamicRefreshFailed')) {
     const failed = projection.issues.find((issue) => issue.code === 'dynamicRefreshFailed');
@@ -830,9 +1062,21 @@ function createFindings(options: {
         ? `最近一次动态刷新失败：${failed.detail}`
         : '最近一次动态刷新失败。',
     );
+    for (const entry of codexSkillEntries.filter((current) => current.lastRefresh?.status === 'failed')) {
+      findings.push(
+        entry.lastRefresh?.error
+          ? `codex.skill "${entry.artifactKey ?? entry.id}" 最近一次刷新失败：${entry.lastRefresh.error}`
+          : `codex.skill "${entry.artifactKey ?? entry.id}" 最近一次刷新失败。`,
+      );
+    }
   }
   if (hasIssue(projection, 'artifactMissing')) {
     findings.push('记录里的目标文件有缺失。');
+    for (const artifact of evidence.installRecord.artifacts.filter((recordArtifact) =>
+      recordArtifact.artifact.target === 'codex.skill' &&
+      recordArtifact.files.some((file) => !file.exists))) {
+      findings.push(`codex.skill "${artifact.artifact.artifactKey ?? artifact.artifact.id}" 缺少运行时文件。`);
+    }
   }
   if (hasIssue(projection, 'historicalLifecycleUnavailable')) {
     findings.push('历史 lifecycle runtime 不完整。');
@@ -864,10 +1108,27 @@ function createFindings(options: {
   if (evidence.adoptable.possible) {
     findings.push('项目文件与共享身份可以对齐，具备认领条件。');
   }
+  for (const entry of codexSkillEntries.filter((current) => current.state === 'disabled')) {
+    findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 当前按配置禁用。`);
+  }
+  if (legacyDynamicTracking.length > 0) {
+    findings.push(
+      `检测到当前 manifest 已移除的历史 dynamic tracking：${legacyDynamicTracking
+        .map((entry) => `${entry.id}(${entry.target})`)
+        .join('、')}。本轮不会在 status / diagnose / repair 中隐式迁移这些旧入口。`,
+    );
+  }
   if (deepDiagnose.attempted && deepDiagnose.rendered) {
     const drifted = deepDiagnose.artifacts.filter((artifact) => artifact.drift);
     if (drifted.length > 0) {
       findings.push(`deep 诊断下发现 ${drifted.length} 个动态内容与当前 renderer 结果不一致。`);
+      for (const artifact of drifted) {
+        if (artifact.target === 'codex.skill' && artifact.driftReasons?.length) {
+          findings.push(
+            `deep 诊断显示 codex.skill "${artifact.artifactKey ?? artifact.id}" 与当前 expected tree 不一致：${artifact.driftReasons.join('；')}`,
+          );
+        }
+      }
     }
   } else if (deepDiagnose.attempted && deepDiagnose.skippedReason === 'catalogDrift') {
     findings.push('deep 诊断跳过了跨版本内容比对，因为当前目录来源已经变化。');
@@ -954,8 +1215,12 @@ function toStatusJsonLocation(state: CollectedLocationState): StatusJsonLocation
       available: state.evidence.dynamicDiagnostic.available,
       unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
       unavailable: state.projection.dynamicDiagnosticUnavailable,
+      triggerPreference: state.evidence.installRecord.read.status === 'ok'
+        ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
+        : null,
       entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
     },
+    legacyDynamicTracking: collectLegacyDynamicTracking(state.evidence),
     dependencyIndex: {
       status: state.evidence.dependencyIndex.inspection.status,
       trusted: state.projection.dependencyIndexTrusted,

@@ -10,6 +10,10 @@ import {
   createArtifactConfigDigest,
   validateArtifactPlan,
 } from '../../src/utils/artifact-plan.js';
+import {
+  createCodexSkillExpectedTree,
+  createCodexSkillStagingTreeContentDigest,
+} from '../../src/utils/codex-skill-staging.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
@@ -147,6 +151,46 @@ function createDisabledInstructionPlan() {
     ],
   };
   return plan;
+}
+
+function createSkillManifest(): PluginManifestSource {
+  return createManifest({
+    artifacts: {
+      targets: [
+        {
+          id: 'codex-explore-skill',
+          platform: 'codex',
+          scopes: ['project', 'user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present', 'disabled'],
+          refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+          skillKey: 'codex-explore',
+        },
+      ],
+    },
+  });
+}
+
+function createSkillPlan() {
+  return {
+    version: 1,
+    artifacts: [
+      {
+        id: 'codex-explore-skill',
+        kind: 'skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        state: 'present',
+        skillKey: 'codex-explore',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        content: {
+          skillFile: '# Codex Explore\n',
+          openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
+        },
+      },
+    ],
+  };
 }
 
 const renderConfig = {
@@ -312,6 +356,15 @@ describe('artifact plan validation', () => {
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('requiresCodexProjectConfig');
+
+    expect(() => validateArtifactPlan({
+      manifest: createSkillManifest(),
+      plan: createSkillPlan(),
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).not.toThrow();
   });
 
   it('rejects missing returns, missing disabled refresh keys, role name drift, and reserved config_file', () => {
@@ -455,6 +508,176 @@ describe('artifact plan validation', () => {
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('unexpected field "path"');
+  });
+
+  it('accepts codex.skill plans and rejects missing skill identity or required files', () => {
+    const manifest = createSkillManifest();
+
+    const validated = validateArtifactPlan({
+      manifest,
+      plan: createSkillPlan(),
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    });
+    expect(validated.artifacts).toMatchObject([
+      {
+        id: 'codex-explore-skill',
+        kind: 'skill',
+        target: 'codex.skill',
+        skillKey: 'codex-explore',
+      },
+    ]);
+
+    const missingSkillKeyPlan = createSkillPlan();
+    delete (missingSkillKeyPlan.artifacts[0] as Record<string, unknown>).skillKey;
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: missingSkillKeyPlan,
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).toThrow('skillKey');
+
+    const mismatchedSkillKeyPlan = createSkillPlan();
+    mismatchedSkillKeyPlan.artifacts[0] = {
+      ...mismatchedSkillKeyPlan.artifacts[0],
+      skillKey: 'other-skill',
+    };
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: mismatchedSkillKeyPlan,
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).toThrow('expected "codex-explore"');
+
+    const unexpectedPathPlan = createSkillPlan();
+    unexpectedPathPlan.artifacts[0] = {
+      ...unexpectedPathPlan.artifacts[0],
+      content: {
+        ...unexpectedPathPlan.artifacts[0].content,
+        path: '.agents/skills/codex-explore/SKILL.md',
+      },
+    } as typeof unexpectedPathPlan.artifacts[number];
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: unexpectedPathPlan,
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).toThrow('unexpected field "path"');
+
+    const missingSkillFilePlan = createSkillPlan();
+    missingSkillFilePlan.artifacts[0] = {
+      ...missingSkillFilePlan.artifacts[0],
+      content: {
+        openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
+      },
+    } as typeof missingSkillFilePlan.artifacts[number];
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: missingSkillFilePlan,
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).toThrow('skillFile');
+
+    const missingOpenaiYamlPlan = createSkillPlan();
+    missingOpenaiYamlPlan.artifacts[0] = {
+      ...missingOpenaiYamlPlan.artifacts[0],
+      content: {
+        skillFile: '# Codex Explore\n',
+      },
+    } as typeof missingOpenaiYamlPlan.artifacts[number];
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: missingOpenaiYamlPlan,
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    })).toThrow('openaiYaml');
+  });
+
+  it('builds codex.skill expected trees from renderer content plus trigger preference patch', () => {
+    const validated = validateArtifactPlan({
+      manifest: createSkillManifest(),
+      plan: {
+        version: 1,
+        artifacts: [{
+          ...createSkillPlan().artifacts[0],
+          content: {
+            skillFile: '# Codex Explore\n',
+            openaiYaml: 'policy:\n  allow_implicit_invocation: false\n',
+          },
+        }],
+      },
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    });
+    const artifact = validated.artifacts[0]!;
+
+    const defaultTree = createCodexSkillExpectedTree({
+      artifact,
+      preference: 'default',
+    });
+    const autoTree = createCodexSkillExpectedTree({
+      artifact,
+      preference: 'auto',
+    });
+    const manualTree = createCodexSkillExpectedTree({
+      artifact,
+      preference: 'manual',
+    });
+
+    expect(defaultTree.files['SKILL.md']).toBe('# Codex Explore\n');
+    expect(defaultTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: true');
+    expect(autoTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: true');
+    expect(manualTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: false');
+    expect(createCodexSkillStagingTreeContentDigest(defaultTree)).toBe(
+      createCodexSkillStagingTreeContentDigest(autoTree),
+    );
+    expect(createCodexSkillStagingTreeContentDigest(manualTree)).not.toBe(
+      createCodexSkillStagingTreeContentDigest(defaultTree),
+    );
+  });
+
+  it('keeps codex.skill expected tree independent from embedded pristine templates', async () => {
+    const validated = validateArtifactPlan({
+      manifest: createSkillManifest(),
+      plan: createSkillPlan(),
+      platform: 'codex',
+      scope: 'project',
+      renderConfig,
+      rendererDigest: 'sha256:renderer-a',
+    });
+    const artifact = validated.artifacts[0]!;
+    const root = await makeTempRoot('aw-codex-skill-embedded-drift-');
+    const embeddedSkillPath = path.join(root, 'plugins', 'dynamic-artifacts', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml');
+    await fs.outputFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: false\n', 'utf8');
+
+    const beforeTree = createCodexSkillExpectedTree({
+      artifact,
+      preference: 'manual',
+    });
+    await fs.writeFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: true\n', 'utf8');
+    const afterTree = createCodexSkillExpectedTree({
+      artifact,
+      preference: 'manual',
+    });
+
+    expect(afterTree).toEqual(beforeTree);
+    expect(createCodexSkillStagingTreeContentDigest(afterTree)).toBe(
+      createCodexSkillStagingTreeContentDigest(beforeTree),
+    );
   });
 
   it('rejects duplicate artifact id + target entries', () => {

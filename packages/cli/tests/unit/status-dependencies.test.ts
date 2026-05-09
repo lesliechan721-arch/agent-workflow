@@ -37,10 +37,12 @@ async function maybePrepareP2RecordFiles(fixture: Awaited<ReturnType<typeof writ
 async function createProjectPluginMeta(options: {
   rootDir: string;
   pluginName: string;
+  includeDynamicInstructionTarget?: boolean;
 }): Promise<PluginMeta> {
   const pluginRoot = path.join(options.rootDir, 'catalog', options.pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const rendererPath = path.join(pluginRoot, 'scripts', 'render.mjs');
+  const includeDynamicInstructionTarget = options.includeDynamicInstructionTarget ?? true;
   const manifest = {
     name: options.pluginName,
     version: '1.0.0',
@@ -53,19 +55,27 @@ async function createProjectPluginMeta(options: {
         authentication: 'NONE',
       },
     },
-    artifacts: {
-      targets: [{
-        id: `${options.pluginName}-instruction`,
-        platform: 'codex',
-        scopes: ['project'],
-        target: 'codex.developerInstructionsBlock',
-        kind: 'instruction',
-        projectManagedKind: 'skill',
-        states: ['present', 'disabled'],
-        refreshKeys: ['sharedFlag'],
-        requiresCodexProjectConfig: true,
-      }],
-    },
+    ...(includeDynamicInstructionTarget
+      ? {
+          artifacts: {
+            targets: [{
+              id: `${options.pluginName}-instruction`,
+              platform: 'codex',
+              scopes: ['project'],
+              target: 'codex.developerInstructionsBlock',
+              kind: 'instruction',
+              projectManagedKind: 'skill',
+              states: ['present', 'disabled'],
+              refreshKeys: ['sharedFlag'],
+              requiresCodexProjectConfig: true,
+            }],
+          },
+        }
+      : {
+          artifacts: {
+            targets: [],
+          },
+        }),
     scripts: {
       artifacts: {
         render: {
@@ -342,6 +352,73 @@ describe('status P7', () => {
     expect(result.output).not.toContain('动态内容和上次接受的结果不一致');
     expect(result.output).not.toContain('共享配置已经变化');
     expect(result.output).not.toContain('最近一次动态刷新失败');
+  });
+
+  it('explains removed legacy dynamic tracking without reporting the old entry as current missing capability', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-status-legacy-dynamic-'),
+      scenario: 'installed',
+    });
+    await maybePrepareP2RecordFiles(fixture);
+    const currentPlugin = await createProjectPluginMeta({
+      rootDir: fixture.paths.rootDir,
+      pluginName: fixture.target.location.plugin,
+      includeDynamicInstructionTarget: false,
+    });
+    await alignFixtureSourceToPlugin({ fixture, currentPlugin });
+    await stripFixtureLifecycle(fixture);
+    const record = await fs.readJson(fixture.files.installRecordPath) as {
+      record: {
+        artifacts: Array<Record<string, unknown>>;
+      };
+    };
+    record.record.artifacts[0] = {
+      ...record.record.artifacts[0],
+      id: 'lightweight-instruction',
+    };
+    await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
+    await updateDiagnosticCache(fixture.files.diagnosticCachePath, (cache) => {
+      cache.artifacts[0]!.id = 'lightweight-instruction';
+    });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const rendererRunner = createRendererRunner();
+
+    const result = await statusCommand(
+      [fixture.target.location.plugin],
+      { cwd: fixture.paths.repoRoot, json: true },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: fixture.target.location.platform,
+          scope: fixture.target.location.scope,
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+          currentPlugin,
+        }],
+        p7ArtifactRendererRunner: rendererRunner,
+      } as never,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        summary: string;
+        issues: Array<{ code: string }>;
+        legacyDynamicTracking: Array<{
+          id: string;
+          target: string;
+        }>;
+      }>;
+    };
+    expect(rendererRunner.run).not.toHaveBeenCalled();
+    expect(payload.locations[0]?.summary).toContain('历史 dynamic tracking');
+    expect(payload.locations[0]?.legacyDynamicTracking).toEqual([
+      expect.objectContaining({
+        id: 'lightweight-instruction',
+        target: 'codex.developerInstructionsBlock',
+      }),
+    ]);
+    expect(payload.locations[0]?.issues ?? []).toEqual([]);
   });
 
   it('keeps default project status absolutely read-only when ignore rules are missing', async () => {

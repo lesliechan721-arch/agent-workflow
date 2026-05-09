@@ -1,7 +1,7 @@
 {
   "name": "codex-explore",
   "version": "0.1.0",
-  "description": "为 Codex 提供轻量指令和只读代码库探索流程。",
+  "description": "为 Codex 提供只读探索 workflow，支持代码库、多源资料与证据整合。",
   "skills": "./skills",
   "skillTriggers": {
     "codex-explore": {
@@ -20,7 +20,7 @@
   },
   "interface": {
     "displayName": "Codex Explore",
-    "shortDescription": "Codex 只读代码库探索",
+    "shortDescription": "Codex 只读探索与多源证据整合",
     "capabilities": ["Skills"]
   },
   "scripts": {
@@ -36,58 +36,33 @@
   },
   "config": {
     "schema": {
-      "enableLightweightInstruction": {
-        "type": "boolean",
-        "title": "启用轻量指令",
-        "default": true,
-        "description": "是否安装轻量指令，让主 Codex agent 使用内置 explorer role。"
-      },
       "explorerModel": {
         "type": "string",
         "title": "探索模型",
         "default": "gpt-5.4-mini",
-        "description": "使用内置 explorer role 时传入的模型。"
+        "description": "调用内置 explorer 时默认传入的模型。"
       },
       "modelReasoningEffort": {
         "type": "enum",
         "title": "探索推理强度",
         "values": ["low", "medium", "high", "xhigh"],
         "default": "medium",
-        "description": "启动 explorer 任务时传入的推理强度。"
+        "description": "调用内置 explorer 时默认传入的推理强度。"
       }
     }
   },
   "artifacts": {
     "targets": [
       {
-        "id": "lightweight-instruction",
+        "id": "codex-explore-skill",
         "platform": "codex",
         "scopes": ["user", "project"],
-        "target": "codex.developerInstructionsBlock",
-        "projectManagedKind": "instruction",
-        "states": ["present", "disabled"],
-        "refreshKeys": ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],
-        "requiresCodexProjectConfig": true
-      },
-      {
-        "id": "codex-explorer-role",
-        "platform": "codex",
-        "scopes": ["user", "project"],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
+        "target": "codex.skill",
+        "projectManagedKind": "skill",
         "states": ["present"],
         "refreshKeys": ["explorerModel", "modelReasoningEffort"],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explorer"
+        "skillKey": "codex-explore"
       }
     ]
-  },
-  "buildConfig": {
-    "fileRules": {
-      "codex": {
-        "include": ["instructions/**", "roles/**"],
-        "exclude": []
-      }
-    }
   }
 }

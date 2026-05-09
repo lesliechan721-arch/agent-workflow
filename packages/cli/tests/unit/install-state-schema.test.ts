@@ -231,6 +231,17 @@ describe('install-state schema', () => {
       state: 'present',
     }).ok).toBe(true);
     expect(validateProjectArtifactIdentityArtifact({
+      kind: 'skill',
+      platform: 'codex',
+      path: '.agents/skills/codex-explore',
+      artifactKey: 'codex-explore',
+      id: 'codex-explore-skill',
+      target: 'codex.skill',
+      ownershipMarker: 'aw:codex-explore',
+      state: 'present',
+      contentDigest: 'sha256:content',
+    }).ok).toBe(true);
+    expect(validateProjectArtifactIdentityArtifact({
       kind: 'instruction',
       platform: 'codex',
       path: '../outside.md',
@@ -427,6 +438,47 @@ describe('install-state schema', () => {
     if (!mismatchResult.ok) {
       expect(mismatchResult.code).toBe('artifactMismatch');
     }
+  });
+
+  it('accepts dynamic skill identities in install records and diagnostic cache', () => {
+    const record = makeInstallRecordFile({
+      artifacts: [{
+        kind: 'skill',
+        platform: 'codex',
+        path: '/tmp/repo/.agents/skills/codex-explore',
+        artifactKey: 'codex-explore',
+        id: 'codex-explore-skill',
+        target: 'codex.skill',
+      }],
+    });
+
+    expect(validateInstallRecordFile(record).ok).toBe(true);
+
+    const cache: DynamicArtifactDiagnosticCache = {
+      version: 1,
+      recordId: record.recordId,
+      location: {
+        plugin: record.record.pluginName,
+        platform: record.record.platform,
+        scope: record.record.scope,
+        projectKey: record.record.projectKey,
+      },
+      updatedAt: '2026-05-07T00:00:01.000Z',
+      artifacts: [{
+        id: 'codex-explore-skill',
+        target: 'codex.skill',
+        state: 'present',
+        artifactKey: 'codex-explore',
+        configDigest: 'sha256:cfg',
+        contentDigest: 'sha256:content',
+      }],
+    };
+
+    expect(validateDynamicArtifactDiagnosticCache(cache, {
+      expectedRecordId: record.recordId,
+      expectedLocation: cache.location,
+      currentRecord: record,
+    }).ok).toBe(true);
   });
 
   it('validates shared owner payloads and filename rules', () => {

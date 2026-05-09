@@ -26,6 +26,10 @@ import type {
 } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
+  getCodexProjectManagedKinds,
+  needsCodexProjectConfigAccess,
+} from '../../src/utils/codex-project-surface.js';
+import {
   resolveCodexProjectKey,
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
@@ -298,6 +302,69 @@ describe('Codex project installability', () => {
       installable: true,
       managedKinds: ['skill', 'instruction', 'agent'],
     });
+    const dynamicSkillPlugin = createPlugin({
+      config: {
+        schema: {
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+          modelReasoningEffort: {
+            type: 'enum',
+            values: ['low', 'medium', 'high', 'xhigh'],
+            default: 'medium',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'codex-explore-skill',
+            platform: 'codex',
+            scopes: ['project', 'user'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present', 'disabled'],
+            refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+            skillKey: 'codex-explore',
+          },
+        ],
+      },
+    });
+    expect(getCodexProjectInstallability(dynamicSkillPlugin)).toMatchObject({
+      installable: true,
+      managedKinds: ['skill'],
+    });
+    expect(getCodexProjectManagedKinds(dynamicSkillPlugin)).toEqual(['skill']);
+    expect(needsCodexProjectConfigAccess(dynamicSkillPlugin, undefined)).toBe(false);
+
+    const configBackedRolePlugin = createPlugin({
+      config: {
+        schema: {
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'codex-explorer-role',
+            platform: 'codex',
+            scopes: ['project'],
+            target: 'codex.agentRole',
+            projectManagedKind: 'agent',
+            states: ['present'],
+            refreshKeys: ['explorerModel'],
+            requiresCodexProjectConfig: true,
+            roleKey: 'codex-explorer',
+          },
+        ],
+      },
+    });
+    expect(needsCodexProjectConfigAccess(configBackedRolePlugin, undefined)).toBe(true);
+
     expect(getCodexProjectInstallability(createPlugin({
       marketplace: {
         category: 'workflow',

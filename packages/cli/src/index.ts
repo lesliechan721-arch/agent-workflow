@@ -319,6 +319,7 @@ function writeArtifactRefreshNotice(
     attempted: boolean;
     status: 'succeeded' | 'failed' | 'skipped';
     error?: string;
+    nextSteps?: string[];
   } | undefined,
 ): void {
   if (!artifactRefresh?.attempted || artifactRefresh.status !== 'failed') {
@@ -329,6 +330,9 @@ function writeArtifactRefreshNotice(
     write,
     `配置已保存，但相关项目文件刷新失败：${artifactRefresh.error ?? '请运行 aw status 检查详细诊断。'}`,
   );
+  if (artifactRefresh.nextSteps && artifactRefresh.nextSteps.length > 0) {
+    writeLine(write, `下一步：${artifactRefresh.nextSteps.join('；')}`);
+  }
 }
 
 function formatConfigIssueRepairHint(

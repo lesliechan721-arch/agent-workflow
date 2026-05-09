@@ -69,6 +69,8 @@ import type {
 } from '../types.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScript } from '../utils/plugin-scripts.js';
+import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
+import { resolveAwHome } from '../utils/paths.js';
 
 export interface RawRepairCommandOptions extends RawCommandOptions {
   adoptExisting?: boolean;
@@ -122,6 +124,17 @@ export interface RepairLocationPayload {
   dependencyIndexVerifiedLocations: PluginLocation[];
   dependencyIndexRevisitLocations: PluginLocation[];
   dependencyIndexRecoveryMessage: string | null;
+  triggerPreferenceApplied: SkillTriggerPreference | null;
+  dynamicArtifacts: Array<{
+    id: string;
+    target: string;
+    state: string;
+    artifactKey?: string;
+    roleKey?: string;
+    disabledReason?: string;
+    configDigest?: string;
+    contentDigest?: string;
+  }>;
   sharedSkillTriggerOwner: {
     present: boolean;
     needsTakeover: boolean;
@@ -222,6 +235,8 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
   | 'dependencyIndexVerifiedLocations'
   | 'dependencyIndexRevisitLocations'
   | 'dependencyIndexRecoveryMessage'
+  | 'triggerPreferenceApplied'
+  | 'dynamicArtifacts'
   | 'sharedSkillTriggerOwner'
   | 'nativeTransactionMarker'
 > {
@@ -243,6 +258,19 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
           ? '请回到可能相关的仓库重新运行 diagnose 或 repair。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`,
+    triggerPreferenceApplied: state.evidence.installRecord.read.status === 'ok'
+      ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
+      : null,
+    dynamicArtifacts: state.evidence.dynamicDiagnostic.entries.map(({ entry }) => ({
+      id: entry.id,
+      target: entry.target,
+      state: entry.state,
+      ...(entry.artifactKey ? { artifactKey: entry.artifactKey } : {}),
+      ...(entry.roleKey ? { roleKey: entry.roleKey } : {}),
+      ...(entry.disabledReason ? { disabledReason: entry.disabledReason } : {}),
+      ...(entry.configDigest ? { configDigest: entry.configDigest } : {}),
+      ...(entry.contentDigest ? { contentDigest: entry.contentDigest } : {}),
+    })),
     sharedSkillTriggerOwner: {
       present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
       needsTakeover,
@@ -259,6 +287,92 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
       ...(markerStatus !== 'none' ? { cleanupCommand: `aw cleanup ${args}` } : {}),
     },
   };
+}
+
+function collectRemovedDynamicTracking(state: CollectedLocationState): Array<{
+  id: string;
+  target: string;
+  artifactKey?: string;
+  roleKey?: string;
+}> {
+  if (!state.currentCatalog || state.evidence.installRecord.sameBundleAsCatalog !== true) {
+    return [];
+  }
+  const legacyIds = new Set(['lightweight-instruction', 'codex-explorer-role']);
+
+  return state.evidence.installRecord.artifacts
+    .filter((artifact) =>
+      artifact.artifact.id !== undefined &&
+      artifact.artifact.target !== undefined &&
+      legacyIds.has(artifact.artifact.id) &&
+      !artifact.matchedCurrentDynamicArtifact)
+    .map((artifact) => ({
+      id: artifact.artifact.id!,
+      target: artifact.artifact.target!,
+      ...(artifact.artifact.artifactKey ? { artifactKey: artifact.artifact.artifactKey } : {}),
+      ...(artifact.artifact.roleKey ? { roleKey: artifact.artifact.roleKey } : {}),
+    }));
+}
+
+function summarizeDynamicArtifacts(
+  artifacts: readonly GeneratedArtifact[],
+): RepairLocationPayload['dynamicArtifacts'] {
+  return artifacts
+    .filter((artifact) => artifact.id && artifact.target)
+    .map((artifact) => ({
+      id: artifact.id!,
+      target: artifact.target!,
+      state: artifact.state ?? 'present',
+      ...(artifact.artifactKey ? { artifactKey: artifact.artifactKey } : {}),
+      ...(artifact.roleKey ? { roleKey: artifact.roleKey } : {}),
+      ...(artifact.disabledReason ? { disabledReason: artifact.disabledReason } : {}),
+      ...(artifact.configDigest ? { configDigest: artifact.configDigest } : {}),
+      ...(artifact.contentDigest ? { contentDigest: artifact.contentDigest } : {}),
+    }));
+}
+
+function shouldRefreshCodexUserNativeAfterArtifactRepair(options: {
+  location: PluginLocation;
+  generatedArtifacts: GeneratedArtifact[];
+}): boolean {
+  return (
+    options.location.platform === 'codex' &&
+    options.location.scope === 'user' &&
+    options.generatedArtifacts.some((artifact) => artifact.target === 'codex.skill')
+  );
+}
+
+async function inferCodexUserDynamicSkillPreferenceFromRuntime(options: {
+  pluginName: string;
+  artifacts: readonly InstallRecordArtifact[];
+  env: NodeJS.ProcessEnv;
+}): Promise<SkillTriggerPreference | undefined> {
+  for (const artifact of options.artifacts) {
+    if (artifact.target !== 'codex.skill' || !artifact.artifactKey) {
+      continue;
+    }
+    const metadataPath = path.join(
+      getLocalMarketplaceCodexSkillRoot(
+        resolveAwHome(options.env),
+        options.pluginName,
+        artifact.artifactKey,
+      ),
+      'agents',
+      'openai.yaml',
+    );
+    if (!(await fs.pathExists(metadataPath))) {
+      continue;
+    }
+    const content = await fs.readFile(metadataPath, 'utf8');
+    if (content.includes('allow_implicit_invocation: false')) {
+      return 'manual';
+    }
+    if (content.includes('allow_implicit_invocation: true')) {
+      return 'default';
+    }
+  }
+
+  return undefined;
 }
 
 function sourceEqualsRecord(source: CurrentCatalogSource, record: InstallRecordFile): boolean {
@@ -324,10 +438,13 @@ function toInstallRecordArtifacts(
     ...(artifact.hookGroups === undefined ? {} : { hookGroups: structuredClone(artifact.hookGroups) }),
     ...(artifact.id === undefined ? {} : { id: artifact.id }),
     ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.state === undefined ? {} : { state: artifact.state }),
     ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
     ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
       : {}),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   }));
 }
 
@@ -412,6 +529,7 @@ function toProjectArtifactIdentityArtifact(
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
       : {}),
     ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
     ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   };
 }
@@ -911,7 +1029,10 @@ async function ensureDependencyLocationHealthy(options: {
   const generatedArtifacts = await adapters[options.location.platform].installExtensions(
     dependencyPlugin,
     options.location.scope,
-    { event: previousRecord ? 'upgrade' : 'install' },
+    {
+      event: previousRecord ? 'upgrade' : 'install',
+      skillTriggerPreference: options.parentPreference ?? 'default',
+    },
   );
 
   const runtimeStage = await maybeStageHistoricalLifecycle({
@@ -1106,11 +1227,19 @@ async function repairInstalledLocation(options: {
   const source = await buildCurrentCatalogSource(currentPlugin);
   const sameBundle = sourceEqualsRecord(source, record);
   const sourceDrift = !sameBundle;
+  const removedDynamicTracking = collectRemovedDynamicTracking(state);
   const rewriteIssues = state.projection.issues.filter((issue) => isRepairRewriteIssue(issue.code));
 
   if (sourceDrift && rewriteIssues.length > 0) {
     throw new Error(
       `${location.plugin} 的 record source 已经漂移，当前 repair 不能隐式升级或重写 artifacts。请改用 aw upgrade、aw reinstall 或 aw cleanup。`,
+    );
+  }
+  if (removedDynamicTracking.length > 0) {
+    throw new Error(
+      `${location.plugin} 检测到当前 manifest 已移除的历史 dynamic tracking（${removedDynamicTracking
+        .map((artifact) => `${artifact.id}/${artifact.target}`)
+        .join('、')}）。本轮 repair 不会隐式迁移这些旧入口；请先按新基线重新安装，或显式 cleanup 旧残留。`,
     );
   }
 
@@ -1193,11 +1322,30 @@ async function repairInstalledLocation(options: {
   if (needsNativeInstall) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
+  const inferredRuntimePreference = options.repairOptions.requestedSkillTrigger === undefined
+    ? await inferCodexUserDynamicSkillPreferenceFromRuntime({
+      pluginName: location.plugin,
+      artifacts: record.record.artifacts,
+      env: options.env,
+    })
+    : undefined;
+  const effectiveSkillTriggerPreference = options.repairOptions.requestedSkillTrigger
+    ?? inferredRuntimePreference
+    ?? record.record.options?.skillTriggerPreference
+    ?? 'default';
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
-    { event: 'upgrade' },
+    {
+      event: 'upgrade',
+      skillTriggerPreference: effectiveSkillTriggerPreference,
+    },
   );
+  let nativeInstallReplayed = needsNativeInstall;
+  if (shouldRefreshCodexUserNativeAfterArtifactRepair({ location, generatedArtifacts })) {
+    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    nativeInstallReplayed = true;
+  }
 
   const runtimeStage = await maybeStageHistoricalLifecycle({
     cwd: options.repairOptions.cwd,
@@ -1214,7 +1362,7 @@ async function repairInstalledLocation(options: {
     artifacts: generatedArtifacts.length > 0 ? generatedArtifacts : record.record.artifacts as never as GeneratedArtifact[],
     updatedAt: new Date().toISOString(),
     lifecycle: runtimeStage?.runtimeRef ?? record.record.lifecycle,
-    requestedSkillTrigger: options.repairOptions.requestedSkillTrigger,
+    requestedSkillTrigger: effectiveSkillTriggerPreference,
   });
   const stages = [];
   if (runtimeStage) {
@@ -1287,10 +1435,12 @@ async function repairInstalledLocation(options: {
       dependencyIndex: true,
       nativeMarkerDeleted: nativeMarkerPresent && result.warnings.every((warning) => warning.code !== 'nativeMarkerDeleteFailed'),
       artifactsReapplied: true,
-      nativeInstallReplayed: needsNativeInstall,
+      nativeInstallReplayed,
       lifecycleExecuted: false,
     },
     ...buildRepairLocationDetails(state),
+    triggerPreferenceApplied: nextRecord.record.options?.skillTriggerPreference ?? null,
+    dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     warnings: [...warnings, ...result.warnings],
   };
 }
@@ -1324,8 +1474,16 @@ async function repairMarkerOnlyLocation(options: {
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
-    { event: 'install' },
+    {
+      event: 'install',
+      skillTriggerPreference: options.repairOptions.requestedSkillTrigger ?? 'default',
+    },
   );
+  let nativeInstallReplayed = !nativeSatisfied;
+  if (shouldRefreshCodexUserNativeAfterArtifactRepair({ location, generatedArtifacts })) {
+    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    nativeInstallReplayed = true;
+  }
   const runtimeStage = await maybeStageHistoricalLifecycle({
     cwd: options.repairOptions.cwd,
     location,
@@ -1390,10 +1548,12 @@ async function repairMarkerOnlyLocation(options: {
       dependencyIndex: true,
       nativeMarkerDeleted: result.warnings.every((warning) => warning.code !== 'nativeMarkerDeleteFailed'),
       artifactsReapplied: true,
-      nativeInstallReplayed: !nativeSatisfied,
+      nativeInstallReplayed,
       lifecycleExecuted: false,
     },
     ...buildRepairLocationDetails(state),
+    triggerPreferenceApplied: recordFile.record.options?.skillTriggerPreference ?? null,
+    dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     warnings: result.warnings,
   };
 }
@@ -1452,7 +1612,10 @@ async function adoptExistingLocation(options: {
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
-    { event: 'install' },
+    {
+      event: 'install',
+      skillTriggerPreference: options.repairOptions.requestedSkillTrigger ?? 'default',
+    },
   );
   const lifecycleResult = await maybeExecuteInstallLifecycle({
     plugin: currentPlugin,
@@ -1546,6 +1709,8 @@ async function adoptExistingLocation(options: {
       lifecycleExecuted: lifecycleResult.executed,
     },
     ...buildRepairLocationDetails(state),
+    triggerPreferenceApplied: recordFile.record.options?.skillTriggerPreference ?? null,
+    dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     ...(lifecycleResult.reason === 'adoptExistingFirstLocalRecord'
       ? { adoptExistingLifecycleReason: 'adoptExistingFirstLocalRecord' as const }
       : {}),

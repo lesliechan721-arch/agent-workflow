@@ -52,6 +52,7 @@ const VALID_SKILL_TRIGGER_PREFERENCES = new Set<SkillTriggerPreference>(['defaul
 const VALID_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
+  'codex.skill',
 ]);
 const VALID_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const VALID_REPO_MANAGED_ARTIFACT_KINDS = new Set<RepoManagedArtifactKind>([
@@ -86,6 +87,12 @@ const BANNED_RECORD_FIELDS = new Set([
   'artifactHealthSnapshot',
   'lifecycleConfigSnapshot',
 ]);
+
+const INSTALL_STATE_ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, RepoManagedArtifactKind> = {
+  'codex.developerInstructionsBlock': 'instruction',
+  'codex.agentRole': 'agent',
+  'codex.skill': 'skill',
+};
 
 function validatePlatform(value: unknown, context: string): ValidationResult<PlatformName> {
   if (!VALID_PLATFORMS.has(value as PlatformName)) {
@@ -281,7 +288,12 @@ function validateInstallDependencyEdge(
 function validateArtifactIdentityFields(
   value: Record<string, unknown>,
   context: string,
-  options: { allowState?: boolean; allowContentDigest?: boolean; expectAbsolutePath: boolean },
+  options: {
+    allowState?: boolean;
+    allowConfigDigest?: boolean;
+    allowContentDigest?: boolean;
+    expectAbsolutePath: boolean;
+  },
 ): ValidationResult<void> {
   if (!VALID_REPO_MANAGED_ARTIFACT_KINDS.has(value.kind as RepoManagedArtifactKind)) {
     return fail('invalidArtifact', `Invalid ${context}.kind: unsupported artifact kind.`);
@@ -334,8 +346,20 @@ function validateArtifactIdentityFields(
   if ((value.id === undefined) !== (value.target === undefined)) {
     return fail('invalidArtifact', `Invalid ${context}: dynamic artifact identity requires both "id" and "target".`);
   }
+  if (value.target !== undefined) {
+    const expectedKind = INSTALL_STATE_ARTIFACT_KIND_BY_TARGET[value.target as ArtifactTarget];
+    if (value.kind !== expectedKind) {
+      return fail(
+        'invalidArtifact',
+        `Invalid ${context}: target "${value.target}" must use artifact kind "${expectedKind}".`,
+      );
+    }
+  }
   if (value.roleKey !== undefined && !isNonEmptyString(value.roleKey)) {
     return fail('invalidArtifact', `Invalid ${context}.roleKey: expected a non-empty string.`);
+  }
+  if (value.target !== 'codex.agentRole' && value.roleKey !== undefined) {
+    return fail('invalidArtifact', `Invalid ${context}.roleKey: only codex.agentRole may declare roleKey.`);
   }
   if (value.hookGroups !== undefined) {
     if (!Array.isArray(value.hookGroups) || value.hookGroups.length === 0) {
@@ -355,6 +379,13 @@ function validateArtifactIdentityFields(
   }
   if (!options.allowState && value.state !== undefined) {
     return fail('unexpectedField', `Invalid ${context}: install record artifacts must not persist "state".`);
+  }
+  if (options.allowConfigDigest) {
+    if (value.configDigest !== undefined && !isNonEmptyString(value.configDigest)) {
+      return fail('invalidArtifact', `Invalid ${context}.configDigest: expected a non-empty string.`);
+    }
+  } else if (value.configDigest !== undefined) {
+    return fail('unexpectedField', `Invalid ${context}: install record artifacts must not persist "configDigest".`);
   }
   if (options.allowContentDigest) {
     if (value.contentDigest !== undefined && !isNonEmptyString(value.contentDigest)) {
@@ -389,15 +420,30 @@ export function validateInstallRecordArtifact(
   }
   const allowedKeys = ensureOnlyKeys(
     value,
-    ['kind', 'platform', 'path', 'paths', 'artifactKey', 'hookGroups', 'id', 'target', 'roleKey', 'ownershipMarker'],
+    [
+      'kind',
+      'platform',
+      'path',
+      'paths',
+      'artifactKey',
+      'hookGroups',
+      'id',
+      'target',
+      'state',
+      'roleKey',
+      'ownershipMarker',
+      'configDigest',
+      'contentDigest',
+    ],
     context,
   );
   if (!allowedKeys.ok) {
     return allowedKeys;
   }
   const validated = validateArtifactIdentityFields(value, context, {
-    allowState: false,
-    allowContentDigest: false,
+    allowState: true,
+    allowConfigDigest: true,
+    allowContentDigest: true,
     expectAbsolutePath: true,
   });
   if (!validated.ok) {
@@ -482,6 +528,7 @@ export function validateProjectArtifactIdentityArtifact(
       'roleKey',
       'ownershipMarker',
       'state',
+      'configDigest',
       'contentDigest',
     ],
     context,
@@ -491,6 +538,7 @@ export function validateProjectArtifactIdentityArtifact(
   }
   const validated = validateArtifactIdentityFields(value, context, {
     allowState: true,
+    allowConfigDigest: true,
     allowContentDigest: true,
     expectAbsolutePath: false,
   });
@@ -808,6 +856,9 @@ function validateDiagnosticEntry(
   }
   if (value.roleKey !== undefined && !isNonEmptyString(value.roleKey)) {
     return fail('invalidDiagnosticEntry', `Invalid ${context}.roleKey: expected a non-empty string.`);
+  }
+  if (value.target !== 'codex.agentRole' && value.roleKey !== undefined) {
+    return fail('invalidDiagnosticEntry', `Invalid ${context}.roleKey: only codex.agentRole may declare roleKey.`);
   }
   if (value.refreshKeys !== undefined && !isStringArray(value.refreshKeys)) {
     return fail('invalidDiagnosticEntry', `Invalid ${context}.refreshKeys: expected a string array.`);

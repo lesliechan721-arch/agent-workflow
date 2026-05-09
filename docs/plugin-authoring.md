@@ -130,7 +130,7 @@ Node 脚本默认只能使用 `node:` 内置模块和插件内相对 import。�
 
 `scripts.artifacts.render` 用于动态生成 AW 管理的 artifact plan。它只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行；`aw status` 不会执行 renderer，也不会执行 lifecycle。首版 renderer 入口使用 `runner = "node"`，`path` 必须是插件包内的 `./` 相对路径，可选 `args` 会传给脚本。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 context JSON 文件；context 包含 event、platform、scope、插件名/版本/rootDir、artifact render config、changedConfigKeys、previousArtifacts、AW/Codex/Claude home、manifestPath、renderer digest 等信息。
 
-renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败诊断摘要。renderer 不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件；它只能返回 plan。AW 会先按 manifest 校验 plan，再由对应 target runtime 统一写盘、回滚、诊断缓存、status 和 uninstall。
+renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败诊断摘要。renderer 不能直接写 `.agents/skills/**`、Codex user runtime skill、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件；它只能返回 plan。AW 会先按 manifest 校验 plan，再由对应 target runtime 统一写盘、回滚、诊断缓存、status 和 uninstall。
 
 示例：
 
@@ -169,28 +169,24 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 ```json
 {
+  "skills": "./skills",
+  "skillTriggers": {
+    "codex-explore": {
+      "allowInstallOverride": true
+    }
+  },
   "artifacts": {
     "targets": [
       {
-        "id": "lightweight-instruction",
+        "id": "codex-explore-skill",
         "platform": "codex",
         "scopes": ["user", "project"],
-        "target": "codex.developerInstructionsBlock",
-        "projectManagedKind": "instruction",
-        "states": ["present", "disabled"],
-        "refreshKeys": ["enableLightweightInstruction"],
-        "requiresCodexProjectConfig": true
-      },
-      {
-        "id": "codex-explorer-role",
-        "platform": "codex",
-        "scopes": ["user", "project"],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
+        "target": "codex.skill",
+        "kind": "skill",
+        "projectManagedKind": "skill",
         "states": ["present"],
-        "refreshKeys": ["explorerModel"],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explorer"
+        "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+        "skillKey": "codex-explore"
       }
     ]
   }
@@ -200,14 +196,45 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 `ArtifactPlan` 顶层格式为 `{ "version": 1, "artifacts": [...] }`。每个 artifact 的关键字段：
 
 - `id`：插件内稳定 id，只能使用安全字符；`pluginName + id + target` 是 AW 受管 artifact 的逻辑身份
-- `target`：首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`
+- `target`：首版支持 `codex.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`
 - `state`：首版支持 `present` 和 `disabled`；当前 platform/scope 在 manifest 中声明过的动态 artifact 必须返回其中一种状态，不能省略
 - `refreshKeys`：必须完整保留 manifest 中该 artifact 声明的 config key，且 key 必须存在于 `config.schema`
 - `disabledReason`：`state = "disabled"` 时可写，例如 `config`；disabled artifact 可以没有 content，但仍要保留 `refreshKeys`
 
+`codex.skill` 管理 Codex skill 目录。manifest target 必须静态声明 `skillKey`，用于安装前路径冲突检查、install record artifact identity、project artifact shared identity 和后续 stale prune；renderer plan 里的 `skillKey` 必须完全匹配。`present` content 是对象，必须包含 `skillFile`（写成运行时 `SKILL.md`）和 `openaiYaml`（写成运行时 `agents/openai.yaml`）。renderer 不能提供任意路径，也不能自己写 `.agents/skills/<skillKey>` 或用户级 Codex runtime。project scope 下它的 `projectManagedKind` 应声明为 `skill`，且不要求 `requiresCodexProjectConfig: true`，因为它不依赖 `.codex/config.toml`。
+
+`codex.skill` 的内容真值来自“静态模板 + 当前 artifact render config + 当前 skill trigger preference patch”。插件通常把 `skills/<skillKey>/SKILL.md` 和 `skills/<skillKey>/agents/openai.yaml` 作为静态模板，由 renderer 读取模板并插入配置值；AW apply 阶段再按 install record 中的 `skillTriggerPreference` patch `openaiYaml`。`default` 和 `auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。重复 install、upgrade、repair 或 config refresh 不会因为 renderer 输出默认值而重置用户显式选择。
+
+renderer plan 示例：
+
+```json
+{
+  "version": 1,
+  "artifacts": [
+    {
+      "id": "codex-explore-skill",
+      "kind": "skill",
+      "platform": "codex",
+      "target": "codex.skill",
+      "state": "present",
+      "skillKey": "codex-explore",
+      "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+      "content": {
+        "skillFile": "---\nname: codex-explore\n---\n# Codex Explore\n",
+        "openaiYaml": "policy:\n  allow_implicit_invocation: true\n"
+      }
+    }
+  ]
+}
+```
+
 `codex.developerInstructionsBlock` 写入当前 scope 对应 Codex config 的 AW managed developer instructions block。`present` 需要 `content` 字符串；`disabled` 会移除或跳过该 artifact 对应的受管 instruction，不保留“已禁用”的运行时提示词。project scope 下它的 `projectManagedKind` 应声明为 `instruction`。
 
 `codex.agentRole` 管理 Codex agent role 注册项和 role layer 文件。manifest target 必须静态声明 `roleKey`，用于安装前 role namespace 冲突检查；renderer plan 里的 `roleKey` 必须完全匹配。`present` content 包含 `registration.description` 和 `roleFile`；`registration.config_file` 由 AW 生成，renderer 不能提供。`roleFile.name` 必须等于 `roleKey`，可包含 Codex-only 的 `model` 和 `model_reasoning_effort`。project scope 下它的 `projectManagedKind` 应声明为 `agent`，不要把内部 `kind = "codexRole"` 写入 install record artifact identity。
+
+动态 `codex.skill` 适合配置驱动的 skill。不要用 lifecycle 直接改 `.agents/skills/**`、`~/.codex/**` 或 `~/.aw/plugins/**` 来“刷新 skill”；那会绕过 install record、trigger preference、diagnostic cache、status/diagnose/repair 和 uninstall/stale prune。固定不随配置变化的 skill 仍放在 `skills/` 静态目录即可。
+
+> P0/P11 runtime contract：`codex-explore` 以 `codex.skill` 形态发布通用只读探索 workflow。它可以覆盖代码库、文档、网络资料、日志和用户材料；公开文档和 release 说明需要同时写清，具体来源访问取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
 静态 `extensions.*` 仍然适合不依赖 AW config 动态切换的简单产物，例如固定 instructions、permissions、hooks、native hooks 或 agent 文件。已有静态插件不需要迁移到 renderer；只有当产物内容、启用状态或 role 注册需要随 AW config 刷新时，才应使用动态 artifact。
 

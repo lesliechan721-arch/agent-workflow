@@ -6,9 +6,13 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { preparePluginTargetsForCommand } from '../../src/commands/common.js';
+import { createHistoricalPluginTarget } from '../../src/commands/common.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import { resolveCurrentCatalog } from '../../src/utils/plugin-catalog.js';
+import { getCodexProjectManagedKinds } from '../../src/utils/codex-project-surface.js';
+import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
@@ -213,4 +217,39 @@ it('keeps Codex project upgrade --all read-only preflight zero-write when ledger
       ),
     ),
   ).rejects.toThrow('installed.json 处于 degraded 状态');
+});
+
+it('reconstructs historical codex.skill targets as project-managed skills without project config backing', async () => {
+  const workspace = await makeWorkspace([]);
+  const trackingDir = resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).trackingDir;
+  await upsertTrackingRecord(trackingDir, 'codex-explore', [{
+    path: path.join(workspace.repoRoot, '.agents', 'skills', 'codex-explore'),
+    kind: 'skill',
+    platform: 'codex',
+    artifactKey: 'codex-explore',
+    id: 'codex-explore-skill',
+    target: 'codex.skill',
+    state: 'present',
+    refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+  }]);
+
+  const target = await createHistoricalPluginTarget(
+    workspace.repoRoot,
+    'project',
+    'codex-explore',
+    undefined,
+    workspace.env,
+  );
+
+  expect(target.plugin.manifest.artifacts?.targets).toMatchObject([
+    {
+      id: 'codex-explore-skill',
+      target: 'codex.skill',
+      kind: 'skill',
+      projectManagedKind: 'skill',
+      skillKey: 'codex-explore',
+      requiresCodexProjectConfig: false,
+    },
+  ]);
+  expect(getCodexProjectManagedKinds(target.plugin)).toEqual(['skill']);
 });

@@ -15,9 +15,11 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
+import { readInstallRecordFileAt } from '../install-state/facade.js';
 import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
 import {
+  getCodexHome,
   resolveAwHome,
   resolveCliPackageRoot,
   resolveEmbeddedPluginsRoot,
@@ -27,6 +29,22 @@ import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-prefere
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
+}
+
+export function getLocalMarketplacePluginRoot(rootDir: string, pluginName: string): string {
+  return path.join(rootDir, 'plugins', pluginName);
+}
+
+export function getLocalMarketplaceCodexSkillsRoot(rootDir: string, pluginName: string): string {
+  return path.join(getLocalMarketplacePluginRoot(rootDir, pluginName), 'codex', 'skills');
+}
+
+export function getLocalMarketplaceCodexSkillRoot(
+  rootDir: string,
+  pluginName: string,
+  skillKey: string,
+): string {
+  return path.join(getLocalMarketplaceCodexSkillsRoot(rootDir, pluginName), skillKey);
 }
 
 async function readCliPackageInfo(): Promise<{ name: string; version: string }> {
@@ -620,6 +638,77 @@ async function preserveLocalRuntimeStateDirectories(sourceRoot: string, targetRo
   }
 }
 
+async function replayCodexUserDynamicSkillsToMarketplace(options: {
+  previousMarketplaceRoot: string;
+  marketplaceRoot: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<{ warnings: string[] }> {
+  const warnings: string[] = [];
+  const recordsDir = path.join(getCodexHome(options.env), '.agent-workflows', 'records');
+  if (!(await fs.pathExists(recordsDir))) {
+    return { warnings };
+  }
+
+  const recordEntries = (await fs.readdir(recordsDir))
+    .filter((entry) => entry.endsWith('.json'))
+    .sort();
+
+  for (const entry of recordEntries) {
+    const recordPath = path.join(recordsDir, entry);
+    const recordRead = await readInstallRecordFileAt(recordPath, { env: options.env });
+    if (recordRead.status !== 'ok') {
+      warnings.push(`跳过 user dynamic skill replay：无法读取 install record ${recordPath}。`);
+      continue;
+    }
+
+    const recordFile = recordRead.value;
+    if (recordFile.record.platform !== 'codex' || recordFile.record.scope !== 'user') {
+      continue;
+    }
+
+    for (const artifact of recordFile.record.artifacts) {
+      if (artifact.target !== 'codex.skill' || !artifact.artifactKey) {
+        continue;
+      }
+
+      const targetSkillRoot = getLocalMarketplaceCodexSkillRoot(
+        options.marketplaceRoot,
+        recordFile.record.pluginName,
+        artifact.artifactKey,
+      );
+
+      if (artifact.state === 'disabled') {
+        await fs.remove(targetSkillRoot);
+        continue;
+      }
+
+      const sourceSkillRoot = path.isAbsolute(artifact.path)
+        ? artifact.path
+        : getLocalMarketplaceCodexSkillRoot(
+            options.previousMarketplaceRoot,
+            recordFile.record.pluginName,
+            artifact.artifactKey,
+          );
+      if (!(await fs.pathExists(sourceSkillRoot))) {
+        warnings.push(
+          `跳过 user dynamic skill replay：缺少 runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey}（${sourceSkillRoot}）。`,
+        );
+        await fs.remove(targetSkillRoot);
+        continue;
+      }
+
+      await fs.remove(targetSkillRoot);
+      await fs.ensureDir(path.dirname(targetSkillRoot));
+      await fs.copy(sourceSkillRoot, targetSkillRoot, {
+        overwrite: true,
+        errorOnExist: false,
+      });
+    }
+  }
+
+  return { warnings };
+}
+
 async function replaceDirectoryAtomically(targetDir: string, stagingDir: string): Promise<void> {
   const parentDir = path.dirname(targetDir);
   const backupDir = path.join(parentDir, `.aw-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -694,6 +783,12 @@ export async function initializeLocalMarketplace(
       warnOnDegraded: ledgerFileExists,
     });
     warnings.push(...replay.warnings);
+    const dynamicSkillReplay = await replayCodexUserDynamicSkillsToMarketplace({
+      previousMarketplaceRoot: awHome,
+      marketplaceRoot: stagingDir,
+      env,
+    });
+    warnings.push(...dynamicSkillReplay.warnings);
     await writeJsonFile(path.join(stagingDir, 'installed.json'), ledger);
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
       version: 1,

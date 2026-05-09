@@ -15,6 +15,7 @@ import {
   patchClaudeSkillFrontmatter,
   patchCodexOpenAiYaml,
   readCurrentSkillTriggerRuntimeSignature,
+  rematerializeSkillTriggerPreferenceAfterUninstall,
   resolveSkillTriggerPolicies,
   rollbackMaterializedSkillTriggerPreference,
   selectEffectiveSkillTriggerPreference,
@@ -80,6 +81,9 @@ async function writeBundlePlugin(options: {
   rootDir: string;
   pluginName?: string;
   skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
+  artifacts?: {
+    targets: Array<Record<string, unknown>>;
+  };
   skills: Record<string, BundleSkillDefinition>;
 }): Promise<string> {
   const pluginName = options.pluginName ?? 'git-commit';
@@ -94,6 +98,7 @@ async function writeBundlePlugin(options: {
       description: `${pluginName} plugin`,
       skills: './skills',
       skillTriggers: options.skillTriggers,
+      artifacts: options.artifacts,
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -251,6 +256,81 @@ describe('skill trigger preferences', () => {
       marketplaceRootOrStagingRoot: marketplaceRoot,
       mode: 'bestEffortReplay',
     });
+    await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_TRUE);
+  });
+
+  it('excludes manifest-declared codex.skill keys from static Codex materialization and uninstall rematerialize', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-dynamic-embedded-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      artifacts: {
+        targets: [{
+          id: 'commit-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'commit',
+        }],
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+    const policies = await resolveSkillTriggerPolicies({
+      embeddedRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+    });
+    expect(policies.applicability).toBe('none');
+    expect(policies.policies).toEqual([]);
+
+    const materialization = await materializeSkillTriggerPreference({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      resolvedOptions: {
+        skillTriggerPreference: 'manual',
+      },
+      embeddedRoot,
+      marketplaceRootOrStagingRoot: marketplaceRoot,
+      mode: 'strictExplicit',
+    });
+    expect(materialization.generatedArtifacts).toEqual([]);
+    expect(materialization.summary.status).toBe('skipped');
+    await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_TRUE);
+
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createLedgerScopeRecord({
+            preference: 'manual',
+            writeOrder: 1,
+          }),
+        },
+      },
+    };
+    const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      ledgerAfterUninstall: ledger,
+      embeddedRoot,
+      marketplaceRoot,
+    });
+    expect(rematerialization.materialization?.generatedArtifacts ?? []).toEqual([]);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_TRUE);
   });
 

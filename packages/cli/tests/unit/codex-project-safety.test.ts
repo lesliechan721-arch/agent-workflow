@@ -7,6 +7,7 @@ import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
+import { repairCommand } from '../../src/commands/repair.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
@@ -26,6 +27,7 @@ import {
 } from '../../src/utils/local-marketplace.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import {
   resolveCodexPaths,
   resolveCodexProjectKey,
@@ -33,6 +35,11 @@ import {
 } from '../../src/utils/paths.js';
 import { readTrackingManifest, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import * as trackingModule from '../../src/utils/tracking.js';
+import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  getProjectArtifactSharedIdentityPath,
+} from '../../src/install-state/paths.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -269,6 +276,89 @@ function renderValidDynamicArtifactsPlan(): string {
     '  ]',
     '}));',
   ].join('\n');
+}
+
+function renderDynamicSkillPlan(options: {
+  skillKey?: string;
+  skillTitle?: string;
+  instructionPrefix?: string;
+  implicit?: boolean;
+} = {}): string {
+  const skillKey = options.skillKey ?? 'repo-check';
+  const skillTitle = options.skillTitle ?? 'Repo Check';
+  const instructionPrefix = options.instructionPrefix ?? 'Render from dynamic plan: ';
+
+  return [
+    'import { readFile } from "node:fs/promises";',
+    'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    'const values = context?.config?.values ?? context?.renderConfig?.values ?? {};',
+    `const explorerModel = typeof values.explorerModel === "string" && values.explorerModel.trim() !== "" ? values.explorerModel : "gpt-5.4-mini";`,
+    `const skillFile = ${JSON.stringify([
+      '---',
+      `name: ${skillKey}`,
+      'description: 动态 skill 测试',
+      'user-invocable: true',
+      '---',
+      '',
+      `# ${skillTitle}`,
+      '',
+      `${instructionPrefix}__MODEL__`,
+      '',
+    ].join('\n'))}.replace("__MODEL__", explorerModel);`,
+    `const openaiYaml = ${JSON.stringify([
+      'interface:',
+      `  display_name: ${JSON.stringify(skillTitle)}`,
+      '  short_description: "动态 skill 测试"',
+      'policy:',
+      `  allow_implicit_invocation: ${options.implicit === true ? 'true' : 'false'}`,
+      '',
+    ].join('\n'))};`,
+    'console.log(JSON.stringify({',
+    '  version: 1,',
+    '  artifacts: [',
+    '    {',
+    '      id: "repo-check-skill",',
+    '      kind: "skill",',
+    '      platform: "codex",',
+    '      target: "codex.skill",',
+    '      state: "present",',
+    `      skillKey: ${JSON.stringify(skillKey)},`,
+    '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
+    '      content: { skillFile, openaiYaml }',
+    '    }',
+    '  ]',
+    '}));',
+  ].join('\n');
+}
+
+async function configureProjectDynamicSkillPlugin(
+  repoRoot: string,
+  pluginName: string,
+  rendererSource = renderDynamicSkillPlan(),
+): Promise<void> {
+  await mutateFixturePluginManifest(repoRoot, pluginName, (manifest) => {
+    manifest.artifacts = {
+      targets: [{
+        id: 'repo-check-skill',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        skillKey: 'repo-check',
+      }],
+    };
+    manifest.skillTriggers = {
+      'repo-check': {
+        allowInstallOverride: true,
+      },
+    };
+    delete manifest.extensions;
+    delete manifest.mcpServers;
+    delete manifest.slashCommands;
+  });
+  await writeFixtureArtifactRenderer(repoRoot, pluginName, rendererSource);
 }
 
 async function seedCodexProjectEvidence(options: {
@@ -741,6 +831,233 @@ describe('Codex project safety preflight', () => {
     expect(events.map((event) => event.type)).not.toContain('artifacts:written');
     expect(events.map((event) => event.type)).not.toContain('tracking:written');
     expect(events.map((event) => event.type)).not.toContain('ledger:written');
+  });
+
+  it('installs a project-scoped codex.skill without requiring project config and records only the dynamic skill artifact', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+      mutateRepo: async (repoRoot) => configureProjectDynamicSkillPlugin(repoRoot, 'dynamic-artifacts'),
+    });
+
+    await installCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    const projectPaths = resolveCodexPaths(workspace.repoRoot, 'project', workspace.env);
+    const tracking = await readTrackingManifest(projectPaths.trackingDir);
+    const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
+    const record = await readInstallRecordForLocation({
+      cwd: workspace.repoRoot,
+      location: {
+        plugin: 'dynamic-artifacts',
+        platform: 'codex',
+        scope: 'project',
+        projectKey,
+      },
+      env: workspace.env,
+    });
+    const status = await statusCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    await expect(fs.pathExists(projectPaths.configTomlPath)).resolves.toBe(false);
+    await expect(readRepoSkillAllowImplicitInvocation(workspace.repoRoot, 'repo-check')).resolves.toBe(false);
+    expect(tracking.plugins['dynamic-artifacts']?.artifacts).toEqual([
+      expect.objectContaining({
+        kind: 'skill',
+        target: 'codex.skill',
+        id: 'repo-check-skill',
+        artifactKey: 'repo-check',
+        state: 'present',
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+    ]);
+    expect(record.status).toBe('ok');
+    if (record.status === 'ok') {
+      expect(record.value.record.artifacts).toEqual([
+        expect.objectContaining({
+          kind: 'skill',
+          target: 'codex.skill',
+          artifactKey: 'repo-check',
+        }),
+      ]);
+    }
+    expect(status.matrix.cells[0]).toMatchObject({
+      pluginName: 'dynamic-artifacts',
+      health: 'ready',
+    });
+    expect(status.reports[0]?.plugins[0]).toMatchObject({
+      pluginName: 'dynamic-artifacts',
+      driftWarnings: [],
+    });
+  });
+
+  it('repairs project-scoped codex.skill from renderer output instead of copying the bundled static skill', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+      mutateRepo: async (repoRoot) => configureProjectDynamicSkillPlugin(repoRoot, 'dynamic-artifacts'),
+    });
+
+    await installCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    await writePluginConfigStore({
+      pluginName: 'dynamic-artifacts',
+      scope: 'project',
+      cwd: workspace.repoRoot,
+      env: workspace.env,
+      values: {
+        explorerModel: 'gpt-5.5',
+      },
+    });
+    await fs.writeFile(
+      path.join(workspace.repoRoot, '.agents', 'skills', 'repo-check', 'SKILL.md'),
+      '# local drift\n',
+      'utf8',
+    );
+
+    await repairCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    await expect(
+      fs.readFile(path.join(workspace.repoRoot, '.agents', 'skills', 'repo-check', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('Render from dynamic plan: gpt-5.5');
+  });
+
+  it('uninstalls an AW-owned project codex.skill and leaves a later foreign same-name repo skill untouched', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+      mutateRepo: async (repoRoot) => configureProjectDynamicSkillPlugin(repoRoot, 'dynamic-artifacts'),
+    });
+
+    await installCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    const identityPath = getProjectArtifactSharedIdentityPath({
+      repoRoot: workspace.repoRoot,
+      locator: createProjectArtifactSharedLocator({
+        plugin: 'dynamic-artifacts',
+        platform: 'codex',
+        repoRoot: workspace.repoRoot,
+        projectRoot: workspace.repoRoot,
+      }),
+    });
+    const skillRoot = repoSkillRoot(workspace.repoRoot, 'repo-check');
+
+    await uninstallCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(identityPath)).resolves.toBe(false);
+
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# foreign\n', 'utf8');
+    await fs.outputFile(
+      path.join(skillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    await uninstallCommand(
+      ['dynamic-artifacts'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: workspace.env,
+      },
+    );
+
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# foreign\n');
+  });
+
+  it('refuses project codex.skill install when a same-name non-AW-owned repo skill already exists', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+      mutateRepo: async (repoRoot) => {
+        await configureProjectDynamicSkillPlugin(repoRoot, 'dynamic-artifacts');
+        await fs.outputFile(
+          path.join(repoRoot, '.agents', 'skills', 'repo-check', 'SKILL.md'),
+          '# foreign\n',
+          'utf8',
+        );
+        await fs.outputFile(
+          path.join(repoRoot, '.agents', 'skills', 'repo-check', 'agents', 'openai.yaml'),
+          'policy:\n  allow_implicit_invocation: false\n',
+          'utf8',
+        );
+      },
+    });
+
+    await expect(
+      installCommand(
+        ['dynamic-artifacts'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          env: workspace.env,
+        },
+      ),
+    ).rejects.toThrow('repo skill "repo-check"');
   });
 
   it('fails install before config prompt when an unmanaged MCP server with the same key already exists', async () => {

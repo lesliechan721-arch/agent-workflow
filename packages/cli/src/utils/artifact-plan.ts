@@ -6,6 +6,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CodexAgentRoleArtifact,
+  CodexSkillArtifact,
   DeveloperInstructionsBlockArtifact,
   PlatformName,
   PluginArtifactTargetDefinition,
@@ -18,15 +19,18 @@ import { assertPlatformFieldSupported } from './manifest.js';
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
+  'codex.skill',
 ]);
 const SUPPORTED_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const TARGET_ORDER: ArtifactTarget[] = [
+  'codex.skill',
   'codex.developerInstructionsBlock',
   'codex.agentRole',
 ];
 const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, ArtifactPlanArtifact['kind']> = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
+  'codex.skill': 'skill',
 };
 
 export type ValidatedArtifactPlanArtifact = ArtifactPlanArtifact & {
@@ -78,6 +82,12 @@ function validateCodexRoleKey(value: string, fieldName: string): void {
   }
 }
 
+function validateCodexSkillKey(value: string, fieldName: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a valid Codex skill key.`);
+  }
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
@@ -126,7 +136,12 @@ function getDeclaredTargets(options: {
     if (target.platform !== options.platform || !target.scopes.includes(options.scope)) {
       continue;
     }
-    if (options.scope === 'project' && target.platform === 'codex' && target.requiresCodexProjectConfig !== true) {
+    if (
+      options.scope === 'project' &&
+      target.platform === 'codex' &&
+      targetRequiresCodexProjectConfig(target.target) &&
+      target.requiresCodexProjectConfig !== true
+    ) {
       throw new Error(
         `Artifact "${target.id}" target "${target.target}" is missing requiresCodexProjectConfig for project scope.`,
       );
@@ -265,6 +280,25 @@ function validateRoleArtifactContent(
   return value as CodexAgentRoleArtifact['content'];
 }
 
+function validateSkillArtifactContent(
+  value: unknown,
+  fieldName: string,
+): CodexSkillArtifact['content'] {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an object.`);
+  }
+  assertAllowedObjectKeys(value, fieldName, ['skillFile', 'openaiYaml']);
+
+  return {
+    skillFile: ensureNonEmptyString(value.skillFile, `${fieldName}.skillFile`),
+    openaiYaml: ensureNonEmptyString(value.openaiYaml, `${fieldName}.openaiYaml`),
+  };
+}
+
+function targetRequiresCodexProjectConfig(target: ArtifactTarget): boolean {
+  return target === 'codex.developerInstructionsBlock' || target === 'codex.agentRole';
+}
+
 function normalizeArtifact(options: {
   artifact: unknown;
   index: number;
@@ -291,7 +325,9 @@ function normalizeArtifact(options: {
     fieldName,
     target === 'codex.developerInstructionsBlock'
       ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'content']
-      : ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'roleKey', 'content'],
+      : target === 'codex.agentRole'
+        ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'roleKey', 'content']
+        : ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
   );
 
   const declaration = options.declarationMap.get(`${id}:${target}`);
@@ -350,6 +386,40 @@ function normalizeArtifact(options: {
       platform,
       target,
       state,
+      refreshKeys,
+      ...(disabledReason === undefined ? {} : { disabledReason }),
+      ...(content === undefined ? {} : { content }),
+    };
+    return {
+      ...normalized,
+      declaration,
+      logicalIdentity,
+      configDigest: createArtifactConfigDigest({
+        artifact: normalized,
+        configValues: options.renderConfig.values,
+        digestSalt: options.digestSalt,
+      }),
+    };
+  }
+
+  if (target === 'codex.skill') {
+    const skillKey = ensureNonEmptyString(options.artifact.skillKey, `${fieldName}.skillKey`);
+    validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
+    if (skillKey !== declaration.skillKey) {
+      throw new Error(
+        `Invalid ${fieldName}.skillKey: expected "${declaration.skillKey}" from static metadata.`,
+      );
+    }
+    const content = state === 'present'
+      ? validateSkillArtifactContent(options.artifact.content, `${fieldName}.content`)
+      : undefined;
+    const normalized: CodexSkillArtifact = {
+      id,
+      kind: 'skill',
+      platform,
+      target,
+      state,
+      skillKey,
       refreshKeys,
       ...(disabledReason === undefined ? {} : { disabledReason }),
       ...(content === undefined ? {} : { content }),

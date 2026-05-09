@@ -75,6 +75,26 @@ function createTrackedDynamicArtifact(options: {
   };
 }
 
+function createTrackedDynamicSkillArtifact(options: {
+  artifactPath: string;
+  refreshKeys: string[];
+  lastRefresh?: GeneratedArtifact['lastRefresh'];
+}): GeneratedArtifact {
+  return {
+    path: options.artifactPath,
+    kind: 'skill',
+    platform: 'codex',
+    artifactKey: 'codex-explore',
+    id: 'codex-explore-skill',
+    target: 'codex.skill',
+    state: 'present',
+    refreshKeys: [...options.refreshKeys],
+    contentDigest: 'sha256:skill-content',
+    configDigest: 'sha256:skill-config',
+    lastRefresh: options.lastRefresh,
+  };
+}
+
 afterEach(async () => {
   vi.clearAllMocks();
   codexAdapterStatus.mockResolvedValue({
@@ -252,5 +272,72 @@ describe('artifact refresh reapply helper', () => {
       reason: 'no-tracked-dynamic-artifact',
     });
     expect(codexAdapterInstallExtensions).not.toHaveBeenCalled();
+  });
+
+  it('reapplies tracked codex.skill artifacts through the same refresh path', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-skill-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin();
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    const artifactPath = path.join(repoRoot, '.agents', 'skills', 'codex-explore');
+    await fs.ensureDir(artifactPath);
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-05T00:00:00.000Z',
+          artifacts: [
+            createTrackedDynamicSkillArtifact({
+              artifactPath,
+              refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+              lastRefresh: {
+                status: 'failed',
+                updatedAt: '2026-05-04T00:00:00.000Z',
+                event: 'refresh',
+                triggerKeys: ['explorerModel'],
+                error: 'old skill failure',
+              },
+            }),
+          ],
+        },
+      },
+    });
+
+    codexAdapterInstallExtensions.mockImplementation(async (_plugin, _scope, options: { changedConfigKeys?: string[] }) => {
+      expect(options.changedConfigKeys).toEqual(['explorerModel']);
+      return [
+        createTrackedDynamicSkillArtifact({
+          artifactPath,
+          refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        }),
+      ];
+    });
+
+    const receipt = await reapplyConfigRefresh({
+      plugin,
+      commandScope: 'project',
+      cwd: repoRoot,
+      env,
+    });
+
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['explorerModel'],
+      artifacts: [
+        expect.objectContaining({
+          id: 'codex-explore-skill',
+          target: 'codex.skill',
+          scope: 'project',
+          status: 'succeeded',
+        }),
+      ],
+    });
   });
 });

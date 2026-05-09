@@ -61,8 +61,11 @@ export interface InstallRecordArtifact {
   hookGroups?: TrackedHookGroupIdentity[];
   id?: string;
   target?: ArtifactTarget;
+  state?: ArtifactState;
   roleKey?: string;
   ownershipMarker?: string;
+  configDigest?: string;
+  contentDigest?: string;
 }
 
 export interface InstallRecord {
@@ -146,6 +149,7 @@ export interface ProjectArtifactIdentityArtifact {
   roleKey?: string;
   ownershipMarker?: string;
   state?: ArtifactState;
+  configDigest?: string;
   contentDigest?: string;
 }
 

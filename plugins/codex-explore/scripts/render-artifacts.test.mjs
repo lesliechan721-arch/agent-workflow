@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(new URL('./render-artifacts.mjs', import.meta.url));
+const scriptModuleUrl = pathToFileURL(scriptPath).href;
 
 async function readFirstExisting(urls) {
   let lastError;
@@ -34,7 +35,6 @@ function createContext(overrides = {}) {
       mode: 'artifact-render',
       targetScope: 'user',
       values: {
-        enableLightweightInstruction: true,
         explorerModel: 'gpt-5.4',
         modelReasoningEffort: 'high',
       },
@@ -70,81 +70,73 @@ function findArtifact(plan, id) {
   return artifact;
 }
 
-async function testPresentInstructionAndRole() {
+async function testPresentSkillArtifact() {
+  const { trimBlock } = await import(scriptModuleUrl);
   const plan = await runRenderer(createContext());
-  const instruction = findArtifact(plan, 'lightweight-instruction');
-  const role = findArtifact(plan, 'codex-explorer-role');
+  const skill = findArtifact(plan, 'codex-explore-skill');
 
   assert.equal(plan.version, 1);
-  assert.equal(instruction.state, 'present');
-  assert.deepEqual(instruction.refreshKeys, [
-    'enableLightweightInstruction',
-    'explorerModel',
-    'modelReasoningEffort',
-  ]);
-  assert.match(instruction.content, /Codex 内置 `explorer` role/);
-  assert.match(instruction.content, /`agent_type`: `explorer`/);
-  assert.match(instruction.content, /`model`: `gpt-5\.4`/);
-  assert.match(instruction.content, /`reasoning_effort`: `high`/);
-  assert.match(instruction.content, /用户显式指定其它模型/);
-  assert.match(instruction.content, /Codex runtime 报告 `gpt-5\.4` 不可用/);
-  assert.match(instruction.content, /不要静默改用其它模型/);
-  assert.match(instruction.content, /只读要求/);
-  assert.match(instruction.content, /等待并读取它的结果/);
-  assert.match(instruction.content, /立即关闭本次启动的 explorer/);
-  assert.equal(instruction.content.includes('agent_type = "codex-explorer"'), false);
-  assert.equal(instruction.content.includes('codex-explorer'), false);
-  assert.equal(instruction.content.includes('aw install'), false);
-  assert.equal(instruction.content.includes('aw config'), false);
+  assert.equal(plan.artifacts.length, 1);
+  assert.equal(skill.state, 'present');
+  assert.equal(skill.kind, 'skill');
+  assert.equal(skill.target, 'codex.skill');
+  assert.equal(skill.skillKey, 'codex-explore');
+  assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
+  assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
+  assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
+  assert.match(skill.content.skillFile, /Codex 内置 `explorer`/);
+  assert.match(skill.content.skillFile, /agent_type: "explorer"/);
+  assert.match(skill.content.skillFile, /model: "gpt-5\.4"/);
+  assert.match(skill.content.skillFile, /reasoning_effort: "high"/);
+  assert.match(skill.content.skillFile, /代码库、文档、网络、长日志和用户提供的材料/);
+  assert.match(skill.content.skillFile, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
+  assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
+  assert.match(skill.content.skillFile, /不能凭记忆补事实/);
+  assert.match(skill.content.skillFile, /每个 explorer 的 prompt 必须包含/);
+  assert.match(
+    skill.content.skillFile,
+    /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*只读边界[\s\S]*期望输出/,
+  );
+  assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
+  assert.match(skill.content.skillFile, /主 agent 不要重复调查同一个问题/);
+  assert.match(skill.content.skillFile, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*explorer 数量/s);
+  assert.match(skill.content.skillFile, /读取并整合结果后，立即用 `close_agent`/);
+  assert.match(skill.content.skillFile, /`wait_agent` 不等于关闭 agent/);
+  assert.match(skill.content.skillFile, /不要静默换模型/);
+  assert.equal(skill.content.skillFile.includes('aw install'), false);
+  assert.equal(skill.content.skillFile.includes('aw config'), false);
+  assert.match(
+    skill.content.skillFile,
+    /spawn_agent\(\{[\s\S]*agent_type: "explorer"[\s\S]*model: "gpt-5\.4"[\s\S]*reasoning_effort: "high"[\s\S]*message: "\.\.\."[\s\S]*\}\)/,
+  );
+  assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
-  assert.equal(role.state, 'present');
-  assert.equal(role.roleKey, 'codex-explorer');
-  assert.deepEqual(role.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
-  assert.equal(role.content.registration.description, 'Codex Explore 只读代码库探索 role。');
-  assert.equal('config_file' in role.content.registration, false);
-  assert.equal(role.content.roleFile.name, 'codex-explorer');
-  assert.equal(role.content.roleFile.model, 'gpt-5.4');
-  assert.equal(role.content.roleFile.model_reasoning_effort, 'high');
-  assert.match(role.content.roleFile.developer_instructions, /只读边界/);
-  assert.match(role.content.roleFile.developer_instructions, /不要创建、编辑、移动、删除、格式化或回退文件/);
-  assert.match(role.content.roleFile.developer_instructions, /固定使用下面结构/);
-  assert.match(role.content.roleFile.developer_instructions, /结论/);
-  assert.match(role.content.roleFile.developer_instructions, /证据/);
-  assert.match(role.content.roleFile.developer_instructions, /不确定点/);
-  assert.match(role.content.roleFile.developer_instructions, /建议主 agent 下一步查看/);
-  assert.equal('config_file' in role.content.roleFile, false);
+  assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
+  assert.match(skill.content.openaiYaml, /代码库、文档、网络和大上下文的只读探索与多源证据总结/);
+  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 对这个问题做只读探索/);
+  assert.match(skill.content.openaiYaml, /代码、文档、网络资料或用户提供的数据/);
 }
 
-async function testDisabledInstructionStillKeepsRole() {
+async function testCustomConfigOverridesSkillTemplates() {
   const plan = await runRenderer(
     createContext({
       config: undefined,
       renderConfig: {
         values: {
-          enableLightweightInstruction: false,
           explorerModel: 'gpt-5.4-mini',
           modelReasoningEffort: 'xhigh',
         },
       },
     }),
   );
-  const instruction = findArtifact(plan, 'lightweight-instruction');
-  const role = findArtifact(plan, 'codex-explorer-role');
+  const skill = findArtifact(plan, 'codex-explore-skill');
 
-  assert.equal(instruction.state, 'disabled');
-  assert.equal(instruction.disabledReason, 'config');
-  assert.deepEqual(instruction.refreshKeys, [
-    'enableLightweightInstruction',
-    'explorerModel',
-    'modelReasoningEffort',
-  ]);
-  assert.equal(instruction.content, undefined);
-
-  assert.equal(role.state, 'present');
-  assert.equal(role.roleKey, 'codex-explorer');
-  assert.deepEqual(role.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
-  assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
-  assert.equal(role.content.roleFile.model_reasoning_effort, 'xhigh');
+  assert.equal(skill.state, 'present');
+  assert.equal(skill.skillKey, 'codex-explore');
+  assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.match(skill.content.skillFile, /model: "gpt-5\.4-mini"/);
+  assert.match(skill.content.skillFile, /reasoning_effort: "xhigh"/);
 }
 
 async function testDefaultsComeFromManifestSchema() {
@@ -179,23 +171,24 @@ async function testDefaultsComeFromManifestSchema() {
       cwd: path.dirname(scriptPath),
     });
     const plan = JSON.parse(stdout);
-    const role = findArtifact(plan, 'codex-explorer-role');
+    const skill = findArtifact(plan, 'codex-explore-skill');
 
-    assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
-    assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
+    assert.match(skill.content.skillFile, /model: "gpt-5\.4-mini"/);
+    assert.match(skill.content.skillFile, /reasoning_effort: "medium"/);
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.4-mini');
     assert.equal(manifest.config.schema.modelReasoningEffort.default, 'medium');
+    assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 }
 
-async function testStaticSkillAndRoleContracts() {
+async function testStaticSkillContracts() {
   const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
-  const [skill, metadata, rolePrompt] = await Promise.all([
+  const [skill, metadata] = await Promise.all([
     readFirstExisting([
       new URL('../skills/codex-explore/SKILL.md', import.meta.url),
       new URL('../codex/skills/codex-explore/SKILL.md', import.meta.url),
@@ -204,38 +197,67 @@ async function testStaticSkillAndRoleContracts() {
       new URL('../skills/codex-explore/agents/openai.yaml', import.meta.url),
       new URL('../codex/skills/codex-explore/agents/openai.yaml', import.meta.url),
     ]),
-    readFirstExisting([
-      new URL('../roles/codex-explorer.md', import.meta.url),
-      new URL('../codex/roles/codex-explorer.md', import.meta.url),
-    ]),
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  assert.match(skill, /agent_type` 设为 `"codex-explorer"`/);
-  assert.match(skill, /探索深度：只能使用 `quick`、`medium`、`very thorough`/);
-  assert.match(skill, /必须等待它进入最终状态并读取结果/);
-  assert.match(skill, /`wait_agent` 只代表等待结果/);
-  assert.match(skill, /`close_agent` 关闭本 workflow 启动的 explorer/);
+  assert.match(skill, /Codex 内置 `explorer`/);
+  assert.match(skill, /代码库、文档、网络、长日志和用户提供的材料/);
+  assert.match(skill, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
+  assert.match(skill, /子代理继承当前会话可用的工具和权限/);
+  assert.match(skill, /不能凭记忆补事实/);
+  assert.match(skill, /只读边界/);
+  assert.match(skill, /每个 explorer 的 prompt 必须包含/);
+  assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*只读边界[\s\S]*期望输出/);
+  assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
+  assert.match(skill, /主 agent 不要重复调查同一个问题/);
+  assert.match(skill, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*explorer 数量/s);
+  assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
+  assert.match(skill, /`wait_agent` 不等于关闭 agent/);
+  assert.match(skill, /不要静默换模型/);
+  assert.equal(skill.includes('codex-explorer'), false);
 
-  assert.match(metadata, /allow_implicit_invocation:\s*false/);
+  assert.match(metadata, /allow_implicit_invocation:\s*true/);
+  assert.match(metadata, /short_description: "代码库、文档、网络和大上下文的只读探索与多源证据总结"/);
+  assert.match(metadata, /使用 \$codex-explore 对这个问题做只读探索/);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
+  assert.equal(manifest.artifacts.targets.length, 1);
+  assert.deepEqual(manifest.artifacts.targets[0], {
+    id: 'codex-explore-skill',
+    platform: 'codex',
+    scopes: ['user', 'project'],
+    target: 'codex.skill',
+    projectManagedKind: 'skill',
+    states: ['present'],
+    refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+    skillKey: 'codex-explore',
+  });
+  assert.equal('buildConfig' in manifest, false);
+}
 
-  assert.match(rolePrompt, /只读边界/);
-  assert.match(rolePrompt, /不要创建、编辑、移动、删除、格式化或回退文件/);
-  assert.match(rolePrompt, /不要产出实现计划/);
-  assert.match(rolePrompt, /固定使用下面结构/);
-  assert.match(rolePrompt, /结论/);
-  assert.match(rolePrompt, /证据/);
-  assert.match(rolePrompt, /不确定点/);
-  assert.match(rolePrompt, /建议主 agent 下一步查看/);
+async function testTrimBlockDedentsWithoutLeakingIndentation() {
+  const { trimBlock } = await import(scriptModuleUrl);
+
+  const result = trimBlock(`
+        第一行
+          第二行
+
+        - 列表项
+          - 子项
+  `);
+
+  assert.equal(
+    result,
+    ['第一行', '  第二行', '', '- 列表项', '  - 子项'].join('\n'),
+  );
 }
 
 async function main() {
-  await testPresentInstructionAndRole();
-  await testDisabledInstructionStillKeepsRole();
+  await testPresentSkillArtifact();
+  await testCustomConfigOverridesSkillTemplates();
   await testDefaultsComeFromManifestSchema();
-  await testStaticSkillAndRoleContracts();
+  await testStaticSkillContracts();
+  await testTrimBlockDedentsWithoutLeakingIndentation();
   console.log('render-artifacts tests passed');
 }
 

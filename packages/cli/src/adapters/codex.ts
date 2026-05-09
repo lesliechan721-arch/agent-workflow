@@ -21,6 +21,7 @@ import type {
   CatalogCompatibility,
   CodexNativeCacheStatus,
   CodexCapabilitySnapshot,
+  CodexSkillArtifact,
   CodexProjectManagedKind,
   CodexSharedHookGroup,
   CodexSharedNativeRefs,
@@ -92,6 +93,7 @@ import {
 } from '../utils/codex-native-recovery.js';
 import {
   ensureLocalMarketplace,
+  getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
   resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
@@ -120,6 +122,7 @@ import {
   resolveCurrentCatalog,
 } from '../utils/plugin-catalog.js';
 import {
+  resolveAwHome,
   resolveAwHomeCanonical,
   resolveCodexPaths,
   resolveCodexProjectKey,
@@ -134,6 +137,7 @@ import {
   attachGeneratedArtifactsToError,
   createGeneratedArtifactContentDigest,
   getGeneratedArtifactIdentityKey,
+  hasSameGeneratedArtifactDesiredIdentity,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
 import {
@@ -141,6 +145,11 @@ import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import {
+  createCodexSkillExpectedTree,
+  createCodexSkillStagingTreeContentDigest,
+  type CodexSkillStagingTree,
+} from '../utils/codex-skill-staging.js';
 import {
   parseCodexSharedHooksFile,
   planCodexSharedHooksUpdate,
@@ -176,6 +185,15 @@ import {
   calculateFileDigest,
   resolveBundledPluginFilePath,
 } from '../utils/plugin-scripts.js';
+import {
+  readInstallRecordForLocation,
+  readProjectArtifactIdentityForLocator,
+} from '../install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  resolveProjectArtifactProjectRoot,
+  resolveProjectScopeRepoRoot,
+} from '../install-state/paths.js';
 import { detectCodexExternalOwnership } from './helpers.js';
 import {
   preflightCodexProjectStatusProjectConfig,
@@ -680,6 +698,43 @@ async function collectDirectoryFileContents(rootDir: string): Promise<Map<string
   return snapshot;
 }
 
+async function collectCodexSkillTreeFileContents(
+  rootDir: string,
+): Promise<Record<string, string>> {
+  const snapshot = await collectDirectoryFileContents(rootDir);
+  return Object.fromEntries(
+    [...snapshot.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([relativePath, content]) => [relativePath.split(path.sep).join('/'), content.toString('utf8')]),
+  );
+}
+
+function compareCodexSkillTrees(options: {
+  expectedFiles: Record<string, string>;
+  actualFiles: Record<string, string>;
+}): { drifted: boolean; reason?: string } {
+  const allPaths = [...new Set([
+    ...Object.keys(options.expectedFiles),
+    ...Object.keys(options.actualFiles),
+  ])].sort();
+
+  for (const relativePath of allPaths) {
+    const expected = options.expectedFiles[relativePath];
+    const actual = options.actualFiles[relativePath];
+    if (expected === undefined) {
+      return { drifted: true, reason: `存在未受管文件 ${relativePath}` };
+    }
+    if (actual === undefined) {
+      return { drifted: true, reason: `缺少文件 ${relativePath}` };
+    }
+    if (actual !== expected) {
+      return { drifted: true, reason: `文件内容已漂移 ${relativePath}` };
+    }
+  }
+
+  return { drifted: false };
+}
+
 async function compareCodexRepoSkillToPristine(options: {
   embeddedRoot: string;
   pluginName: string;
@@ -714,33 +769,50 @@ async function compareCodexRepoSkillToPristine(options: {
       );
     }
 
-    const [expectedFiles, actualFiles] = await Promise.all([
-      collectDirectoryFileContents(expectedSkillRoot),
-      collectDirectoryFileContents(options.actualSkillRoot),
-    ]);
-    const allPaths = [...new Set([
-      ...expectedFiles.keys(),
-      ...actualFiles.keys(),
-    ])].sort();
-
-    for (const relativePath of allPaths) {
-      const expected = expectedFiles.get(relativePath);
-      const actual = actualFiles.get(relativePath);
-      if (!expected) {
-        return { drifted: true, reason: `存在未受管文件 ${relativePath}` };
-      }
-      if (!actual) {
-        return { drifted: true, reason: `缺少文件 ${relativePath}` };
-      }
-      if (!expected.equals(actual)) {
-        return { drifted: true, reason: `文件内容已漂移 ${relativePath}` };
-      }
-    }
-
-    return { drifted: false };
+    return compareCodexSkillTrees({
+      expectedFiles: await collectCodexSkillTreeFileContents(expectedSkillRoot),
+      actualFiles: await collectCodexSkillTreeFileContents(options.actualSkillRoot),
+    });
   } finally {
     await fs.remove(tempRoot).catch(() => undefined);
   }
+}
+
+async function compareCodexRepoSkillToExpectedTree(options: {
+  expectedTree: CodexSkillStagingTree;
+  actualSkillRoot: string;
+}): Promise<{ drifted: boolean; reason?: string }> {
+  return compareCodexSkillTrees({
+    expectedFiles: options.expectedTree.files,
+    actualFiles: await collectCodexSkillTreeFileContents(options.actualSkillRoot),
+  });
+}
+
+async function writeCodexSkillTree(
+  rootDir: string,
+  tree: CodexSkillStagingTree,
+): Promise<string[]> {
+  await fs.remove(rootDir);
+  await fs.ensureDir(rootDir);
+
+  const writtenPaths: string[] = [];
+  for (const [relativePath, content] of Object.entries(tree.files).sort(([left], [right]) =>
+    left.localeCompare(right))) {
+    const targetPath = path.join(rootDir, relativePath.split('/').join(path.sep));
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.writeFile(targetPath, content, 'utf8');
+    writtenPaths.push(targetPath);
+  }
+
+  return writtenPaths;
+}
+
+function findTrackedCodexDynamicSkillArtifact(
+  record: TrackingPluginRecord | undefined,
+  skillName: string,
+): GeneratedArtifact | undefined {
+  return readTrackedCodexSkillArtifacts(record).find((artifact) =>
+    artifact.artifactKey === skillName && artifact.target === 'codex.skill');
 }
 
 function readMutableLedger(ledger: InstalledLedger): InstalledLedger {
@@ -1082,15 +1154,19 @@ async function pruneTrackedCodexArtifacts(options: {
   roleFileRollbackBaselines?: Map<string, TextFileRollbackBaseline>;
 }): Promise<void> {
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
+  const preservedTrackingRecord = options.preservedArtifacts?.length
+    ? {
+        name: options.pluginName,
+        generatedAt: new Date(0).toISOString(),
+        artifacts: options.preservedArtifacts,
+      } satisfies TrackingPluginRecord
+    : undefined;
   const trackedRoleArtifacts = readTrackedCodexRoleArtifacts(options.trackingRecord);
   const preservedRoleArtifacts = readTrackedCodexRoleArtifacts(
-    options.preservedArtifacts?.length
-      ? {
-          name: options.pluginName,
-          generatedAt: new Date(0).toISOString(),
-          artifacts: options.preservedArtifacts,
-        }
-      : undefined,
+    preservedTrackingRecord,
+  );
+  const preservedDynamicSkillArtifacts = readTrackedCodexDynamicSkillArtifacts(
+    preservedTrackingRecord,
   );
   const roleFileRollbackBaselines = options.roleFileRollbackBaselines ?? new Map();
   const restoringRoleFiles = Boolean(options.rollbackBaseline) || roleFileRollbackBaselines.size > 0;
@@ -1102,12 +1178,45 @@ async function pruneTrackedCodexArtifacts(options: {
           entry.path === artifact.path &&
           entry.artifactKey === resolveCodexRoleIdentity(artifact),
         );
-      if (artifact.kind === 'permission' || artifact.kind === 'skill' || (artifact.kind === 'agent' && !managedRoleArtifact)) {
-        if (artifact.kind === 'skill' && !artifact.artifactKey) {
+      if (artifact.kind === 'permission' || (artifact.kind === 'agent' && !managedRoleArtifact)) {
+        await fs.remove(artifact.path);
+        continue;
+      }
+
+      if (artifact.kind === 'skill') {
+        if (!artifact.artifactKey) {
           throw new Error(
             `tracking manifest 中的 skill 缺少 artifactKey，不能对 ${artifact.path} 执行 path-only 删除。`,
           );
         }
+
+        const overlappingPreservedDynamicSkill = preservedDynamicSkillArtifacts.find((preservedArtifact) =>
+          path.normalize(preservedArtifact.path) === path.normalize(artifact.path) ||
+          preservedArtifact.artifactKey === artifact.artifactKey,
+        );
+        if (overlappingPreservedDynamicSkill) {
+          if (
+            artifact.target === 'codex.skill' &&
+            hasSameGeneratedArtifactDesiredIdentity(artifact, overlappingPreservedDynamicSkill)
+          ) {
+            continue;
+          }
+
+          if (artifact.target === 'codex.skill') {
+            throw new Error(
+              `tracking manifest 中的 codex.skill "${artifact.id ?? artifact.artifactKey}" ` +
+                `与当前声明的 "${overlappingPreservedDynamicSkill.id ?? overlappingPreservedDynamicSkill.artifactKey}" ` +
+                '共享同一路径或 artifactKey，CLI 不会按 path-only 清理旧 identity；请先清理旧 tracking 后再升级。',
+            );
+          }
+
+          throw new Error(
+            `tracking manifest 中仍残留旧 skill "${artifact.artifactKey}"，它与当前 codex.skill ` +
+              `"${overlappingPreservedDynamicSkill.artifactKey}" 共享路径或 artifactKey；` +
+              '本轮不做旧 static skill 到 dynamic identity 的自动迁移，请先清理旧 tracking 后再升级。',
+          );
+        }
+
         await fs.remove(artifact.path);
       }
     }
@@ -1493,6 +1602,25 @@ async function restoreTextFileRollbackBaseline(
   await fs.writeFile(baseline.path, baseline.content, 'utf8');
 }
 
+function getCodexSkillStatusPaths(skillRoot: string): string[] {
+  return [
+    path.join(skillRoot, 'SKILL.md'),
+    path.join(skillRoot, 'agents', 'openai.yaml'),
+  ];
+}
+
+async function readCodexSkillRuntimeTree(skillRoot: string): Promise<Record<string, string> | null> {
+  const [skillFilePath, openaiYamlPath] = getCodexSkillStatusPaths(skillRoot);
+  if (!(await fs.pathExists(skillFilePath)) || !(await fs.pathExists(openaiYamlPath))) {
+    return null;
+  }
+
+  return {
+    'SKILL.md': await fs.readFile(skillFilePath, 'utf8'),
+    'agents/openai.yaml': await fs.readFile(openaiYamlPath, 'utf8'),
+  };
+}
+
 async function resolveRenderedCodexMcpServers(
   plugin: PluginMeta,
 ): Promise<Record<string, CodexMcpServerConfig>> {
@@ -1552,6 +1680,57 @@ function readTrackedCodexRoleArtifacts(
     .filter((artifact): artifact is GeneratedArtifact & { artifactKey: string; roleKey: string } =>
       Boolean(artifact),
     );
+}
+
+function readTrackedCodexDynamicSkillArtifacts(
+  record: TrackingPluginRecord | undefined,
+): Array<GeneratedArtifact & { artifactKey: string }> {
+  return (record?.artifacts ?? [])
+    .filter((artifact) => artifact.kind === 'skill' && artifact.target === 'codex.skill')
+    .map((artifact) => {
+      const skillKey = artifact.artifactKey?.trim();
+      if (!skillKey) {
+        return undefined;
+      }
+      return {
+        ...artifact,
+        artifactKey: skillKey,
+      };
+    })
+    .filter((artifact): artifact is GeneratedArtifact & { artifactKey: string } =>
+      Boolean(artifact),
+    );
+}
+
+function assertTrackedCodexSkillIdentityMatchesPlan(options: {
+  pluginName: string;
+  trackingRecord: TrackingPluginRecord | undefined;
+  skillArtifacts: Array<{
+    id: string;
+    target: 'codex.skill';
+    skillKey: string;
+  }>;
+}): void {
+  const trackedSkillArtifactsById = new Map(
+    readTrackedCodexDynamicSkillArtifacts(options.trackingRecord)
+      .filter((artifact) => artifact.id && artifact.target === 'codex.skill')
+      .map((artifact) => [artifact.id as string, artifact]),
+  );
+
+  for (const artifact of options.skillArtifacts) {
+    const trackedArtifact = trackedSkillArtifactsById.get(artifact.id);
+    if (!trackedArtifact) {
+      continue;
+    }
+
+    if (trackedArtifact.artifactKey !== artifact.skillKey) {
+      throw new Error(
+        `Tracking artifact "${artifact.id}" 记录的 skillKey 为 "${trackedArtifact.artifactKey}"，` +
+          `但 ${options.pluginName} 当前静态 metadata / render plan 要求 "${artifact.skillKey}"。` +
+          '请先修复 tracking 受管身份后再继续写入。',
+      );
+    }
+  }
 }
 
 function assertTrackedCodexRoleIdentityMatchesPlan(options: {
@@ -1840,6 +2019,155 @@ async function resolveCodexHigherPriorityRoleNamespaces(
       resolveCodexRoleNamespace(path.join(layerRoot, 'config.toml')),
     ),
   );
+}
+
+async function hasProjectSharedIdentityForCodexSkill(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  pluginName: string;
+  skillKey: string;
+}): Promise<boolean> {
+  const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+  const locator = createProjectArtifactSharedLocator({
+    plugin: options.pluginName,
+    platform: 'codex',
+    repoRoot,
+    projectRoot: resolveProjectArtifactProjectRoot(options.cwd, {
+      platform: 'codex',
+      scope: 'project',
+      projectKey: undefined,
+    }),
+  });
+  const identityRead = await readProjectArtifactIdentityForLocator({
+    repoRoot,
+    locator,
+    cwd: options.cwd,
+    homeDir: options.env.HOME,
+  });
+  if (identityRead.status !== 'ok') {
+    return false;
+  }
+
+  return identityRead.value.artifacts.some((artifact) =>
+    artifact.kind === 'skill' &&
+      artifact.platform === 'codex' &&
+      artifact.artifactKey === options.skillKey &&
+      artifact.target === 'codex.skill');
+}
+
+async function assertCodexProjectSkillPathOwnedByAw(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  pluginName: string;
+  trackingRecord: TrackingPluginRecord | undefined;
+  skillKey: string;
+  skillPath: string;
+}): Promise<void> {
+  if (!(await fs.pathExists(options.skillPath))) {
+    return;
+  }
+
+  if (
+    findTrackedCodexDynamicSkillArtifact(options.trackingRecord, options.skillKey) ||
+    await hasProjectSharedIdentityForCodexSkill({
+      cwd: options.cwd,
+      env: options.env,
+      pluginName: options.pluginName,
+      skillKey: options.skillKey,
+    })
+  ) {
+    return;
+  }
+
+  throw new Error(
+    `Codex repo skill "${options.skillKey}" 已存在于 ${
+      path.relative(resolveProjectScopeRepoRoot(options.cwd), options.skillPath) || options.skillPath
+    }，但当前没有 AW ownership 证明，不会静默覆盖。`,
+  );
+}
+
+async function readResolvedInstallOptionsFromLedger(options: {
+  cwd: string;
+  pluginName: string;
+  scope: Scope;
+  env: NodeJS.ProcessEnv;
+}): Promise<InstalledScopeRecord<Record<string, unknown>>['installOptions'] | undefined> {
+  const location = options.scope === 'user'
+    ? {
+        plugin: options.pluginName,
+        platform: 'codex' as const,
+        scope: 'user' as const,
+      }
+    : {
+        plugin: options.pluginName,
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        projectKey: await resolveCodexProjectKey(options.cwd),
+      };
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  if (recordRead.status === 'ok') {
+    return recordRead.value.record.options;
+  }
+
+  const ledger = await readInstalledLedger(options.env);
+  if (options.scope === 'user') {
+    return ledger.plugins[options.pluginName]?.platforms.codex?.userScope?.installOptions;
+  }
+
+  const projectKey = await resolveCodexProjectKey(options.cwd);
+  return ledger.plugins[options.pluginName]?.platforms.codex?.projectScopes?.[projectKey]?.installOptions;
+}
+
+async function buildExpectedCodexSkillTreeForStatus(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  skillName: string;
+  preference: SkillTriggerPreference;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<CodexSkillStagingTree | null> {
+  if (!options.plugin.manifest.scripts?.artifacts?.render) {
+    return null;
+  }
+
+  const renderResult = await runArtifactRenderer({
+    event: 'install',
+    plugin: options.plugin,
+    platform: 'codex',
+    scope: options.scope,
+    cwd: options.cwd,
+    commandEnv: options.env,
+  });
+  const renderConfig = await resolveArtifactRenderConfig({
+    pluginName: options.plugin.manifest.name,
+    manifest: options.plugin.manifest,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  const plan = validateArtifactPlan({
+    manifest: options.plugin.manifest,
+    plan: renderResult.plan,
+    platform: 'codex',
+    scope: options.scope,
+    renderConfig,
+    rendererDigest: renderResult.target.rendererDigest,
+    manifestDigest: renderResult.target.manifestDigest,
+  });
+  const artifact = plan.artifacts.find((entry): entry is ValidatedArtifactPlanArtifact & CodexSkillArtifact =>
+    entry.target === 'codex.skill' && entry.skillKey === options.skillName);
+  if (!artifact) {
+    return null;
+  }
+
+  return createCodexSkillExpectedTree({
+    artifact,
+    preference: options.preference,
+  });
 }
 
 async function resolveCurrentArtifactConfigDigest(options: {
@@ -2282,6 +2610,72 @@ async function buildCodexManagedArtifactStatuses(options: {
         currentContentDigest,
         health,
         sessionVisibility,
+        diagnostics,
+      };
+    }
+
+    if (artifact.target === 'codex.skill') {
+      const skillRootExists = await fs.pathExists(artifact.path);
+      const runtimeTree = skillRootExists
+        ? await readCodexSkillRuntimeTree(artifact.path)
+        : null;
+      const currentContentDigest = runtimeTree
+        ? createCodexSkillStagingTreeContentDigest({
+            skillKey: artifact.artifactKey ?? path.basename(artifact.path),
+            files: runtimeTree,
+          })
+        : undefined;
+      let health: ManagedArtifactStatus['health'];
+
+      if (artifact.state === 'disabled') {
+        if (skillRootExists) {
+          health = 'contentDrift';
+          diagnostics.push('artifact tracking 标记为 disabled，但当前 skill runtime 仍然存在。');
+        } else if (artifact.lastRefresh?.status === 'failed') {
+          health = 'recentRefreshFailed';
+          diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+        } else if (
+          artifact.configDigest &&
+          currentConfigDigest &&
+          artifact.configDigest !== currentConfigDigest
+        ) {
+          health = 'configDigestStale';
+          diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+        } else {
+          health = 'disabledByConfig';
+        }
+      } else if (!skillRootExists) {
+        health = 'missing';
+        diagnostics.push('当前 scope 缺少受管 dynamic skill runtime。');
+      } else if (!runtimeTree) {
+        health = 'contentDrift';
+        diagnostics.push('dynamic skill runtime 缺少 SKILL.md 或 agents/openai.yaml。');
+      } else if (artifact.contentDigest && currentContentDigest && artifact.contentDigest !== currentContentDigest) {
+        health = 'contentDrift';
+        diagnostics.push('当前 dynamic skill runtime 内容与 tracking contentDigest 不一致。');
+      } else if (artifact.lastRefresh?.status === 'failed') {
+        health = 'recentRefreshFailed';
+        diagnostics.push(describeFailedArtifactRefresh(artifact) ?? '最近一次 artifact refresh 失败。');
+      } else if (
+        artifact.configDigest &&
+        currentConfigDigest &&
+        artifact.configDigest !== currentConfigDigest
+      ) {
+        health = 'configDigestStale';
+        diagnostics.push('tracking configDigest 与当前 render config 不一致。');
+      } else {
+        health = 'healthy';
+      }
+
+      return {
+        ...artifact,
+        tracked: true,
+        currentConfigDigest,
+        currentContentDigest,
+        health,
+        sessionVisibility: options.scope === 'project'
+          ? resolveProjectArtifactVisibility(options.projectTrust)
+          : 'visible',
         diagnostics,
       };
     }
@@ -3217,6 +3611,7 @@ export class CodexAdapter implements PlatformAdapter {
       event?: 'install' | 'upgrade' | 'refresh';
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
+      skillTriggerPreference?: SkillTriggerPreference;
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
@@ -3281,6 +3676,23 @@ export class CodexAdapter implements PlatformAdapter {
       const dynamicRoleArtifacts = validatedDynamicArtifacts.filter(
         (artifact) => artifact.target === 'codex.agentRole',
       );
+      const dynamicSkillArtifacts = validatedDynamicArtifacts.filter(
+        (artifact) => artifact.target === 'codex.skill',
+      );
+      assertTrackedCodexSkillIdentityMatchesPlan({
+        pluginName: plugin.manifest.name,
+        trackingRecord,
+        skillArtifacts: dynamicSkillArtifacts.map((artifact) => {
+          if (!artifact.skillKey) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.skill 必须声明 skillKey。`);
+          }
+          return {
+            id: artifact.id,
+            target: 'codex.skill' as const,
+            skillKey: artifact.skillKey,
+          };
+        }),
+      });
       assertTrackedCodexRoleIdentityMatchesPlan({
         pluginName: plugin.manifest.name,
         trackingRecord,
@@ -3295,12 +3707,123 @@ export class CodexAdapter implements PlatformAdapter {
           };
         }),
       });
+      const installOptions = await readResolvedInstallOptionsFromLedger({
+        cwd: this.cwd,
+        pluginName: plugin.manifest.name,
+        scope,
+        env: this.env,
+      });
+      const dynamicSkillPreference = options?.skillTriggerPreference ??
+        installOptions?.skillTriggerPreference ??
+        'default';
       const instructions = dynamicOnly || dynamicInstructionArtifacts.length > 0
         ? []
         : resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'codex');
       const renderedMcpServers = dynamicOnly
         ? {}
         : await resolveRenderedCodexMcpServers(plugin);
+
+      if (scope === 'user') {
+        for (const artifact of dynamicSkillArtifacts) {
+          const skillKey = artifact.skillKey?.trim();
+          if (!skillKey) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.skill 必须声明 skillKey。`);
+          }
+
+          const skillPath = getLocalMarketplaceCodexSkillRoot(
+            resolveAwHome(this.env),
+            plugin.manifest.name,
+            skillKey,
+          );
+          const expectedTree = createCodexSkillExpectedTree({
+            artifact,
+            preference: dynamicSkillPreference,
+          });
+          const writtenPaths = artifact.state === 'disabled'
+            ? (await fs.remove(skillPath), [] as string[])
+            : await writeCodexSkillTree(skillPath, expectedTree);
+
+          artifacts.push({
+            path: skillPath,
+            ...(writtenPaths.length > 0 ? { paths: writtenPaths } : {}),
+            kind: 'skill',
+            platform: 'codex',
+            artifactKey: skillKey,
+            id: artifact.id,
+            target: artifact.target,
+            state: artifact.state,
+            ...(artifact.disabledReason === undefined
+              ? {}
+              : { disabledReason: artifact.disabledReason }),
+            refreshKeys: [...artifact.refreshKeys],
+            configDigest: artifact.configDigest,
+            contentDigest: createCodexSkillStagingTreeContentDigest(expectedTree),
+          });
+        }
+      }
+
+      if (scope === 'project') {
+        const repoRoot = await resolveRepoRoot(this.cwd);
+        for (const artifact of dynamicSkillArtifacts) {
+          const skillKey = artifact.skillKey?.trim();
+          if (!skillKey) {
+            throw new Error(`Artifact "${artifact.id}" 的 codex.skill 必须声明 skillKey。`);
+          }
+
+          const skillPath = getRepoSkillPath(repoRoot, skillKey);
+          await assertCodexProjectSkillPathOwnedByAw({
+            cwd: this.cwd,
+            env: this.env,
+            pluginName: plugin.manifest.name,
+            trackingRecord,
+            skillKey,
+            skillPath,
+          });
+
+          const expectedTree = createCodexSkillExpectedTree({
+            artifact,
+            preference: dynamicSkillPreference,
+          });
+          const managedPaths = Object.keys(expectedTree.files).map((relativePath) =>
+            path.join(skillPath, relativePath.split('/').join(path.sep)));
+
+          if (artifact.state === 'disabled') {
+            await fs.remove(skillPath);
+            artifacts.push({
+              path: skillPath,
+              paths: managedPaths,
+              kind: 'skill',
+              platform: 'codex',
+              artifactKey: skillKey,
+              id: artifact.id,
+              target: artifact.target,
+              state: artifact.state,
+              ...(artifact.disabledReason === undefined
+                ? {}
+                : { disabledReason: artifact.disabledReason }),
+              refreshKeys: [...artifact.refreshKeys],
+              configDigest: artifact.configDigest,
+              contentDigest: createCodexSkillStagingTreeContentDigest(expectedTree),
+            });
+            continue;
+          }
+
+          const writtenPaths = await writeCodexSkillTree(skillPath, expectedTree);
+          artifacts.push({
+            path: skillPath,
+            paths: writtenPaths,
+            kind: 'skill',
+            platform: 'codex',
+            artifactKey: skillKey,
+            id: artifact.id,
+            target: artifact.target,
+            state: artifact.state,
+            refreshKeys: [...artifact.refreshKeys],
+            configDigest: artifact.configDigest,
+            contentDigest: createCodexSkillStagingTreeContentDigest(expectedTree),
+          });
+        }
+      }
 
       if (
         instructions.length > 0 ||
@@ -4173,28 +4696,67 @@ export class CodexAdapter implements PlatformAdapter {
           state = 'absent';
         } else {
           state = 'visible';
-          const policy = skillPoliciesByName.get(skillName);
-          const canCompare =
-            currentCatalogAvailable &&
-            Boolean(policy) &&
-            (
-              policy?.allowInstallOverride !== true ||
-              skillTriggerStatus?.skillTriggerApplicability === 'fixed' ||
-              typeof skillTriggerStatus?.skillTriggerPreference === 'string'
-            );
-          if (policy && canCompare) {
-            const comparison = await compareCodexRepoSkillToPristine({
-              embeddedRoot,
-              pluginName: plugin.manifest.name,
-              skillName,
-              actualSkillRoot: skillPath,
-              preference: skillTriggerStatus?.skillTriggerPreference ?? 'default',
-              policy,
-            });
+          if (trackedArtifact?.target === 'codex.skill') {
+            let expectedTree: CodexSkillStagingTree | null = null;
+            if (currentCatalogAvailable) {
+              try {
+                expectedTree = await buildExpectedCodexSkillTreeForStatus({
+                  plugin,
+                  scope,
+                  skillName,
+                  preference: skillTriggerStatus?.skillTriggerPreference ?? 'default',
+                  cwd: this.cwd,
+                  env: this.env,
+                });
+              } catch (error) {
+                diagnostics.push(
+                  `无法重新渲染 dynamic skill 期望内容：${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
+            }
+            const comparison = expectedTree
+              ? await compareCodexRepoSkillToExpectedTree({
+                expectedTree,
+                actualSkillRoot: skillPath,
+              })
+              : trackedArtifact.contentDigest
+                ? {
+                    drifted:
+                      createCodexSkillStagingTreeContentDigest({
+                        skillKey: skillName,
+                        files: await collectCodexSkillTreeFileContents(skillPath),
+                      }) !== trackedArtifact.contentDigest,
+                    reason: undefined,
+                  }
+                : { drifted: false };
             if (comparison.drifted) {
               state = 'drifted';
-              if (comparison.reason) {
-                diagnostics.push(comparison.reason);
+              diagnostics.push(comparison.reason ?? '动态 skill 内容与 tracking 记录不一致。');
+            }
+          } else {
+            const policy = skillPoliciesByName.get(skillName);
+            const canCompare =
+              currentCatalogAvailable &&
+              Boolean(policy) &&
+              (
+                policy?.allowInstallOverride !== true ||
+                skillTriggerStatus?.skillTriggerApplicability === 'fixed' ||
+                typeof skillTriggerStatus?.skillTriggerPreference === 'string'
+              );
+            if (policy && canCompare) {
+              const comparison = await compareCodexRepoSkillToPristine({
+                embeddedRoot,
+                pluginName: plugin.manifest.name,
+                skillName,
+                actualSkillRoot: skillPath,
+                preference: skillTriggerStatus?.skillTriggerPreference ?? 'default',
+                policy,
+              });
+              if (comparison.drifted) {
+                state = 'drifted';
+                if (comparison.reason) {
+                  diagnostics.push(comparison.reason);
+                }
               }
             }
           }

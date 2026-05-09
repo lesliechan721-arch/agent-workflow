@@ -800,6 +800,72 @@ describe('manifest utils', () => {
 
     manifest.artifacts = {
       targets: [
+        {
+          id: 'codex-explore-skill',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present', 'disabled'],
+          refreshKeys: ['model'],
+          skillKey: 'codex-explore',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        artifacts: {
+          targets: [expect.objectContaining({
+            id: 'codex-explore-skill',
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            skillKey: 'codex-explore',
+          })],
+        },
+      },
+    });
+
+    manifest.artifacts = {
+      targets: [
+        {
+          id: 'codex-explore-skill',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: ['model'],
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must declare a static skillKey');
+
+    manifest.artifacts = {
+      targets: [
+        {
+          ...validTarget,
+          roleKey: 'should-not-be-here',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('roleKey is only supported for codex.agentRole targets');
+
+    manifest.artifacts = {
+      targets: [
+        {
+          ...validTarget,
+          skillKey: 'should-not-be-here',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('skillKey is only supported for codex.skill targets');
+
+    manifest.artifacts = {
+      targets: [
         validTarget,
         {
           ...validTarget,

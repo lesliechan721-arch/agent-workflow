@@ -21,7 +21,7 @@
 | `buildConfig` | object | 否 | 详见 `references/build-config-spec.md` |
 | `scripts` | object | 否 | AW 管理的 lifecycle、config helper、Node package 和测试入口声明 |
 | `config` | object | 否 | AW 自管配置 schema，供 `aw config`、lifecycle context 和标准 helper 使用 |
-| `artifacts` | object | 否 | 动态 artifact 静态能力声明，首版用于 Codex developer instructions / agent role |
+| `artifacts` | object | 否 | 动态 artifact 静态能力声明，用于 Codex skill / developer instructions / agent role |
 
 不允许出现上表以外的顶层字段。
 
@@ -198,32 +198,26 @@
   },
   "config": {
     "schema": {
-      "enableInstruction": { "type": "boolean", "default": true },
-      "explorerModel": { "type": "string", "default": "gpt-5.4-mini" }
+      "explorerModel": { "type": "string", "default": "gpt-5.4-mini" },
+      "modelReasoningEffort": {
+        "type": "enum",
+        "values": ["low", "medium", "high", "xhigh"],
+        "default": "medium"
+      }
     }
   },
   "artifacts": {
     "targets": [
       {
-        "id": "lightweight-instruction",
+        "id": "codex-explore-skill",
         "platform": "codex",
         "scopes": ["user", "project"],
-        "target": "codex.developerInstructionsBlock",
-        "projectManagedKind": "instruction",
-        "states": ["present", "disabled"],
-        "refreshKeys": ["enableInstruction", "explorerModel"],
-        "requiresCodexProjectConfig": true
-      },
-      {
-        "id": "codex-explorer-role",
-        "platform": "codex",
-        "scopes": ["user", "project"],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
+        "target": "codex.skill",
+        "kind": "skill",
+        "projectManagedKind": "skill",
         "states": ["present"],
-        "refreshKeys": ["explorerModel"],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explorer"
+        "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+        "skillKey": "codex-explore"
       }
     ]
   }
@@ -234,16 +228,17 @@
 
 - `id + target` 在同一插件内必须唯一，`id` 只能使用字母、数字、`.`、`_`、`-`，并以字母开头。
 - `platform` 首版只能是 `codex`；`scopes` 只能包含 `user`、`project`。
-- `target` 首版支持 `codex.developerInstructionsBlock` 和 `codex.agentRole`。
+- `target` 支持 `codex.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`。
 - `states` 首版支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
 - `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
 - 配置写入、主控制台配置向导和 refresh-only 动作共用同一条 dynamic artifact apply 路径。成功时 AW 更新必要 artifact identity、project artifact shared identity 和 dynamic diagnostic cache；失败摘要进入 diagnostic cache，不写入 install record。`config set/unset/reset --json` 会返回稳定的 `artifactRefresh`；refresh-only 不修改 config store，只重跑当前 location target 可定位的 dynamic artifact refresh。
 - 对包含 `project` scope 的 repo-visible dynamic artifact，`refreshKeys` 不能引用 `file` / `directory` 类型配置。project artifact render config 只来自 manifest default 和 project shared config 中可共享的非路径 key；user store、project local store 和路径型 key 只影响本机 effective config、lifecycle 或 helper。
-- `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project write safety preflight。
+- `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
+- `codex.skill` 的 `projectManagedKind` 必须是 `skill`，且必须静态声明合法 `skillKey`。renderer plan 里的 `skillKey` 必须完全一致，`present` content 只能包含 `skillFile` 和 `openaiYaml`，分别写成运行时 `SKILL.md` 和 `agents/openai.yaml`。renderer 不能提供任意路径，也不能直接写 `.agents/skills/**` 或用户级 Codex runtime。AW apply 阶段会按当前 `skillTriggerPreference` patch `openaiYaml`；`default` / `auto` 对应 `policy.allow_implicit_invocation: true`，`manual` 对应 `false`。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
-`ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。
+`ArtifactPlan` 顶层固定为 `{ "version": 1, "artifacts": [...] }`。artifact 至少包含 `id`、`platform`、`target`、`kind`、`state`、`refreshKeys`；`disabled` 可带 `disabledReason: "config"` 并省略 content，`present` 必须按 target 提供 content。renderer 只能返回 plan，不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。
 
 status 和控制台会把 dynamic artifact 的 refresh failed、drift、missing 投影成友好状态和下一步；disabled by config 不算问题。写动作必须基于明确的 location target：同一插件出现在多个位置时，可以汇总展示，但不能把“多个位置”当成隐式批量写目标。安装、升级、卸载、配置保存、refresh-only 和 cleanup 都必须先明确 platform / scope / project root。
 

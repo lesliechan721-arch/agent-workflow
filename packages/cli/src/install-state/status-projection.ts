@@ -1,5 +1,8 @@
+import path from 'node:path';
+
 import type { PluginLocation } from './types.js';
 import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
+import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
 
 export type ProjectInstallStateKind =
   | 'installed'
@@ -66,6 +69,29 @@ function addArtifactIssue(
   });
 }
 
+function computeCodexSkillTreeDigest(
+  artifact: RecordArtifactEvidence,
+): string | null {
+  if (artifact.artifact.target !== 'codex.skill') {
+    return artifact.files[0]?.contentDigest ?? null;
+  }
+
+  const rootPath = artifact.artifact.path;
+  const files = artifact.files
+    .filter((file) => file.path !== rootPath && file.exists && file.rawContent !== null)
+    .map((file) => [
+      path.relative(rootPath, file.path).split(path.sep).join('/'),
+      file.rawContent,
+    ] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  return createGeneratedArtifactContentDigest(Object.fromEntries(files));
+}
+
 function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   const issues: ProjectInstallIssue[] = [];
 
@@ -89,6 +115,17 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   }
 
   for (const artifact of evidence.installRecord.artifacts) {
+    const isDynamicArtifact = artifact.artifact.id !== undefined && artifact.artifact.target !== undefined;
+    const removedFromCurrentDynamicPlan = Boolean(
+      isDynamicArtifact &&
+      evidence.currentCatalog.provided &&
+      evidence.installRecord.sameBundleAsCatalog === true &&
+      !artifact.matchedCurrentDynamicArtifact,
+    );
+    if (removedFromCurrentDynamicPlan) {
+      continue;
+    }
+
     const disabledByDynamicEntry = artifact.matchedDynamicEntry?.state === 'disabled';
     const missingFiles = artifact.files.filter((file) => !file.exists);
     if (!disabledByDynamicEntry && missingFiles.length > 0) {
@@ -98,7 +135,7 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
 
     if (artifact.matchedDynamicEntry) {
       const acceptedDigest = artifact.matchedDynamicEntry.contentDigest;
-      const actualDigest = artifact.files[0]?.contentDigest ?? null;
+      const actualDigest = computeCodexSkillTreeDigest(artifact);
       if (acceptedDigest && actualDigest && acceptedDigest !== actualDigest) {
         addArtifactIssue(issues, 'dynamicContentDrift', artifact);
       }
@@ -139,7 +176,7 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
       continue;
     }
 
-    const actualDigest = artifact.files[0]?.contentDigest ?? null;
+    const actualDigest = computeCodexSkillTreeDigest(artifact);
     const staticDigest =
       (evidence.installRecord.sameBundleAsCatalog
         ? artifact.matchedCatalogArtifact?.contentDigest

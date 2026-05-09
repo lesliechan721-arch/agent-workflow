@@ -56,10 +56,18 @@ import type {
 } from '../types.js';
 import {
   resolveAwHome,
+  resolveClaudePaths,
   resolveClaudeProjectKey,
+  resolveCodexPaths,
   resolveCodexProjectKey,
   resolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
+import {
+  getTrackingRecord,
+  readTrackingManifest,
+  removeTrackingRecordFromManifest,
+  writeTrackingManifest,
+} from '../utils/tracking.js';
 import { sha256Hex } from '../install-state/internal.js';
 
 export interface InstallStateRemovalRuntime extends CommandExecutionContextInput {
@@ -139,6 +147,16 @@ function createMaterializationTarget(
     kind: 'localMarketplaceRuntime',
     root: resolveAwHome(env),
   };
+}
+
+function resolveTrackingDir(
+  cwd: string,
+  location: PluginLocation,
+  env: NodeJS.ProcessEnv,
+): string {
+  return location.platform === 'claude'
+    ? resolveClaudePaths(cwd, location.scope, env).trackingDir
+    : resolveCodexPaths(cwd, location.scope, env).trackingDir;
 }
 
 function toGeneratedArtifact(
@@ -524,6 +542,14 @@ export async function tryUninstallUsingInstallState(options: {
       createInstallRecordDeleteStage({ filePath: recordRead.path }),
     ],
   });
+  const trackingDir = resolveTrackingDir(options.commandOptions.cwd, location, context.env);
+  const trackingManifest = await readTrackingManifest(trackingDir);
+  if (getTrackingRecord(trackingManifest, location.plugin)) {
+    await writeTrackingManifest(
+      trackingDir,
+      removeTrackingRecordFromManifest(trackingManifest, location.plugin),
+    );
+  }
 
   const warnings = [...removalStages.warnings];
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
@@ -666,6 +692,18 @@ export async function cleanupInstallStateTarget(options: {
   const runtimeRoot = recordRead.status === 'ok'
     ? recordRead.value.record.lifecycle?.runtimeRoot
     : deriveLocationRuntimeRoot(options.location, context.env);
+  const residualRepoArtifactStages =
+    !projection.installRecordPresent && options.commandOptions.force === true
+      ? evidence.projectSharedIdentity.artifacts
+        .filter((artifact) => artifact.file.exists)
+        .map((artifact) =>
+          createPathDeleteStage({
+            label: `project residual artifact (${artifact.file.path})`,
+            filePath: artifact.file.path,
+            rollbackWarningCode: 'projectArtifactRollbackFailed',
+            finalizeWarningCode: 'projectArtifactFinalizeFailed',
+          }))
+      : [];
   await runInstallStateGraphRecordTransaction({
     mode: 'delete',
     location: options.location,
@@ -673,6 +711,7 @@ export async function cleanupInstallStateTarget(options: {
     env: context.env,
     stages: [
       ...removalStages.stages,
+      ...residualRepoArtifactStages,
       ...(evidence.projectSharedIdentity.read
         && evidence.projectSharedIdentity.read.status !== 'missing'
         ? [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })]
@@ -700,6 +739,14 @@ export async function cleanupInstallStateTarget(options: {
       createInstallRecordDeleteStage({ filePath: recordPath }),
     ],
   });
+  const trackingDir = resolveTrackingDir(options.commandOptions.cwd, options.location, context.env);
+  const trackingManifest = await readTrackingManifest(trackingDir);
+  if (getTrackingRecord(trackingManifest, options.location.plugin)) {
+    await writeTrackingManifest(
+      trackingDir,
+      removeTrackingRecordFromManifest(trackingManifest, options.location.plugin),
+    );
+  }
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
   const warnings = [
     ...removalStages.warnings,

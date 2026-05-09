@@ -3,37 +3,62 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-const LIGHTWEIGHT_INSTRUCTION_ID = 'lightweight-instruction';
-const CODEX_EXPLORER_ROLE_ID = 'codex-explorer-role';
-const CODEX_EXPLORER_ROLE_KEY = 'codex-explorer';
-const ROLE_DESCRIPTION = 'Codex Explore 只读代码库探索 role。';
-const LIGHTWEIGHT_REFRESH_KEYS = [
-  'enableLightweightInstruction',
-  'explorerModel',
-  'modelReasoningEffort',
-];
-const ROLE_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
+const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
+const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
+const SKILL_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const pluginRoot = path.resolve(scriptDir, '..');
+const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
+const skillTemplatePath = path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md');
+const openaiTemplatePath = path.resolve(
+  pluginRoot,
+  'skills',
+  CODEX_EXPLORE_SKILL_KEY,
+  'agents',
+  'openai.yaml',
+);
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function trimBlock(text) {
-  return text
-    .trim()
-    .split('\n')
+export function trimBlock(text) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+
+  while (lines.length > 0 && lines[0].trim() === '') {
+    lines.shift();
+  }
+
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+
+  if (lines.length === 0) {
+    return '';
+  }
+
+  const normalizedLines = lines.map((line) => line.trimEnd());
+  const indentation = lines
     .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '')
+    .map((line) => line.match(/^[\t ]*/)?.[0].length ?? 0);
+  const commonIndent = indentation.length === 0 ? 0 : Math.min(...indentation);
+
+  return normalizedLines
+    .map((line) => {
+      if (line.trim() === '') {
+        return '';
+      }
+      return line.slice(commonIndent);
+    })
     .join('\n');
 }
 
 async function readManifestDefaults() {
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const manifestPath = path.resolve(scriptDir, '..', '.agents-plugin', 'plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
   return {
-    enableLightweightInstruction: schema.enableLightweightInstruction?.default ?? true,
     explorerModel: schema.explorerModel?.default ?? 'gpt-5.4-mini',
     modelReasoningEffort: schema.modelReasoningEffort?.default ?? 'medium',
   };
@@ -56,10 +81,6 @@ function resolveConfigValues(context, defaults) {
   }
 
   return {
-    enableLightweightInstruction:
-      typeof values.enableLightweightInstruction === 'boolean'
-        ? values.enableLightweightInstruction
-        : defaults.enableLightweightInstruction,
     explorerModel:
       typeof values.explorerModel === 'string' && values.explorerModel.trim() !== ''
         ? values.explorerModel
@@ -71,50 +92,27 @@ function resolveConfigValues(context, defaults) {
   };
 }
 
-function renderLightweightInstruction({ explorerModel, modelReasoningEffort }) {
+export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffort }) {
   return trimBlock(`
-    你可以使用 Codex 内置 \`explorer\` role 来加速代码库探索。该 workflow 只用于边界不清、跨模块、需要比较既有模式、或能和你本地调查并行推进的只读探索问题。
-
-    已知单个文件、单个符号、或 2 到 3 个文件内的小搜索，优先自己用本地工具完成。不要把实现、修改、格式化、提交或需要立即决策的问题交给 explorer。
-
-    使用 explorer 时，默认只启动 1 个。只有多个问题互不重叠且能并行推进时才启动 2 到 3 个；极少数复杂场景最多 4 个。
-
-    默认调用参数：
     - \`agent_type\`: \`explorer\`
     - \`model\`: \`${explorerModel}\`
     - \`reasoning_effort\`: \`${modelReasoningEffort}\`
-
-    如果用户显式指定其它模型，或 Codex runtime 报告 \`${explorerModel}\` 不可用，先向用户说明当前 workflow 默认模型不可用或已被用户指令覆盖，再按用户最新指示处理，不要静默改用其它模型。
-
-    给每个 explorer 的任务必须写清楚：具体问题、范围、探索深度（\`quick\` / \`medium\` / \`very thorough\`）、只读要求和期望输出。提醒它不要创建、编辑、移动、删除、格式化或回退文件，不要安装依赖，不要运行破坏性命令。
-
-    explorer 运行时，继续做不重叠的本地调查。已经启动 explorer 后，必须等待并读取它的结果，不能因为暂时没有返回就关闭 explorer、再由主 agent 自己完成同一个探索问题。整合结果时只保留关键结论、文件路径、必要行号和不确定点；必要时补读少量代码验证。读取并整合结果后，立即关闭本次启动的 explorer。
   `);
 }
 
-function renderRoleInstructions() {
-  return trimBlock(`
-    你是 Codex Explore 的专用只读探索 role，只回答主 agent 明确交给你的代码库问题。
+function renderTemplate(template, replacements) {
+  return Object.entries(replacements).reduce((content, [key, value]) => {
+    return content.split(`{{${key}}}`).join(value);
+  }, template);
+}
 
-    只读边界：
-    - 不要创建、编辑、移动、删除、格式化或回退文件。
-    - 不要安装依赖，不要运行破坏性命令。
-    - 不要产出实现计划，不要替主 agent 做修改决策。
+async function readSkillTemplates() {
+  const [skillTemplate, openaiTemplate] = await Promise.all([
+    readFile(skillTemplatePath, 'utf8'),
+    readFile(openaiTemplatePath, 'utf8'),
+  ]);
 
-    输出要围绕主 agent 的具体问题，摘录保持很短，不要搬运大段源码。固定使用下面结构：
-
-    结论
-    - ...
-
-    证据
-    - 路径 + 必要行号
-
-    不确定点
-    - ...
-
-    建议主 agent 下一步查看
-    - ...
-  `);
+  return { skillTemplate, openaiTemplate };
 }
 
 export async function readArtifactRenderContext() {
@@ -128,60 +126,37 @@ export async function readArtifactRenderContext() {
 
 export async function renderArtifactPlan(context) {
   const defaults = await readManifestDefaults();
-  const { enableLightweightInstruction, explorerModel, modelReasoningEffort } = resolveConfigValues(
-    context,
-    defaults,
-  );
+  const { explorerModel, modelReasoningEffort } = resolveConfigValues(context, defaults);
   const platform = context?.platform ?? 'codex';
 
   if (platform !== 'codex') {
     throw new Error(`Unsupported platform: ${platform}`);
   }
 
+  const { skillTemplate, openaiTemplate } = await readSkillTemplates();
+  const replacements = {
+    defaultExplorerConfig: renderDefaultExplorerConfig({
+      explorerModel,
+      modelReasoningEffort,
+    }),
+    explorerModel,
+    modelReasoningEffort,
+  };
+
   return {
     version: 1,
     artifacts: [
-      enableLightweightInstruction
-        ? {
-            id: LIGHTWEIGHT_INSTRUCTION_ID,
-            kind: 'instruction',
-            platform: 'codex',
-            target: 'codex.developerInstructionsBlock',
-            state: 'present',
-            refreshKeys: LIGHTWEIGHT_REFRESH_KEYS,
-            content: renderLightweightInstruction({
-              explorerModel,
-              modelReasoningEffort,
-            }),
-          }
-        : {
-            id: LIGHTWEIGHT_INSTRUCTION_ID,
-            kind: 'instruction',
-            platform: 'codex',
-            target: 'codex.developerInstructionsBlock',
-            state: 'disabled',
-            disabledReason: 'config',
-            refreshKeys: LIGHTWEIGHT_REFRESH_KEYS,
-          },
       {
-        id: CODEX_EXPLORER_ROLE_ID,
-        kind: 'codexRole',
+        id: CODEX_EXPLORE_SKILL_ID,
+        kind: 'skill',
         platform: 'codex',
-        target: 'codex.agentRole',
+        target: 'codex.skill',
         state: 'present',
-        roleKey: CODEX_EXPLORER_ROLE_KEY,
-        refreshKeys: ROLE_REFRESH_KEYS,
+        skillKey: CODEX_EXPLORE_SKILL_KEY,
+        refreshKeys: SKILL_REFRESH_KEYS,
         content: {
-          registration: {
-            description: ROLE_DESCRIPTION,
-          },
-          roleFile: {
-            name: CODEX_EXPLORER_ROLE_KEY,
-            description: ROLE_DESCRIPTION,
-            developer_instructions: renderRoleInstructions(),
-            model: explorerModel,
-            model_reasoning_effort: modelReasoningEffort,
-          },
+          skillFile: renderTemplate(skillTemplate, replacements),
+          openaiYaml: renderTemplate(openaiTemplate, replacements),
         },
       },
     ],

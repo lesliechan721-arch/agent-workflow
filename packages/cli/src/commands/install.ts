@@ -47,7 +47,7 @@ import {
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
-  getGeneratedArtifactIdentityKey,
+  hasSameGeneratedArtifactDesiredIdentity,
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
@@ -89,6 +89,12 @@ import {
   readCodexNativeRecoveryBreadcrumb,
   updateCodexNativeRecoveryBreadcrumb,
 } from '../utils/codex-native-recovery.js';
+import {
+  captureCodexNativePluginRollbackBaseline,
+  disposeCodexNativePluginRollbackBaseline,
+  restoreCodexNativePluginRollbackBaseline,
+  type CodexNativePluginRollbackBaseline,
+} from '../utils/codex-native-state.js';
 import {
   inspectGlobalDependencyIndex,
   readInstallRecordForLocation,
@@ -358,10 +364,13 @@ function toInstallRecordArtifacts(
     ...(artifact.hookGroups === undefined ? {} : { hookGroups: structuredClone(artifact.hookGroups) }),
     ...(artifact.id === undefined ? {} : { id: artifact.id }),
     ...(artifact.target === undefined ? {} : { target: artifact.target }),
+    ...(artifact.state === undefined ? {} : { state: artifact.state }),
     ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
     ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
       : {}),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
+    ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   }));
 }
 
@@ -462,6 +471,7 @@ function toProjectArtifactIdentityArtifact(
       ? { ownershipMarker: artifact.artifactKey ?? relativePath }
       : {}),
     ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.configDigest === undefined ? {} : { configDigest: artifact.configDigest }),
     ...(artifact.contentDigest === undefined ? {} : { contentDigest: artifact.contentDigest }),
   };
 }
@@ -546,6 +556,22 @@ function createSkillTriggerMaterializationTarget(
     kind: 'localMarketplaceRuntime',
     root: resolveAwHome(env),
   };
+}
+
+function hasCodexUserDynamicSkillTarget(
+  target: ResolvedPluginTarget,
+  platform: PlatformName,
+  scope: Scope,
+): boolean {
+  if (platform !== 'codex' || scope !== 'user' || !target.currentPlugin) {
+    return false;
+  }
+
+  return (target.currentPlugin.manifest.artifacts?.targets ?? []).some((artifact) =>
+    artifact.platform === 'codex' &&
+    artifact.scopes.includes('user') &&
+    artifact.target === 'codex.skill',
+  );
 }
 
 function projectStatusLooksAdoptable(
@@ -647,8 +673,9 @@ function diffGeneratedArtifacts(
   previousArtifacts: GeneratedArtifact[],
   desiredArtifacts: GeneratedArtifact[],
 ): GeneratedArtifact[] {
-  const desiredKeys = new Set(desiredArtifacts.map((artifact) => getGeneratedArtifactIdentityKey(artifact)));
-  return previousArtifacts.filter((artifact) => !desiredKeys.has(getGeneratedArtifactIdentityKey(artifact)));
+  return previousArtifacts.filter((artifact) =>
+    !desiredArtifacts.some((desiredArtifact) =>
+      hasSameGeneratedArtifactDesiredIdentity(artifact, desiredArtifact)));
 }
 
 async function restoreUpgradeRollbackBaseline(
@@ -1193,6 +1220,7 @@ async function installTargetOnPlatform(
   if (!target.currentPlugin) {
     throw new Error(`Unknown plugin "${target.pluginName}".`);
   }
+  const currentPlugin = target.currentPlugin;
 
   const env = context.env;
   const operation = runtime.operation ?? 'install';
@@ -1289,15 +1317,23 @@ async function installTargetOnPlatform(
   const baselineTracking = await readTrackingManifest(trackingDir);
   const previousTrackedArtifacts =
     baselineTracking.plugins[target.currentPlugin.manifest.name]?.artifacts ?? [];
-  const isCodexProjectUpgrade =
+  const usesCodexUserDynamicSkillFlow = hasCodexUserDynamicSkillTarget(
+    target,
+    platform,
+    options.scope,
+  );
+  const isCodexUpgradeWithStalePrune =
     operation === 'upgrade' &&
     platform === 'codex' &&
-    options.scope === 'project';
+    (
+      options.scope === 'project' ||
+      usesCodexUserDynamicSkillFlow
+    );
   const upgradeRollbackBaselineKey = createUpgradeRollbackBaselineKey(
     platform,
     target.pluginName,
   );
-  const upgradeRollbackBaseline = isCodexProjectUpgrade
+  const upgradeRollbackBaseline = operation === 'upgrade' && platform === 'codex' && options.scope === 'project'
     ? runtime.upgradeRollbackBaselines?.get(upgradeRollbackBaselineKey) ?? {
         artifactRollbackState: pluginStatus && (
           pluginStatus.scopeManagedEvidence?.ledger ||
@@ -1323,8 +1359,8 @@ async function installTargetOnPlatform(
     options.scope,
     resolvedInstallOptions,
   );
-  const materializationPreference = resolveMaterializationPreference(resolvedInstallOptions);
-
+  const materializationPreference = options.requestedSkillTrigger
+    ?? resolveMaterializationPreference(resolvedInstallOptions);
   let nativeWritten = false;
   let artifactsWritten = false;
   let trackingWritten = false;
@@ -1345,11 +1381,57 @@ async function installTargetOnPlatform(
   let recoveryBreadcrumbPersisted = false;
   let artifactsRollbackFailed = false;
   let trackingRestoreFailed = false;
+  let dynamicSkillArtifactRollbackState: ArtifactRollbackState | undefined;
+  let nativeRollbackBaseline: CodexNativePluginRollbackBaseline | undefined;
   const recoveryFailureStage = {
     snapshotPersisted: false,
     lifecycleStarted: false,
     trackingWriteAttempted: false,
     ledgerWriteAttempted: false,
+  };
+  const pruneCodexUpgradeStaleArtifacts = async (): Promise<void> => {
+    const previousIdentityRefusal = createArtifactIdentityRefusal(
+      previousTrackedArtifacts,
+      'previousArtifacts',
+    );
+    if (previousIdentityRefusal) {
+      throw new Error(previousIdentityRefusal);
+    }
+
+    const desiredIdentityRefusal = createArtifactIdentityRefusal(
+      trackedArtifacts,
+      'desiredArtifacts',
+    );
+    if (desiredIdentityRefusal) {
+      throw new Error(desiredIdentityRefusal);
+    }
+
+    const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts);
+    if (staleArtifacts.length === 0) {
+      return;
+    }
+
+    await pruneCodexTrackedArtifacts({
+      cwd: options.cwd,
+      scope: options.scope,
+      env,
+      pluginName: currentPlugin.manifest.name,
+      artifacts: staleArtifacts,
+      preservedArtifacts: trackedArtifacts,
+    });
+    await emitCommandEvent(context, {
+      type: 'artifacts:pruned',
+      data: {
+        platform,
+        plugin: currentPlugin.manifest.name,
+        scope: options.scope,
+        staleArtifacts: staleArtifacts.map((artifact) => ({
+          kind: artifact.kind,
+          path: artifact.path,
+          ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
+        })),
+      },
+    });
   };
 
   try {
@@ -1360,6 +1442,29 @@ async function installTargetOnPlatform(
       cwd: options.cwd,
       env,
     });
+
+    if (
+      usesCodexUserDynamicSkillFlow &&
+      (
+        pluginStatus?.scopeManagedEvidence?.ledger ||
+        pluginStatus?.scopeManagedEvidence?.tracking ||
+        pluginStatus?.scopeManagedEvidence?.sharedNativeRef
+      )
+    ) {
+      dynamicSkillArtifactRollbackState = await captureArtifactRollbackState(
+        platform,
+        target,
+        options.scope,
+        options.cwd,
+        env,
+      );
+    }
+    if (usesCodexUserDynamicSkillFlow) {
+      nativeRollbackBaseline = await captureCodexNativePluginRollbackBaseline(
+        target.currentPlugin.manifest.name,
+        env,
+      );
+    }
 
     if (materializeSkillTriggers) {
       const [embeddedRoot, writtenScope] = await Promise.all([
@@ -1449,10 +1554,10 @@ async function installTargetOnPlatform(
       },
     });
 
-    if (plannedNativeWrite) {
+    if (plannedNativeWrite && !usesCodexUserDynamicSkillFlow) {
       await adapters[platform].installPlugin(target.currentPlugin, options.scope);
     }
-    nativeWritten = plannedNativeWrite;
+    nativeWritten = plannedNativeWrite && !usesCodexUserDynamicSkillFlow;
     if (nativeWritten) {
       recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
       if (isCodexUserNativeInstall(platform, target, options.scope)) {
@@ -1494,6 +1599,7 @@ async function installTargetOnPlatform(
     });
     generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope, {
       event: operation,
+      skillTriggerPreference: options.requestedSkillTrigger ?? resolveMaterializationPreference(resolvedInstallOptions),
     });
     trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
     repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
@@ -1511,6 +1617,32 @@ async function installTargetOnPlatform(
       },
     });
 
+    if (isCodexUpgradeWithStalePrune && usesCodexUserDynamicSkillFlow) {
+      await pruneCodexUpgradeStaleArtifacts();
+    }
+
+    if (plannedNativeWrite && usesCodexUserDynamicSkillFlow) {
+      await adapters[platform].installPlugin(target.currentPlugin, options.scope);
+      nativeWritten = true;
+      recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
+      if (isCodexUserNativeInstall(platform, target, options.scope)) {
+        const marker = createNativeInstallTransactionMarker(
+          target.currentPlugin.manifest.name,
+          new Date().toISOString(),
+        );
+        await writeNativeTransactionMarker(marker, env);
+        recoveryBreadcrumbPersisted = true;
+      }
+      await emitCommandEvent(context, {
+        type: 'native:applied',
+        data: {
+          platform,
+          plugin: target.currentPlugin.manifest.name,
+          scope: options.scope,
+        },
+      });
+    }
+
     recoveryFailureStage.lifecycleStarted = true;
     await runLifecycleScript({
       event: operation,
@@ -1525,47 +1657,8 @@ async function installTargetOnPlatform(
       scriptTimeoutMs: options.scriptTimeoutMs,
     });
 
-    if (isCodexProjectUpgrade) {
-      const previousIdentityRefusal = createArtifactIdentityRefusal(
-        previousTrackedArtifacts,
-        'previousArtifacts',
-      );
-      if (previousIdentityRefusal) {
-        throw new Error(previousIdentityRefusal);
-      }
-
-      const desiredIdentityRefusal = createArtifactIdentityRefusal(
-        trackedArtifacts,
-        'desiredArtifacts',
-      );
-      if (desiredIdentityRefusal) {
-        throw new Error(desiredIdentityRefusal);
-      }
-
-      const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts);
-      if (staleArtifacts.length > 0) {
-        await pruneCodexTrackedArtifacts({
-          cwd: options.cwd,
-          scope: options.scope,
-          env,
-          pluginName: target.currentPlugin.manifest.name,
-          artifacts: staleArtifacts,
-          preservedArtifacts: trackedArtifacts,
-        });
-        await emitCommandEvent(context, {
-          type: 'artifacts:pruned',
-          data: {
-            platform,
-            plugin: target.currentPlugin.manifest.name,
-            scope: options.scope,
-            staleArtifacts: staleArtifacts.map((artifact) => ({
-              kind: artifact.kind,
-              path: artifact.path,
-              ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
-            })),
-          },
-        });
-      }
+    if (isCodexUpgradeWithStalePrune && !usesCodexUserDynamicSkillFlow) {
+      await pruneCodexUpgradeStaleArtifacts();
     }
 
     trackingWriteAttempted = true;
@@ -1911,12 +2004,23 @@ async function installTargetOnPlatform(
 
     if (artifactsWritten) {
       try {
-        await rollbackArtifacts(
-          adapters[platform],
-          target,
-          options.scope,
-          generatedArtifacts,
-        );
+        if (usesCodexUserDynamicSkillFlow && dynamicSkillArtifactRollbackState) {
+          await restoreTrackedArtifactRollbackState(
+            platform,
+            target,
+            options.scope,
+            options.cwd,
+            env,
+            dynamicSkillArtifactRollbackState,
+          );
+        } else {
+          await rollbackArtifacts(
+            adapters[platform],
+            target,
+            options.scope,
+            generatedArtifacts,
+          );
+        }
       } catch (rollbackError) {
         artifactsRollbackFailed = true;
         appendRollbackIssue(
@@ -1925,6 +2029,21 @@ async function installTargetOnPlatform(
           'repo artifacts 回滚失败',
           rollbackError,
           artifactSurfaceHints,
+        );
+      }
+    }
+
+    if (nativeWritten && nativeRollbackBaseline) {
+      try {
+        await restoreCodexNativePluginRollbackBaseline(nativeRollbackBaseline);
+        nativeWritten = false;
+      } catch (rollbackError) {
+        appendRollbackIssue(
+          rollbackIssues,
+          rollbackSurfaces,
+          'Codex native materialized cache 回滚失败',
+          rollbackError,
+          [nativeRollbackBaseline.configPath, nativeRollbackBaseline.cacheRootPath],
         );
       }
     }
@@ -2081,6 +2200,13 @@ async function installTargetOnPlatform(
       }
     }
 
+    if (dynamicSkillArtifactRollbackState) {
+      await disposeArtifactRollbackState(dynamicSkillArtifactRollbackState).catch(() => undefined);
+      dynamicSkillArtifactRollbackState = undefined;
+    }
+    await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
+    nativeRollbackBaseline = undefined;
+
     const rollbackFailure = createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
     if (isCodexUserNativeInstall(platform, target, options.scope) && nativeWritten) {
       throw wrapCodexNativeInstallFailure(
@@ -2124,6 +2250,10 @@ async function installTargetOnPlatform(
     await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
       .catch(() => undefined);
   }
+  if (dynamicSkillArtifactRollbackState) {
+    await disposeArtifactRollbackState(dynamicSkillArtifactRollbackState).catch(() => undefined);
+  }
+  await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
 
   return {
     warnings,

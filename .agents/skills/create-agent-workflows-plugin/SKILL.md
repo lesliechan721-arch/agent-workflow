@@ -73,7 +73,7 @@ plugins/<name>/
 
 ### 场景 E：Codex 动态 Artifact 插件
 
-插件需要根据 AW config 动态生成 Codex developer instructions 或 agent role，并在 `aw config set/unset/reset` 或主控制台配置向导保存后自动刷新。
+插件需要根据 AW config 动态生成 Codex skill、developer instructions 或 agent role，并在 `aw config set/unset/reset` 或主控制台配置向导保存后自动刷新。配置驱动的 Codex skill 优先使用 `codex.skill`，不要用 lifecycle 直接改 `.agents/skills/**` 或用户级 Codex runtime。
 
 ```text
 plugins/<name>/
@@ -114,7 +114,7 @@ plugins/<name>/
    - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
-   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；renderer 只输出 `ArtifactPlan`，不要直接写 `.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record
+   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；配置驱动的 Codex skill 用 `codex.skill` + 静态 `skillKey`；renderer 只输出 `ArtifactPlan`，不要直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record
    - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件，不写版本范围、外部来源或 platform override
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
@@ -177,9 +177,10 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `slashCommands` 只为支持平台生成 Claude commands / Codex manual-only skills；Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
-- Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
+- Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。配置驱动 skill 推荐声明 `target: "codex.skill"`、`projectManagedKind: "skill"` 和静态 `skillKey`；renderer plan / fixture 里的 `skillKey` 必须与之完全一致。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
 - Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。
 - `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。
+- `codex.skill` 的 runtime 内容来自静态模板、artifact render config 和当前 `skillTriggerPreference` patch。`--skill-trigger default|auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`；config refresh、repair 和 refresh-only 不应重置用户显式选择。
 - dynamic artifact 的 accepted state、digest 和最近 refresh 摘要保存在 dynamic diagnostic cache，不进入 install record。刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
 - project shared config 写 `.agent-workflows/plugin-config/<plugin>/config.json`，是 repo-visible project artifacts 唯一共享配置输入；project local config 写 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略，只影响本机 effective config、lifecycle 和 helper。
 - project scope 的 private state / local config 默认应被 ignore；`.agent-workflows/plugin-config/` 和 `.agent-workflows/project-artifacts/` 是可提交的共享输入/identity，模板和示例不要默认忽略它们。
@@ -191,6 +192,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - Node lifecycle/helper/test 默认只能使用 `node:` 内置模块和插件内相对 import。需要第三方依赖时声明 `scripts.node.packageRoot`，提交 `package.json` 和 `pnpm-lock.yaml`，并只使用 registry-backed 依赖；运行时依赖离线随 bundle 携带。
 - manifest build 只能通过 `scripts.node.build` 显式触发，并运行在隔离 staging 目录；不要期待 `package.json` scripts 或 npm lifecycle 自动执行，也不要依赖源码树被回写。
 - Codex user native 成功状态需要 enabled config、active materialized cache、native transaction 状态和 AW per-plugin record 同时健康；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，native transaction marker 残留会投影为需要处理而不是普通已安装。
+- P0/P11 runtime contract：`$codex-explore` 可描述为通用只读探索 workflow，覆盖代码库、文档、网络、日志和用户材料；同时必须说明访问来源受当前会话工具、权限、联网策略和用户提供的上下文限制，不能承诺当前会话不可访问的来源。
 
 ## 脚本测试入口
 

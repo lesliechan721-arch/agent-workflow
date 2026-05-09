@@ -92,6 +92,7 @@ export interface ArtifactFileEvidence {
   path: string;
   exists: boolean;
   contentDigest: string | null;
+  rawContent: string | null;
 }
 
 export interface CatalogArtifactEvidence extends CurrentCatalogArtifact {
@@ -111,6 +112,7 @@ export interface RecordArtifactEvidence {
   matchedCatalogArtifact: CatalogArtifactEvidence | null;
   matchedIdentityArtifact: IdentityArtifactEvidence | null;
   matchedDynamicEntry: DynamicArtifactDiagnosticEntry | null;
+  matchedCurrentDynamicArtifact: CurrentCatalogDynamicArtifact | null;
 }
 
 export interface DynamicEntryEvidence {
@@ -308,6 +310,24 @@ function makeDynamicArtifactKey(
   });
 }
 
+function matchesCurrentDynamicArtifact(
+  artifact: InstallRecordArtifact,
+  current: CurrentCatalogDynamicArtifact,
+): boolean {
+  if (artifact.id !== current.id || artifact.target !== current.target) {
+    return false;
+  }
+
+  if (current.artifactKey !== undefined && artifact.artifactKey !== current.artifactKey) {
+    return false;
+  }
+  if (current.roleKey !== undefined && artifact.roleKey !== current.roleKey) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveLocationCwd(location: PluginLocation, fallbackCwd: string): string {
   if (location.scope === 'project') {
     return location.projectKey ?? fallbackCwd;
@@ -322,6 +342,7 @@ async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
       path: filePath,
       exists: false,
       contentDigest: null,
+      rawContent: null,
     };
   }
 
@@ -331,13 +352,16 @@ async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
       path: filePath,
       exists: true,
       contentDigest: null,
+      rawContent: null,
     };
   }
 
+  const rawContent = await fs.readFile(filePath, 'utf8');
   return {
     path: filePath,
     exists: true,
-    contentDigest: sha256Hex(await fs.readFile(filePath)),
+    contentDigest: sha256Hex(Buffer.from(rawContent, 'utf8')),
+    rawContent,
   };
 }
 
@@ -400,6 +424,7 @@ async function inspectRecordArtifacts(
   catalogArtifacts: CatalogArtifactEvidence[],
   identityArtifacts: IdentityArtifactEvidence[],
   dynamicEntries: DynamicArtifactDiagnosticEntry[],
+  currentDynamicArtifacts: CurrentCatalogDynamicArtifact[],
 ): Promise<RecordArtifactEvidence[]> {
   if (!record) {
     return [];
@@ -418,6 +443,8 @@ async function inspectRecordArtifacts(
       matchedCatalogArtifact: catalogByKey.get(artifactMatchKey(artifact)) ?? null,
       matchedIdentityArtifact: identityByKey.get(artifactMatchKey(artifact)) ?? null,
       matchedDynamicEntry: dynamicByKey.get(makeDynamicArtifactKey(artifact)) ?? null,
+      matchedCurrentDynamicArtifact: currentDynamicArtifacts.find((current) =>
+        matchesCurrentDynamicArtifact(artifact, current)) ?? null,
     };
   }));
 }
@@ -846,6 +873,7 @@ export async function collectInstallEvidence(
     catalogArtifacts,
     identityArtifacts,
     dynamicEntries,
+    currentCatalog?.dynamicArtifacts ?? [],
   );
   const dynamicEntriesByKey = new Map(recordArtifacts
     .filter((artifact) => artifact.matchedDynamicEntry)
@@ -940,8 +968,6 @@ export async function collectInstallEvidence(
     }
     if (projectSharedIdentityRead?.status === 'ok' && hasAlignedIdentityArtifacts(identityArtifacts)) {
       adoptableSource = 'identity';
-    } else if (projectSharedIdentityRead?.status === 'missing' && hasAlignedCatalogArtifacts(catalogArtifacts)) {
-      adoptableSource = 'catalog';
     } else if (catalogArtifacts.some((artifact) => artifact.file.exists) || identityArtifacts.some((artifact) => artifact.file.exists)) {
       adoptableBlockers.push('artifactIdentityUnverifiable');
     }

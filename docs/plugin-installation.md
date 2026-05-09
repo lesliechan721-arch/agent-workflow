@@ -20,6 +20,8 @@ aw status
 
 `aw install` 和 `aw upgrade` 只有在目标需要 native plugin runtime 时才会同步 `~/.aw`。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装、升级 CLI 后排查 bundle 问题，或想提前确认本机 marketplace 状态时使用。纯 `Codex + project scope` 安装走当前仓库的 repo-visible artifacts，只读使用 catalog，不会为了当前项目写入去初始化、修复或注册用户级 Codex marketplace。
 
+带动态 `codex.skill` 的插件也由 AW 统一安装和刷新：renderer 只返回 `ArtifactPlan`，AW 再把 skill 写到 user 或 project runtime，并按 `--skill-trigger default|manual|auto` patch `agents/openai.yaml`。配置变化命中 `refreshKeys` 后，同一条 apply 路径会重新生成 skill、更新 dynamic diagnostic cache，并保留用户已经选择过的触发偏好。
+
 ---
 
 ## 命令参考
@@ -210,6 +212,8 @@ aw config reset <插件名> [-s project|user] [-y] [-j]
 
 默认策略仍来自平台原生文件：Codex 读取 `skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`，Claude Code 读取 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。
 
+对动态 `codex.skill`，`default` 和 `auto` 会让最终 runtime `agents/openai.yaml` 中的 `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。renderer 输出的模板不是最终触发真值；AW 会在 install、显式 upgrade、repair、config refresh 和 refresh-only 时按 install record 里的偏好重新 patch，因此配置刷新不会把用户显式选择的 manual/auto 悄悄重置。
+
 重复执行 `aw install` 时，未传 `--skill-trigger` 不等于重置。只要当前 location 的 install record 可读且来源仍可信，CLI 会沿用上一次记录的偏好；只有显式传 `-t default` 才会主动恢复默认策略。`aw upgrade <插件名>` 未传参数时也遵循同样的 record 继承规则。
 
 如果当前 location 的 install record 损坏或缺少可恢复安装选项，CLI 不能安全相信旧记录。对已经受管的 target，重复 `install` 或显式 `upgrade` 必须传 `--skill-trigger default|manual|auto` 才能继续；未受管的新安装 target 仍按 `default` 安装。
@@ -240,7 +244,7 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
 
 友好状态投影由 status、主控制台和 JSON 共用。默认输出只展示 `已安装`、`需要修复`、`可认领`、`有残留`、`由其它来源管理`、`未安装` 等用户可理解状态；内部状态文件、低层 runtime 细节和诊断字段只出现在 `--verbose` / `--json` 或 debug log 中。可复制命令、argv、flag、JSON 字段和类型名保留真实技术标识。
 
-`--verbose` 会展开诊断字段，包括平台检测、native plugin 状态、scope 初始化状态、install record、catalog 兼容性、managed evidence、shared runtime owner、config/script health、generated artifacts、dynamic diagnostic cache、project artifact identity、dependency index 和 drift warnings。Codex project scope 的默认状态面板以 repo-visible artifacts、project artifact identity 和本机 record 为主；用户级 native marketplace 注册缺失不会覆盖正常的 project installed/adoptable signal。动态 artifact 会单独展示 instruction / role 等 artifact health，常见状态包括 healthy、disabled by config、block missing、content drift、config digest stale 和 recent refresh failed。user 配置写入没有扫描历史项目时，`refreshReach` 会说明本次已刷新 user / 当前 project，以及其它已知 project target 是否可能仍 stale。`status` 只读，不会执行 lifecycle、不会执行 artifact renderer、不会刷新 marketplace、不会启动 `codex app-server`、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
+`--verbose` 会展开诊断字段，包括平台检测、native plugin 状态、scope 初始化状态、install record、catalog 兼容性、managed evidence、shared runtime owner、config/script health、generated artifacts、dynamic diagnostic cache、project artifact identity、dependency index 和 drift warnings。Codex project scope 的默认状态面板以 repo-visible artifacts、project artifact identity 和本机 record 为主；用户级 native marketplace 注册缺失不会覆盖正常的 project installed/adoptable signal。动态 artifact 会单独展示 skill / instruction / role 等 artifact health，常见状态包括 healthy、disabled by config、missing、content drift、config digest stale 和 recent refresh failed。user 配置写入没有扫描历史项目时，`refreshReach` 会说明本次已刷新 user / 当前 project，以及其它已知 project target 是否可能仍 stale。`status` 只读，不会执行 lifecycle、不会执行 artifact renderer、不会刷新 marketplace、不会启动 `codex app-server`、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
 
 依赖状态也只读展示。`status --json` 中每个位置的 `dependencies` 会包含 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift` 和 `dependencyIndexTrusted`。`missing` 表示当前健康层确实缺依赖；`catalogDrift` 表示 current catalog 和 record 里的依赖声明不同，不会单独把旧安装判成缺失依赖。`autoRemovable=true` 是只读投影，表示该位置是未显式保留的自动依赖且当前没有其它插件引用；status 和主控制台不会因此自动删除它。
 
@@ -284,8 +288,8 @@ Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled
 - Claude hooks 来自插件 bundle 内的 `claude/hooks/hooks.json`，由 Claude Code 原生插件加载；CLI 不会把它作为额外 repo-visible hook 文件写入项目目录
 
 **Codex**
-- `.agents/skills/<skill>/` — Codex project scope 的 repo skill；公共 `slashCommands` 也会在 Codex 侧生成 manual-only skill
-- `.codex/config.toml` — 追加 managed instructions block，写入动态 `developer_instructions` block、Codex agent role 注册项和 `mcp_servers`；MCP server key 保留 rendered `.mcp.json` 的原始属性名，包含点号、空格或 Unicode 时使用 TOML quoted key，例如 `[mcp_servers."acme.tools v1"]`
+- `.agents/skills/<skill>/` — Codex project scope 的 repo skill；静态 skill、动态 `codex.skill` 和公共 `slashCommands` 生成的 manual-only skill 都会以受管 identity 记录
+- `.codex/config.toml` — 追加 managed instructions block，写入动态 `developer_instructions` block、Codex agent role 注册项和 `mcp_servers`；动态 `codex.skill` 不要求 `.codex/config.toml`。MCP server key 保留 rendered `.mcp.json` 的原始属性名，包含点号、空格或 Unicode 时使用 TOML quoted key，例如 `[mcp_servers."acme.tools v1"]`
 - `.codex/rules/*.rules` — Codex execpolicy `prefix_rule(...)` 权限规则
 - `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置，包含公共 hooks 和 `extensions.nativeHooks.codex`
 - `.codex/agents/*.toml` — Codex agent role 文件
@@ -320,7 +324,9 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 | 插件名 | 描述 | 支持平台 |
 |--------|------|----------|
 | `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
-| `codex-explore` | 为 Codex 提供只读代码库探索流程 | Codex |
+| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
+
+> P0/P11 runtime contract：`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
 查看完整列表：
 
