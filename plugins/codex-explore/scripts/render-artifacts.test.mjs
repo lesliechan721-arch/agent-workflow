@@ -101,13 +101,18 @@ async function testPresentSkillArtifact() {
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
-  assert.match(skill.content.skillFile, /description: 通用只读探查 workflow/);
-  assert.match(skill.content.skillFile, /大范围只读探索/);
+  assert.match(skill.content.skillFile, /description: 只读大范围探索委派 workflow/);
+  assert.match(skill.content.skillFile, /用户明确要求使用 codex-explore\/\$codex-explore 做只读探索时优先触发/);
+  assert.match(skill.content.skillFile, /大范围只读证据探索/);
   assert.match(skill.content.skillFile, /跨 6 个以上文件、3 个以上模块、多来源材料、长日志、网页\/官方文档/);
+  assert.match(skill.content.skillFile, /任务边界不明确，需要大量探查、筛选和排除材料/);
+  assert.match(skill.content.skillFile, /直接由主 agent 探查会明显占用上下文时触发/);
+  assert.match(skill.content.skillFile, /普通实现、修改、调试、审查、解释、提交/);
   assert.match(skill.content.skillFile, /交叉验证不能单独作为启动子代理的理由/);
-  assert.match(skill.content.skillFile, /只是提到 codex-explore 插件时不要触发/);
+  assert.match(skill.content.skillFile, /或只是提到 codex-explore\/\$codex-explore\/plugins\/codex-explore 时不要触发/);
+  assert.match(skill.content.skillFile, /任务需要只读证据探查才能可靠推进/);
+  assert.match(skill.content.skillFile, /只是顺带提到 `codex-explore`、`\$codex-explore` 或 `plugins\/codex-explore`/);
   assert.match(skill.content.skillFile, /先只做 Gate 判断/);
-  assert.match(skill.content.skillFile, /不要同时读取目标代码、文档、网页、日志或用户材料/);
   assert.match(skill.content.skillFile, /默认使用 Codex Explore 受管子代理/);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
   assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4`/);
@@ -138,10 +143,12 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /跨多文件、多模块、多来源和长上下文的只读探索/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 只做 Gate 判断/);
-  assert.match(skill.content.openaiYaml, /只有跨 6 个以上文件、3 个以上模块、多来源、长日志、网页\/官方文档或大段用户材料时才委派子代理/);
-  assert.match(skill.content.openaiYaml, /小范围定位或单纯交叉验证不要触发/);
+  assert.match(skill.content.openaiYaml, /大范围材料探查与证据筛选的只读委派/);
+  assert.match(skill.content.openaiYaml, /用户明确要求使用 \$codex-explore 做只读探索时优先触发/);
+  assert.match(skill.content.openaiYaml, /任务边界不明确，需要大量探查、筛选和排除材料/);
+  assert.match(skill.content.openaiYaml, /跨 6 个以上文件、3 个以上模块、多来源、长日志、网页\/官方文档或大段用户材料/);
+  assert.match(skill.content.openaiYaml, /直接由主 agent 探查会明显占用上下文时才委派子代理/);
+  assert.match(skill.content.openaiYaml, /普通实现、修改、调试、审查、解释、提交、2 到 3 个文件定位、单纯交叉验证或只是顺带提到插件名都不要触发/);
 }
 
 async function testCustomConfigOverridesSkillTemplates() {
@@ -232,13 +239,18 @@ async function testStaticSkillContracts() {
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  assert.match(skill, /description: 通用只读探查 workflow/);
-  assert.match(skill, /大范围只读探索/);
+  assert.match(skill, /description: 只读大范围探索委派 workflow/);
+  assert.match(skill, /用户明确要求使用 codex-explore\/\$codex-explore 做只读探索时优先触发/);
+  assert.match(skill, /大范围只读证据探索/);
   assert.match(skill, /跨 6 个以上文件、3 个以上模块、多来源材料、长日志、网页\/官方文档/);
+  assert.match(skill, /任务边界不明确，需要大量探查、筛选和排除材料/);
+  assert.match(skill, /直接由主 agent 探查会明显占用上下文时触发/);
+  assert.match(skill, /普通实现、修改、调试、审查、解释、提交/);
   assert.match(skill, /交叉验证不能单独作为启动子代理的理由/);
-  assert.match(skill, /只是提到 codex-explore 插件时不要触发/);
+  assert.match(skill, /或只是提到 codex-explore\/\$codex-explore\/plugins\/codex-explore 时不要触发/);
+  assert.match(skill, /任务需要只读证据探查才能可靠推进/);
+  assert.match(skill, /只是顺带提到 `codex-explore`、`\$codex-explore` 或 `plugins\/codex-explore`/);
   assert.match(skill, /先只做 Gate 判断/);
-  assert.match(skill, /不要同时读取目标代码、文档、网页、日志或用户材料/);
   assert.match(skill, /受管子代理/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
   assert.match(skill, /不要静默换到内置 `explorer`/);
@@ -258,9 +270,10 @@ async function testStaticSkillContracts() {
   assert.equal(skill.includes('codex-explorer'), false);
 
   assert.match(metadata, /allow_implicit_invocation:\s*true/);
-  assert.match(metadata, /short_description: "跨多文件、多模块、多来源和长上下文的只读探索"/);
-  assert.match(metadata, /使用 \$codex-explore 只做 Gate 判断/);
-  assert.match(metadata, /小范围定位或单纯交叉验证不要触发/);
+  assert.match(metadata, /short_description: "大范围材料探查与证据筛选的只读委派"/);
+  assert.match(metadata, /用户明确要求使用 \$codex-explore 做只读探索时优先触发/);
+  assert.match(metadata, /任务边界不明确，需要大量探查、筛选和排除材料/);
+  assert.match(metadata, /普通实现、修改、调试、审查、解释、提交、2 到 3 个文件定位、单纯交叉验证或只是顺带提到插件名都不要触发/);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
@@ -268,7 +281,18 @@ async function testStaticSkillContracts() {
   assert.match(manifest.extensions.instructions[0].content, /第一层 Codex Explore 子代理/);
   assert.match(manifest.extensions.instructions[0].content, /授权不传递给探索子代理/);
   assert.equal(manifest.artifacts.targets.length, 2);
-  assert.deepEqual(manifest.artifacts.targets, [
+  if (manifest.artifacts.targets.some((target) => 'kind' in target)) {
+    assert.deepEqual(
+      manifest.artifacts.targets.map((target) => target.kind),
+      ['skill', 'codexRole'],
+    );
+  }
+  const normalizedTargets = manifest.artifacts.targets.map((target) => {
+    const normalized = { ...target };
+    delete normalized.kind;
+    return normalized;
+  });
+  assert.deepEqual(normalizedTargets, [
     {
       id: 'codex-explore-skill',
       platform: 'codex',

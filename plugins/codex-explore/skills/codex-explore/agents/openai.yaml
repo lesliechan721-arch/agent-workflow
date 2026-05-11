@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Explore"
-  short_description: "跨多文件、多模块、多来源和长上下文的只读探索"
-  default_prompt: "使用 $codex-explore 只做 Gate 判断；只有跨 6 个以上文件、3 个以上模块、多来源、长日志、网页/官方文档或大段用户材料时才委派子代理；小范围定位或单纯交叉验证不要触发。"
+  short_description: "大范围材料探查与证据筛选的只读委派"
+  default_prompt: "用户明确要求使用 $codex-explore 做只读探索时优先触发；否则，当任务边界不明确，需要大量探查、筛选和排除材料，或预计跨 6 个以上文件、3 个以上模块、多来源、长日志、网页/官方文档或大段用户材料整理证据，直接由主 agent 探查会明显占用上下文时才委派子代理；普通实现、修改、调试、审查、解释、提交、2 到 3 个文件定位、单纯交叉验证或只是顺带提到插件名都不要触发。"
 
 policy:
   allow_implicit_invocation: true
