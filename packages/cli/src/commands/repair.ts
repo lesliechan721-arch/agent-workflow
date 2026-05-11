@@ -1094,6 +1094,7 @@ async function ensureDependencyLocationHealthy(options: {
       artifacts: generatedArtifacts,
     }),
     currentRecord: nextRecord,
+    env: options.env,
   }));
   const recordPath = previousRecordRead.status === 'ok'
     ? previousRecordRead.path
@@ -1405,6 +1406,7 @@ async function repairInstalledLocation(options: {
       artifacts: generatedArtifacts,
     }),
     currentRecord: nextRecord,
+    env: options.env,
   }));
   stages.push(await createInstallRecordWriteStage({
     cwd: options.repairOptions.cwd,
@@ -1519,6 +1521,7 @@ async function repairMarkerOnlyLocation(options: {
       artifacts: generatedArtifacts,
     }),
     currentRecord: recordFile,
+    env: options.env,
   }));
   stages.push(await createInstallRecordWriteStage({
     cwd: options.repairOptions.cwd,
@@ -1679,6 +1682,7 @@ async function adoptExistingLocation(options: {
       artifacts: generatedArtifacts,
     }),
     currentRecord: recordFile,
+    env: options.env,
   }));
   const recordPath = path.join(
     getInstallStatePrivateRoot(options.repairOptions.cwd, location, options.env),

@@ -1825,6 +1825,7 @@ async function installTargetOnPlatform(
         location: toInstallStateLocation(location),
         value: dynamicCache,
         currentRecord: recordFile,
+        env,
       }),
     ];
     if (options.scope === 'project') {

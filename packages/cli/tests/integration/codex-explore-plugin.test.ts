@@ -33,6 +33,12 @@ import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-serve
 import { runWithZeroWriteSnapshot } from '../helpers/repo-managed-state.js';
 
 const tempDirs: string[] = [];
+const originalPath = process.env.PATH;
+const originalHome = process.env.HOME;
+
+function isolateHostEnv(root: string): void {
+  process.env.HOME = path.join(root, 'home');
+}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -549,6 +555,7 @@ async function makeWorkspaceWithCodexExplore(): Promise<{
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   await hydrateEmbeddedCodexExploreTemplates(repoRoot, embeddedRoot);
   tempDirs.push(embeddedRoot);
+  isolateHostEnv(root);
 
   return {
     repoRoot,
@@ -578,6 +585,7 @@ async function makeMultiRepoWorkspaceWithCodexExplore(): Promise<{
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoA);
   await hydrateEmbeddedCodexExploreTemplates(repoA, embeddedRoot);
   tempDirs.push(embeddedRoot);
+  isolateHostEnv(root);
 
   return {
     repoA,
@@ -958,8 +966,15 @@ async function alignUserRecordSourceToWorkspacePlugin(repoRoot: string, recordPa
 afterEach(async () => {
   vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
+  process.env.PATH = originalPath;
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
   delete process.env.AW_HOME;
   delete process.env.AW_CODEX_HOME;
+  delete process.env.AW_CLAUDE_HOME;
   delete process.env.AW_FORCE_CODEX_AVAILABLE;
   delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -1371,9 +1386,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'auto',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const result = await runCliEntry(
@@ -1994,9 +2007,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'auto',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
@@ -2449,9 +2460,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'default',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -2513,9 +2522,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'default',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     await writeCodexExploreRenderer(
@@ -2557,9 +2564,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'default',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -2682,6 +2687,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'auto',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
@@ -2722,9 +2728,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const result = await statusCommand(
@@ -2772,9 +2776,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectVerbose = await statusCommand(
@@ -2865,6 +2867,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -2892,9 +2895,7 @@ describe('codex-explore integration acceptance', () => {
           scope: 'project',
           platform: 'codex',
         },
-        {
-          env: process.env,
-        },
+        createCodexExploreRuntime(repoRoot, process.env),
       ),
     ).rejects.toThrow('当前不是健康 installed 状态，请先运行 aw cleanup。');
 
@@ -3113,6 +3114,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -3149,6 +3151,7 @@ describe('codex-explore integration acceptance', () => {
         platform: 'codex',
         requestedSkillTrigger: 'default',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const config = await readCodexConfigFile(projectPaths.configTomlPath);
@@ -3212,6 +3215,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const result = await runCliEntry(
@@ -3337,6 +3341,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
@@ -3485,9 +3490,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -3700,9 +3703,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -3835,9 +3836,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
     await fs.remove(path.join(awHome, 'artifact-render.log'));
     await fs.remove(path.join(awHome, 'lifecycle.log'));
@@ -3946,9 +3945,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -4032,9 +4029,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoA, process.env),
     );
     await installCommand(
       ['codex-explore'],
@@ -4043,9 +4038,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoB, process.env),
     );
 
     const repoAUserPaths = resolveCodexPaths(repoA, 'user', process.env);
@@ -4255,9 +4248,7 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         platform: 'codex',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
@@ -4881,6 +4872,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         scope: 'project',
         platform: 'codex',
       },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -4963,9 +4955,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         platform: 'codex',
         requestedSkillTrigger: 'default',
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
 
     const config = await readCodexConfigFile(projectPaths.configTomlPath);

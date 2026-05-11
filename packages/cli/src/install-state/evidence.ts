@@ -97,6 +97,28 @@ export interface CollectInstallEvidenceOptions {
   projectSharedRenderConfigDigest?: string | null;
 }
 
+async function readTrackingRecordSafely(options: {
+  trackingDir: string;
+  pluginName: string;
+}): Promise<{
+  trackingRecord: ReturnType<typeof getTrackingRecord>;
+  trackingIntegrityErrors: ReturnType<typeof getTrackingArtifactIntegrityErrors>;
+}> {
+  try {
+    const trackingManifest = await readTrackingManifest(options.trackingDir);
+    const trackingRecord = getTrackingRecord(trackingManifest, options.pluginName);
+    return {
+      trackingRecord,
+      trackingIntegrityErrors: getTrackingArtifactIntegrityErrors(trackingRecord?.artifacts ?? []),
+    };
+  } catch {
+    return {
+      trackingRecord: undefined,
+      trackingIntegrityErrors: [],
+    };
+  }
+}
+
 export interface ArtifactFileEvidence {
   path: string;
   exists: boolean;
@@ -984,9 +1006,13 @@ export async function collectInstallEvidence(
   const trackingDir = options.location.platform === 'claude'
     ? resolveClaudePaths(options.cwd, options.location.scope, env).trackingDir
     : resolveCodexPaths(options.cwd, options.location.scope, env).trackingDir;
-  const trackingManifest = await readTrackingManifest(trackingDir);
-  const trackingRecord = getTrackingRecord(trackingManifest, options.location.plugin);
-  const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(trackingRecord?.artifacts ?? []);
+  const {
+    trackingRecord,
+    trackingIntegrityErrors,
+  } = await readTrackingRecordSafely({
+    trackingDir,
+    pluginName: options.location.plugin,
+  });
   const currentCatalogSource = currentCatalog?.source ?? null;
   const projectIdentityPresent = projectSharedIdentityRead?.status === 'ok';
   const sourceDrift = Boolean(
