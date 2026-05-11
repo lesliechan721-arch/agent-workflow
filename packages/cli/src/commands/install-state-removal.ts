@@ -105,6 +105,16 @@ interface RemovalDependencyProtection {
     | 'dependencyIndexCoverageUntrusted';
 }
 
+export interface InstallStateRemovalProtection {
+  allowed: boolean;
+  blockedDependents: PluginLocation[];
+  failClosedReason?: string;
+  failClosedCode?:
+    | 'dependencyIndexMissing'
+    | 'dependencyIndexInvalid'
+    | 'dependencyIndexCoverageUntrusted';
+}
+
 interface ProtectedRecordEntry {
   location: PluginLocation;
   dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
@@ -115,6 +125,14 @@ function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
     && left.platform === right.platform
     && left.scope === right.scope
     && (left.projectKey ?? null) === (right.projectKey ?? null);
+}
+
+function dedupeLocations(locations: PluginLocation[]): PluginLocation[] {
+  const deduped = new Map<string, PluginLocation>();
+  for (const location of locations) {
+    deduped.set(renderLocation(location), location);
+  }
+  return [...deduped.values()];
 }
 
 function renderLocation(location: PluginLocation): string {
@@ -220,6 +238,32 @@ async function listReadableScopedRecords(options: {
   return output;
 }
 
+async function listLocallyVisibleReadableRecords(options: {
+  cwd: string;
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<ProtectedRecordEntry[]> {
+  const records = await listReadableScopedRecords(options);
+  if (options.location.scope !== 'user') {
+    return records;
+  }
+
+  const projectRecords = await listReadableScopedRecords({
+    ...options,
+    location: {
+      plugin: options.location.plugin,
+      platform: options.location.platform,
+      scope: 'project',
+      projectKey: await resolveProjectKeyForPlatform(options.location.platform, options.cwd),
+    },
+  });
+  const deduped = new Map<string, ProtectedRecordEntry>();
+  for (const record of [...records, ...projectRecords]) {
+    deduped.set(renderLocation(record.location), record);
+  }
+  return [...deduped.values()];
+}
+
 function isRelevantIndexReference(
   target: PluginLocation,
   reference: DependencyIndexReferenceInspection,
@@ -236,19 +280,19 @@ async function analyzeRemovalDependencyProtection(options: {
   location: PluginLocation;
   env: NodeJS.ProcessEnv;
 }): Promise<RemovalDependencyProtection> {
-  const localRecords = await listReadableScopedRecords(options);
-  const blockedDependents = localRecords
+  const localRecords = await listLocallyVisibleReadableRecords(options);
+  const localBlockedDependents = dedupeLocations(localRecords
     .filter((entry) => !sameLocation(entry.location, options.location))
     .filter((entry) =>
       entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
-    .map((entry) => entry.location);
+    .map((entry) => entry.location));
 
   const inspection = await inspectGlobalDependencyIndex(options.env);
   if (inspection.status !== 'ok') {
     return options.location.scope === 'user'
       ? {
           allowed: false,
-          blockedDependents,
+          blockedDependents: localBlockedDependents,
           failClosedCode: inspection.status === 'missing'
             ? 'dependencyIndexMissing'
             : 'dependencyIndexInvalid',
@@ -257,8 +301,8 @@ async function analyzeRemovalDependencyProtection(options: {
             : `dependency index 已损坏：${inspection.error}`,
         }
       : {
-          allowed: blockedDependents.length === 0,
-          blockedDependents,
+          allowed: localBlockedDependents.length === 0,
+          blockedDependents: localBlockedDependents,
         };
   }
 
@@ -268,7 +312,10 @@ async function analyzeRemovalDependencyProtection(options: {
     .filter((entry) =>
       entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
     .map((entry) => entry.location);
-  blockedDependents.push(...verifiedIndexDependents);
+  const blockedDependents = dedupeLocations([
+    ...localBlockedDependents,
+    ...verifiedIndexDependents,
+  ]);
 
   const coverageIssue = inspection.references.some((reference) =>
     reference.status !== 'verified'
@@ -292,11 +339,9 @@ async function analyzeRemovalDependencyProtection(options: {
     };
   }
 
-  const dedupedBlockedDependents = blockedDependents.filter((location, index, all) =>
-    all.findIndex((candidate) => sameLocation(candidate, location)) === index);
   return {
-    allowed: dedupedBlockedDependents.length === 0,
-    blockedDependents: dedupedBlockedDependents,
+    allowed: blockedDependents.length === 0,
+    blockedDependents,
   };
 }
 
@@ -839,6 +884,7 @@ export async function readInstallStateProjection(options: {
   evidence: InstallEvidence;
   projection: ProjectInstallStateProjection;
   forceCleanupRequired: boolean;
+  removalProtection: InstallStateRemovalProtection;
 }> {
   const evidence = await collectInstallEvidence({
     cwd: options.cwd,
@@ -846,11 +892,13 @@ export async function readInstallStateProjection(options: {
     env: options.env,
   });
   const projection = projectInstallState(evidence);
+  const removalProtection = await analyzeRemovalDependencyProtection(options);
   return {
     evidence,
     projection,
     forceCleanupRequired: !projection.installRecordPresent
       && projection.kind === 'residual'
       && evidence.projectSharedIdentity.artifacts.some((artifact) => artifact.file.exists),
+    removalProtection,
   };
 }

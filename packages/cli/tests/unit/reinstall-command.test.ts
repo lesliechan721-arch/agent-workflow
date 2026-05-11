@@ -132,4 +132,135 @@ describe('reinstall command (P9)', () => {
 
     expect(installSpy).not.toHaveBeenCalled();
   });
+
+  it('does not proceed to implicit cleanup when repairable residue fails closed on a missing dependency index', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-reinstall-needs-repair-')),
+      scenario: 'recordAndInstallMarkerResidual',
+    });
+    tempDirs.push(fixture.paths.rootDir);
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await fs.remove(path.join(fixture.paths.awHome, 'dependency-index'));
+
+    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
+    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
+
+    await expect(
+      reinstallCommand(
+        [fixture.target.location.plugin],
+        {
+          cwd: fixture.paths.repoRoot,
+          scope: fixture.target.location.scope,
+          platform: fixture.target.location.platform,
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: fixture.paths.awHome,
+            AW_CODEX_HOME: fixture.paths.codexHome,
+            AW_CLAUDE_HOME: fixture.paths.claudeHome,
+          },
+          adapters: {
+            codex: new FakeAdapter(),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+          cleanupCommandImpl: cleanupSpy,
+          installCommandImpl: installSpy,
+        },
+      ),
+    ).rejects.toThrow(/dependency index/);
+
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports blocked dependents before suggesting cleanup --force for record-less project residuals', async () => {
+    const builder = await makeBuilder();
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const target = builder.createTarget({
+      pluginName: 'residual-target',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    const dependent = builder.createTarget({
+      pluginName: 'residual-parent',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+
+    await builder.writeRepoArtifact(target);
+    await builder.writeProjectIdentity(target);
+    const targetRecordPath = path.join(
+      builder.paths.repoRoot,
+      '.codex',
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await builder.writeInstallRecord(target);
+    await builder.writeSharedRuntimeOwner(target, targetRecordPath);
+    await fs.remove(targetRecordPath);
+
+    const dependentRecord = await builder.writeInstallRecord(dependent);
+    const dependentRecordPath = path.join(
+      builder.paths.repoRoot,
+      '.codex',
+      '.agent-workflows',
+      'records',
+      `${dependent.recordId}.json`,
+    );
+    await fs.writeJson(
+      dependentRecordPath,
+      {
+        ...dependentRecord,
+        record: {
+          ...dependentRecord.record,
+          dependencyEdges: [{
+            dependency: target.location,
+            declaration: {
+              name: target.location.plugin,
+            },
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
+    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
+
+    const error = await reinstallCommand(
+      [target.location.plugin],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: target.location.scope,
+        platform: target.location.platform,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+        cleanupCommandImpl: cleanupSpy,
+        installCommandImpl: installSpy,
+      },
+    ).then(
+      () => null,
+      (caught) => caught,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/verified dependent/);
+    expect((error as Error).message).not.toMatch(/cleanup --force/);
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
 });

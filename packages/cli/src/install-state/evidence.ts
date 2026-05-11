@@ -565,6 +565,40 @@ async function inspectScopedRecords(options: {
   return output;
 }
 
+async function inspectLocallyVisibleRecords(options: {
+  cwd: string;
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<Array<{
+  location: PluginLocation;
+  path: string;
+  dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
+}>> {
+  const records = await inspectScopedRecords(options);
+  if (options.location.scope !== 'user') {
+    return records;
+  }
+
+  const projectRecords = await inspectScopedRecords({
+    ...options,
+    location: {
+      plugin: options.location.plugin,
+      platform: options.location.platform,
+      scope: 'project',
+      projectKey: resolveProjectScopeRepoRoot(options.cwd),
+    },
+  });
+  const deduped = new Map<string, {
+    location: PluginLocation;
+    path: string;
+    dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
+  }>();
+  for (const record of [...records, ...projectRecords]) {
+    deduped.set(record.path, record);
+  }
+  return [...deduped.values()];
+}
+
 async function inspectDependencyLocation(options: {
   cwd: string;
   location: PluginLocation;
@@ -660,7 +694,7 @@ async function buildDependencyProjection(options: {
   const verifiedLocations: PluginLocation[] = [];
   const revisitProjectLocations: PluginLocation[] = [];
 
-  const scopedRecords = await inspectScopedRecords({
+  const scopedRecords = await inspectLocallyVisibleRecords({
     cwd: options.cwd,
     location: options.location,
     env: options.env,
@@ -976,8 +1010,7 @@ export async function collectInstallEvidence(
     installRecordRead.status !== 'missing'
     || dynamicDiagnosticRead.status !== 'unavailable'
     || nativeTransaction.present
-    || sharedRuntimeOwnerRead.status === 'ok'
-    || (!installRecordPresent && (trackingRecord?.artifacts.length ?? 0) > 0),
+    || sharedRuntimeOwnerRead.status === 'ok',
   );
   const repoVisibleArtifactPresent = identityArtifacts.some((artifact) => artifact.file.exists)
     || catalogArtifacts.some((artifact) => artifact.file.exists);

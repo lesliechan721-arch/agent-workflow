@@ -57,9 +57,6 @@ export async function reinstallCommand(
   if (projectionState.projection.kind === 'adoptable') {
     throw new Error(`${pluginNames[0]} 当前是可认领状态，reinstall 默认不会删除这些共享产物。`);
   }
-  if (projectionState.forceCleanupRequired) {
-    throw new Error(`${pluginNames[0]} 当前需要先显式运行 aw cleanup --force，reinstall 不会隐式执行该清理。`);
-  }
 
   const uninstallImpl = runtime.uninstallCommandImpl ?? uninstallCommand;
   const cleanupImpl = runtime.cleanupCommandImpl ?? cleanupCommand;
@@ -68,6 +65,20 @@ export async function reinstallCommand(
   if (projectionState.projection.kind === 'installed') {
     await uninstallImpl(pluginNames, rawOptions, runtime);
   } else if (projectionState.projection.kind === 'needsRepair' || projectionState.projection.kind === 'residual') {
+    if (projectionState.removalProtection.blockedDependents.length > 0) {
+      throw new Error(
+        `${pluginNames[0]} 当前仍被其它 verified dependent 引用，reinstall 不会隐式执行 cleanup。`,
+      );
+    }
+    if (projectionState.forceCleanupRequired) {
+      throw new Error(`${pluginNames[0]} 当前需要先显式运行 aw cleanup --force，reinstall 不会隐式执行该清理。`);
+    }
+    if (!projectionState.removalProtection.allowed) {
+      throw new Error(
+        projectionState.removalProtection.failClosedReason
+        ?? `${pluginNames[0]} 当前无法安全执行隐式 cleanup。`,
+      );
+    }
     await cleanupImpl(pluginNames, rawOptions as RawCleanupCommandOptions, runtime);
   }
 

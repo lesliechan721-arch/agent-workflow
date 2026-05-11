@@ -36,19 +36,22 @@ async function maybePrepareP2RecordFiles(fixture: Awaited<ReturnType<typeof writ
 
 async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
   dependencyIndexState: 'missing' | 'corrupted' | 'staleReference';
-  localDependent?: boolean;
-  nativeEvidence?: 'configOnly' | 'configAndCache';
+  localDependentScope?: 'user' | 'project';
+  nativeEvidence?: 'configOnly' | 'configAndCache' | 'cacheOnly';
 }) {
   const builder = await createMinimalPluginInstallStateFixtureBuilder(
     await makeTempDir(`aw-diagnose-config-only-native-residue-${options.dependencyIndexState}-`),
   );
   const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
-  await fs.outputFile(
-    path.join(builder.paths.codexHome, 'config.toml'),
-    `[plugins."${target.pluginId}"]\nenabled = true\n`,
-    'utf8',
-  );
-  if ((options.nativeEvidence ?? 'configOnly') === 'configAndCache') {
+  const nativeEvidence = options.nativeEvidence ?? 'configOnly';
+  if (nativeEvidence !== 'cacheOnly') {
+    await fs.outputFile(
+      path.join(builder.paths.codexHome, 'config.toml'),
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+  }
+  if (nativeEvidence === 'configAndCache' || nativeEvidence === 'cacheOnly') {
     await fs.outputJson(
       path.join(builder.paths.codexHome, 'plugins', 'cache', 'aw', target.location.plugin, target.source.pluginVersion, 'plugin.json'),
       {
@@ -85,11 +88,14 @@ async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
     await fs.remove(referencedRecordPath);
   }
 
-  if (options.localDependent) {
+  if (options.localDependentScope) {
     const dependentTarget = builder.createTarget({
       pluginName: 'helper-local-dependent',
       platform: 'codex',
-      scope: 'user',
+      scope: options.localDependentScope,
+      ...(options.localDependentScope === 'project'
+        ? { projectKey: builder.paths.repoRoot }
+        : {}),
     });
     const dependentRecord = await builder.writeInstallRecord(dependentTarget);
     dependentRecord.record.dependencyEdges = [{
@@ -100,7 +106,7 @@ async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
     }];
     const scopedRecords = await builder.readScopedInstallRecordDirectory({
       platform: 'codex',
-      scope: 'user',
+      scope: dependentTarget.location.scope,
     });
     const dependentRecordPath = scopedRecords.successes.find((entry) =>
       entry.recordId === dependentTarget.recordId)?.path;
@@ -931,7 +937,82 @@ describe('diagnose P7', () => {
   it('does not offer config-only Codex cleanup when a readable local scoped record still depends on it', async () => {
     const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
       dependencyIndexState: 'missing',
-      localDependent: true,
+      localDependentScope: 'user',
+    });
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        cleanupAvailable: boolean;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'externallyManaged',
+      cleanupAvailable: false,
+    });
+    expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).not.toContain(cleanupCommand);
+  });
+
+  it('does not offer Codex user cleanup when a readable current-repo project record still depends on it', async () => {
+    const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+      dependencyIndexState: 'missing',
+      localDependentScope: 'project',
+    });
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        cleanupAvailable: boolean;
+        dependents: Array<{ plugin: string; scope: string }>;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'externallyManaged',
+      cleanupAvailable: false,
+    });
+    expect(payload.locations[0]?.dependents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          plugin: 'helper-local-dependent',
+          scope: 'project',
+        }),
+      ]),
+    );
+    expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).not.toContain(cleanupCommand);
+  });
+
+  it('does not offer cleanup for cache-only Codex native residue without ownership proof', async () => {
+    const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'cacheOnly',
     });
 
     const json = await diagnoseCommand(

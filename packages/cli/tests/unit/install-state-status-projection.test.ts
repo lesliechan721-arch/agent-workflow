@@ -60,19 +60,22 @@ async function projectStateForScenario(
 
 async function projectConfigOnlyCodexUserResidue(options: {
   dependencyIndexState: 'missing' | 'corrupted' | 'staleReference' | 'unreadableReference';
-  localDependent?: boolean;
-  nativeEvidence?: 'configOnly' | 'configAndCache';
+  localDependentScope?: 'user' | 'project';
+  nativeEvidence?: 'configOnly' | 'configAndCache' | 'cacheOnly';
 }) {
   const builder = await createMinimalPluginInstallStateFixtureBuilder(
     await makeTempDir(`aw-install-state-config-only-native-${options.dependencyIndexState}-`),
   );
   const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
-  await fs.outputFile(
-    path.join(builder.paths.codexHome, 'config.toml'),
-    `[plugins."${target.pluginId}"]\nenabled = true\n`,
-    'utf8',
-  );
-  if ((options.nativeEvidence ?? 'configOnly') === 'configAndCache') {
+  const nativeEvidence = options.nativeEvidence ?? 'configOnly';
+  if (nativeEvidence !== 'cacheOnly') {
+    await fs.outputFile(
+      path.join(builder.paths.codexHome, 'config.toml'),
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+  }
+  if (nativeEvidence === 'configAndCache' || nativeEvidence === 'cacheOnly') {
     await fs.outputJson(
       path.join(builder.paths.codexHome, 'plugins', 'cache', 'aw', target.location.plugin, target.source.pluginVersion, 'plugin.json'),
       {
@@ -116,11 +119,14 @@ async function projectConfigOnlyCodexUserResidue(options: {
     }
   }
 
-  if (options.localDependent) {
+  if (options.localDependentScope) {
     const dependentTarget = builder.createTarget({
       pluginName: 'helper-local-dependent',
       platform: 'codex',
-      scope: 'user',
+      scope: options.localDependentScope,
+      ...(options.localDependentScope === 'project'
+        ? { projectKey: builder.paths.repoRoot }
+        : {}),
     });
     const dependentRecord = await builder.writeInstallRecord(dependentTarget);
     dependentRecord.record.dependencyEdges = [{
@@ -131,7 +137,7 @@ async function projectConfigOnlyCodexUserResidue(options: {
     }];
     const scopedRecords = await builder.readScopedInstallRecordDirectory({
       platform: 'codex',
-      scope: 'user',
+      scope: dependentTarget.location.scope,
     });
     const dependentRecordPath = scopedRecords.successes.find((entry) =>
       entry.recordId === dependentTarget.recordId)?.path;
@@ -606,11 +612,39 @@ describe('projectInstallState', () => {
   it('does not expose config-only Codex cleanup when a readable local scoped record depends on it', async () => {
     const missingWithLocalDependent = await projectConfigOnlyCodexUserResidue({
       dependencyIndexState: 'missing',
-      localDependent: true,
+      localDependentScope: 'user',
     });
 
     expect(missingWithLocalDependent.projection.kind).toBe('externallyManaged');
     expect(missingWithLocalDependent.projection.cleanupAvailable).toBe(false);
+  });
+
+  it('does not expose Codex user cleanup when a readable current-repo project record depends on it', async () => {
+    const missingWithProjectDependent = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      localDependentScope: 'project',
+    });
+
+    expect(missingWithProjectDependent.projection.kind).toBe('externallyManaged');
+    expect(missingWithProjectDependent.projection.dependents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          plugin: 'helper-local-dependent',
+          scope: 'project',
+        }),
+      ]),
+    );
+    expect(missingWithProjectDependent.projection.cleanupAvailable).toBe(false);
+  });
+
+  it('does not expose cleanup for cache-only Codex native residue without ownership proof', async () => {
+    const cacheOnly = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'cacheOnly',
+    });
+
+    expect(cacheOnly.projection.kind).toBe('externallyManaged');
+    expect(cacheOnly.projection.cleanupAvailable).toBe(false);
   });
 
   it.each(['needsRepair', 'residual'] as const)(

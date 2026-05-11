@@ -80,7 +80,7 @@ export function isCodexUserNativeResidueCleanupCandidate(
     !evidence.installRecord.present &&
     !evidence.nativeTransaction.present &&
     codexNative !== null &&
-    codexNative.anyNativeEvidence &&
+    codexNative.pluginEnabled === true &&
     !evidence.residualEvidence.privateStatePresent &&
     !evidence.residualEvidence.repoVisibleArtifactPresent &&
     !evidence.residualEvidence.sharedIdentityPresent &&

@@ -20,6 +20,9 @@ import {
   createMinimalPluginInstallStateFixtureBuilder,
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
+import { projectInstallState } from '../../src/install-state/status-projection.js';
+import { resolveCodexPaths } from '../../src/utils/paths.js';
+import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 
 const tempDirs: string[] = [];
 
@@ -203,6 +206,37 @@ describe('collectInstallEvidence', () => {
     });
     expect(missingIndexEvidence.dependencyIndex.projection.coverage.reasons).toContain('indexMissing');
     expect(missingIndexEvidence.dependencyIndex.projection.coverage.recoverySuggestion).toBe('revisitRelatedProjects');
+  });
+
+  it('does not project tracking-only project evidence into private residual state', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-evidence-tracking-only-'),
+    );
+    const target = builder.createTarget({ pluginName: 'skills-only', platform: 'codex', scope: 'project' });
+    const codexPaths = resolveCodexPaths(builder.paths.repoRoot, 'project', createInstallStateFixtureEnv(builder.paths));
+    const rolePath = path.join(codexPaths.configDir, 'agents', 'skills-only-role.toml');
+    await upsertTrackingRecord(codexPaths.trackingDir, target.location.plugin, [{
+      path: rolePath,
+      paths: [codexPaths.configTomlPath, rolePath],
+      kind: 'agent',
+      platform: 'codex',
+      artifactKey: 'codex-explorer',
+      id: 'codex-explorer-role',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey: 'codex-explorer',
+    }]);
+
+    const evidence = await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: createCurrentCatalogForTarget(target),
+    });
+
+    expect(evidence.legacyTracking.present).toBe(true);
+    expect(evidence.residualEvidence.privateStatePresent).toBe(false);
+    expect(projectInstallState(evidence).kind).toBe('notInstalled');
   });
 
   it('distinguishes marker-only and record-plus-marker native transaction states', async () => {
