@@ -20,6 +20,7 @@ async function createPlugin(
   options: {
     codexSkills?: string[];
     claudeSkills?: string[];
+    dynamicCodexSkills?: string[];
     skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
   } = {},
 ): Promise<PluginMeta> {
@@ -38,6 +39,21 @@ async function createPlugin(
       description: `${pluginName} plugin`,
       ...(codexSkills.length > 0 || claudeSkills.length > 0 ? { skills: './skills' } : {}),
       ...(options.skillTriggers ? { skillTriggers: options.skillTriggers } : {}),
+      ...(options.dynamicCodexSkills
+        ? {
+            artifacts: {
+              targets: options.dynamicCodexSkills.map((skillKey) => ({
+                id: `${skillKey}-dynamic-skill`,
+                platform: 'codex',
+                scopes: ['user', 'project'],
+                target: 'codex.skill',
+                projectManagedKind: 'skill',
+                states: ['present'],
+                skillKey,
+              })),
+            },
+          }
+        : {}),
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -399,6 +415,38 @@ describe('skill trigger install options resolver', () => {
       skillTriggerPreference: 'auto',
       skillTriggerSource: 'cli',
       ledgerTrust: 'degraded',
+    });
+  });
+
+  it('treats dynamic codex.skill targets as overridable install options while excluding them from static materialization', async () => {
+    const resolved = await resolveInstallOptionsForTargets(
+      'install',
+      [await createTarget('dynamic-skill', {
+        codexSkills: ['explore'],
+        claudeSkills: [],
+        dynamicCodexSkills: ['explore'],
+        skillTriggers: {
+          explore: {
+            allowInstallOverride: true,
+          },
+        },
+      })],
+      ['codex'],
+      {
+        cwd: '/tmp/workspace',
+        scope: 'user',
+        requestedSkillTrigger: 'auto',
+      },
+      createAvailableLedger(),
+    );
+
+    expect(
+      resolved.get(createResolvedInstallOptionsKey('codex', 'dynamic-skill', 'user')),
+    ).toEqual({
+      applicability: 'overridable',
+      skillTriggerPreference: 'auto',
+      skillTriggerSource: 'cli',
+      ledgerTrust: 'available',
     });
   });
 

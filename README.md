@@ -48,7 +48,9 @@ aw config reset git-commit -s user --yes
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
 | `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
-| `codex-explore` | 为 Codex 提供只读代码库探索流程 | Codex |
+| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
+
+`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
 ## 开发
 

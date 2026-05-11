@@ -329,16 +329,36 @@ async function marketplacePlatformSkillsRootExists(
   );
 }
 
-function getSkillTriggerApplicabilityFromPolicies(
-  policies: SkillTriggerPolicyEntry[],
+function getSkillTriggerApplicabilityFromAllowInstallOverrides(
+  values: boolean[],
 ): SkillTriggerApplicability {
-  if (policies.length === 0) {
+  if (values.length === 0) {
     return 'none';
   }
 
-  return policies.some((policy) => policy.allowInstallOverride)
+  return values.some((allowInstallOverride) => allowInstallOverride)
     ? 'overridable'
     : 'fixed';
+}
+
+function getSkillTriggerApplicabilityFromPolicies(
+  policies: SkillTriggerPolicyEntry[],
+): SkillTriggerApplicability {
+  return getSkillTriggerApplicabilityFromAllowInstallOverrides(
+    policies.map((policy) => policy.allowInstallOverride),
+  );
+}
+
+function mergeSkillTriggerApplicability(
+  values: SkillTriggerApplicability[],
+): SkillTriggerApplicability {
+  if (values.includes('overridable')) {
+    return 'overridable';
+  }
+  if (values.includes('fixed')) {
+    return 'fixed';
+  }
+  return 'none';
 }
 
 function getExcludedDynamicCodexSkillKeys(options: {
@@ -355,6 +375,21 @@ function getExcludedDynamicCodexSkillKeys(options: {
       .filter((target) => target.target === 'codex.skill')
       .map((target) => target.skillKey?.trim())
       .filter((skillKey): skillKey is string => Boolean(skillKey)),
+  );
+}
+
+function getDynamicCodexSkillTriggerApplicability(options: {
+  manifest: PluginMeta['manifest'];
+  platform: PlatformName;
+}): SkillTriggerApplicability {
+  const skillKeys = [...getExcludedDynamicCodexSkillKeys(options)];
+  if (skillKeys.length === 0) {
+    return 'none';
+  }
+
+  const manifestPolicies = options.manifest.skillTriggers ?? {};
+  return getSkillTriggerApplicabilityFromAllowInstallOverrides(
+    skillKeys.map((skillName) => manifestPolicies[skillName]?.allowInstallOverride === true),
   );
 }
 
@@ -423,7 +458,13 @@ export async function resolveSkillTriggerApplicabilityForPlugin(
     manifest: plugin.manifest,
     platform,
   });
-  return resolution.applicability;
+  return mergeSkillTriggerApplicability([
+    resolution.applicability,
+    getDynamicCodexSkillTriggerApplicability({
+      manifest: plugin.manifest,
+      platform,
+    }),
+  ]);
 }
 
 interface ParsedCodexSkill {

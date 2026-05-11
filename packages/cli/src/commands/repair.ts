@@ -1322,7 +1322,13 @@ async function repairInstalledLocation(options: {
   if (needsNativeInstall) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
-  const inferredRuntimePreference = options.repairOptions.requestedSkillTrigger === undefined
+  const recordedSkillTriggerPreference = record.record.options?.skillTriggerPreference;
+  const inferredRuntimePreference = (
+    options.repairOptions.requestedSkillTrigger === undefined
+    && recordedSkillTriggerPreference === undefined
+    && location.platform === 'codex'
+    && location.scope === 'user'
+  )
     ? await inferCodexUserDynamicSkillPreferenceFromRuntime({
       pluginName: location.plugin,
       artifacts: record.record.artifacts,
@@ -1330,8 +1336,8 @@ async function repairInstalledLocation(options: {
     })
     : undefined;
   const effectiveSkillTriggerPreference = options.repairOptions.requestedSkillTrigger
+    ?? recordedSkillTriggerPreference
     ?? inferredRuntimePreference
-    ?? record.record.options?.skillTriggerPreference
     ?? 'default';
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,

@@ -1863,6 +1863,224 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
+  it('repair preserves explicit auto trigger preference for Codex user dynamic skill', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
+    await configureCodexExploreSkillOnlyArtifact(repoRoot);
+    await writeCodexExploreSkillOnlyRenderer(repoRoot);
+    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'auto',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    await fs.writeFile(userDynamicSkillPath(awHome), '# stale runtime\n', 'utf8');
+    await fs.writeFile(cachedDynamicSkillPath(process.env), '# stale cache\n', 'utf8');
+
+    const statusBeforeRepair = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const repairLocation = findStatusLocation(parseStatusPayload(statusBeforeRepair.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    await alignUserRecordSourceToWorkspacePlugin(repoRoot, repairLocation.record!.path!);
+
+    const currentPlugin: PluginMeta = {
+      rootDir: path.join(repoRoot, 'plugins', 'codex-explore'),
+      manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
+      manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
+    };
+    const result = await repairCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        ...createCodexExploreRuntime(repoRoot, process.env),
+        p7Targets: [{
+          pluginName: 'codex-explore',
+          platform: 'codex',
+          scope: 'user',
+          executionCwd: repoRoot,
+          currentPlugin,
+        }],
+        p8CurrentPluginsByName: {
+          'codex-explore': currentPlugin,
+        },
+      },
+    );
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        triggerPreferenceApplied?: string | null;
+      }>;
+    };
+
+    const statusAfterRepair = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const location = findStatusLocation(parseStatusPayload(statusAfterRepair.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const recordOptions = await readInstallRecordOptionsFromLocation(location);
+
+    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
+    expect(recordOptions.skillTriggerPreference).toBe('auto');
+    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
+    await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
+  });
+
+  it('project repair keeps project trigger preference independent from user dynamic skill runtime', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
+    await configureCodexExploreSkillOnlyArtifact(repoRoot);
+    await writeCodexExploreSkillOnlyRenderer(repoRoot);
+    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'auto',
+      },
+      {
+        env: process.env,
+      },
+    );
+
+    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
+    expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
+
+    const statusBeforeRepair = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const repairLocation = findStatusLocation(parseStatusPayload(statusBeforeRepair.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    await alignUserRecordSourceToWorkspacePlugin(repoRoot, repairLocation.record!.path!);
+
+    const currentPlugin: PluginMeta = {
+      rootDir: path.join(repoRoot, 'plugins', 'codex-explore'),
+      manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
+      manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
+    };
+    const projectKey = await resolveCodexProjectKey(repoRoot);
+    const result = await repairCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+        p7Targets: [{
+          pluginName: 'codex-explore',
+          platform: 'codex',
+          scope: 'project',
+          projectKey,
+          executionCwd: repoRoot,
+          currentPlugin,
+        }],
+        p8CurrentPluginsByName: {
+          'codex-explore': currentPlugin,
+        },
+      },
+    );
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        triggerPreferenceApplied?: string | null;
+      }>;
+    };
+
+    const statusAfterRepair = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const location = findStatusLocation(parseStatusPayload(statusAfterRepair.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const recordOptions = await readInstallRecordOptionsFromLocation(location);
+
+    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
+    expect(recordOptions.skillTriggerPreference).toBe('auto');
+    expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
+    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
+  });
+
   it('uninstalls only the AW-owned Codex user dynamic skill and clears the native cache without touching a foreign same-name skill', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
