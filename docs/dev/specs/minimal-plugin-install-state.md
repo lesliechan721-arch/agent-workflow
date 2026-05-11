@@ -21,7 +21,7 @@
 
 - 不兼容旧 `installed.json` / tracking manifest / recovery breadcrumb 格式，不做自动迁移。
 - scope 本地 per-plugin install record 是唯一安装真值；单个 record 损坏只影响对应插件和位置，不让同 scope 其它插件一起失忆。
-- 维护一个极小的全局依赖索引，只保存已知 install record location、record digest 和 outgoing dependency edges 摘要。它不是安装真值，但会参与跨 scope incoming edge 保护；索引缺失、损坏或覆盖范围不可信时，任何可能影响其它 scope 的 `cleanup` 或 `uninstall` 都必须 fail closed。外部删除、仓库迁移或 project 私有状态被清掉形成的 stale project reference 不能被默认读命令静默裁剪，只能通过 `aw cleanup --dependency-index --prune-stale <token> --yes` 显式退休。
+- 维护一个极小的全局依赖索引，只保存已知 install record location、record digest 和 outgoing dependency edges 摘要。它不是安装真值，但会参与跨 scope incoming edge 保护；索引缺失、损坏或覆盖范围不可信时，任何可能影响其它 scope 的 `cleanup` 或 `uninstall` 都必须 fail closed。唯一例外是 Codex user scope 只剩 AW 写入的 enabled config、且没有 install record、active cache 或 native marker 的 config-only 原生残留：这类现场可以直接 cleanup 收口。外部删除、仓库迁移或 project 私有状态被清掉形成的 stale project reference 不能被默认读命令静默裁剪，只能通过 `aw cleanup --dependency-index --prune-stale <token> --yes` 显式退休。
 - 移除完整安装快照，但保留极小 historical lifecycle runtime 引用，只服务普通 `uninstall` 和需要先撤销历史副作用的 `repair` / `reinstall` 路径。它不参与安装真值、artifact 比对、dependency 判断或 config schema 解释；缺失或损坏时只影响卸载安全性和 repairability。
 - 移除旧版 artifact snapshot 后，current catalog 只能作为“当前版本”的 artifact 真值。record 的 `source.manifestDigest` / `source.bundleFingerprint` 可用于判断 current catalog 是否仍是同一 bundle；如果不同，只能投影为 catalog drift / upgrade available，不能仅凭静态 artifact 不等于 current catalog 就判定内容损坏。
 - 插件依赖已经是基线能力。安全卸载、升级、依赖引用保护和状态投影需要的安装来源与 canonical outgoing dependency edges 必须进入 scope 本地 per-plugin install record；`dependents`、`ref-count` 和未使用依赖提醒继续只从 edge 图现算，不作为持久真值。
@@ -659,7 +659,7 @@ repair 用 current catalog 修复当前插件在目标位置的 AW-owned artifac
 要求：
 
 - 删除前必须从当前可定位 records 和可信全局依赖索引构建 incoming edge 图。目标仍被其它 verified record 的 dependency edge 引用时，`uninstall` 必须失败，并列出 dependent location。
-- 全局依赖索引缺失、损坏或覆盖范围不足时，不能删除可能被其它 scope 引用的目标。
+- 全局依赖索引缺失、损坏或覆盖范围不足时，不能删除可能被其它 scope 引用的目标；但 Codex user scope 只剩 enabled config、没有 cache/record/marker 的 config-only 原生残留不在这个限制内。
 - 如果 record 声明了 `lifecycle` 且其中包含 `uninstall`，必须优先按该 historical lifecycle runtime 运行 uninstall lifecycle，并校验 manifest digest、bundle fingerprint、plugin name/version 和入口路径边界。current catalog 不能替代历史 runtime，除非它能和 record 中的 digest / fingerprint 证明为同一 bundle。
 - historical lifecycle runtime 缺失、损坏、digest 不匹配或 record / 现场损坏到无法安全运行 lifecycle 时，普通 `uninstall` 失败，并提示 `aw diagnose` / `aw repair` / `aw cleanup`。用户选择 `cleanup` 时不会运行 lifecycle，因此输出必须说明可能残留 lifecycle 负责的外部副作用。
 - 删除 record 中列出的完整 AW-owned 文件或目录。
@@ -943,7 +943,7 @@ JSON 输出可以保留机器字段，但字段围绕新模型命名，例如：
 - 安装带依赖的父插件时，缺失依赖先写；自动依赖 record 标记为 dependency 来源，父插件 record 写 outgoing dependency edge。
 - 父插件安装失败时，不提交失败父插件的 dependency edge；未被成功 edge 引用的新自动依赖会回滚或进入可诊断残留状态。
 - 全局依赖索引缺失或损坏时，status 仍能从 scope 本地 record 判断当前安装，但不展示未使用依赖提醒。
-- 全局依赖索引缺失、损坏或覆盖范围不足时，`uninstall` / `cleanup` 对可能被其它 scope 引用的目标 fail closed。
+- 全局依赖索引缺失、损坏或覆盖范围不足时，`uninstall` / `cleanup` 对可能被其它 scope 引用的目标 fail closed；Codex user scope 的 config-only 原生残留 cleanup 例外。
 - 全局依赖索引中的 project record path 缺失或 project 私有状态目录已不存在时，diagnose / verbose status 标记 `staleProjectReference`，但删除类命令在用户显式退休该索引引用前仍 fail closed。
 - `aw repair --dependency-index` 只重建可验证 index entries，不能裁剪 stale project reference，也不能把部分重建索引用作跨 repo 删除授权。
 - `aw cleanup --dependency-index --prune-stale <token> --yes` 只退休 token 指向的 stale index entry，不删除 project 文件；token 过期、条目重新可读或条目不可读但不 stale 时必须失败。

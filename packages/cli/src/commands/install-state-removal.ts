@@ -20,7 +20,11 @@ import type {
   PluginLocation,
 } from '../install-state/types.js';
 import { collectInstallEvidence, type InstallEvidence } from '../install-state/evidence.js';
-import { projectInstallState, type ProjectInstallStateProjection } from '../install-state/status-projection.js';
+import {
+  isCodexUserConfigOnlyResidueCleanupCandidate,
+  projectInstallState,
+  type ProjectInstallStateProjection,
+} from '../install-state/status-projection.js';
 import {
   createInstallRecordDeleteStage,
   createPathDeleteStage,
@@ -96,6 +100,10 @@ interface RemovalDependencyProtection {
   allowed: boolean;
   blockedDependents: PluginLocation[];
   failClosedReason?: string;
+  failClosedCode?:
+    | 'dependencyIndexMissing'
+    | 'dependencyIndexInvalid'
+    | 'dependencyIndexCoverageUntrusted';
 }
 
 interface ProtectedRecordEntry {
@@ -242,6 +250,9 @@ async function analyzeRemovalDependencyProtection(options: {
       ? {
           allowed: false,
           blockedDependents,
+          failClosedCode: inspection.status === 'missing'
+            ? 'dependencyIndexMissing'
+            : 'dependencyIndexInvalid',
           failClosedReason: inspection.status === 'missing'
             ? 'dependency index 缺失，无法安全确认其它 scope 是否仍在引用该插件。'
             : `dependency index 已损坏：${inspection.error}`,
@@ -268,6 +279,7 @@ async function analyzeRemovalDependencyProtection(options: {
     return {
       allowed: false,
       blockedDependents,
+      failClosedCode: 'dependencyIndexCoverageUntrusted',
       failClosedReason: 'dependency index 覆盖范围不可信，当前无法安全删除 user-scope 插件。',
     };
   }
@@ -276,6 +288,7 @@ async function analyzeRemovalDependencyProtection(options: {
     return {
       allowed: false,
       blockedDependents,
+      failClosedCode: 'dependencyIndexCoverageUntrusted',
       failClosedReason: `当前 projectKey=${options.location.projectKey ?? '(missing-project-key)'} 的 dependency index 覆盖范围不可信，无法安全删除该 project-scope 插件。`,
     };
   }
@@ -616,7 +629,10 @@ export async function cleanupInstallStateTarget(options: {
       `${renderLocation(options.location)} 仍被以下 verified dependent 引用：${protection.blockedDependents.map(renderLocation).join('、')}。`,
     );
   }
-  if (!protection.allowed) {
+  const allowMissingIndexConfigOnlyCleanup =
+    protection.failClosedCode === 'dependencyIndexMissing'
+    && isCodexUserConfigOnlyResidueCleanupCandidate(evidence);
+  if (!protection.allowed && !allowMissingIndexConfigOnlyCleanup) {
     throw new Error(protection.failClosedReason ?? 'dependency protection failed closed');
   }
 

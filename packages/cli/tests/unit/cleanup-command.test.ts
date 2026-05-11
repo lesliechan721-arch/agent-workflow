@@ -16,6 +16,7 @@ import {
   rewriteSanitizedInstallRecordForP2,
 } from '../helpers/install-state-projection-fixtures.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { removeCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -105,6 +106,24 @@ class FakeAdapter implements PlatformAdapter {
       initialized: false,
       plugins: [],
     };
+  }
+}
+
+class FakeCodexNativeCleanupAdapter extends FakeAdapter {
+  readonly uninstallUserNativePluginByIdCalls: string[] = [];
+
+  constructor(private readonly configPath: string) {
+    super();
+  }
+
+  override async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    await super.uninstallPlugin(plugin, scope);
+    await removeCodexPluginEnabledFile(this.configPath, `${plugin.manifest.name}@aw`);
+  }
+
+  async uninstallUserNativePluginById(pluginNameOrId: string): Promise<void> {
+    this.uninstallUserNativePluginByIdCalls.push(pluginNameOrId);
+    await removeCodexPluginEnabledFile(this.configPath, pluginNameOrId);
   }
 }
 
@@ -298,5 +317,43 @@ describe('cleanup command (P9)', () => {
 
     const index = await fs.readJson(indexPath);
     expect(index.records).toHaveLength(1);
+  });
+
+  it('cleans config-only Codex native residue even when dependency index is missing', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath);
+    await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(
+      codex.uninstallUserNativePluginByIdCalls.length + codex.uninstallPluginCalls.length,
+    ).toBeGreaterThan(0);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
   });
 });

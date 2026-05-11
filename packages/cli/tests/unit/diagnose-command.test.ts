@@ -687,6 +687,54 @@ describe('diagnose P7', () => {
     expect(result.output).not.toContain('这个目标是自动装上的依赖');
   });
 
+  it('offers cleanup for config-only Codex native residue when dependency index is missing', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-diagnose-config-only-native-residue-'),
+    );
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    await fs.outputFile(
+      path.join(builder.paths.codexHome, 'config.toml'),
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const runtime = {
+      env: createInstallStateFixtureEnv(builder.paths),
+      p7Targets: [{
+        pluginName: target.location.plugin,
+        platform: target.location.platform,
+        scope: target.location.scope,
+        executionCwd: builder.paths.repoRoot,
+      }],
+    } as never;
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        cleanupAvailable: boolean;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'externallyManaged',
+      cleanupAvailable: true,
+    });
+    expect(payload.locations[0]?.nextSteps).toContain('aw cleanup git-commit -p codex -s user');
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+    expect(human.output).toContain('aw cleanup git-commit -p codex -s user');
+  });
+
   it('runs the renderer in diagnose --deep without rewriting the diagnostic cache', async () => {
     const { fixture, currentPlugin } = await createAlignedInstalledDiagnoseFixture('aw-diagnose-deep-');
     const cacheBefore = await fs.readFile(fixture.files.diagnosticCachePath, 'utf8');

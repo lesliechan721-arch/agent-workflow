@@ -85,7 +85,7 @@ aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [--scr
 
 参数与 `install` 相同。卸载会清理当前 scope 里 AW 管理的平台原生注册、repo-visible artifacts、project artifact identity、dynamic diagnostic cache 和 install record，但默认保留 AW 自管配置；需要删除配置时运行 `aw config reset <插件名> --yes`，或在 `aw` 主控制台里进入配置流程。Codex project scope 只清理当前仓库里 AW 管理的 repo-visible artifacts，不会删除用户级 Codex native plugin 状态。`--json` receipt 会包含清理动作、native 结果、artifact 结果、warnings 和 next steps。
 
-如果目标仍被其它已安装插件依赖，`aw uninstall` 会拒绝单独卸载，并提示先卸载依赖它的插件。父插件成功卸载后，AW 会反向检查自动依赖：如果某个自动安装的依赖没有可信 incoming edge，只给出手动处理建议，不会自动删除。dependency index 缺失、不可信、存在 stale project reference，或 record edge 不完整时，删除类命令会保守失败。
+如果目标仍被其它已安装插件依赖，`aw uninstall` 会拒绝单独卸载，并提示先卸载依赖它的插件。父插件成功卸载后，AW 会反向检查自动依赖：如果某个自动安装的依赖没有可信 incoming edge，只给出手动处理建议，不会自动删除。默认情况下，dependency index 缺失、不可信、存在 stale project reference，或 record edge 不完整时，删除类命令会保守失败；但 Codex user scope 如果只剩一条 AW 写入的 enabled config，且没有 install record、active cache 或 native marker，`aw cleanup` 可以直接清掉这类 config-only 原生残留。
 
 ---
 
@@ -140,7 +140,7 @@ aw repair [插件名...] [-s project|user] [-p codex|claude|both] [--adopt-exist
 aw cleanup [插件名...] [-s project|user] [-p codex|claude|both] [--force] [--dependency-index --prune-stale <token>] [-y|--yes] [-j|--json]
 ```
 
-`cleanup` 只处理 AW 能确认拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。目标仍是健康安装时，应先用 `aw uninstall`。`cleanup --force` 可在共享配置文件损坏时先备份，再删除可定位的 AW-owned 区块；它不能重写整份用户配置。
+`cleanup` 只处理 AW 能确认拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。目标仍是健康安装时，应先用 `aw uninstall`。`cleanup --force` 可在共享配置文件损坏时先备份，再删除可定位的 AW-owned 区块；它不能重写整份用户配置。对 Codex user scope，还有一个专门的收口例外：如果现场只剩 `~/.codex/config.toml` 里的 AW enabled config，没有 install record、active cache 或 native marker，`cleanup` 会把它当成 config-only 原生残留，允许直接删除这条配置，即使 dependency index 当前缺失。
 
 dependency index 的 stale project reference 不会被读命令静默裁剪。只有诊断给出 token 后，才运行：
 
@@ -384,7 +384,7 @@ aw reinstall git-commit -p codex -s user -t default
 aw cleanup git-commit -p codex -s user --yes
 ```
 
-依赖功能依赖完整的 `installSource` 和 `dependencyEdges` metadata。若 install record 缺少这些字段、edge 不完整，或 dependency index 不可信，依赖相关安装、升级、卸载保护和 cleanup 会 fail closed；先用 `aw diagnose --verbose` 看具体位置，再通过 `aw repair --dependency-index`、显式升级或重新安装受影响插件补齐记录。
+依赖功能依赖完整的 `installSource` 和 `dependencyEdges` metadata。若 install record 缺少这些字段、edge 不完整，或 dependency index 不可信，依赖相关安装、升级、卸载保护和 cleanup 默认会 fail closed；先用 `aw diagnose --verbose` 看具体位置，再通过 `aw repair --dependency-index`、显式升级或重新安装受影响插件补齐记录。唯一例外是 Codex user scope 的 config-only 原生残留：如果只剩 AW 写入的 enabled config，且没有 cache、record 或 marker，`aw cleanup` 允许直接收口。
 
 ### 自动依赖无法安装或升级
 

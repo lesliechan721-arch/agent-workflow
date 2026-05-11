@@ -1167,6 +1167,8 @@ function createNextSteps(options: {
     steps.push(`aw diagnose ${args} --deep`);
   } else if (projection.kind === 'residual') {
     steps.push(`aw cleanup ${args}`);
+  } else if (projection.kind === 'externallyManaged' && projection.cleanupAvailable) {
+    steps.push(`aw cleanup ${args}`);
   } else if (projection.kind === 'installed' && projection.catalogDrift) {
     steps.push(`aw upgrade ${args}`);
     steps.push(`aw reinstall ${args}`);

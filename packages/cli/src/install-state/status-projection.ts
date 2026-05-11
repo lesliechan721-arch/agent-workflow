@@ -56,6 +56,29 @@ export interface ProjectInstallStateProjection {
   nativeTransactionKind: InstallEvidence['nativeTransaction']['classification'];
 }
 
+export function isCodexUserConfigOnlyResidueCleanupCandidate(
+  evidence: InstallEvidence,
+): boolean {
+  const codexNative = evidence.platform.codexNative;
+  return (
+    evidence.location.platform === 'codex' &&
+    evidence.location.scope === 'user' &&
+    !evidence.installRecord.present &&
+    !evidence.nativeTransaction.present &&
+    codexNative !== null &&
+    codexNative.configEntryPresent &&
+    codexNative.pluginEnabled === true &&
+    !codexNative.installedManifestPresent &&
+    !codexNative.activeCachePresent &&
+    !evidence.residualEvidence.privateStatePresent &&
+    !evidence.residualEvidence.repoVisibleArtifactPresent &&
+    !evidence.residualEvidence.sharedIdentityPresent &&
+    !evidence.residualEvidence.historicalLifecyclePresent &&
+    !evidence.residualEvidence.nativeMarkerPresent &&
+    !evidence.residualEvidence.sharedOwnerPresent
+  );
+}
+
 function addArtifactIssue(
   issues: ProjectInstallIssue[],
   code: ProjectInstallIssue['code'],
@@ -277,7 +300,10 @@ export function projectInstallState(
     autoInstalled: evidence.dependencyIndex.projection.autoInstalled,
     unusedDependencyHint: evidence.dependencyIndex.projection.unusedDependencyHint,
     repairAvailable: installRecordPresent || evidence.nativeTransaction.present,
-    cleanupAvailable: kind === 'needsRepair' || kind === 'residual',
+    cleanupAvailable:
+      kind === 'needsRepair' ||
+      kind === 'residual' ||
+      isCodexUserConfigOnlyResidueCleanupCandidate(evidence),
     adoptExistingAvailable: kind === 'adoptable',
     sharedRuntimeOwnerPresent: evidence.sharedRuntimeOwner.read.status === 'ok',
     sharedRuntimeNeedsTakeover: evidence.sharedRuntimeOwner.needsTakeover,

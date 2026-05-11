@@ -486,7 +486,7 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 
 `aw repair` 只在 current catalog 与 record source 能证明同一 bundle 时重新应用 AW-owned artifacts；source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
 
-`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。dependency index stale reference 必须通过诊断给出的 token 显式退休：
+`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。大多数情况下，dependency index 缺失、损坏或覆盖范围不可信时，删除动作都会保守失败；但 Codex user scope 如果只剩 AW 写入的 enabled config，且没有 install record、active cache 或 native marker，`cleanup` 可以直接删掉这类 config-only 原生残留。dependency index stale reference 仍必须通过诊断给出的 token 显式退休：
 
 ```bash
 aw cleanup --dependency-index --prune-stale <token> --yes
