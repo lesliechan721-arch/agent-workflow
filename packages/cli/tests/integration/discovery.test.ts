@@ -176,6 +176,13 @@ function resolveCodexCacheVersionPath(
   return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
 }
 
+function resolveCodexInstalledManifestPath(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+): string {
+  return path.join(env.AW_CODEX_HOME!, 'plugins', `${pluginName}@aw`, 'manifest.json');
+}
+
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -784,6 +791,52 @@ describe('managed plugin discovery', () => {
     });
     expect(candidates[0].evidence.sources).toContain('codexNativeConfig');
     expect(candidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+  });
+
+  it('discovers manifest-only Codex native residue and keeps it visible in status', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    await fs.outputFile(resolveCodexInstalledManifestPath(env, 'manifest-only'), '{}\n', 'utf8');
+
+    const statusCandidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['manifest-only'],
+      env,
+    });
+    const uninstallCandidates = await buildCommandCandidates({
+      command: 'uninstall',
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      pluginNames: ['manifest-only'],
+      env,
+    });
+
+    expect(statusCandidates).toHaveLength(1);
+    expect(statusCandidates[0].evidence.sources).toContain('codexNativeManifest');
+    expect(statusCandidates[0].target.plugin.manifest.skills).toBe('./historical-skills');
+
+    expect(uninstallCandidates).toHaveLength(1);
+    expect(uninstallCandidates[0].selectable).toBe(false);
+    expect(uninstallCandidates[0].disabledReason).toContain('installed manifest');
+
+    const status = await statusCommand(
+      ['manifest-only'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      { env },
+    );
+    const payload = JSON.parse(status.output) as {
+      cells: Array<{ health: string }>;
+    };
+
+    expect(payload.cells[0]?.health).toBe('needsAttention');
   });
 
   it('discovers cache-only Codex native evidence, but keeps uninstall non-selectable without ownership proof', async () => {

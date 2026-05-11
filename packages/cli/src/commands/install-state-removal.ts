@@ -4,7 +4,10 @@ import fs from 'fs-extra';
 
 import type { CommandExecutionContextInput } from './runtime.js';
 import { createCommandExecutionContext } from './runtime.js';
-import type { ResolvedPluginTarget } from './common.js';
+import {
+  createHistoricalPluginTarget,
+  type ResolvedPluginTarget,
+} from './common.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { runLifecycleScript, type LifecycleProcessRunner } from '../utils/plugin-scripts.js';
 import {
@@ -71,6 +74,10 @@ import {
   removeTrackingRecordFromManifest,
   writeTrackingManifest,
 } from '../utils/tracking.js';
+import {
+  normalizeSharedNativeRefs,
+  readInstalledLedger,
+} from '../utils/local-marketplace.js';
 import { sha256Hex } from '../install-state/internal.js';
 
 export interface InstallStateRemovalRuntime extends CommandExecutionContextInput {
@@ -419,6 +426,44 @@ async function loadPreferredPluginMeta(options: {
   return null;
 }
 
+async function loadProtectedCodexUserCleanupPluginMeta(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  pluginName: string;
+  ledgerPluginSharedNativeRefs: unknown;
+  target?: ResolvedPluginTarget | null;
+  recordFile?: InstallRecordFile | null;
+  anyNativeEvidence: boolean;
+}): Promise<PluginMeta | null> {
+  const preferred = await loadPreferredPluginMeta(options);
+  if (preferred) {
+    return preferred;
+  }
+
+  const sharedNativeRefs = normalizeSharedNativeRefs(
+    options.ledgerPluginSharedNativeRefs,
+  );
+  const needsProtectedCleanup = Boolean(
+    sharedNativeRefs?.user === true || (sharedNativeRefs?.projects.length ?? 0) > 0,
+  );
+  if (!needsProtectedCleanup) {
+    return null;
+  }
+
+  const historicalTarget = await createHistoricalPluginTarget(
+    options.cwd,
+    'user',
+    options.pluginName,
+    options.target?.embeddedPlugin,
+    options.env,
+    await readInstalledLedger(options.env),
+    {
+      codexNativeManifestPlaceholder: options.anyNativeEvidence,
+    },
+  );
+  return historicalTarget.plugin;
+}
+
 async function resolveProjectKeyForPlatform(
   platform: PlatformName,
   cwd: string,
@@ -694,18 +739,43 @@ export async function cleanupInstallStateTarget(options: {
     location: options.location,
     env: context.env,
   });
-  const pluginMeta = await loadPreferredPluginMeta({
-    target: options.target,
-    recordFile: recordRead.status === 'ok' ? recordRead.value : null,
-  });
+  const codexUserNativeEvidencePresent =
+    options.location.platform === 'codex' &&
+    options.location.scope === 'user' &&
+    evidence.platform.codexNative?.anyNativeEvidence === true;
+  const ledger = options.location.platform === 'codex' && options.location.scope === 'user'
+    ? await readInstalledLedger(context.env)
+    : null;
+  const codexSharedNativeRefs = options.location.platform === 'codex' && options.location.scope === 'user'
+    ? normalizeSharedNativeRefs(
+        ledger?.plugins[options.pluginName]?.platforms.codex?.sharedNativeRefs,
+      )
+    : null;
+  const protectedCodexUserNativeCleanup = Boolean(
+    codexSharedNativeRefs?.user === true || (codexSharedNativeRefs?.projects.length ?? 0) > 0,
+  );
+  const pluginMeta = options.location.platform === 'codex' && options.location.scope === 'user'
+    ? await loadProtectedCodexUserCleanupPluginMeta({
+        cwd: options.commandOptions.cwd,
+        env: context.env,
+        pluginName: options.pluginName,
+        ledgerPluginSharedNativeRefs: ledger?.plugins[options.pluginName]?.platforms.codex?.sharedNativeRefs,
+        target: options.target,
+        recordFile: recordRead.status === 'ok' ? recordRead.value : null,
+        anyNativeEvidence: codexUserNativeEvidencePresent,
+      })
+    : await loadPreferredPluginMeta({
+        target: options.target,
+        recordFile: recordRead.status === 'ok' ? recordRead.value : null,
+      });
   const platformAdapter = options.runtime.adapters?.[options.location.platform];
   const nativeCleanupAdapter = platformAdapter as PlatformAdapter & {
     uninstallUserNativePluginById?: (pluginNameOrId: string) => Promise<void>;
   } | undefined;
   const preferDirectCodexUserNativeCleanup =
-    options.location.platform === 'codex' &&
-    options.location.scope === 'user' &&
-    evidence.platform.codexNative?.anyNativeEvidence === true &&
+    codexUserNativeEvidencePresent &&
+    !projection.installRecordPresent &&
+    !protectedCodexUserNativeCleanup &&
     typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function';
   if (platformAdapter && options.location.scope === 'user') {
     if (preferDirectCodexUserNativeCleanup) {
@@ -716,7 +786,7 @@ export async function cleanupInstallStateTarget(options: {
       await nativeCleanupAdapter.uninstallUserNativePluginById(`${options.pluginName}@aw`);
     }
   }
-  if (pluginMeta && platformAdapter) {
+  if (pluginMeta && platformAdapter && !preferDirectCodexUserNativeCleanup) {
     await platformAdapter.uninstallExtensions(
       pluginMeta,
       options.location.scope,
@@ -726,30 +796,39 @@ export async function cleanupInstallStateTarget(options: {
     );
   }
 
-  const removalPlan = await planSharedSkillTriggerRuntimeOwnerRemoval({
-    location: options.location,
-    embeddedRoot: await resolveEmbeddedRoot(),
-    target: createMaterializationTarget(
-      options.location.platform,
-      options.location.scope,
-      options.commandOptions.cwd,
-      context.env,
-    ),
-    env: context.env,
-  });
-  const removalStages = await createSharedSkillTriggerRuntimeRemovalStages({
-    plan: removalPlan,
-    pluginName: options.location.plugin,
-    platform: options.location.platform,
-    embeddedRoot: await resolveEmbeddedRoot(),
-    target: createMaterializationTarget(
-      options.location.platform,
-      options.location.scope,
-      options.commandOptions.cwd,
-      context.env,
-    ),
-    env: context.env,
-  });
+  const shouldPlanSharedRuntimeRemoval =
+    projection.installRecordPresent || evidence.sharedRuntimeOwner.read.status === 'ok';
+  const removalTarget = createMaterializationTarget(
+    options.location.platform,
+    options.location.scope,
+    options.commandOptions.cwd,
+    context.env,
+  );
+  const embeddedRoot = shouldPlanSharedRuntimeRemoval
+    ? await resolveEmbeddedRoot()
+    : null;
+  const removalPlan = shouldPlanSharedRuntimeRemoval
+    ? await planSharedSkillTriggerRuntimeOwnerRemoval({
+        location: options.location,
+        embeddedRoot: embeddedRoot!,
+        target: removalTarget,
+        env: context.env,
+      })
+    : null;
+  const removalStages = removalPlan && embeddedRoot
+    ? await createSharedSkillTriggerRuntimeRemovalStages({
+        plan: removalPlan,
+        pluginName: options.location.plugin,
+        platform: options.location.platform,
+        embeddedRoot,
+        target: removalTarget,
+        env: context.env,
+      })
+    : {
+        ownerAction: 'none' as const,
+        warnings: [],
+        stages: [],
+      };
 
   const recordPath = getInstallRecordPath(options.commandOptions.cwd, options.location, context.env);
   const runtimeRoot = recordRead.status === 'ok'

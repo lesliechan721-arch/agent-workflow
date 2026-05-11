@@ -17,6 +17,7 @@ import {
 } from '../helpers/install-state-projection-fixtures.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { removeCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
+import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -111,17 +112,37 @@ class FakeAdapter implements PlatformAdapter {
 
 class FakeCodexNativeCleanupAdapter extends FakeAdapter {
   readonly uninstallUserNativePluginByIdCalls: string[] = [];
+  private readonly protectedPluginIds: Set<string>;
 
   constructor(
     private readonly configPath: string,
     private readonly cacheRootPath?: string,
     private readonly installRootPath?: string,
+    options: {
+      protectedPluginIds?: string[];
+    } = {},
   ) {
     super();
+    this.protectedPluginIds = new Set(options.protectedPluginIds ?? []);
+  }
+
+  private async isPluginEnabledInConfig(pluginNameOrId: string): Promise<boolean> {
+    if (!(await fs.pathExists(this.configPath))) {
+      return false;
+    }
+    const content = await fs.readFile(this.configPath, 'utf8');
+    const pluginId = pluginNameOrId.endsWith('@aw') ? pluginNameOrId : `${pluginNameOrId}@aw`;
+    return content.includes(`[plugins."${pluginId}"]`) && content.includes('enabled = true');
   }
 
   override async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
     await super.uninstallPlugin(plugin, scope);
+    if (this.protectedPluginIds.has(`${plugin.manifest.name}@aw`)) {
+      return;
+    }
+    if (!(await this.isPluginEnabledInConfig(plugin.manifest.name))) {
+      return;
+    }
     await removeCodexPluginEnabledFile(this.configPath, `${plugin.manifest.name}@aw`);
     if (this.cacheRootPath) {
       await fs.remove(this.cacheRootPath);
@@ -373,11 +394,95 @@ describe('cleanup command (P9)', () => {
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
   });
 
-  it('prefers direct Codex native cleanup for user-scope native residue even when plugin metadata is available', async () => {
+  it('uses Codex adapter uninstall for user-scope native residue when shared native refs still protect project consumers and target resolution fails', async () => {
     const builder = await makeBuilder();
     const pluginName = 'git-commit';
     const target = builder.createTarget({ pluginName, platform: 'codex', scope: 'user' });
     const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+    await writeInstalledLedger(
+      {
+        ...createAvailableLedger(),
+        plugins: {
+          [pluginName]: {
+            lastResolvedVersion: target.source.pluginVersion,
+            platforms: {
+              codex: {
+                sharedNativeRefs: {
+                  user: true,
+                  projects: ['repo:fixture-project'],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        ...process.env,
+        AW_HOME: builder.paths.awHome,
+        AW_CODEX_HOME: builder.paths.codexHome,
+        AW_CLAUDE_HOME: builder.paths.claudeHome,
+      },
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(
+      configPath,
+      undefined,
+      undefined,
+      { protectedPluginIds: [target.pluginId] },
+    );
+    await cleanupCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(codex.uninstallPluginCalls).toEqual([pluginName]);
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([]);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(target.pluginId);
+  });
+
+  it('keeps record-backed Codex user residual on uninstall-plus-extensions path even when direct native cleanup is available', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'git-commit';
+    const target = builder.createTarget({ pluginName, platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    await rewriteSanitizedInstallRecordForP2(path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    ));
+    await builder.writeDiagnosticCache(target);
+    await builder.writeNativeMarker(target, 'install');
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, pluginName);
     await fs.outputFile(
       configPath,
       `[plugins."${target.pluginId}"]\nenabled = true\n`,
@@ -406,8 +511,10 @@ describe('cleanup command (P9)', () => {
       },
     );
 
-    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([`${pluginName}@aw`]);
-    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(codex.uninstallPluginCalls).toEqual([pluginName]);
+    expect(codex.uninstallExtensionsCalls).toEqual([pluginName]);
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([]);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
   });
 
   it('cleans cache-backed Codex native residue when dependency index is missing', async () => {
@@ -447,6 +554,9 @@ describe('cleanup command (P9)', () => {
           AW_CODEX_HOME: builder.paths.codexHome,
           AW_CLAUDE_HOME: builder.paths.claudeHome,
         },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
         adapters: {
           codex,
           claude: new FakeAdapter(),
@@ -458,6 +568,90 @@ describe('cleanup command (P9)', () => {
       codex.uninstallUserNativePluginByIdCalls.length + codex.uninstallPluginCalls.length,
     ).toBeGreaterThan(0);
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(cacheRootPath)).resolves.toBe(false);
+  });
+
+  it('cleans manifest-only Codex native residue by direct native cleanup', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'manifest-only';
+    const pluginId = `${pluginName}@aw`;
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    const installRootPath = path.join(builder.paths.codexHome, 'plugins', pluginId);
+    const installedManifestPath = path.join(installRootPath, 'manifest.json');
+    await fs.outputFile(installedManifestPath, '{}\n', 'utf8');
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath, undefined, installRootPath);
+    await cleanupCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([pluginId]);
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    await expect(fs.pathExists(installedManifestPath)).resolves.toBe(false);
+  });
+
+  it('cleans cache-only Codex native residue without enabled config by direct native cleanup', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'cache-only';
+    const pluginId = `${pluginName}@aw`;
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    const cacheRootPath = path.join(
+      builder.paths.codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      pluginName,
+    );
+    await fs.outputJson(
+      path.join(cacheRootPath, '0.1.0', 'plugin.json'),
+      { id: pluginId, version: '0.1.0' },
+      { spaces: 2 },
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath, cacheRootPath);
+    await cleanupCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([pluginId]);
+    expect(codex.uninstallPluginCalls).toEqual([]);
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(false);
   });
 

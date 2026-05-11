@@ -872,6 +872,7 @@ function describeEvidenceSource(source: string): string {
     ledger: 'ledger',
     tracking: 'tracking',
     codexNativeConfig: 'Codex enabled config',
+    codexNativeManifest: 'Codex installed manifest',
     codexNativeCache: 'Codex active cache',
     codexNativeRecovery: 'Codex native recovery',
     codexSharedNativeRef: 'shared native ref',
@@ -1579,6 +1580,7 @@ function hasAwNativeResidueDiscoveryEvidence(
 ): boolean {
   const sources = state.target.discoveryEvidence?.sources ?? [];
   return sources.includes('codexNativeConfig') ||
+    sources.includes('codexNativeManifest') ||
     sources.includes('codexNativeCache') ||
     sources.includes('codexNativeRecovery') ||
     sources.includes('codexSharedNativeRef');

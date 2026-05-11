@@ -288,6 +288,7 @@ function toLocation(target: InstallStateTarget): PluginLocation {
 function hasAwNativeResidueDiscoveryEvidence(target: InstallStateTarget): boolean {
   const sources = target.discoveryEvidence?.sources ?? [];
   return sources.includes('codexNativeConfig') ||
+    sources.includes('codexNativeManifest') ||
     sources.includes('codexNativeCache') ||
     sources.includes('codexNativeRecovery') ||
     sources.includes('codexSharedNativeRef');

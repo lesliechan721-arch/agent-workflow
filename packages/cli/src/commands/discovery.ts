@@ -75,6 +75,7 @@ type DiscoveryEvidenceSource =
   | 'ledger'
   | 'tracking'
   | 'codexNativeConfig'
+  | 'codexNativeManifest'
   | 'codexNativeCache'
   | 'codexNativeRecovery'
   | 'codexSharedNativeRef'
@@ -569,6 +570,9 @@ async function collectCodexNativeEvidence(
       if (nativeState.pluginEnabled) {
         addEvidenceSource(evidence, 'codexNativeConfig');
       }
+      if (nativeState.installedManifestPresent) {
+        addEvidenceSource(evidence, 'codexNativeManifest');
+      }
       if (hasCodexNativeCacheEvidence(nativeState)) {
         addEvidenceSource(evidence, 'codexNativeCache');
       }
@@ -818,6 +822,7 @@ async function createTargetForEvidence(
         (
           evidence.codexRequiresNativePlugin === true ||
           evidence.sources.includes('codexNativeConfig') ||
+          evidence.sources.includes('codexNativeManifest') ||
           evidence.sources.includes('codexNativeCache') ||
           evidence.sources.includes('codexNativeRecovery') ||
           evidence.sources.includes('codexSharedNativeRef')
@@ -849,7 +854,9 @@ function evidenceHasActionableSource(evidence: DiscoveryEvidenceSummary): boolea
 }
 
 function evidenceHasDiscoverySource(evidence: DiscoveryEvidenceSummary): boolean {
-  return evidenceHasActionableSource(evidence) || evidence.sources.includes('codexNativeCache');
+  return evidenceHasActionableSource(evidence) ||
+    evidence.sources.includes('codexNativeManifest') ||
+    evidence.sources.includes('codexNativeCache');
 }
 
 function evidenceHasReadErrors(evidence: DiscoveryEvidenceSummary): boolean {
@@ -867,6 +874,7 @@ function isCoarseCodexRepoOnlyEvidence(
     evidence.trackingKinds.length === 0 &&
     evidence.codexRequiresNativePlugin !== true &&
     !evidence.sources.includes('codexNativeConfig') &&
+    !evidence.sources.includes('codexNativeManifest') &&
     !evidence.sources.includes('codexNativeCache') &&
     !evidence.sources.includes('codexNativeRecovery') &&
     !evidence.sources.includes('codexSharedNativeRef')
@@ -935,6 +943,9 @@ function resolveCandidateDisabledReason(
   }
 
   if (!evidenceHasActionableSource(evidence)) {
+    if (evidence.sources.includes('codexNativeManifest')) {
+      return '只发现了 Codex installed manifest 残留，AW 还没有足够的账本或 recovery breadcrumb 证明归属；当前先保留为诊断可见，不会直接清理。';
+    }
     if (evidence.sources.includes('codexNativeCache')) {
       return '只发现了 Codex cache 残留，AW 没有成功账本或 recovery breadcrumb 证明归属；当前只能展示诊断，不能静默删除。';
     }
