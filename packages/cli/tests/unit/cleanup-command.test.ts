@@ -112,18 +112,27 @@ class FakeAdapter implements PlatformAdapter {
 class FakeCodexNativeCleanupAdapter extends FakeAdapter {
   readonly uninstallUserNativePluginByIdCalls: string[] = [];
 
-  constructor(private readonly configPath: string) {
+  constructor(
+    private readonly configPath: string,
+    private readonly cacheRootPath?: string,
+  ) {
     super();
   }
 
   override async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
     await super.uninstallPlugin(plugin, scope);
     await removeCodexPluginEnabledFile(this.configPath, `${plugin.manifest.name}@aw`);
+    if (this.cacheRootPath) {
+      await fs.remove(this.cacheRootPath);
+    }
   }
 
   async uninstallUserNativePluginById(pluginNameOrId: string): Promise<void> {
     this.uninstallUserNativePluginByIdCalls.push(pluginNameOrId);
     await removeCodexPluginEnabledFile(this.configPath, pluginNameOrId);
+    if (this.cacheRootPath) {
+      await fs.remove(this.cacheRootPath);
+    }
   }
 }
 
@@ -355,6 +364,57 @@ describe('cleanup command (P9)', () => {
       codex.uninstallUserNativePluginByIdCalls.length + codex.uninstallPluginCalls.length,
     ).toBeGreaterThan(0);
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+  });
+
+  it('cleans cache-backed Codex native residue when dependency index is missing', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    const cacheRootPath = path.join(
+      builder.paths.codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      target.location.plugin,
+    );
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+    await fs.outputJson(
+      path.join(cacheRootPath, target.source.pluginVersion, 'plugin.json'),
+      { id: target.pluginId, version: target.source.pluginVersion },
+      { spaces: 2 },
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath, cacheRootPath);
+    await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(
+      codex.uninstallUserNativePluginByIdCalls.length + codex.uninstallPluginCalls.length,
+    ).toBeGreaterThan(0);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(cacheRootPath)).resolves.toBe(false);
   });
 
   it('rejects config-only Codex cleanup when a readable local scoped record still depends on it', async () => {

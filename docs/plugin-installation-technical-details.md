@@ -185,7 +185,7 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 - 有 project artifact identity，但没有本机 install record，通常表示“仓库里有可认领的共享产物”，不等于本机已经安装。
 - 有 native marker，但没有 install record，表示平台 native 写入可能已经发生，AW 后续提交没收口，应该进入 repair 或 cleanup。
 - 有 diagnostic cache，只能说明最近一次动态 artifact 接受或刷新过什么内容，不能把它当成安装成功证明。
-- dependency index 可以丢失后重建。它不可信时，卸载这类删除命令必须保守失败。
+- dependency index 可以丢失后重建。它不可信时，普通卸载这类删除命令仍然保守失败；但显式 `aw cleanup` 只要能定位残留且没有已知 dependents，就可以继续收口。
 
 旧格式不会自动迁移。实现里如果需要测试旧文件，只能把它们作为“旧格式不迁移、读路径拒绝或历史兼容证据”的 fixture，不得把它们恢复成用户默认排障入口。
 
@@ -486,7 +486,7 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 
 `aw repair` 只在 current catalog 与 record source 能证明同一 bundle 时重新应用 AW-owned artifacts；source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
 
-`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。大多数情况下，dependency index 缺失、损坏或覆盖范围不可信时，删除动作都会保守失败；但 Codex user scope 如果只剩 AW 写入的 enabled config，且没有 install record、active cache 或 native marker，`cleanup` 可以直接删掉这类 config-only 原生残留。dependency index stale reference 仍必须通过诊断给出的 token 显式退休：
+`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。它是用户显式确认的收口入口：只要 AW 能定位到要删的残留，并且没有已知 dependents，就会继续执行；dependency index 缺失、损坏或覆盖范围不可信时，会保留诊断和 warning，但不会再把用户逼回重装或手动改文件。dependency index stale reference 仍必须通过诊断给出的 token 显式退休：
 
 ```bash
 aw cleanup --dependency-index --prune-stale <token> --yes

@@ -61,6 +61,7 @@ async function projectStateForScenario(
 async function projectConfigOnlyCodexUserResidue(options: {
   dependencyIndexState: 'missing' | 'corrupted' | 'staleReference' | 'unreadableReference';
   localDependent?: boolean;
+  nativeEvidence?: 'configOnly' | 'configAndCache';
 }) {
   const builder = await createMinimalPluginInstallStateFixtureBuilder(
     await makeTempDir(`aw-install-state-config-only-native-${options.dependencyIndexState}-`),
@@ -71,6 +72,16 @@ async function projectConfigOnlyCodexUserResidue(options: {
     `[plugins."${target.pluginId}"]\nenabled = true\n`,
     'utf8',
   );
+  if ((options.nativeEvidence ?? 'configOnly') === 'configAndCache') {
+    await fs.outputJson(
+      path.join(builder.paths.codexHome, 'plugins', 'cache', 'aw', target.location.plugin, target.source.pluginVersion, 'plugin.json'),
+      {
+        id: target.pluginId,
+        version: target.source.pluginVersion,
+      },
+      { spaces: 2 },
+    );
+  }
 
   if (options.dependencyIndexState === 'corrupted') {
     await fs.outputFile(
@@ -562,27 +573,34 @@ describe('projectInstallState', () => {
     expect(projection.cleanupAvailable).toBe(true);
   });
 
-  it('only exposes config-only Codex cleanup when dependency index is trusted or just missing', async () => {
+  it('exposes Codex user native residue cleanup whenever there are no known dependents', async () => {
     const missing = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'missing' });
     expect(missing.projection.kind).toBe('externallyManaged');
     expect(missing.projection.cleanupAvailable).toBe(true);
 
+    const missingWithCache = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'configAndCache',
+    });
+    expect(missingWithCache.projection.kind).toBe('externallyManaged');
+    expect(missingWithCache.projection.cleanupAvailable).toBe(true);
+
     const corrupted = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'corrupted' });
     expect(corrupted.projection.kind).toBe('externallyManaged');
     expect(corrupted.projection.dependencyIndexCoverageReasons).toContain('indexCorrupted');
-    expect(corrupted.projection.cleanupAvailable).toBe(false);
+    expect(corrupted.projection.cleanupAvailable).toBe(true);
 
     const stale = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'staleReference' });
     expect(stale.projection.kind).toBe('externallyManaged');
     expect(stale.projection.dependencyIndexCoverageTrusted).toBe(false);
     expect(stale.projection.dependencyIndexCoverageReasons).toContain('staleReference');
-    expect(stale.projection.cleanupAvailable).toBe(false);
+    expect(stale.projection.cleanupAvailable).toBe(true);
 
     const unreadable = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'unreadableReference' });
     expect(unreadable.projection.kind).toBe('externallyManaged');
     expect(unreadable.projection.dependencyIndexCoverageTrusted).toBe(false);
     expect(unreadable.projection.dependencyIndexCoverageReasons).toContain('unreadableReference');
-    expect(unreadable.projection.cleanupAvailable).toBe(false);
+    expect(unreadable.projection.cleanupAvailable).toBe(true);
   });
 
   it('does not expose config-only Codex cleanup when a readable local scoped record depends on it', async () => {

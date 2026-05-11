@@ -21,7 +21,6 @@ import type {
 } from '../install-state/types.js';
 import { collectInstallEvidence, type InstallEvidence } from '../install-state/evidence.js';
 import {
-  isCodexUserConfigOnlyResidueCleanupCandidate,
   projectInstallState,
   type ProjectInstallStateProjection,
 } from '../install-state/status-projection.js';
@@ -629,12 +628,6 @@ export async function cleanupInstallStateTarget(options: {
       `${renderLocation(options.location)} 仍被以下 verified dependent 引用：${protection.blockedDependents.map(renderLocation).join('、')}。`,
     );
   }
-  const allowMissingIndexConfigOnlyCleanup =
-    protection.failClosedCode === 'dependencyIndexMissing'
-    && isCodexUserConfigOnlyResidueCleanupCandidate(evidence);
-  if (!protection.allowed && !allowMissingIndexConfigOnlyCleanup) {
-    throw new Error(protection.failClosedReason ?? 'dependency protection failed closed');
-  }
 
   const forceCleanupRequired = !projection.installRecordPresent
     && projection.kind === 'residual'
@@ -671,11 +664,13 @@ export async function cleanupInstallStateTarget(options: {
       }).uninstallUserNativePluginById(`${options.pluginName}@aw`);
     }
   }
-  if (pluginMeta && recordRead.status === 'ok' && options.runtime.adapters?.[options.location.platform]) {
+  if (pluginMeta && options.runtime.adapters?.[options.location.platform]) {
     await options.runtime.adapters[options.location.platform]!.uninstallExtensions(
       pluginMeta,
       options.location.scope,
-      recordRead.value.record.artifacts.map(toGeneratedArtifact),
+      recordRead.status === 'ok'
+        ? recordRead.value.record.artifacts.map(toGeneratedArtifact)
+        : [],
     );
   }
 
@@ -766,6 +761,9 @@ export async function cleanupInstallStateTarget(options: {
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
   const warnings = [
     ...removalStages.warnings,
+    ...(!protection.allowed && protection.failClosedReason
+      ? [`[${renderLocation(options.location)}] 忽略 dependency index fail-closed：${protection.failClosedReason}`]
+      : []),
     ...(backedUp.length > 0 ? [`已备份 ${backedUp.length} 个共享文件。`] : []),
     ...(gcWarning ? [`[${renderLocation(options.location)}] lifecycle runtime GC 已 fail closed：${gcWarning}`] : []),
   ];

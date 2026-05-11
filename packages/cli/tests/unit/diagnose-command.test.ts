@@ -37,6 +37,7 @@ async function maybePrepareP2RecordFiles(fixture: Awaited<ReturnType<typeof writ
 async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
   dependencyIndexState: 'missing' | 'corrupted' | 'staleReference';
   localDependent?: boolean;
+  nativeEvidence?: 'configOnly' | 'configAndCache';
 }) {
   const builder = await createMinimalPluginInstallStateFixtureBuilder(
     await makeTempDir(`aw-diagnose-config-only-native-residue-${options.dependencyIndexState}-`),
@@ -47,6 +48,16 @@ async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
     `[plugins."${target.pluginId}"]\nenabled = true\n`,
     'utf8',
   );
+  if ((options.nativeEvidence ?? 'configOnly') === 'configAndCache') {
+    await fs.outputJson(
+      path.join(builder.paths.codexHome, 'plugins', 'cache', 'aw', target.location.plugin, target.source.pluginVersion, 'plugin.json'),
+      {
+        id: target.pluginId,
+        version: target.source.pluginVersion,
+      },
+      { spaces: 2 },
+    );
+  }
 
   if (options.dependencyIndexState === 'corrupted') {
     await fs.outputFile(
@@ -818,7 +829,7 @@ describe('diagnose P7', () => {
     expect(result.output).not.toContain('这个目标是自动装上的依赖');
   });
 
-  it('offers cleanup for config-only Codex native residue when dependency index is missing', async () => {
+  it('offers cleanup for Codex native residue when dependency index is missing', async () => {
     const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
       dependencyIndexState: 'missing',
     });
@@ -850,7 +861,40 @@ describe('diagnose P7', () => {
     expect(human.output).toContain(cleanupCommand);
   });
 
-  it('does not offer direct cleanup for config-only Codex native residue when dependency index is corrupted or untrusted', async () => {
+  it('offers cleanup for cache-backed Codex native residue when dependency index is missing', async () => {
+    const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'configAndCache',
+    });
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        cleanupAvailable: boolean;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'externallyManaged',
+      cleanupAvailable: true,
+    });
+    expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+    expect(human.output).toContain(cleanupCommand);
+  });
+
+  it('keeps cleanup available for Codex native residue even when dependency index is corrupted or untrusted', async () => {
     for (const dependencyIndexState of ['corrupted', 'staleReference'] as const) {
       const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
         dependencyIndexState,
@@ -870,17 +914,17 @@ describe('diagnose P7', () => {
       };
       expect(payload.locations[0]).toMatchObject({
         state: 'externallyManaged',
-        cleanupAvailable: false,
+        cleanupAvailable: true,
       });
-      expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+      expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
 
       const human = await diagnoseCommand(
         [target.location.plugin],
         { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
         runtime,
       );
-      expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
-      expect(human.output).not.toContain(cleanupCommand);
+      expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+      expect(human.output).toContain(cleanupCommand);
     }
   });
 

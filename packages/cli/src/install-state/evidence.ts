@@ -9,7 +9,16 @@ import type {
   TrackedHookGroupIdentity,
 } from '../types.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import { getCodexHome } from '../utils/paths.js';
+import {
+  getCodexHome,
+  resolveClaudePaths,
+  resolveCodexPaths,
+} from '../utils/paths.js';
+import {
+  getTrackingArtifactIntegrityErrors,
+  getTrackingRecord,
+  readTrackingManifest,
+} from '../utils/tracking.js';
 import {
   inspectGlobalDependencyIndex,
   readDynamicArtifactDiagnosticCacheForLocation,
@@ -226,6 +235,11 @@ export interface InstallEvidence {
     unavailableReason: string | null;
     dynamicDiagnosticUnavailable: boolean;
     entries: DynamicEntryEvidence[];
+  };
+  legacyTracking: {
+    present: boolean;
+    artifactCount: number;
+    integrityErrorCodes: string[];
   };
   historicalLifecycle: HistoricalLifecycleEvidence;
   dependencyIndex: {
@@ -933,6 +947,12 @@ export async function collectInstallEvidence(
     : null;
 
   const installRecordPresent = installRecord !== null;
+  const trackingDir = options.location.platform === 'claude'
+    ? resolveClaudePaths(options.cwd, options.location.scope, env).trackingDir
+    : resolveCodexPaths(options.cwd, options.location.scope, env).trackingDir;
+  const trackingManifest = await readTrackingManifest(trackingDir);
+  const trackingRecord = getTrackingRecord(trackingManifest, options.location.plugin);
+  const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(trackingRecord?.artifacts ?? []);
   const currentCatalogSource = currentCatalog?.source ?? null;
   const projectIdentityPresent = projectSharedIdentityRead?.status === 'ok';
   const sourceDrift = Boolean(
@@ -956,7 +976,8 @@ export async function collectInstallEvidence(
     installRecordRead.status !== 'missing'
     || dynamicDiagnosticRead.status !== 'unavailable'
     || nativeTransaction.present
-    || sharedRuntimeOwnerRead.status === 'ok',
+    || sharedRuntimeOwnerRead.status === 'ok'
+    || (!installRecordPresent && (trackingRecord?.artifacts.length ?? 0) > 0),
   );
   const repoVisibleArtifactPresent = identityArtifacts.some((artifact) => artifact.file.exists)
     || catalogArtifacts.some((artifact) => artifact.file.exists);
@@ -1024,6 +1045,11 @@ export async function collectInstallEvidence(
       unavailableReason: dynamicUnavailableReason,
       dynamicDiagnosticUnavailable,
       entries: dynamicEntryEvidence,
+    },
+    legacyTracking: {
+      present: (trackingRecord?.artifacts.length ?? 0) > 0,
+      artifactCount: trackingRecord?.artifacts.length ?? 0,
+      integrityErrorCodes: trackingIntegrityErrors.map((error) => error.code),
     },
     historicalLifecycle,
     dependencyIndex: {

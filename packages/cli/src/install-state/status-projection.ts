@@ -61,15 +61,26 @@ export function isCodexUserConfigOnlyResidueCleanupCandidate(
 ): boolean {
   const codexNative = evidence.platform.codexNative;
   return (
+    isCodexUserNativeResidueCleanupCandidate(evidence) &&
+    codexNative !== null &&
+    codexNative.configEntryPresent &&
+    codexNative.pluginEnabled === true &&
+    !codexNative.installedManifestPresent &&
+    !codexNative.activeCachePresent
+  );
+}
+
+export function isCodexUserNativeResidueCleanupCandidate(
+  evidence: InstallEvidence,
+): boolean {
+  const codexNative = evidence.platform.codexNative;
+  return (
     evidence.location.platform === 'codex' &&
     evidence.location.scope === 'user' &&
     !evidence.installRecord.present &&
     !evidence.nativeTransaction.present &&
     codexNative !== null &&
-    codexNative.configEntryPresent &&
-    codexNative.pluginEnabled === true &&
-    !codexNative.installedManifestPresent &&
-    !codexNative.activeCachePresent &&
+    codexNative.anyNativeEvidence &&
     !evidence.residualEvidence.privateStatePresent &&
     !evidence.residualEvidence.repoVisibleArtifactPresent &&
     !evidence.residualEvidence.sharedIdentityPresent &&
@@ -79,20 +90,14 @@ export function isCodexUserConfigOnlyResidueCleanupCandidate(
   );
 }
 
-function canExposeCodexUserConfigOnlyResidueCleanup(
+function canExposeCodexUserNativeResidueCleanup(
   evidence: InstallEvidence,
 ): boolean {
-  if (!isCodexUserConfigOnlyResidueCleanupCandidate(evidence)) {
+  if (!isCodexUserNativeResidueCleanupCandidate(evidence)) {
     return false;
   }
 
-  if (hasVerifiedDependents(evidence)) {
-    return false;
-  }
-
-  const coverage = evidence.dependencyIndex.projection.coverage;
-  return coverage.coverageTrusted
-    || (coverage.reasons.length === 1 && coverage.reasons[0] === 'indexMissing');
+  return !hasVerifiedDependents(evidence);
 }
 
 function hasVerifiedDependents(evidence: InstallEvidence): boolean {
@@ -325,7 +330,7 @@ export function projectInstallState(
         (kind === 'needsRepair' || kind === 'residual')
         && !hasVerifiedDependents(evidence)
       ) ||
-      canExposeCodexUserConfigOnlyResidueCleanup(evidence),
+      canExposeCodexUserNativeResidueCleanup(evidence),
     adoptExistingAvailable: kind === 'adoptable',
     sharedRuntimeOwnerPresent: evidence.sharedRuntimeOwner.read.status === 'ok',
     sharedRuntimeNeedsTakeover: evidence.sharedRuntimeOwner.needsTakeover,
