@@ -9,14 +9,14 @@ const SKILL_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
-const skillTemplatePath = path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md');
-const openaiTemplatePath = path.resolve(
-  pluginRoot,
-  'skills',
-  CODEX_EXPLORE_SKILL_KEY,
-  'agents',
-  'openai.yaml',
-);
+const skillTemplatePaths = [
+  path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
+  path.resolve(pluginRoot, 'codex', 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
+];
+const openaiTemplatePaths = [
+  path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
+  path.resolve(pluginRoot, 'codex', 'skills', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
+];
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -106,10 +106,23 @@ function renderTemplate(template, replacements) {
   }, template);
 }
 
+async function readFirstExisting(paths) {
+  let lastError;
+  for (const candidatePath of paths) {
+    try {
+      return await readFile(candidatePath, 'utf8');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
 async function readSkillTemplates() {
   const [skillTemplate, openaiTemplate] = await Promise.all([
-    readFile(skillTemplatePath, 'utf8'),
-    readFile(openaiTemplatePath, 'utf8'),
+    readFirstExisting(skillTemplatePaths),
+    readFirstExisting(openaiTemplatePaths),
   ]);
 
   return { skillTemplate, openaiTemplate };

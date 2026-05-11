@@ -85,7 +85,12 @@ async function testPresentSkillArtifact() {
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
+  assert.match(skill.content.skillFile, /description: 通用只读探查 workflow/);
+  assert.match(skill.content.skillFile, /当任务需要先探查才能得出结论/);
+  assert.match(skill.content.skillFile, /探查会读取较多文件、日志、文档、网页或用户材料，查询较多数据，整理长上下文/);
+  assert.match(skill.content.skillFile, /已知文件内的小搜索和单个事实查询不要触发/);
   assert.match(skill.content.skillFile, /Codex 内置 `explorer`/);
+  assert.match(skill.content.skillFile, /读取大量文件或材料、查询较多数据、梳理长上下文/);
   assert.match(skill.content.skillFile, /agent_type: "explorer"/);
   assert.match(skill.content.skillFile, /model: "gpt-5\.4"/);
   assert.match(skill.content.skillFile, /reasoning_effort: "high"/);
@@ -200,7 +205,12 @@ async function testStaticSkillContracts() {
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
+  assert.match(skill, /description: 通用只读探查 workflow/);
+  assert.match(skill, /当任务需要先探查才能得出结论/);
+  assert.match(skill, /探查会读取较多文件、日志、文档、网页或用户材料，查询较多数据，整理长上下文/);
+  assert.match(skill, /已知文件内的小搜索和单个事实查询不要触发/);
   assert.match(skill, /Codex 内置 `explorer`/);
+  assert.match(skill, /读取大量文件或材料、查询较多数据、梳理长上下文/);
   assert.match(skill, /代码库、文档、网络、长日志和用户提供的材料/);
   assert.match(skill, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
   assert.match(skill, /子代理继承当前会话可用的工具和权限/);
@@ -222,7 +232,11 @@ async function testStaticSkillContracts() {
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.artifacts.targets.length, 1);
-  assert.deepEqual(manifest.artifacts.targets[0], {
+  const { kind, ...artifactTarget } = manifest.artifacts.targets[0];
+  if (kind !== undefined) {
+    assert.equal(kind, 'skill');
+  }
+  assert.deepEqual(artifactTarget, {
     id: 'codex-explore-skill',
     platform: 'codex',
     scopes: ['user', 'project'],
