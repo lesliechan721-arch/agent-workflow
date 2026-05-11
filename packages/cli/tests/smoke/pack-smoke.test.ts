@@ -208,6 +208,13 @@ describe('pack smoke', () => {
             target: 'codex.skill',
             skillKey: 'codex-explore',
           }),
+          expect.objectContaining({
+            id: 'codex-explore-agent-role',
+            platform: 'codex',
+            target: 'codex.agentRole',
+            requiresCodexProjectConfig: true,
+            roleKey: 'codex-explore-agent',
+          }),
         ]),
       },
     });

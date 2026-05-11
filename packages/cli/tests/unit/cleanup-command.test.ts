@@ -394,6 +394,56 @@ describe('cleanup command (P9)', () => {
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
   });
 
+  it('uses the runtime adapters factory for CLI-style Codex native cleanup', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    const cacheRootPath = path.join(
+      builder.paths.codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      target.location.plugin,
+    );
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+    await fs.outputJson(
+      path.join(cacheRootPath, target.source.pluginVersion, 'plugin.json'),
+      { id: target.pluginId, version: target.source.pluginVersion },
+      { spaces: 2 },
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath, cacheRootPath);
+    await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adaptersFactory: () => ({
+          codex,
+          claude: new FakeAdapter(),
+        }) satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([target.pluginId]);
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(cacheRootPath)).resolves.toBe(false);
+  });
+
   it('uses Codex adapter uninstall for user-scope native residue when shared native refs still protect project consumers and target resolution fails', async () => {
     const builder = await makeBuilder();
     const pluginName = 'git-commit';

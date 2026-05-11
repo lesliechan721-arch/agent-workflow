@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Explore"
-  short_description: "代码库、文档、网络和大上下文的只读探索与多源证据总结"
-  default_prompt: "使用 $codex-explore 对这个问题做只读探索，搜索并总结相关代码、文档、网络资料或用户提供的数据。"
+  short_description: "跨多文件、多模块、多来源和长上下文的只读探索"
+  default_prompt: "使用 $codex-explore 判断这个问题是否需要大范围只读探索；只有需要跨多文件、多模块、多来源、长日志、网页/官方文档或大段用户材料核对时才委派子代理。"
 
 policy:
   allow_implicit_invocation: true

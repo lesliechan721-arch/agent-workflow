@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
-const SKILL_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
+const CODEX_EXPLORE_ROLE_ID = 'codex-explore-agent-role';
+const CODEX_EXPLORE_ROLE_KEY = 'codex-explore-agent';
+const REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -94,9 +96,19 @@ function resolveConfigValues(context, defaults) {
 
 export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffort }) {
   return trimBlock(`
-    - \`agent_type\`: \`explorer\`
-    - \`model\`: \`${explorerModel}\`
-    - \`reasoning_effort\`: \`${modelReasoningEffort}\`
+    - \`agent_type\`: \`${CODEX_EXPLORE_ROLE_KEY}\`
+    - role \`model\`: \`${explorerModel}\`
+    - role \`model_reasoning_effort\`: \`${modelReasoningEffort}\`
+  `);
+}
+
+export function renderRoleDeveloperInstructions() {
+  return trimBlock(`
+    你是 Codex Explore 只读探索子代理。只回答主代理交给你的具体探索问题，并围绕指定范围读取必要的代码、文档、日志、网页或用户材料。
+
+    严格保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
+
+    输出关键结论、证据路径或链接、必要行号、来源时间、不确定点，以及建议主代理下一步查看的少量内容。避免展开无关材料，不要替主代理做实现或修改。
   `);
 }
 
@@ -152,9 +164,11 @@ export async function renderArtifactPlan(context) {
       explorerModel,
       modelReasoningEffort,
     }),
+    explorerRoleKey: CODEX_EXPLORE_ROLE_KEY,
     explorerModel,
     modelReasoningEffort,
   };
+  const roleDescription = '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。';
 
   return {
     version: 1,
@@ -166,10 +180,31 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_EXPLORE_SKILL_KEY,
-        refreshKeys: SKILL_REFRESH_KEYS,
+        refreshKeys: REFRESH_KEYS,
         content: {
           skillFile: renderTemplate(skillTemplate, replacements),
           openaiYaml: renderTemplate(openaiTemplate, replacements),
+        },
+      },
+      {
+        id: CODEX_EXPLORE_ROLE_ID,
+        kind: 'codexRole',
+        platform: 'codex',
+        target: 'codex.agentRole',
+        state: 'present',
+        roleKey: CODEX_EXPLORE_ROLE_KEY,
+        refreshKeys: REFRESH_KEYS,
+        content: {
+          registration: {
+            description: roleDescription,
+          },
+          roleFile: {
+            name: CODEX_EXPLORE_ROLE_KEY,
+            description: roleDescription,
+            developer_instructions: renderRoleDeveloperInstructions(),
+            model: explorerModel,
+            model_reasoning_effort: modelReasoningEffort,
+          },
         },
       },
     ],

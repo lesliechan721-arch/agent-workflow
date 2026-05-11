@@ -74,38 +74,53 @@ async function testPresentSkillArtifact() {
   const { trimBlock } = await import(scriptModuleUrl);
   const plan = await runRenderer(createContext());
   const skill = findArtifact(plan, 'codex-explore-skill');
+  const role = findArtifact(plan, 'codex-explore-agent-role');
 
   assert.equal(plan.version, 1);
-  assert.equal(plan.artifacts.length, 1);
+  assert.equal(plan.artifacts.length, 2);
   assert.equal(skill.state, 'present');
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-explore');
   assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.equal(role.state, 'present');
+  assert.equal(role.kind, 'codexRole');
+  assert.equal(role.target, 'codex.agentRole');
+  assert.equal(role.roleKey, 'codex-explore-agent');
+  assert.deepEqual(role.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.equal(role.content.registration.description, '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。');
+  assert.equal(role.content.roleFile.name, 'codex-explore-agent');
+  assert.equal(role.content.roleFile.description, '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。');
+  assert.equal(role.content.roleFile.model, 'gpt-5.4');
+  assert.equal(role.content.roleFile.model_reasoning_effort, 'high');
+  assert.match(role.content.roleFile.developer_instructions, /只读探索子代理/);
+  assert.match(role.content.roleFile.developer_instructions, /严格保持只读/);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
   assert.match(skill.content.skillFile, /description: 通用只读探查 workflow/);
-  assert.match(skill.content.skillFile, /当任务需要先探查才能得出结论/);
-  assert.match(skill.content.skillFile, /探查会读取较多文件、日志、文档、网页或用户材料，查询较多数据，整理长上下文/);
-  assert.match(skill.content.skillFile, /已知文件内的小搜索和单个事实查询不要触发/);
+  assert.match(skill.content.skillFile, /较大范围只读探索/);
+  assert.match(skill.content.skillFile, /跨 4 个以上文件、多模块、多来源材料、长日志、网页\/官方文档/);
+  assert.match(skill.content.skillFile, /只是提到 codex-explore 插件时不要触发/);
+  assert.match(skill.content.skillFile, /先只做 Gate 判断/);
+  assert.match(skill.content.skillFile, /不要一边读取本 skill/);
+  assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
+  assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4`/);
+  assert.match(skill.content.skillFile, /推理强度 `high`/);
   assert.match(skill.content.skillFile, /Codex 内置 `explorer`/);
-  assert.match(skill.content.skillFile, /读取大量文件或材料、查询较多数据、梳理长上下文/);
-  assert.match(skill.content.skillFile, /agent_type: "explorer"/);
-  assert.match(skill.content.skillFile, /model: "gpt-5\.4"/);
-  assert.match(skill.content.skillFile, /reasoning_effort: "high"/);
-  assert.match(skill.content.skillFile, /代码库、文档、网络、长日志和用户提供的材料/);
+  assert.match(skill.content.skillFile, /model: "<用户指定模型或 gpt-5\.4>"/);
+  assert.match(skill.content.skillFile, /reasoning_effort: "<用户指定推理强度或 high>"/);
   assert.match(skill.content.skillFile, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
   assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill.content.skillFile, /不能凭记忆补事实/);
-  assert.match(skill.content.skillFile, /每个 explorer 的 prompt 必须包含/);
+  assert.match(skill.content.skillFile, /每个子代理的 prompt 必须包含/);
   assert.match(
     skill.content.skillFile,
     /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*只读边界[\s\S]*期望输出/,
   );
   assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill.content.skillFile, /主 agent 不要重复调查同一个问题/);
-  assert.match(skill.content.skillFile, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*explorer 数量/s);
+  assert.match(skill.content.skillFile, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill.content.skillFile, /读取并整合结果后，立即用 `close_agent`/);
   assert.match(skill.content.skillFile, /`wait_agent` 不等于关闭 agent/);
   assert.match(skill.content.skillFile, /不要静默换模型/);
@@ -113,14 +128,14 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.content.skillFile.includes('aw config'), false);
   assert.match(
     skill.content.skillFile,
-    /spawn_agent\(\{[\s\S]*agent_type: "explorer"[\s\S]*model: "gpt-5\.4"[\s\S]*reasoning_effort: "high"[\s\S]*message: "\.\.\."[\s\S]*\}\)/,
+    /spawn_agent\(\{[\s\S]*agent_type: "codex-explore-agent"[\s\S]*message: "\.\.\."[\s\S]*\}\)/,
   );
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /代码库、文档、网络和大上下文的只读探索与多源证据总结/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 对这个问题做只读探索/);
-  assert.match(skill.content.openaiYaml, /代码、文档、网络资料或用户提供的数据/);
+  assert.match(skill.content.openaiYaml, /跨多文件、多模块、多来源和长上下文的只读探索/);
+  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 判断这个问题是否需要大范围只读探索/);
+  assert.match(skill.content.openaiYaml, /只有需要跨多文件、多模块、多来源、长日志、网页\/官方文档或大段用户材料核对时才委派子代理/);
 }
 
 async function testCustomConfigOverridesSkillTemplates() {
@@ -136,12 +151,15 @@ async function testCustomConfigOverridesSkillTemplates() {
     }),
   );
   const skill = findArtifact(plan, 'codex-explore-skill');
+  const role = findArtifact(plan, 'codex-explore-agent-role');
 
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
   assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
-  assert.match(skill.content.skillFile, /model: "gpt-5\.4-mini"/);
-  assert.match(skill.content.skillFile, /reasoning_effort: "xhigh"/);
+  assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4-mini`/);
+  assert.match(skill.content.skillFile, /推理强度 `xhigh`/);
+  assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
+  assert.equal(role.content.roleFile.model_reasoning_effort, 'xhigh');
 }
 
 async function testDefaultsComeFromManifestSchema() {
@@ -177,9 +195,12 @@ async function testDefaultsComeFromManifestSchema() {
     });
     const plan = JSON.parse(stdout);
     const skill = findArtifact(plan, 'codex-explore-skill');
+    const role = findArtifact(plan, 'codex-explore-agent-role');
 
-    assert.match(skill.content.skillFile, /model: "gpt-5\.4-mini"/);
-    assert.match(skill.content.skillFile, /reasoning_effort: "medium"/);
+    assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4-mini`/);
+    assert.match(skill.content.skillFile, /推理强度 `medium`/);
+    assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
+    assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -206,46 +227,59 @@ async function testStaticSkillContracts() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
   assert.match(skill, /description: 通用只读探查 workflow/);
-  assert.match(skill, /当任务需要先探查才能得出结论/);
-  assert.match(skill, /探查会读取较多文件、日志、文档、网页或用户材料，查询较多数据，整理长上下文/);
-  assert.match(skill, /已知文件内的小搜索和单个事实查询不要触发/);
+  assert.match(skill, /较大范围只读探索/);
+  assert.match(skill, /跨 4 个以上文件、多模块、多来源材料、长日志、网页\/官方文档/);
+  assert.match(skill, /只是提到 codex-explore 插件时不要触发/);
+  assert.match(skill, /先只做 Gate 判断/);
+  assert.match(skill, /不要一边读取本 skill/);
   assert.match(skill, /Codex 内置 `explorer`/);
-  assert.match(skill, /读取大量文件或材料、查询较多数据、梳理长上下文/);
-  assert.match(skill, /代码库、文档、网络、长日志和用户提供的材料/);
+  assert.match(skill, /受管子代理/);
+  assert.match(skill, /\{\{explorerRoleKey\}\}/);
   assert.match(skill, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
   assert.match(skill, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill, /不能凭记忆补事实/);
   assert.match(skill, /只读边界/);
-  assert.match(skill, /每个 explorer 的 prompt 必须包含/);
+  assert.match(skill, /每个子代理的 prompt 必须包含/);
   assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*只读边界[\s\S]*期望输出/);
   assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill, /主 agent 不要重复调查同一个问题/);
-  assert.match(skill, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*explorer 数量/s);
+  assert.match(skill, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
   assert.match(skill, /`wait_agent` 不等于关闭 agent/);
   assert.match(skill, /不要静默换模型/);
   assert.equal(skill.includes('codex-explorer'), false);
 
   assert.match(metadata, /allow_implicit_invocation:\s*true/);
-  assert.match(metadata, /short_description: "代码库、文档、网络和大上下文的只读探索与多源证据总结"/);
-  assert.match(metadata, /使用 \$codex-explore 对这个问题做只读探索/);
+  assert.match(metadata, /short_description: "跨多文件、多模块、多来源和长上下文的只读探索"/);
+  assert.match(metadata, /使用 \$codex-explore 判断这个问题是否需要大范围只读探索/);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
-  assert.equal(manifest.artifacts.targets.length, 1);
-  const { kind, ...artifactTarget } = manifest.artifacts.targets[0];
-  if (kind !== undefined) {
-    assert.equal(kind, 'skill');
-  }
-  assert.deepEqual(artifactTarget, {
-    id: 'codex-explore-skill',
-    platform: 'codex',
-    scopes: ['user', 'project'],
-    target: 'codex.skill',
-    projectManagedKind: 'skill',
-    states: ['present'],
-    refreshKeys: ['explorerModel', 'modelReasoningEffort'],
-    skillKey: 'codex-explore',
-  });
+  assert.equal(manifest.interface.capabilities.includes('Agents'), true);
+  assert.match(manifest.extensions.instructions[0].content, /Gate 判断确实需要委派只读探索/);
+  assert.equal(manifest.artifacts.targets.length, 2);
+  assert.deepEqual(manifest.artifacts.targets, [
+    {
+      id: 'codex-explore-skill',
+      platform: 'codex',
+      scopes: ['user', 'project'],
+      target: 'codex.skill',
+      projectManagedKind: 'skill',
+      states: ['present'],
+      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      skillKey: 'codex-explore',
+    },
+    {
+      id: 'codex-explore-agent-role',
+      platform: 'codex',
+      scopes: ['user', 'project'],
+      target: 'codex.agentRole',
+      projectManagedKind: 'agent',
+      states: ['present'],
+      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      requiresCodexProjectConfig: true,
+      roleKey: 'codex-explore-agent',
+    },
+  ]);
   assert.equal('buildConfig' in manifest, false);
 }
 

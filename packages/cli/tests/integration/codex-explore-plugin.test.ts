@@ -153,6 +153,27 @@ const plan = {
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
       },
     },
+    {
+      id: 'codex-explore-agent-role',
+      kind: 'codexRole',
+      platform: 'codex',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey: 'codex-explore-agent',
+      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      content: {
+        registration: {
+          description: 'Recorded explore agent',
+        },
+        roleFile: {
+          name: 'codex-explore-agent',
+          description: 'Recorded explore agent',
+          developer_instructions: 'Read only.',
+          model: explorerModel,
+          model_reasoning_effort: modelReasoningEffort,
+        },
+      },
+    },
   ],
 };
 
@@ -1509,7 +1530,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('keeps previous Codex user dynamic skill runtime and cache when refresh fails, and records failure diagnostics', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
-    await addCodexExploreDynamicSkillArtifact(repoRoot);
+    await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreDynamicSkillRenderer(repoRoot);
     let embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
     process.env.AW_HOME = awHome;
@@ -2254,15 +2275,12 @@ describe('codex-explore integration acceptance', () => {
     );
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome, 'codex-explore-v2'))).resolves.toBe(false);
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
-    expect(trackingArtifacts).toHaveLength(1);
-    expect(trackingArtifacts[0]).toMatchObject({
+    expect(trackingArtifacts.find((artifact) => artifact.id === 'codex-explore-skill-v2')).toMatchObject({
       id: 'codex-explore-skill-v2',
       target: 'codex.skill',
       artifactKey: 'codex-explore-v2',
     });
-    expect(location.dynamicDiagnostic?.entries?.map((entry) => entry.id)).toEqual([
-      'codex-explore-skill-v2',
-    ]);
+    expect(location.dynamicDiagnostic?.entries?.map((entry) => entry.id)).toContain('codex-explore-skill-v2');
     expect(findIssueCodes(location, 'artifactMissing')).toEqual([]);
   });
 
@@ -2401,26 +2419,46 @@ describe('codex-explore integration acceptance', () => {
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
     const skillPath = path.join(repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md');
     const skillMetadataPath = projectSkillMetadataPath(repoRoot);
+    const rolePath = path.join(projectPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-agent.toml');
     const skillContent = await fs.readFile(skillPath, 'utf8');
+    const projectConfig = await readCodexConfigFile(projectPaths.configTomlPath);
+    const roleContent = await fs.readFile(rolePath, 'utf8');
     const trackedArtifacts = (await readTrackingManifest(projectPaths.trackingDir)).plugins['codex-explore']?.artifacts ?? [];
 
     expect(nativeCalls).toHaveLength(0);
-    await expect(fs.pathExists(projectPaths.configTomlPath)).resolves.toBe(false);
+    expect(projectConfig.snapshot.agents['codex-explore-agent']).toEqual({
+      key: 'codex-explore-agent',
+      description: '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。',
+      configFile: 'agents/aw-codex-explore-codex-explore-agent.toml',
+    });
     await expect(fs.pathExists(skillPath)).resolves.toBe(true);
     await expect(fs.pathExists(skillMetadataPath)).resolves.toBe(true);
     await expect(fs.readFile(skillMetadataPath, 'utf8')).resolves.toContain(
       'allow_implicit_invocation: true',
     );
-    expect(skillContent).toContain('Codex 内置 `explorer`');
-    expect(skillContent).toContain('`close_agent` 关闭本 workflow 启动的 explorer');
-    expect(skillContent).toContain('model: "gpt-5.5"');
-    expect(skillContent).toContain('reasoning_effort: "xhigh"');
+    expect(skillContent).toContain('受管子代理');
+    expect(skillContent).toContain('agent_type: "codex-explore-agent"');
+    expect(skillContent).toContain('默认模型 `gpt-5.5`');
+    expect(skillContent).toContain('推理强度 `xhigh`');
+    expect(skillContent).toContain('`close_agent` 关闭本 workflow 启动的子代理');
+    expect(roleContent).toContain('name = "codex-explore-agent"');
+    expect(roleContent).toContain('model = "gpt-5.5"');
+    expect(roleContent).toContain('model_reasoning_effort = "xhigh"');
     expect(trackedArtifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'codex-explore-skill',
         target: 'codex.skill',
         state: 'present',
         artifactKey: 'codex-explore',
+        configDigest: expect.stringMatching(/^sha256:/),
+        contentDigest: expect.stringMatching(/^sha256:/),
+      }),
+      expect.objectContaining({
+        id: 'codex-explore-agent-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        artifactKey: 'codex-explore-agent',
+        roleKey: 'codex-explore-agent',
         configDigest: expect.stringMatching(/^sha256:/),
         contentDigest: expect.stringMatching(/^sha256:/),
       }),
@@ -2671,7 +2709,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.pathExists(path.join(awHome, 'lifecycle.log'))).resolves.toBe(false);
   });
 
-  it('allows $codex-explore to become auto-triggerable only after explicit --skill-trigger auto install', async () => {
+  it('keeps $codex-explore auto-triggerable with explicit --skill-trigger auto install', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -2751,14 +2789,19 @@ describe('codex-explore integration acceptance', () => {
       scope: 'project',
     });
     const skillArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-skill');
+    const roleArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-agent-role');
 
     expect(plugin?.projectTrust).toBe('unknown');
     expect(location.dynamicDiagnostic?.available).toBe(true);
-    expect(location.state).toBe('installed');
+    expect(location.state).toBe('needsRepair');
     expect(skillArtifact).toMatchObject({
       state: 'present',
     });
-    expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(0);
+    expect(roleArtifact).toMatchObject({
+      state: 'present',
+      roleKey: 'codex-explore-agent',
+    });
+    expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(1);
   });
 
   it.skip('explains invisible reasons in human verbose status for repo trust and higher-priority session layers', async () => {
@@ -3391,8 +3434,8 @@ describe('codex-explore integration acceptance', () => {
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('reasoning_effort: "medium"');
-    expect(projectSkillContent).toContain('reasoning_effort: "low"');
+    expect(userSkillContent).toContain('推理强度 `medium`');
+    expect(projectSkillContent).toContain('推理强度 `low`');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3544,7 +3587,7 @@ describe('codex-explore integration acceptance', () => {
     const trackedSkill = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-skill');
 
-    expect(skillContent).toContain('reasoning_effort: "low"');
+    expect(skillContent).toContain('推理强度 `low`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
@@ -3754,8 +3797,8 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explore-skill');
 
     await expect(fs.pathExists(projectStorePath)).resolves.toBe(false);
-    expect(skillContent).toContain('model: "gpt-5.4-mini"');
-    expect(skillContent).toContain('reasoning_effort: "medium"');
+    expect(skillContent).toContain('默认模型 `gpt-5.4-mini`');
+    expect(skillContent).toContain('推理强度 `medium`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {

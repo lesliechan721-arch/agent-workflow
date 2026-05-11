@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import type { CommandExecutionContextInput } from './runtime.js';
 import { createCommandExecutionContext } from './runtime.js';
 import {
+  createAdapters,
   createHistoricalPluginTarget,
   type ResolvedPluginTarget,
 } from './common.js';
@@ -569,7 +570,7 @@ export async function tryUninstallUsingInstallState(options: {
     });
   }
 
-  const adapters = options.runtime.adapters;
+  const adapters = createAdapters(options.commandOptions.cwd, context);
   const pluginMeta = await loadPreferredPluginMeta({
     target: options.target,
     recordFile: recordRead.value,
@@ -768,7 +769,9 @@ export async function cleanupInstallStateTarget(options: {
         target: options.target,
         recordFile: recordRead.status === 'ok' ? recordRead.value : null,
       });
-  const platformAdapter = options.runtime.adapters?.[options.location.platform];
+  const platformAdapter = projection.kind === 'notInstalled'
+    ? undefined
+    : createAdapters(options.commandOptions.cwd, context)[options.location.platform];
   const nativeCleanupAdapter = platformAdapter as PlatformAdapter & {
     uninstallUserNativePluginById?: (pluginNameOrId: string) => Promise<void>;
   } | undefined;
