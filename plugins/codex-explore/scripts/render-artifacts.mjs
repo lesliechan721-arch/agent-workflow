@@ -104,7 +104,9 @@ export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffor
 
 export function renderRoleDeveloperInstructions() {
   return trimBlock(`
-    你是 Codex Explore 只读探索子代理。只回答主代理交给你的具体探索问题，并围绕指定范围读取必要的代码、文档、日志、网页或用户材料。
+    你是 Codex Explore 叶子只读探索子代理。只回答主代理交给你的具体问题，并围绕指定范围读取必要的代码、文档、日志、网页或用户材料。
+
+    只能自己读取材料并总结；不得调用 \`spawn_agent\`、\`wait_agent\`、\`close_agent\`，不得把任务再拆给任何子代理。如果范围过大，只说明需要主代理缩小问题。
 
     严格保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
 

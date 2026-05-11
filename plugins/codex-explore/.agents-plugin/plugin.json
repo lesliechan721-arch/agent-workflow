@@ -28,7 +28,7 @@
       {
         "name": "delegation-authorization",
         "title": "Codex Explore 子代理授权",
-        "content": "当调用 `$codex-explore`、`codex-explore` 技能，并且该技能的 Gate 判断确实需要委派只读探索时，将这次委派视为用户明确请求在该 workflow 中使用子代理；Gate 未通过时不得因此启动子代理。"
+        "content": "只有主 agent 可以在 `$codex-explore`、`codex-explore` 技能 Gate 通过后启动第一层 Codex Explore 子代理；这份授权不传递给探索子代理。Gate 未通过时不得启动任何子代理。"
       }
     ]
   },

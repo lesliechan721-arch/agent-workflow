@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Explore"
   short_description: "跨多文件、多模块、多来源和长上下文的只读探索"
-  default_prompt: "使用 $codex-explore 判断这个问题是否需要大范围只读探索；只有需要跨多文件、多模块、多来源、长日志、网页/官方文档或大段用户材料核对时才委派子代理。"
+  default_prompt: "使用 $codex-explore 只做 Gate 判断；只有跨 6 个以上文件、3 个以上模块、多来源、长日志、网页/官方文档或大段用户材料时才委派子代理；小范围定位或单纯交叉验证不要触发。"
 
 policy:
   allow_implicit_invocation: true
