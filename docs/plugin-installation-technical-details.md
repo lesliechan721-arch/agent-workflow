@@ -2,14 +2,51 @@
 
 本文描述当前模型下，`@yiliang/aw` 如何把一个 `agent-workflows` 插件安装到 Codex 和 Claude Code。它面向 CLI 维护者和插件作者，重点说明运行时写入链路、关键文件、scope 差异和失败恢复语义；日常命令用法见 [plugin-installation.md](./plugin-installation.md)。
 
+## 怎么读这份文档
+
+这份文档既是技术说明，也是排障索引。建议先看图建立整体路径，再回到具体平台章节核对细节。
+
+| 你想快速确认 | 优先看 |
+|---|---|
+| 插件从源码到平台目录会经过哪些层 | [安装模型总览](#安装模型总览) |
+| `aw install` 的主路径和失败边界 | [通用安装流水线](#通用安装流水线) |
+| Claude Code、Codex user、Codex project 到底差在哪 | [平台与 scope 分流](#平台与-scope-分流) |
+| 某个状态文件是不是安装真值 | [Install-State Facade](#install-state-facade) |
+| project scope 哪些文件该提交，哪些不该提交 | [Project Config 与 Ignore 边界](#project-config-与-ignore-边界) |
+| repair、cleanup、reinstall 应该选哪个 | [Repair、Cleanup 与 Reinstall](#repaircleanup-与-reinstall) |
+
 ## 安装模型总览
 
-插件安装不是直接把 `plugins/<name>/` 复制到平台目录，而是经过四层：
+插件安装不是直接把 `plugins/<name>/` 复制到平台目录。源码会先被打成 embedded bundle，需要时再同步到本机 runtime，最后按目标平台和 scope 写入不同位置。
 
-1. **源码层**：插件作者维护 `plugins/<name>/.agents-plugin/plugin.json` 以及 `skills/`、`.mcp.json`、`slash-commands/`、脚本等源码。
-2. **embedded bundle**：`pnpm build` 生成 `packages/cli/plugins-dist/`。每个插件会得到 AW 源码 manifest、Claude 平台 manifest 和 Codex 平台 manifest。
-3. **本机 runtime**：需要平台 native plugin runtime 时，`aw init`、`aw install` 或 `aw upgrade` 会把 embedded bundle 同步到 `~/.aw/`。
-4. **平台 scope**：CLI 按 `--platform` 和 `--scope` 写入 Claude Code 或 Codex 的原生状态、repo-visible artifacts，并通过 install-state facade 提交本机 record、project artifact identity、diagnostic cache、dependency index、historical lifecycle runtime、native marker 和 shared runtime owner。
+```mermaid
+flowchart TD
+  source["源码层<br/>plugins/name/.agents-plugin/plugin.json<br/>skills / .mcp.json / slash-commands / scripts"]
+  bundle["embedded bundle<br/>packages/cli/plugins-dist"]
+  runtime["本机 runtime<br/>~/.aw/ marketplace mirror"]
+  facade["install-state facade"]
+  claude["Claude Code scopes"]
+  codexUser["Codex user scope"]
+  codexProject["Codex project scope"]
+  records["install records<br/>本机安装真值"]
+  shared["project artifacts<br/>团队共享身份线索"]
+  evidence["diagnostic cache<br/>dependency index / markers / lifecycle runtime"]
+
+  source --> bundle --> runtime --> facade
+  facade --> claude
+  facade --> codexUser
+  facade --> codexProject
+  facade --> records
+  facade --> shared
+  facade --> evidence
+```
+
+| 层级 | 由谁产生 | 主要内容 | 安装时的作用 |
+|---|---|---|---|
+| 源码层 | 插件作者 | AW manifest、skills、MCP、slash commands、脚本 | 作为 build 输入，不直接写入平台目录 |
+| embedded bundle | `pnpm build` | AW 源码 manifest、Claude manifest、Codex manifest | CLI 发布包内的插件来源 |
+| 本机 runtime | `aw init` / `aw install` / `aw upgrade` | `~/.aw/` 下的 marketplace 镜像和跨 scope runtime 状态 | 供 native marketplace 和 shared runtime 使用 |
+| 平台 scope | `aw install` / `aw repair` / `aw reinstall` | Claude 或 Codex 的原生状态、repo-visible artifacts、install-state 记录 | 形成当前机器和当前项目真正可用的安装结果 |
 
 `~/.aw/` 是 embedded bundle 的本机镜像，同时保存跨 scope 运行时状态：
 
@@ -32,19 +69,58 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 
 安装、升级、卸载、修复、清理、重装、状态和诊断都通过同一层 facade 处理状态：
 
-- **per-plugin install record v2**：本机安装真值，落在 `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/` 或 `<repo>/.codex/.agent-workflows/records/`。
-- **project artifact shared identity**：project scope 随仓库提交的最小共享身份线索，路径是 `<repo>/.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json`。它证明 repo-visible artifacts 的来源和可验证 identity，但不代表本机已安装。
-- **dynamic diagnostic cache**：记录动态 artifact 最近一次 accepted state / digest、`lastRefresh` 和 `refreshReach`。它服务只读诊断，不参与安装真值。
-- **historical lifecycle runtime**：只为普通 `uninstall` 和需要先撤销历史副作用的 `repair` / `reinstall` 保存最小运行面，不解释 artifact、config schema 或依赖声明。
-- **global dependency index**：从 records 重建的跨 scope incoming edge 索引。它辅助卸载保护和未使用依赖提醒，不可信时删除类命令必须 fail closed。
-- **native transaction marker**：只在 native 写入成功但 record 尚未提交时短暂存在，用于授权后续 repair 或 cleanup。
-- **shared runtime owner**：同一 plugin/platform 的共享 skill trigger runtime 同时只能由一个 location 控制；冲突时必须显式 `--takeover-shared-runtime`。
+| 状态 | 角色 | 典型位置 | 是否是安装真值 |
+|---|---|---|---|
+| per-plugin install record v2 | 记录本机安装事实、AW ownership、安装来源和 dependency edges | `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/`、`<repo>/.codex/.agent-workflows/records/` | 是 |
+| project artifact shared identity | 随仓库提交的最小共享身份线索，证明 repo-visible artifacts 的来源 | `<repo>/.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json` | 否 |
+| dynamic diagnostic cache | 记录动态 artifact 最近一次 accepted state / digest、`lastRefresh` 和 `refreshReach` | AW private state | 否 |
+| historical lifecycle runtime | 为 `uninstall`、`repair`、`reinstall` 保存撤销历史副作用所需的最小运行面 | `~/.aw/lifecycle-runtime/...` | 否 |
+| global dependency index | 从 records 重建跨 scope incoming edge 索引，辅助卸载保护和未使用依赖提醒 | `~/.aw/dependency-index.json` | 否 |
+| native transaction marker | native 写入成功但 record 尚未提交时的短暂证据 | `~/.aw/native-markers/...` | 否 |
+| shared runtime owner | 标记同一 plugin/platform 的共享 skill trigger runtime 由哪个 location 控制 | `~/.aw/shared-runtime-owners/...` | 否 |
 
 旧格式不会自动迁移。实现里如果需要测试旧文件，只能把它们作为“旧格式不迁移、读路径拒绝或历史兼容证据”的 fixture，不得把它们恢复成用户默认排障入口。
 
 ## 通用安装流水线
 
-`aw install <plugin> -p <platform> -s <scope>` 的命令层大致按下面顺序执行：
+`aw install <plugin> -p <platform> -s <scope>` 可以先按三段理解：前置校验、写入执行、状态提交。
+
+```mermaid
+flowchart TD
+  start["aw install plugin"]
+  catalog["解析 current catalog 和 PluginMeta"]
+  preflight["平台 / scope / policy / dependency / config / ownership preflight"]
+  nativeNeed{"需要 native runtime?"}
+  marketplace["同步 ~/.aw/<br/>检查 marketplace 和 shared runtime owner"]
+  skipNative["跳过 native marketplace 初始化"]
+  staging["staging<br/>marker / identity backup / diagnostic cache backup / lifecycle runtime / owner backup"]
+  apply["平台 native install<br/>或 repo-visible artifact apply"]
+  identity["写 project identity<br/>写 dynamic diagnostic cache"]
+  lifecycle["写 historical lifecycle runtime<br/>运行 lifecycle"]
+  record["原子提交 install record"]
+  finish["清理 marker<br/>提交 owner takeover<br/>刷新 dependency index"]
+  earlyStop["写入前失败<br/>不落平台状态"]
+  rollback["尽量回滚本命令写入<br/>保留可诊断证据"]
+
+  start --> catalog --> preflight --> nativeNeed
+  preflight -- "preflight 不通过" --> earlyStop
+  nativeNeed -- "是" --> marketplace --> staging
+  nativeNeed -- "否" --> skipNative --> staging
+  staging --> apply --> identity --> lifecycle --> record --> finish
+  staging -- "失败" --> rollback
+  apply -- "失败" --> rollback
+  identity -- "失败" --> rollback
+  lifecycle -- "失败" --> rollback
+```
+
+| 阶段 | 覆盖步骤 | 主要问题 |
+|---|---|---|
+| 前置校验 | 1-5 | 这个插件能不能装到目标平台和 scope，依赖、配置、ownership、ignore 规则是否安全 |
+| staging | 6 | 如果后面失败，哪些状态可以恢复，哪些证据要留下 |
+| 写入执行 | 7-10 | 调平台 native runtime、写 AW-managed artifacts、写诊断缓存、准备 lifecycle |
+| 状态提交 | 11-13 | record 原子落盘，清理 marker，刷新 dependency index |
+
+需要逐项核对时，命令层顺序如下：
 
 1. 解析 current catalog，按插件名拿到 `PluginMeta`。
 2. 推断或校验目标平台，并检查 `marketplace.policy.products` 是否允许安装。
@@ -62,9 +138,62 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 
 失败时，CLI 尽量回滚当前命令写入；无法回滚的外部 side effect 会留下局部可诊断证据。AW 不写全局降级状态，也不让单个 location 的损坏影响同 scope 其它插件。
 
+## 平台与 scope 分流
+
+不同平台真正分开的点，是“要不要走 native plugin runtime”以及“写入面在用户目录还是仓库目录”。
+
+```mermaid
+flowchart TD
+  cmd["aw install plugin"]
+  platform{"--platform"}
+  claude["Claude Code<br/>user/project 都走 Claude native plugin runtime"]
+  codexScope{"Codex --scope"}
+  codexUserNeed{"user scope<br/>声明 skills / slashCommands / mcpServers / apps?"}
+  codexUserNative["Codex user<br/>native marketplace + app-server RPC"]
+  codexUserArtifacts["Codex user<br/>只写 ~/.codex AW-managed artifacts"]
+  codexProject["Codex project<br/>只写 repo-visible artifacts"]
+
+  cmd --> platform
+  platform -- "claude" --> claude
+  platform -- "codex" --> codexScope
+  codexScope -- "user" --> codexUserNeed
+  codexUserNeed -- "是" --> codexUserNative
+  codexUserNeed -- "否" --> codexUserArtifacts
+  codexScope -- "project" --> codexProject
+```
+
+| 平台 / scope | 是否走 native runtime | 主要写入面 | 适合先看 |
+|---|---|---|---|
+| Claude `user` | 是 | `~/.claude/plugins/`、`~/.claude/.agent-workflows/records/`、用户级 `.claude` 扩展层 | [Claude Code 安装](#claude-code-安装) |
+| Claude `project` | 是 | `~/.claude/plugins/`、`<cwd>/.claude/.agent-workflows/records/`、项目级 `.claude` 扩展层 | [Claude Code 安装](#claude-code-安装) |
+| Codex `user`，需要 native runtime | 是 | `~/.codex/config.toml`、`~/.codex/plugins/cache/aw/...`、`~/.codex/.agent-workflows/records/` | [Codex User Scope 安装](#codex-user-scope-安装) |
+| Codex `user`，不需要 native runtime | 否 | `~/.codex/` 下的 AW-managed artifacts 和 records | [Codex User Scope 安装](#codex-user-scope-安装) |
+| Codex `project` | 否 | `<repo>/.agents/`、`<repo>/.codex/`、`<repo>/.agent-workflows/project-artifacts/`、本机 project records | [Codex Project Scope 安装](#codex-project-scope-安装) |
+
 ## Claude Code 安装
 
 Claude Code 的 `user` 和 `project` scope 都走 Claude 原生 plugin runtime。
+
+```mermaid
+flowchart LR
+  cmd["aw install -p claude<br/>-s user/project"]
+  native["Claude native plugin runtime"]
+  marketplace["~/.claude/plugins/"]
+  extensions["AW-managed extensions"]
+  rules["scope .claude/rules/aw-*.md"]
+  settings["scope .claude/settings.json"]
+  hooks["manifest hooks<br/>由 Claude runtime 加载"]
+  records["scope .claude/.agent-workflows/records/"]
+  ignore["project scope<br/>确认 private state 默认被 ignore"]
+
+  cmd --> native --> marketplace
+  cmd --> extensions
+  extensions --> rules
+  extensions --> settings
+  native --> hooks
+  cmd --> records
+  cmd --> ignore
+```
 
 | scope | 配置目录 | AW private state | 原生 marketplace 状态 |
 |---|---|---|---|
@@ -86,6 +215,25 @@ Codex user scope 分成两类：
 - **需要 native plugin runtime**：插件声明了 `skills`、`slashCommands`、`mcpServers` 或 `apps`。这类安装必须走 Codex native marketplace 和 app-server RPC。
 - **不需要 native plugin runtime**：只有 Codex `extensions.*` 或动态 artifacts。CLI 不调用 native install，只写 `~/.codex/` 下的 AW-managed artifacts。
 
+```mermaid
+flowchart TD
+  cmd["aw install -p codex -s user"]
+  need{"需要 native plugin runtime?"}
+  local["ensureLocalMarketplace()<br/>同步 ~/.aw/"]
+  config["检查 ~/.codex/config.toml<br/>marketplace 和外部同名插件"]
+  rpc["启动 codex app-server<br/>调用 plugin/install"]
+  cache["Codex 写 enabled config<br/>materialize cache"]
+  direct["跳过 native install"]
+  post["AW post-check<br/>artifact apply / lifecycle"]
+  record["提交 ~/.codex/.agent-workflows/records/"]
+  index["刷新 dependency index"]
+
+  cmd --> need
+  need -- "是" --> local --> config --> rpc --> cache --> post
+  need -- "否" --> direct --> post
+  post --> record --> index
+```
+
 需要 native runtime 时，安装步骤如下：
 
 1. 调用 `ensureLocalMarketplace()`，并解析 canonical `AW_HOME`。
@@ -106,6 +254,24 @@ Codex project scope 完全走 repo-visible artifacts，不走 native plugin 平�
 - 不写 `~/.codex/config.toml [marketplaces]`
 - 不写 `~/.codex/config.toml [plugins]`
 - 不写 `~/.codex/plugins/cache/...`
+
+```mermaid
+flowchart TD
+  cmd["aw install -p codex -s project"]
+  preflight["project installability<br/>ownership / identity / ignore preflight"]
+  gate{"preflight 通过?"}
+  stop["写入前停止<br/>提示修正冲突或 ignore 规则"]
+  render["渲染 repo-visible artifacts"]
+  files[".agents/skills<br/>.codex/config.toml<br/>.codex/rules / hooks / agents"]
+  identity[".agent-workflows/project-artifacts/codex/..."]
+  records[".codex/.agent-workflows/records/<br/>本机 private state"]
+
+  cmd --> preflight --> gate
+  gate -- "否" --> stop
+  gate -- "是" --> render
+  render --> files
+  render --> identity --> records
+```
 
 project scope 的 Codex 写入面解析到仓库根：
 
@@ -135,8 +301,10 @@ fresh clone 后，如果仓库里已有可验证的 repo-visible artifacts 和 s
 
 project config 分 shared / local 两层：
 
-- shared：`.agent-workflows/plugin-config/<plugin>/config.json`，可以提交，会影响 repo-visible project artifacts。
-- local：`.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略，只影响本机读命令、lifecycle/helper 或 local-only 场景。
+| 配置层 | 路径 | 是否提交 | 会不会参与 repo-visible artifact render |
+|---|---|---|---|
+| shared | `.agent-workflows/plugin-config/<plugin>/config.json` | 可以提交 | 会 |
+| local | `.agent-workflows/plugin-config.local/<plugin>/config.json` | 默认忽略 | 不会 |
 
 project scope 下，repo-visible artifact render config 只能来自 manifest default 和 project shared config store 中可共享的键。user store、project local store 和路径型 `file` / `directory` 配置不能参与 project artifact render、digest、stale 判断或 refresh。
 
@@ -150,6 +318,16 @@ project scope 下，repo-visible artifact render config 只能来自 manifest de
 ## Repair、Cleanup 与 Reinstall
 
 `aw diagnose` 只读收集证据；默认不执行 renderer、不运行 lifecycle、不修复文件。`aw diagnose --deep` 可以执行 renderer，用于确认动态 artifact 是否仍可生成。
+
+| 命令 | 用途 | 安全边界 |
+|---|---|---|
+| `aw diagnose` | 只读收集状态证据 | 默认不执行 renderer、不运行 lifecycle、不修复文件 |
+| `aw diagnose --deep` | 确认动态 artifact 是否还能生成 | 可以执行 renderer，但仍不写修复结果 |
+| `aw repair` | 在 current catalog 与 record source 能证明同一 bundle 时，重新应用 AW-owned artifacts | source 漂移时不能隐式升级 |
+| `aw repair --dependency-index` | 从可验证 records 重建 dependency index | 只修索引，不修插件安装 |
+| `aw repair --adopt-existing` | 认领 fresh clone 中已有的 project shared artifacts | 按当前机器 `PluginLocation` 创建本机 record |
+| `aw cleanup` | 清理 AW 明确拥有的残留、marker-only 或损坏状态 | 不替代正常 `aw uninstall` |
+| `aw reinstall` | 先诊断，再安全移除 AW-owned 状态，最后按 current catalog 重装 | 遇到 project “可认领”状态时默认停止 |
 
 `aw repair` 只在 current catalog 与 record source 能证明同一 bundle 时重新应用 AW-owned artifacts；source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
 
