@@ -49,14 +49,14 @@
         "type": "string",
         "title": "探索模型",
         "default": "gpt-5.4-mini",
-        "description": "Codex Explore 默认受管子代理使用的模型；用户显式指定模型时，skill 会改用内置 explorer 并显式传参。"
+        "description": "Codex Explore 默认受管子代理使用的模型；skill 不会回退到内置 explorer。"
       },
       "modelReasoningEffort": {
         "type": "enum",
         "title": "探索推理强度",
         "values": ["low", "medium", "high", "xhigh"],
         "default": "medium",
-        "description": "Codex Explore 默认受管子代理使用的推理强度；用户显式指定推理强度时，skill 会改用内置 explorer 并显式传参。"
+        "description": "Codex Explore 默认受管子代理使用的推理强度；skill 不会回退到内置 explorer。"
       }
     }
   },

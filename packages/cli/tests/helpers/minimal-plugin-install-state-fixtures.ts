@@ -83,6 +83,8 @@ export interface InstallRecordArtifact {
   roleKey?: string;
   ownershipMarker?: string;
   state?: 'present' | 'disabled';
+  configDigest?: string;
+  contentDigest?: string;
 }
 
 export interface InstallRecord {

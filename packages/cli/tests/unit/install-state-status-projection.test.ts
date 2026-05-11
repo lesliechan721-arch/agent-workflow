@@ -12,6 +12,7 @@ import {
   getProjectArtifactSharedIdentityPath,
 } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
+import { createGeneratedArtifactContentDigest } from '../../src/utils/generated-artifacts.js';
 import {
   createCurrentCatalogForTarget,
   createInstallStateFixtureEnv,
@@ -475,6 +476,107 @@ describe('projectInstallState', () => {
     }));
     expect(projection.kind).toBe('installed');
     expect(projection.issues.map((issue) => issue.code)).not.toContain('artifactMissing');
+  });
+
+  it('recomputes dynamic codex.agentRole content digests from the registration and role file', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-dynamic-role-digest-'),
+    );
+    const target = builder.createTarget({ pluginName: 'codex-explore', platform: 'codex', scope: 'project' });
+    const roleKey = 'codex-explore-agent';
+    const description = '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。';
+    const configPath = path.join(builder.paths.repoRoot, '.codex', 'config.toml');
+    const rolePath = path.join(
+      builder.paths.repoRoot,
+      '.codex',
+      'agents',
+      'aw-codex-explore-codex-explore-agent.toml',
+    );
+    const roleContent = [
+      `name = "${roleKey}"`,
+      `description = "${description}"`,
+      'developer_instructions = "Read only."',
+      'model = "gpt-5.4-mini"',
+      'model_reasoning_effort = "medium"',
+      '',
+    ].join('\n');
+    const contentDigest = createGeneratedArtifactContentDigest({
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey,
+      registration: { description },
+      roleFile: roleContent,
+    });
+
+    await fs.outputFile(
+      configPath,
+      [
+        `[agents.${roleKey}]`,
+        `description = "${description}"`,
+        'config_file = "agents/aw-codex-explore-codex-explore-agent.toml"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.outputFile(rolePath, roleContent, 'utf8');
+
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+    record.record.artifacts = [{
+      kind: 'agent',
+      platform: 'codex',
+      path: rolePath,
+      paths: [configPath, rolePath],
+      artifactKey: roleKey,
+      id: 'codex-explore-agent-role',
+      target: 'codex.agentRole',
+      roleKey,
+      state: 'present',
+      configDigest: 'config:role',
+      contentDigest,
+    }];
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+      record,
+      { spaces: 2 },
+    );
+    await builder.writeProjectIdentity(target);
+    await builder.writeDiagnosticCache(target, {
+      version: 1,
+      recordId: target.recordId,
+      location: target.location,
+      updatedAt: target.timestamps.updatedAt,
+      artifacts: [{
+        id: 'codex-explore-agent-role',
+        target: 'codex.agentRole',
+        state: 'present',
+        artifactKey: roleKey,
+        roleKey,
+        configDigest: 'config:role',
+        contentDigest,
+      }],
+    });
+    await builder.writeDependencyIndex([{ target, record }]);
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(target),
+        artifacts: [],
+        dynamicArtifacts: [{
+          id: 'codex-explore-agent-role',
+          target: 'codex.agentRole',
+          state: 'present',
+          roleKey,
+          configDigest: 'config:role',
+          contentDigest,
+        }],
+      },
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.issues.map((issue) => issue.code)).not.toContain('dynamicContentDrift');
   });
 
   it('projects fresh clone without identity and with current-catalog drift as residual instead of adoptable', async () => {

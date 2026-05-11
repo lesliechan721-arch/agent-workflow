@@ -104,12 +104,12 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /只是提到 codex-explore 插件时不要触发/);
   assert.match(skill.content.skillFile, /先只做 Gate 判断/);
   assert.match(skill.content.skillFile, /不要一边读取本 skill/);
+  assert.match(skill.content.skillFile, /默认使用 Codex Explore 受管子代理/);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
   assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4`/);
   assert.match(skill.content.skillFile, /推理强度 `high`/);
-  assert.match(skill.content.skillFile, /Codex 内置 `explorer`/);
-  assert.match(skill.content.skillFile, /model: "<用户指定模型或 gpt-5\.4>"/);
-  assert.match(skill.content.skillFile, /reasoning_effort: "<用户指定推理强度或 high>"/);
+  assert.match(skill.content.skillFile, /不要改用 Codex 内置 `explorer`/);
+  assert.match(skill.content.skillFile, /立即停止使用本 workflow/);
   assert.match(skill.content.skillFile, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
   assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill.content.skillFile, /不能凭记忆补事实/);
@@ -123,7 +123,7 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill.content.skillFile, /读取并整合结果后，立即用 `close_agent`/);
   assert.match(skill.content.skillFile, /`wait_agent` 不等于关闭 agent/);
-  assert.match(skill.content.skillFile, /不要静默换模型/);
+  assert.match(skill.content.skillFile, /不要静默换到内置 `explorer`/);
   assert.equal(skill.content.skillFile.includes('aw install'), false);
   assert.equal(skill.content.skillFile.includes('aw config'), false);
   assert.match(
@@ -232,9 +232,9 @@ async function testStaticSkillContracts() {
   assert.match(skill, /只是提到 codex-explore 插件时不要触发/);
   assert.match(skill, /先只做 Gate 判断/);
   assert.match(skill, /不要一边读取本 skill/);
-  assert.match(skill, /Codex 内置 `explorer`/);
   assert.match(skill, /受管子代理/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
+  assert.match(skill, /不要静默换到内置 `explorer`/);
   assert.match(skill, /当前会话工具可用性、联网要求、官方文档优先和上层安全策略/);
   assert.match(skill, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill, /不能凭记忆补事实/);
@@ -246,7 +246,7 @@ async function testStaticSkillContracts() {
   assert.match(skill, /`wait_agent`.*timeout.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
   assert.match(skill, /`wait_agent` 不等于关闭 agent/);
-  assert.match(skill, /不要静默换模型/);
+  assert.match(skill, /不要静默换到内置 `explorer`/);
   assert.equal(skill.includes('codex-explorer'), false);
 
   assert.match(metadata, /allow_implicit_invocation:\s*true/);

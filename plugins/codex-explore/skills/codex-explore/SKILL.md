@@ -32,7 +32,7 @@ Gate 通过后，主 agent 不要再自行探索同一个问题；进入委派�
 
 ## 委派规则
 
-默认使用 Codex Explore 受管子代理，role 已配置默认模型 `{{explorerModel}}` 和推理强度 `{{modelReasoningEffort}}`。除非用户在当前请求里明确指定其它模型或推理强度，`spawn_agent` 只传 `agent_type` 和 `message`。
+默认使用 Codex Explore 受管子代理，role 已配置默认模型 `{{explorerModel}}` 和推理强度 `{{modelReasoningEffort}}`。`spawn_agent` 只传 `agent_type` 和 `message`，不要改用 Codex 内置 `explorer`，也不要为了模型或推理强度覆盖而切换到其它 agent。
 
 ```ts
 spawn_agent({
@@ -41,18 +41,7 @@ spawn_agent({
 })
 ```
 
-用户在当前请求里明确指定其它模型或推理强度时，改用 Codex 内置 `explorer`；指定的字段显式传入，未指定的字段继续使用插件配置默认值。
-
-```ts
-spawn_agent({
-  agent_type: "explorer",
-  model: "<用户指定模型或 {{explorerModel}}>",
-  reasoning_effort: "<用户指定推理强度或 {{modelReasoningEffort}}>",
-  message: "..."
-})
-```
-
-如果 Codex runtime 报告 `{{explorerRoleKey}}`、`{{explorerModel}}` 或指定推理强度不可用，先向用户说明当前 workflow 默认配置不可用或已被用户指令覆盖，再按用户最新指示处理。不要静默换模型或 role。
+如果 Codex runtime 报告 `{{explorerRoleKey}}` 不可用，或用户要求的模型/推理强度不能由当前受管 role 满足，立即停止使用本 workflow，向用户说明当前 Codex Explore 受管子代理不可用或配置不匹配，并由主 agent 按普通任务继续处理。不要静默换到内置 `explorer` 或其它 role。
 
 除非用户另有要求，默认启动 1 个子代理。只有多个探索问题互不重叠、彼此能独立完成且确实值得拆分时，才启动 2 到 3 个；极少数复杂场景最多 4 个。
 

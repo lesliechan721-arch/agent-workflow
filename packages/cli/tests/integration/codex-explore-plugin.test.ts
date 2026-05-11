@@ -2437,6 +2437,8 @@ describe('codex-explore integration acceptance', () => {
       'allow_implicit_invocation: true',
     );
     expect(skillContent).toContain('受管子代理');
+    expect(skillContent).toContain('默认使用 Codex Explore 受管子代理');
+    expect(skillContent).toContain('不要改用 Codex 内置 `explorer`');
     expect(skillContent).toContain('agent_type: "codex-explore-agent"');
     expect(skillContent).toContain('默认模型 `gpt-5.5`');
     expect(skillContent).toContain('推理强度 `xhigh`');
@@ -2793,7 +2795,7 @@ describe('codex-explore integration acceptance', () => {
 
     expect(plugin?.projectTrust).toBe('unknown');
     expect(location.dynamicDiagnostic?.available).toBe(true);
-    expect(location.state).toBe('needsRepair');
+    expect(location.state).toBe('installed');
     expect(skillArtifact).toMatchObject({
       state: 'present',
     });
@@ -2801,7 +2803,7 @@ describe('codex-explore integration acceptance', () => {
       state: 'present',
       roleKey: 'codex-explore-agent',
     });
-    expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(1);
+    expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(0);
   });
 
   it.skip('explains invisible reasons in human verbose status for repo trust and higher-priority session layers', async () => {

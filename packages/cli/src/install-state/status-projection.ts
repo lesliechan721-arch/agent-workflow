@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import type { PluginLocation } from './types.js';
 import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
+import { parseCodexConfig } from '../utils/codex-config.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
 
 export type ProjectInstallStateKind =
@@ -140,6 +141,75 @@ function computeCodexSkillTreeDigest(
   return createGeneratedArtifactContentDigest(Object.fromEntries(files));
 }
 
+function findRawArtifactFile(
+  artifact: RecordArtifactEvidence,
+  filePath: string,
+): RecordArtifactEvidence['files'][number] | null {
+  const normalizedPath = path.normalize(filePath);
+  return artifact.files.find((file) => path.normalize(file.path) === normalizedPath) ?? null;
+}
+
+function computeCodexAgentRoleDigest(
+  artifact: RecordArtifactEvidence,
+): string | null {
+  const roleKey = artifact.artifact.roleKey?.trim() || artifact.artifact.artifactKey?.trim();
+  if (!roleKey) {
+    return null;
+  }
+
+  const roleFile = findRawArtifactFile(artifact, artifact.artifact.path);
+  const configFile = artifact.files.find((file) =>
+    path.normalize(file.path) !== path.normalize(artifact.artifact.path) &&
+    path.basename(file.path) === 'config.toml'
+  );
+
+  if (artifact.artifact.state === 'disabled') {
+    const roleLayerStillExists = Boolean(roleFile?.exists);
+    let registrationStillExists = false;
+    if (configFile?.rawContent !== null && configFile?.rawContent !== undefined) {
+      try {
+        registrationStillExists = parseCodexConfig(configFile.rawContent).agents[roleKey] !== undefined;
+      } catch {
+        registrationStillExists = false;
+      }
+    }
+    if (!roleLayerStillExists && !registrationStillExists) {
+      return null;
+    }
+  }
+
+  if (!roleFile?.rawContent || !configFile?.rawContent) {
+    return null;
+  }
+
+  try {
+    const registration = parseCodexConfig(configFile.rawContent).agents[roleKey];
+    return createGeneratedArtifactContentDigest({
+      target: artifact.artifact.target,
+      state: 'present',
+      roleKey,
+      registration: {
+        description: registration?.description?.trim(),
+      },
+      roleFile: roleFile.rawContent,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function computeDynamicArtifactDigest(
+  artifact: RecordArtifactEvidence,
+): string | null {
+  if (artifact.artifact.target === 'codex.skill') {
+    return computeCodexSkillTreeDigest(artifact);
+  }
+  if (artifact.artifact.target === 'codex.agentRole') {
+    return computeCodexAgentRoleDigest(artifact);
+  }
+  return artifact.files[0]?.contentDigest ?? null;
+}
+
 function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   const issues: ProjectInstallIssue[] = [];
 
@@ -183,7 +253,7 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
 
     if (artifact.matchedDynamicEntry) {
       const acceptedDigest = artifact.matchedDynamicEntry.contentDigest;
-      const actualDigest = computeCodexSkillTreeDigest(artifact);
+      const actualDigest = computeDynamicArtifactDigest(artifact);
       if (acceptedDigest && actualDigest && acceptedDigest !== actualDigest) {
         addArtifactIssue(issues, 'dynamicContentDrift', artifact);
       }
@@ -224,7 +294,9 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
       continue;
     }
 
-    const actualDigest = computeCodexSkillTreeDigest(artifact);
+    const actualDigest = artifact.artifact.target === 'codex.skill'
+      ? computeCodexSkillTreeDigest(artifact)
+      : artifact.files[0]?.contentDigest ?? null;
     const staticDigest =
       (evidence.installRecord.sameBundleAsCatalog
         ? artifact.matchedCatalogArtifact?.contentDigest
