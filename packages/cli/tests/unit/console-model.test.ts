@@ -1045,6 +1045,26 @@ describe('console-model', () => {
     );
   });
 
+  it('does not offer residual cleanup when dependency protection already blocks removal', () => {
+    const item = singleItem(cell({
+      installState: installState({
+        kind: 'residual',
+        summary: '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。',
+        dependents: [{
+          plugin: 'parent-plugin',
+          platform: 'codex',
+          scope: 'project',
+          projectKey: '/workspace',
+        }],
+        cleanupAvailable: false,
+      }),
+      report: undefined,
+    }));
+
+    expect(item.locations[0].reasonCodes).toEqual(expect.arrayContaining(['nativeResidue', 'dependencyProtected']));
+    expect(item.locations[0].actions.map((action) => action.label)).not.toContain('清理残留');
+  });
+
   it('enforces the action contract', () => {
     const disabledInstallCell = cell({
       disabledReason: '当前项目暂时不能安装这个插件。',

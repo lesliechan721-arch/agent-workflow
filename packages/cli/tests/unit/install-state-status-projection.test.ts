@@ -58,6 +58,152 @@ async function projectStateForScenario(
   };
 }
 
+async function projectConfigOnlyCodexUserResidue(options: {
+  dependencyIndexState: 'missing' | 'corrupted' | 'staleReference' | 'unreadableReference';
+  localDependent?: boolean;
+}) {
+  const builder = await createMinimalPluginInstallStateFixtureBuilder(
+    await makeTempDir(`aw-install-state-config-only-native-${options.dependencyIndexState}-`),
+  );
+  const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+  await fs.outputFile(
+    path.join(builder.paths.codexHome, 'config.toml'),
+    `[plugins."${target.pluginId}"]\nenabled = true\n`,
+    'utf8',
+  );
+
+  if (options.dependencyIndexState === 'corrupted') {
+    await fs.outputFile(
+      path.join(builder.paths.awHome, 'dependency-index', 'index.json'),
+      '{"version": 1,',
+      'utf8',
+    );
+  } else if (
+    options.dependencyIndexState === 'staleReference'
+    || options.dependencyIndexState === 'unreadableReference'
+  ) {
+    const referencedTarget = builder.createTarget({
+      pluginName: `helper-${options.dependencyIndexState}`,
+      platform: 'codex',
+      scope: 'user',
+    });
+    const referencedRecord = await builder.writeInstallRecord(referencedTarget);
+    await builder.writeDependencyIndex([{ target: referencedTarget, record: referencedRecord }]);
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const referencedRecordPath = scopedRecords.successes.find((entry) =>
+      entry.recordId === referencedTarget.recordId)?.path;
+    if (!referencedRecordPath) {
+      throw new Error(`missing fixture record for ${referencedTarget.recordId}`);
+    }
+    if (options.dependencyIndexState === 'staleReference') {
+      await fs.remove(referencedRecordPath);
+    } else {
+      await fs.writeFile(referencedRecordPath, '{"version": 2,', 'utf8');
+    }
+  }
+
+  if (options.localDependent) {
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    dependentRecord.record.dependencyEdges = [{
+      dependency: target.location,
+      declaration: {
+        name: target.location.plugin,
+      },
+    }];
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecordPath = scopedRecords.successes.find((entry) =>
+      entry.recordId === dependentTarget.recordId)?.path;
+    if (!dependentRecordPath) {
+      throw new Error(`missing fixture record for ${dependentTarget.recordId}`);
+    }
+    await fs.writeJson(dependentRecordPath, dependentRecord, { spaces: 2 });
+  }
+
+  const evidence = await collectInstallEvidence({
+    cwd: builder.paths.repoRoot,
+    location: target.location,
+    env: createInstallStateFixtureEnv(builder.paths),
+    currentCatalog: createCurrentCatalogForTarget(target),
+  });
+  return {
+    evidence,
+    projection: projectInstallState(evidence),
+  };
+}
+
+async function projectStateWithUnindexedLocalDependent(
+  kind: 'needsRepair' | 'residual',
+) {
+  const builder = await createMinimalPluginInstallStateFixtureBuilder(
+    await makeTempDir(`aw-install-state-${kind}-local-dependent-`),
+  );
+  const target = builder.createTarget({
+    pluginName: `target-${kind}`,
+    platform: 'codex',
+    scope: 'project',
+    projectKey: builder.paths.repoRoot,
+  });
+  const dependentTarget = builder.createTarget({
+    pluginName: `dependent-${kind}`,
+    platform: 'codex',
+    scope: 'project',
+    projectKey: builder.paths.repoRoot,
+  });
+
+  if (kind === 'needsRepair') {
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const targetRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+      targetRecord,
+      { spaces: 2 },
+    );
+    await builder.writeProjectIdentity(target);
+    await builder.writeDiagnosticCache(target);
+    await builder.writeDependencyIndex([{ target, record: targetRecord }]);
+    await fs.writeFile(target.repoArtifactPath, `${target.repoArtifactContent}mutated\n`, 'utf8');
+  } else {
+    await builder.writeRepoArtifact(target);
+    await builder.writeDiagnosticCache(target);
+  }
+
+  const dependentRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(dependentTarget));
+  dependentRecord.record.dependencyEdges = [{
+    dependency: target.location,
+    declaration: {
+      name: target.location.plugin,
+    },
+  }];
+  await fs.writeJson(
+    path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${dependentTarget.recordId}.json`),
+    dependentRecord,
+    { spaces: 2 },
+  );
+
+  const evidence = await collectInstallEvidence({
+    cwd: builder.paths.repoRoot,
+    location: target.location,
+    env: createInstallStateFixtureEnv(builder.paths),
+    currentCatalog: createCurrentCatalogForTarget(target),
+  });
+  return {
+    evidence,
+    projection: projectInstallState(evidence),
+  };
+}
+
 describe('projectInstallState', () => {
   it('covers the six default status classes', async () => {
     await expect(projectStateForScenario('installed')).resolves.toMatchObject({
@@ -415,6 +561,56 @@ describe('projectInstallState', () => {
     expect(projection.repairAvailable).toBe(true);
     expect(projection.cleanupAvailable).toBe(true);
   });
+
+  it('only exposes config-only Codex cleanup when dependency index is trusted or just missing', async () => {
+    const missing = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'missing' });
+    expect(missing.projection.kind).toBe('externallyManaged');
+    expect(missing.projection.cleanupAvailable).toBe(true);
+
+    const corrupted = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'corrupted' });
+    expect(corrupted.projection.kind).toBe('externallyManaged');
+    expect(corrupted.projection.dependencyIndexCoverageReasons).toContain('indexCorrupted');
+    expect(corrupted.projection.cleanupAvailable).toBe(false);
+
+    const stale = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'staleReference' });
+    expect(stale.projection.kind).toBe('externallyManaged');
+    expect(stale.projection.dependencyIndexCoverageTrusted).toBe(false);
+    expect(stale.projection.dependencyIndexCoverageReasons).toContain('staleReference');
+    expect(stale.projection.cleanupAvailable).toBe(false);
+
+    const unreadable = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'unreadableReference' });
+    expect(unreadable.projection.kind).toBe('externallyManaged');
+    expect(unreadable.projection.dependencyIndexCoverageTrusted).toBe(false);
+    expect(unreadable.projection.dependencyIndexCoverageReasons).toContain('unreadableReference');
+    expect(unreadable.projection.cleanupAvailable).toBe(false);
+  });
+
+  it('does not expose config-only Codex cleanup when a readable local scoped record depends on it', async () => {
+    const missingWithLocalDependent = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      localDependent: true,
+    });
+
+    expect(missingWithLocalDependent.projection.kind).toBe('externallyManaged');
+    expect(missingWithLocalDependent.projection.cleanupAvailable).toBe(false);
+  });
+
+  it.each(['needsRepair', 'residual'] as const)(
+    'does not expose cleanup for %s when a readable same-scope record still depends on it',
+    async (kind) => {
+      const blocked = await projectStateWithUnindexedLocalDependent(kind);
+
+      expect(blocked.projection.kind).toBe(kind);
+      expect(blocked.projection.dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            plugin: `dependent-${kind}`,
+          }),
+        ]),
+      );
+      expect(blocked.projection.cleanupAvailable).toBe(false);
+    },
+  );
 
   it('marks broken dependency edges as needsRepair instead of catalog drift or unused hints', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(

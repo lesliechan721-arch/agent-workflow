@@ -13,6 +13,7 @@ import {
   createInstallStateFixtureEnv,
   refreshDependencyIndexDigestsForP2,
   rewriteSanitizedInstallRecordForP2,
+  sanitizeInstallRecordForP2,
 } from '../helpers/install-state-projection-fixtures.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
@@ -31,6 +32,136 @@ async function makeTempDir(prefix: string): Promise<string> {
 async function maybePrepareP2RecordFiles(fixture: Awaited<ReturnType<typeof writeMinimalPluginInstallStateFixture>>): Promise<void> {
   await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath).catch(() => undefined);
   await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath).catch(() => undefined);
+}
+
+async function createConfigOnlyCodexNativeResidueDiagnoseFixture(options: {
+  dependencyIndexState: 'missing' | 'corrupted' | 'staleReference';
+  localDependent?: boolean;
+}) {
+  const builder = await createMinimalPluginInstallStateFixtureBuilder(
+    await makeTempDir(`aw-diagnose-config-only-native-residue-${options.dependencyIndexState}-`),
+  );
+  const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+  await fs.outputFile(
+    path.join(builder.paths.codexHome, 'config.toml'),
+    `[plugins."${target.pluginId}"]\nenabled = true\n`,
+    'utf8',
+  );
+
+  if (options.dependencyIndexState === 'corrupted') {
+    await fs.outputFile(
+      path.join(builder.paths.awHome, 'dependency-index', 'index.json'),
+      '{"version": 1,',
+      'utf8',
+    );
+  } else if (options.dependencyIndexState === 'staleReference') {
+    const referencedTarget = builder.createTarget({
+      pluginName: 'helper-stale-reference',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const referencedRecord = await builder.writeInstallRecord(referencedTarget);
+    await builder.writeDependencyIndex([{ target: referencedTarget, record: referencedRecord }]);
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const referencedRecordPath = scopedRecords.successes.find((entry) =>
+      entry.recordId === referencedTarget.recordId)?.path;
+    if (!referencedRecordPath) {
+      throw new Error(`missing fixture record for ${referencedTarget.recordId}`);
+    }
+    await fs.remove(referencedRecordPath);
+  }
+
+  if (options.localDependent) {
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    dependentRecord.record.dependencyEdges = [{
+      dependency: target.location,
+      declaration: {
+        name: target.location.plugin,
+      },
+    }];
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecordPath = scopedRecords.successes.find((entry) =>
+      entry.recordId === dependentTarget.recordId)?.path;
+    if (!dependentRecordPath) {
+      throw new Error(`missing fixture record for ${dependentTarget.recordId}`);
+    }
+    await fs.writeJson(dependentRecordPath, dependentRecord, { spaces: 2 });
+  }
+
+  return {
+    builder,
+    target,
+    runtime: {
+      env: createInstallStateFixtureEnv(builder.paths),
+      p7Targets: [{
+        pluginName: target.location.plugin,
+        platform: target.location.platform,
+        scope: target.location.scope,
+        executionCwd: builder.paths.repoRoot,
+      }],
+    } as never,
+    cleanupCommand: `aw cleanup ${target.location.plugin} -p ${target.location.platform} -s ${target.location.scope}`,
+  };
+}
+
+async function createResidualDiagnoseFixtureWithLocalDependent() {
+  const builder = await createMinimalPluginInstallStateFixtureBuilder(
+    await makeTempDir('aw-diagnose-residual-local-dependent-'),
+  );
+  const target = builder.createTarget({
+    pluginName: 'residual-local-target',
+    platform: 'codex',
+    scope: 'project',
+    projectKey: builder.paths.repoRoot,
+  });
+  await builder.writeRepoArtifact(target);
+  await builder.writeDiagnosticCache(target);
+
+  const dependentTarget = builder.createTarget({
+    pluginName: 'residual-local-consumer',
+    platform: 'codex',
+    scope: 'project',
+    projectKey: builder.paths.repoRoot,
+  });
+  const dependentRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(dependentTarget));
+  dependentRecord.record.dependencyEdges = [{
+    dependency: target.location,
+    declaration: {
+      name: target.location.plugin,
+    },
+  }];
+  await fs.writeJson(
+    path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${dependentTarget.recordId}.json`),
+    dependentRecord,
+    { spaces: 2 },
+  );
+
+  return {
+    builder,
+    target,
+    runtime: {
+      env: createInstallStateFixtureEnv(builder.paths),
+      p7Targets: [{
+        pluginName: target.location.plugin,
+        platform: target.location.platform,
+        scope: target.location.scope,
+        projectKey: target.location.projectKey ?? undefined,
+        executionCwd: builder.paths.repoRoot,
+      }],
+    } as never,
+    cleanupCommand: `aw cleanup ${target.location.plugin} -p ${target.location.platform} -s ${target.location.scope}`,
+  };
 }
 
 async function createProjectPluginMeta(options: {
@@ -688,25 +819,9 @@ describe('diagnose P7', () => {
   });
 
   it('offers cleanup for config-only Codex native residue when dependency index is missing', async () => {
-    const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-diagnose-config-only-native-residue-'),
-    );
-    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
-    await fs.outputFile(
-      path.join(builder.paths.codexHome, 'config.toml'),
-      `[plugins."${target.pluginId}"]\nenabled = true\n`,
-      'utf8',
-    );
-
-    const runtime = {
-      env: createInstallStateFixtureEnv(builder.paths),
-      p7Targets: [{
-        pluginName: target.location.plugin,
-        platform: target.location.platform,
-        scope: target.location.scope,
-        executionCwd: builder.paths.repoRoot,
-      }],
-    } as never;
+    const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+      dependencyIndexState: 'missing',
+    });
 
     const json = await diagnoseCommand(
       [target.location.plugin],
@@ -724,7 +839,7 @@ describe('diagnose P7', () => {
       state: 'externallyManaged',
       cleanupAvailable: true,
     });
-    expect(payload.locations[0]?.nextSteps).toContain('aw cleanup git-commit -p codex -s user');
+    expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
 
     const human = await diagnoseCommand(
       [target.location.plugin],
@@ -732,7 +847,115 @@ describe('diagnose P7', () => {
       runtime,
     );
     expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
-    expect(human.output).toContain('aw cleanup git-commit -p codex -s user');
+    expect(human.output).toContain(cleanupCommand);
+  });
+
+  it('does not offer direct cleanup for config-only Codex native residue when dependency index is corrupted or untrusted', async () => {
+    for (const dependencyIndexState of ['corrupted', 'staleReference'] as const) {
+      const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+        dependencyIndexState,
+      });
+
+      const json = await diagnoseCommand(
+        [target.location.plugin],
+        { cwd: builder.paths.repoRoot, json: true },
+        runtime,
+      );
+      const payload = JSON.parse(json.output) as {
+        locations: Array<{
+          state: string;
+          cleanupAvailable: boolean;
+          nextSteps: string[];
+        }>;
+      };
+      expect(payload.locations[0]).toMatchObject({
+        state: 'externallyManaged',
+        cleanupAvailable: false,
+      });
+      expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+
+      const human = await diagnoseCommand(
+        [target.location.plugin],
+        { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+        runtime,
+      );
+      expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+      expect(human.output).not.toContain(cleanupCommand);
+    }
+  });
+
+  it('does not offer config-only Codex cleanup when a readable local scoped record still depends on it', async () => {
+    const { builder, target, runtime, cleanupCommand } = await createConfigOnlyCodexNativeResidueDiagnoseFixture({
+      dependencyIndexState: 'missing',
+      localDependent: true,
+    });
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        cleanupAvailable: boolean;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'externallyManaged',
+      cleanupAvailable: false,
+    });
+    expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).not.toContain(cleanupCommand);
+  });
+
+  it('does not offer residual cleanup when a readable same-scope record still depends on it', async () => {
+    const { builder, target, runtime, cleanupCommand } = await createResidualDiagnoseFixtureWithLocalDependent();
+
+    const json = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      runtime,
+    );
+    const payload = JSON.parse(json.output) as {
+      locations: Array<{
+        state: string;
+        summary: string;
+        cleanupAvailable: boolean;
+        dependents: Array<{ plugin: string }>;
+        nextSteps: string[];
+      }>;
+    };
+    expect(payload.locations[0]).toMatchObject({
+      state: 'residual',
+      summary: '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。',
+      cleanupAvailable: false,
+    });
+    expect(payload.locations[0]?.dependents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          plugin: 'residual-local-consumer',
+        }),
+      ]),
+    );
+    expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
+
+    const human = await diagnoseCommand(
+      [target.location.plugin],
+      { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'project' },
+      runtime,
+    );
+    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).toContain('当前还有其它安装在依赖它，不能直接清理。');
+    expect(human.output).not.toContain(cleanupCommand);
   });
 
   it('runs the renderer in diagnose --deep without rewriting the diagnostic cache', async () => {

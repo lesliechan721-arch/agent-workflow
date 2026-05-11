@@ -356,4 +356,58 @@ describe('cleanup command (P9)', () => {
     ).toBeGreaterThan(0);
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
   });
+
+  it('rejects config-only Codex cleanup when a readable local scoped record still depends on it', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    dependentRecord.record.dependencyEdges = [{
+      dependency: target.location,
+      declaration: {
+        name: target.location.plugin,
+      },
+    }];
+    const dependentRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${dependentTarget.recordId}.json`,
+    );
+    await fs.writeJson(dependentRecordPath, dependentRecord, { spaces: 2 });
+
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          adapters: {
+            codex: new FakeCodexNativeCleanupAdapter(configPath),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow(/verified dependent/);
+  });
 });

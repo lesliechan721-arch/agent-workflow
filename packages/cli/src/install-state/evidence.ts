@@ -146,6 +146,7 @@ export interface DependencyIndexCoverageEvidence {
 export interface DependencyProjectionEvidence {
   autoInstalled: boolean;
   dependents: PluginLocation[];
+  localScopedDependents: PluginLocation[];
   unusedDependencyHint: boolean;
   dependencyHealth: DependencyHealthEvidence[];
   coverage: DependencyIndexCoverageEvidence;
@@ -508,7 +509,11 @@ async function inspectScopedRecords(options: {
   cwd: string;
   location: PluginLocation;
   env: NodeJS.ProcessEnv;
-}): Promise<Array<{ location: PluginLocation; path: string }>> {
+}): Promise<Array<{
+  location: PluginLocation;
+  path: string;
+  dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
+}>> {
   const recordsDir = path.join(
     getInstallStatePrivateRoot(options.cwd, options.location, options.env),
     'records',
@@ -520,7 +525,11 @@ async function inspectScopedRecords(options: {
   const entries = (await fs.readdir(recordsDir))
     .filter((entry) => entry.endsWith('.json'))
     .sort();
-  const output: Array<{ location: PluginLocation; path: string }> = [];
+  const output: Array<{
+    location: PluginLocation;
+    path: string;
+    dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
+  }> = [];
   for (const entry of entries) {
     const recordPath = path.join(recordsDir, entry);
     const result = await readInstallRecordFileAt(recordPath, { env: options.env });
@@ -535,6 +544,7 @@ async function inspectScopedRecords(options: {
             : {}),
         },
         path: recordPath,
+        dependencyEdges: result.value.record.dependencyEdges,
       });
     }
   }
@@ -644,6 +654,10 @@ async function buildDependencyProjection(options: {
   for (const scopedRecord of scopedRecords) {
     verifiedLocations.push(scopedRecord.location);
   }
+  const localScopedDependents = dedupeLocations(scopedRecords
+    .filter((entry) => !sameLocation(entry.location, options.location))
+    .filter((entry) => entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
+    .map((entry) => entry.location));
 
   let trusted = false;
   if (options.inspection.status === 'missing') {
@@ -675,14 +689,15 @@ async function buildDependencyProjection(options: {
     ? 'revisitRelatedProjects'
     : null;
 
-  let dependents: PluginLocation[] = [];
+  let indexedDependents: PluginLocation[] = [];
   const inspection = options.inspection;
   if (inspection.status === 'ok' && trusted) {
-    dependents = inspection.value.records
+    indexedDependents = inspection.value.records
       .filter((entry, index) => inspection.references[index]?.status === 'verified')
       .filter((entry) => entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
       .map((entry) => entry.location);
   }
+  const dependents = dedupeLocations([...indexedDependents, ...localScopedDependents]);
 
   const autoInstalled = options.record?.record.installSource.kind === 'dependency';
   const unusedDependencyHint = Boolean(
@@ -695,7 +710,8 @@ async function buildDependencyProjection(options: {
 
   return {
     autoInstalled: Boolean(autoInstalled),
-    dependents: dedupeLocations(dependents),
+    dependents,
+    localScopedDependents,
     unusedDependencyHint,
     dependencyHealth,
     coverage: {

@@ -79,6 +79,26 @@ export function isCodexUserConfigOnlyResidueCleanupCandidate(
   );
 }
 
+function canExposeCodexUserConfigOnlyResidueCleanup(
+  evidence: InstallEvidence,
+): boolean {
+  if (!isCodexUserConfigOnlyResidueCleanupCandidate(evidence)) {
+    return false;
+  }
+
+  if (hasVerifiedDependents(evidence)) {
+    return false;
+  }
+
+  const coverage = evidence.dependencyIndex.projection.coverage;
+  return coverage.coverageTrusted
+    || (coverage.reasons.length === 1 && coverage.reasons[0] === 'indexMissing');
+}
+
+function hasVerifiedDependents(evidence: InstallEvidence): boolean {
+  return evidence.dependencyIndex.projection.dependents.length > 0;
+}
+
 function addArtifactIssue(
   issues: ProjectInstallIssue[],
   code: ProjectInstallIssue['code'],
@@ -301,9 +321,11 @@ export function projectInstallState(
     unusedDependencyHint: evidence.dependencyIndex.projection.unusedDependencyHint,
     repairAvailable: installRecordPresent || evidence.nativeTransaction.present,
     cleanupAvailable:
-      kind === 'needsRepair' ||
-      kind === 'residual' ||
-      isCodexUserConfigOnlyResidueCleanupCandidate(evidence),
+      (
+        (kind === 'needsRepair' || kind === 'residual')
+        && !hasVerifiedDependents(evidence)
+      ) ||
+      canExposeCodexUserConfigOnlyResidueCleanup(evidence),
     adoptExistingAvailable: kind === 'adoptable',
     sharedRuntimeOwnerPresent: evidence.sharedRuntimeOwner.read.status === 'ok',
     sharedRuntimeNeedsTakeover: evidence.sharedRuntimeOwner.needsTakeover,

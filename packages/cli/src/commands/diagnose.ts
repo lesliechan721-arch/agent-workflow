@@ -984,6 +984,9 @@ function createSummaryText(options: {
     return '发现了一份可认领的已有项目安装。';
   }
   if (projection.kind === 'residual') {
+    if (projection.dependents.length > 0) {
+      return '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。';
+    }
     return '发现残留文件或本机状态，建议清理后再继续。';
   }
   if (projection.kind === 'externallyManaged') {
@@ -1165,7 +1168,7 @@ function createNextSteps(options: {
   } else if (projection.kind === 'adoptable') {
     steps.push(`aw repair ${args} --adopt-existing`);
     steps.push(`aw diagnose ${args} --deep`);
-  } else if (projection.kind === 'residual') {
+  } else if (projection.kind === 'residual' && projection.cleanupAvailable) {
     steps.push(`aw cleanup ${args}`);
   } else if (projection.kind === 'externallyManaged' && projection.cleanupAvailable) {
     steps.push(`aw cleanup ${args}`);

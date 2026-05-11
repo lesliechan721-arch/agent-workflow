@@ -715,6 +715,79 @@ describe('status P7', () => {
     );
   });
 
+  it('folds readable same-scope dependents into removal hints even when the dependency index misses them', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-status-local-dependent-projection-'),
+    );
+    const target = await writeInstalledProjectRecord({
+      builder,
+      pluginName: 'local-dependent-target',
+      installSource: { kind: 'dependency', explicitlyRequested: false },
+    });
+    const localConsumer = await writeInstalledProjectRecord({
+      builder,
+      pluginName: 'local-dependent-consumer',
+      dependencyEdges: [{
+        dependency: target.target.location,
+        declaration: {
+          name: target.target.location.plugin,
+        },
+      }],
+    });
+    await builder.writeDependencyIndex([{ target: target.target, record: target.record }]);
+
+    const payload = JSON.parse((await statusCommand(
+      [target.target.location.plugin],
+      { cwd: builder.paths.repoRoot, json: true },
+      {
+        env: createInstallStateFixtureEnv(builder.paths),
+        p7Targets: [{
+          pluginName: target.target.location.plugin,
+          platform: target.target.location.platform,
+          scope: target.target.location.scope,
+          projectKey: target.target.location.projectKey ?? undefined,
+          executionCwd: builder.paths.repoRoot,
+        }],
+      } as never,
+    )).output) as {
+      locations: Array<{
+        plugin: string;
+        dependents: Array<{ plugin: string }>;
+        autoInstalled: boolean;
+        unusedDependencyHint: boolean;
+      }>;
+      consoleItems: Array<{
+        pluginName: string;
+        locations: Array<{
+          reasonCodes: string[];
+          detailHints?: string[];
+          actions: Array<{ kind: string; label: string }>;
+        }>;
+      }>;
+    };
+    const location = payload.locations[0];
+    const consoleItem = payload.consoleItems.find((item) => item.pluginName === target.target.location.plugin);
+
+    expect(location).toMatchObject({
+      plugin: 'local-dependent-target',
+      autoInstalled: true,
+      unusedDependencyHint: false,
+    });
+    expect(location.dependents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          plugin: localConsumer.target.location.plugin,
+        }),
+      ]),
+    );
+    expect(consoleItem?.locations[0]?.reasonCodes).toContain('dependencyProtected');
+    expect(consoleItem?.locations[0]?.reasonCodes).not.toContain('autoDependencyRemovable');
+    expect(consoleItem?.locations[0]?.detailHints).toEqual(
+      expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
+    );
+    expect(consoleItem?.locations[0]?.actions.find((action) => action.kind === 'runUninstall')?.label).toBe('卸载');
+  });
+
   it('shows recovery details for untrusted dependency index coverage and suppresses unused dependency hints', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
       await makeTempDir('aw-status-untrusted-index-'),

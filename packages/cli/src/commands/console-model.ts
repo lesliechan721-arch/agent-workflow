@@ -765,9 +765,11 @@ function buildInstallStateActions(
   }
 
   if (installState.kind === 'residual') {
-    actions.push(action('diagnoseCommand', '清理残留', target, {
-      command: cleanupCommand,
-    }));
+    if (installState.cleanupAvailable && !reasons.includes('ownerConflict')) {
+      actions.push(action('diagnoseCommand', '清理残留', target, {
+        command: cleanupCommand,
+      }));
+    }
     actions.push(diagnose);
     return dedupeActions(actions);
   }
