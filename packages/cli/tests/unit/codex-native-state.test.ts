@@ -40,6 +40,13 @@ function getCacheVersionPath(
   return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, version);
 }
 
+function getInstalledManifestPath(
+  env: NodeJS.ProcessEnv,
+  pluginName: string,
+): string {
+  return path.join(env.AW_CODEX_HOME!, 'plugins', `${pluginName}@aw`, 'manifest.json');
+}
+
 async function writeActiveCache(
   env: NodeJS.ProcessEnv,
   pluginName: string,
@@ -105,6 +112,28 @@ describe('codex-native-state', () => {
         pluginEnabled: false,
         pluginInstalled: true,
         activeCachePath,
+      },
+    ]);
+  });
+
+  it('detects installed-manifest residue as native evidence', async () => {
+    const env = await makeEnv();
+    const installedManifestPath = getInstalledManifestPath(env, 'manifest-only');
+    await fs.outputFile(installedManifestPath, '{}\n', 'utf8');
+
+    await expect(readCodexNativePluginState('manifest-only', env)).resolves.toMatchObject({
+      configEntryPresent: false,
+      pluginEnabled: false,
+      pluginInstalled: false,
+      installedManifestPresent: true,
+      installedManifestPath,
+      cacheStatus: 'missing',
+    });
+
+    await expect(listCodexNativeEvidence(env)).resolves.toMatchObject([
+      {
+        pluginName: 'manifest-only',
+        installedManifestPresent: true,
       },
     ]);
   });
@@ -206,6 +235,7 @@ describe('codex-native-state', () => {
     const configPath = getConfigPath(env);
 
     await upsertCodexPluginEnabledFile(configPath, 'disabled-residue@aw', { enabled: false });
+    await fs.outputFile(getInstalledManifestPath(env, 'manifest-residue'), '{}\n', 'utf8');
     await writeActiveCache(env, 'cache-residue');
     await fs.ensureDir(getCacheVersionPath(env, 'invalid-cache-residue', '0.1.0'));
     await writeActiveCache(env, 'ambiguous-cache-residue', '0.1.0');
@@ -223,6 +253,14 @@ describe('codex-native-state', () => {
       state: {
         configEntryPresent: true,
         pluginEnabled: false,
+        pluginInstalled: false,
+      },
+    });
+    await expect(checkCodexNativeUninstallPostCheck('manifest-residue', env)).resolves.toMatchObject({
+      ok: false,
+      state: {
+        configEntryPresent: false,
+        installedManifestPresent: true,
         pluginInstalled: false,
       },
     });
@@ -269,6 +307,7 @@ describe('codex-native-state', () => {
 
     await upsertCodexPluginEnabledFile(configPath, 'enabled-only@aw', { enabled: true });
     await writeActiveCache(env, 'cache-only');
+    await fs.outputFile(getInstalledManifestPath(env, 'manifest-only'), '{}\n', 'utf8');
 
     await expect(assessCodexMarketplaceCleanup(env)).resolves.toMatchObject({
       marketplaceConfigPresent: true,
@@ -281,6 +320,10 @@ describe('codex-native-state', () => {
         {
           pluginName: 'enabled-only',
           pluginEnabled: true,
+        },
+        {
+          pluginName: 'manifest-only',
+          installedManifestPresent: true,
         },
       ],
     });

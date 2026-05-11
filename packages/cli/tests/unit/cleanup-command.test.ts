@@ -115,6 +115,7 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
   constructor(
     private readonly configPath: string,
     private readonly cacheRootPath?: string,
+    private readonly installRootPath?: string,
   ) {
     super();
   }
@@ -125,6 +126,9 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
     if (this.cacheRootPath) {
       await fs.remove(this.cacheRootPath);
     }
+    if (this.installRootPath) {
+      await fs.remove(this.installRootPath);
+    }
   }
 
   async uninstallUserNativePluginById(pluginNameOrId: string): Promise<void> {
@@ -132,6 +136,9 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
     await removeCodexPluginEnabledFile(this.configPath, pluginNameOrId);
     if (this.cacheRootPath) {
       await fs.remove(this.cacheRootPath);
+    }
+    if (this.installRootPath) {
+      await fs.remove(this.installRootPath);
     }
   }
 }
@@ -364,6 +371,43 @@ describe('cleanup command (P9)', () => {
       codex.uninstallUserNativePluginByIdCalls.length + codex.uninstallPluginCalls.length,
     ).toBeGreaterThan(0);
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+  });
+
+  it('prefers direct Codex native cleanup for user-scope native residue even when plugin metadata is available', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'git-commit';
+    const target = builder.createTarget({ pluginName, platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const codex = new FakeCodexNativeCleanupAdapter(configPath);
+    await cleanupCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex,
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(codex.uninstallUserNativePluginByIdCalls).toEqual([`${pluginName}@aw`]);
+    expect(codex.uninstallPluginCalls).toEqual([]);
   });
 
   it('cleans cache-backed Codex native residue when dependency index is missing', async () => {

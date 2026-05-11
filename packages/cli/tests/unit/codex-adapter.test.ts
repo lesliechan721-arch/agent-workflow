@@ -2584,6 +2584,7 @@ describe('CodexAdapter', () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await fs.ensureDir(env.AW_HOME!);
     const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    const installedManifestPath = path.join(env.AW_CODEX_HOME!, 'plugins', 'git-commit@aw', 'manifest.json');
     const canonicalAwHome = await fs.realpath(env.AW_HOME!);
     await upsertCodexMarketplaceFile(configPath, 'aw', {
       source: canonicalAwHome,
@@ -2597,6 +2598,7 @@ describe('CodexAdapter', () => {
       '{}\n',
       'utf8',
     );
+    await fs.outputFile(installedManifestPath, '{}\n', 'utf8');
     await writeInstalledLedger(
       {
         ...createAvailableLedger(),
@@ -2662,6 +2664,7 @@ describe('CodexAdapter', () => {
         plugins: {},
       },
     });
+    await expect(fs.pathExists(installedManifestPath)).resolves.toBe(false);
     await expect(
       fs.pathExists(resolveCodexNativeCacheVersionPath(env, plugin.manifest.name)),
     ).resolves.toBe(false);
@@ -2791,6 +2794,8 @@ describe('CodexAdapter', () => {
       '{}\n',
       'utf8',
     );
+    const installedManifestPath = path.join(env.AW_CODEX_HOME!, 'plugins', 'git-commit@aw', 'manifest.json');
+    await fs.outputFile(installedManifestPath, '{}\n', 'utf8');
     await writeCodexNativeRecoveryBreadcrumb({
       pluginName: 'git-commit',
       state: 'post_check_failed',
@@ -2826,6 +2831,7 @@ describe('CodexAdapter', () => {
         marketplaces: {},
       },
     });
+    await expect(fs.pathExists(installedManifestPath)).resolves.toBe(false);
   });
 
   it('does not call marketplace add or app-server for Codex project scope installs', async () => {

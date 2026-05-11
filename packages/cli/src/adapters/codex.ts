@@ -79,6 +79,7 @@ import {
 import {
   checkCodexNativeInstallPostCheck,
   checkCodexNativeUninstallPostCheck,
+  getCodexNativePluginInstallRootPath,
   hasCodexNativeCacheEvidence,
   hasCodexNativeStateEvidence,
   listCodexNativeEvidence,
@@ -472,13 +473,17 @@ function formatCodexNativeCacheResidue(
 function describeCodexNativeUninstallPostCheckFailure(
   state: Awaited<ReturnType<typeof checkCodexNativeUninstallPostCheck>>['state'],
 ): string {
-  if (state.configEntryPresent && hasCodexNativeCacheEvidence(state)) {
-    return `config entry 与 native cache 残留都仍然存在（config: ${state.configPath}；${formatCodexNativeCacheResidue(state)}）。`;
-  }
+  const residues: string[] = [];
   if (state.configEntryPresent) {
-    return `目标 config entry 仍然存在（${state.configPath}）。`;
+    residues.push(`目标 config entry 仍然存在（${state.configPath}）。`);
   }
-  return formatCodexNativeCacheResidue(state);
+  if (state.installedManifestPresent) {
+    residues.push(`native installed manifest 仍然存在（${state.installedManifestPath}）。`);
+  }
+  if (hasCodexNativeCacheEvidence(state)) {
+    residues.push(formatCodexNativeCacheResidue(state));
+  }
+  return residues.join('；');
 }
 
 function hasCodexSharedNativeRefs(
@@ -3531,6 +3536,11 @@ export class CodexAdapter implements PlatformAdapter {
       durationMs: Date.now() - uninstallStartedAt,
       nativeWriteSucceeded: true,
     });
+
+    // Codex app-server may leave the AW-owned install root behind even after a
+    // successful uninstall RPC. Remove that root here so cleanup/status share
+    // the same native residue baseline.
+    await fs.remove(getCodexNativePluginInstallRootPath(pluginId, this.env)).catch(() => undefined);
 
     await this.emitNativePostCheckEvent({
       plugin: pluginName,

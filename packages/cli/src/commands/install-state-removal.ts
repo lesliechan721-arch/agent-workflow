@@ -698,19 +698,26 @@ export async function cleanupInstallStateTarget(options: {
     target: options.target,
     recordFile: recordRead.status === 'ok' ? recordRead.value : null,
   });
-  if (options.runtime.adapters?.[options.location.platform] && options.location.scope === 'user') {
-    if (pluginMeta) {
-      await options.runtime.adapters[options.location.platform]!.uninstallPlugin(pluginMeta, options.location.scope);
-    } else if (typeof (options.runtime.adapters[options.location.platform] as PlatformAdapter & {
-      uninstallUserNativePluginById?: (pluginNameOrId: string) => Promise<void>;
-    }).uninstallUserNativePluginById === 'function') {
-      await (options.runtime.adapters[options.location.platform] as PlatformAdapter & {
-        uninstallUserNativePluginById: (pluginNameOrId: string) => Promise<void>;
-      }).uninstallUserNativePluginById(`${options.pluginName}@aw`);
+  const platformAdapter = options.runtime.adapters?.[options.location.platform];
+  const nativeCleanupAdapter = platformAdapter as PlatformAdapter & {
+    uninstallUserNativePluginById?: (pluginNameOrId: string) => Promise<void>;
+  } | undefined;
+  const preferDirectCodexUserNativeCleanup =
+    options.location.platform === 'codex' &&
+    options.location.scope === 'user' &&
+    evidence.platform.codexNative?.anyNativeEvidence === true &&
+    typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function';
+  if (platformAdapter && options.location.scope === 'user') {
+    if (preferDirectCodexUserNativeCleanup) {
+      await nativeCleanupAdapter!.uninstallUserNativePluginById!(`${options.pluginName}@aw`);
+    } else if (pluginMeta) {
+      await platformAdapter.uninstallPlugin(pluginMeta, options.location.scope);
+    } else if (typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function') {
+      await nativeCleanupAdapter.uninstallUserNativePluginById(`${options.pluginName}@aw`);
     }
   }
-  if (pluginMeta && options.runtime.adapters?.[options.location.platform]) {
-    await options.runtime.adapters[options.location.platform]!.uninstallExtensions(
+  if (pluginMeta && platformAdapter) {
+    await platformAdapter.uninstallExtensions(
       pluginMeta,
       options.location.scope,
       recordRead.status === 'ok'

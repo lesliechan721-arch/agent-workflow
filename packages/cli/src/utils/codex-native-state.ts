@@ -18,6 +18,9 @@ export interface CodexNativePluginState {
   pluginName: string;
   pluginId: `${string}@aw`;
   configPath: string;
+  installRootPath: string;
+  installedManifestPath: string;
+  installedManifestPresent: boolean;
   cacheRootPath: string;
   configEntryPresent: boolean;
   pluginEnabled: boolean;
@@ -54,6 +57,12 @@ function buildPluginId(pluginName: string): `${string}@aw` {
   return `${pluginName}@${MARKETPLACE_NAME}`;
 }
 
+function normalizePluginId(pluginNameOrId: string): `${string}@aw` {
+  return pluginNameOrId.endsWith(`@${MARKETPLACE_NAME}`)
+    ? pluginNameOrId as `${string}@aw`
+    : buildPluginId(pluginNameOrId);
+}
+
 function getCodexConfigPath(env: NodeJS.ProcessEnv): string {
   return path.join(getCodexHome(env), 'config.toml');
 }
@@ -67,6 +76,20 @@ export function getCodexNativePluginCacheRootPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return path.join(getCodexMarketplaceCacheRoot(env), pluginName);
+}
+
+export function getCodexNativePluginInstallRootPath(
+  pluginNameOrId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(getCodexHome(env), 'plugins', normalizePluginId(pluginNameOrId));
+}
+
+export function getCodexNativePluginInstalledManifestPath(
+  pluginNameOrId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(getCodexNativePluginInstallRootPath(pluginNameOrId, env), 'manifest.json');
 }
 
 function stripMarketplaceSuffix(pluginId: string): string | null {
@@ -83,7 +106,12 @@ export function hasCodexNativeCacheEvidence(state: CodexNativePluginState): bool
 }
 
 export function hasCodexNativeStateEvidence(state: CodexNativePluginState): boolean {
-  return state.pluginEnabled || state.pluginInstalled || hasCodexNativeCacheEvidence(state);
+  return (
+    state.pluginEnabled ||
+    state.pluginInstalled ||
+    state.installedManifestPresent ||
+    hasCodexNativeCacheEvidence(state)
+  );
 }
 
 async function isValidCodexCacheVersionDir(versionPath: string): Promise<boolean> {
@@ -202,14 +230,22 @@ export async function readCodexNativePluginState(
   const configPath = getCodexConfigPath(env);
   const config = await readCodexConfigFile(configPath);
   const pluginSnapshot = config.snapshot.plugins[pluginId];
+  const installRootPath = getCodexNativePluginInstallRootPath(pluginId, env);
+  const installedManifestPath = getCodexNativePluginInstalledManifestPath(pluginId, env);
+  const [cacheState, installedManifestPresent] = await Promise.all([
+    inspectCodexActiveCache(pluginName, env),
+    fs.pathExists(installedManifestPath),
+  ]);
   const configEntryPresent = pluginSnapshot !== undefined;
   const pluginEnabled = pluginSnapshot?.enabled === true;
-  const cacheState = await inspectCodexActiveCache(pluginName, env);
 
   return {
     pluginName,
     pluginId,
     configPath,
+    installRootPath,
+    installedManifestPath,
+    installedManifestPresent,
     configEntryPresent,
     pluginEnabled,
     ...cacheState,
@@ -244,6 +280,25 @@ export async function listCodexNativeEvidence(
     // Ignore missing cache roots.
   }
 
+  const installedPluginsRoot = path.join(getCodexHome(env), 'plugins');
+  try {
+    const installEntries = await fs.readdir(installedPluginsRoot, { withFileTypes: true });
+    for (const entry of installEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const pluginName = stripMarketplaceSuffix(entry.name);
+      if (!pluginName) {
+        continue;
+      }
+      if (await fs.pathExists(path.join(installedPluginsRoot, entry.name, 'manifest.json'))) {
+        pluginNames.add(pluginName);
+      }
+    }
+  } catch {
+    // Ignore missing install roots.
+  }
+
   const states = await Promise.all(
     [...pluginNames].sort((left, right) => left.localeCompare(right)).map((pluginName) =>
       readCodexNativePluginState(pluginName, env),
@@ -270,7 +325,7 @@ export async function checkCodexNativeUninstallPostCheck(
 ): Promise<CodexNativePostCheckResult> {
   const state = await readCodexNativePluginState(pluginName, env);
   return {
-    ok: !state.configEntryPresent && !hasCodexNativeCacheEvidence(state),
+    ok: !state.configEntryPresent && !state.installedManifestPresent && !hasCodexNativeCacheEvidence(state),
     state,
   };
 }
