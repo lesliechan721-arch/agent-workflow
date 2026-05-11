@@ -222,6 +222,130 @@ async function projectStateWithUnindexedLocalDependent(
   };
 }
 
+async function writeDynamicAgentRoleProjectionFixture(options: {
+  state?: 'present' | 'disabled';
+  writeRegistration?: boolean;
+  writeRoleFile?: boolean;
+  registrationRelativePath?: string;
+} = {}) {
+  const builder = await createMinimalPluginInstallStateFixtureBuilder(
+    await makeTempDir('aw-install-state-dynamic-role-digest-'),
+  );
+  const target = builder.createTarget({ pluginName: 'codex-explore', platform: 'codex', scope: 'project' });
+  const roleKey = 'codex-explore-agent';
+  const description = 'Read-only code exploration role.';
+  const configPath = path.join(builder.paths.repoRoot, '.codex', 'config.toml');
+  const roleRelativePath = 'agents/aw-codex-explore-codex-explore-agent.toml';
+  const rolePath = path.join(builder.paths.repoRoot, '.codex', roleRelativePath);
+  const roleContent = [
+    `name = "${roleKey}"`,
+    `description = "${description}"`,
+    'developer_instructions = "Read only."',
+    'model = "gpt-5.4-mini"',
+    'model_reasoning_effort = "medium"',
+    '',
+  ].join('\n');
+  const state = options.state ?? 'present';
+  const contentDigest = state === 'present'
+    ? createGeneratedArtifactContentDigest({
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey,
+      registration: { description },
+      roleFile: roleContent,
+    })
+    : createGeneratedArtifactContentDigest({
+      target: 'codex.agentRole',
+      state: 'disabled',
+      roleKey,
+      disabledReason: null,
+    });
+
+  if (options.writeRegistration !== false) {
+    await fs.outputFile(
+      configPath,
+      [
+        `[agents.${roleKey}]`,
+        `description = "${description}"`,
+        `config_file = ${JSON.stringify(options.registrationRelativePath ?? roleRelativePath)}`,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+  }
+  if (options.writeRoleFile !== false) {
+    await fs.outputFile(rolePath, roleContent, 'utf8');
+  }
+
+  const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+  const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+  record.record.artifacts = [{
+    kind: 'agent',
+    platform: 'codex',
+    path: rolePath,
+    paths: [configPath, rolePath],
+    artifactKey: roleKey,
+    id: 'codex-explore-agent-role',
+    target: 'codex.agentRole',
+    roleKey,
+    state,
+    configDigest: 'config:role',
+    contentDigest,
+  }];
+  await fs.writeJson(
+    path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+    record,
+    { spaces: 2 },
+  );
+  await builder.writeProjectIdentity(target);
+  await builder.writeDiagnosticCache(target, {
+    version: 1,
+    recordId: target.recordId,
+    location: target.location,
+    updatedAt: target.timestamps.updatedAt,
+    artifacts: [{
+      id: 'codex-explore-agent-role',
+      target: 'codex.agentRole',
+      state,
+      artifactKey: roleKey,
+      roleKey,
+      configDigest: 'config:role',
+      contentDigest,
+    }],
+  });
+  await builder.writeDependencyIndex([{ target, record }]);
+
+  const env = createInstallStateFixtureEnv(builder.paths);
+  const currentCatalog: CurrentCatalogEvidenceInput = {
+    ...createCurrentCatalogForTarget(target),
+    artifacts: [],
+    dynamicArtifacts: [{
+      id: 'codex-explore-agent-role',
+      target: 'codex.agentRole',
+      state,
+      roleKey,
+      configDigest: 'config:role',
+      contentDigest,
+    }],
+  };
+  return {
+    builder,
+    target,
+    roleKey,
+    configPath,
+    rolePath,
+    roleContent,
+    async project() {
+      return projectInstallState(await collectInstallEvidence({
+        cwd: builder.paths.repoRoot,
+        location: target.location,
+        env,
+        currentCatalog,
+      }));
+    },
+  };
+}
+
 describe('projectInstallState', () => {
   it('covers the six default status classes', async () => {
     await expect(projectStateForScenario('installed')).resolves.toMatchObject({
@@ -479,104 +603,48 @@ describe('projectInstallState', () => {
   });
 
   it('recomputes dynamic codex.agentRole content digests from the registration and role file', async () => {
-    const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-dynamic-role-digest-'),
-    );
-    const target = builder.createTarget({ pluginName: 'codex-explore', platform: 'codex', scope: 'project' });
-    const roleKey = 'codex-explore-agent';
-    const description = '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。';
-    const configPath = path.join(builder.paths.repoRoot, '.codex', 'config.toml');
-    const rolePath = path.join(
-      builder.paths.repoRoot,
-      '.codex',
-      'agents',
-      'aw-codex-explore-codex-explore-agent.toml',
-    );
-    const roleContent = [
-      `name = "${roleKey}"`,
-      `description = "${description}"`,
-      'developer_instructions = "Read only."',
-      'model = "gpt-5.4-mini"',
-      'model_reasoning_effort = "medium"',
-      '',
-    ].join('\n');
-    const contentDigest = createGeneratedArtifactContentDigest({
-      target: 'codex.agentRole',
-      state: 'present',
-      roleKey,
-      registration: { description },
-      roleFile: roleContent,
-    });
-
-    await fs.outputFile(
-      configPath,
-      [
-        `[agents.${roleKey}]`,
-        `description = "${description}"`,
-        'config_file = "agents/aw-codex-explore-codex-explore-agent.toml"',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    await fs.outputFile(rolePath, roleContent, 'utf8');
-
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
-    record.record.artifacts = [{
-      kind: 'agent',
-      platform: 'codex',
-      path: rolePath,
-      paths: [configPath, rolePath],
-      artifactKey: roleKey,
-      id: 'codex-explore-agent-role',
-      target: 'codex.agentRole',
-      roleKey,
-      state: 'present',
-      configDigest: 'config:role',
-      contentDigest,
-    }];
-    await fs.writeJson(
-      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
-      record,
-      { spaces: 2 },
-    );
-    await builder.writeProjectIdentity(target);
-    await builder.writeDiagnosticCache(target, {
-      version: 1,
-      recordId: target.recordId,
-      location: target.location,
-      updatedAt: target.timestamps.updatedAt,
-      artifacts: [{
-        id: 'codex-explore-agent-role',
-        target: 'codex.agentRole',
-        state: 'present',
-        artifactKey: roleKey,
-        roleKey,
-        configDigest: 'config:role',
-        contentDigest,
-      }],
-    });
-    await builder.writeDependencyIndex([{ target, record }]);
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
-      env: createInstallStateFixtureEnv(builder.paths),
-      currentCatalog: {
-        ...createCurrentCatalogForTarget(target),
-        artifacts: [],
-        dynamicArtifacts: [{
-          id: 'codex-explore-agent-role',
-          target: 'codex.agentRole',
-          state: 'present',
-          roleKey,
-          configDigest: 'config:role',
-          contentDigest,
-        }],
-      },
-    }));
+    const fixture = await writeDynamicAgentRoleProjectionFixture();
+    const projection = await fixture.project();
 
     expect(projection.kind).toBe('installed');
     expect(projection.issues.map((issue) => issue.code)).not.toContain('dynamicContentDrift');
+  });
+
+  it.each([
+    ['registration residue', { writeRoleFile: false }],
+    ['role layer residue', { writeRegistration: false }],
+  ] as const)(
+    'keeps disabled dynamic codex.agentRole partial cleanup in needsRepair with %s',
+    async (_label, options) => {
+      const fixture = await writeDynamicAgentRoleProjectionFixture({
+        state: 'disabled',
+        ...options,
+      });
+      const projection = await fixture.project();
+
+      expect(projection.kind).toBe('needsRepair');
+      expect(projection.issues).toContainEqual(expect.objectContaining({
+        code: 'dynamicContentDrift',
+      }));
+    },
+  );
+
+  it('treats retargeted dynamic codex.agentRole registrations as drift', async () => {
+    const fixture = await writeDynamicAgentRoleProjectionFixture({
+      registrationRelativePath: 'agents/shadow.toml',
+    });
+    await fs.outputFile(
+      path.join(path.dirname(fixture.configPath), 'agents', 'shadow.toml'),
+      fixture.roleContent,
+      'utf8',
+    );
+
+    const projection = await fixture.project();
+
+    expect(projection.kind).toBe('needsRepair');
+    expect(projection.issues).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
   });
 
   it('projects fresh clone without identity and with current-catalog drift as residual instead of adoptable', async () => {

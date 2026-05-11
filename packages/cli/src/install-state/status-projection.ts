@@ -149,6 +149,24 @@ function findRawArtifactFile(
   return artifact.files.find((file) => path.normalize(file.path) === normalizedPath) ?? null;
 }
 
+function createCodexAgentRoleDriftDigest(options: {
+  roleKey: string;
+  reason: string;
+  roleLayerExists: boolean;
+  registrationExists: boolean;
+  registrationConfigFile?: string;
+}): string {
+  return createGeneratedArtifactContentDigest({
+    target: 'codex.agentRole',
+    state: 'drifted',
+    roleKey: options.roleKey,
+    reason: options.reason,
+    roleLayerExists: options.roleLayerExists,
+    registrationExists: options.registrationExists,
+    registrationConfigFile: options.registrationConfigFile ?? null,
+  });
+}
+
 function computeCodexAgentRoleDigest(
   artifact: RecordArtifactEvidence,
 ): string | null {
@@ -162,40 +180,72 @@ function computeCodexAgentRoleDigest(
     path.normalize(file.path) !== path.normalize(artifact.artifact.path) &&
     path.basename(file.path) === 'config.toml'
   );
+  let registration: ReturnType<typeof parseCodexConfig>['agents'][string] | undefined;
+  let registrationParseFailed = false;
+  if (configFile?.rawContent !== null && configFile?.rawContent !== undefined) {
+    try {
+      registration = parseCodexConfig(configFile.rawContent).agents[roleKey];
+    } catch {
+      registrationParseFailed = true;
+    }
+  }
 
   if (artifact.artifact.state === 'disabled') {
     const roleLayerStillExists = Boolean(roleFile?.exists);
-    let registrationStillExists = false;
-    if (configFile?.rawContent !== null && configFile?.rawContent !== undefined) {
-      try {
-        registrationStillExists = parseCodexConfig(configFile.rawContent).agents[roleKey] !== undefined;
-      } catch {
-        registrationStillExists = false;
-      }
-    }
-    if (!roleLayerStillExists && !registrationStillExists) {
+    const registrationStillExists = registration !== undefined;
+    if (!roleLayerStillExists && !registrationStillExists && !registrationParseFailed) {
       return null;
     }
-  }
-
-  if (!roleFile?.rawContent || !configFile?.rawContent) {
-    return null;
-  }
-
-  try {
-    const registration = parseCodexConfig(configFile.rawContent).agents[roleKey];
-    return createGeneratedArtifactContentDigest({
-      target: artifact.artifact.target,
-      state: 'present',
+    return createCodexAgentRoleDriftDigest({
       roleKey,
-      registration: {
-        description: registration?.description?.trim(),
-      },
-      roleFile: roleFile.rawContent,
+      reason: registrationParseFailed ? 'cleanupRegistrationUnreadable' : 'disabledCleanupIncomplete',
+      roleLayerExists: roleLayerStillExists,
+      registrationExists: registrationStillExists,
+      registrationConfigFile: registration?.configFile,
     });
-  } catch {
+  }
+
+  if (
+    roleFile?.rawContent === null ||
+    roleFile?.rawContent === undefined ||
+    configFile?.rawContent === null ||
+    configFile?.rawContent === undefined
+  ) {
     return null;
   }
+
+  if (registrationParseFailed || !registration) {
+    return createCodexAgentRoleDriftDigest({
+      roleKey,
+      reason: registrationParseFailed ? 'registrationUnreadable' : 'registrationMissing',
+      roleLayerExists: Boolean(roleFile.exists),
+      registrationExists: Boolean(registration),
+    });
+  }
+
+  const registeredRoleLayerPath = registration.configFile
+    ? path.normalize(path.resolve(path.dirname(configFile.path), registration.configFile))
+    : null;
+  const expectedRoleLayerPath = path.normalize(artifact.artifact.path);
+  if (registeredRoleLayerPath !== expectedRoleLayerPath) {
+    return createCodexAgentRoleDriftDigest({
+      roleKey,
+      reason: registeredRoleLayerPath ? 'registrationRetargeted' : 'registrationConfigFileMissing',
+      roleLayerExists: Boolean(roleFile.exists),
+      registrationExists: true,
+      registrationConfigFile: registration.configFile,
+    });
+  }
+
+  return createGeneratedArtifactContentDigest({
+    target: artifact.artifact.target,
+    state: 'present',
+    roleKey,
+    registration: {
+      description: registration.description?.trim(),
+    },
+    roleFile: roleFile.rawContent,
+  });
 }
 
 function computeDynamicArtifactDigest(
