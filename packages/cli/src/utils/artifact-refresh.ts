@@ -52,11 +52,17 @@ import type {
   DynamicArtifactDiagnosticEntry,
   InstallRecordArtifact,
   InstallRecordFile,
+  InstallStateReadResult,
   PluginLocation,
   ProjectArtifactIdentityArtifact,
   ProjectArtifactIdentityFile,
 } from '../install-state/types.js';
 import { resolveAwHome, resolveCodexPaths, resolveCodexProjectKey } from './paths.js';
+import { readPluginManifest } from './manifest.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from './plugin-scripts.js';
 import {
   getTrackingRecord,
   readTrackingManifest,
@@ -195,6 +201,94 @@ function createResolvedTarget(plugin: PluginMeta): ResolvedPluginTarget {
     currentPlugin: plugin,
     source: 'currentCatalog',
   };
+}
+
+function formatInstallRecordReadFailure(
+  recordRead: InstallStateReadResult<InstallRecordFile>,
+): string {
+  if (recordRead.status === 'ok') {
+    return '';
+  }
+
+  return `${recordRead.code}: ${recordRead.error}`;
+}
+
+function createHistoricalRefreshBundleError(options: {
+  pluginName: string;
+  scope: Scope;
+  reason: string;
+}): Error {
+  return new Error(
+    `无法使用 ${options.pluginName} (${options.scope}) 的 historical lifecycle bundle 刷新 dynamic artifacts：${options.reason}。` +
+      `请先运行 \`aw repair ${options.pluginName} --platform codex --scope ${options.scope}\` 重建 install record 后再试。`,
+  );
+}
+
+async function resolveHistoricalRefreshPlugin(options: {
+  currentPlugin: PluginMeta;
+  scope: Scope;
+  recordRead: InstallStateReadResult<InstallRecordFile>;
+}): Promise<PluginMeta> {
+  const pluginName = options.currentPlugin.manifest.name;
+  if (options.recordRead.status !== 'ok') {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason: `install record 不可用（${formatInstallRecordReadFailure(options.recordRead)}）`,
+    });
+  }
+
+  const lifecycle = options.recordRead.value.record.lifecycle;
+  if (!lifecycle) {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason: 'install record 缺少 historical lifecycle runtime',
+    });
+  }
+
+  if (!(await fs.pathExists(lifecycle.bundleRoot))) {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason: `historical bundle 不存在：${lifecycle.bundleRoot}`,
+    });
+  }
+
+  const [manifestDigest, bundleFingerprint] = await Promise.all([
+    calculateFileDigest(lifecycle.manifestPath),
+    calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+  ]);
+  if (manifestDigest !== lifecycle.sourceManifestDigest) {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason: `historical manifest digest 不匹配：expected ${lifecycle.sourceManifestDigest}, got ${manifestDigest}`,
+    });
+  }
+  if (bundleFingerprint !== lifecycle.bundleFingerprint) {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason: `historical bundle fingerprint 不匹配：expected ${lifecycle.bundleFingerprint}, got ${bundleFingerprint}`,
+    });
+  }
+
+  const historicalPlugin = await readPluginManifest(lifecycle.bundleRoot, { mode: 'bundle' });
+  if (
+    historicalPlugin.manifest.name !== pluginName ||
+    historicalPlugin.manifest.version !== lifecycle.pluginVersion
+  ) {
+    throw createHistoricalRefreshBundleError({
+      pluginName,
+      scope: options.scope,
+      reason:
+        `historical manifest 身份不匹配：expected ${pluginName}@${lifecycle.pluginVersion}, ` +
+        `got ${historicalPlugin.manifest.name}@${historicalPlugin.manifest.version}`,
+    });
+  }
+
+  return historicalPlugin;
 }
 
 async function collectRefreshUnits(options: {
@@ -388,6 +482,11 @@ async function executeRefreshUnit(options: {
       },
       env: options.env,
     });
+    const refreshPlugin = await resolveHistoricalRefreshPlugin({
+      currentPlugin: options.plugin,
+      scope: options.unit.scope,
+      recordRead: installRecordRead,
+    });
     const ledger = await readInstalledLedger(options.env);
     let skillTriggerPreference =
       installRecordRead.status === 'ok'
@@ -412,7 +511,7 @@ async function executeRefreshUnit(options: {
         skillTriggerPreference = runtimeSkillTriggerPreference;
       }
     }
-    const refreshedArtifacts = (await adapter.installExtensions(options.plugin, options.unit.scope, {
+    const refreshedArtifacts = (await adapter.installExtensions(refreshPlugin, options.unit.scope, {
       event: 'refresh',
       changedConfigKeys: options.unit.triggerKeys,
       dynamicOnly: true,

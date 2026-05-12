@@ -1360,6 +1360,79 @@ describe('codex-explore integration acceptance', () => {
     expect(location.record?.present).toBe(true);
   });
 
+  it('refreshes Codex user dynamic skill from historical bundle when local marketplace runtime has rendered templates', async () => {
+    const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initCommand({ force: true });
+    await writePluginConfigStore({
+      pluginName: 'codex-explore',
+      scope: 'user',
+      cwd: repoRoot,
+      env: process.env,
+      values: {
+        explorerModel: 'gpt-5.4-mini',
+        modelReasoningEffort: 'medium',
+      },
+    });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
+    expect(renderedMarketplaceSkill).toContain('推理强度 `medium`');
+    expect(renderedMarketplaceSkill).not.toContain('{{modelReasoningEffort}}');
+
+    const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPlugin').mockImplementation(
+      async (plugin, scope) => {
+        if (scope !== 'user') {
+          return;
+        }
+        materializeCodexExploreNativePluginSync(repoRoot, process.env, plugin.manifest.name);
+      },
+    );
+    const result = await runCliEntry(
+      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
+      {
+        cwd: repoRoot,
+        env: process.env,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: true,
+      command: 'config:set',
+      artifactRefresh: {
+        attempted: true,
+        status: 'succeeded',
+        triggerKeys: ['modelReasoningEffort'],
+      },
+    });
+    expect(nativeRefreshSpy).toHaveBeenCalled();
+
+    const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
+    const [runtimeSkill, cachedSkill, roleContent] = await Promise.all([
+      fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
+      fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
+      fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-agent.toml'), 'utf8'),
+    ]);
+
+    expect(runtimeSkill).toContain('推理强度 `low`');
+    expect(runtimeSkill).not.toContain('推理强度 `medium`');
+    expect(cachedSkill).toContain('推理强度 `low`');
+    expect(roleContent).toContain('model_reasoning_effort = "low"');
+  });
+
   it('refreshes installed user and current-project Codex dynamic skills on user config writes and syncs accepted digests', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
@@ -1528,11 +1601,11 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.pathExists(path.join(resolveCodexPaths(repoRoot, 'project', process.env).configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'))).resolves.toBe(false);
   });
 
-  it('keeps previous Codex user dynamic skill runtime and cache when refresh fails, and records failure diagnostics', async () => {
+  it('keeps previous Codex user dynamic skill runtime and cache when historical refresh fails, and records failure diagnostics', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreDynamicSkillRenderer(repoRoot);
-    let embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';
@@ -1562,9 +1635,43 @@ describe('codex-explore integration acceptance', () => {
 
     const beforeRuntimeSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
     const beforeCachedSkill = await fs.readFile(cachedDynamicSkillPath(process.env), 'utf8');
-    await writeCodexExploreDynamicSkillRenderer(repoRoot, { failScopes: ['user'] });
-    embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    const statusBefore = await statusCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: process.env,
+      },
+    );
+    const locationBefore = findStatusLocation(parseStatusPayload(statusBefore.output), {
+      plugin: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const record = await fs.readJson(locationBefore.record!.path!) as {
+      record: {
+        source: {
+          bundleFingerprint: string;
+        };
+        lifecycle: {
+          bundleRoot: string;
+          bundleFingerprint: string;
+        };
+      };
+    };
+    await fs.writeFile(
+      path.join(record.record.lifecycle.bundleRoot, 'scripts', 'render-artifacts.mjs'),
+      'throw new Error("forced historical renderer failure");\n',
+      'utf8',
+    );
+    const bundleFingerprint = await calculatePluginBundleFingerprint(record.record.lifecycle.bundleRoot);
+    record.record.lifecycle.bundleFingerprint = bundleFingerprint;
+    record.record.source.bundleFingerprint = bundleFingerprint;
+    await fs.writeJson(locationBefore.record!.path!, record, { spaces: 2 });
 
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],

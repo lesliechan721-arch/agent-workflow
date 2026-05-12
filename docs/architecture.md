@@ -59,10 +59,10 @@ npm Registry
 - `~/.aw/` 是本机 marketplace 镜像和 AW 运行时状态目录。需要 native plugin runtime 时，`aw init`、`aw install`、`aw upgrade` 会按需同步；纯 Codex project 路径只读使用 catalog，不会为了项目产物初始化或修复共享 runtime。
 - `native-markers/` 只保存短生命周期 native transaction marker。它表示外部 native 写入已经发生、但 AW record 尚未成功提交；后续 `diagnose`、`repair` 或 `cleanup` 可以据此收口，marker 本身不代表安装成功。
 - `dependency-index.json` 是跨 scope incoming edge 的索引，只辅助依赖保护、未使用依赖提醒和汇总视图；它不是安装真值。索引不可用或覆盖范围不可信时，删除类命令必须 fail closed。
-- `lifecycle-runtime/` 只保存普通卸载和必要 repair/reinstall 所需的最小历史 lifecycle 运行面。它不解释当前 artifact、config schema 或依赖声明。
+- `lifecycle-runtime/` 保存最小 historical runtime bundle。普通卸载和必要 repair/reinstall 用它运行历史 lifecycle；动态 artifact 的配置刷新和 refresh-only 用它运行历史 renderer。它不解释 current catalog、config schema 或依赖声明。
 - `shared-runtime-owners/` 记录同一 plugin/platform 的共享 skill trigger runtime owner。它决定谁可以写共享 runtime，以及 `aw init` / marketplace refresh replay 哪个 preference，但不能证明插件已安装。
 - `plugin-config/` 是 user config store。project scope 另有 shared/local 两层配置，见 Runtime State。
-- 动态 `codex.skill` 的静态模板仍随源码和 embedded bundle 分发；安装时由 renderer 输出当前配置下的 skill 内容，再由 AW apply 写入 user runtime 或 project repo-visible `.agents/skills/<skillKey>`。renderer 不写 runtime 目录，也不写 diagnostic cache、install record 或 project artifact identity。
+- 动态 `codex.skill` 的静态模板仍随源码和 embedded bundle 分发；安装时由 renderer 输出当前配置下的 skill 内容，再由 AW apply 写入 user runtime 或 project repo-visible `.agents/skills/<skillKey>`。配置刷新和 refresh-only 重新执行 renderer 时使用 install record 指向的 historical bundle，避免 Codex user runtime 写回 `~/.aw/plugins/<plugin>/codex/skills` 后污染下一次模板读取。renderer 不写 runtime 目录，也不写 diagnostic cache、install record 或 project artifact identity。
 
 排查问题时先确认问题发生在哪一层：源码 contract、bundle 生成、本机 runtime 镜像，还是平台配置。
 
@@ -104,15 +104,15 @@ install/upgrade 会先按 schema 做 required config preflight；脚本化子命
 
 依赖满足规则是 location-aware 的。user 父插件只能由同 platform 的 user scope 健康依赖满足，user 父插件声明当前 platform 生效的 `target.scope: "project"` 会在写入前失败。project 父插件省略 `target.scope` 时优先使用当前 project，当前 project 不健康或缺失时可 fallback 到 user scope；显式 `target.scope: "user"` 只看 user，显式 `target.scope: "project"` 只看当前 project，不做 user fallback。external-only、marker-only、enabled-only、cache-only、identity 损坏或需要 repair 的位置都不算健康依赖。
 
-动态 artifact 的写路径分三段：先执行 renderer，拿到 stdout JSON `ArtifactPlan`；再由 `artifact-plan.ts` 按当前 platform/scope 的 `artifacts.targets` 校验 `id`、`target`、`state`、`refreshKeys`、`skillKey`、`roleKey` 和 target content；最后交给 adapter 的 target apply 写入受管文件。renderer 和 lifecycle 都不能直接写 AW 受管文件，`.agents/skills/**`、Codex user runtime skill、`.codex/config.toml`、`.codex/agents/*.toml`、dynamic diagnostic cache、project artifact identity 和 install record 等写盘集中在 AW target apply 和命令提交阶段。
+动态 artifact 的写路径分三段：先执行 renderer，拿到 stdout JSON `ArtifactPlan`；再由 `artifact-plan.ts` 按当前 platform/scope 的 `artifacts.targets` 校验 `id`、`target`、`state`、`refreshKeys`、`skillKey`、`roleKey` 和 target content；最后交给 adapter 的 target apply 写入受管文件。install/upgrade 的 renderer 源是本次解析出的 bundle，config-triggered refresh 和 refresh-only 的 renderer 源是 install record 中校验过的 historical bundle。renderer 和 lifecycle 都不能直接写 AW 受管文件，`.agents/skills/**`、Codex user runtime skill、`.codex/config.toml`、`.codex/agents/*.toml`、dynamic diagnostic cache、project artifact identity 和 install record 等写盘集中在 AW target apply 和命令提交阶段。
 
 当前 target runtime 支持 `codex.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`。`codex.skill` 用 manifest 静态 `skillKey` 做安装前路径冲突检查，renderer content 只提供 `skillFile` 和 `openaiYaml`，apply 阶段按当前 `skillTriggerPreference` patch 后写入 project `.agents/skills/<skillKey>` 或 Codex user runtime，并以 `projectManagedKind = "skill"` 写 project artifact shared identity。`codex.developerInstructionsBlock` 把 present content 合成到当前 scope 的 Codex AW managed developer instructions block，disabled 时移除或跳过该 artifact 的受管 instruction。`codex.agentRole` 用 manifest 静态 `roleKey` 做安装前 role namespace preflight，apply 阶段写 role layer，再 upsert 当前 scope Codex config 的 `[agents.<roleKey>]` 注册项；renderer 不能提供 `registration.config_file` 或任意落盘路径。落在同一 Codex config 的 instruction 和 role registration 共享文档级事务和 rollback baseline。
 
-config-triggered refresh 发生在 config store 写入成功之后，只刷新 dynamic diagnostic cache / install evidence 中 `refreshKeys` 命中的动态 artifact。user scope 写入最多刷新 user target 和当前 repo project target，project scope 写入只刷新当前 repo project target，不扫描历史 project。刷新失败不回滚 config store，而是在 dynamic diagnostic cache 的 `lastRefresh` 记录失败摘要，并用 `refreshReach` 写实说明本次覆盖范围和其它已知 project target 是否可能 stale。
+config-triggered refresh 发生在 config store 写入成功之后，只刷新 dynamic diagnostic cache / install evidence 中 `refreshKeys` 命中的动态 artifact。user scope 写入最多刷新 user target 和当前 repo project target，project scope 写入只刷新当前 repo project target，不扫描历史 project。刷新失败不回滚 config store，而是在 dynamic diagnostic cache 的 `lastRefresh` 记录失败摘要，并用 `refreshReach` 写实说明本次覆盖范围和其它已知 project target 是否可能 stale。若 install record 或 historical bundle 不可用，刷新会 fail closed，提示通过 repair 重建安装状态。
 
 stale prune 以当前 manifest 的 `artifacts.targets`、install record artifact identity 和 project artifact shared identity 为准。当前版本不再声明某个 AW-owned dynamic `codex.skill`、instruction 或 role artifact 时，upgrade/cleanup/remove 只能清理有 ownership evidence 的残留；同名但非 AW-owned 的 repo skill、runtime skill 或 role 文件必须保留。
 
-每个成功安装的 platform + scope + plugin 都会保存最小 historical lifecycle runtime。普通 `uninstall` 和需要先撤销历史副作用的 `repair` / `reinstall` 可以使用它运行安装时 bundle 的卸载 lifecycle；它不作为 artifact 期望内容、config schema 或 dependency manifest 的来源。缺失或损坏时只影响卸载安全性和 repairability，status 会降级为需要处理。
+每个成功安装的 platform + scope + plugin 都会保存最小 historical runtime bundle。普通 `uninstall` 和需要先撤销历史副作用的 `repair` / `reinstall` 可以使用它运行安装时 bundle 的卸载 lifecycle；config-triggered refresh 和 refresh-only 会使用它执行安装时的 dynamic artifact renderer。它不作为 current catalog、config schema 或 dependency manifest 的来源。缺失或损坏会影响卸载安全性、repairability 和动态刷新，status 会降级为需要处理。
 
 install record 对依赖只持久化两类事实：`installSource` 表示 explicit / dependency 来源和是否被用户显式保留；`dependencyEdges` 表示当前安装对依赖的 canonical outgoing edges。edge 端点包含完整 `PluginLocation`，声明摘要包含 `name`、`target.scope`、`inheritInstallOptions` 和 `when.platforms`。读路径从 per-plugin records 重建 dependency index，再构建 incoming dependents view，供卸载保护、未使用依赖提醒、status 和主控制台复用；`dependents`、ref-count 和 `autoRemovable` 不落盘，只从 edge 图和安装来源实时推导。dependency index 缺失、不可信、stale project reference 未显式退休，或 record edge 不完整时，依赖相关删除命令 fail closed。
 

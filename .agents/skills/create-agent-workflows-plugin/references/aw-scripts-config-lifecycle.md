@@ -162,7 +162,7 @@ manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`�
 }
 ```
 
-renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行。`aw status` 不执行 renderer，也不执行 lifecycle。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
+renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行。`aw status` 不执行 renderer，也不执行 lifecycle。install/upgrade 时 renderer 从本次解析出的 bundle 运行；config refresh 和 refresh-only 时从当前 location 的 install record historical bundle 运行，避免 current local marketplace 被运行时产物污染后继续充当模板源。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
 
 - `event`、`platform`、`scope`
 - 插件 `name`、`version`、`rootDir`、`manifestPath`
@@ -204,7 +204,7 @@ renderer stdout 必须只输出 JSON：
 
 renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
 
 refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 diagnostic cache；没有可定位 dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
 
@@ -265,7 +265,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - 不改写源码树和 generated bundle。
 - 写入 AW 受管状态前先创建目录，已有内容按可重复执行处理。
 - 清理操作允许目标不存在。
-- 不依赖当前 marketplace 中的同名插件；`uninstall` 会优先使用安装时保存的 historical lifecycle runtime。这个 runtime 只保留安全卸载所需的 bundle 引用，不是完整 install snapshot，也不能当作生成 artifacts 或依赖边的 current catalog。
+- 不依赖当前 marketplace 中的同名插件；`uninstall` 会优先使用安装时保存的 historical runtime bundle，config refresh 也会使用它运行动态 artifact renderer。这个 runtime 不是 current catalog，不能当作当前依赖边或 schema 真值。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
 `aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或修复 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。常见底层状态包括：
