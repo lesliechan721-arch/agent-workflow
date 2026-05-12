@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "为 Codex 提供只读探索 workflow，支持代码库、多源资料与证据整合。",
   "skills": "./skills",
   "skillTriggers": {
