@@ -88,8 +88,12 @@ export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): s
   return path.join(getClaudeHome(env), 'plugins');
 }
 
+export function getEmbeddedPluginsRootCandidate(): string {
+  return embeddedPluginsRootOverride ?? path.join(resolveCliPackageRoot(), 'plugins-dist');
+}
+
 export async function resolveEmbeddedPluginsRoot(): Promise<string> {
-  const candidate = embeddedPluginsRootOverride ?? path.join(resolveCliPackageRoot(), 'plugins-dist');
+  const candidate = getEmbeddedPluginsRootCandidate();
   if (validatedEmbeddedPluginRoots.has(candidate)) {
     return candidate;
   }
@@ -106,6 +110,22 @@ export async function resolveEmbeddedPluginsRoot(): Promise<string> {
 
   validatedEmbeddedPluginRoots.add(candidate);
   return candidate;
+}
+
+export async function tryResolveEmbeddedPluginsRoot(): Promise<{
+  root: string | null;
+  error?: string;
+}> {
+  try {
+    return {
+      root: await resolveEmbeddedPluginsRoot(),
+    };
+  } catch (error) {
+    return {
+      root: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export function resolveClaudePaths(

@@ -30,6 +30,7 @@ import {
   resolveAwHome,
   resolveClaudeProjectKey,
   resolveCodexProjectKey,
+  resolveEmbeddedPluginsRoot,
 } from './paths.js';
 import { SOURCE_MANIFEST_PATH, readPluginManifest } from './manifest.js';
 import { resolveCatalogPlugins, resolveCurrentCatalog } from './plugin-catalog.js';
@@ -52,6 +53,7 @@ export interface PreparedLifecycleConfigSnapshot {
   metadata: LifecycleConfigSnapshotMetadata;
   sourceBundleRoot: string;
   stagingRoot: string;
+  stagedBundleRoot: string;
 }
 
 export interface LifecycleScriptTarget {
@@ -240,17 +242,74 @@ async function resolveSnapshotScopeIdentity(
     : resolveCodexProjectKey(cwd);
 }
 
+async function resolveLifecycleSnapshotSource(options: {
+  plugin: PluginMeta;
+  pluginManifestDigest: string;
+  catalog?: Awaited<ReturnType<typeof resolveCurrentCatalog>>;
+}): Promise<{
+  sourceBundleRoot: string;
+  manifestDigest: string;
+  bundleFingerprint: string;
+}> {
+  if (options.catalog?.source !== 'local') {
+    return {
+      sourceBundleRoot: options.plugin.rootDir,
+      manifestDigest: options.pluginManifestDigest,
+      bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
+    };
+  }
+
+  try {
+    const embeddedPluginRoot = path.join(
+      await resolveEmbeddedPluginsRoot(),
+      'plugins',
+      options.plugin.manifest.name,
+    );
+    const embeddedPlugin = await readPluginManifest(embeddedPluginRoot, { mode: 'bundle' });
+    if (
+      embeddedPlugin.manifest.name === options.plugin.manifest.name &&
+      embeddedPlugin.manifest.version === options.plugin.manifest.version
+    ) {
+      return {
+        sourceBundleRoot: embeddedPluginRoot,
+        manifestDigest: await calculateFileDigest(embeddedPlugin.manifestPath),
+        bundleFingerprint: await calculatePluginBundleFingerprint(embeddedPluginRoot),
+      };
+    }
+  } catch {
+    return {
+      sourceBundleRoot: options.plugin.rootDir,
+      manifestDigest: options.pluginManifestDigest,
+      bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
+    };
+  }
+
+  return {
+    sourceBundleRoot: options.plugin.rootDir,
+    manifestDigest: options.pluginManifestDigest,
+    bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
+  };
+}
+
 export async function prepareLifecycleConfigSnapshot(
   options: CreateLifecycleConfigSnapshotOptions,
 ): Promise<PreparedLifecycleConfigSnapshot> {
   const env = options.env ?? process.env;
   const manifestPath = path.join(options.plugin.rootDir, SOURCE_MANIFEST_PATH);
-  const [manifestDigest, bundleFingerprint, catalog, scopeIdentity] = await Promise.all([
+  const [pluginManifestDigest, catalog, scopeIdentity] = await Promise.all([
     calculateFileDigest(manifestPath),
-    calculatePluginBundleFingerprint(options.plugin.rootDir),
     resolveCurrentCatalog(env).catch(() => undefined),
     resolveSnapshotScopeIdentity(options.platform, options.scope, options.cwd),
   ]);
+  const {
+    sourceBundleRoot,
+    manifestDigest,
+    bundleFingerprint,
+  } = await resolveLifecycleSnapshotSource({
+    plugin: options.plugin,
+    pluginManifestDigest,
+    catalog,
+  });
   const createdAt = new Date().toISOString();
   const digestSegment = manifestDigest.replace(/^sha256:/, '').slice(0, 16);
   const snapshotRoot = path.join(
@@ -263,6 +322,9 @@ export async function prepareLifecycleConfigSnapshot(
     `${digestSegment}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,
   );
   const bundleRoot = path.join(snapshotRoot, 'bundle');
+  const stagingRoot = `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`;
+  const stagedBundleRoot = path.join(stagingRoot, 'bundle');
+
   return {
     metadata: {
       snapshotRoot,
@@ -280,8 +342,9 @@ export async function prepareLifecycleConfigSnapshot(
         pluginRoot: options.plugin.rootDir,
       },
     },
-    sourceBundleRoot: options.plugin.rootDir,
-    stagingRoot: `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`,
+    sourceBundleRoot,
+    stagingRoot,
+    stagedBundleRoot,
   };
 }
 
@@ -290,10 +353,23 @@ export async function persistLifecycleConfigSnapshot(
 ): Promise<LifecycleConfigSnapshotMetadata> {
   await fs.ensureDir(path.dirname(prepared.metadata.snapshotRoot));
   try {
-    await fs.copy(prepared.sourceBundleRoot, path.join(prepared.stagingRoot, 'bundle'), {
-      overwrite: true,
-      errorOnExist: false,
+    await fs.copy(prepared.sourceBundleRoot, prepared.stagedBundleRoot, {
+      overwrite: false,
+      errorOnExist: true,
     });
+    const stagedManifestPath = path.join(prepared.stagedBundleRoot, SOURCE_MANIFEST_PATH);
+    const [stagedManifestDigest, stagedBundleFingerprint] = await Promise.all([
+      calculateFileDigest(stagedManifestPath),
+      calculatePluginBundleFingerprint(prepared.stagedBundleRoot),
+    ]);
+    if (
+      stagedManifestDigest !== prepared.metadata.sourceManifestDigest ||
+      stagedBundleFingerprint !== prepared.metadata.bundleFingerprint
+    ) {
+      throw new Error(
+        'Lifecycle config snapshot staging no longer matches the prepared source bundle.',
+      );
+    }
     await fs.move(prepared.stagingRoot, prepared.metadata.snapshotRoot, { overwrite: false });
   } catch (error) {
     await fs.remove(prepared.stagingRoot).catch(() => undefined);

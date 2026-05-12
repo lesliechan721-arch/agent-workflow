@@ -243,6 +243,15 @@ async function updateEmbeddedManifest(
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function createCorruptedEmbeddedRoot(repoRoot: string): Promise<string> {
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  await fs.remove(
+    path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'agents', 'openai.yaml'),
+  );
+  return embeddedRoot;
+}
+
 async function addLifecycleRecorder(repoRoot: string, pluginName = 'git-commit'): Promise<void> {
   const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -557,6 +566,7 @@ async function readInstallRecordPreference(options: {
 }): Promise<'default' | 'manual' | 'auto' | undefined> {
   return (await findInstallRecord(options))?.record.options?.skillTriggerPreference;
 }
+
 
 function findStatusCell<T extends { matrix: { cells: Array<{ pluginName: string; platform: PlatformName; scope: string }> } }>(
   result: T,
@@ -1982,7 +1992,7 @@ describe('skill trigger command integration', () => {
       status: 'ok',
     });
 
-    await uninstallCommand(
+    const result = await uninstallCommand(
       ['git-commit'],
       {
         cwd: workspace.repoRoot,
@@ -2002,6 +2012,87 @@ describe('skill trigger command integration', () => {
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
+    await expect(readSharedSkillTriggerRuntimeOwner({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      env: process.env,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
+
+  it('best-effort uninstalls the last Codex scope when the embedded bundle is corrupted', async () => {
+    const workspace = await makeWorkspace();
+    configureWorkspaceEnv(workspace);
+    await initCommand({ force: true, env: process.env });
+    await writeInstalledLedger(createAvailableLedger(), process.env);
+
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'auto',
+      },
+      {
+        adapters: createAdapters(),
+        env: process.env,
+      },
+    );
+    await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: createAdapters({
+          'git-commit': {
+            scopeInitialized: 'yes',
+            managedEvidence: true,
+          },
+        }),
+        env: process.env,
+      },
+    );
+
+    setEmbeddedPluginsRootOverrideForTests(await createCorruptedEmbeddedRoot(workspace.repoRoot));
+
+    const result = await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: createAdapters({
+          'git-commit': {
+            scopeInitialized: 'yes',
+            managedEvidence: true,
+            nativeInstalled: true,
+          },
+        }),
+        env: process.env,
+      },
+    );
+
+    expect(result.warnings.join('\n')).toContain('embedded bundle 不可用');
     await expect(readSharedSkillTriggerRuntimeOwner({
       pluginName: 'git-commit',
       platform: 'codex',

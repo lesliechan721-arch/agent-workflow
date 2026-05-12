@@ -1153,7 +1153,12 @@ async function restoreBundledUserCodexSkillIfPresent(options: {
   skillKey: string;
   skillPath: string;
 }): Promise<boolean> {
-  const embeddedRoot = await resolveEmbeddedPluginsRoot();
+  let embeddedRoot: string;
+  try {
+    embeddedRoot = await resolveEmbeddedPluginsRoot();
+  } catch {
+    return false;
+  }
   const embeddedSkillRoot = path.join(
     embeddedRoot,
     'plugins',

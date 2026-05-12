@@ -1759,7 +1759,7 @@ async function installTargetOnPlatform(
     const runtimeStage = await stageHistoricalLifecycleRuntime({
       cwd: options.cwd,
       location: toInstallStateLocation(location),
-      sourceBundleRoot: preparedLifecycleConfigSnapshot?.sourceBundleRoot ?? target.currentPlugin.rootDir,
+      sourceBundleRoot: lifecycleConfigSnapshot.bundleRoot,
       pluginVersion: lifecycleConfigSnapshot.pluginVersion,
       manifestDigest: lifecycleConfigSnapshot.sourceManifestDigest,
       bundleFingerprint: lifecycleConfigSnapshot.bundleFingerprint,

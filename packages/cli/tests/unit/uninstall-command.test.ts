@@ -14,8 +14,25 @@ import {
   rewriteSanitizedInstallRecordForP2,
 } from '../helpers/install-state-projection-fixtures.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  createAvailableLedger,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
+import {
+  patchClaudeSkillFrontmatter,
+  patchCodexOpenAiYaml,
+} from '../../src/utils/skill-trigger-preferences.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
+import {
+  resolveClaudeProjectKey,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import type {
   GeneratedArtifact,
+  LifecycleConfigSnapshotMetadata,
   PlatformAdapter,
   PlatformName,
   PluginMeta,
@@ -23,6 +40,7 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
 
@@ -94,6 +112,34 @@ async function ensureRepoPlugin(
   return readPluginManifest(pluginRoot);
 }
 
+async function createLifecycleSnapshotMetadata(options: {
+  sourcePluginRoot: string;
+  pluginName: string;
+  pluginVersion: string;
+}): Promise<LifecycleConfigSnapshotMetadata> {
+  const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-lifecycle-snapshot-'));
+  tempDirs.push(snapshotRoot);
+
+  const bundleRoot = path.join(snapshotRoot, 'bundle');
+  await fs.copy(options.sourcePluginRoot, bundleRoot);
+  const manifestPath = path.join(bundleRoot, '.agents-plugin', 'plugin.json');
+
+  return {
+    snapshotRoot,
+    bundleRoot,
+    manifestPath,
+    pluginName: options.pluginName,
+    pluginVersion: options.pluginVersion,
+    sourceManifestDigest: await calculateFileDigest(manifestPath),
+    bundleFingerprint: await calculatePluginBundleFingerprint(bundleRoot),
+    createdAt: '2026-04-28T00:00:00.000Z',
+    createdFrom: {
+      source: 'currentCatalog',
+      pluginRoot: options.sourcePluginRoot,
+    },
+  };
+}
+
 class FakeAdapter implements PlatformAdapter {
   readonly uninstallPluginCalls: string[] = [];
   readonly uninstallExtensionsCalls: string[] = [];
@@ -151,6 +197,7 @@ function makeTarget(plugin: PluginMeta): ResolvedPluginTarget {
 }
 
 afterEach(async () => {
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -355,5 +402,344 @@ describe('uninstall command (P9 install-state path)', () => {
 
     expect(codex.uninstallPluginCalls).toEqual([]);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'current-catalog.txt'))).resolves.toBe(false);
+  });
+});
+
+class LegacyClaudeAdapter extends FakeAdapter {
+  override async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    return {
+      platform: 'claude',
+      scope,
+      initialized: true,
+      plugins: [{
+        pluginName: plugin.manifest.name,
+        native: {
+          marketplaceRegistered: true,
+          pluginAvailable: true,
+          pluginInstalled: true,
+          version: plugin.manifest.version,
+        },
+        generatedArtifacts: [],
+        driftWarnings: [],
+        ledgerStateStatus: 'available',
+        ledgerStateReason: null,
+        scopeInitialized: 'yes',
+        catalogCompatibility: 'current',
+        platformRuntimeEvidence: {
+          present: false,
+        },
+        platformNativeFallbackEvidence: {
+          present: false,
+        },
+        scopeManagedEvidence: {
+          ledger: true,
+          tracking: false,
+          sharedNativeRef: false,
+        },
+        currentCatalog: {
+          rootDir: '/synthetic',
+          source: 'local',
+          available: true,
+        },
+        artifactsInitialized: true,
+        repoManagedSessionState: {
+          instructions: 'absent',
+          rules: 'not_applicable',
+          hooks: 'not_applicable',
+          agents: 'not_applicable',
+          diagnostics: [],
+        },
+        projectTrust: 'not_applicable',
+      }],
+    };
+  }
+}
+
+describe('uninstall command (legacy shared-runtime replay)', () => {
+  it('replays surviving Claude preferences when the embedded manifest is unreadable', async () => {
+    const builder = await makeBuilder();
+    await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
+    const repoPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+    const pristineEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(pristineEmbeddedRoot);
+
+    const localBundleRoot = path.join(builder.paths.awHome, 'plugins', 'git-commit');
+    await fs.copy(path.join(pristineEmbeddedRoot, 'plugins', 'git-commit'), localBundleRoot);
+    await patchClaudeSkillFrontmatter(
+      path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'),
+      'auto',
+    );
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('disable-model-invocation: false');
+
+    const projectKey = await resolveClaudeProjectKey(builder.paths.repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: repoPlugin.manifest.version,
+      platforms: {
+        claude: {
+          lastRequestedScope: 'user',
+          lastRequestedAt: '2026-04-28T00:00:02.000Z',
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:02.000Z',
+            resolvedVersion: repoPlugin.manifest.version,
+            capabilitySnapshot: {
+              managedExtensions: [],
+            },
+            installOptions: {
+              skillTriggerPreference: 'auto',
+            },
+            skillTriggerWriteOrder: 2,
+          },
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:01.000Z',
+              resolvedVersion: repoPlugin.manifest.version,
+              capabilitySnapshot: {
+                managedExtensions: [],
+              },
+              installOptions: {
+                skillTriggerPreference: 'manual',
+              },
+              skillTriggerWriteOrder: 1,
+            },
+          },
+        },
+      },
+    };
+    const env = {
+      ...process.env,
+      AW_HOME: builder.paths.awHome,
+      AW_CODEX_HOME: builder.paths.codexHome,
+      AW_CLAUDE_HOME: builder.paths.claudeHome,
+    };
+    await writeInstalledLedger(ledger, env);
+
+    const brokenEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(brokenEmbeddedRoot);
+    await fs.writeFile(
+      path.join(brokenEmbeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
+      '{"name":',
+      'utf8',
+    );
+    setEmbeddedPluginsRootOverrideForTests(brokenEmbeddedRoot);
+
+    const currentPlugin = await readPluginManifest(localBundleRoot, { mode: 'bundle' });
+    const target: ResolvedPluginTarget = {
+      pluginName: 'git-commit',
+      plugin: currentPlugin,
+      currentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog',
+    };
+
+    const claude = new LegacyClaudeAdapter();
+    const result = await uninstallTargetsOnPlatforms(
+      [target],
+      ['claude'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+      },
+      makeRuntime(env, { claude }),
+    );
+
+    expect(result.warnings).toEqual([]);
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('disable-model-invocation: true');
+  });
+
+  it('replays surviving Claude preferences from the winning scope snapshot when the embedded root is unavailable', async () => {
+    const builder = await makeBuilder();
+    await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
+    const repoPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+    const pristineEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(pristineEmbeddedRoot);
+
+    const localBundleRoot = path.join(builder.paths.awHome, 'plugins', 'git-commit');
+    const pristinePluginRoot = path.join(pristineEmbeddedRoot, 'plugins', 'git-commit');
+    await fs.copy(pristinePluginRoot, localBundleRoot);
+    await patchClaudeSkillFrontmatter(
+      path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'),
+      'auto',
+    );
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('disable-model-invocation: false');
+
+    const projectSnapshot = await createLifecycleSnapshotMetadata({
+      sourcePluginRoot: pristinePluginRoot,
+      pluginName: repoPlugin.manifest.name,
+      pluginVersion: repoPlugin.manifest.version,
+    });
+
+    const projectKey = await resolveClaudeProjectKey(builder.paths.repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: repoPlugin.manifest.version,
+      platforms: {
+        claude: {
+          lastRequestedScope: 'user',
+          lastRequestedAt: '2026-04-28T00:00:02.000Z',
+          userScope: {
+            managed: true,
+            updatedAt: '2026-04-28T00:00:02.000Z',
+            resolvedVersion: repoPlugin.manifest.version,
+            capabilitySnapshot: {
+              managedExtensions: [],
+            },
+            installOptions: {
+              skillTriggerPreference: 'auto',
+            },
+            skillTriggerWriteOrder: 2,
+          },
+          projectScopes: {
+            [projectKey]: {
+              managed: true,
+              updatedAt: '2026-04-28T00:00:01.000Z',
+              resolvedVersion: repoPlugin.manifest.version,
+              capabilitySnapshot: {
+                managedExtensions: [],
+              },
+              installOptions: {
+                skillTriggerPreference: 'manual',
+              },
+              skillTriggerWriteOrder: 1,
+              lifecycleConfigSnapshot: projectSnapshot,
+            },
+          },
+        },
+      },
+    };
+    const env = {
+      ...process.env,
+      AW_HOME: builder.paths.awHome,
+      AW_CODEX_HOME: builder.paths.codexHome,
+      AW_CLAUDE_HOME: builder.paths.claudeHome,
+    };
+    await writeInstalledLedger(ledger, env);
+
+    setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
+
+    const currentPlugin = await readPluginManifest(localBundleRoot, { mode: 'bundle' });
+    const target: ResolvedPluginTarget = {
+      pluginName: 'git-commit',
+      plugin: currentPlugin,
+      currentPlugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog',
+    };
+
+    const claude = new LegacyClaudeAdapter();
+    const result = await uninstallTargetsOnPlatforms(
+      [target],
+      ['claude'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+      },
+      makeRuntime(env, { claude }),
+    );
+
+    expect(result.warnings).toEqual([]);
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'claude', 'skills', 'commit', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('disable-model-invocation: true');
+  });
+
+  it('replays verified default runtime before releasing the shared owner when the embedded root is unavailable', async () => {
+    const builder = await makeBuilder();
+    await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
+    const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(embeddedRoot);
+
+    const targetState = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const pristinePluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const localBundleRoot = path.join(builder.paths.awHome, 'plugins', 'git-commit');
+    await fs.copy(pristinePluginRoot, localBundleRoot);
+    await patchCodexOpenAiYaml(
+      path.join(localBundleRoot, 'codex', 'skills', 'commit', 'agents', 'openai.yaml'),
+      'manual',
+    );
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'codex', 'skills', 'commit', 'agents', 'openai.yaml'), 'utf8'),
+    ).resolves.toContain('allow_implicit_invocation: false');
+
+    await builder.writeRepoArtifact(targetState);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(targetState);
+    await fs.remove(lifecycle.bundleRoot);
+    await fs.copy(pristinePluginRoot, lifecycle.bundleRoot);
+    const manifestPath = path.join(lifecycle.bundleRoot, '.agents-plugin', 'plugin.json');
+    const currentPlugin = await readPluginManifest(localBundleRoot, { mode: 'bundle' });
+    const verifiedLifecycle = {
+      ...lifecycle,
+      manifestPath,
+      pluginVersion: currentPlugin.manifest.version,
+      sourceManifestDigest: await calculateFileDigest(manifestPath),
+      bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+    };
+    const record = await builder.writeInstallRecord(targetState, verifiedLifecycle);
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${targetState.recordId}.json`,
+    );
+    const patchedRecord = {
+      ...record,
+      record: {
+        ...record.record,
+        source: {
+          pluginVersion: verifiedLifecycle.pluginVersion,
+          manifestDigest: verifiedLifecycle.sourceManifestDigest,
+          bundleFingerprint: verifiedLifecycle.bundleFingerprint,
+        },
+      },
+    };
+    await fs.writeJson(recordPath, patchedRecord, { spaces: 2 });
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeExternalNativeEvidence(targetState);
+    await builder.writeSharedRuntimeOwner(targetState, recordPath);
+    await builder.writeDependencyIndex([{ target: targetState, record: patchedRecord }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+
+    setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
+
+    const codex = new FakeAdapter();
+    const result = await uninstallTargetsOnPlatforms(
+      [{
+        pluginName: 'git-commit',
+        plugin: currentPlugin,
+        currentPlugin,
+        embeddedPlugin: undefined,
+        source: 'currentCatalog',
+      }],
+      ['codex'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      makeRuntime(
+        {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        { codex },
+      ),
+    );
+
+    expect(result.warnings.join('\n')).toContain('embedded bundle 不可用');
+    await expect(
+      fs.readFile(path.join(localBundleRoot, 'codex', 'skills', 'commit', 'agents', 'openai.yaml'), 'utf8'),
+    ).resolves.toContain('allow_implicit_invocation: true');
   });
 });

@@ -51,12 +51,12 @@ import {
   runLifecycleScript,
 } from '../utils/plugin-scripts.js';
 import {
+  getEmbeddedPluginsRootCandidate,
   resolveAwHome,
   resolveClaudePaths,
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  resolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
 import {
   commitMaterializedSkillTriggerPreference,
@@ -80,7 +80,7 @@ import {
   getTrackingArtifactIdentityRefusal,
   hasHistoricalEvidence,
   hasScopeManagedEvidence,
-  loadPluginTargetsForCommand,
+  loadPluginTargetsForRemovalCommand,
   resolveTargetPlatforms,
   type ResolvedPluginTarget,
 } from './common.js';
@@ -94,6 +94,14 @@ import {
   type RawCommandOptions,
 } from './options.js';
 import { tryUninstallUsingInstallState } from './install-state-removal.js';
+
+export interface RawUninstallCommandOptions extends RawCommandOptions {
+  force?: boolean;
+}
+
+type UninstallCommandOptions = CommandOptions & {
+  force?: boolean;
+};
 
 type UninstallCommandRuntime = CommandExecutionContextInput & {
   skipLifecycle?: boolean;
@@ -527,8 +535,14 @@ async function collectUninstallPlannerState(options: {
   requestedLocations: PluginLocation[];
   currentProjectKeysByPlatform: Partial<Record<PlatformName, string | null>>;
 }): Promise<PluginDependencyPlannerState> {
-  const currentCatalog = await resolveCurrentCatalog(options.env);
-  const currentCatalogPlugins = await resolvePluginsFromCatalog(currentCatalog.rootDir, undefined);
+  const currentCatalogPlugins = await (async () => {
+    try {
+      const currentCatalog = await resolveCurrentCatalog(options.env);
+      return await resolvePluginsFromCatalog(currentCatalog.rootDir, undefined);
+    } catch {
+      return [];
+    }
+  })();
   const currentCatalogByPlugin = Object.fromEntries(
     currentCatalogPlugins.map((plugin) => [plugin.manifest.name, plugin.manifest]),
   );
@@ -565,7 +579,7 @@ async function collectUninstallPlannerState(options: {
     }
     seenHealthKeys.add(locationKey);
 
-    const [target] = await loadPluginTargetsForCommand(
+    const [target] = await loadPluginTargetsForRemovalCommand(
       options.cwd,
       location.scope,
       [location.plugin],
@@ -619,7 +633,7 @@ async function resolveUninstallExecutionTargets(options: {
   const executions: PlannedUninstallExecution[] = [];
 
   for (const location of options.plannedLocations) {
-    const [target] = await loadPluginTargetsForCommand(
+    const [target] = await loadPluginTargetsForRemovalCommand(
       options.cwd,
       location.scope,
       [location.plugin],
@@ -712,7 +726,8 @@ function shouldRematerializeSkillTriggersAfterUninstall(
     return false;
   }
 
-  return target.source === 'currentCatalog' && Boolean(target.embeddedPlugin?.manifest.skills);
+  const skillTriggerPolicyPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
+  return target.source === 'currentCatalog' && Boolean(skillTriggerPolicyPlugin.manifest.skills);
 }
 
 function normalizeGeneratedArtifactForUninstall(
@@ -927,7 +942,7 @@ export async function rollbackArtifacts(
 async function uninstallTargetOnPlatform(
   target: ResolvedPluginTarget,
   platform: PlatformName,
-  options: CommandOptions,
+  options: UninstallCommandOptions,
   runtime: UninstallCommandRuntime,
 ): Promise<{ warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const context = createCommandExecutionContext(runtime);
@@ -1029,6 +1044,12 @@ async function uninstallTargetOnPlatform(
   }
 
   const baselineLedger = await readInstalledLedger(env);
+  const scopeRecord = await getScopeRecordForUninstall(
+    baselineLedger,
+    platform,
+    target.pluginName,
+    options,
+  );
   const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
   const baselineTracking = await readTrackingManifest(trackingDir);
   const trackedArtifacts = getTrackingRecord(baselineTracking, target.pluginName)?.artifacts ?? [];
@@ -1069,12 +1090,7 @@ async function uninstallTargetOnPlatform(
         scope: options.scope,
         cwd: options.cwd,
         context,
-        scopeRecord: await getScopeRecordForUninstall(
-          baselineLedger,
-          platform,
-          target.pluginName,
-          options,
-        ),
+        scopeRecord,
         currentPlugin: target.currentPlugin,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
@@ -1107,8 +1123,11 @@ async function uninstallTargetOnPlatform(
           pluginName: target.pluginName,
           platform,
           ledgerAfterUninstall: nextLedger,
-          embeddedRoot: await resolveEmbeddedPluginsRoot(),
+          embeddedRoot: getEmbeddedPluginsRootCandidate(),
           marketplaceRoot: resolveAwHome(env),
+          policyPlugin: target.embeddedPlugin ?? target.currentPlugin ?? target.plugin,
+          fallbackSourcePluginRoot: target.currentPlugin?.rootDir,
+          force: options.force === true,
         });
         warnings.push(...rematerialization.warnings);
         materializationCommitted = rematerialization.materialization?.committed === true;
@@ -1243,7 +1262,7 @@ async function uninstallTargetOnPlatform(
 export async function uninstallTargetsOnPlatforms(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
-  options: CommandOptions,
+  options: UninstallCommandOptions,
   runtime: UninstallCommandRuntime = {},
 ): Promise<{ warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const warnings: string[] = [];
@@ -1262,7 +1281,7 @@ export async function uninstallTargetsOnPlatforms(
 
 export async function uninstallCommand(
   pluginNames: string[],
-  rawOptions: RawCommandOptions,
+  rawOptions: RawUninstallCommandOptions,
   runtime: UninstallCommandRuntime = {},
 ): Promise<{
   platforms: string[];
@@ -1273,14 +1292,15 @@ export async function uninstallCommand(
   const options = normalizeCommandOptions(rawOptions, {
     defaultScope: 'user',
     defaultPlatform: 'auto',
-  });
+  }) as UninstallCommandOptions;
+  options.force = rawOptions.force === true;
   if (pluginNames.length === 0) {
     throw new Error('uninstall 命令至少需要一个插件名。非交互模式下请运行 `aw uninstall <插件名>`。');
   }
 
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
-  const targets = await loadPluginTargetsForCommand(
+  const targets = await loadPluginTargetsForRemovalCommand(
     options.cwd,
     options.scope,
     pluginNames,

@@ -1,4 +1,7 @@
+import path from 'node:path';
+
 import chalk from 'chalk';
+import fs from 'fs-extra';
 
 import { CommandWarningError, isCommandWarningError } from '../types.js';
 import { ClaudeAdapter } from '../adapters/claude.js';
@@ -48,7 +51,10 @@ import {
   normalizeCodexCapabilitySnapshot,
   requiresCodexNativePlugin,
 } from '../utils/codex-project-surface.js';
-import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import {
+  readPluginManifest,
+  resolvePluginsFromCatalog,
+} from '../utils/manifest.js';
 import {
   getTrackingArtifactIntegrityErrors,
   getTrackingRecord,
@@ -62,7 +68,10 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
 } from '../utils/paths.js';
-import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import {
+  resolveActiveLocalBundle,
+  resolveCurrentCatalog,
+} from '../utils/plugin-catalog.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import {
   formatMarketplaceProductsForError,
@@ -1146,6 +1155,114 @@ export async function loadPluginTargetsForCommand(
     allowHistoricalFallback: options.allowHistoricalFallback,
     env,
   })).targets;
+}
+
+async function tryReadBundlePluginAt(
+  pluginRoot: string,
+): Promise<PluginMeta | null> {
+  if (!(await fs.pathExists(path.join(pluginRoot, '.agents-plugin', 'plugin.json')))) {
+    return null;
+  }
+
+  try {
+    return await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCurrentBundlePluginForRemoval(
+  pluginName: string,
+  env: NodeJS.ProcessEnv,
+): Promise<PluginMeta | null> {
+  try {
+    const catalog = await resolveCurrentCatalog(env);
+    const plugin = await tryReadBundlePluginAt(path.join(catalog.rootDir, 'plugins', pluginName));
+    if (plugin) {
+      return plugin;
+    }
+  } catch {
+    // Fall back to the active local bundle or historical metadata when the
+    // embedded catalog is unavailable during cleanup-oriented commands.
+  }
+
+  const activeLocalBundle = await resolveActiveLocalBundle(pluginName, env);
+  if (!activeLocalBundle) {
+    return null;
+  }
+
+  return tryReadBundlePluginAt(activeLocalBundle);
+}
+
+async function resolveEmbeddedBundlePluginForRemoval(
+  pluginName: string,
+): Promise<PluginMeta | undefined> {
+  try {
+    return (await tryReadBundlePluginAt(
+      path.join(await resolveEmbeddedPluginsRoot(), 'plugins', pluginName),
+    )) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function loadPluginTargetsForRemovalCommand(
+  cwd: string,
+  scope: Scope,
+  pluginNames?: string[],
+  options: {
+    allowHistoricalFallback?: boolean;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<ResolvedPluginTarget[]> {
+  if (!pluginNames || pluginNames.length === 0) {
+    return [];
+  }
+
+  const env = options.env ?? process.env;
+  const ledger = options.allowHistoricalFallback
+    ? await readInstalledLedger(env)
+    : undefined;
+
+  return Promise.all(pluginNames.map(async (pluginName) => {
+    const [currentPlugin, embeddedPlugin] = await Promise.all([
+      resolveCurrentBundlePluginForRemoval(pluginName, env),
+      resolveEmbeddedBundlePluginForRemoval(pluginName),
+    ]);
+
+    if (currentPlugin) {
+      return {
+        pluginName,
+        plugin: currentPlugin,
+        currentPlugin,
+        embeddedPlugin,
+        source: 'currentCatalog' as const,
+      };
+    }
+
+    if (embeddedPlugin && await resolveActiveLocalBundle(pluginName, env)) {
+      return {
+        pluginName,
+        plugin: embeddedPlugin,
+        currentPlugin: embeddedPlugin,
+        embeddedPlugin,
+        source: 'currentCatalog' as const,
+      };
+    }
+
+    if (!options.allowHistoricalFallback) {
+      throw new Error(`Unknown plugin "${pluginName}".`);
+    }
+
+    return createHistoricalPluginTarget(
+      cwd,
+      scope,
+      pluginName,
+      embeddedPlugin,
+      env,
+      ledger,
+    );
+  }));
 }
 
 export function hasScopeManagedEvidence(plugin: PluginStatusReport): boolean {

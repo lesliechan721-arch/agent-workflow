@@ -2855,6 +2855,49 @@ describe('CodexAdapter', () => {
     ).resolves.toBe(false);
   });
 
+  it('falls back to deleting user codex skills when the embedded bundle is invalid', async () => {
+    const { cwd, embeddedRoot, env } = await makeWorkspace();
+    const skillPath = path.join(
+      env.AW_HOME!,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'commit',
+    );
+    await fs.outputFile(path.join(skillPath, 'SKILL.md'), '# dynamic\n', 'utf8');
+    await fs.outputFile(path.join(skillPath, 'agents', 'openai.yaml'), 'model: gpt-5\n', 'utf8');
+    await fs.remove(
+      path.join(
+        embeddedRoot,
+        'plugins',
+        'git-commit',
+        'codex',
+        'skills',
+        'commit',
+        'agents',
+        'openai.yaml',
+      ),
+    );
+
+    await expect(
+      pruneCodexTrackedArtifacts({
+        cwd,
+        scope: 'user',
+        env,
+        pluginName: 'git-commit',
+        artifacts: [{
+          path: skillPath,
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: 'commit',
+          target: 'codex.skill',
+        }],
+      }),
+    ).resolves.toBeUndefined();
+    await expect(fs.pathExists(skillPath)).resolves.toBe(false);
+  });
+
   it('detects enabled higher-priority current/tree/repo layers in user scope status', async () => {
     const { repoRoot, cwd, embeddedRoot, env } = await makeWorkspace();
     process.env.AW_HOME = env.AW_HOME;

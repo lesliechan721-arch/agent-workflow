@@ -80,12 +80,14 @@ aw install git-commit another-plugin -p claude
 ### `aw uninstall`
 
 ```bash
-aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [--script-timeout <ms>] [-j|--json]
+aw uninstall [插件名...] [-s project|user] [-p codex|claude|both|auto] [--script-timeout <ms>] [--force] [-j|--json]
 ```
 
 参数与 `install` 相同。卸载会清理当前 scope 里 AW 管理的平台原生注册、repo-visible artifacts、project artifact identity、dynamic diagnostic cache 和 install record，但默认保留 AW 自管配置；需要删除配置时运行 `aw config reset <插件名> --yes`，或在 `aw` 主控制台里进入配置流程。Codex project scope 只清理当前仓库里 AW 管理的 repo-visible artifacts，不会删除用户级 Codex native plugin 状态。`--json` receipt 会包含清理动作、native 结果、artifact 结果、warnings 和 next steps。
 
 如果目标仍被其它已安装插件依赖，`aw uninstall` 会拒绝单独卸载，并提示先卸载依赖它的插件。父插件成功卸载后，AW 会反向检查自动依赖：如果某个自动安装的依赖没有可信 incoming edge，只给出手动处理建议，不会自动删除。`aw uninstall` 仍然依赖可信 dependency index 做跨 scope 删除保护；但 `aw cleanup` 是用户显式确认的残留收口入口，只要 AW 能定位到要删的残留，并且没有已知 dependents，命令就会继续执行，不再把用户卡回“重装一遍”或手动改文件。
+
+当内置 bundle 不可用且 shared skill runtime 无法用可验证来源重放时，普通 `aw uninstall` 会失败关闭，避免把 runtime 静默回滚到旧 skill 子树。确认要继续删除安装状态并把后续修复交给 `status` / `repair` 时，可显式加 `--force`。
 
 ---
 
@@ -316,6 +318,7 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 | `-D` | `--debug` | `install` / `uninstall` / `upgrade` / `status` |
 | `-j` | `--json` | `init` / `install` / `uninstall` / `upgrade` / `config` / `status` |
 | `-f` | `--force` | `init` |
+| 无 | `--force` | `uninstall` / `cleanup` |
 
 ---
 

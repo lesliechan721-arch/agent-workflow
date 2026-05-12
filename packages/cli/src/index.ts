@@ -751,13 +751,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--force', 'continue uninstall when shared runtime replay cannot be verified', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (
       plugins: string[],
-      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string; json?: boolean } & RawDiagnosticsOptions,
+      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string; force?: boolean; json?: boolean } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('uninstall', rawOptions);
       const receipt = await runActionWithContext(
@@ -766,7 +767,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           const commandOptions = normalizeCommandOptions({
             cwd,
             ...rawOptions,
-          });
+          }) as ReturnType<typeof normalizeCommandOptions> & { force?: boolean };
+          commandOptions.force = rawOptions.force === true;
           assertUninstallPluginsProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',

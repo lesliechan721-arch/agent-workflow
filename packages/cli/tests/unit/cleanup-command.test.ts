@@ -18,6 +18,7 @@ import {
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { removeCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
+import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -165,6 +166,7 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
 }
 
 afterEach(async () => {
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -259,6 +261,81 @@ describe('cleanup command (P9)', () => {
     const index = await fs.readJson(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     expect(index.records).toEqual([]);
     expect(codex.uninstallPluginCalls).toEqual(['git-commit']);
+  });
+
+  it('requires --force before cleaning a shared runtime owner when the embedded bundle is unavailable', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    const ownerPath = path.join(
+      builder.paths.awHome,
+      'shared-runtime-owners',
+      'codex',
+      `${target.pluginSlug}.${target.pluginHash}.json`,
+    );
+
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeNativeMarker(target, 'install');
+    await builder.writeSharedRuntimeOwner(target, recordPath);
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+
+    setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
+
+    const runtime = {
+      env: {
+        ...process.env,
+        AW_HOME: builder.paths.awHome,
+        AW_CODEX_HOME: builder.paths.codexHome,
+        AW_CLAUDE_HOME: builder.paths.claudeHome,
+      },
+      p9TargetResolver: async () => {
+        throw new Error('synthetic target resolution failure');
+      },
+      adapters: {
+        codex: new FakeAdapter(),
+        claude: new FakeAdapter(),
+      } satisfies Record<PlatformName, PlatformAdapter>,
+    };
+
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        runtime,
+      ),
+    ).rejects.toThrow(/如需跳过 runtime 重放并强制清理 owner，请加 --force/);
+    await expect(fs.pathExists(ownerPath)).resolves.toBe(true);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(true);
+
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        force: true,
+      },
+      runtime,
+    );
+
+    expect(result.warnings.join('\n')).toContain('embedded bundle 不可用');
+    expect(result.warnings.join('\n')).toContain('已因 --force 仅清理 owner');
+    await expect(fs.pathExists(ownerPath)).resolves.toBe(false);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
   });
 
   it('prunes stale dependency-index entries without deleting project files', async () => {

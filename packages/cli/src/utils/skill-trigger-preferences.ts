@@ -9,6 +9,7 @@ import type {
   InstalledLedger,
   InstalledScopeInstallOptions,
   InstalledScopeRecord,
+  LifecycleConfigSnapshotMetadata,
   PlatformName,
   PluginMeta,
   Scope,
@@ -17,6 +18,7 @@ import type {
 } from '../types.js';
 import { renderCodexOpenAiYamlWithAllowImplicitInvocation } from './codex-skill-staging.js';
 import { readPluginManifest } from './manifest.js';
+import { calculateFileDigest, calculatePluginBundleFingerprint } from './plugin-scripts.js';
 
 type ParsedTriggerBoolean = boolean | 'absent';
 
@@ -46,6 +48,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function createTempDirectoryName(prefix: string): string {
   return `.${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isInsidePath(childPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, childPath);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function serializeComparableValue(value: unknown): string {
@@ -80,6 +87,14 @@ async function listSkillDirectories(rootDir: string): Promise<string[]> {
 
 function getEmbeddedPluginRoot(embeddedRoot: string, pluginName: string): string {
   return path.join(embeddedRoot, 'plugins', pluginName);
+}
+
+function getSkillTriggerSourcePluginRoot(options: {
+  embeddedRoot: string;
+  pluginName: string;
+  sourcePluginRoot?: string;
+}): string {
+  return options.sourcePluginRoot ?? getEmbeddedPluginRoot(options.embeddedRoot, options.pluginName);
 }
 
 function getMarketplacePluginRoot(marketplaceRoot: string, pluginName: string): string {
@@ -329,6 +344,247 @@ async function marketplacePlatformSkillsRootExists(
   );
 }
 
+type SkillTriggerReplaySourceValidationResult =
+  | {
+    status: 'ok';
+    sourcePluginRoot: string;
+  }
+  | {
+    status: 'invalid';
+    reason: string;
+  };
+
+type SnapshotReplayValidationResult =
+  | {
+    status: 'ok';
+    sourcePluginRoot: string;
+  }
+  | {
+    status: 'invalid';
+    reason: string;
+  };
+
+async function validateSkillTriggerReplaySource(options: {
+  pluginName: string;
+  platform: PlatformName;
+  sourcePluginRoot: string;
+}): Promise<SkillTriggerReplaySourceValidationResult> {
+  let sourcePluginRoot: string;
+  let plugin: PluginMeta;
+  try {
+    sourcePluginRoot = await fs.realpath(options.sourcePluginRoot);
+    plugin = await readPluginManifest(sourcePluginRoot, { mode: 'bundle' });
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `source bundle manifest 不可验证：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (plugin.manifest.name !== options.pluginName) {
+    return {
+      status: 'invalid',
+      reason: `source bundle 属于 ${plugin.manifest.name}，不是 ${options.pluginName}`,
+    };
+  }
+
+  const skillsRoot = getPlatformSkillsRoot(sourcePluginRoot, options.platform);
+  if (!(await fs.pathExists(skillsRoot))) {
+    return {
+      status: 'invalid',
+      reason: `缺少 ${options.platform} skill source 子树`,
+    };
+  }
+
+  let resolution: SkillTriggerPolicyResolution;
+  try {
+    resolution = await resolveSkillTriggerPoliciesFromPluginRoot({
+      pluginRoot: sourcePluginRoot,
+      pluginName: plugin.manifest.name,
+      manifestPath: plugin.manifestPath,
+      manifest: plugin.manifest,
+      platform: options.platform,
+    });
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `skill trigger policy 不可解析：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const diagnostics: SkillTriggerDiagnostic[] = [];
+  for (const policy of resolution.policies) {
+    const filePath = options.platform === 'codex'
+      ? policy.codexFilePath
+      : policy.claudeFilePath;
+    try {
+      if (options.platform === 'codex') {
+        await parseCodexSkillMetadata(filePath);
+      } else {
+        await parseClaudeSkillMetadata(filePath);
+      }
+    } catch (error) {
+      diagnostics.push({
+        pluginName: options.pluginName,
+        platform: options.platform,
+        skillName: policy.skillName,
+        filePath,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (diagnostics.length > 0) {
+    return {
+      status: 'invalid',
+      reason: `skill metadata 不可验证：${formatSignatureDiagnostics(diagnostics)}`,
+    };
+  }
+
+  return {
+    status: 'ok',
+    sourcePluginRoot,
+  };
+}
+
+async function validateLifecycleSnapshotForSkillTriggerReplay(options: {
+  pluginName: string;
+  platform: PlatformName;
+  snapshot: LifecycleConfigSnapshotMetadata;
+  currentPlugin?: PluginMeta;
+  currentSourcePluginRoot?: string;
+}): Promise<SnapshotReplayValidationResult> {
+  const { snapshot } = options;
+
+  if (snapshot.pluginName !== options.pluginName) {
+    return {
+      status: 'invalid',
+      reason: `snapshot 属于 ${snapshot.pluginName}，不是 ${options.pluginName}`,
+    };
+  }
+
+  let snapshotRoot: string;
+  let bundleRoot: string;
+  let manifestPath: string;
+  try {
+    snapshotRoot = await fs.realpath(snapshot.snapshotRoot);
+    bundleRoot = await fs.realpath(snapshot.bundleRoot);
+    const expectedBundleRoot = await fs.realpath(path.join(snapshotRoot, 'bundle'));
+    if (bundleRoot !== expectedBundleRoot || !isInsidePath(bundleRoot, snapshotRoot)) {
+      return {
+        status: 'invalid',
+        reason: 'snapshot bundle root 不在 snapshot root 内',
+      };
+    }
+
+    manifestPath = await fs.realpath(snapshot.manifestPath);
+    if (!isInsidePath(manifestPath, bundleRoot)) {
+      return {
+        status: 'invalid',
+        reason: 'snapshot manifest path 不在 bundle root 内',
+      };
+    }
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `snapshot 路径不可用：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  try {
+    const [manifestDigest, bundleFingerprint, snapshotPlugin] = await Promise.all([
+      calculateFileDigest(manifestPath),
+      calculatePluginBundleFingerprint(bundleRoot),
+      readPluginManifest(bundleRoot, { mode: 'bundle' }),
+    ]);
+    if (manifestDigest !== snapshot.sourceManifestDigest) {
+      return {
+        status: 'invalid',
+        reason: 'snapshot manifest digest 与 ledger metadata 不一致',
+      };
+    }
+    if (bundleFingerprint !== snapshot.bundleFingerprint) {
+      return {
+        status: 'invalid',
+        reason: 'snapshot bundle fingerprint 与 ledger metadata 不一致',
+      };
+    }
+    if (
+      snapshotPlugin.manifest.name !== snapshot.pluginName ||
+      snapshotPlugin.manifest.version !== snapshot.pluginVersion
+    ) {
+      return {
+        status: 'invalid',
+        reason: 'snapshot manifest identity 与 ledger metadata 不一致',
+      };
+    }
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `snapshot 内容不可验证：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (options.currentPlugin && options.currentPlugin.manifest.version !== snapshot.pluginVersion) {
+    return {
+      status: 'invalid',
+      reason: `snapshot version ${snapshot.pluginVersion} 与当前 bundle version ${options.currentPlugin.manifest.version} 不一致`,
+    };
+  }
+
+  if (options.currentSourcePluginRoot) {
+    try {
+      const currentPlugin = await readPluginManifest(options.currentSourcePluginRoot, { mode: 'bundle' });
+      if (currentPlugin.manifest.name !== options.pluginName) {
+        return {
+          status: 'invalid',
+          reason: `当前 bundle 属于 ${currentPlugin.manifest.name}，不是 ${options.pluginName}`,
+        };
+      }
+      if (currentPlugin.manifest.version !== snapshot.pluginVersion) {
+        return {
+          status: 'invalid',
+          reason: `snapshot version ${snapshot.pluginVersion} 与当前 bundle version ${currentPlugin.manifest.version} 不一致`,
+        };
+      }
+    } catch (error) {
+      return {
+        status: 'invalid',
+        reason: `当前 bundle 不可验证：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  } else if (!options.currentPlugin) {
+    return {
+      status: 'invalid',
+      reason: '缺少当前 bundle 参照，无法判断 lifecycle snapshot 是否过期',
+    };
+  }
+
+  if (!(await fs.pathExists(getPlatformSkillsRoot(bundleRoot, options.platform)))) {
+    return {
+      status: 'invalid',
+      reason: `snapshot 缺少 ${options.platform} skill source 子树`,
+    };
+  }
+
+  const sourceValidation = await validateSkillTriggerReplaySource({
+    pluginName: options.pluginName,
+    platform: options.platform,
+    sourcePluginRoot: bundleRoot,
+  });
+  if (sourceValidation.status !== 'ok') {
+    return {
+      status: 'invalid',
+      reason: `snapshot source 不可用于 skill trigger replay：${sourceValidation.reason}`,
+    };
+  }
+
+  return {
+    status: 'ok',
+    sourcePluginRoot: sourceValidation.sourcePluginRoot,
+  };
+}
+
 function getSkillTriggerApplicabilityFromAllowInstallOverrides(
   values: boolean[],
 ): SkillTriggerApplicability {
@@ -435,12 +691,14 @@ export async function resolveSkillTriggerPolicies(options: {
   embeddedRoot: string;
   pluginName: string;
   platform: PlatformName;
+  policyPlugin?: PluginMeta;
+  sourcePluginRoot?: string;
 }): Promise<SkillTriggerPolicyResolution> {
-  const pluginRoot = getEmbeddedPluginRoot(options.embeddedRoot, options.pluginName);
-  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  const pluginRoot = getSkillTriggerSourcePluginRoot(options);
+  const plugin = options.policyPlugin ?? await readPluginManifest(pluginRoot, { mode: 'bundle' });
   return resolveSkillTriggerPoliciesFromPluginRoot({
     pluginRoot,
-    pluginName: options.pluginName,
+    pluginName: plugin.manifest.name,
     manifestPath: plugin.manifestPath,
     manifest: plugin.manifest,
     platform: options.platform,
@@ -666,48 +924,42 @@ export async function patchClaudeSkillFrontmatter(
 }
 
 async function copyEmbeddedSkillsToStaging(
-  embeddedRoot: string,
-  pluginName: string,
+  sourcePluginRoot: string,
   platform: PlatformName,
   stagingSkillsRoot: string,
 ): Promise<void> {
-  const embeddedSkillsRoot = getPlatformSkillsRoot(
-    getEmbeddedPluginRoot(embeddedRoot, pluginName),
-    platform,
-  );
-  if (!(await fs.pathExists(embeddedSkillsRoot))) {
-    throw new Error(`缺少 embedded skills 子树：${embeddedSkillsRoot}`);
+  const sourceSkillsRoot = getPlatformSkillsRoot(sourcePluginRoot, platform);
+  if (!(await fs.pathExists(sourceSkillsRoot))) {
+    throw new Error(`缺少 skill source 子树：${sourceSkillsRoot}`);
   }
 
-  await fs.copy(embeddedSkillsRoot, stagingSkillsRoot, { overwrite: true });
+  await fs.copy(sourceSkillsRoot, stagingSkillsRoot, { overwrite: true });
 }
 
 async function resetStagingSkillsToPristine(
-  embeddedRoot: string,
-  pluginName: string,
+  sourcePluginRoot: string,
   platform: PlatformName,
   stagingSkillsRoot: string,
 ): Promise<void> {
   await fs.remove(stagingSkillsRoot);
-  await copyEmbeddedSkillsToStaging(embeddedRoot, pluginName, platform, stagingSkillsRoot);
+  await copyEmbeddedSkillsToStaging(sourcePluginRoot, platform, stagingSkillsRoot);
 }
 
 async function copyEmbeddedSkillToStaging(
-  embeddedRoot: string,
-  pluginName: string,
+  sourcePluginRoot: string,
   platform: PlatformName,
   skillName: string,
   stagingSkillRoot: string,
 ): Promise<void> {
-  const embeddedSkillRoot = path.join(
-    getPlatformSkillsRoot(getEmbeddedPluginRoot(embeddedRoot, pluginName), platform),
+  const sourceSkillRoot = path.join(
+    getPlatformSkillsRoot(sourcePluginRoot, platform),
     skillName,
   );
-  if (!(await fs.pathExists(embeddedSkillRoot))) {
-    throw new Error(`缺少 embedded skill 目录：${embeddedSkillRoot}`);
+  if (!(await fs.pathExists(sourceSkillRoot))) {
+    throw new Error(`缺少 skill source 目录：${sourceSkillRoot}`);
   }
 
-  await fs.copy(embeddedSkillRoot, stagingSkillRoot, { overwrite: true });
+  await fs.copy(sourceSkillRoot, stagingSkillRoot, { overwrite: true });
 }
 
 async function replaceSkillsSubtree(
@@ -1339,6 +1591,8 @@ export async function materializeSkillTriggerPreference(options: {
   platform: PlatformName;
   resolvedOptions: { skillTriggerPreference: SkillTriggerPreference };
   embeddedRoot: string;
+  policyPlugin?: PluginMeta;
+  sourcePluginRoot?: string;
   target?: SkillTriggerMaterializationTarget;
   marketplaceRootOrStagingRoot?: string;
   mode: SkillTriggerMaterializationMode;
@@ -1355,10 +1609,13 @@ export async function materializeSkillTriggerPreference(options: {
   if (!target) {
     throw new Error('materializeSkillTriggerPreference 缺少 materialization target。');
   }
+  const sourcePluginRoot = getSkillTriggerSourcePluginRoot(options);
   const resolution = await resolveSkillTriggerPolicies({
     embeddedRoot: options.embeddedRoot,
     pluginName: options.pluginName,
     platform: options.platform,
+    policyPlugin: options.policyPlugin,
+    sourcePluginRoot,
   });
 
   const warnings: string[] = [];
@@ -1440,8 +1697,7 @@ export async function materializeSkillTriggerPreference(options: {
       );
 
       await copyEmbeddedSkillToStaging(
-        options.embeddedRoot,
-        options.pluginName,
+        sourcePluginRoot,
         options.platform,
         policy.skillName,
         stagingSkillRoot,
@@ -1488,8 +1744,7 @@ export async function materializeSkillTriggerPreference(options: {
 
     await fs.ensureDir(targetParent);
     await copyEmbeddedSkillsToStaging(
-      options.embeddedRoot,
-      options.pluginName,
+      sourcePluginRoot,
       options.platform,
       stagingSkillsRoot,
     );
@@ -1509,8 +1764,7 @@ export async function materializeSkillTriggerPreference(options: {
       );
       patchedSkills.length = 0;
       await resetStagingSkillsToPristine(
-        options.embeddedRoot,
-        options.pluginName,
+        sourcePluginRoot,
         options.platform,
         stagingSkillsRoot,
       );
@@ -1920,18 +2174,15 @@ export async function rematerializeSkillTriggerPreferenceAfterUninstall(options:
   ledgerAfterUninstall: InstalledLedger;
   embeddedRoot: string;
   marketplaceRoot: string;
+  policyPlugin?: PluginMeta;
+  fallbackSourcePluginRoot?: string;
+  force?: boolean;
 }): Promise<SkillTriggerPostUninstallMaterializationResult> {
   if (options.ledgerAfterUninstall.ledgerState.status !== 'available') {
     return {
       warnings: [
         `[${options.platform}/${options.pluginName}] installed.json 处于 degraded 状态，跳过卸载后的 skill trigger 重选。`,
       ],
-    };
-  }
-
-  if (!(await embeddedPlatformSkillsRootExists(options.embeddedRoot, options.pluginName, options.platform))) {
-    return {
-      warnings: [],
     };
   }
 
@@ -1946,6 +2197,66 @@ export async function rematerializeSkillTriggerPreferenceAfterUninstall(options:
     pluginName: options.pluginName,
     platform: options.platform,
   });
+
+  const embeddedSourceValidation = await validateSkillTriggerReplaySource({
+    pluginName: options.pluginName,
+    platform: options.platform,
+    sourcePluginRoot: getEmbeddedPluginRoot(options.embeddedRoot, options.pluginName),
+  });
+  const embeddedSourceAvailable = embeddedSourceValidation.status === 'ok';
+  let fallbackSourcePluginRoot: string | undefined;
+
+  if (!embeddedSourceAvailable) {
+    const snapshot = effectiveRecord?.record.lifecycleConfigSnapshot;
+    if (snapshot) {
+      const snapshotValidation = await validateLifecycleSnapshotForSkillTriggerReplay({
+        pluginName: options.pluginName,
+        platform: options.platform,
+        snapshot,
+        currentPlugin: options.policyPlugin,
+        currentSourcePluginRoot: options.fallbackSourcePluginRoot,
+      });
+      if (snapshotValidation.status === 'ok') {
+        fallbackSourcePluginRoot = snapshotValidation.sourcePluginRoot;
+      } else {
+        const message =
+          `[${options.platform}/${options.pluginName}] lifecycle snapshot bundle 不可用于卸载后的 skill trigger 重选：${snapshotValidation.reason}`;
+        if (options.force === true) {
+          return {
+            warnings: [`${message}；已因 --force 跳过重放。`],
+          };
+        }
+        throw new Error(`${message}。如需继续卸载并保留后续 repair 处理，请加 --force。`);
+      }
+    } else if (options.fallbackSourcePluginRoot) {
+      fallbackSourcePluginRoot = options.fallbackSourcePluginRoot;
+    }
+  }
+
+  const fallbackSourceValidation = !embeddedSourceAvailable && fallbackSourcePluginRoot
+    ? await validateSkillTriggerReplaySource({
+        pluginName: options.pluginName,
+        platform: options.platform,
+        sourcePluginRoot: fallbackSourcePluginRoot,
+      })
+    : undefined;
+  const fallbackSourceAvailable = fallbackSourceValidation?.status === 'ok';
+  if (fallbackSourceValidation?.status === 'ok') {
+    fallbackSourcePluginRoot = fallbackSourceValidation.sourcePluginRoot;
+  }
+  if (!embeddedSourceAvailable && !fallbackSourceAvailable) {
+    const embeddedReason = embeddedSourceValidation.status === 'invalid'
+      ? `（${embeddedSourceValidation.reason}）`
+      : '';
+    const fallbackReason = fallbackSourceValidation?.status === 'invalid'
+      ? `；fallback source 不可用：${fallbackSourceValidation.reason}`
+      : '';
+    return {
+      warnings: [
+        `[${options.platform}/${options.pluginName}] embedded bundle 不可用${embeddedReason}，且缺少可回放的 lifecycle snapshot bundle，跳过卸载后的 skill trigger 重选${fallbackReason}。`,
+      ],
+    };
+  }
   const materialization = await materializeSkillTriggerPreference({
     pluginName: options.pluginName,
     platform: options.platform,
@@ -1953,6 +2264,10 @@ export async function rematerializeSkillTriggerPreferenceAfterUninstall(options:
       skillTriggerPreference: effectiveRecord?.preference ?? 'default',
     },
     embeddedRoot: options.embeddedRoot,
+    policyPlugin: embeddedSourceAvailable ? options.policyPlugin : undefined,
+    ...(embeddedSourceAvailable || !fallbackSourcePluginRoot
+      ? {}
+      : { sourcePluginRoot: fallbackSourcePluginRoot }),
     marketplaceRootOrStagingRoot: options.marketplaceRoot,
     mode: 'bestEffortReplay',
   });

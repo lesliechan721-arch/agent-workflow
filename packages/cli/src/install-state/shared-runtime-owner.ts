@@ -1,6 +1,6 @@
 import fs from 'fs-extra';
 
-import type { PlatformName, SkillTriggerPreference } from '../types.js';
+import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.js';
 import {
   assessSharedSkillTriggerRuntimeSemantics,
   commitMaterializedSkillTriggerPreference,
@@ -153,11 +153,13 @@ async function verifyOwnerRecordDigest(owner: SharedSkillTriggerRuntimeOwner): P
   return sha256Hex(await fs.readFile(owner.ownerRecordPath)) === owner.ownerRecordDigest;
 }
 
-async function createMaterializationStage(options: {
+export async function createSharedSkillTriggerRuntimeMaterializationStage(options: {
   pluginName: string;
   platform: PlatformName;
   preference: SkillTriggerPreference;
   embeddedRoot: string;
+  sourcePluginRoot?: string;
+  policyPlugin?: PluginMeta;
   target: SkillTriggerMaterializationTarget;
   mode: SkillTriggerMaterializationMode;
 }): Promise<{ stage: InstallStateTransactionStage; warnings: string[] }> {
@@ -168,6 +170,8 @@ async function createMaterializationStage(options: {
       skillTriggerPreference: options.preference,
     },
     embeddedRoot: options.embeddedRoot,
+    sourcePluginRoot: options.sourcePluginRoot,
+    policyPlugin: options.policyPlugin,
     target: options.target,
     mode: options.mode,
   });
@@ -447,7 +451,7 @@ export async function createSharedSkillTriggerRuntimeUpsertStages(options: {
   }
 
   if (options.plan.shouldMaterializeRuntime) {
-    const materialization = await createMaterializationStage({
+    const materialization = await createSharedSkillTriggerRuntimeMaterializationStage({
       pluginName: options.recordFile.record.pluginName,
       platform: options.recordFile.record.platform,
       preference: preferenceFromRecord(options.recordFile),
@@ -494,7 +498,7 @@ export async function createSharedSkillTriggerRuntimeRemovalStages(options: {
   }
 
   if (options.plan.shouldMaterializeRuntime) {
-    const materialization = await createMaterializationStage({
+    const materialization = await createSharedSkillTriggerRuntimeMaterializationStage({
       pluginName: options.pluginName,
       platform: options.platform,
       preference: 'default',

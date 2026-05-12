@@ -4,8 +4,12 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { InstalledLedger } from '../../src/types.js';
+import type { InstalledLedger, LifecycleConfigSnapshotMetadata } from '../../src/types.js';
 import { createAvailableLedger } from '../../src/utils/local-marketplace.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
 import {
   buildSkillTriggerMaterializationSignature,
   commitMaterializedSkillTriggerPreference,
@@ -80,6 +84,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 async function writeBundlePlugin(options: {
   rootDir: string;
   pluginName?: string;
+  version?: string;
   skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
   artifacts?: {
     targets: Array<Record<string, unknown>>;
@@ -94,7 +99,7 @@ async function writeBundlePlugin(options: {
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
     {
       name: pluginName,
-      version: '0.1.0',
+      version: options.version ?? '0.1.0',
       description: `${pluginName} plugin`,
       skills: './skills',
       skillTriggers: options.skillTriggers,
@@ -127,6 +132,32 @@ async function copyToMarketplace(embeddedRoot: string): Promise<string> {
   const marketplaceRoot = await makeTempDir('aw-skill-trigger-marketplace-');
   await fs.copy(embeddedRoot, marketplaceRoot);
   return marketplaceRoot;
+}
+
+async function createLifecycleSnapshotMetadata(options: {
+  sourcePluginRoot: string;
+  pluginName?: string;
+  pluginVersion?: string;
+}): Promise<LifecycleConfigSnapshotMetadata> {
+  const snapshotRoot = await makeTempDir('aw-skill-trigger-snapshot-');
+  const bundleRoot = path.join(snapshotRoot, 'bundle');
+  await fs.copy(options.sourcePluginRoot, bundleRoot);
+  const manifestPath = path.join(bundleRoot, '.agents-plugin', 'plugin.json');
+
+  return {
+    snapshotRoot,
+    bundleRoot,
+    manifestPath,
+    pluginName: options.pluginName ?? 'git-commit',
+    pluginVersion: options.pluginVersion ?? '0.1.0',
+    sourceManifestDigest: await calculateFileDigest(manifestPath),
+    bundleFingerprint: await calculatePluginBundleFingerprint(bundleRoot),
+    createdAt: '2026-04-28T00:00:00.000Z',
+    createdFrom: {
+      source: 'test',
+      pluginRoot: options.sourcePluginRoot,
+    },
+  };
 }
 
 function codexSkillPath(rootDir: string, skillName = 'commit', pluginName = 'git-commit'): string {
@@ -332,6 +363,135 @@ describe('skill trigger preferences', () => {
     });
     expect(rematerialization.materialization?.generatedArtifacts ?? []).toEqual([]);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_TRUE);
+  });
+
+  it('fails closed instead of replaying a stale lifecycle snapshot when the embedded root is unavailable', async () => {
+    const oldEmbeddedRoot = await makeTempDir('aw-skill-trigger-old-embedded-');
+    const oldPluginRoot = await writeBundlePlugin({
+      rootDir: oldEmbeddedRoot,
+      version: '0.1.0',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_FALSE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const currentEmbeddedRoot = await makeTempDir('aw-skill-trigger-current-embedded-');
+    await writeBundlePlugin({
+      rootDir: currentEmbeddedRoot,
+      version: '0.2.0',
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_FALSE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const marketplaceRoot = await copyToMarketplace(currentEmbeddedRoot);
+    const currentPluginRoot = path.join(marketplaceRoot, 'plugins', 'git-commit');
+    const snapshot = await createLifecycleSnapshotMetadata({
+      sourcePluginRoot: oldPluginRoot,
+      pluginVersion: '0.1.0',
+    });
+
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.2.0',
+      platforms: {
+        claude: {
+          userScope: {
+            ...createLedgerScopeRecord({
+              preference: 'manual',
+              writeOrder: 1,
+            }),
+            resolvedVersion: '0.1.0',
+            lifecycleConfigSnapshot: snapshot,
+          },
+        },
+      },
+    };
+
+    await expect(
+      rematerializeSkillTriggerPreferenceAfterUninstall({
+        pluginName: 'git-commit',
+        platform: 'claude',
+        ledgerAfterUninstall: ledger,
+        embeddedRoot: path.join(marketplaceRoot, 'missing-embedded-root'),
+        marketplaceRoot,
+        fallbackSourcePluginRoot: currentPluginRoot,
+      }),
+    ).rejects.toThrow(/snapshot version 0\.1\.0 与当前 bundle version 0\.2\.0 不一致/);
+
+    const forced = await rematerializeSkillTriggerPreferenceAfterUninstall({
+      pluginName: 'git-commit',
+      platform: 'claude',
+      ledgerAfterUninstall: ledger,
+      embeddedRoot: path.join(marketplaceRoot, 'missing-embedded-root'),
+      marketplaceRoot,
+      fallbackSourcePluginRoot: currentPluginRoot,
+      force: true,
+    });
+
+    expect(forced.materialization).toBeUndefined();
+    expect(forced.warnings.join('\n')).toContain('已因 --force 跳过重放');
+  });
+
+  it('falls back to the current bundle instead of replaying a corrupted embedded source after uninstall', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-embedded-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      skillTriggers: {
+        commit: {
+          allowInstallOverride: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+    const currentPluginRoot = path.join(marketplaceRoot, 'plugins', 'git-commit');
+    await fs.remove(codexSkillPath(embeddedRoot));
+
+    const ledger = createAvailableLedger();
+    ledger.plugins['git-commit'] = {
+      lastResolvedVersion: '0.1.0',
+      platforms: {
+        codex: {
+          userScope: createLedgerScopeRecord({
+            preference: 'manual',
+            writeOrder: 1,
+          }),
+        },
+      },
+    };
+
+    const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      ledgerAfterUninstall: ledger,
+      embeddedRoot,
+      marketplaceRoot,
+      fallbackSourcePluginRoot: currentPluginRoot,
+    });
+
+    expect(rematerialization.warnings).toEqual([]);
+    expect(rematerialization.materialization?.summary.status).toBe('patched');
+    await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_FALSE);
   });
 
   it('materializes Claude manual/auto/default and restores pristine user-invocable values', async () => {

@@ -6,7 +6,7 @@ import {
   type InstallStateRemovalRuntime,
 } from './install-state-removal.js';
 import { normalizeCommandOptions, type RawCommandOptions } from './options.js';
-import { loadPluginTargetsForCommand } from './common.js';
+import { loadPluginTargetsForRemovalCommand } from './common.js';
 import type { PlatformName, Scope } from '../types.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/paths.js';
 
@@ -66,7 +66,7 @@ export interface RawCleanupCommandOptions extends RawCommandOptions {
 }
 
 export interface CleanupCommandRuntime extends InstallStateRemovalRuntime {
-  p9TargetResolver?: typeof loadPluginTargetsForCommand;
+  p9TargetResolver?: typeof loadPluginTargetsForRemovalCommand;
 }
 
 async function resolveProjectKey(platform: PlatformName, cwd: string): Promise<string> {
@@ -151,7 +151,7 @@ export async function cleanupCommand(
   };
   let target = null;
   try {
-    const resolver = runtime.p9TargetResolver ?? loadPluginTargetsForCommand;
+    const resolver = runtime.p9TargetResolver ?? loadPluginTargetsForRemovalCommand;
     const resolved = await resolver(
       options.cwd,
       scope,
