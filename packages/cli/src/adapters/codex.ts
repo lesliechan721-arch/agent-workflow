@@ -3247,6 +3247,14 @@ export class CodexAdapter implements PlatformAdapter {
   }
 
   async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+    await this.installPluginFromMarketplace(plugin, scope);
+  }
+
+  async installPluginFromMarketplace(
+    plugin: PluginMeta,
+    scope: Scope,
+    options: { marketplacePath?: string } = {},
+  ): Promise<void> {
     if (scope === 'project') {
       if (plugin.manifest.apps) {
         throw new Error(
@@ -3339,7 +3347,7 @@ export class CodexAdapter implements PlatformAdapter {
       phase: 'success',
     });
 
-    const marketplacePath = path.join(awHome, '.agents', 'plugins', 'marketplace.json');
+    const marketplacePath = options.marketplacePath ?? path.join(awHome, '.agents', 'plugins', 'marketplace.json');
     const pluginId = normalizeCodexUserPluginId(plugin.manifest.name);
     const installStartedAt = Date.now();
     await this.emitNativeRpcEvent({

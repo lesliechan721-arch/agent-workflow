@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -20,14 +21,20 @@ import type {
   ArtifactState,
   ArtifactTarget,
   GeneratedArtifact,
+  MarketplaceManifest,
   PluginMeta,
   Scope,
+  SkillTriggerPreference,
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
 import { mergeGeneratedArtifacts } from './generated-artifacts.js';
 import { getLocalMarketplaceCodexSkillRoot, readInstalledLedger } from './local-marketplace.js';
-import { patchCodexOpenAiYaml } from './skill-trigger-preferences.js';
+import {
+  commitMaterializedSkillTriggerPreference,
+  materializeSkillTriggerPreference,
+  patchCodexOpenAiYaml,
+} from './skill-trigger-preferences.js';
 import {
   captureCodexNativePluginRollbackBaseline,
   disposeCodexNativePluginRollbackBaseline,
@@ -203,6 +210,18 @@ function createResolvedTarget(plugin: PluginMeta): ResolvedPluginTarget {
   };
 }
 
+function createHistoricalRefreshTarget(
+  currentPlugin: PluginMeta,
+  refreshPlugin: PluginMeta,
+): ResolvedPluginTarget {
+  return {
+    pluginName: currentPlugin.manifest.name,
+    plugin: refreshPlugin,
+    currentPlugin,
+    source: 'historical',
+  };
+}
+
 function formatInstallRecordReadFailure(
   recordRead: InstallStateReadResult<InstallRecordFile>,
 ): string {
@@ -289,6 +308,113 @@ async function resolveHistoricalRefreshPlugin(options: {
   }
 
   return historicalPlugin;
+}
+
+function createSinglePluginCodexMarketplace(plugin: PluginMeta): MarketplaceManifest {
+  return {
+    name: 'aw',
+    owner: {
+      name: 'Agent Workflows',
+      url: 'https://github.com/LeslieChan/agent-workflows',
+    },
+    interface: {
+      displayName: 'Agent Workflows',
+    },
+    plugins: [
+      {
+        name: plugin.manifest.name,
+        source: `./plugins/${plugin.manifest.name}`,
+        description: plugin.manifest.description,
+        ...(plugin.manifest.interface ? { interface: structuredClone(plugin.manifest.interface) } : {}),
+        category: plugin.manifest.marketplace.category,
+        ...(plugin.manifest.marketplace.tags ? { tags: [...plugin.manifest.marketplace.tags] } : {}),
+        strict: plugin.manifest.marketplace.strict,
+        policy: structuredClone(plugin.manifest.marketplace.policy),
+      },
+    ],
+  };
+}
+
+async function stageCodexUserNativeHistoricalMarketplace(options: {
+  plugin: PluginMeta;
+  refreshedArtifacts: readonly GeneratedArtifact[];
+  skillTriggerPreference?: SkillTriggerPreference;
+  env: NodeJS.ProcessEnv;
+}): Promise<{ rootDir: string; marketplacePath: string }> {
+  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-refresh-marketplace-'));
+  const pluginName = options.plugin.manifest.name;
+  const stagedPluginRoot = path.join(stagingRoot, 'plugins', pluginName);
+  try {
+    await fs.copy(options.plugin.rootDir, stagedPluginRoot, {
+      overwrite: true,
+      errorOnExist: false,
+    });
+
+    if (options.skillTriggerPreference) {
+      const materialization = await materializeSkillTriggerPreference({
+        pluginName,
+        platform: 'codex',
+        resolvedOptions: {
+          skillTriggerPreference: options.skillTriggerPreference,
+        },
+        embeddedRoot: stagingRoot,
+        marketplaceRootOrStagingRoot: stagingRoot,
+        mode: 'bestEffortReplay',
+      });
+      await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle)
+        .catch(() => undefined);
+    }
+
+    for (const artifact of options.refreshedArtifacts) {
+      if (artifact.target !== 'codex.skill') {
+        continue;
+      }
+      if (!artifact.artifactKey) {
+        throw new Error(`Artifact "${artifact.id ?? '<unknown>'}" 的 codex.skill 缺少 artifactKey，无法重建 Codex native cache。`);
+      }
+
+      const stagedSkillRoot = getLocalMarketplaceCodexSkillRoot(
+        stagingRoot,
+        pluginName,
+        artifact.artifactKey,
+      );
+      if (artifact.state === 'disabled') {
+        await fs.remove(stagedSkillRoot);
+        continue;
+      }
+
+      const runtimeSkillRoot = path.isAbsolute(artifact.path)
+        ? artifact.path
+        : getLocalMarketplaceCodexSkillRoot(
+            resolveAwHome(options.env),
+            pluginName,
+            artifact.artifactKey,
+          );
+      if (!(await fs.pathExists(runtimeSkillRoot))) {
+        throw new Error(
+          `无法从 historical bundle 重建 Codex native cache：缺少已刷新的 runtime skill ${runtimeSkillRoot}。`,
+        );
+      }
+      await fs.remove(stagedSkillRoot);
+      await fs.ensureDir(path.dirname(stagedSkillRoot));
+      await fs.copy(runtimeSkillRoot, stagedSkillRoot, {
+        overwrite: true,
+        errorOnExist: false,
+      });
+    }
+
+    const marketplacePath = path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json');
+    await fs.outputJson(marketplacePath, createSinglePluginCodexMarketplace(options.plugin), {
+      spaces: 2,
+    });
+    return {
+      rootDir: stagingRoot,
+      marketplacePath,
+    };
+  } catch (error) {
+    await fs.remove(stagingRoot).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function collectRefreshUnits(options: {
@@ -438,9 +564,28 @@ async function executeRefreshUnit(options: {
     | Awaited<ReturnType<typeof captureCodexNativePluginRollbackBaseline>>
     | undefined;
   try {
+    const installRecordRead = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location: {
+        plugin: options.plugin.manifest.name,
+        platform: 'codex',
+        scope: options.unit.scope,
+        ...(options.unit.scope === 'project'
+          ? { projectKey: await resolveCodexProjectKey(options.cwd) }
+          : {}),
+      },
+      env: options.env,
+    });
+    const refreshPlugin = await resolveHistoricalRefreshPlugin({
+      currentPlugin: options.plugin,
+      scope: options.unit.scope,
+      recordRead: installRecordRead,
+    });
+    const refreshTarget = createHistoricalRefreshTarget(options.plugin, refreshPlugin);
+
     if (options.unit.scope === 'project') {
       await preflightCodexProjectWriteSafety({
-        targets: [createResolvedTarget(options.plugin)],
+        targets: [refreshTarget],
         platforms: ['codex'],
         cwd: options.cwd,
         scope: 'project',
@@ -450,7 +595,7 @@ async function executeRefreshUnit(options: {
     }
 
     await preflightDynamicArtifactRefresh({
-      plugin: options.plugin,
+      plugin: refreshPlugin,
       scope: options.unit.scope,
       cwd: options.cwd,
       env: options.env,
@@ -470,23 +615,6 @@ async function executeRefreshUnit(options: {
         options.env,
       );
     }
-    const installRecordRead = await readInstallRecordForLocation({
-      cwd: options.cwd,
-      location: {
-        plugin: options.plugin.manifest.name,
-        platform: 'codex',
-        scope: options.unit.scope,
-        ...(options.unit.scope === 'project'
-          ? { projectKey: await resolveCodexProjectKey(options.cwd) }
-          : {}),
-      },
-      env: options.env,
-    });
-    const refreshPlugin = await resolveHistoricalRefreshPlugin({
-      currentPlugin: options.plugin,
-      scope: options.unit.scope,
-      recordRead: installRecordRead,
-    });
     const ledger = await readInstalledLedger(options.env);
     let skillTriggerPreference =
       installRecordRead.status === 'ok'
@@ -537,7 +665,19 @@ async function executeRefreshUnit(options: {
       }
     }
     if (refreshesCodexUserDynamicSkill) {
-      await adapter.installPlugin(options.plugin, 'user');
+      const stagedMarketplace = await stageCodexUserNativeHistoricalMarketplace({
+        plugin: refreshPlugin,
+        refreshedArtifacts,
+        ...(skillTriggerPreference ? { skillTriggerPreference } : {}),
+        env: options.env,
+      });
+      try {
+        await adapter.installPluginFromMarketplace(refreshPlugin, 'user', {
+          marketplacePath: stagedMarketplace.marketplacePath,
+        });
+      } finally {
+        await fs.remove(stagedMarketplace.rootDir).catch(() => undefined);
+      }
     }
     if (artifactRollbackState) {
       await disposeArtifactRollbackState(artifactRollbackState).catch(() => undefined);

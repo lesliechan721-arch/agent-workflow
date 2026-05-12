@@ -649,10 +649,28 @@ function codexExploreNativeCachePath(env: NodeJS.ProcessEnv, pluginName: string)
   return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, '0.1.0');
 }
 
+function resolveMarketplacePluginRootSync(
+  marketplacePath: string | undefined,
+  fallbackRoot: string,
+  pluginName: string,
+): string {
+  if (!marketplacePath || !fs.existsSync(marketplacePath)) {
+    return fallbackRoot;
+  }
+
+  const marketplaceRoot = path.dirname(path.dirname(path.dirname(marketplacePath)));
+  const marketplace = fs.readJsonSync(marketplacePath) as {
+    plugins?: Array<{ name?: string; source?: string }>;
+  };
+  const source = marketplace.plugins?.find((entry) => entry.name === pluginName)?.source;
+  return source ? path.resolve(marketplaceRoot, source) : fallbackRoot;
+}
+
 function materializeCodexExploreNativePluginSync(
   cwd: string,
   env: NodeJS.ProcessEnv,
   pluginName: string,
+  marketplacePath?: string,
 ): void {
   const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
   const pluginHeader = `[plugins.${JSON.stringify(`${pluginName}@aw`)}]`;
@@ -670,7 +688,12 @@ function materializeCodexExploreNativePluginSync(
   const cachePath = codexExploreNativeCachePath(env, pluginName);
   fs.removeSync(cachePath);
   fs.ensureDirSync(path.dirname(cachePath));
-  fs.copySync(path.join(env.AW_HOME!, 'plugins', pluginName), cachePath, {
+  const pluginRoot = resolveMarketplacePluginRootSync(
+    marketplacePath,
+    path.join(env.AW_HOME!, 'plugins', pluginName),
+    pluginName,
+  );
+  fs.copySync(pluginRoot, cachePath, {
     overwrite: true,
     errorOnExist: false,
   });
@@ -713,8 +736,13 @@ function createCodexExploreAppServerRunner(
           if (input.json?.method !== 'plugin/install') {
             return false;
           }
-          const params = input.json.params as { pluginName?: string } | undefined;
-          materializeCodexExploreNativePluginSync(cwd, env, params?.pluginName ?? 'codex-explore');
+          const params = input.json.params as { marketplacePath?: string; pluginName?: string } | undefined;
+          materializeCodexExploreNativePluginSync(
+            cwd,
+            env,
+            params?.pluginName ?? 'codex-explore',
+            params?.marketplacePath,
+          );
           return true;
         },
         actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
@@ -1297,12 +1325,17 @@ describe('codex-explore integration acceptance', () => {
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
-    const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPlugin').mockImplementation(
-      async (plugin, scope) => {
+    const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPluginFromMarketplace').mockImplementation(
+      async (plugin, scope, options) => {
         if (scope !== 'user') {
           return;
         }
-        materializeCodexExploreNativePluginSync(repoRoot, process.env, plugin.manifest.name);
+        materializeCodexExploreNativePluginSync(
+          repoRoot,
+          process.env,
+          plugin.manifest.name,
+          options?.marketplacePath,
+        );
       },
     );
     const result = await runCliEntry(
@@ -1392,12 +1425,17 @@ describe('codex-explore integration acceptance', () => {
     expect(renderedMarketplaceSkill).toContain('推理强度 `medium`');
     expect(renderedMarketplaceSkill).not.toContain('{{modelReasoningEffort}}');
 
-    const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPlugin').mockImplementation(
-      async (plugin, scope) => {
+    const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPluginFromMarketplace').mockImplementation(
+      async (plugin, scope, options) => {
         if (scope !== 'user') {
           return;
         }
-        materializeCodexExploreNativePluginSync(repoRoot, process.env, plugin.manifest.name);
+        materializeCodexExploreNativePluginSync(
+          repoRoot,
+          process.env,
+          plugin.manifest.name,
+          options?.marketplacePath,
+        );
       },
     );
     const result = await runCliEntry(

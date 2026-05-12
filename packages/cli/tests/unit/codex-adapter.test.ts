@@ -2068,6 +2068,54 @@ describe('CodexAdapter', () => {
     expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/install');
   });
 
+  it('can install Codex user native cache from an explicit marketplace path', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const historicalMarketplacePath = path.join(repoRoot, 'historical-aw', '.agents', 'plugins', 'marketplace.json');
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/install' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
+      },
+    ]);
+    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
+    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
+      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
+      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
+    });
+
+    await adapter.installPluginFromMarketplace(plugin, 'user', {
+      marketplacePath: historicalMarketplacePath,
+    });
+    await installSideEffect;
+
+    const installMessage = appServerHarness.stdinMessages.find((message) =>
+      message.json?.method === 'plugin/install'
+    );
+    expect(installMessage?.json?.params).toMatchObject({
+      marketplacePath: historicalMarketplacePath,
+      pluginName: 'git-commit',
+    });
+    await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toMatchObject({
+      marketplacePath: historicalMarketplacePath,
+    });
+  });
+
   it('fails install when app-server reports unknown method and does not fall back to config-only', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });

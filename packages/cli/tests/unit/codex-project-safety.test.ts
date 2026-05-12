@@ -1180,6 +1180,48 @@ describe('Codex project safety preflight', () => {
     ).rejects.toThrow('[agents.foo]');
   });
 
+  it('uses the historical target plugin for refresh write preflight', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+    });
+    await seedCodexRoleAlias({
+      configPath: resolveCodexPaths(workspace.repoRoot, 'project', workspace.env).configTomlPath,
+      tableKey: 'foo',
+      roleFileRelativePath: 'agents/foo.toml',
+      roleName: 'codex-explorer',
+    });
+    const historicalPlugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'dynamic-artifacts'));
+    const currentPlugin: PluginMeta = {
+      ...historicalPlugin,
+      manifest: {
+        ...structuredClone(historicalPlugin.manifest),
+        artifacts: { targets: [] },
+      },
+    };
+
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        () => preflightCodexProjectWriteSafety({
+          targets: [{
+            pluginName: 'dynamic-artifacts',
+            plugin: historicalPlugin,
+            currentPlugin,
+            source: 'historical',
+          }],
+          platforms: ['codex'],
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          env: workspace.env,
+          operation: 'refresh',
+        }),
+      ),
+    ).rejects.toThrow('[agents.foo]');
+  });
+
   it('fails project role preflight when an unreferenced role file exposes the target final role name', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['dynamic-artifacts'],

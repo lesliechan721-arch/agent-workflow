@@ -114,7 +114,7 @@ plugins/<name>/
    - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
-   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；配置驱动的 Codex skill 用 `codex.skill` + 静态 `skillKey`；renderer 只输出 `ArtifactPlan`，不要直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record；config refresh 会从 install record 的 historical bundle 执行 renderer，不要依赖当前 local marketplace 中可变的 runtime 文件作为模板真值
+   - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；配置驱动的 Codex skill 用 `codex.skill` + 静态 `skillKey`；renderer 只输出 `ArtifactPlan`，不要直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record；config refresh 会从 install record 的 historical bundle 执行 renderer，Codex user dynamic skill 的 native cache 重建也会 staging historical bundle 后叠加本次刷新结果，不要依赖当前 local marketplace 中可变的 runtime 文件作为模板真值
    - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件，不写版本范围、外部来源或 platform override
 6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。

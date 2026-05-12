@@ -278,6 +278,10 @@ function resolvePreflightPlugin(
   target: ResolvedPluginTarget,
   operation: 'install' | 'upgrade' | 'refresh',
 ): PluginMeta {
+  if (operation === 'refresh' && target.source === 'historical') {
+    return target.plugin;
+  }
+
   if (operation !== 'install' && !target.currentPlugin) {
     throw new CodexProjectWriteSafetyError(
       'catalogNotCurrent',

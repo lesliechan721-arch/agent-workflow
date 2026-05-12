@@ -8,11 +8,13 @@ const codexAdapterStatus = vi.fn(async () => ({
   plugins: [{ managedArtifacts: [] }],
 }));
 const codexAdapterInstallExtensions = vi.fn();
+const codexAdapterInstallPluginFromMarketplace = vi.fn();
 
 vi.mock('../../src/adapters/codex.js', () => ({
   CodexAdapter: vi.fn().mockImplementation(() => ({
     status: codexAdapterStatus,
     installExtensions: codexAdapterInstallExtensions,
+    installPluginFromMarketplace: codexAdapterInstallPluginFromMarketplace,
   })),
 }));
 
@@ -27,7 +29,8 @@ vi.mock('../../src/utils/local-marketplace.js', () => ({
 }));
 
 import { reapplyConfigRefresh } from '../../src/utils/artifact-refresh.js';
-import type { GeneratedArtifact, PluginMeta } from '../../src/types.js';
+import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
+import type { GeneratedArtifact, PluginMeta, SkillTriggerPreference } from '../../src/types.js';
 import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
 import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import { stageHistoricalLifecycleRuntime } from '../../src/install-state/runtime-state.js';
@@ -112,6 +115,8 @@ async function writeHistoricalInstallRecord(options: {
   scope: 'project' | 'user';
   artifacts: GeneratedArtifact[];
   historicalVersion?: string;
+  skillTriggerPreference?: SkillTriggerPreference;
+  prepareBundle?: (sourceBundleRoot: string) => Promise<void>;
 }): Promise<string> {
   const sourceBundleRoot = path.join(
     options.root,
@@ -123,6 +128,7 @@ async function writeHistoricalInstallRecord(options: {
   };
   const sourceManifestPath = path.join(sourceBundleRoot, '.agents-plugin', 'plugin.json');
   await fs.outputJson(sourceManifestPath, manifest, { spaces: 2 });
+  await options.prepareBundle?.(sourceBundleRoot);
 
   const [manifestDigest, bundleFingerprint] = await Promise.all([
     calculateFileDigest(sourceManifestPath),
@@ -170,6 +176,9 @@ async function writeHistoricalInstallRecord(options: {
         kind: 'explicit',
         explicitlyRequested: true,
       },
+      ...(options.skillTriggerPreference
+        ? { options: { skillTriggerPreference: options.skillTriggerPreference } }
+        : {}),
       lifecycle: runtimeStage.runtimeRef,
       artifacts: options.artifacts.map((artifact) => ({
         kind: artifact.kind,
@@ -269,6 +278,24 @@ describe('artifact refresh reapply helper', () => {
       status: 'succeeded',
       triggerKeys: ['token'],
     });
+    expect(codexAdapterStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rootDir: historicalBundleRoot,
+        manifest: expect.objectContaining({ version: '0.0.9' }),
+      }),
+      'project',
+    );
+    expect(preflightCodexProjectWriteSafety).toHaveBeenCalledWith(expect.objectContaining({
+      targets: [
+        expect.objectContaining({
+          source: 'historical',
+          plugin: expect.objectContaining({
+            rootDir: historicalBundleRoot,
+            manifest: expect.objectContaining({ version: '0.0.9' }),
+          }),
+        }),
+      ],
+    }));
     await expect(readTrackingManifest(codexPaths.trackingDir)).resolves.toMatchObject({
       plugins: {
         [plugin.manifest.name]: {
@@ -284,6 +311,228 @@ describe('artifact refresh reapply helper', () => {
         },
       },
     });
+  });
+
+  it('rebuilds Codex user native cache from a staged historical marketplace', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-user-cache-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin();
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    const artifactPath = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore');
+    await fs.outputFile(path.join(artifactPath, 'SKILL.md'), 'old runtime skill\n');
+    const trackedArtifact = createTrackedDynamicSkillArtifact({
+      artifactPath,
+      refreshKeys: ['explorerModel'],
+      lastRefresh: {
+        status: 'failed',
+        updatedAt: '2026-05-04T00:00:00.000Z',
+        event: 'refresh',
+        triggerKeys: ['explorerModel'],
+        error: 'old failure',
+      },
+    });
+    const historicalBundleRoot = await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'user',
+      artifacts: [trackedArtifact],
+      historicalVersion: '0.0.7',
+    });
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-05T00:00:00.000Z',
+          artifacts: [trackedArtifact],
+        },
+      },
+    });
+
+    codexAdapterInstallExtensions.mockImplementation(async (refreshPlugin: PluginMeta) => {
+      expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
+      expect(refreshPlugin.manifest.version).toBe('0.0.7');
+      await fs.outputFile(path.join(artifactPath, 'SKILL.md'), 'historical refreshed skill\n');
+      return [
+        createTrackedDynamicSkillArtifact({
+          artifactPath,
+          refreshKeys: ['explorerModel'],
+        }),
+      ];
+    });
+    codexAdapterInstallPluginFromMarketplace.mockImplementation(async (
+      refreshPlugin: PluginMeta,
+      scope: string,
+      options: { marketplacePath?: string },
+    ) => {
+      expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
+      expect(refreshPlugin.manifest.version).toBe('0.0.7');
+      expect(scope).toBe('user');
+      expect(options.marketplacePath).toBeDefined();
+      expect(options.marketplacePath).not.toContain(env.AW_HOME!);
+
+      const marketplacePath = options.marketplacePath!;
+      const stagedRoot = path.dirname(path.dirname(path.dirname(marketplacePath)));
+      await expect(fs.readJson(marketplacePath)).resolves.toMatchObject({
+        name: 'aw',
+        plugins: [
+          expect.objectContaining({
+            name: plugin.manifest.name,
+            source: `./plugins/${plugin.manifest.name}`,
+          }),
+        ],
+      });
+      await expect(
+        fs.readFile(path.join(stagedRoot, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
+      ).resolves.toBe('historical refreshed skill\n');
+    });
+
+    const receipt = await reapplyConfigRefresh({
+      plugin,
+      commandScope: 'user',
+      cwd: repoRoot,
+      env,
+    });
+
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['explorerModel'],
+    });
+    expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves bundled Codex skill trigger materialization in the staged historical marketplace', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-user-trigger-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin('mixed-skills');
+    plugin.manifest.skills = './skills';
+    plugin.manifest.config = {
+      schema: {
+        explorerModel: {
+          type: 'string',
+        },
+      },
+    };
+    plugin.manifest.skillTriggers = {
+      'static-skill': { allowInstallOverride: true },
+      'codex-explore': { allowInstallOverride: true },
+    };
+    plugin.manifest.artifacts = {
+      targets: [{
+        id: 'codex-explore-skill',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present', 'disabled'],
+        refreshKeys: ['explorerModel'],
+        skillKey: 'codex-explore',
+      }],
+    };
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    const artifactPath = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore');
+    await fs.outputFile(path.join(artifactPath, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+    const trackedArtifact = createTrackedDynamicSkillArtifact({
+      artifactPath,
+      refreshKeys: ['explorerModel'],
+      lastRefresh: {
+        status: 'failed',
+        updatedAt: '2026-05-04T00:00:00.000Z',
+        event: 'refresh',
+        triggerKeys: ['explorerModel'],
+        error: 'old failure',
+      },
+    });
+    const historicalBundleRoot = await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'user',
+      artifacts: [trackedArtifact],
+      historicalVersion: '0.0.7',
+      skillTriggerPreference: 'manual',
+      prepareBundle: async (bundleRoot) => {
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'skills', 'static-skill', 'SKILL.md'),
+          'static historical skill\n',
+        );
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'skills', 'static-skill', 'agents', 'openai.yaml'),
+          'policy:\n  allow_implicit_invocation: true\n',
+        );
+      },
+    });
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-05T00:00:00.000Z',
+          artifacts: [trackedArtifact],
+        },
+      },
+    });
+
+    codexAdapterInstallExtensions.mockImplementation(async (refreshPlugin: PluginMeta) => {
+      expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
+      await fs.outputFile(path.join(artifactPath, 'SKILL.md'), 'dynamic refreshed skill\n');
+      await fs.outputFile(
+        path.join(artifactPath, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      );
+      return [
+        createTrackedDynamicSkillArtifact({
+          artifactPath,
+          refreshKeys: ['explorerModel'],
+        }),
+      ];
+    });
+    codexAdapterInstallPluginFromMarketplace.mockImplementation(async (
+      _refreshPlugin: PluginMeta,
+      _scope: string,
+      options: { marketplacePath?: string },
+    ) => {
+      const marketplacePath = options.marketplacePath!;
+      const stagedRoot = path.dirname(path.dirname(path.dirname(marketplacePath)));
+      const stagedPluginRoot = path.join(stagedRoot, 'plugins', plugin.manifest.name);
+      await expect(
+        fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'static-skill', 'agents', 'openai.yaml'), 'utf8'),
+      ).resolves.toContain('allow_implicit_invocation: false');
+      await expect(
+        fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'), 'utf8'),
+      ).resolves.toContain('allow_implicit_invocation: false');
+      await expect(
+        fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
+      ).resolves.toBe('dynamic refreshed skill\n');
+    });
+
+    const receipt = await reapplyConfigRefresh({
+      plugin,
+      commandScope: 'user',
+      cwd: repoRoot,
+      env,
+    });
+
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['explorerModel'],
+    });
+    expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to all tracked refreshKeys when there is no failed artifact and records refresh failures', async () => {
