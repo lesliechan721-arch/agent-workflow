@@ -1148,6 +1148,33 @@ function createTrackingRecordFromArtifacts(
   };
 }
 
+async function restoreBundledUserCodexSkillIfPresent(options: {
+  pluginName: string;
+  skillKey: string;
+  skillPath: string;
+}): Promise<boolean> {
+  const embeddedRoot = await resolveEmbeddedPluginsRoot();
+  const embeddedSkillRoot = path.join(
+    embeddedRoot,
+    'plugins',
+    options.pluginName,
+    'codex',
+    'skills',
+    options.skillKey,
+  );
+  if (!(await fs.pathExists(embeddedSkillRoot))) {
+    return false;
+  }
+
+  await fs.remove(options.skillPath);
+  await fs.ensureDir(path.dirname(options.skillPath));
+  await fs.copy(embeddedSkillRoot, options.skillPath, {
+    overwrite: true,
+    errorOnExist: false,
+  });
+  return true;
+}
+
 async function pruneTrackedCodexArtifacts(options: {
   cwd: string;
   scope: Scope;
@@ -1220,6 +1247,19 @@ async function pruneTrackedCodexArtifacts(options: {
               `"${overlappingPreservedDynamicSkill.artifactKey}" 共享路径或 artifactKey；` +
               '本轮不做旧 static skill 到 dynamic identity 的自动迁移，请先清理旧 tracking 后再升级。',
           );
+        }
+
+        if (
+          options.scope === 'user' &&
+          !options.preservedArtifacts?.length &&
+          artifact.target === 'codex.skill' &&
+          await restoreBundledUserCodexSkillIfPresent({
+            pluginName: options.pluginName,
+            skillKey: artifact.artifactKey,
+            skillPath: artifact.path,
+          })
+        ) {
+          continue;
         }
 
         await fs.remove(artifact.path);

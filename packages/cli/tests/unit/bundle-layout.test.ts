@@ -210,6 +210,27 @@ describe('bundle layout validation', () => {
     );
   });
 
+  it('rejects Codex skills that are missing agents/openai.yaml', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+
+    await fs.remove(
+      path.join(
+        embeddedRoot,
+        'plugins',
+        'git-commit',
+        'codex',
+        'skills',
+        'commit',
+        'agents',
+        'openai.yaml',
+      ),
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'skill "commit" is missing agents/openai.yaml',
+    );
+  });
+
   it('rejects unexpected Claude bundle manifests for unsupported plugins', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];

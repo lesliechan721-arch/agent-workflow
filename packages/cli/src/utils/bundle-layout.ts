@@ -88,11 +88,20 @@ async function assertBundlePathExists(
   fieldName: string,
   expectedPrefix: string,
 ): Promise<void> {
+  await resolveExistingBundlePath(pluginRoot, relativePath, fieldName, expectedPrefix);
+}
+
+async function resolveExistingBundlePath(
+  pluginRoot: string,
+  relativePath: string,
+  fieldName: string,
+  expectedPrefix: string,
+): Promise<string> {
   const resolved = assertRelativeBundlePath(pluginRoot, relativePath, fieldName, expectedPrefix);
   if (!(await fs.pathExists(resolved))) {
     throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
   }
-  await assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
+  return assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
 }
 
 function stripDotSlash(value: string): string {
@@ -199,6 +208,7 @@ async function validateClaudeManifest(
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
+    await validateClaudeSkillsTree(pluginRoot, manifest.skills);
   }
   if (manifest.commands) {
     await assertBundlePathExists(pluginRoot, manifest.commands, 'claude.commands', './claude/');
@@ -274,12 +284,70 @@ async function validateCodexManifest(
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');
+    await validateCodexSkillsTree(pluginRoot, manifest.skills);
   }
   if (manifest.mcpServers) {
     await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'codex.mcpServers', './codex/');
   }
   if (manifest.apps) {
     await assertAppsArtifact(pluginRoot, manifest.apps, 'codex.apps', './codex/');
+  }
+}
+
+async function listSkillDirectories(rootDir: string): Promise<string[]> {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+async function assertSkillEntryExists(
+  skillRoot: string,
+  skillName: string,
+  relativePath: string,
+  fieldName: string,
+): Promise<void> {
+  if (!(await fs.pathExists(path.join(skillRoot, relativePath)))) {
+    throw new Error(`Invalid ${fieldName}: skill "${skillName}" is missing ${relativePath}.`);
+  }
+}
+
+async function validateClaudeSkillsTree(
+  pluginRoot: string,
+  relativePath: string,
+): Promise<void> {
+  const skillsRoot = await resolveExistingBundlePath(
+    pluginRoot,
+    relativePath,
+    'claude.skills',
+    './claude/',
+  );
+  for (const skillName of await listSkillDirectories(skillsRoot)) {
+    const skillRoot = path.join(skillsRoot, skillName);
+    await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'claude.skills');
+  }
+}
+
+async function validateCodexSkillsTree(
+  pluginRoot: string,
+  relativePath: string,
+): Promise<void> {
+  const skillsRoot = await resolveExistingBundlePath(
+    pluginRoot,
+    relativePath,
+    'codex.skills',
+    './codex/',
+  );
+  for (const skillName of await listSkillDirectories(skillsRoot)) {
+    const skillRoot = path.join(skillsRoot, skillName);
+    await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'codex.skills');
+    await assertSkillEntryExists(
+      skillRoot,
+      skillName,
+      path.join('agents', 'openai.yaml'),
+      'codex.skills',
+    );
   }
 }
 

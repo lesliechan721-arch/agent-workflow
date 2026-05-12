@@ -1,0 +1,5 @@
+interface:
+  display_name: Repo Check
+  short_description: Dynamic artifact metadata fixture skill.
+policy:
+  allow_implicit_invocation: true

@@ -2113,15 +2113,15 @@ describe('codex-explore integration acceptance', () => {
     expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
   });
 
-  it('uninstalls only the AW-owned Codex user dynamic skill and clears the native cache without touching a foreign same-name skill', async () => {
+  it('uninstalls only the AW-owned Codex user dynamic skill, restores bundled templates, and can reinstall cleanly', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
-    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    const rebuiltEmbeddedRoot = await rebuildEmbeddedRoot(repoRoot);
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(rebuiltEmbeddedRoot);
 
     await initCommand({ force: true });
     await installCommand(
@@ -2164,11 +2164,33 @@ describe('codex-explore integration acceptance', () => {
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
-    await expect(fs.pathExists(userDynamicSkillPath(awHome))).resolves.toBe(false);
-    await expect(fs.pathExists(userSkillMetadataPath(awHome))).resolves.toBe(false);
+    const [restoredRuntimeSkill, restoredRuntimeMetadata, embeddedRuntimeSkill, embeddedRuntimeMetadata] = await Promise.all([
+      fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
+      fs.readFile(userSkillMetadataPath(awHome), 'utf8'),
+      fs.readFile(path.join(rebuiltEmbeddedRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
+      fs.readFile(path.join(rebuiltEmbeddedRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'), 'utf8'),
+    ]);
+
+    expect(restoredRuntimeSkill).toBe(embeddedRuntimeSkill);
+    expect(restoredRuntimeMetadata).toBe(embeddedRuntimeMetadata);
     await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
     await expect(fs.readFile(foreignRuntimeSkillPath, 'utf8')).resolves.toBe('# foreign runtime\n');
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
+
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        requestedSkillTrigger: 'manual',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    await expect(fs.readFile(userDynamicSkillPath(awHome), 'utf8')).resolves.toContain('Dynamic Explore');
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
+    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(false);
   });
 
   it('prunes stale Codex user dynamic skills by identity during upgrade and leaves foreign same-name skills untouched', async () => {

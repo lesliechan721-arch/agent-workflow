@@ -12,6 +12,7 @@ import type { PlatformName, Scope } from '../types.js';
 import { validateBundleLayout } from './bundle-layout.js';
 
 let embeddedPluginsRootOverride: string | null = null;
+const validatedEmbeddedPluginRoots = new Set<string>();
 
 export function resolveCliPackageRoot(): string {
   let currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -62,6 +63,7 @@ export interface CodexPaths {
 
 export function setEmbeddedPluginsRootOverrideForTests(rootDir: string | null): void {
   embeddedPluginsRootOverride = rootDir;
+  validatedEmbeddedPluginRoots.clear();
 }
 
 export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -88,6 +90,10 @@ export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): s
 
 export async function resolveEmbeddedPluginsRoot(): Promise<string> {
   const candidate = embeddedPluginsRootOverride ?? path.join(resolveCliPackageRoot(), 'plugins-dist');
+  if (validatedEmbeddedPluginRoots.has(candidate)) {
+    return candidate;
+  }
+
   try {
     await validateBundleLayout(candidate);
   } catch (error) {
@@ -98,6 +104,7 @@ export async function resolveEmbeddedPluginsRoot(): Promise<string> {
     throw new Error(`Embedded plugins root is unavailable; run \`pnpm build\` first. ${message}`);
   }
 
+  validatedEmbeddedPluginRoots.add(candidate);
   return candidate;
 }
 
