@@ -211,14 +211,14 @@ async function testDefaultsComeFromManifestSchema() {
     const role = findArtifact(plan, 'codex-explore-agent-role');
 
     assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4-mini`/);
-    assert.match(skill.content.skillFile, /推理强度 `medium`/);
+    assert.match(skill.content.skillFile, /推理强度 `low`/);
     assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
-    assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
+    assert.equal(role.content.roleFile.model_reasoning_effort, 'low');
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.4-mini');
-    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'medium');
+    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
     assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -277,9 +277,10 @@ async function testStaticSkillContracts() {
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
-  assert.match(manifest.extensions.instructions[0].content, /只有主 agent 可以/);
-  assert.match(manifest.extensions.instructions[0].content, /第一层 Codex Explore 子代理/);
-  assert.match(manifest.extensions.instructions[0].content, /授权不传递给探索子代理/);
+  assert.match(manifest.extensions.instructions[0].content, /调用 `codex-explore` 技能/);
+  assert.match(manifest.extensions.instructions[0].content, /Gate 判断通过/);
+  assert.match(manifest.extensions.instructions[0].content, /用户明确请求在该 workflow 中使用子代理/);
+  assert.match(manifest.extensions.instructions[0].content, /Gate 未通过则不得启动子代理/);
   assert.equal(manifest.artifacts.targets.length, 2);
   if (manifest.artifacts.targets.some((target) => 'kind' in target)) {
     assert.deepEqual(

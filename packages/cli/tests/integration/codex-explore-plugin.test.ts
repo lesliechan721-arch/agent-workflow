@@ -3980,7 +3980,7 @@ describe('codex-explore integration acceptance', () => {
 
     await expect(fs.pathExists(projectStorePath)).resolves.toBe(false);
     expect(skillContent).toContain('默认模型 `gpt-5.4-mini`');
-    expect(skillContent).toContain('推理强度 `medium`');
+    expect(skillContent).toContain('推理强度 `low`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
