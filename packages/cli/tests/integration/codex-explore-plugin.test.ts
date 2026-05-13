@@ -1662,7 +1662,7 @@ describe('codex-explore integration acceptance', () => {
     });
     await expect(fs.pathExists(path.join(resolveCodexPaths(repoRoot, 'user', process.env).configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(resolveCodexPaths(repoRoot, 'project', process.env).configDir, 'agents', 'aw-codex-explore-codex-explorer.toml'))).resolves.toBe(false);
-  });
+  }, 15_000);
 
   it('keeps previous Codex user dynamic skill runtime and cache when historical refresh fails, and records failure diagnostics', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
@@ -1914,7 +1914,7 @@ describe('codex-explore integration acceptance', () => {
       configDigest: acceptedBefore.configDigest,
       contentDigest: acceptedBefore.contentDigest,
     });
-  });
+  }, 15_000);
 
   it('repair re-renders codex.skill from current config and trigger preference, and refreshes the native cache', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();

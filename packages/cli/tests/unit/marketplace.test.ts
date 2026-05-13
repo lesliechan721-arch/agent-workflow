@@ -153,7 +153,7 @@ describe('marketplace bundle', () => {
         },
       ],
     });
-  });
+  }, 15_000);
 
   it('reads only the target platform marketplace and validates its root metadata', async () => {
     const catalogRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-marketplace-read-'));

@@ -28,7 +28,7 @@ import {
 } from './common.js';
 import { diagnoseCommand } from './diagnose.js';
 import { installCommand } from './install.js';
-import { cleanupCommand } from './cleanup.js';
+import { cleanupCommand, isCleanupExecutionFailure } from './cleanup.js';
 import { reinstallCommand } from './reinstall.js';
 import { repairCommand } from './repair.js';
 import {
@@ -38,13 +38,17 @@ import {
 import { uninstallCommand } from './uninstall.js';
 import { upgradeCommand } from './upgrade.js';
 import { formatWarnings } from '../output/reporter.js';
-import { renderCommandReceipt } from '../output/command-receipt.js';
+import {
+  renderCleanupReceipt,
+  renderCommandReceipt,
+} from '../output/command-receipt.js';
 import { resolveSkillTriggerApplicabilityForPlugin } from '../utils/skill-trigger-preferences.js';
 import {
   coercePluginConfigValue,
   createPluginConfigSchemaIdentity,
   createPluginConfigFormModel,
   readPluginConfigStore,
+  resetPluginConfigStore,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
   type PluginConfigFormFieldModel,
@@ -78,11 +82,47 @@ interface ConsoleResultPageState {
   lines: string[];
   item?: ConsoleControllerItem;
   focusLocations?: PluginConsoleLocation[];
+  diagnoseTargets?: ConsoleResultDiagnoseTarget[];
 }
 
 interface ExecutableTargetSelection {
   action: PluginConsoleExecutableAction;
   location: PluginConsoleLocation;
+}
+
+interface ConsoleResultDiagnoseTarget {
+  location: PluginConsoleLocation;
+  description?: string;
+  command?: string[];
+}
+
+interface ConsoleExecutionOutcome {
+  selection: ExecutableTargetSelection;
+  status: 'succeeded' | 'failed';
+  lines: string[];
+  diagnoseDescription?: string;
+  diagnoseCommand?: string[];
+}
+
+interface ConfigStoreExecutionGroup {
+  storePath: string;
+  scope: Scope;
+  selections: ExecutableTargetSelection[];
+}
+
+interface CleanupPlanOutcome {
+  selection: ExecutableTargetSelection;
+  status: 'planned' | 'failed';
+  removeConfig: boolean;
+  needsForce?: boolean;
+  lines: string[];
+}
+
+interface RunCleanupActionOptions {
+  resultTitle: string;
+  riskTitle: string;
+  promptRemoveConfig?: boolean;
+  preConfirmed?: boolean;
 }
 
 interface ConfigWriteOutcome {
@@ -285,6 +325,55 @@ function filterResultDiagnoseTargets(
     : item.locations.filter((location) => location.status === 'abnormal');
 }
 
+function findMatchingLocation(
+  item: ConsoleControllerItem,
+  location: PluginConsoleLocation,
+): PluginConsoleLocation | undefined {
+  const targetKey = buildTargetChoiceValue(location);
+  return item.locations.find((entry) => buildTargetChoiceValue(entry) === targetKey);
+}
+
+function collectResultDiagnoseTargets(
+  item: ConsoleControllerItem | undefined,
+  focusLocations: PluginConsoleLocation[] = [],
+  explicitTargets: ConsoleResultDiagnoseTarget[] = [],
+): ConsoleResultDiagnoseTarget[] {
+  const collected = new Map<string, ConsoleResultDiagnoseTarget>();
+
+  const addTarget = (target: ConsoleResultDiagnoseTarget): void => {
+    const key = buildTargetChoiceValue(target.location);
+    const existing = collected.get(key);
+    if (!existing) {
+      collected.set(key, target);
+      return;
+    }
+    collected.set(key, {
+      location: target.location,
+      description: existing.description ?? target.description,
+      command: existing.command ?? target.command,
+    });
+  };
+
+  for (const target of explicitTargets) {
+    addTarget({
+      ...target,
+      location: item
+        ? findMatchingLocation(item, target.location) ?? target.location
+        : target.location,
+    });
+  }
+
+  if (!item) {
+    return [...collected.values()];
+  }
+
+  for (const location of filterResultDiagnoseTargets(item, focusLocations)) {
+    addTarget({ location });
+  }
+
+  return [...collected.values()];
+}
+
 function renderResultWithWarnings(
   lines: string[],
   warnings: string[] = [],
@@ -334,6 +423,9 @@ function commandResultLines(
   command: 'install' | 'uninstall' | 'upgrade',
   scope: Scope,
   result: Parameters<typeof renderCommandReceipt>[1]['result'],
+  options: {
+    headlineVariant?: 'install' | 'reinstall';
+  } = {},
 ): string[] {
   return renderResultWithWarnings(
     renderCommandReceipt(command, {
@@ -343,9 +435,276 @@ function commandResultLines(
         platforms: result.platforms,
         plugins: result.plugins,
       }],
-    }),
+    }, options),
     result.warnings,
   );
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function indentLines(lines: string[], prefix = '  '): string[] {
+  return lines.map((line) => `${prefix}${line}`);
+}
+
+function createFailedExecutionOutcome(
+  selection: ExecutableTargetSelection,
+  error: unknown,
+  command?: string[],
+): ConsoleExecutionOutcome {
+  const message = formatErrorMessage(error);
+  return {
+    selection,
+    status: 'failed',
+    lines: [message],
+    diagnoseDescription: message,
+    ...(command ? { diagnoseCommand: command } : {}),
+  };
+}
+
+function renderGroupedLines(options: {
+  entries: Array<{
+    selection: ExecutableTargetSelection;
+    lines: string[];
+    statusLabel?: string;
+  }>;
+}): string[] {
+  const grouped = new Map<PluginConsoleLocation['platform'], Array<{
+    selection: ExecutableTargetSelection;
+    lines: string[];
+    statusLabel?: string;
+  }>>();
+  for (const entry of options.entries) {
+    const bucket = grouped.get(entry.selection.location.platform) ?? [];
+    bucket.push(entry);
+    grouped.set(entry.selection.location.platform, bucket);
+  }
+
+  return [...grouped.entries()].flatMap(([platform, entries], index) => [
+    ...(index > 0 ? [''] : []),
+    `${platformLabel(platform)}：`,
+    ...entries.flatMap((entry) => [
+      `- ${entry.selection.location.locationLabel}${entry.statusLabel ? ` · ${entry.statusLabel}` : ''}`,
+      ...indentLines(entry.lines),
+    ]),
+  ]);
+}
+
+function renderExecutionOutcomeLines(outcomes: ConsoleExecutionOutcome[]): string[] {
+  if (outcomes.length === 0) {
+    return ['当前没有可执行的目标。'];
+  }
+
+  if (outcomes.length === 1) {
+    return outcomes[0]!.lines;
+  }
+
+  const succeededCount = outcomes.filter((outcome) => outcome.status === 'succeeded').length;
+  const failedCount = outcomes.length - succeededCount;
+
+  return joinNonEmpty([
+    failedCount === 0
+      ? `已完成 ${outcomes.length} 个目标。`
+      : `已完成 ${outcomes.length} 个目标，其中 ${succeededCount} 个成功，${failedCount} 个失败。`,
+    '',
+    ...renderGroupedLines({
+      entries: outcomes.map((outcome) => ({
+        selection: outcome.selection,
+        statusLabel: outcome.status === 'succeeded' ? '成功' : '失败',
+        lines: outcome.lines,
+      })),
+    }),
+  ]);
+}
+
+function scopeLabel(scope: Scope): string {
+  return scope === 'project' ? '当前项目' : '当前用户';
+}
+
+function createOutcomeResultPageState(
+  item: ConsoleControllerItem,
+  title: string,
+  outcomes: ConsoleExecutionOutcome[],
+): ConsoleResultPageState {
+  return {
+    pluginName: item.summary.pluginName,
+    title,
+    lines: renderExecutionOutcomeLines(outcomes),
+    item,
+    focusLocations: outcomes.map((outcome) => outcome.selection.location),
+    diagnoseTargets: outcomes
+      .filter((outcome) => outcome.status === 'failed')
+      .map((outcome) => ({
+        location: outcome.selection.location,
+        description: outcome.diagnoseDescription,
+        ...(outcome.diagnoseCommand ? { command: outcome.diagnoseCommand } : {}),
+      })),
+  };
+}
+
+async function showExecutionOutcomePage(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  title: string,
+  outcomes: ConsoleExecutionOutcome[],
+): Promise<ConsoleNavigation> {
+  return showResultPage(context, createOutcomeResultPageState(item, title, outcomes));
+}
+
+function describeDestructiveSelections(
+  actionLabel: string,
+  selections: ExecutableTargetSelection[],
+): string[] {
+  return [
+    `即将执行：${actionLabel}`,
+    '',
+    '目标：',
+    ...selections.map((selection) => `- ${selection.location.locationLabel}`),
+  ];
+}
+
+async function confirmDestructiveAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  action: PluginConsoleExecutableAction,
+  selections: ExecutableTargetSelection[],
+): Promise<boolean> {
+  if (selections.length > 1) {
+    await renderView(context, `${item.summary.title} 确认`, describeDestructiveSelections(action.label, selections));
+    return confirmValue(
+      context,
+      `确定继续处理这 ${selections.length} 个目标吗？`,
+      false,
+    );
+  }
+
+  return confirmValue(
+    context,
+    action.confirmText ?? `确定执行 ${action.label} 吗？`,
+    false,
+  );
+}
+
+function buildCleanupExecutionSelections(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): ConfigStoreExecutionGroup[] {
+  const groups = new Map<string, ConfigStoreExecutionGroup>();
+  for (const selection of selections) {
+    const storePath = resolvePluginConfigStorePath({
+      pluginName: item.summary.pluginName,
+      scope: selection.location.scope,
+      cwd: context.cwd,
+      env: context.env,
+    });
+    const existing = groups.get(storePath);
+    if (existing) {
+      existing.selections.push(selection);
+      continue;
+    }
+    groups.set(storePath, {
+      storePath,
+      scope: selection.location.scope,
+      selections: [selection],
+    });
+  }
+  return [...groups.values()];
+}
+
+function buildCleanupPlanSelections(
+  groups: ConfigStoreExecutionGroup[],
+  removeConfig: boolean,
+): Array<{
+  selection: ExecutableTargetSelection;
+  removeConfig: boolean;
+}> {
+  return groups.flatMap((group) =>
+    group.selections.map((selection, index) => ({
+      selection,
+      removeConfig: removeConfig && index === 0,
+    })));
+}
+
+function appendConfigGroupLines(
+  outcomes: ConsoleExecutionOutcome[],
+  group: ConfigStoreExecutionGroup,
+  lines: string[],
+): ConsoleExecutionOutcome[] {
+  if (lines.length === 0) {
+    return outcomes;
+  }
+
+  const selectionKeys = new Set(group.selections.map((selection) =>
+    buildTargetChoiceValue(selection.location)));
+  return outcomes.map((outcome) =>
+    selectionKeys.has(buildTargetChoiceValue(outcome.selection.location))
+      ? {
+          ...outcome,
+          lines: [...outcome.lines, '', ...lines],
+        }
+      : outcome);
+}
+
+async function applyGroupedConfigRemoval(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  groups: ConfigStoreExecutionGroup[],
+  outcomes: ConsoleExecutionOutcome[],
+  removeConfig: boolean,
+): Promise<ConsoleExecutionOutcome[]> {
+  if (!removeConfig) {
+    return outcomes;
+  }
+
+  let nextOutcomes = outcomes;
+  for (const group of groups) {
+    const selectionKeys = new Set(group.selections.map((selection) =>
+      buildTargetChoiceValue(selection.location)));
+    const groupOutcomes = nextOutcomes.filter((outcome) =>
+      selectionKeys.has(buildTargetChoiceValue(outcome.selection.location)));
+    if (groupOutcomes.length === 0) {
+      continue;
+    }
+
+    if (groupOutcomes.some((outcome) => outcome.status === 'failed')) {
+      nextOutcomes = appendConfigGroupLines(nextOutcomes, group, [
+        `配置处理：已保留${scopeLabel(group.scope)}的 AW 自管配置；同一配置位置仍有主体失败。`,
+      ]);
+      continue;
+    }
+
+    try {
+      const reset = await resetPluginConfigStore({
+        pluginName: item.summary.pluginName,
+        scope: group.scope,
+        cwd: context.cwd,
+        env: context.env,
+      });
+      nextOutcomes = appendConfigGroupLines(nextOutcomes, group, [
+        reset.deleted
+          ? `配置处理：已在${scopeLabel(group.scope)}这一组主体全部成功后删除 AW 自管配置。`
+          : `配置处理：${scopeLabel(group.scope)}位置没有可删除的 AW 自管配置。`,
+      ]);
+    } catch (error) {
+      nextOutcomes = appendConfigGroupLines(nextOutcomes, group, [
+        `配置处理：未能删除${scopeLabel(group.scope)}的 AW 自管配置：${formatErrorMessage(error)}`,
+      ]);
+    }
+  }
+
+  return nextOutcomes;
+}
+
+function renderCleanupPlanOutcomeLines(outcomes: CleanupPlanOutcome[]): string[] {
+  return renderGroupedLines({
+    entries: outcomes.map((outcome) => ({
+      selection: outcome.selection,
+      statusLabel: outcome.status === 'planned' ? '已评估' : '评估失败',
+      lines: outcome.lines,
+    })),
+  });
 }
 
 function renderDetailLines(item: ConsoleControllerItem): string[] {
@@ -1294,60 +1653,44 @@ async function runInstallLikeAction(options: {
     scope: firstLocation.scope,
     ...(requestedSkillTrigger ? { requestedSkillTrigger } : {}),
   };
-  if (selectedPlatforms.length > 1) {
-    const lines: string[] = [];
-    for (const platform of selectedPlatforms) {
-      const scopedOptions = {
+  const outcomes: ConsoleExecutionOutcome[] = [];
+  for (const selection of selections) {
+    try {
+      if (decision.commandAction === 'upgrade') {
+        const result = await upgradeCommand([item.summary.pluginName], {
+          ...commandOptions,
+          platform: selection.location.platform,
+        }, context);
+        outcomes.push({
+          selection,
+          status: 'succeeded',
+          lines: commandResultLines('upgrade', selection.location.scope, result),
+        });
+        continue;
+      }
+
+      const result = await installCommand([item.summary.pluginName], {
         ...commandOptions,
-        platform,
-      };
-      const result = decision.commandAction === 'upgrade'
-        ? await upgradeCommand([item.summary.pluginName], scopedOptions, context)
-        : await installCommand([item.summary.pluginName], scopedOptions, context);
-      lines.push(
-        `${platformLabel(platform)}：`,
-        ...commandResultLines(
-          decision.commandAction === 'upgrade' ? 'upgrade' : 'install',
-          firstLocation.scope,
-          result,
-        ),
-        '',
-      );
+        platform: selection.location.platform,
+      }, context);
+      outcomes.push({
+        selection,
+        status: 'succeeded',
+        lines: commandResultLines('install', selection.location.scope, result, {
+          headlineVariant: 'reinstall',
+        }),
+      });
+    } catch (error) {
+      outcomes.push(createFailedExecutionOutcome(selection, error));
     }
-    return showResultPage(context, {
-      pluginName: item.summary.pluginName,
-      title: `${item.summary.title} ${decision.commandAction === 'upgrade' ? '升级' : '安装'}`,
-      lines: lines.slice(0, -1),
-      item,
-      focusLocations: selections.map((selection) => selection.location),
-    });
   }
 
-  if (decision.commandAction === 'upgrade') {
-    const result = await upgradeCommand([item.summary.pluginName], {
-      ...commandOptions,
-      platform: firstLocation.platform,
-    }, context);
-    return showResultPage(context, {
-      pluginName: item.summary.pluginName,
-      title: `${item.summary.title} 升级`,
-      lines: commandResultLines('upgrade', firstLocation.scope, result),
-      item,
-      focusLocations: selections.map((selection) => selection.location),
-    });
-  }
-
-  const result = await installCommand([item.summary.pluginName], {
-    ...commandOptions,
-    platform: firstLocation.platform,
-  }, context);
-  return showResultPage(context, {
-    pluginName: item.summary.pluginName,
-    title: `${item.summary.title} 安装`,
-    lines: commandResultLines('install', firstLocation.scope, result),
+  return showExecutionOutcomePage(
+    context,
     item,
-    focusLocations: selections.map((selection) => selection.location),
-  });
+    `${item.summary.title} ${decision.commandAction === 'upgrade' ? '升级' : '安装'}`,
+    outcomes,
+  );
 }
 
 async function promptRemoveConfigSelection(
@@ -1378,188 +1721,290 @@ async function runUninstallAction(
   if (removeConfig === null) {
     return 'back';
   }
-  const seenStores = new Set<string>();
-  const lines: string[] = [];
-  for (const selection of selections) {
-    const storePath = resolvePluginConfigStorePath({
-      pluginName: item.summary.pluginName,
-      scope: selection.location.scope,
-      cwd: context.cwd,
-      env: context.env,
-    });
-    const result = await uninstallCommand([item.summary.pluginName], {
-      cwd: context.cwd,
-      scope: selection.location.scope,
-      platform: selection.location.platform,
-      removeConfig: removeConfig && !seenStores.has(storePath),
-    }, context);
-    seenStores.add(storePath);
-    lines.push(
-      `${selection.location.locationLabel}：`,
-      ...commandResultLines('uninstall', selection.location.scope, result),
-      '',
-    );
+  const configGroups = buildCleanupExecutionSelections(context, item, selections);
+  const outcomes: ConsoleExecutionOutcome[] = [];
+  for (const group of configGroups) {
+    for (const selection of group.selections) {
+      try {
+        const result = await uninstallCommand([item.summary.pluginName], {
+          cwd: context.cwd,
+          scope: selection.location.scope,
+          platform: selection.location.platform,
+          removeConfig: false,
+        }, context);
+        outcomes.push({
+          selection,
+          status: 'succeeded',
+          lines: commandResultLines('uninstall', selection.location.scope, result),
+        });
+      } catch (error) {
+        outcomes.push(createFailedExecutionOutcome(selection, error));
+      }
+    }
   }
-  return showResultPage(context, {
-    pluginName: item.summary.pluginName,
-    title: `${item.summary.title} 卸载`,
-    lines: lines.slice(0, -1),
+
+  return showExecutionOutcomePage(
+    context,
     item,
-    focusLocations: selections.map((selection) => selection.location),
-  });
+    `${item.summary.title} 卸载`,
+    await applyGroupedConfigRemoval(context, item, configGroups, outcomes, removeConfig),
+  );
 }
 
-function renderCleanupPlanLines(payload: Awaited<ReturnType<typeof cleanupCommand>>['payload']): string[] {
-  if (payload.dependencyIndex) {
-    return ['当前 cleanup plan 不支持 dependency index 目标。'];
+async function runCleanupActionInternal(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+  options: RunCleanupActionOptions,
+): Promise<ConsoleNavigation> {
+  const removeConfig = options.promptRemoveConfig === false
+    ? false
+    : await promptRemoveConfigSelection(context, '配置处理');
+  if (removeConfig === null) {
+    return 'back';
+  }
+  const configGroups = buildCleanupExecutionSelections(context, item, selections);
+  const plannedSelections = buildCleanupPlanSelections(configGroups, removeConfig);
+  const planOutcomes: CleanupPlanOutcome[] = [];
+  for (const configured of plannedSelections) {
+    try {
+      const plan = await cleanupCommand([item.summary.pluginName], {
+        cwd: context.cwd,
+        scope: configured.selection.location.scope,
+        platform: configured.selection.location.platform,
+        plan: true,
+        removeConfig: configured.removeConfig,
+      }, context);
+      const needsForce = !plan.payload.dependencyIndex && (
+        plan.payload.forceReason !== null ||
+        plan.payload.blockingReasons.length > 0
+      );
+      planOutcomes.push({
+        ...configured,
+        status: 'planned',
+        needsForce,
+        lines: renderCleanupReceipt({
+          payload: plan.payload,
+          warnings: plan.warnings,
+        }),
+      });
+    } catch (error) {
+      planOutcomes.push({
+        ...configured,
+        status: 'failed',
+        lines: [formatErrorMessage(error)],
+      });
+    }
   }
 
-  return joinNonEmpty([
-    payload.forceReason ? `风险来源：${payload.forceReason}` : '当前 target 可按标准 cleanup 处理。',
-    payload.plannedRemovals.length > 0
-      ? `删除计划：${payload.plannedRemovals.map((entry) => entry.label).join('、')}`
-      : '删除计划：当前没有可删除项。',
-    payload.affectedDependents.length > 0
-      ? `受影响依赖：${payload.affectedDependents.map((entry) => `${entry.platform}/${entry.plugin}/${entry.scope}`).join('、')}`
-      : '受影响依赖：无',
-    payload.wouldBackups.length > 0
-      ? `备份：${payload.wouldBackups.map((entry) => entry.label).join('、')}`
-      : '备份：当前计划没有可备份项。',
-    payload.blockingReasons.length > 0
-      ? `不可删除项：${payload.blockingReasons.map((entry) => entry.message).join('；')}`
-      : '不可删除项：无',
-  ]);
+  const executablePlans = planOutcomes.filter((outcome): outcome is CleanupPlanOutcome & {
+    status: 'planned';
+    needsForce: boolean;
+  } => outcome.status === 'planned');
+
+  if (planOutcomes.length > 0) {
+    await renderView(context, options.riskTitle, renderCleanupPlanOutcomeLines(planOutcomes));
+  }
+
+  if (executablePlans.length === 0) {
+    return showExecutionOutcomePage(
+      context,
+      item,
+      options.resultTitle,
+      await applyGroupedConfigRemoval(
+        context,
+        item,
+        configGroups,
+        planOutcomes.map((outcome) => ({
+          selection: outcome.selection,
+          status: 'failed',
+          lines: outcome.lines,
+          diagnoseDescription: outcome.lines[0],
+        })),
+        removeConfig,
+      ),
+    );
+  }
+
+  const requiresRiskConfirmation = executablePlans.some((outcome) => outcome.needsForce);
+  if (!options.preConfirmed || requiresRiskConfirmation) {
+    const confirmed = await confirmValue(
+      context,
+      requiresRiskConfirmation
+        ? `确定继续处理这 ${executablePlans.length} 个清理目标吗？`
+        : `确定清理这 ${executablePlans.length} 个目标吗？`,
+      false,
+    );
+    if (!confirmed) {
+      await renderView(context, `${item.summary.title}`, ['已取消，本次没有写入任何状态。']);
+      return 'back';
+    }
+  }
+
+  const outcomes: ConsoleExecutionOutcome[] = planOutcomes
+    .filter((outcome) => outcome.status === 'failed')
+    .map((outcome) => ({
+      selection: outcome.selection,
+      status: 'failed',
+      lines: outcome.lines,
+      diagnoseDescription: outcome.lines[0],
+    }));
+
+  for (const planned of executablePlans) {
+    try {
+      const result = await cleanupCommand([item.summary.pluginName], {
+        cwd: context.cwd,
+        scope: planned.selection.location.scope,
+        platform: planned.selection.location.platform,
+        force: planned.needsForce,
+        removeConfig: false,
+      }, context);
+      const lines = renderCleanupReceipt({
+        payload: result.payload,
+        warnings: result.warnings,
+      });
+      const failed = isCleanupExecutionFailure(result.payload);
+      outcomes.push({
+        selection: planned.selection,
+        status: failed ? 'failed' : 'succeeded',
+        lines,
+        ...(failed ? { diagnoseDescription: lines[0] ?? 'cleanup 执行失败。' } : {}),
+      });
+    } catch (error) {
+      outcomes.push(createFailedExecutionOutcome(planned.selection, error));
+    }
+  }
+
+  return showExecutionOutcomePage(
+    context,
+    item,
+    options.resultTitle,
+    await applyGroupedConfigRemoval(context, item, configGroups, outcomes, removeConfig),
+  );
 }
 
 async function runCleanupAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
   selections: ExecutableTargetSelection[],
-): Promise<boolean> {
-  const removeConfig = await promptRemoveConfigSelection(context, '配置处理');
-  if (removeConfig === null) {
-    return false;
-  }
-  const seenStores = new Set<string>();
-  const lines: string[] = [];
-  for (const selection of selections) {
-    const plan = await cleanupCommand([item.summary.pluginName], {
-      cwd: context.cwd,
-      scope: selection.location.scope,
-      platform: selection.location.platform,
-      plan: true,
-      removeConfig: false,
-    }, context);
-    const needsForce = !plan.payload.dependencyIndex && (
-      plan.payload.forceReason !== null ||
-      plan.payload.blockingReasons.length > 0
-    );
-    await renderView(context, `${item.summary.title} 清理风险`, renderCleanupPlanLines(plan.payload));
-    const confirmed = await confirmValue(
-      context,
-      needsForce ? `确定以恢复清理方式处理 ${selection.location.locationLabel} 吗？` : `确定清理 ${selection.location.locationLabel} 吗？`,
-      false,
-    );
-    if (!confirmed) {
-      await renderView(context, `${item.summary.title}`, ['已取消，本次没有写入任何状态。']);
-      return false;
-    }
-    const storePath = resolvePluginConfigStorePath({
-      pluginName: item.summary.pluginName,
-      scope: selection.location.scope,
-      cwd: context.cwd,
-      env: context.env,
-    });
-    const result = await cleanupCommand([item.summary.pluginName], {
-      cwd: context.cwd,
-      scope: selection.location.scope,
-      platform: selection.location.platform,
-      force: needsForce,
-      removeConfig: removeConfig && !seenStores.has(storePath),
-    }, context);
-    seenStores.add(storePath);
-    lines.push(
-      `${selection.location.locationLabel}：`,
-      ...renderCleanupPlanLines(result.payload),
-      '',
-    );
-  }
-  await renderView(context, `${item.summary.title} 清理`, lines.slice(0, -1));
-  return true;
+): Promise<ConsoleNavigation> {
+  return runCleanupActionInternal(context, item, selections, {
+    resultTitle: `${item.summary.title} 清理`,
+    riskTitle: `${item.summary.title} 清理风险`,
+  });
+}
+
+async function runResolveDuplicateInstallAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<ConsoleNavigation> {
+  return runCleanupActionInternal(context, item, selections, {
+    resultTitle: `${item.summary.title} 处理重复安装`,
+    riskTitle: `${item.summary.title} 重复安装处理风险`,
+    promptRemoveConfig: false,
+    preConfirmed: true,
+  });
 }
 
 async function runRepairAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
   selections: ExecutableTargetSelection[],
-): Promise<boolean> {
-  const lines: string[] = [];
+): Promise<ConsoleNavigation> {
+  const outcomes: ConsoleExecutionOutcome[] = [];
   for (const selection of selections) {
-    const result = await repairCommand([item.summary.pluginName], {
-      cwd: context.cwd,
-      scope: selection.location.scope,
-      platform: selection.location.platform,
-    }, context);
-    lines.push(
-      `${selection.location.locationLabel}：`,
-      result.output.trim() || '修复完成。',
-      '',
-    );
+    try {
+      const result = await repairCommand([item.summary.pluginName], {
+        cwd: context.cwd,
+        scope: selection.location.scope,
+        platform: selection.location.platform,
+      }, context);
+      outcomes.push({
+        selection,
+        status: 'succeeded',
+        lines: [result.output.trim() || '修复完成。'],
+      });
+    } catch (error) {
+      outcomes.push(createFailedExecutionOutcome(selection, error));
+    }
   }
-  await renderView(context, `${item.summary.title} 修复`, lines.slice(0, -1));
-  return true;
+  return showExecutionOutcomePage(context, item, `${item.summary.title} 修复`, outcomes);
 }
 
 async function runReinstallAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
   selections: ExecutableTargetSelection[],
-): Promise<boolean> {
-  const lines: string[] = [];
+): Promise<ConsoleNavigation> {
+  const outcomes: ConsoleExecutionOutcome[] = [];
   for (const selection of selections) {
-    const result = await reinstallCommand([item.summary.pluginName], {
-      cwd: context.cwd,
-      scope: selection.location.scope,
-      platform: selection.location.platform,
-    }, context);
-    lines.push(
-      `${selection.location.locationLabel}：`,
-      ...commandResultLines('install', selection.location.scope, result),
-      '',
-    );
+    try {
+      const result = await reinstallCommand([item.summary.pluginName], {
+        cwd: context.cwd,
+        scope: selection.location.scope,
+        platform: selection.location.platform,
+      }, context);
+      outcomes.push({
+        selection,
+        status: 'succeeded',
+        lines: commandResultLines('install', selection.location.scope, result, {
+          headlineVariant: 'reinstall',
+        }),
+      });
+    } catch (error) {
+      outcomes.push(createFailedExecutionOutcome(selection, error));
+    }
   }
-  await renderView(context, `${item.summary.title} 重新安装`, lines.slice(0, -1));
-  return true;
+  return showExecutionOutcomePage(context, item, `${item.summary.title} 重新安装`, outcomes);
 }
 
 async function runAdoptExistingAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
   selection: ExecutableTargetSelection,
-): Promise<boolean> {
-  const result = await repairCommand([item.summary.pluginName], {
-    cwd: context.cwd,
-    scope: selection.location.scope,
-    platform: selection.location.platform,
-    adoptExisting: true,
-  }, context);
-  await renderView(context, `${item.summary.title} 认领现有安装`, [result.output.trim() || '认领完成。']);
-  return true;
+): Promise<ConsoleNavigation> {
+  try {
+    const result = await repairCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+      adoptExisting: true,
+    }, context);
+    return showExecutionOutcomePage(context, item, `${item.summary.title} 认领现有安装`, [{
+      selection,
+      status: 'succeeded',
+      lines: [result.output.trim() || '认领完成。'],
+    }]);
+  } catch (error) {
+    return showExecutionOutcomePage(context, item, `${item.summary.title} 认领现有安装`, [
+      createFailedExecutionOutcome(selection, error),
+    ]);
+  }
 }
 
 async function runTakeoverSharedRuntimeAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
   selection: ExecutableTargetSelection,
-): Promise<boolean> {
-  const result = await repairCommand([item.summary.pluginName], {
-    cwd: context.cwd,
-    scope: selection.location.scope,
-    platform: selection.location.platform,
-    takeoverSharedRuntime: true,
-  }, context);
-  await renderView(context, `${item.summary.title} 接管共享触发策略`, [result.output.trim() || '接管完成。']);
-  return true;
+): Promise<ConsoleNavigation> {
+  try {
+    const result = await repairCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+      takeoverSharedRuntime: true,
+    }, context);
+    return showExecutionOutcomePage(context, item, `${item.summary.title} 接管共享触发策略`, [{
+      selection,
+      status: 'succeeded',
+      lines: [result.output.trim() || '接管完成。'],
+    }]);
+  } catch (error) {
+    return showExecutionOutcomePage(context, item, `${item.summary.title} 接管共享触发策略`, [
+      createFailedExecutionOutcome(selection, error),
+    ]);
+  }
 }
 
 async function runReapplyAction(
@@ -1643,9 +2088,11 @@ async function showResultPage(
   state: ConsoleResultPageState,
 ): Promise<ConsoleNavigation> {
   const reloadedItem = await loadResultPageItem(context, state.pluginName) ?? state.item;
-  const diagnoseTargets = reloadedItem
-    ? filterResultDiagnoseTargets(reloadedItem, state.focusLocations)
-    : [];
+  const diagnoseTargets = collectResultDiagnoseTargets(
+    reloadedItem,
+    state.focusLocations,
+    state.diagnoseTargets,
+  );
 
   while (true) {
     await renderView(context, state.title, joinNonEmpty([
@@ -1655,16 +2102,16 @@ async function showResultPage(
     const selection = await selectValue(context, {
       message: '下一步',
       choices: [
-        ...diagnoseTargets.map((location) => ({
-          value: buildTargetChoiceValue(location),
-          label: `诊断 · ${location.locationLabel}`,
-          description: location.issueSummary ?? location.statusLabel,
+        ...diagnoseTargets.map((target) => ({
+          value: buildTargetChoiceValue(target.location),
+          label: `诊断 · ${target.location.locationLabel}`,
+          description: target.description ?? target.location.issueSummary ?? target.location.statusLabel,
         })),
         { value: 'result-home', label: '返回首页', role: 'back' },
         { value: 'result-exit', label: '退出', role: 'exit' },
       ],
       defaultValue: diagnoseTargets[0]
-        ? buildTargetChoiceValue(diagnoseTargets[0])
+        ? buildTargetChoiceValue(diagnoseTargets[0].location)
         : 'result-home',
     });
     if (isPromptAction(selection, 'exit')) {
@@ -1677,11 +2124,16 @@ async function showResultPage(
     if (!selected) {
       return 'reload';
     }
-    const location = diagnoseTargets.find((entry) => buildTargetChoiceValue(entry) === selected);
-    if (!location || !reloadedItem) {
+    const target = diagnoseTargets.find((entry) => buildTargetChoiceValue(entry.location) === selected);
+    if (!target || !reloadedItem) {
       return 'reload';
     }
-    await runDiagnoseAction(context, reloadedItem, location, undefined);
+    await runDiagnoseAction(
+      context,
+      reloadedItem,
+      target.location,
+      target.command ? { command: target.command } : undefined,
+    );
   }
 }
 
@@ -1693,11 +2145,7 @@ async function handleExecutableAction(
 ): Promise<ConsoleNavigation> {
   const firstAction = executableActions[0]?.action;
   if (firstAction?.destructive && firstAction.kind !== 'runCleanup') {
-    const confirmed = await confirmValue(
-      context,
-      firstAction.confirmText ?? `确定执行 ${firstAction.label} 吗？`,
-      false,
-    );
+    const confirmed = await confirmDestructiveAction(context, item, firstAction, executableActions);
     if (!confirmed) {
       await renderView(context, `${item.summary.title}`, ['已取消，本次没有写入任何状态。']);
       return 'back';
@@ -1739,28 +2187,31 @@ async function handleExecutableAction(
       case 'runUninstall':
         return runUninstallAction(context, item, executableActions);
       case 'runCleanup':
-        return await runCleanupAction(context, item, executableActions) ? 'reload' : 'back';
+        return runCleanupAction(context, item, executableActions);
       case 'resolveDuplicateInstall': {
         const removalTargets = item.locations.filter((entry) =>
           entry.platform === location.platform &&
           !(entry.scope === location.scope && entry.projectKey === location.projectKey) &&
           entry.reasonCodes.includes('duplicateInstall'),
         );
-        for (const removalTarget of removalTargets) {
-          await runUninstallAction(context, item, [{ action: firstAction, location: removalTarget }]);
-        }
-        return removalTargets.length > 0 ? 'reload' : 'back';
+        return removalTargets.length > 0
+          ? runResolveDuplicateInstallAction(
+              context,
+              item,
+              removalTargets.map((removalTarget) => ({ action: firstAction, location: removalTarget })),
+            )
+          : 'back';
       }
       case 'runAdoptExisting':
-        return await runAdoptExistingAction(context, item, executableActions[0]!) ? 'reload' : 'back';
+        return runAdoptExistingAction(context, item, executableActions[0]!);
       case 'runTakeoverSharedRuntime':
-        return await runTakeoverSharedRuntimeAction(context, item, executableActions[0]!) ? 'reload' : 'back';
+        return runTakeoverSharedRuntimeAction(context, item, executableActions[0]!);
       case 'runReapplyConfigRefresh':
         return runReapplyAction(context, item, location);
       case 'runReinstall':
-        return await runReinstallAction(context, item, executableActions) ? 'reload' : 'back';
+        return runReinstallAction(context, item, executableActions);
       case 'runRepair':
-        return await runRepairAction(context, item, executableActions) ? 'reload' : 'back';
+        return runRepairAction(context, item, executableActions);
       default:
         throw new Error(`Unsupported console action "${firstAction.kind}".`);
     }
@@ -1773,7 +2224,11 @@ async function handleExecutableAction(
         '你可以进入诊断查看原因。',
       ],
       item,
-      focusLocations: [location],
+      focusLocations: executableActions.map((selection) => selection.location),
+      diagnoseTargets: executableActions.map((selection) => ({
+        location: selection.location,
+        description: formatErrorMessage(error),
+      })),
     });
   }
 }

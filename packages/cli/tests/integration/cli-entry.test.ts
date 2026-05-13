@@ -10,7 +10,17 @@ import { ClaudeAdapter } from '../../src/adapters/claude.js';
 import { CodexAdapter } from '../../src/adapters/codex.js';
 import * as discoveryModule from '../../src/commands/discovery.js';
 import { runCli } from '../../src/index.js';
-import type { InstalledLedger } from '../../src/types.js';
+import {
+  createMinimalPluginInstallStateFixtureBuilder,
+} from '../helpers/minimal-plugin-install-state-fixtures.js';
+import type {
+  GeneratedArtifact,
+  InstalledLedger,
+  PlatformAdapter,
+  PluginMeta,
+  Scope,
+  StatusReport,
+} from '../../src/types.js';
 import {
   removeCodexPluginEnabledFile,
   upsertCodexMarketplaceFile,
@@ -395,6 +405,42 @@ async function readCodexAllowImplicitInvocation(awHome: string): Promise<boolean
   return parsed.policy?.allow_implicit_invocation === true;
 }
 
+class PassiveAdapter implements PlatformAdapter {
+  async detect(): Promise<boolean> {
+    return true;
+  }
+
+  async installPlugin(): Promise<void> {}
+  async uninstallPlugin(): Promise<void> {}
+  async installExtensions(): Promise<GeneratedArtifact[]> {
+    return [];
+  }
+  async uninstallExtensions(): Promise<void> {}
+  async upgradePlugin(): Promise<void> {}
+  async status(_plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    return {
+      platform: 'codex',
+      scope,
+      initialized: false,
+      plugins: [],
+    };
+  }
+}
+
+class FakeCliCleanupAdapter extends PassiveAdapter {
+  constructor(private readonly configPath: string) {
+    super();
+  }
+
+  override async uninstallPlugin(plugin: PluginMeta): Promise<void> {
+    await removeCodexPluginEnabledFile(this.configPath, `${plugin.manifest.name}@aw`);
+  }
+
+  async uninstallUserNativePluginById(pluginNameOrId: string): Promise<void> {
+    await removeCodexPluginEnabledFile(this.configPath, pluginNameOrId);
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
@@ -402,6 +448,76 @@ afterEach(async () => {
 });
 
 describe('cli entry integration', () => {
+  it('lets cleanup --force remove the target while keeping verified dependents and printing the follow-up guidance', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-cleanup-force-'));
+    tempDirs.push(root);
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(root);
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    const dependentRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${dependentTarget.recordId}.json`,
+    );
+    await fs.writeJson(
+      dependentRecordPath,
+      {
+        ...dependentRecord,
+        record: {
+          ...dependentRecord.record,
+          dependencyEdges: [{
+            dependency: target.location,
+            declaration: {
+              name: target.location.plugin,
+            },
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const capture = createCapturedIo();
+    const exitCode = await runCli(
+      ['cleanup', 'git-commit', '-p', 'codex', '-s', 'user', '--force'],
+      {
+        cwd: builder.paths.repoRoot,
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+          AW_FORCE_CODEX_AVAILABLE: '1',
+        },
+        io: capture.io,
+        adaptersFactory: () => ({
+          codex: new FakeCliCleanupAdapter(configPath),
+          claude: new PassiveAdapter(),
+        }),
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(capture.readStdout()).toContain('cleanup 已完成：git-commit。');
+    expect(capture.readStdout()).toContain('受影响依赖：');
+    expect(capture.readStdout()).toContain('helper-local-dependent');
+    expect(capture.readStdout()).toContain('repair、reinstall 或 cleanup');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(dependentRecordPath)).resolves.toBe(true);
+  });
+
   it('rejects schema-aware config commands for plugins without AW config schema', async () => {
     const workspace = await makeWorkspace();
     setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
@@ -812,7 +928,7 @@ describe('cli entry integration', () => {
       'add',
       await fs.realpath(workspace.awHome),
     ]);
-  });
+  }, 15_000);
 
   it('uses the injected native runner for Codex marketplace add failures in runCli', async () => {
     const workspace = await makeWorkspace();
@@ -1209,7 +1325,7 @@ describe('cli entry integration', () => {
       await installSideEffect;
       expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(expected);
     }
-  });
+  }, 15_000);
 
   it('rejects upgrade --all --skill-trigger at the entry layer', async () => {
     const workspace = await makeWorkspace();

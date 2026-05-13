@@ -22,6 +22,18 @@ const installCommand = vi.fn();
 const upgradeCommand = vi.fn();
 const uninstallCommand = vi.fn();
 const cleanupCommand = vi.fn();
+const isCleanupExecutionFailure = vi.fn((payload: {
+  dependencyIndex?: boolean;
+  dryRun?: boolean;
+  blockingReasons?: unknown[];
+  remainingItems?: unknown[];
+}) =>
+  payload.dependencyIndex !== true
+  && payload.dryRun !== true
+  && (
+    (payload.blockingReasons?.length ?? 0) > 0
+    || (payload.remainingItems?.length ?? 0) > 0
+  ));
 const repairCommand = vi.fn();
 const reinstallCommand = vi.fn();
 const preparePluginTargetsForCommand = vi.fn();
@@ -53,7 +65,7 @@ vi.mock('../../src/commands/diagnose.js', () => ({ diagnoseCommand }));
 vi.mock('../../src/commands/install.js', () => ({ installCommand }));
 vi.mock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
 vi.mock('../../src/commands/uninstall.js', () => ({ uninstallCommand }));
-vi.mock('../../src/commands/cleanup.js', () => ({ cleanupCommand }));
+vi.mock('../../src/commands/cleanup.js', () => ({ cleanupCommand, isCleanupExecutionFailure }));
 vi.mock('../../src/commands/repair.js', () => ({ repairCommand }));
 vi.mock('../../src/commands/reinstall.js', () => ({ reinstallCommand }));
 vi.mock('../../src/commands/common.js', () => ({ preparePluginTargetsForCommand }));
@@ -286,7 +298,7 @@ function cleanupPayload(overrides: Record<string, unknown> = {}) {
     skippedForeignItems: [],
     affectedDependents: [],
     blockingReasons: [],
-    suggestedCommand: 'aw cleanup git-commit -p codex -s user',
+    recommendedCommand: 'aw cleanup git-commit -p codex -s user',
     nextSteps: [],
     ...overrides,
   };
@@ -942,6 +954,7 @@ describe('console controller stage 5', () => {
     })]);
     cleanupCommand.mockResolvedValue({
       payload: cleanupPayload({
+        dryRun: true,
         forceReason: '需要降级清理。',
         plannedRemovals: [{ kind: 'record', label: '安装记录' }],
         wouldBackups: [{ kind: 'file', label: '历史 runtime' }],
@@ -970,18 +983,84 @@ describe('console controller stage 5', () => {
     );
     const riskView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理风险');
     expect(riskView?.lines).toEqual(expect.arrayContaining([
-      '风险来源：需要降级清理。',
-      '删除计划：安装记录',
-      '受影响依赖：codex/consumer/user',
-      '备份：历史 runtime',
-      '不可删除项：外部归属未确认。',
+      'Codex：',
+      '- Codex（个人） · 已评估',
+      '  cleanup 评估完成：git-commit。',
+      '  目标类型：installed。',
+      '  force 语义：未启用；需要降级清理。',
+      '  计划删除项：',
+      '  - 安装记录',
+      '  备份项：',
+      '  - 历史 runtime',
+      '  受影响依赖：',
+      '  - codex/user/consumer',
+      '  阻断原因：',
+      '  - [foreign] 外部归属未确认。',
     ]));
     expect(consoleDriver.views.some((view) =>
       view.lines.includes('已取消，本次没有写入任何状态。'),
     )).toBe(true);
   });
 
-  it('deduplicates remove-config during all-platform cleanup and only cleanup receives force', async () => {
+  it('shows the full target list before confirming destructive all-platform uninstall', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        supportedPlatforms: ['codex', 'claude'],
+        locationSummary: 'Codex、Claude Code',
+        features: [
+          feature('uninstall', { targetSelection: 'multiTargetAllowed', destructive: true }),
+          feature('status'),
+          feature('diagnose'),
+        ],
+      },
+      locations: [
+        location({
+          actions: [{
+            kind: 'runUninstall',
+            label: '卸载',
+            target: { platform: 'codex', scope: 'user' },
+            destructive: true,
+            confirmText: 'remove codex?',
+          }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          actions: [{
+            kind: 'runUninstall',
+            label: '卸载',
+            target: { platform: 'claude', scope: 'user' },
+            destructive: true,
+            confirmText: 'remove claude?',
+          }],
+        }),
+      ],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'uninstall' },
+      { method: 'select', value: '__all_platforms' },
+      { method: 'select', value: 'user' },
+      { method: 'confirm', value: false },
+      { method: 'select', value: '__back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const confirmView = consoleDriver.views.find((view) => view.title === 'Git Commit 确认');
+    expect(confirmView?.lines).toEqual(expect.arrayContaining([
+      '即将执行：卸载',
+      '目标：',
+      '- Codex（个人）',
+      '- Claude Code（个人）',
+    ]));
+    expect(uninstallCommand).not.toHaveBeenCalled();
+  });
+
+  it('removes grouped config only after all-platform cleanup succeeds for the same store', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -1030,6 +1109,19 @@ describe('console controller stage 5', () => {
       warnings: [],
     }));
 
+    const root = await makeTempDir('aw-console-cleanup-remove-config-');
+    const cwd = path.join(root, 'workspace');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const { resolvePluginConfigStorePath } = await import('../../src/utils/plugin-config.js');
+    const configStorePath = resolvePluginConfigStorePath({
+      pluginName: 'git-commit',
+      scope: 'user',
+      cwd,
+      env: { AW_HOME: awHome },
+    });
+    await fs.outputJson(configStorePath, { token: 'keep-me-until-done' }, { spaces: 2 });
+
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
@@ -1038,11 +1130,25 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'user' },
       { method: 'select', value: 'remove' },
       { method: 'confirm', value: true },
-      { method: 'confirm', value: true },
       { method: 'select', value: '__exit' },
     ]);
+    context.cwd = cwd;
+    context.env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
 
     await expect(runConsoleController(context)).resolves.toBe(0);
+    const plannedCleanupCalls = cleanupCommand.mock.calls.filter(([, options]) =>
+      (options as { plan?: boolean }).plan === true,
+    );
+    expect(plannedCleanupCalls).toHaveLength(2);
+    expect(plannedCleanupCalls[0]![1]).toMatchObject({
+      platform: 'codex',
+      removeConfig: true,
+    });
+    expect(plannedCleanupCalls[1]![1]).toMatchObject({
+      platform: 'claude',
+      removeConfig: false,
+    });
+
     const actualCleanupCalls = cleanupCommand.mock.calls.filter(([, options]) =>
       (options as { plan?: boolean }).plan !== true,
     );
@@ -1050,16 +1156,680 @@ describe('console controller stage 5', () => {
     expect(actualCleanupCalls[0]![1]).toMatchObject({
       platform: 'codex',
       force: true,
-      removeConfig: true,
+      removeConfig: false,
     });
     expect(actualCleanupCalls[1]![1]).toMatchObject({
       platform: 'claude',
       force: true,
       removeConfig: false,
     });
-    expect(consoleDriver.views.some((view) =>
-      view.lines.includes('备份：当前计划没有可备份项。'),
+    await expect(fs.pathExists(configStorePath)).resolves.toBe(false);
+    const riskView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理风险');
+    expect(riskView?.lines).toEqual(expect.arrayContaining([
+      'Codex：',
+      '- Codex（个人） · 已评估',
+      'Claude Code：',
+      '- Claude Code（个人） · 已评估',
+    ]));
+    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
+    expect(resultView?.lines.some((line) =>
+      line.includes('配置处理：已在当前用户这一组主体全部成功后删除 AW 自管配置。'),
     )).toBe(true);
+  });
+
+  it('keeps grouped config when a later all-platform uninstall target fails in the same store', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        supportedPlatforms: ['codex', 'claude'],
+        locationSummary: 'Codex、Claude Code',
+        features: [
+          feature('uninstall', { targetSelection: 'multiTargetAllowed', destructive: true }),
+          feature('status'),
+          feature('diagnose'),
+        ],
+      },
+      locations: [
+        location({
+          actions: [{
+            kind: 'runUninstall',
+            label: '卸载',
+            target: { platform: 'codex', scope: 'user' },
+            destructive: true,
+            confirmText: 'remove codex?',
+          }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          actions: [{
+            kind: 'runUninstall',
+            label: '卸载',
+            target: { platform: 'claude', scope: 'user' },
+            destructive: true,
+            confirmText: 'remove claude?',
+          }],
+        }),
+      ],
+    })]);
+    uninstallCommand.mockImplementation(async (_plugins: string[], options: { platform?: string }) => {
+      if (options.platform === 'claude') {
+        throw new Error('claude uninstall failed');
+      }
+      return {
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+        warnings: [],
+      };
+    });
+
+    const root = await makeTempDir('aw-console-uninstall-remove-config-');
+    const cwd = path.join(root, 'workspace');
+    const awHome = path.join(root, 'aw-home');
+    await fs.ensureDir(cwd);
+    const { resolvePluginConfigStorePath } = await import('../../src/utils/plugin-config.js');
+    const configStorePath = resolvePluginConfigStorePath({
+      pluginName: 'git-commit',
+      scope: 'user',
+      cwd,
+      env: { AW_HOME: awHome },
+    });
+    await fs.outputJson(configStorePath, { token: 'keep-me' }, { spaces: 2 });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'uninstall' },
+      { method: 'select', value: '__all_platforms' },
+      { method: 'select', value: 'user' },
+      { method: 'confirm', value: true },
+      { method: 'select', value: 'remove' },
+      { method: 'select', action: 'exit' },
+    ]);
+    context.cwd = cwd;
+    context.env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(uninstallCommand).toHaveBeenCalledTimes(2);
+    expect(uninstallCommand).toHaveBeenNthCalledWith(
+      1,
+      ['git-commit'],
+      expect.objectContaining({ platform: 'codex', removeConfig: false }),
+      context,
+    );
+    expect(uninstallCommand).toHaveBeenNthCalledWith(
+      2,
+      ['git-commit'],
+      expect.objectContaining({ platform: 'claude', removeConfig: false }),
+      context,
+    );
+    await expect(fs.pathExists(configStorePath)).resolves.toBe(true);
+    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 卸载');
+    expect(resultView?.lines.some((line) =>
+      line.includes('配置处理：已保留当前用户的 AW 自管配置；同一配置位置仍有主体失败。'),
+    )).toBe(true);
+  });
+
+  it('resolves duplicate installs through cleanup instead of uninstall and shows the unified result page', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'abnormal',
+        statusLabel: '异常',
+        locationSummary: 'Codex（个人 + 当前项目）',
+        duplicateInstallGroups: [{
+          pluginName: 'git-commit',
+          platform: 'codex',
+          locations: [
+            {
+              platform: 'codex',
+              scope: 'user',
+              label: 'Codex（个人）',
+              status: 'abnormal',
+              statusLabel: '异常',
+              reasonCodes: ['duplicateInstall'],
+              nextSteps: [],
+            },
+            {
+              platform: 'codex',
+              scope: 'project',
+              projectKey: '/workspace',
+              label: 'Codex（当前项目）',
+              status: 'abnormal',
+              statusLabel: '异常',
+              reasonCodes: ['duplicateInstall'],
+              nextSteps: [],
+            },
+          ],
+        }],
+        features: [
+          feature('resolveDuplicateInstall', { targetSelection: 'singleTargetOnly', destructive: true }),
+          feature('status'),
+          feature('diagnose'),
+        ],
+      },
+      locations: [
+        location({
+          status: 'abnormal',
+          statusLabel: '异常',
+          reasonCodes: ['duplicateInstall'],
+        }),
+        location({
+          scope: 'project',
+          projectKey: '/workspace',
+          locationLabel: 'Codex（当前项目）',
+          status: 'abnormal',
+          statusLabel: '异常',
+          reasonCodes: ['duplicateInstall'],
+        }),
+      ],
+    })]);
+    cleanupCommand.mockImplementation(async (_plugins: string[], options: { plan?: boolean; scope?: string }) => ({
+      payload: cleanupPayload({
+        dryRun: options.plan === true,
+        target: {
+          plugin: 'git-commit',
+          platform: 'codex',
+          scope: (options.scope ?? 'project') as 'project',
+          projectKey: '/workspace',
+          targetType: 'installed',
+        },
+        plannedRemovals: [{ kind: 'record', label: '安装记录' }],
+        ...(options.plan
+          ? {}
+          : { actualRemovals: [{ kind: 'record', label: '安装记录' }] }),
+      }),
+      warnings: [],
+    }));
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'resolveDuplicateInstall' },
+      { method: 'select', value: 'codex:user:-' },
+      { method: 'confirm', value: true },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(uninstallCommand).not.toHaveBeenCalled();
+    expect(cleanupCommand).toHaveBeenCalledTimes(2);
+    expect(cleanupCommand).toHaveBeenNthCalledWith(
+      1,
+      ['git-commit'],
+      expect.objectContaining({
+        scope: 'project',
+        platform: 'codex',
+        plan: true,
+        removeConfig: false,
+      }),
+      context,
+    );
+    expect(cleanupCommand).toHaveBeenNthCalledWith(
+      2,
+      ['git-commit'],
+      expect.objectContaining({
+        scope: 'project',
+        platform: 'codex',
+        force: false,
+        removeConfig: false,
+      }),
+      context,
+    );
+    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 重复安装处理风险')).toBe(true);
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 处理重复安装' &&
+      view.lines.includes('cleanup 已完成：git-commit。'),
+    )).toBe(true);
+  });
+
+  it('continues all-platform installs after one target fails and still exposes diagnose for the failed non-abnormal target', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems
+      .mockResolvedValueOnce([item({
+        summary: {
+          status: 'notInstalled',
+          statusLabel: '未安装',
+          supportedPlatforms: ['codex', 'claude'],
+          locationSummary: 'Codex、Claude Code',
+          features: [feature('install', { targetSelection: 'multiTargetAllowed' }), feature('status'), feature('diagnose')],
+        },
+        locations: [
+          location({
+            status: 'notInstalled',
+            statusLabel: '未安装',
+            actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'codex', scope: 'user' } }],
+          }),
+          location({
+            platform: 'claude',
+            locationLabel: 'Claude Code（个人）',
+            status: 'notInstalled',
+            statusLabel: '未安装',
+            actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'claude', scope: 'user' } }],
+          }),
+        ],
+      })])
+      .mockResolvedValueOnce([item({
+        summary: {
+          status: 'installed',
+          statusLabel: '已安装',
+          supportedPlatforms: ['codex', 'claude'],
+          locationSummary: 'Claude Code（个人）',
+          features: [feature('status'), feature('diagnose')],
+        },
+        locations: [
+          location({
+            status: 'notInstalled',
+            statusLabel: '未安装',
+            actions: [],
+          }),
+          location({
+            platform: 'claude',
+            locationLabel: 'Claude Code（个人）',
+            status: 'installed',
+            statusLabel: '已安装',
+            actions: [],
+          }),
+        ],
+      })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [{ pluginName: 'git-commit', plugin: plugin() }],
+    });
+    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('fixed');
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'install',
+    });
+    installCommand.mockImplementation(async (_plugins: string[], options: { platform?: string }) => {
+      if (options.platform === 'codex') {
+        throw new Error('codex install failed');
+      }
+      return {
+        platforms: ['claude'],
+        plugins: ['git-commit'],
+        warnings: [],
+      };
+    });
+    diagnoseCommand.mockResolvedValue({
+      output: '',
+      pageModels: [createDiagnosePage({
+        locations: [{
+          ...createDiagnosePage().locations[0]!,
+          label: 'Codex（个人）',
+        }],
+      })],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'install' },
+      { method: 'select', value: '__all_platforms' },
+      { method: 'select', value: 'user' },
+      { method: 'select', value: 'codex:user:-' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(installCommand).toHaveBeenCalledTimes(2);
+    expect(installCommand).toHaveBeenNthCalledWith(
+      1,
+      ['git-commit'],
+      expect.objectContaining({ platform: 'codex' }),
+      context,
+    );
+    expect(installCommand).toHaveBeenNthCalledWith(
+      2,
+      ['git-commit'],
+      expect.objectContaining({ platform: 'claude' }),
+      context,
+    );
+    const resultPrompt = prompt.calls.find((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '下一步',
+    );
+    expect((resultPrompt!.options as { choices: Array<{ label: string }> }).choices)
+      .toContainEqual(expect.objectContaining({
+        label: '诊断 · Codex（个人）',
+        description: 'codex install failed',
+      }));
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 安装' &&
+      view.lines.includes('已完成 2 个目标，其中 1 个成功，1 个失败。'),
+    )).toBe(true);
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 诊断' &&
+      view.lines.some((line) => line.includes('AW 记录和当前安装状态对不上')),
+    )).toBe(true);
+  });
+
+  it('renders cleanup failure when actual cleanup still has skipped items and remaining items', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('cleanup', { destructive: true }), feature('status'), feature('diagnose')],
+      },
+      locations: [location({
+        actions: [{
+          kind: 'runCleanup',
+          label: '清理',
+          target: { platform: 'codex', scope: 'user' },
+          destructive: true,
+          confirmText: 'cleanup?',
+        }],
+      })],
+    })]);
+    cleanupCommand.mockImplementation(async (_plugins: string[], options: { plan?: boolean }) => ({
+      payload: cleanupPayload(options.plan
+        ? {
+            dryRun: true,
+            plannedRemovals: [{ kind: 'record', label: '计划删除的记录' }],
+            wouldBackups: [{ kind: 'backup', label: '计划备份' }],
+          }
+        : {
+            dryRun: false,
+            force: true,
+            actualRemovals: [{ kind: 'record', label: '真正删除的记录' }],
+            actualBackups: [{ kind: 'backup', label: '真正生成的备份' }],
+            skippedItems: [{ kind: 'skip', label: '跳过的条目' }],
+            remainingItems: [{ kind: 'remain', label: '仍然保留的条目' }],
+            plannedRemovals: [{ kind: 'record', label: '计划删除的记录' }],
+          }),
+      warnings: [],
+    }));
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'cleanup' },
+      { method: 'select', value: 'keep' },
+      { method: 'confirm', value: true },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
+    expect(resultView?.lines).toEqual(expect.arrayContaining([
+      'cleanup 失败：git-commit。',
+      '实际删除项：',
+      '- 真正删除的记录',
+      '实际备份项：',
+      '- 真正生成的备份',
+      '执行跳过项：',
+      '- 跳过的条目',
+      '未清项：',
+      '- 仍然保留的条目',
+    ]));
+    expect(resultView?.lines).not.toContain('- 计划删除的记录');
+  });
+
+  it('shows affected dependents in the cleanup force flow and executes the confirmed force cleanup', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('cleanup', { destructive: true }), feature('status'), feature('diagnose')],
+      },
+      locations: [location({
+        actions: [{
+          kind: 'runCleanup',
+          label: '清理',
+          target: { platform: 'codex', scope: 'user' },
+          destructive: true,
+          confirmText: 'cleanup?',
+        }],
+      })],
+    })]);
+    cleanupCommand.mockImplementation(async (_plugins: string[], options: { plan?: boolean; force?: boolean }) => ({
+      payload: cleanupPayload(options.plan
+        ? {
+            dryRun: true,
+            force: false,
+            forceReason: '目标仍被 verified dependents 引用，`--force` 会保留 dependent 本身，只清理当前目标；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。',
+            affectedDependents: [{
+              plugin: 'helper-local-dependent',
+              platform: 'codex',
+              scope: 'user',
+            }],
+            blockingReasons: [{
+              code: 'verifiedDependents',
+              message: '目标仍被 helper-local-dependent 引用。',
+            }],
+          }
+        : {
+            dryRun: false,
+            force: true,
+            forceReason: '目标仍被 verified dependents 引用，`--force` 会保留 dependent 本身，只清理当前目标；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。',
+            affectedDependents: [{
+              plugin: 'helper-local-dependent',
+              platform: 'codex',
+              scope: 'user',
+            }],
+            actualRemovals: [{ kind: 'record', label: '真正删除的记录' }],
+            remainingItems: [],
+          }),
+      warnings: [],
+    }));
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'cleanup' },
+      { method: 'select', value: 'keep' },
+      { method: 'confirm', value: true },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(cleanupCommand).toHaveBeenNthCalledWith(2, ['git-commit'], expect.objectContaining({
+      force: true,
+      removeConfig: false,
+    }), expect.anything());
+    const riskView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理风险');
+    expect(riskView?.lines.join('\n')).toContain('受影响依赖：');
+    expect(riskView?.lines.join('\n')).toContain('helper-local-dependent');
+    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
+    expect(resultView?.lines.join('\n')).toContain('repair、reinstall 或 cleanup');
+  });
+
+  it('renders reinstall outcome lines with a reinstall headline instead of an install headline', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    reinstallCommand.mockResolvedValue({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+    });
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'abnormal',
+        statusLabel: '异常',
+        features: [feature('reinstall', { destructive: true }), feature('status'), feature('diagnose')],
+      },
+      locations: [location({
+        status: 'abnormal',
+        statusLabel: '异常',
+        actions: [{
+          kind: 'runReinstall',
+          label: '重新安装',
+          target: { platform: 'codex', scope: 'user' },
+          destructive: true,
+          confirmText: 'reinstall?',
+        }],
+      })],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'reinstall' },
+      { method: 'confirm', value: true },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 重新安装');
+    expect(resultView?.lines).toEqual(expect.arrayContaining([
+      '已重新安装 git-commit。',
+    ]));
+    expect(resultView?.lines).not.toContain('已安装 git-commit。');
+  });
+
+  it.each([
+    {
+      name: 'repair',
+      featureKind: 'repair',
+      expectedTitle: 'Git Commit 修复',
+      replies: [
+        { method: 'select', value: 'git-commit' },
+        { method: 'select', value: 'repair' },
+        { method: 'select', action: 'exit' },
+      ],
+      setup() {
+        repairCommand.mockResolvedValue({ output: 'repair done' });
+        return item({
+          summary: {
+            status: 'abnormal',
+            statusLabel: '异常',
+            features: [feature('repair'), feature('status'), feature('diagnose')],
+          },
+          locations: [location({
+            status: 'abnormal',
+            statusLabel: '异常',
+            actions: [{ kind: 'repairInstall', label: '修复安装', target: { platform: 'codex', scope: 'user' } }],
+          })],
+        });
+      },
+    },
+    {
+      name: 'reinstall',
+      featureKind: 'reinstall',
+      expectedTitle: 'Git Commit 重新安装',
+      replies: [
+        { method: 'select', value: 'git-commit' },
+        { method: 'select', value: 'reinstall' },
+        { method: 'confirm', value: true },
+        { method: 'select', action: 'exit' },
+      ],
+      setup() {
+        reinstallCommand.mockResolvedValue({
+          platforms: ['codex'],
+          plugins: ['git-commit'],
+          warnings: [],
+        });
+        return item({
+          summary: {
+            status: 'abnormal',
+            statusLabel: '异常',
+            features: [feature('reinstall', { destructive: true }), feature('status'), feature('diagnose')],
+          },
+          locations: [location({
+            status: 'abnormal',
+            statusLabel: '异常',
+            actions: [{
+              kind: 'runReinstall',
+              label: '重新安装',
+              target: { platform: 'codex', scope: 'user' },
+              destructive: true,
+              confirmText: 'reinstall?',
+            }],
+          })],
+        });
+      },
+    },
+    {
+      name: 'adoptExisting',
+      featureKind: 'adoptExisting',
+      expectedTitle: 'Git Commit 认领现有安装',
+      replies: [
+        { method: 'select', value: 'git-commit' },
+        { method: 'select', value: 'adoptExisting' },
+        { method: 'confirm', value: true },
+        { method: 'select', action: 'exit' },
+      ],
+      setup() {
+        repairCommand.mockResolvedValue({ output: 'adopt done' });
+        return item({
+          summary: {
+            status: 'abnormal',
+            statusLabel: '异常',
+            features: [feature('adoptExisting', { destructive: true }), feature('status'), feature('diagnose')],
+          },
+          locations: [location({
+            status: 'abnormal',
+            statusLabel: '异常',
+            reasonCodes: ['adoptableInstall'],
+            actions: [{
+              kind: 'runAdoptExisting',
+              label: '认领现有安装',
+              target: { platform: 'codex', scope: 'user' },
+              destructive: true,
+              confirmText: 'adopt?',
+            }],
+          })],
+        });
+      },
+    },
+    {
+      name: 'takeoverSharedRuntime',
+      featureKind: 'takeoverSharedRuntime',
+      expectedTitle: 'Git Commit 接管共享触发策略',
+      replies: [
+        { method: 'select', value: 'git-commit' },
+        { method: 'select', value: 'takeoverSharedRuntime' },
+        { method: 'confirm', value: true },
+        { method: 'select', action: 'exit' },
+      ],
+      setup() {
+        repairCommand.mockResolvedValue({ output: 'takeover done' });
+        return item({
+          summary: {
+            status: 'abnormal',
+            statusLabel: '异常',
+            features: [feature('takeoverSharedRuntime', { destructive: true }), feature('status'), feature('diagnose')],
+          },
+          locations: [location({
+            status: 'abnormal',
+            statusLabel: '异常',
+            reasonCodes: ['foreignOwnershipConflict'],
+            actions: [{
+              kind: 'runTakeoverSharedRuntime',
+              label: '接管共享触发策略',
+              target: { platform: 'codex', scope: 'user' },
+              destructive: true,
+              confirmText: 'takeover?',
+            }],
+          })],
+        });
+      },
+    },
+  ] as const)('shows the unified result page for $name', async ({ setup, replies, expectedTitle }) => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([setup()]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext(replies as Parameters<typeof createFakePrompt>[0]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(prompt.calls.some((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '下一步',
+    )).toBe(true);
+    expect(consoleDriver.views.some((view) => view.title === expectedTitle)).toBe(true);
   });
 
   it('opens diagnose from the feature menu without asking for a target', async () => {

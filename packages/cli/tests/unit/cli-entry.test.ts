@@ -724,6 +724,7 @@ describe('cli entry', () => {
       repoManagedArtifacts: [],
       payload: { ok: true, command: 'cleanup', locations: [] },
     }));
+    const isCleanupExecutionFailure = vi.fn(() => false);
     const reinstallCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -732,7 +733,7 @@ describe('cli entry', () => {
       repoManagedArtifacts: [],
     }));
     vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
-    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand }));
+    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand, isCleanupExecutionFailure }));
     vi.doMock('../../src/commands/reinstall.js', () => ({ reinstallCommand }));
 
     const { runCli } = await import('../../src/index.js');
@@ -808,9 +809,10 @@ describe('cli entry', () => {
   it('fails P11 illegal combinations before invoking write commands', async () => {
     const upgradeCommand = vi.fn();
     const cleanupCommand = vi.fn();
+    const isCleanupExecutionFailure = vi.fn(() => false);
     const repairCommand = vi.fn();
     vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
-    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand }));
+    vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand, isCleanupExecutionFailure }));
     vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
 
     const { runCli } = await import('../../src/index.js');

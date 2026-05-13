@@ -3,9 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { cleanupCommand } from '../../src/commands/cleanup.js';
+import { renderCleanupReceipt } from '../../src/output/command-receipt.js';
 import { createDependencyIndexPruneToken } from '../../src/install-state/transactions.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
@@ -170,6 +171,7 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -252,6 +254,75 @@ describe('cleanup command (P9)', () => {
     expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
     await expect(fs.readFile(path.join(builder.paths.awHome, 'cleanup-ran.txt'), 'utf8')).resolves.toBe('ran');
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
+  });
+
+  it('downgrades healthy installed cleanup to recovery cleanup when --force is set and standard uninstall target resolution fails', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'claude', scope: 'user' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit', 'fallback-cleanup-should-not-run.txt');
+
+    const claude = new FakeAdapter();
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+        force: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude,
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      force: true,
+      target: {
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'user',
+        targetType: 'installed',
+      },
+      blockingReasons: [],
+      actualBackups: [],
+      actualRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'install-record',
+        }),
+      ]),
+    });
+    expect(result.payload.forceReason).toContain('标准 uninstall 等价路径不可用');
+    expect(result.warnings.join('\n')).toContain('已因 --force 降级为恢复清理');
+    expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'fallback-cleanup-should-not-run.txt'))).resolves.toBe(false);
   });
 
   it('cleans record plus install-marker residuals without running uninstall lifecycle', async () => {
@@ -374,8 +445,6 @@ describe('cleanup command (P9)', () => {
       runtime,
     );
 
-    expect(result.warnings.join('\n')).toContain('embedded bundle 不可用');
-    expect(result.warnings.join('\n')).toContain('已因 --force 仅清理 owner');
     await expect(fs.pathExists(ownerPath)).resolves.toBe(false);
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
   });
@@ -507,6 +576,144 @@ describe('cleanup command (P9)', () => {
       blockingReasons: [],
     });
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
+  });
+
+  it('builds a real blocking cleanup plan and renders blocking reasons plus config handling', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'empty-plugin', platform: 'codex', scope: 'user' });
+
+    const result = await cleanupCommand(
+      ['empty-plugin'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        plan: true,
+        removeConfig: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: true,
+      force: false,
+      removeConfig: true,
+      target: {
+        plugin: 'empty-plugin',
+        platform: 'codex',
+        scope: 'user',
+        targetType: 'not-installed',
+      },
+      wouldBackups: [],
+      wouldRemoveConfig: expect.arrayContaining([
+        expect.objectContaining({
+          status: 'blocked',
+        }),
+      ]),
+      blockingReasons: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'nothingToClean',
+        }),
+      ]),
+    });
+
+    const output = renderCleanupReceipt({
+      payload: result.payload,
+      warnings: result.warnings,
+    }).join('\n');
+    expect(output).toContain('阻断原因：');
+    expect(output).toContain('[nothingToClean]');
+    expect(output).toContain('配置处理：');
+  });
+
+  it('returns real execution cleanup payload fields and receipt labels for force cleanup', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'project' });
+    await builder.writeRepoArtifact(target);
+    await builder.writeProjectIdentity(target);
+    await builder.writeNativeMarker(target, 'install');
+
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        force: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      force: true,
+      target: {
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'project',
+        targetType: 'marker-only',
+      },
+      actualBackups: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'backup',
+        }),
+      ]),
+      skippedItems: [],
+      remainingItems: [],
+      blockingReasons: [],
+    });
+    expect(result.payload).toMatchObject({
+      actualRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-transaction-marker',
+        }),
+      ]),
+    });
+
+    const output = renderCleanupReceipt({
+      payload: result.payload,
+      warnings: result.warnings,
+    }).join('\n');
+    expect(output).toContain('cleanup 已完成');
+    expect(output).toContain('实际删除项：');
+    expect(output).toContain('实际备份项：');
+    expect(output).toContain('执行跳过项：');
+    expect(output).toContain('未清项：');
+    expect(output).toContain('阻断原因：\n- 无');
+    expect(result.warnings.join('\n')).toContain('已备份');
+    expect(result.payload.actualBackups?.length ?? 0).toBeGreaterThan(0);
   });
 
   it('fails closed for unreadable dependency-index references instead of pruning them as stale', async () => {
@@ -676,7 +883,7 @@ describe('cleanup command (P9)', () => {
       undefined,
       { protectedPluginIds: [target.pluginId] },
     );
-    await cleanupCommand(
+    const result = await cleanupCommand(
       [pluginName],
       {
         cwd: builder.paths.repoRoot,
@@ -702,6 +909,30 @@ describe('cleanup command (P9)', () => {
 
     expect(codex.uninstallPluginCalls).toEqual([pluginName]);
     expect(codex.uninstallUserNativePluginByIdCalls).toEqual([]);
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      target: {
+        plugin: pluginName,
+        platform: 'codex',
+        scope: 'user',
+      },
+      skippedItems: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-config',
+        }),
+      ]),
+      remainingItems: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-config',
+        }),
+      ]),
+    });
+    expect(renderCleanupReceipt({
+      payload: result.payload,
+      warnings: result.warnings,
+    }).join('\n')).toContain('cleanup 失败');
     await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(target.pluginId);
   });
 
@@ -894,6 +1125,255 @@ describe('cleanup command (P9)', () => {
     expect(codex.uninstallUserNativePluginByIdCalls).toEqual([pluginId]);
     expect(codex.uninstallPluginCalls).toEqual([]);
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(false);
+  });
+
+  it('allows cleanup --force to remove the target while keeping verified dependents and surfacing follow-up guidance', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    const dependentRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${dependentTarget.recordId}.json`,
+    );
+    await fs.writeJson(
+      dependentRecordPath,
+      {
+        ...dependentRecord,
+        record: {
+          ...dependentRecord.record,
+          dependencyEdges: [{
+            dependency: target.location,
+            declaration: {
+              name: target.location.plugin,
+            },
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        force: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeCodexNativeCleanupAdapter(configPath),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      force: true,
+      target: {
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+        targetType: 'config-only',
+      },
+      affectedDependents: [{
+        plugin: 'helper-local-dependent',
+        platform: 'codex',
+        scope: 'user',
+      }],
+      blockingReasons: [],
+      actualRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-config',
+        }),
+      ]),
+      remainingItems: [],
+    });
+    expect(result.payload.forceReason).toContain('repair、reinstall 或 cleanup');
+    expect(result.warnings.join('\n')).toContain('helper-local-dependent');
+    expect(result.warnings.join('\n')).toContain('repair、reinstall 或 cleanup');
+    expect(renderCleanupReceipt({
+      payload: result.payload,
+      warnings: result.warnings,
+    }).join('\n')).toContain('受影响依赖：\n- codex/user/helper-local-dependent');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(dependentRecordPath)).resolves.toBe(true);
+  });
+
+  it('keeps later cleanup deletions and returns a failed receipt when one delete stage fails mid-flight', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    const diagnosticCachePath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'diagnostics',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeDiagnosticCache(target);
+    await builder.writeNativeMarker(target, 'install');
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+
+    const originalMove = fs.move.bind(fs);
+    vi.spyOn(fs, 'move').mockImplementation(async (source, destination, options) => {
+      if (source === diagnosticCachePath) {
+        throw new Error('synthetic diagnostic cache delete failure');
+      }
+      return originalMove(source, destination, options);
+    });
+
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      actualRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'install-record',
+        }),
+        expect.objectContaining({
+          kind: 'native-transaction-marker',
+        }),
+      ]),
+      remainingItems: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'diagnostic-cache',
+          path: diagnosticCachePath,
+        }),
+      ]),
+    });
+    expect(result.warnings.join('\n')).toContain('cleanup 删除 dynamic diagnostic cache 失败');
+    expect(renderCleanupReceipt({
+      payload: result.payload,
+      warnings: result.warnings,
+    }).join('\n')).toContain('cleanup 失败');
+    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
+    await expect(fs.pathExists(diagnosticCachePath)).resolves.toBe(true);
+  });
+
+  it('preserves successful cleanup results when --remove-config fails after the main cleanup', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const configPath = path.join(builder.paths.codexHome, 'config.toml');
+    await fs.outputFile(
+      configPath,
+      `[plugins."${target.pluginId}"]\nenabled = true\n`,
+      'utf8',
+    );
+    const configStorePath = path.join(
+      builder.paths.awHome,
+      'plugin-config',
+      'git-commit',
+      'config.json',
+    );
+    await fs.outputJson(configStorePath, { token: 'secret' }, { spaces: 2 });
+
+    const originalRemove = fs.remove.bind(fs);
+    vi.spyOn(fs, 'remove').mockImplementation(async (targetPath) => {
+      if (targetPath === configStorePath) {
+        throw new Error('synthetic config removal failure');
+      }
+      return originalRemove(targetPath);
+    });
+
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        removeConfig: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeCodexNativeCleanupAdapter(configPath),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: false,
+      actualRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-config',
+        }),
+      ]),
+      remainingItems: [],
+      wouldRemoveConfig: [{
+        plugin: 'git-commit',
+        scope: 'user',
+        path: configStorePath,
+        status: 'failed',
+        reason: 'synthetic config removal failure',
+      }],
+    });
+    expect(result.warnings.join('\n')).toContain('主体清理已完成，但删除当前 target scope 的 AW 自管配置失败');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    await expect(fs.pathExists(configStorePath)).resolves.toBe(true);
   });
 
   it('rejects config-only Codex cleanup when a readable local scoped record still depends on it', async () => {

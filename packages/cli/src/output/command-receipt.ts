@@ -11,6 +11,7 @@ import type {
   CleanupPlanItem,
   CleanupTargetPayload,
 } from '../commands/cleanup.js';
+import { isCleanupExecutionFailure } from '../commands/cleanup.js';
 
 export interface CliMarketplaceReceipt {
   rootDir: string;
@@ -74,6 +75,14 @@ export interface ReceiptFileEntry {
   repoRelativePath?: string;
 }
 
+export interface ReceiptConfigRemovalAction extends ReceiptFileEntry {
+  plugin: string;
+  scope: Scope;
+  projectKey?: string;
+  status: 'removed' | 'skipped' | 'failed';
+  reason?: string;
+}
+
 export interface ReceiptProjectArtifactIdentityEntry extends ReceiptFileEntry {
   sharedIdentityId?: string;
 }
@@ -120,6 +129,7 @@ export interface CliCommandReceiptDetails {
   projectLocalConfigFiles?: ReceiptFileEntry[];
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
   removedConfigStores?: ReceiptFileEntry[];
+  configRemovalActions?: ReceiptConfigRemovalAction[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -166,6 +176,7 @@ interface ReceiptJsonBase {
   projectLocalConfigFiles?: ReceiptFileEntry[];
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
   removedConfigStores?: ReceiptFileEntry[];
+  configRemovalActions?: ReceiptConfigRemovalAction[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -339,6 +350,9 @@ function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
       : {}),
     ...(result.receiptDetails.removedConfigStores?.length
       ? { removedConfigStores: result.receiptDetails.removedConfigStores }
+      : {}),
+    ...(result.receiptDetails.configRemovalActions?.length
+      ? { configRemovalActions: result.receiptDetails.configRemovalActions }
       : {}),
     ...(result.receiptDetails.nativeTransactionMarker
       ? { nativeTransactionMarker: result.receiptDetails.nativeTransactionMarker }
@@ -590,6 +604,31 @@ function formatTargetSummary(targets: ReceiptTarget[]): string {
   return `${platforms}；${scopes}`;
 }
 
+function renderConfigRemovalSummary(
+  actions: ReceiptConfigRemovalAction[] | undefined,
+): string | null {
+  if (!actions || actions.length === 0) {
+    return null;
+  }
+  const failed = actions.filter((action) => action.status === 'failed');
+  if (failed.length > 0) {
+    return failed.length === 1
+      ? '配置处理：主体已完成，但 AW 自管配置删除失败。'
+      : `配置处理：主体已完成，但 ${failed.length} 个 AW 自管配置删除失败。`;
+  }
+  const skipped = actions.filter((action) => action.status === 'skipped');
+  if (skipped.length > 0) {
+    return skipped.every((action) => action.reason === '当前 target scope 没有可删除的 AW 自管配置。')
+      ? '配置处理：没有可删除的 AW 自管配置。'
+      : '配置处理：已保留 AW 自管配置。';
+  }
+  const removed = actions.filter((action) => action.status === 'removed');
+  if (removed.length > 0) {
+    return '已删除 AW 自管配置。';
+  }
+  return null;
+}
+
 export function renderInitReceipt(result: CliInitReceipt): string[] {
   return [
     `${result.changed ? '已准备好' : '已复用'}本地插件目录：${result.rootDir}。`,
@@ -600,6 +639,9 @@ export function renderInitReceipt(result: CliInitReceipt): string[] {
 export function renderCommandReceipt(
   command: CliReceiptCommand,
   receipt: CliCommandReceipt,
+  options: {
+    headlineVariant?: 'install' | 'reinstall';
+  } = {},
 ): string[] {
   const payload = buildCommandReceiptJson(command, receipt);
   const lines: string[] = [];
@@ -609,6 +651,7 @@ export function renderCommandReceipt(
     || (payload.projectLocalConfigFiles?.length ?? 0) > 0;
   const markerNeedsAttention = payload.nativeTransactionMarker?.needsAttention === true;
   const sharedOwnerSuppressed = payload.sharedSkillTriggerOwner?.suppressedOwnerConflict === true;
+  const headlineVariant = options.headlineVariant ?? payload.command;
 
   if (payload.command === 'upgrade') {
     const upgradedPlugins = formatChineseList(payload.upgraded.map((target) => target.plugin));
@@ -674,9 +717,13 @@ export function renderCommandReceipt(
     ? formatChineseList(payload.plugins)
     : explicitPlugins;
   if (markerNeedsAttention && payload.command === 'install') {
-    lines.push(`主要安装已经完成，但还需要收口本机原生状态：${plugins}。`);
+    lines.push(`${headlineVariant === 'reinstall' ? '主要重新安装已经完成' : '主要安装已经完成'}，但还需要收口本机原生状态：${plugins}。`);
   } else {
-    lines.push(`${payload.command === 'install' ? '已安装' : '已卸载'} ${plugins}。`);
+    lines.push(`${
+      payload.command === 'install'
+        ? headlineVariant === 'reinstall' ? '已重新安装' : '已安装'
+        : '已卸载'
+    } ${plugins}。`);
   }
   if (payload.command === 'install') {
     const autoDependencyTargets = payload.actions.filter((action) => action.type === 'installDependency');
@@ -700,7 +747,10 @@ export function renderCommandReceipt(
   if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
     lines.push('已更新共享身份文件。');
   }
-  if ((payload.removedConfigStores?.length ?? 0) > 0) {
+  const configRemovalSummary = renderConfigRemovalSummary(payload.configRemovalActions);
+  if (configRemovalSummary) {
+    lines.push(configRemovalSummary);
+  } else if ((payload.removedConfigStores?.length ?? 0) > 0) {
     lines.push('已删除 AW 自管配置。');
   }
   if (privateStateTouched) {
@@ -801,8 +851,9 @@ export function renderCleanupReceipt(result: {
     return lines;
   }
 
+  const cleanupFailed = isCleanupExecutionFailure(payload);
   const lines: string[] = [
-    `${payload.dryRun ? 'cleanup 评估完成' : 'cleanup 已完成'}：${payload.target.plugin}。`,
+    `${payload.dryRun ? 'cleanup 评估完成' : cleanupFailed ? 'cleanup 失败' : 'cleanup 已完成'}：${payload.target.plugin}。`,
     `目标类型：${payload.target.targetType}。`,
     `force 语义：${payload.force ? '已启用' : '未启用'}${payload.forceReason ? `；${payload.forceReason}` : ''}`,
   ];

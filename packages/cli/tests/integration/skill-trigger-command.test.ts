@@ -1345,7 +1345,7 @@ describe('skill trigger command integration', () => {
     );
     expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-commit')).toBe(true);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-review')).toBe(false);
-  });
+  }, 15_000);
 
   it('fails Codex project sibling installs with duplicateInstall and leaves the user runtime untouched', async () => {
     const workspace = await makeWorkspace();

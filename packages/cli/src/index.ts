@@ -9,7 +9,7 @@ import { Command, CommanderError } from 'commander';
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
 import { repairCommand } from './commands/repair.js';
-import { cleanupCommand } from './commands/cleanup.js';
+import { cleanupCommand, isCleanupExecutionFailure } from './commands/cleanup.js';
 import { reinstallCommand } from './commands/reinstall.js';
 import {
   formatInteractiveConsoleUnavailableMessage,
@@ -943,7 +943,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
       }
       writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = 0;
+      commandExitState.exitCode = isCleanupExecutionFailure(result.payload) ? 1 : 0;
     });
 
   program
@@ -1003,12 +1003,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           receipt: buildCommandReceiptJson('install', receipt),
         });
       } else {
-        const lines = renderCommandReceipt('install', receipt);
-        const [firstLine, ...restLines] = lines;
-        if (firstLine) {
-          writeLine(io.stdout, firstLine.replace('已安装', '已重新安装'));
-        }
-        for (const line of restLines) {
+        const lines = renderCommandReceipt('install', receipt, {
+          headlineVariant: 'reinstall',
+        });
+        for (const line of lines) {
           writeLine(io.stdout, line);
         }
       }

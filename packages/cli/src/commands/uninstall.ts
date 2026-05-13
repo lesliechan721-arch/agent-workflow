@@ -1390,6 +1390,14 @@ export async function uninstallCommand(
   repoManagedArtifacts: GeneratedArtifact[];
   receiptDetails?: {
     removedConfigStores?: Array<{ path: string }>;
+    configRemovalActions?: Array<{
+      path: string;
+      plugin: string;
+      scope: Scope;
+      projectKey?: string;
+      status: 'removed' | 'skipped' | 'failed';
+      reason?: string;
+    }>;
   };
 }> {
   const options = normalizeUninstallCommandOptions(rawOptions, {
@@ -1497,6 +1505,14 @@ export async function uninstallCommand(
   const warnings: string[] = [];
   let repoManagedArtifacts: GeneratedArtifact[] = [];
   const removedConfigStores: Array<{ path: string }> = [];
+  const configRemovalActions: Array<{
+    path: string;
+    plugin: string;
+    scope: Scope;
+    projectKey?: string;
+    status: 'removed' | 'skipped' | 'failed';
+    reason?: string;
+  }> = [];
   for (const execution of executions) {
     const result = await uninstallTargetOnPlatform(
       execution.target,
@@ -1526,14 +1542,40 @@ export async function uninstallCommand(
         continue;
       }
       seenStorePaths.add(storePath);
-      const reset = await resetPluginConfigStore({
-        pluginName,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-      });
-      if (reset.deleted) {
-        removedConfigStores.push({ path: reset.path });
+      try {
+        const reset = await resetPluginConfigStore({
+          pluginName,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
+        });
+        if (reset.deleted) {
+          removedConfigStores.push({ path: reset.path });
+          configRemovalActions.push({
+            plugin: pluginName,
+            scope: options.scope,
+            path: reset.path,
+            status: 'removed',
+          });
+        } else {
+          configRemovalActions.push({
+            plugin: pluginName,
+            scope: options.scope,
+            path: reset.path,
+            status: 'skipped',
+            reason: '当前 target scope 没有可删除的 AW 自管配置。',
+          });
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        warnings.push(`主体卸载已完成，但删除 ${pluginName} 的 AW 自管配置失败：${reason}`);
+        configRemovalActions.push({
+          plugin: pluginName,
+          scope: options.scope,
+          path: storePath,
+          status: 'failed',
+          reason,
+        });
       }
     }
   }
@@ -1547,10 +1589,11 @@ export async function uninstallCommand(
       ...warnings,
       ...(removedConfigStores.length > 0 ? ['已删除 AW 自管配置。'] : []),
     ],
-    ...(removedConfigStores.length > 0
+    ...((removedConfigStores.length > 0 || configRemovalActions.length > 0)
       ? {
           receiptDetails: {
-            removedConfigStores,
+            ...(removedConfigStores.length > 0 ? { removedConfigStores } : {}),
+            ...(configRemovalActions.length > 0 ? { configRemovalActions } : {}),
           },
         }
       : {}),

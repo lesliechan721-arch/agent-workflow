@@ -385,4 +385,160 @@ describe('command receipt output', () => {
     expect(output).toContain('受影响依赖');
     expect(output).toContain('- 无');
   });
+
+  it('renders cleanup execution receipts as failed when remaining items are still present', () => {
+    const output = renderCleanupReceipt({
+      payload: {
+        ok: true,
+        command: 'cleanup',
+        generatedAt: '2026-05-13T00:00:00.000Z',
+        dependencyIndex: false,
+        cleanupPlanSchemaVersion: 1,
+        dryRun: false,
+        force: true,
+        removeConfig: false,
+        target: {
+          plugin: 'git-commit',
+          platform: 'codex',
+          scope: 'user' as const,
+          targetType: 'config-only' as const,
+        },
+        forceReason: null,
+        plannedRemovals: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        wouldBackups: [],
+        wouldRemoveConfig: [],
+        skippedForeignItems: [],
+        affectedDependents: [],
+        blockingReasons: [],
+        recommendedCommand: 'aw diagnose git-commit --platform codex --scope user',
+        actualRemovals: [],
+        actualBackups: [],
+        skippedItems: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        remainingItems: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+      },
+      warnings: [],
+    }).join('\n');
+
+    expect(output).toContain('cleanup 失败');
+    expect(output).toContain('执行跳过项');
+    expect(output).toContain('未清项');
+  });
+
+  it('renders cleanup force receipts with affected dependents and follow-up guidance', () => {
+    const output = renderCleanupReceipt({
+      payload: {
+        ok: true,
+        command: 'cleanup',
+        generatedAt: '2026-05-13T00:00:00.000Z',
+        dependencyIndex: false,
+        cleanupPlanSchemaVersion: 1,
+        dryRun: false,
+        force: true,
+        removeConfig: false,
+        target: {
+          plugin: 'git-commit',
+          platform: 'codex',
+          scope: 'user' as const,
+          targetType: 'config-only' as const,
+        },
+        forceReason: '目标仍被 verified dependents 引用，`--force` 会保留 dependent 本身，只清理当前目标；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。',
+        plannedRemovals: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        wouldBackups: [],
+        wouldRemoveConfig: [],
+        skippedForeignItems: [],
+        affectedDependents: [{
+          plugin: 'helper-local-dependent',
+          platform: 'codex',
+          scope: 'user' as const,
+        }],
+        blockingReasons: [],
+        recommendedCommand: 'aw diagnose git-commit --platform codex --scope user',
+        actualRemovals: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        actualBackups: [],
+        skippedItems: [],
+        remainingItems: [],
+      },
+      warnings: [],
+    }).join('\n');
+
+    expect(output).toContain('force 语义：已启用；目标仍被 verified dependents 引用');
+    expect(output).toContain('repair、reinstall 或 cleanup');
+    expect(output).toContain('受影响依赖：');
+    expect(output).toContain('- codex/user/helper-local-dependent');
+  });
+
+  it('renders uninstall receipts with config removal failure without losing the main result', () => {
+    const output = renderCommandReceipt('uninstall', {
+      result: {
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+        warnings: ['主体卸载已完成，但删除 git-commit 的 AW 自管配置失败：synthetic config removal failure'],
+        receiptDetails: {
+          configRemovalActions: [{
+            plugin: 'git-commit',
+            scope: 'user' as const,
+            path: '/tmp/config.json',
+            status: 'failed' as const,
+            reason: 'synthetic config removal failure',
+          }],
+        },
+      },
+      groups: [{
+        scope: 'user' as const,
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+      }],
+    }).join('\n');
+
+    expect(output).toContain('已卸载 git-commit。');
+    expect(output).toContain('配置处理：主体已完成，但 AW 自管配置删除失败。');
+  });
+
+  it('renders reinstall headlines directly instead of rewriting install strings after the fact', () => {
+    const output = renderCommandReceipt('install', {
+      result: {
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+        warnings: [],
+        receiptDetails: {
+          nativeTransactionMarker: {
+            status: 'markerOnlyInstall',
+            needsAttention: true,
+            repairCommand: 'aw repair git-commit -p codex -s user',
+            cleanupCommand: 'aw cleanup git-commit -p codex -s user',
+          },
+        },
+      },
+      groups: [{
+        scope: 'user' as const,
+        platforms: ['codex'],
+        plugins: ['git-commit'],
+      }],
+    }, {
+      headlineVariant: 'reinstall',
+    }).join('\n');
+
+    expect(output).toContain('主要重新安装已经完成，但还需要收口本机原生状态：git-commit。');
+    expect(output).not.toContain('主要安装已经完成');
+  });
 });

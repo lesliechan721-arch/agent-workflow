@@ -30,11 +30,17 @@ import {
   type ProjectInstallStateProjection,
 } from '../install-state/status-projection.js';
 import {
+  createDependencyIndexRefreshPostCommitAction,
   createInstallRecordDeleteStage,
   createPathDeleteStage,
   createProjectArtifactIdentityDeleteStage,
   createSharedRuntimeOwnerDeleteStage,
+  InstallStateTransactionError,
   runInstallStateGraphRecordTransaction,
+  runInstallStateTransaction,
+  type InstallStateReceiptWarning,
+  type InstallStateTransactionPostCommitAction,
+  type InstallStateTransactionStage,
 } from '../install-state/transactions.js';
 import {
   createSharedSkillTriggerRuntimeMaterializationStage,
@@ -84,6 +90,7 @@ import {
   normalizeSharedNativeRefs,
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
+import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
@@ -100,9 +107,17 @@ export interface InstallStateRemovalResult {
   repoManagedArtifacts: GeneratedArtifact[];
 }
 
+export interface InstallStateCleanupExecutionItem {
+  kind: string;
+  label: string;
+  path?: string;
+  detail?: string;
+}
+
 export interface InstallStateCleanupResult extends InstallStateRemovalResult {
   summary: string;
   backups: string[];
+  skippedItems: InstallStateCleanupExecutionItem[];
 }
 
 export interface InstallStatePruneResult {
@@ -136,6 +151,10 @@ export interface InstallStateRemovalProtection {
 interface ProtectedRecordEntry {
   location: PluginLocation;
   dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
+}
+
+function formatCommandError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
@@ -903,6 +922,95 @@ async function backupFiles(filePaths: string[], env: NodeJS.ProcessEnv): Promise
   return backedUp;
 }
 
+async function collectProtectedCodexUserNativeSkippedItems(options: {
+  protectedCodexUserNativeCleanup: boolean;
+  evidence: InstallEvidence;
+}): Promise<InstallStateCleanupExecutionItem[]> {
+  if (!options.protectedCodexUserNativeCleanup) {
+    return [];
+  }
+
+  const codexNative = options.evidence.platform.codexNative;
+  if (!codexNative) {
+    return [];
+  }
+
+  const detail = 'shared native refs 仍保护其它 project consumer，cleanup 未删除该原生条目。';
+  const config = await readCodexConfigFile(codexNative.configPath);
+  const items: InstallStateCleanupExecutionItem[] = [];
+
+  if (config.snapshot.plugins[codexNative.pluginId]?.enabled === true) {
+    items.push({
+      kind: 'native-config',
+      label: 'Codex enabled config',
+      path: codexNative.configPath,
+      detail,
+    });
+  }
+  if (await fs.pathExists(codexNative.installedManifestPath)) {
+    items.push({
+      kind: 'native-manifest',
+      label: 'Codex installed manifest',
+      path: codexNative.installedManifestPath,
+      detail,
+    });
+  }
+  if (await fs.pathExists(codexNative.activeCacheRootPath)) {
+    items.push({
+      kind: 'native-cache',
+      label: 'Codex active cache',
+      path: codexNative.activeCacheRootPath,
+      detail,
+    });
+  }
+
+  return items;
+}
+
+interface CleanupDeleteStageGroup {
+  label: string;
+  stages: InstallStateTransactionStage[];
+  postCommit?: InstallStateTransactionPostCommitAction[];
+}
+
+function formatInstallStateWarning(
+  location: PluginLocation,
+  warning: InstallStateReceiptWarning,
+): string {
+  return `[${renderLocation(location)}] ${warning.message}`
+    + `${warning.path ? ` (${warning.path})` : ''}`
+    + `${warning.error ? `：${warning.error}` : ''}`;
+}
+
+async function runCleanupDeleteStageGroups(options: {
+  location: PluginLocation;
+  groups: CleanupDeleteStageGroup[];
+}): Promise<string[]> {
+  const warnings: string[] = [];
+  for (const group of options.groups) {
+    if (group.stages.length === 0 && (group.postCommit?.length ?? 0) === 0) {
+      continue;
+    }
+    try {
+      const result = await runInstallStateTransaction({
+        stages: group.stages,
+        postCommit: group.postCommit,
+      });
+      warnings.push(...result.warnings.map((warning) => formatInstallStateWarning(options.location, warning)));
+    } catch (error) {
+      warnings.push(
+        `[${renderLocation(options.location)}] cleanup 删除 ${group.label} 失败：${
+          formatCommandError(error instanceof InstallStateTransactionError ? error.cause : error)
+        }`,
+      );
+      if (error instanceof InstallStateTransactionError) {
+        warnings.push(...error.warnings.map((warning) => formatInstallStateWarning(options.location, warning)));
+      }
+    }
+  }
+  return warnings;
+}
+
 export async function cleanupInstallStateTarget(options: {
   pluginName: string;
   location: PluginLocation;
@@ -931,7 +1039,7 @@ export async function cleanupInstallStateTarget(options: {
     location: options.location,
     env: context.env,
   });
-  if (protection.blockedDependents.length > 0) {
+  if (protection.blockedDependents.length > 0 && options.commandOptions.force !== true) {
     throw new Error(
       `${renderLocation(options.location)} 仍被以下 verified dependent 引用：${protection.blockedDependents.map(renderLocation).join('、')}。`,
     );
@@ -997,23 +1105,36 @@ export async function cleanupInstallStateTarget(options: {
     !projection.installRecordPresent &&
     !protectedCodexUserNativeCleanup &&
     typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function';
+  const executionWarnings: string[] = [];
   if (platformAdapter && options.location.scope === 'user') {
-    if (preferDirectCodexUserNativeCleanup) {
-      await nativeCleanupAdapter!.uninstallUserNativePluginById!(`${options.pluginName}@aw`);
-    } else if (pluginMeta) {
-      await platformAdapter.uninstallPlugin(pluginMeta, options.location.scope);
-    } else if (typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function') {
-      await nativeCleanupAdapter.uninstallUserNativePluginById(`${options.pluginName}@aw`);
+    try {
+      if (preferDirectCodexUserNativeCleanup) {
+        await nativeCleanupAdapter!.uninstallUserNativePluginById!(`${options.pluginName}@aw`);
+      } else if (pluginMeta) {
+        await platformAdapter.uninstallPlugin(pluginMeta, options.location.scope);
+      } else if (typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function') {
+        await nativeCleanupAdapter.uninstallUserNativePluginById(`${options.pluginName}@aw`);
+      }
+    } catch (error) {
+      executionWarnings.push(
+        `[${renderLocation(options.location)}] cleanup 原生卸载步骤失败：${formatCommandError(error)}`,
+      );
     }
   }
   if (pluginMeta && platformAdapter && !preferDirectCodexUserNativeCleanup) {
-    await platformAdapter.uninstallExtensions(
-      pluginMeta,
-      options.location.scope,
-      recordRead.status === 'ok'
-        ? recordRead.value.record.artifacts.map(toGeneratedArtifact)
-        : [],
-    );
+    try {
+      await platformAdapter.uninstallExtensions(
+        pluginMeta,
+        options.location.scope,
+        recordRead.status === 'ok'
+          ? recordRead.value.record.artifacts.map(toGeneratedArtifact)
+          : [],
+      );
+    } catch (error) {
+      executionWarnings.push(
+        `[${renderLocation(options.location)}] cleanup 扩展卸载步骤失败：${formatCommandError(error)}`,
+      );
+    }
   }
 
   const shouldPlanSharedRuntimeRemoval =
@@ -1076,58 +1197,100 @@ export async function cleanupInstallStateTarget(options: {
             finalizeWarningCode: 'projectArtifactFinalizeFailed',
           }))
       : [];
-  await runInstallStateGraphRecordTransaction({
-    mode: 'delete',
+  executionWarnings.push(...await runCleanupDeleteStageGroups({
     location: options.location,
-    recordPath,
-    env: context.env,
-    stages: [
-      ...removalStages.stages,
-      ...residualRepoArtifactStages,
+    groups: [
+      {
+        label: 'shared runtime owner',
+        stages: removalStages.stages,
+      },
+      ...residualRepoArtifactStages.map((stage) => ({
+        label: stage.label,
+        stages: [stage],
+      })),
       ...(evidence.projectSharedIdentity.read
         && evidence.projectSharedIdentity.read.status !== 'missing'
-        ? [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })]
+        ? [{
+            label: 'project artifact identity',
+            stages: [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })],
+          }]
         : []),
-      createPathDeleteStage({
+      {
         label: 'dynamic diagnostic cache',
-        filePath: getDiagnosticCachePath(options.commandOptions.cwd, options.location, context.env),
-        rollbackWarningCode: 'diagnosticCacheRollbackFailed',
-        finalizeWarningCode: 'diagnosticCacheFinalizeFailed',
-      }),
+        stages: [createPathDeleteStage({
+          label: 'dynamic diagnostic cache',
+          filePath: getDiagnosticCachePath(options.commandOptions.cwd, options.location, context.env),
+          rollbackWarningCode: 'diagnosticCacheRollbackFailed',
+          finalizeWarningCode: 'diagnosticCacheFinalizeFailed',
+        })],
+      },
       ...(runtimeRoot
-        ? [createPathDeleteStage({
+        ? [{
             label: 'historical lifecycle runtime',
-            filePath: runtimeRoot,
-            rollbackWarningCode: 'historicalLifecycleRollbackFailed',
-            finalizeWarningCode: 'historicalLifecycleFinalizeFailed',
-          })]
+            stages: [createPathDeleteStage({
+              label: 'historical lifecycle runtime',
+              filePath: runtimeRoot,
+              rollbackWarningCode: 'historicalLifecycleRollbackFailed',
+              finalizeWarningCode: 'historicalLifecycleFinalizeFailed',
+            })],
+          }]
         : []),
-      createPathDeleteStage({
+      {
         label: 'native transaction marker',
-        filePath: getNativeTransactionMarkerPath(options.pluginName, context.env),
-        rollbackWarningCode: 'nativeMarkerRollbackFailed',
-        finalizeWarningCode: 'nativeMarkerFinalizeFailed',
-      }),
-      createInstallRecordDeleteStage({ filePath: recordPath }),
+        stages: [createPathDeleteStage({
+          label: 'native transaction marker',
+          filePath: getNativeTransactionMarkerPath(options.pluginName, context.env),
+          rollbackWarningCode: 'nativeMarkerRollbackFailed',
+          finalizeWarningCode: 'nativeMarkerFinalizeFailed',
+        })],
+      },
+      {
+        label: 'install record',
+        stages: [createInstallRecordDeleteStage({ filePath: recordPath })],
+        postCommit: [createDependencyIndexRefreshPostCommitAction({
+          mode: 'delete',
+          location: options.location,
+          recordPath,
+          env: context.env,
+        })],
+      },
     ],
-  });
+  }));
   const trackingDir = resolveTrackingDir(options.commandOptions.cwd, options.location, context.env);
-  const trackingManifest = await readTrackingManifest(trackingDir);
-  if (getTrackingRecord(trackingManifest, options.location.plugin)) {
-    await writeTrackingManifest(
-      trackingDir,
-      removeTrackingRecordFromManifest(trackingManifest, options.location.plugin),
+  try {
+    const trackingManifest = await readTrackingManifest(trackingDir);
+    if (getTrackingRecord(trackingManifest, options.location.plugin)) {
+      await writeTrackingManifest(
+        trackingDir,
+        removeTrackingRecordFromManifest(trackingManifest, options.location.plugin),
+      );
+    }
+  } catch (error) {
+    executionWarnings.push(
+      `[${renderLocation(options.location)}] cleanup tracking manifest 清理失败：${formatCommandError(error)}`,
     );
   }
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
   const warnings = [
+    ...executionWarnings,
     ...removalStages.warnings,
     ...(!protection.allowed && protection.failClosedReason
       ? [`[${renderLocation(options.location)}] 忽略 dependency index fail-closed：${protection.failClosedReason}`]
       : []),
+    ...(protection.blockedDependents.length > 0 && options.commandOptions.force === true
+      ? [
+          `[${renderLocation(options.location)}] 已按 --force 保留 ${
+            protection.blockedDependents.map(renderLocation).join('、')
+          }；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。`,
+        ]
+      : []),
     ...(backedUp.length > 0 ? [`已备份 ${backedUp.length} 个共享文件。`] : []),
     ...(gcWarning ? [`[${renderLocation(options.location)}] lifecycle runtime GC 已 fail closed：${gcWarning}`] : []),
   ];
+  const skippedItems = await collectProtectedCodexUserNativeSkippedItems({
+    protectedCodexUserNativeCleanup,
+    evidence,
+  });
 
   return {
     warnings,
@@ -1138,6 +1301,7 @@ export async function cleanupInstallStateTarget(options: {
       ? 'cleanup completed for record-backed residual'
       : 'cleanup completed for residual state',
     backups: backedUp,
+    skippedItems,
   };
 }
 
