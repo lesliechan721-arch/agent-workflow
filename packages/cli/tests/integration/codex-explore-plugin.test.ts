@@ -2611,7 +2611,7 @@ describe('codex-explore integration acceptance', () => {
     expect(nativeCalls).toHaveLength(0);
     expect(projectConfig.snapshot.agents['codex-explore-agent']).toEqual({
       key: 'codex-explore-agent',
-      description: '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。',
+      description: '只读探索代码、文档、网页和长上下文，并整理关键证据。',
       configFile: 'agents/aw-codex-explore-codex-explore-agent.toml',
     });
     await expect(fs.pathExists(skillPath)).resolves.toBe(true);
@@ -2619,8 +2619,8 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(skillMetadataPath, 'utf8')).resolves.toContain(
       'allow_implicit_invocation: true',
     );
-    expect(skillContent).toContain('受管子代理');
-    expect(skillContent).toContain('默认使用 Codex Explore 受管子代理');
+    expect(skillContent).toContain('探索子代理');
+    expect(skillContent).toContain('默认使用 Codex Explore 自带的探索子代理');
     expect(skillContent).toContain('不要改用 Codex 内置 `explorer`');
     expect(skillContent).toContain('agent_type: "codex-explore-agent"');
     expect(skillContent).toContain('默认模型 `gpt-5.5`');

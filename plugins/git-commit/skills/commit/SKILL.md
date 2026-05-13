@@ -1,6 +1,6 @@
 ---
 name: commit
-description: 当用户要求提交当前改动、生成或执行 git commit 时，先核对工作区范围，再按约定式提交规范生成中文 commit message 并完成提交。
+description: 当用户要求把当前工作区或已暂存改动提交到 Git、创建一次 commit、执行 git commit，或生成提交信息并完成提交时触发；用于完成中文约定式 Git 提交。
 user-invocable: true
 metadata:
   short-description: 中文约定式 Git 提交
