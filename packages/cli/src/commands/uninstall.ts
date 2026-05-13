@@ -20,6 +20,7 @@ import type {
   LedgerStateReason,
   PlatformName,
   PluginStatusReport,
+  Scope,
 } from '../types.js';
 import {
   getInstalledLedgerPath,
