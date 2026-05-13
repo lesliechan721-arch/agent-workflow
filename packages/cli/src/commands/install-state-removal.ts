@@ -102,6 +102,7 @@ export interface InstallStateRemovalResult {
 
 export interface InstallStateCleanupResult extends InstallStateRemovalResult {
   summary: string;
+  backups: string[];
 }
 
 export interface InstallStatePruneResult {
@@ -908,6 +909,7 @@ export async function cleanupInstallStateTarget(options: {
   commandOptions: CommandOptions & { force?: boolean };
   runtime: InstallStateRemovalRuntime;
   target?: ResolvedPluginTarget | null;
+  allowInstalled?: boolean;
 }): Promise<InstallStateCleanupResult> {
   const context = createCommandExecutionContext(options.runtime);
   const evidence = await collectInstallEvidence({
@@ -917,7 +919,7 @@ export async function cleanupInstallStateTarget(options: {
   });
   const projection = projectInstallState(evidence);
 
-  if (projection.kind === 'installed') {
+  if (projection.kind === 'installed' && options.allowInstalled !== true) {
     throw new Error(`${renderLocation(options.location)} 当前健康已安装，请改用 aw uninstall。`);
   }
   if (projection.kind === 'adoptable') {
@@ -1135,6 +1137,7 @@ export async function cleanupInstallStateTarget(options: {
     summary: recordRead.status === 'ok'
       ? 'cleanup completed for record-backed residual'
       : 'cleanup completed for residual state',
+    backups: backedUp,
   };
 }
 

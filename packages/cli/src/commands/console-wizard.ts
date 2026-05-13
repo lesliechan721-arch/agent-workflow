@@ -1,19 +1,48 @@
-import type { EnvironmentDetection, PlatformName, PluginManifestSource, PluginMeta, ResolvedInstallOptions, Scope, SkillTriggerPreference } from '../types.js';
+import type {
+  EnvironmentDetection,
+  InstalledLedger,
+  PlatformName,
+  PluginManifestSource,
+  PluginMeta,
+  ResolvedInstallOptions,
+  Scope,
+  SkillTriggerPreference,
+} from '../types.js';
 import {
   createPluginConfigFormModel,
   createPluginConfigSchemaIdentity,
+  resolvePluginConfigStorePath,
   resolveEffectivePluginConfig,
   type PluginConfigFormModel,
   type ResolvedEffectivePluginConfig,
 } from '../utils/plugin-config.js';
-import type { ResolvedPluginTarget } from './common.js';
+import {
+  createAdapters,
+  loadPluginTargetsForCommand,
+  resolveInstallOptionsForLocationTargets,
+  type ResolvedPluginTarget,
+} from './common.js';
 import type { PluginConsoleActionKind } from './console-model.js';
 import { getCodexProjectInstallability } from './codex-project-installability.js';
+import {
+  buildInstallPlannerContext,
+  createPluginLocationForPlatform,
+  resolveGraphInstallOptionsByLocation,
+  resolveProjectKeysByPlatform,
+  toInstalledScopeInstallOptions,
+  type InstallLocationGraphContext,
+} from './install.js';
 import {
   CodexProjectWriteSafetyError,
   preflightCodexProjectWriteSafety,
 } from './codex-project-safety.js';
 import { canExecuteCodexProjectWithoutNative } from './platform-resolution.js';
+import {
+  planPluginDependencyWrites,
+  type PluginDependencyNodePlan,
+  type PluginDependencyWritePlan,
+} from '../utils/plugin-dependency-planner.js';
+import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 
 export type ConsoleWriteWizardOperation = 'install' | 'upgrade';
 export type ConsoleWriteIntent = ConsoleWriteWizardOperation | 'repairInstall' | 'cleanupRecovery';
@@ -46,10 +75,14 @@ export interface ConsoleWritePreflightResult {
 
 export interface ConsoleRequiredConfigPrompt {
   pluginName: string;
+  scope: Scope;
+  storePath: string;
+  formIdentity: string;
   schemaSourceIdentity: string;
   manifest: PluginManifestSource;
   effective: ResolvedEffectivePluginConfig;
   form: PluginConfigFormModel;
+  targets: ConsoleScopedTarget[];
 }
 
 export interface ConsoleSkillTriggerOption {
@@ -133,15 +166,45 @@ export interface PrepareConsoleWritePreflightOptions {
 }
 
 export interface ResolveConsoleRequiredConfigPromptsOptions {
-  targets: ResolvedPluginTarget[];
+  targets?: ResolvedPluginTarget[];
+  scopedTargets?: ConsoleScopedTarget[];
   cwd: string;
   defaultScope: Scope;
   env?: NodeJS.ProcessEnv;
 }
 
+export interface ConsoleScopedTarget {
+  target: ResolvedPluginTarget;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey?: string;
+  requested: boolean;
+  resolvedInstallOptions?: ResolvedInstallOptions;
+}
+
+export interface ConsoleGraphWritePlan {
+  operation: ConsoleWriteWizardOperation;
+  requestedTargets: ConsoleScopedTarget[];
+  writeTargets: ConsoleScopedTarget[];
+  dependencyPlan: PluginDependencyWritePlan;
+  graphContext: InstallLocationGraphContext;
+}
+
+export interface PlanConsoleGraphWriteTargetsOptions {
+  operation: ConsoleWriteWizardOperation;
+  targets: ResolvedPluginTarget[];
+  platforms: PlatformName[];
+  cwd: string;
+  scope: Scope;
+  ledger: InstalledLedger;
+  env?: NodeJS.ProcessEnv;
+  requestedSkillTrigger?: SkillTriggerPreference;
+}
+
 export interface CreateInstallWizardDecisionOptions {
   intent: ConsoleWriteIntent;
   targets: ResolvedPluginTarget[];
+  scopedTargets?: ConsoleScopedTarget[];
   platforms: PlatformName[];
   cwd: string;
   scope: Scope;
@@ -478,25 +541,39 @@ function createConfigPromptDetail(prompts: ConsoleRequiredConfigPrompt[]): strin
   return `${prompts.length} 个插件需要补充必填配置`;
 }
 
+function toScopedTargets(
+  options: Pick<ResolveConsoleRequiredConfigPromptsOptions, 'targets' | 'scopedTargets' | 'defaultScope'>,
+): ConsoleScopedTarget[] {
+  if (options.scopedTargets && options.scopedTargets.length > 0) {
+    return options.scopedTargets;
+  }
+
+  return (options.targets ?? []).map((target) => ({
+    target,
+    platform: 'codex',
+    scope: options.defaultScope,
+    requested: true,
+  }));
+}
+
+function createConfigFormIdentity(form: PluginConfigFormModel, schemaSourceIdentity: string): string {
+  return `${schemaSourceIdentity}\0${[...form.requiredKeys].sort().join(',')}`;
+}
+
 export async function resolveConsoleRequiredConfigPrompts(
   options: ResolveConsoleRequiredConfigPromptsOptions,
 ): Promise<ConsoleRequiredConfigPrompt[]> {
   const prompts: ConsoleRequiredConfigPrompt[] = [];
-  const visited = new Set<string>();
+  const grouped = new Map<string, ConsoleRequiredConfigPrompt>();
 
-  for (const target of options.targets) {
+  for (const scopedTarget of toScopedTargets(options)) {
+    const target = scopedTarget.target;
     const plugin = target.currentPlugin ?? target.plugin;
     if (!plugin.manifest.config?.schema) {
       continue;
     }
 
     const schemaSourceIdentity = createPluginConfigSchemaIdentity(plugin.manifest);
-    const dedupeKey = `${target.pluginName}\0${schemaSourceIdentity}`;
-    if (visited.has(dedupeKey)) {
-      continue;
-    }
-    visited.add(dedupeKey);
-
     const effective = await resolveEffectivePluginConfig({
       pluginName: target.pluginName,
       manifest: plugin.manifest,
@@ -510,22 +587,162 @@ export async function resolveConsoleRequiredConfigPrompts(
       continue;
     }
 
-    prompts.push({
+    const form = createPluginConfigFormModel({
       pluginName: target.pluginName,
+      manifest: plugin.manifest,
+      effective,
+      initialScope: scopedTarget.scope,
+      allowedScopes: [scopedTarget.scope],
+    });
+    const storePath = resolvePluginConfigStorePath({
+      pluginName: target.pluginName,
+      scope: scopedTarget.scope,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const formIdentity = createConfigFormIdentity(form, schemaSourceIdentity);
+    const dedupeKey = `${storePath}\0${formIdentity}`;
+    const existing = grouped.get(dedupeKey);
+    if (existing) {
+      existing.targets.push(scopedTarget);
+      continue;
+    }
+
+    grouped.set(dedupeKey, {
+      pluginName: target.pluginName,
+      scope: scopedTarget.scope,
+      storePath,
+      formIdentity,
       schemaSourceIdentity,
       manifest: plugin.manifest,
       effective,
-      form: createPluginConfigFormModel({
-        pluginName: target.pluginName,
-        manifest: plugin.manifest,
-        effective,
-        initialScope: options.defaultScope,
-        allowedScopes: ['user', 'project'],
-      }),
+      form,
+      targets: [scopedTarget],
     });
   }
 
+  prompts.push(...grouped.values());
   return prompts;
+}
+
+export async function planConsoleGraphWriteTargets(
+  options: PlanConsoleGraphWriteTargetsOptions,
+): Promise<ConsoleGraphWritePlan> {
+  const env = options.env ?? process.env;
+  const adapters = createAdapters(options.cwd, env);
+  const allCatalogTargets = await loadPluginTargetsForCommand(
+    options.cwd,
+    options.scope,
+    undefined,
+    {
+      catalogMode: 'readOnly',
+      allowHistoricalFallback: false,
+      env,
+    },
+  );
+  const targetByPlugin = new Map<string, ResolvedPluginTarget>(
+    allCatalogTargets.map((target) => [target.pluginName, target]),
+  );
+  const projectKeysByPlatform = await resolveProjectKeysByPlatform(
+    options.cwd,
+    options.scope,
+    options.platforms,
+  );
+  const requestedLocations = options.platforms.flatMap((platform) =>
+    options.targets.map((target) => createPluginLocationForPlatform({
+      plugin: target.pluginName,
+      platform,
+      scope: options.scope,
+      projectKeysByPlatform,
+    })),
+  );
+  const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
+    options.operation,
+    requestedLocations.map((location) => {
+      const target = targetByPlugin.get(location.plugin);
+      if (!target) {
+        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
+      }
+      return {
+        location,
+        target,
+        requestedSkillTrigger: options.requestedSkillTrigger,
+      };
+    }),
+    {
+      cwd: options.cwd,
+      env,
+    },
+    options.ledger,
+  );
+  const plannerTargets = requestedLocations.map((location) => ({
+    location,
+    installOptions: toInstalledScopeInstallOptions(
+      rootInstallOptionsByLocation.get(serializePluginLocation(location)),
+    ),
+  }));
+  const { plannerState, graphContext } = await buildInstallPlannerContext({
+    requestedLocations,
+    targetByPlugin,
+    adapters,
+    scope: options.scope,
+    cwd: options.cwd,
+    env,
+    ledger: options.ledger,
+    projectKeysByPlatform,
+    readStatusForRequestedLocations: true,
+  });
+  const dependencyPlan = planPluginDependencyWrites({
+    mode: options.operation,
+    state: plannerState,
+    targets: plannerTargets,
+  });
+  const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
+    mode: options.operation,
+    plan: dependencyPlan,
+    graphContext,
+    commandOptions: {
+      cwd: options.cwd,
+      requestedSkillTrigger: options.requestedSkillTrigger,
+    },
+    ledger: options.ledger,
+    env,
+  });
+  const requestedLocationKeys = new Set(requestedLocations.map((location) => serializePluginLocation(location)));
+
+  return {
+    operation: options.operation,
+    requestedTargets: requestedLocations.map((location) => {
+      const target = targetByPlugin.get(location.plugin);
+      if (!target) {
+        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
+      }
+      return {
+        target,
+        platform: location.platform,
+        scope: location.scope,
+        ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+        requested: true,
+        resolvedInstallOptions: resolvedInstallOptionsByLocation.get(serializePluginLocation(location)),
+      } satisfies ConsoleScopedTarget;
+    }),
+    writeTargets: dependencyPlan.writeOrder.map((location) => {
+      const target = targetByPlugin.get(location.plugin);
+      if (!target) {
+        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
+      }
+      return {
+        target,
+        platform: location.platform,
+        scope: location.scope,
+        ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+        requested: requestedLocationKeys.has(serializePluginLocation(location)),
+        resolvedInstallOptions: resolvedInstallOptionsByLocation.get(serializePluginLocation(location)),
+      } satisfies ConsoleScopedTarget;
+    }),
+    dependencyPlan,
+    graphContext,
+  };
 }
 
 function createSkillTriggerDecision(
@@ -649,6 +866,7 @@ export async function createInstallWizardDecision(
 
   const configPrompts = await (options.resolveRequiredConfigPrompts ?? resolveConsoleRequiredConfigPrompts)({
     targets: options.targets,
+    scopedTargets: options.scopedTargets,
     cwd: options.cwd,
     defaultScope: options.scope,
     env: options.env,

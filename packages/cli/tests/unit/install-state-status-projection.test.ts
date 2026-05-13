@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -9,6 +10,7 @@ import type { CurrentCatalogEvidenceInput } from '../../src/install-state/eviden
 import {
   createProjectArtifactSharedLocator,
   createSharedIdentityId,
+  getSharedSkillTriggerRuntimeOwnerPath,
   getProjectArtifactSharedIdentityPath,
 } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
@@ -664,6 +666,64 @@ describe('projectInstallState', () => {
 
     expect(projection.kind).toBe('residual');
     expect(projection.adoptExistingAvailable).toBe(false);
+  });
+
+  it('does not treat a foreign user shared-runtime owner as project residual by itself', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-project-owner-foreign-'),
+    );
+    const projectTarget = builder.createTarget({
+      pluginName: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const userTarget = builder.createTarget({
+      pluginName: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    await builder.writeRepoArtifact(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    const userRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(userTarget));
+    const userRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const userRecordPath = userRecords.successes.find((entry) => entry.recordId === userTarget.recordId)?.path;
+    if (!userRecordPath) {
+      throw new Error(`missing fixture record for ${userTarget.recordId}`);
+    }
+    await fs.writeJson(userRecordPath, userRecord, { spaces: 2 });
+    const env = createInstallStateFixtureEnv(builder.paths);
+    await fs.outputJson(
+      getSharedSkillTriggerRuntimeOwnerPath({
+        pluginName: projectTarget.location.plugin,
+        platform: projectTarget.location.platform,
+        env,
+      }),
+      {
+        version: 1,
+        pluginName: projectTarget.location.plugin,
+        platform: projectTarget.location.platform,
+        owner: userTarget.location,
+        ownerRecordPath: userRecordPath,
+        ownerRecordDigest: crypto.createHash('sha256').update(await fs.readFile(userRecordPath)).digest('hex'),
+        preference: 'manual',
+        updatedAt: userRecord.record.updatedAt,
+      },
+      { spaces: 2 },
+    );
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: projectTarget.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(projectTarget),
+    }));
+
+    expect(projection.kind).toBe('adoptable');
+    expect(projection.adoptExistingAvailable).toBe(true);
   });
 
   it('does not show unused dependency hints when the index is untrusted and suppresses the hint for explicitly retained dependencies', async () => {

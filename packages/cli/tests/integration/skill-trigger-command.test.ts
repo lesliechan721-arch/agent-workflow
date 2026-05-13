@@ -509,6 +509,41 @@ function createAdapters(
   };
 }
 
+async function seedLegacyCodexUserHealthySiblingInstall(options: {
+  workspace: {
+    repoRoot: string;
+    awHome: string;
+    codexHome: string;
+    claudeHome: string;
+    embeddedRoot: string;
+  };
+  requestedSkillTrigger: 'manual' | 'auto' | 'default';
+}): Promise<void> {
+  const sibling = await makeWorkspace();
+  process.env.AW_HOME = options.workspace.awHome;
+  process.env.AW_CODEX_HOME = options.workspace.codexHome;
+  process.env.AW_CLAUDE_HOME = options.workspace.claudeHome;
+  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+  process.env.PATH = '';
+  setEmbeddedPluginsRootOverrideForTests(options.workspace.embeddedRoot);
+
+  await installCommand(
+    ['git-commit'],
+    {
+      cwd: sibling.repoRoot,
+      scope: 'user',
+      platform: 'codex',
+      requestedSkillTrigger: options.requestedSkillTrigger,
+    },
+    {
+      adapters: createAdapters(),
+      env: process.env,
+    },
+  );
+
+  configureWorkspaceEnv(options.workspace);
+}
+
 async function readScopedInstallRecords(
   cwd: string,
   platform: PlatformName,
@@ -1312,7 +1347,7 @@ describe('skill trigger command integration', () => {
     expect(await readCodexAllowImplicitInvocation(workspace.awHome, 'git-review')).toBe(false);
   });
 
-  it('keeps user runtime stable across Codex project installs and skips equivalent default-auto rewrites', async () => {
+  it('fails Codex project sibling installs with duplicateInstall and leaves the user runtime untouched', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1332,7 +1367,7 @@ describe('skill trigger command integration', () => {
       },
     );
 
-    let projectResult = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: workspace.repoRoot,
@@ -1344,22 +1379,21 @@ describe('skill trigger command integration', () => {
         adapters: createAdapters(),
         env: process.env,
       },
-    );
-    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    )).rejects.toThrow(/duplicateInstall/);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
-
     expect(await readInstallRecordPreference({
       cwd: workspace.repoRoot,
       pluginName: 'git-commit',
       platform: 'codex',
       scope: 'user',
     })).toBe('manual');
-    expect(await readInstallRecordPreference({
+    expect(await findInstallRecord({
       cwd: workspace.repoRoot,
       pluginName: 'git-commit',
       platform: 'codex',
       scope: 'project',
-    })).toBe('auto');
+    })).toBeUndefined();
+    await expect(fs.pathExists(path.join(workspace.repoRoot, '.agents', 'skills', 'commit', 'SKILL.md'))).resolves.toBe(false);
 
     const equivalent = await makeWorkspace();
     configureWorkspaceEnv(equivalent);
@@ -1378,7 +1412,7 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
-    projectResult = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: equivalent.repoRoot,
@@ -1390,10 +1424,9 @@ describe('skill trigger command integration', () => {
         adapters: createAdapters(),
         env: process.env,
       },
-    );
-    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    )).rejects.toThrow(/duplicateInstall/);
 
-    const repeatResult = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: equivalent.repoRoot,
@@ -1405,18 +1438,17 @@ describe('skill trigger command integration', () => {
         adapters: createAdapters(),
         env: process.env,
       },
-    );
-    expect(repeatResult.warnings.join('\n')).not.toContain('sibling scope');
+    )).rejects.toThrow(/duplicateInstall/);
     expect(await readCodexAllowImplicitInvocation(equivalent.awHome)).toBe(true);
-    expect(await readInstallRecordPreference({
+    expect(await findInstallRecord({
       cwd: equivalent.repoRoot,
       pluginName: 'git-commit',
       platform: 'codex',
       scope: 'project',
-    })).toBe('manual');
+    })).toBeUndefined();
   });
 
-  it('does not warn for Claude default-auto sibling scopes when frontmatter relies on platform defaults', async () => {
+  it('fails Claude sibling installs with duplicateInstall before any project write when frontmatter relies on platform defaults', async () => {
     const workspace = await makeWorkspace(writeClaudeSkillWithPlatformDefaults);
     configureWorkspaceEnv(workspace, ['claude']);
     await initCommand({ force: true, env: process.env });
@@ -1436,7 +1468,7 @@ describe('skill trigger command integration', () => {
       },
     );
 
-    const projectResult = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: workspace.repoRoot,
@@ -1448,15 +1480,12 @@ describe('skill trigger command integration', () => {
         adapters: createAdapters(),
         env: process.env,
       },
-    );
-
-    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
-    expect(await readClaudeFrontmatter(workspace.awHome)).toMatchObject({
-      'disable-model-invocation': false,
-    });
+    )).rejects.toThrow(/duplicateInstall/);
+    await expect(fs.pathExists(path.join(workspace.repoRoot, '.claude', 'settings.json'))).resolves.toBe(false);
+    expect(await readClaudeFrontmatter(workspace.awHome)).not.toHaveProperty('disable-model-invocation');
   });
 
-  it('does not warn for Codex default-auto sibling scopes when openai.yaml relies on platform defaults', async () => {
+  it('fails Codex sibling installs with duplicateInstall before any project write when openai.yaml relies on platform defaults', async () => {
     const workspace = await makeWorkspace(writeCodexSkillWithEmptyPolicy);
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1476,7 +1505,7 @@ describe('skill trigger command integration', () => {
       },
     );
 
-    const projectResult = await installCommand(
+    await expect(installCommand(
       ['git-commit'],
       {
         cwd: workspace.repoRoot,
@@ -1488,10 +1517,9 @@ describe('skill trigger command integration', () => {
         adapters: createAdapters(),
         env: process.env,
       },
-    );
-
-    expect(projectResult.warnings.join('\n')).not.toContain('sibling scope');
+    )).rejects.toThrow(/duplicateInstall/);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    await expect(fs.pathExists(path.join(workspace.repoRoot, '.agents', 'skills', 'commit', 'SKILL.md'))).resolves.toBe(false);
   });
 
   it('materializes Codex project skills into repo-local .agents/skills without touching ~/.aw runtime skills', async () => {
@@ -1523,7 +1551,7 @@ describe('skill trigger command integration', () => {
     await expect(fs.pathExists(codexOpenAiYamlPath(workspace.awHome))).resolves.toBe(false);
   });
 
-  it('requires an explicit skill trigger when a Codex project upgrade can no longer recover from current scope state', async () => {
+  it('fails Codex project upgrade preflight with duplicateInstall when the sibling user install is healthy', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1536,19 +1564,6 @@ describe('skill trigger command integration', () => {
         scope: 'user',
         platform: 'codex',
         requestedSkillTrigger: 'auto',
-      },
-      {
-        adapters: createAdapters(),
-        env: process.env,
-      },
-    );
-    await installCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       {
         adapters: createAdapters(),
@@ -1574,26 +1589,30 @@ describe('skill trigger command integration', () => {
     config.bundleFingerprint = await calculateBundleFingerprint(workspace.embeddedRoot);
     await fs.writeJson(configPath, config, { spaces: 2 });
 
-    await expect(
-      upgradeCommand(
-        ['git-commit'],
-        {
-          cwd: workspace.repoRoot,
-          scope: 'project',
-          platform: 'codex',
-        },
-        {
-          adapters: createAdapters({
-            'git-commit': {
-              scopeInitialized: 'yes',
-              managedEvidence: true,
-            },
-          }),
-          env: process.env,
-        },
-      ),
-    ).rejects.toThrow('tracking 只能证明 repo artifact 归属');
+    await expect(upgradeCommand(
+      ['git-commit'],
+      {
+        cwd: workspace.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        adapters: createAdapters({
+          'git-commit': {
+            scopeInitialized: 'yes',
+            managedEvidence: true,
+          },
+        }),
+        env: process.env,
+      },
+    )).rejects.toThrow(/duplicateInstall/);
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
+    expect(await findInstallRecord({
+      cwd: workspace.repoRoot,
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'project',
+    })).toBeUndefined();
   });
 
   it('does not trust degraded sibling records when explicit install continues', async () => {
@@ -1930,25 +1949,12 @@ describe('skill trigger command integration', () => {
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
   });
 
-  it('re-elects skill trigger preferences after uninstall and restores pristine after the last scope', async () => {
+  it('re-elects skill trigger preferences after uninstall from a legacy dual-healthy sibling state and restores pristine after the last scope', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
     await writeInstalledLedger(createAvailableLedger(), process.env);
 
-    await installCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        requestedSkillTrigger: 'manual',
-      },
-      {
-        adapters: createAdapters(),
-        env: process.env,
-      },
-    );
     await installCommand(
       ['git-commit'],
       {
@@ -1962,6 +1968,10 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
+    await seedLegacyCodexUserHealthySiblingInstall({
+      workspace,
+      requestedSkillTrigger: 'manual',
+    });
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
     expect(await listSkillBackupDirs(workspace.awHome)).toEqual([]);
 
@@ -2021,25 +2031,12 @@ describe('skill trigger command integration', () => {
     });
   });
 
-  it('best-effort uninstalls the last Codex scope when the embedded bundle is corrupted', async () => {
+  it('best-effort uninstalls the last Codex scope from a legacy dual-healthy sibling state when the embedded bundle is corrupted', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
     await writeInstalledLedger(createAvailableLedger(), process.env);
 
-    await installCommand(
-      ['git-commit'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        requestedSkillTrigger: 'manual',
-      },
-      {
-        adapters: createAdapters(),
-        env: process.env,
-      },
-    );
     await installCommand(
       ['git-commit'],
       {
@@ -2053,6 +2050,10 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
+    await seedLegacyCodexUserHealthySiblingInstall({
+      workspace,
+      requestedSkillTrigger: 'manual',
+    });
     await uninstallCommand(
       ['git-commit'],
       {

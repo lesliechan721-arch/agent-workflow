@@ -2,7 +2,7 @@
 
 ## CLI Source Layout (`packages/cli/src`)
 
-- **`commands/`** — 编排主控制台以及 `init`、`install`、`uninstall`、`upgrade`、`config`、`status`、`diagnose`、`repair`、`cleanup`、`reinstall`；`console.ts` 负责 `aw` 主交互入口，`console-model.ts` / friendly status 投影给 TUI、默认 status 和 `status --json.consoleItems` 复用，`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管、可认领或可发现插件，`common.ts` 放平台推断、catalog 准备和共享状态格式化逻辑
+- **`commands/`** — 编排主控制台以及 `init`、`install`、`uninstall`、`upgrade`、`config`、`status`、`diagnose`、`repair`、`cleanup`、`reinstall`；`console.ts` 负责 `aw` 主交互入口，`console-model.ts` 生成公开 `PluginConsoleSummary`、控制台页面模型和执行层 action 类型，`status.ts` 提供 `status --json.consoleItems` V2 与 console 专用 loader，`options.ts` 统一归一化命令参数，`runtime.ts` 统一注入 env、native runner、prompt、reporter 和 debug logger，`discovery.ts` 枚举受管、可认领或可发现插件，`common.ts` 放平台推断、catalog 准备和共享状态格式化逻辑
 - **`adapters/`** — `claude.ts` / `codex.ts` 处理平台原生状态与命令调用；`helpers.ts` 放共享 adapter 逻辑；`types.ts` 放 adapter 层私有类型
 - **`generators/`** — `instructions.ts` / `permissions.ts` / `hooks.ts` / `agents.ts` 分别生成对应产物；`local-plugin.ts` 处理 bundle 和 repo-visible 文件生成；`shared.ts` 放跨生成器共享逻辑
 - **`output/`** — `command-receipt.ts` 构造写命令 JSON receipt 和默认人类 renderer；`reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
@@ -144,7 +144,7 @@ Codex native 写命令会发结构化 command event，debug log 和 `--verbose` 
 
 ## Discovery and Status
 
-`commands/discovery.ts` 是 status 和主控制台候选来源，也为脚本化 uninstall/upgrade/repair/cleanup 恢复目标身份。它通过 install-state facade 合并 current catalog、平台现场、project artifact identity、per-plugin install record、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared runtime owner 和 native transaction marker；current catalog 找不到时只生成保守的 historical placeholder。
+`commands/discovery.ts` 是 status 和主控制台候选来源，也为脚本化 uninstall/upgrade/repair/cleanup 恢复目标身份。它通过 install-state facade 合并 current catalog、平台现场、project artifact identity、per-plugin install record、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared runtime owner 和 native transaction marker；current catalog 找不到时只生成保守的 historical placeholder。默认 `status` 候选不会把纯 catalog-only 插件放入 `consoleItems`，主控制台通过 `loadConsoleItems({ includeCatalogOnly: true })` 额外读取 current catalog，用来在首页展示尚未安装但可管理的插件。
 
 historical placeholder 必须按 platform + scope 分格。Codex 只有粗略归属线索时，不能恢复成 hook、instruction、permission 或 agent 等具体能力；只有 install record、project artifact identity 或现场 marker 中存在明确 artifact kind / hook identity 等证据时，才能恢复对应能力。
 
@@ -152,11 +152,20 @@ artifact identity 必须带足够的稳定身份信息。`kind: "skill"` 和 `ki
 
 dynamic diagnostic cache 额外记录动态 artifact 的 `id`、`target`、`state`、`disabledReason`、`configDigest`、`contentDigest`、`lastRefresh` 和 `refreshReach`。status、discovery、主控制台动作和 direct uninstall/upgrade 都应优先使用 artifact id/target/skillKey/roleKey 恢复身份；current catalog 缺失时只能从 install record、project artifact identity 和 runtime evidence 保守恢复，不能编造假 skill 或 role 名。uninstall 清理 AW 受管 skill 目录、instruction block、role registration 和 role layer；遇到用户手写或外部接管内容时不得删除用户文件。
 
-`aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 友好位置 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。`status --json` 保留旧矩阵字段 `detection`、`summaries`、`cells`、`reports`，并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`。TUI、默认 status 和 JSON 共用同一友好状态投影，状态优先级、原因码、保守升级判定、Codex user native enabled/cache、native transaction marker、dynamic artifact refresh failed、project artifact adopt-existing 和 session visibility 都在这一层统一映射。
+`aw status` 是只读状态面板。它默认跨 platform/scope 扫描，输出“状态摘要 + 友好位置 + 下一步”；`--verbose` 展开诊断字段；`--json` 输出稳定 schema。`status --json` 保留旧矩阵字段 `detection`、`summaries`、`cells`、`reports`，并追加 `ok`、`command`、`friendlySummaries`、`consoleItemsSchemaVersion: 2` 和 `consoleItems`。V2 `consoleItems` 是公开 summary 合同，只包含插件显示信息、四类友好状态、location summary、reason code、next steps 和 `features`；V2 的变化边界只覆盖 `consoleItemsSchemaVersion` 和 `consoleItems`，顶层 envelope 里的 `ok`、`command`、状态矩阵和友好摘要保持兼容。
+
+控制台模型分四层，不能互相泄漏职责：
+
+- `PluginConsoleSummary`：公开 JSON summary，面向 `status --json.consoleItems`，只表达插件显示信息、友好状态、位置摘要、reason code、下一步和功能入口。
+- `PluginConsoleSummary.features`：功能菜单 summary，只表达“可以进入哪些功能”和目标选择策略，不携带最终 target、确认文案、命令字符串或页面展示字段。
+- `PluginConsoleExecutableAction`：执行层 action，只能在控制台完成功能选择和目标选择后生成，必须带完整 target；它不暴露 `command[]`，`force: true` 只能由 `runCleanup` 生成。
+- Console page model：TUI 页面层从 summary 和执行层上下文派生 `statusIcon`、`statusTone`、`platformBadges`、`primaryActionLabel`、`targetOptions` 等字段；这些字段不进入 `status --json.consoleItems`。
+
+诊断页需要展示补充命令时，只能把 `command?: string[]` 留在诊断 payload / supplemental commands 一侧。`status --json.consoleItems` 不输出旧 `locations[].actions[]`、确认文案、命令数组或页面层字段。
 
 status 的依赖信息完全走只读 planner 投影和 dependency index，不触发安装、修复、renderer、lifecycle 或自动清理。JSON 中 `dependencies` 展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift` 和 `dependencyIndexTrusted`：当前健康层缺失依赖会进入 `needsAttention`；current catalog 新增或移除依赖只作为 drift 展示，不会把旧安装直接判成缺失依赖；当前 platform 不生效的 entry 只进入 `declared`，不参与 ready / needsAttention。
 
-投影层的 action 合同是安全边界：`PluginConsoleItem.actions` 不包含任何立即写状态的动作，也不承载多 location 隐式批量写；`runInstall`、`runUpgrade`、`runUninstall`、`runRepair`、`runCleanup`、`runReinstall`、`adoptExisting`、`reapplyConfigRefresh` 等写动作只能出现在 `locations[].actions[]`，并且必须带完整 target，project 动作需要时带 `projectKey`。删除、覆盖和 cleanup 动作必须带 `destructive: true` 和 `confirmText`；disabled 动作必须带 `disabledReason`，控制台不能靠 `label` 判断行为。
+投影层的 action 合同是安全边界：公开 summary 不包含任何立即写状态的动作，也不承载多 location 隐式批量写。`runInstall`、`runUpgrade`、`runUninstall`、`runRepair`、`runCleanup`、`runReinstall`、`runAdoptExisting`、`runTakeoverSharedRuntime`、`resolveDuplicateInstall`、`runReapplyConfigRefresh` 等执行动作只能在控制台完成功能和目标选择之后生成，并且必须带完整 target，project 动作需要时带 `projectKey`。删除、覆盖和 cleanup 动作必须用 `destructive`、确认页和目标合同表达风险；`force: true` 只能由 `runCleanup` 生成。disabled 功能必须带 `disabledReason`，控制台不能靠 `label` 判断行为。
 
 Codex project scope 的默认视图以 repo-visible artifacts、project artifact identity 和本机 install record 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
 

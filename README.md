@@ -17,7 +17,7 @@ aw status
 aw
 ```
 
-脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --json` 保留矩阵字段并追加 `friendlySummaries` 和 `consoleItems`。
+脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --json` 保留矩阵字段并追加 `friendlySummaries`、`consoleItemsSchemaVersion: 2` 和 `consoleItems`。
 
 `install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`，并维护可提交的 project artifact identity metadata。
 
@@ -36,12 +36,17 @@ aw install git-commit -p codex -s project
 aw diagnose git-commit --verbose
 aw repair git-commit -p codex -s project
 aw repair git-commit -p codex -s project --adopt-existing
-aw cleanup git-commit -p codex -s project --yes
+aw cleanup git-commit -p codex -s project --plan
+aw cleanup git-commit -p codex -s project --plan --json
+aw cleanup git-commit -p codex -s project
+aw cleanup git-commit -p codex -s project --remove-config
 aw reinstall git-commit -p codex -s user
 aw config set git-commit commitStyle conventional -s user
 aw config unset git-commit commitStyle -s user
 aw config reset git-commit -s user --yes
 ```
+
+`aw cleanup --plan --json` 是只读预览，输出 `cleanupPlanSchemaVersion: 1`，可在真正清理前查看 planned removals、would backups、would remove config、skipped foreign items、affected dependents、blocking reasons 和建议命令。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。
 
 ## 当前插件
 

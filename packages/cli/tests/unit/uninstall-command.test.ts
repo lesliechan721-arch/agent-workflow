@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
+import { uninstallCommand, uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
@@ -30,6 +30,7 @@ import {
   resolveClaudeProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import type {
   GeneratedArtifact,
   LifecycleConfigSnapshotMetadata,
@@ -202,6 +203,42 @@ afterEach(async () => {
 });
 
 describe('uninstall command (P9 install-state path)', () => {
+  it('fails before deletion when the target needs cleanup instead of standard uninstall', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeNativeMarker(target, 'install');
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+
+    await expect(
+      uninstallCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        makeRuntime({
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        }),
+      ),
+    ).rejects.toThrow(/\[reason=unsafeStandardUninstall\].*aw cleanup/);
+  });
+
   it('blocks uninstall when a verified dependent still references the target', async () => {
     const builder = await makeBuilder();
     const child = builder.createTarget({ pluginName: 'cleanup-child', platform: 'codex', scope: 'user' });
@@ -402,6 +439,78 @@ describe('uninstall command (P9 install-state path)', () => {
 
     expect(codex.uninstallPluginCalls).toEqual([]);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'current-catalog.txt'))).resolves.toBe(false);
+  });
+
+  it('removes the AW-managed config store after uninstall succeeds when --remove-config is set', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeExternalNativeEvidence(target);
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+    await fs.remove(lifecycle.bundleRoot);
+    await fs.copy(path.join(builder.paths.repoRoot, 'plugins', 'git-commit'), lifecycle.bundleRoot);
+    const manifestPath = path.join(lifecycle.bundleRoot, '.agents-plugin', 'plugin.json');
+    await fs.writeJson(recordPath, {
+      ...record,
+      record: {
+        ...record.record,
+        source: {
+          ...record.record.source,
+          pluginVersion: plugin.manifest.version,
+          manifestDigest: await calculateFileDigest(manifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+        lifecycle: {
+          ...lifecycle,
+          manifestPath,
+          pluginVersion: plugin.manifest.version,
+          sourceManifestDigest: await calculateFileDigest(manifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+      },
+    }, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+
+    const configStorePath = resolvePluginConfigStorePath({
+      pluginName: 'git-commit',
+      scope: 'user',
+      cwd: builder.paths.repoRoot,
+      env: {
+        ...process.env,
+        AW_HOME: builder.paths.awHome,
+      },
+    });
+    await fs.outputJson(configStorePath, { token: 'secret' }, { spaces: 2 });
+
+    const result = await uninstallCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        removeConfig: true,
+      },
+      makeRuntime({
+        ...process.env,
+        AW_HOME: builder.paths.awHome,
+        AW_CODEX_HOME: builder.paths.codexHome,
+        AW_CLAUDE_HOME: builder.paths.claudeHome,
+      }),
+    );
+
+    expect(result.receiptDetails?.removedConfigStores).toEqual([{ path: configStorePath }]);
+    await expect(fs.pathExists(configStorePath)).resolves.toBe(false);
   });
 });
 

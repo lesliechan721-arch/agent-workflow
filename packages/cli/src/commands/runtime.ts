@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 
 import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
@@ -65,9 +65,13 @@ export interface CliPromptChoice {
   description?: string;
   short?: string;
   disabled?: boolean | string;
+  role?: 'option' | 'back' | 'exit';
 }
 
+export type CliPromptAction = 'select' | 'back' | 'exit' | 'cancel';
+
 export interface CliPromptResult<T> {
+  action: CliPromptAction;
   cancelled: boolean;
   value?: T;
 }
@@ -233,7 +237,7 @@ function createDefaultIo(): CliIo {
 function createDefaultConsoleDriver(io: CliIo): CliConsoleDriver {
   return {
     render: ({ title, lines }) => {
-      io.stderr(['', `== ${title} ==`, ...lines, ''].join('\n'));
+      io.stderr(`\u001B[2J\u001B[H== ${title} ==\n${lines.join('\n')}\n`);
     },
   };
 }
@@ -393,22 +397,28 @@ function createPromptWritable(outputSink: CliPromptOutputSink): NodeJS.WritableS
 
 function createPromptResult<T>(value: T): CliPromptResult<T> {
   return {
+    action: 'select',
     cancelled: false,
     value,
   };
 }
 
-function createCancelledPromptResult<T>(): CliPromptResult<T> {
+function createPromptActionResult<T>(action: Exclude<CliPromptAction, 'select'>): CliPromptResult<T> {
   return {
-    cancelled: true,
+    action,
+    cancelled: action === 'cancel',
   };
+}
+
+function createCancelledPromptResult<T>(): CliPromptResult<T> {
+  return createPromptActionResult('cancel');
 }
 
 function unwrapPromptResult<T>(
   result: CliPromptResult<T>,
   message = 'Interactive prompt cancelled.',
 ): T {
-  if (result.cancelled || result.value === undefined) {
+  if (result.action !== 'select' || result.value === undefined) {
     throw new Error(message);
   }
   return result.value;
@@ -423,6 +433,7 @@ interface InquirerPromptContext {
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
   clearPromptOnDone?: boolean;
+  signal?: AbortSignal;
 }
 
 interface InquirerPromptModule {
@@ -526,6 +537,156 @@ function parsePromptedConfigValue(
   return answer;
 }
 
+type PromptInteractionMode = 'menu' | 'confirm' | 'text';
+
+interface PromptInteractionOptions {
+  allowBack?: boolean;
+  allowExit?: boolean;
+  mode?: PromptInteractionMode;
+}
+
+function normalizePromptInput(value: string): string {
+  return value.trim();
+}
+
+function resolveTypedPromptAction(
+  answer: string,
+  options: PromptInteractionOptions = {},
+): Exclude<CliPromptAction, 'select'> | null {
+  const mode = options.mode ?? 'text';
+  const normalized = normalizePromptInput(answer);
+
+  if (normalized === '\u0003') {
+    return 'exit';
+  }
+
+  if (normalized === '\u001B') {
+    if (mode === 'menu') {
+      return options.allowBack ? 'back' : 'exit';
+    }
+    return 'cancel';
+  }
+
+  if (mode !== 'menu') {
+    return null;
+  }
+
+  if (options.allowBack && ['b', 'B'].includes(normalized)) {
+    return 'back';
+  }
+  if ((options.allowExit ?? true) && ['q', 'Q'].includes(normalized)) {
+    return 'exit';
+  }
+
+  return null;
+}
+
+function resolveChunkPromptAction(
+  chunk: Buffer | string,
+  options: PromptInteractionOptions = {},
+): Exclude<CliPromptAction, 'select'> | null {
+  const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+  const mode = options.mode ?? 'text';
+
+  if (text === '\u0003') {
+    return 'exit';
+  }
+
+  if (text === '\u001B') {
+    if (mode === 'menu') {
+      return options.allowBack ? 'back' : 'exit';
+    }
+    return 'cancel';
+  }
+
+  if (mode !== 'menu') {
+    return null;
+  }
+
+  if (text === 'b' || text === 'B') {
+    return options.allowBack ? 'back' : null;
+  }
+  if (text === 'q' || text === 'Q') {
+    return options.allowExit ?? true ? 'exit' : null;
+  }
+
+  return null;
+}
+
+function resolveChoiceResult(
+  value: string,
+  choices: CliPromptChoice[],
+): CliPromptResult<string> {
+  const choice = choices.find((entry) => entry.value === value);
+  if (choice?.role === 'back') {
+    return createPromptActionResult('back');
+  }
+  if (choice?.role === 'exit') {
+    return createPromptActionResult('exit');
+  }
+  return createPromptResult(value);
+}
+
+function createMutedOutput(outputSink: CliPromptOutputSink): NodeJS.WritableStream {
+  const mutedOutput = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  }) as NodeJS.WritableStream & { isTTY?: boolean };
+  mutedOutput.isTTY = outputSink.isTTY;
+  return mutedOutput;
+}
+
+function createPromptInputProxy(options: {
+  input: NodeJS.ReadableStream;
+  promptOptions: PromptInteractionOptions;
+  onAction: (action: Exclude<CliPromptAction, 'select'>) => void;
+}): {
+  input: NodeJS.ReadableStream;
+  close: () => void;
+} {
+  const proxied = new PassThrough() as PassThrough & {
+    isTTY?: boolean;
+    setRawMode?: (mode: boolean) => unknown;
+  };
+  const source = options.input as NodeJS.ReadableStream & {
+    isTTY?: boolean;
+    setRawMode?: (mode: boolean) => unknown;
+  };
+  proxied.isTTY = source.isTTY;
+  if (typeof source.setRawMode === 'function') {
+    proxied.setRawMode = (mode: boolean) => source.setRawMode?.(mode);
+  }
+
+  const onData = (chunk: Buffer | string) => {
+    const action = resolveChunkPromptAction(chunk, options.promptOptions);
+    if (action) {
+      options.onAction(action);
+      return;
+    }
+    proxied.write(chunk);
+  };
+  const onEnd = () => proxied.end();
+  const onClose = () => proxied.end();
+  const onError = (error: Error) => proxied.destroy(error);
+
+  source.on('data', onData);
+  source.on('end', onEnd);
+  source.on('close', onClose);
+  source.on('error', onError);
+
+  return {
+    input: proxied,
+    close: () => {
+      source.off('data', onData);
+      source.off('end', onEnd);
+      source.off('close', onClose);
+      source.off('error', onError);
+      proxied.end();
+    },
+  };
+}
+
 export interface ReadlinePromptOptions {
   input?: NodeJS.ReadableStream;
   outputSink?: CliPromptOutputSink;
@@ -536,36 +697,40 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
   const outputSink = options.outputSink ?? process.stderr;
   const output = createPromptWritable(outputSink);
 
-  async function ask(message: string, askOptions: { hidden?: boolean } = {}): Promise<string> {
-    if (askOptions.hidden) {
+  async function ask(
+    message: string,
+    askOptions: { hidden?: boolean } & PromptInteractionOptions = {},
+  ): Promise<CliPromptResult<string>> {
+    const hidden = askOptions.hidden === true;
+    if (hidden) {
       outputSink.write(message);
-      const mutedOutput = new Writable({
-        write(_chunk, _encoding, callback) {
-          callback();
-        },
-      }) as NodeJS.WritableStream & { isTTY?: boolean };
-      mutedOutput.isTTY = outputSink.isTTY;
-      const rl = createInterface({
-        input,
-        output: mutedOutput,
-        terminal: Boolean((input as { isTTY?: boolean }).isTTY && outputSink.isTTY),
-      });
-      try {
-        const answer = await rl.question('');
-        outputSink.write('\n');
-        return answer;
-      } finally {
-        rl.close();
-      }
     }
-
     const rl = createInterface({
       input,
-      output,
+      output: hidden ? createMutedOutput(outputSink) : output,
       terminal: Boolean((input as { isTTY?: boolean }).isTTY && outputSink.isTTY),
     });
+    const promptText = hidden ? '' : message;
     try {
-      return await rl.question(message);
+      const result = await new Promise<CliPromptResult<string>>((resolve, reject) => {
+        const handleSigint = () => {
+          resolve(createPromptActionResult('exit'));
+        };
+        rl.once('SIGINT', handleSigint);
+        rl.question(promptText)
+          .then((answer) => {
+            const action = resolveTypedPromptAction(answer, askOptions);
+            resolve(action ? createPromptActionResult(action) : createPromptResult(answer));
+          })
+          .catch(reject)
+          .finally(() => {
+            rl.off('SIGINT', handleSigint);
+          });
+      });
+      if (hidden) {
+        outputSink.write('\n');
+      }
+      return result;
     } finally {
       rl.close();
     }
@@ -580,13 +745,21 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
     const body = choices
       .map((choice, index) => formatChoice(choice, index, new Set(defaultValues)))
       .join('\n');
+    const answer = await ask(`${message}\n${body}\n选择编号：`, {
+      mode: 'menu',
+      allowBack: choices.some((choice) => choice.role === 'back'),
+      allowExit: true,
+    });
+    if (answer.action !== 'select') {
+      return answer;
+    }
     const selected = parseSelectionInput(
-      await ask(`${message}\n${body}\n选择编号：`),
+      answer.value!,
       choices,
       defaultValues,
       false,
     );
-    return createPromptResult(selected[0]);
+    return resolveChoiceResult(selected[0], choices);
   };
 
   const multiSelect: NonNullable<CliPrompt['multiSelect']> = async ({
@@ -604,8 +777,16 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
     const body = choices
       .map((choice, index) => formatChoice(choice, index, new Set(defaults)))
       .join('\n');
+    const answer = await ask(`${message}\n${body}\n选择编号，可用逗号分隔多个：`, {
+      mode: 'menu',
+      allowBack: choices.some((choice) => choice.role === 'back'),
+      allowExit: true,
+    });
+    if (answer.action !== 'select') {
+      return createPromptActionResult(answer.action);
+    }
     return createPromptResult(parseSelectionInput(
-      await ask(`${message}\n${body}\n选择编号，可用逗号分隔多个：`),
+      answer.value!,
       choices,
       defaults,
       true,
@@ -614,23 +795,33 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
 
   const confirm: NonNullable<CliPrompt['confirm']> = async ({ message, defaultValue = true }) => {
     const suffix = defaultValue ? 'Y/n' : 'y/N';
-    const answer = (await ask(`${message} [${suffix}] `)).trim().toLowerCase();
-    if (!answer) {
+    const answer = await ask(`${message} [${suffix}] `, { mode: 'confirm' });
+    if (answer.action !== 'select') {
+      return createPromptActionResult(answer.action);
+    }
+    const normalized = answer.value!.trim().toLowerCase();
+    if (!normalized) {
       return createPromptResult(defaultValue);
     }
-    return createPromptResult(answer === 'y' || answer === 'yes');
+    return createPromptResult(normalized === 'y' || normalized === 'yes');
   };
 
   const inputPrompt: NonNullable<CliPrompt['input']> = async ({ message, defaultValue }) => {
     const answer = await ask(defaultValue === undefined
       ? `${message}: `
-      : `${message}（默认：${defaultValue}）: `);
-    return createPromptResult(answer.trim() === '' && defaultValue !== undefined ? defaultValue : answer);
+      : `${message}（默认：${defaultValue}）: `, { mode: 'text' });
+    if (answer.action !== 'select') {
+      return answer;
+    }
+    return createPromptResult(answer.value!.trim() === '' && defaultValue !== undefined ? defaultValue : answer.value!);
   };
 
   const passwordPrompt: NonNullable<CliPrompt['password']> = async ({ message }) => {
-    const answer = await ask(`${message}: `, { hidden: true });
-    return createPromptResult(answer);
+    const answer = await ask(`${message}: `, { hidden: true, mode: 'text' });
+    if (answer.action !== 'select') {
+      return answer;
+    }
+    return createPromptResult(answer.value!);
   };
 
   return {
@@ -728,10 +919,21 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         const body = optionalConfiguredChoices
           .map((choice, index) => formatChoice(choice, index, new Set<string>()))
           .join('\n');
+        const selectedKeysAnswer = await ask(
+          `选择要更新的 ${configOptions.pluginName} 配置项\n${body}\n选择编号，可用逗号分隔多个，直接回车跳过：`,
+          { mode: 'menu', allowExit: true },
+        );
+        if (selectedKeysAnswer.action !== 'select') {
+          return {
+            selectedScope,
+            updates: {},
+            updatedKeys: [],
+            removeKeys: [],
+            cancelled: true,
+          };
+        }
         const selectedKeys = parseSelectionInput(
-          await ask(
-            `选择要更新的 ${configOptions.pluginName} 配置项\n${body}\n选择编号，可用逗号分隔多个，直接回车跳过：`,
-          ),
+          selectedKeysAnswer.value!,
           optionalConfiguredChoices,
           [],
           true,
@@ -783,8 +985,18 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
           : `（当前：${String(current)}）`;
         const answer = await ask(`${label}${suffix}: `, {
           hidden: definition.sensitive && definition.type === 'string',
+          mode: 'text',
         });
-        const parsed = parsePromptedConfigValue(key, definition, answer);
+        if (answer.action !== 'select') {
+          return {
+            selectedScope,
+            updates,
+            updatedKeys: Object.keys(updates),
+            removeKeys,
+            cancelled: true,
+          };
+        }
+        const parsed = parsePromptedConfigValue(key, definition, answer.value!);
         if (parsed !== undefined) {
           updates[key] = parsed;
         } else if (!definition.required && configured) {
@@ -813,19 +1025,41 @@ async function runPromptWithFallback<T>(options: {
   fallback?: () => Promise<CliPromptResult<T>>;
   input: NodeJS.ReadableStream;
   outputSink: CliPromptOutputSink;
+  promptOptions?: PromptInteractionOptions;
+  resolveValue?: (value: T) => CliPromptResult<T>;
 }): Promise<CliPromptResult<T>> {
+  let interceptedAction: Exclude<CliPromptAction, 'select'> | null = null;
   try {
     const module = await loadInquirerPromptModule();
     const output = createPromptWritable(options.outputSink);
-    const value = await options.run(module, {
+    const controller = new AbortController();
+    const proxy = createPromptInputProxy({
       input: options.input,
-      output,
-      clearPromptOnDone: true,
+      promptOptions: options.promptOptions ?? {},
+      onAction: (action) => {
+        if (interceptedAction) {
+          return;
+        }
+        interceptedAction = action;
+        controller.abort();
+      },
     });
-    return createPromptResult(value);
+    try {
+      const value = await options.run(module, {
+        input: proxy.input,
+        output,
+        clearPromptOnDone: true,
+        signal: controller.signal,
+      });
+      return options.resolveValue ? options.resolveValue(value) : createPromptResult(value);
+    } finally {
+      proxy.close();
+    }
   } catch (error) {
     if (isPromptCancellationError(error)) {
-      return createCancelledPromptResult();
+      return interceptedAction
+        ? createPromptActionResult(interceptedAction)
+        : createCancelledPromptResult();
     }
     if (options.fallback) {
       return options.fallback();
@@ -839,14 +1073,19 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
   const outputSink = options.outputSink ?? process.stderr;
   const fallback = options.fallback;
 
-  return {
-    select: async ({ message, choices, defaultValue, pageSize }) =>
+  const select: NonNullable<CliPrompt['select']> = async ({ message, choices, defaultValue, pageSize }) =>
       runPromptWithFallback({
         input,
         outputSink,
+        promptOptions: {
+          mode: 'menu',
+          allowBack: choices.some((choice) => choice.role === 'back'),
+          allowExit: true,
+        },
         fallback: fallback?.select
           ? () => fallback.select!({ message, choices, defaultValue, pageSize })
           : undefined,
+        resolveValue: (value) => resolveChoiceResult(value, choices),
         run: (module, context) => module.select({
           message,
           choices: choices.map((choice) => ({
@@ -860,15 +1099,18 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
           pageSize,
           loop: false,
         }, context),
-      }),
-    multiSelect: async ({ message, choices, defaultValues, pageSize }) =>
+      });
+  const multiSelect: NonNullable<CliPrompt['multiSelect']> = async ({ message, choices, defaultValues, pageSize }) =>
       fallback?.multiSelect
         ? fallback.multiSelect({ message, choices, defaultValues, pageSize })
-        : createCancelledPromptResult(),
-    confirm: async ({ message, defaultValue }) =>
+        : createCancelledPromptResult();
+  const confirm: NonNullable<CliPrompt['confirm']> = async ({ message, defaultValue }) =>
       runPromptWithFallback({
         input,
         outputSink,
+        promptOptions: {
+          mode: 'confirm',
+        },
         fallback: fallback?.confirm
           ? () => fallback.confirm!({ message, defaultValue })
           : undefined,
@@ -876,11 +1118,14 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
           message,
           default: defaultValue,
         }, context),
-      }),
-    input: async ({ message, defaultValue }) =>
+      });
+  const inputPrompt: NonNullable<CliPrompt['input']> = async ({ message, defaultValue }) =>
       runPromptWithFallback({
         input,
         outputSink,
+        promptOptions: {
+          mode: 'text',
+        },
         fallback: fallback?.input
           ? () => fallback.input!({ message, defaultValue })
           : undefined,
@@ -888,11 +1133,14 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
           message,
           default: defaultValue,
         }, context),
-      }),
-    password: async ({ message, mask }) =>
+      });
+  const passwordPrompt: NonNullable<CliPrompt['password']> = async ({ message, mask }) =>
       runPromptWithFallback({
         input,
         outputSink,
+        promptOptions: {
+          mode: 'text',
+        },
         fallback: fallback?.password
           ? () => fallback.password!({ message, mask })
           : undefined,
@@ -900,7 +1148,75 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
           message,
           mask,
         }, context),
-      }),
+      });
+
+  return {
+    select,
+    multiSelect,
+    confirm,
+    input: inputPrompt,
+    password: passwordPrompt,
+    selectPlatform: async ({ available, defaultValue, message }) =>
+      unwrapPromptResult(await select({
+        message: message ?? '选择目标平台',
+        choices: available.map((value) => ({
+          value,
+          label: value === 'both' ? 'Codex + Claude Code' : value === 'codex' ? 'Codex' : 'Claude Code',
+        })),
+        defaultValue,
+      })),
+    selectScope: async ({ defaultValue = 'user' }) =>
+      unwrapPromptResult(await select({
+        message: '选择安装范围',
+        choices: [
+          { value: 'user', label: 'user' },
+          { value: 'project', label: 'project' },
+        ],
+        defaultValue,
+      })),
+    selectPlugins: async ({ command, candidates, defaultValues, allowMultiple }) => {
+      const choices = candidates.map((candidate) => ({
+        value: candidate.id,
+        label: `${candidate.pluginName}${candidate.platform ? ` / ${candidate.platform}` : ''}${candidate.scope ? ` / ${candidate.scope}` : ''}`,
+        disabled: candidate.selectable ? undefined : candidate.disabledReason ?? true,
+      }));
+      return allowMultiple
+        ? unwrapPromptResult(await multiSelect({
+            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            choices,
+            defaultValues,
+          }))
+        : [unwrapPromptResult(await select({
+            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            choices,
+            defaultValue: defaultValues?.[0],
+          }))];
+    },
+    selectUpgradeMode: async ({ canUpgradeAll }) =>
+      unwrapPromptResult(await select({
+        message: '选择升级方式',
+        choices: [
+          {
+            value: 'all',
+            label: '全部可升级插件',
+            disabled: canUpgradeAll ? undefined : '当前存在需要显式处理的插件，不能使用全部升级',
+          },
+          { value: 'select', label: '手动选择插件' },
+        ],
+        defaultValue: canUpgradeAll ? 'all' : 'select',
+      })),
+    selectSkillTrigger: async ({ defaultValue = 'default', allowSkip = true }) =>
+      unwrapPromptResult(await select({
+        message: '选择 skill 触发偏好',
+        choices: [
+          { value: 'default', label: 'default' },
+          { value: 'manual', label: 'manual' },
+          { value: 'auto', label: 'auto' },
+          ...(allowSkip ? [{ value: 'skip', label: '跳过' }] : []),
+        ],
+        defaultValue,
+      })),
+    configurePlugin: fallback?.configurePlugin,
   };
 }
 

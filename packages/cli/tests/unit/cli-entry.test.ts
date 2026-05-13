@@ -722,6 +722,7 @@ describe('cli entry', () => {
       platforms: ['codex'],
       warnings: [],
       repoManagedArtifacts: [],
+      payload: { ok: true, command: 'cleanup', locations: [] },
     }));
     const reinstallCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -766,8 +767,6 @@ describe('cli entry', () => {
     expect(JSON.parse(capture.readStdout())).toMatchObject({
       ok: true,
       command: 'cleanup',
-      plugins: ['git-commit'],
-      platforms: ['codex'],
     });
     expect(cleanupCommand).toHaveBeenCalledWith(
       ['git-commit'],
@@ -917,7 +916,7 @@ describe('cli entry', () => {
       env: {} as NodeJS.ProcessEnv,
       io,
       prompt: {
-        select: vi.fn(async () => ({ cancelled: true })),
+        select: vi.fn(async () => ({ action: 'cancel', cancelled: true })),
       },
       consoleDriver: {
         render: vi.fn(),

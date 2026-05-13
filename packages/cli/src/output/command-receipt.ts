@@ -5,6 +5,12 @@ import type {
   Scope,
   SkippedUpgradeTarget,
 } from '../types.js';
+import type {
+  CleanupConfigAction,
+  CleanupJsonPayload,
+  CleanupPlanItem,
+  CleanupTargetPayload,
+} from '../commands/cleanup.js';
 
 export interface CliMarketplaceReceipt {
   rootDir: string;
@@ -113,6 +119,7 @@ export interface CliCommandReceiptDetails {
   sharedConfigFiles?: ReceiptFileEntry[];
   projectLocalConfigFiles?: ReceiptFileEntry[];
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
+  removedConfigStores?: ReceiptFileEntry[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -158,6 +165,7 @@ interface ReceiptJsonBase {
   sharedConfigFiles?: ReceiptFileEntry[];
   projectLocalConfigFiles?: ReceiptFileEntry[];
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
+  removedConfigStores?: ReceiptFileEntry[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -328,6 +336,9 @@ function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
       : {}),
     ...(result.receiptDetails.projectArtifactIdentityFiles?.length
       ? { projectArtifactIdentityFiles: result.receiptDetails.projectArtifactIdentityFiles }
+      : {}),
+    ...(result.receiptDetails.removedConfigStores?.length
+      ? { removedConfigStores: result.receiptDetails.removedConfigStores }
       : {}),
     ...(result.receiptDetails.nativeTransactionMarker
       ? { nativeTransactionMarker: result.receiptDetails.nativeTransactionMarker }
@@ -689,6 +700,9 @@ export function renderCommandReceipt(
   if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
     lines.push('已更新共享身份文件。');
   }
+  if ((payload.removedConfigStores?.length ?? 0) > 0) {
+    lines.push('已删除 AW 自管配置。');
+  }
   if (privateStateTouched) {
     lines.push('已更新 AW 本地状态。');
   }
@@ -705,6 +719,111 @@ export function renderCommandReceipt(
     lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
   } else {
     lines.push(`下一步：${payload.nextSteps[0]}`);
+  }
+  return lines;
+}
+
+function renderCleanupPlanItems(title: string, items: CleanupPlanItem[]): string[] {
+  const lines = [title];
+  if (items.length === 0) {
+    lines.push('- 无');
+    return lines;
+  }
+  for (const item of items) {
+    lines.push(`- ${item.label}${item.path ? `：${item.path}` : ''}${item.detail ? ` (${item.detail})` : ''}`);
+  }
+  return lines;
+}
+
+function renderCleanupConfigActions(title: string, actions: CleanupConfigAction[]): string[] {
+  const lines = [title];
+  if (actions.length === 0) {
+    lines.push('- 无');
+    return lines;
+  }
+  for (const action of actions) {
+    lines.push(`- ${action.scope}/${action.plugin}：${action.path} [${action.status}]${action.reason ? ` ${action.reason}` : ''}`);
+  }
+  return lines;
+}
+
+function renderCleanupLocations(title: string, locations: CleanupTargetPayload['affectedDependents']): string[] {
+  const lines = [title];
+  if (locations.length === 0) {
+    lines.push('- 无');
+    return lines;
+  }
+  for (const location of locations) {
+    lines.push(`- ${location.platform}/${location.scope}/${location.plugin}${location.projectKey ? ` (${location.projectKey})` : ''}`);
+  }
+  return lines;
+}
+
+function renderCleanupBlockingReasons(payload: CleanupTargetPayload): string[] {
+  const lines = ['阻断原因：'];
+  if (payload.blockingReasons.length === 0) {
+    lines.push('- 无');
+    return lines;
+  }
+  for (const reason of payload.blockingReasons) {
+    lines.push(`- [${reason.code}] ${reason.message}${reason.suggestedCommand ? ` 建议：${reason.suggestedCommand}` : ''}`);
+  }
+  return lines;
+}
+
+export function buildCleanupReceiptJson(result: {
+  payload: CleanupJsonPayload;
+  warnings: string[];
+}): CleanupJsonPayload & { warnings: string[] } {
+  return {
+    ...result.payload,
+    warnings: [...new Set(result.warnings)],
+  };
+}
+
+export function renderCleanupReceipt(result: {
+  payload: CleanupJsonPayload;
+  warnings: string[];
+}): string[] {
+  const payload = buildCleanupReceiptJson(result);
+  if (payload.dependencyIndex) {
+    const lines = [`已退休 ${payload.retiredEntries.length} 条 dependency index stale 引用。`];
+    if (payload.retiredEntries.length === 0) {
+      lines.push('这次没有需要退休的项目引用。');
+    } else {
+      for (const entry of payload.retiredEntries) {
+        lines.push(`- ${entry.recordPath}`);
+      }
+    }
+    if (payload.nextSteps.length > 0) {
+      lines.push(`下一步：${payload.nextSteps.join('；')}`);
+    }
+    return lines;
+  }
+
+  const lines: string[] = [
+    `${payload.dryRun ? 'cleanup 评估完成' : 'cleanup 已完成'}：${payload.target.plugin}。`,
+    `目标类型：${payload.target.targetType}。`,
+    `force 语义：${payload.force ? '已启用' : '未启用'}${payload.forceReason ? `；${payload.forceReason}` : ''}`,
+  ];
+  lines.push(...renderCleanupPlanItems(payload.dryRun ? '计划删除项：' : '实际删除项：', payload.dryRun
+    ? payload.plannedRemovals
+    : payload.actualRemovals ?? payload.plannedRemovals));
+  lines.push(...renderCleanupPlanItems(payload.dryRun ? '备份项：' : '实际备份项：', payload.dryRun
+    ? payload.wouldBackups
+    : payload.actualBackups ?? []));
+  lines.push(...renderCleanupPlanItems(payload.dryRun ? '跳过项：' : '执行跳过项：', payload.dryRun
+    ? payload.skippedForeignItems
+    : payload.skippedItems ?? payload.skippedForeignItems));
+  lines.push(...renderCleanupLocations('受影响依赖：', payload.affectedDependents));
+  lines.push(...renderCleanupBlockingReasons(payload));
+  lines.push(...renderCleanupConfigActions(payload.dryRun ? '配置处理：' : '配置处理结果：', payload.wouldRemoveConfig));
+  if (!payload.dryRun) {
+    lines.push(...renderCleanupPlanItems('未清项：', payload.remainingItems ?? []));
+  }
+  lines.push(`建议命令：${payload.recommendedCommand}`);
+  if (payload.warnings.length > 0) {
+    lines.push(`Warnings：${payload.warnings.join('；')}`);
   }
   return lines;
 }

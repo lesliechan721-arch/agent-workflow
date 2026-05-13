@@ -881,7 +881,7 @@ describe('plugin lifecycle scripts', () => {
     expect(target.source).toBe('currentCatalog');
     expect(target.noOp).toBe(false);
     expect(target.entry?.path).toBe('./scripts/install.mjs');
-    expect(target.warnings.join('\n')).toContain('does not declare "uninstall" lifecycle script');
+    expect(target.warnings).toEqual([]);
   });
 
   it('warns and continues when historical uninstall has no executable lifecycle source', async () => {

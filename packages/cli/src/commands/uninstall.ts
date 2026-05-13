@@ -90,22 +90,20 @@ import {
   type CommandExecutionContextInput,
 } from './runtime.js';
 import {
-  normalizeCommandOptions,
-  type RawCommandOptions,
+  normalizeUninstallCommandOptions,
+  type RawUninstallCommandOptions,
+  type UninstallCommandOptions,
 } from './options.js';
-import { tryUninstallUsingInstallState } from './install-state-removal.js';
-
-export interface RawUninstallCommandOptions extends RawCommandOptions {
-  force?: boolean;
-}
-
-type UninstallCommandOptions = CommandOptions & {
-  force?: boolean;
-};
+import { readInstallStateProjection, tryUninstallUsingInstallState } from './install-state-removal.js';
+import { resetPluginConfigStore, resolvePluginConfigStorePath } from '../utils/plugin-config.js';
 
 type UninstallCommandRuntime = CommandExecutionContextInput & {
   skipLifecycle?: boolean;
   skipLifecycleSnapshotGc?: boolean;
+};
+
+type InternalUninstallCommandOptions = UninstallCommandOptions & {
+  force?: boolean;
 };
 
 interface PlannedUninstallExecution {
@@ -942,7 +940,7 @@ export async function rollbackArtifacts(
 async function uninstallTargetOnPlatform(
   target: ResolvedPluginTarget,
   platform: PlatformName,
-  options: UninstallCommandOptions,
+  options: InternalUninstallCommandOptions,
   runtime: UninstallCommandRuntime,
 ): Promise<{ warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const context = createCommandExecutionContext(runtime);
@@ -1262,7 +1260,7 @@ async function uninstallTargetOnPlatform(
 export async function uninstallTargetsOnPlatforms(
   targets: ResolvedPluginTarget[],
   platforms: PlatformName[],
-  options: UninstallCommandOptions,
+  options: InternalUninstallCommandOptions,
   runtime: UninstallCommandRuntime = {},
 ): Promise<{ warnings: string[]; repoManagedArtifacts: GeneratedArtifact[] }> {
   const warnings: string[] = [];
@@ -1279,6 +1277,108 @@ export async function uninstallTargetsOnPlatforms(
   return { warnings, repoManagedArtifacts };
 }
 
+function renderUninstallLocationArgs(location: PluginLocation): string {
+  return `${location.plugin} --platform ${location.platform} --scope ${location.scope}`;
+}
+
+function renderUninstallLocationLabel(location: PluginLocation): string {
+  return location.scope === 'project'
+    ? `${location.platform}/${location.plugin}/project:${location.projectKey ?? '(missing-project-key)'}`
+    : `${location.platform}/${location.plugin}/user`;
+}
+
+function renderCleanupCommandForLocation(location: PluginLocation, force = false): string {
+  return `aw cleanup ${renderUninstallLocationArgs(location)}${force ? ' --force' : ''}`;
+}
+
+function renderAdoptExistingCommand(location: PluginLocation): string {
+  return `aw repair ${renderUninstallLocationArgs(location)} --adopt-existing`;
+}
+
+function hasManagedLedgerScopeRecord(
+  ledger: InstalledLedger,
+  location: PluginLocation,
+): boolean {
+  const platformRecord = ledger.plugins[location.plugin]?.platforms[location.platform];
+  if (!platformRecord) {
+    return false;
+  }
+
+  const scopeRecord = location.scope === 'user'
+    ? platformRecord.userScope
+    : location.projectKey
+      ? platformRecord.projectScopes?.[location.projectKey]
+        ?? Object.entries(platformRecord.projectScopes ?? {}).find(([projectKey]) => {
+          if (projectKey === location.projectKey) {
+            return true;
+          }
+          try {
+            return fs.realpathSync(projectKey) === fs.realpathSync(location.projectKey!);
+          } catch {
+            return path.resolve(projectKey) === path.resolve(location.projectKey!);
+          }
+        })?.[1]
+      : undefined;
+  return scopeRecord?.managed === true;
+}
+
+async function assertStandardUninstallableLocations(options: {
+  cwd: string;
+  requestedLocations: PluginLocation[];
+  ledger: InstalledLedger;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  for (const location of options.requestedLocations) {
+    const state = await readInstallStateProjection({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+    });
+    const deferCodexProjectNotInstalledSafetyChecks =
+      location.platform === 'codex' &&
+      location.scope === 'project' &&
+      (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged');
+    const deferLedgerBackedPlannerChecks = hasManagedLedgerScopeRecord(options.ledger, location) &&
+      (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged');
+    if (deferCodexProjectNotInstalledSafetyChecks || deferLedgerBackedPlannerChecks) {
+      continue;
+    }
+    const reasonCode = state.projection.kind === 'adoptable'
+      ? 'duplicateInstall'
+      : state.projection.kind === 'installed'
+        ? null
+        : state.projection.kind === 'notInstalled'
+          ? 'notInstalled'
+          : state.projection.kind === 'externallyManaged'
+            ? 'foreignOwnershipConflict'
+            : state.projection.kind === 'residual'
+              ? 'residualState'
+              : 'unsafeStandardUninstall';
+    if (!reasonCode) {
+      continue;
+    }
+
+    const cleanupCommand = renderCleanupCommandForLocation(
+      location,
+      state.forceCleanupRequired || state.removalProtection.blockedDependents.length > 0,
+    );
+    if (state.projection.kind === 'adoptable') {
+      throw new Error(
+        `[reason=${reasonCode}] ${renderUninstallLocationLabel(location)} 当前是可认领的重复安装处理场景，标准 uninstall 不会直接删除共享产物。请改用 ${renderAdoptExistingCommand(location)}；若要放弃这份状态，请先运行 ${cleanupCommand}。`,
+      );
+    }
+
+    const issueSummary = state.projection.issues
+      .map((issue) => issue.code)
+      .filter((code, index, all) => all.indexOf(code) === index)
+      .join('、');
+    throw new Error(
+      `[reason=${reasonCode}] ${renderUninstallLocationLabel(location)} 当前不满足标准 uninstall 前提`
+      + `${issueSummary ? `（${issueSummary}）` : ''}。请改用 ${cleanupCommand}。`,
+    );
+  }
+}
+
 export async function uninstallCommand(
   pluginNames: string[],
   rawOptions: RawUninstallCommandOptions,
@@ -1288,12 +1388,14 @@ export async function uninstallCommand(
   plugins: string[];
   warnings: string[];
   repoManagedArtifacts: GeneratedArtifact[];
+  receiptDetails?: {
+    removedConfigStores?: Array<{ path: string }>;
+  };
 }> {
-  const options = normalizeCommandOptions(rawOptions, {
+  const options = normalizeUninstallCommandOptions(rawOptions, {
     defaultScope: 'user',
     defaultPlatform: 'auto',
-  }) as UninstallCommandOptions;
-  options.force = rawOptions.force === true;
+  });
   if (pluginNames.length === 0) {
     throw new Error('uninstall 命令至少需要一个插件名。非交互模式下请运行 `aw uninstall <插件名>`。');
   }
@@ -1351,6 +1453,12 @@ export async function uninstallCommand(
     })),
   );
   const baselineLedger = await readInstalledLedger(env);
+  await assertStandardUninstallableLocations({
+    cwd: options.cwd,
+    requestedLocations,
+    ledger: baselineLedger,
+    env,
+  });
   const plannerState = await collectUninstallPlannerState({
     cwd: options.cwd,
     env,
@@ -1388,6 +1496,7 @@ export async function uninstallCommand(
   });
   const warnings: string[] = [];
   let repoManagedArtifacts: GeneratedArtifact[] = [];
+  const removedConfigStores: Array<{ path: string }> = [];
   for (const execution of executions) {
     const result = await uninstallTargetOnPlatform(
       execution.target,
@@ -1404,6 +1513,30 @@ export async function uninstallCommand(
     warnings.push(...result.warnings);
     repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, result.repoManagedArtifacts);
   }
+  if (options.removeConfig) {
+    const seenStorePaths = new Set<string>();
+    for (const pluginName of pluginNames) {
+      const storePath = resolvePluginConfigStorePath({
+        pluginName,
+        scope: options.scope,
+        cwd: options.cwd,
+        env,
+      });
+      if (seenStorePaths.has(storePath)) {
+        continue;
+      }
+      seenStorePaths.add(storePath);
+      const reset = await resetPluginConfigStore({
+        pluginName,
+        scope: options.scope,
+        cwd: options.cwd,
+        env,
+      });
+      if (reset.deleted) {
+        removedConfigStores.push({ path: reset.path });
+      }
+    }
+  }
 
   return {
     platforms,
@@ -1412,6 +1545,14 @@ export async function uninstallCommand(
     warnings: [
       ...collectCommandWarnings(platforms, options.scope),
       ...warnings,
+      ...(removedConfigStores.length > 0 ? ['已删除 AW 自管配置。'] : []),
     ],
+    ...(removedConfigStores.length > 0
+      ? {
+          receiptDetails: {
+            removedConfigStores,
+          },
+        }
+      : {}),
   };
 }

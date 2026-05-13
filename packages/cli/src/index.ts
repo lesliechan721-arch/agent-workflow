@@ -28,6 +28,7 @@ import { diagnoseCommand } from './commands/diagnose.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
+  normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
@@ -47,8 +48,10 @@ import {
 import { formatWarnings } from './output/reporter.js';
 import {
   buildCommandReceiptJson,
+  buildCleanupReceiptJson,
   buildInitReceiptJson,
   renderCommandReceipt,
+  renderCleanupReceipt,
   renderInitReceipt,
   type CliCommandResult,
 } from './output/command-receipt.js';
@@ -274,43 +277,6 @@ function configLayerLabel(scope: Scope, projectLayer: 'shared' | 'local' = 'shar
     return '个人';
   }
   return projectLayer === 'local' ? '当前项目（本机私有覆盖）' : '当前项目';
-}
-
-function renderCleanupResult(result: {
-  plugins: string[];
-  platforms: string[];
-  retiredEntries?: Array<{ location: unknown; recordPath: string }>;
-}): string[] {
-  if (result.retiredEntries) {
-    const lines = [`已退休 ${result.retiredEntries.length} 条 dependency index stale 引用。`];
-    for (const entry of result.retiredEntries) {
-      lines.push(`- ${entry.recordPath}`);
-    }
-    return lines;
-  }
-
-  return [
-    `已完成 ${result.plugins.join('、')} 的 cleanup。`,
-    ...(result.platforms.length > 0 ? [`目标：${result.platforms.join('、')}。`] : []),
-  ];
-}
-
-function buildCleanupReceiptJson(result: {
-  plugins: string[];
-  platforms: string[];
-  warnings: string[];
-  repoManagedArtifacts: unknown[];
-  retiredEntries?: Array<{ location: unknown; recordPath: string }>;
-}): Record<string, unknown> {
-  return {
-    ok: true,
-    command: 'cleanup',
-    plugins: result.plugins,
-    platforms: result.platforms,
-    retiredEntries: result.retiredEntries ?? [],
-    warnings: [...new Set(result.warnings)],
-    repoManagedArtifacts: result.repoManagedArtifacts,
-  };
 }
 
 function writeArtifactRefreshNotice(
@@ -751,24 +717,29 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('--force', 'continue uninstall when shared runtime replay cannot be verified', false)
+    .option('--remove-config', 'remove the AW-managed config store after uninstall succeeds', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (
       plugins: string[],
-      rawOptions: { scope?: string; platform?: string; scriptTimeout?: string; force?: boolean; json?: boolean } & RawDiagnosticsOptions,
+      rawOptions: {
+        scope?: string;
+        platform?: string;
+        scriptTimeout?: string;
+        removeConfig?: boolean;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('uninstall', rawOptions);
       const receipt = await runActionWithContext(
         context,
         async () => {
-          const commandOptions = normalizeCommandOptions({
+          const commandOptions = normalizeUninstallCommandOptions({
             cwd,
             ...rawOptions,
-          }) as ReturnType<typeof normalizeCommandOptions> & { force?: boolean };
-          commandOptions.force = rawOptions.force === true;
+          });
           assertUninstallPluginsProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',
@@ -919,10 +890,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user', 'user')
     .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('--force', 'remove AW-owned blocks from shared config after creating a backup', false)
+    .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
+    .option('--plan', 'preview the cleanup plan without writing state', false)
+    .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
     .option('--dependency-index', 'prune or repair stale dependency index entries', false)
     .option('--prune-stale <token>', 'retire a single stale dependency index reference')
-    .option('-y, --yes', 'confirm cleanup or prune actions', false)
+    .option('-y, --yes', 'confirm dependency-index prune actions', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print cleanup result as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -934,6 +907,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         force?: boolean;
+        plan?: boolean;
+        removeConfig?: boolean;
         dependencyIndex?: boolean;
         pruneStale?: string;
         yes?: boolean;
@@ -963,7 +938,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, buildCleanupReceiptJson(result));
       } else {
-        for (const line of renderCleanupResult(result)) {
+        for (const line of renderCleanupReceipt(result)) {
           writeLine(io.stdout, line);
         }
       }

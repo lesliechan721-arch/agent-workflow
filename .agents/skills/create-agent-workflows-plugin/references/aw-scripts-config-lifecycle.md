@@ -108,7 +108,7 @@ aw config list <plugin> --scope project --local
 - `unset` 删除某一层 store 中的单个 key，不会删除其它 key。
 - `reset` 删除整个 scope store。目标 store 存在时脚本化调用需要 `--yes`；目标 store 不存在时是 no-op。
 - `reset` 不需要当前 catalog 里仍有这个插件，因此可以用来清理已卸载或已从 catalog 移除的插件残留配置。
-- `aw uninstall` 默认保留 AW config；需要清理时显式运行 `aw config reset <plugin> -s user|project --yes`。
+- `aw uninstall` 默认保留 AW config；需要随卸载成功一起清理当前 target 的配置时可传 `--remove-config`。只想删除配置、不动安装状态时显式运行 `aw config reset <plugin> -s user|project --yes`。`aw cleanup --remove-config` 同样只在主体清理成功后删除当前 target 的配置。
 
 ### 输出分层和 receipt
 
@@ -204,7 +204,7 @@ renderer stdout 必须只输出 JSON：
 
 renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 会投影为 `artifactDrift`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / V2 `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 在 V2 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
 
 refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 diagnostic cache；没有可定位 dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
 
@@ -275,6 +275,8 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 | config | `configured`、`missing-required`、`invalid-config`、`no-schema` |
 | scripts | `declared`、`not_declared`、`missing-from-bundle`、`unsupported-on-current-os` |
 | healthSource | `installRecord`、`currentCatalog`、`historicalLifecycle`、`none` |
+
+没有声明 `config.schema`、`scripts.lifecycle` 或 `artifacts.targets` 不是默认问题。它们只表示插件没有 AW 配置面、没有生命周期脚本或没有动态 artifact；status 不应因此生成 `missingRequiredConfig`、脚本异常或 artifact refresh 问题。
 
 ## 运行时 Context
 

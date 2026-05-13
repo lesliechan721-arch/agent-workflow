@@ -11,9 +11,12 @@ import {
   normalizeCommandOptions,
   parseSkillTriggerPreference,
   type RawCommandOptions,
-  type RawInstallCommandOptions,
 } from './options.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
+import {
+  assertNoDuplicateInstalls,
+  shouldEnforceDuplicateInstallPreflight,
+} from './scope-exclusivity-preflight.js';
 import {
   buildGlobalDependencyIndexRecord,
   inspectGlobalDependencyIndex,
@@ -36,11 +39,13 @@ import {
   type ProjectBoundaryWarning,
 } from '../install-state/project-boundary.js';
 import { stageHistoricalLifecycleRuntime } from '../install-state/runtime-state.js';
+import { preflightSharedSkillTriggerRuntimeOwnerUpsert } from '../install-state/shared-runtime-owner.js';
 import {
   createDynamicArtifactDiagnosticCacheWriteStage,
   createInstallRecordWriteStage,
   createNativeTransactionMarkerDeletePostCommitAction,
   createProjectArtifactIdentityWriteStage,
+  createSharedRuntimeOwnerWriteStage,
   runInstallStateGraphRecordTransaction,
   runInstallStateTransaction,
   type InstallStateReceiptWarning,
@@ -60,6 +65,7 @@ import type {
 } from '../install-state/types.js';
 import type {
   CommandOptions,
+  PluginLocation as CommandPluginLocation,
   GeneratedArtifact,
   PlatformName,
   PluginLifecycleEvent,
@@ -70,7 +76,7 @@ import type {
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScript } from '../utils/plugin-scripts.js';
 import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
-import { resolveAwHome } from '../utils/paths.js';
+import { resolveAwHome, resolveEmbeddedPluginsRoot } from '../utils/paths.js';
 
 export interface RawRepairCommandOptions extends RawCommandOptions {
   adoptExisting?: boolean;
@@ -78,6 +84,7 @@ export interface RawRepairCommandOptions extends RawCommandOptions {
   json?: boolean;
   requestedSkillTrigger?: SkillTriggerPreference | string;
   skillTrigger?: SkillTriggerPreference | string;
+  takeoverSharedRuntime?: boolean;
 }
 
 export interface RepairCommandOptions extends CommandOptions {
@@ -85,6 +92,7 @@ export interface RepairCommandOptions extends CommandOptions {
   dependencyIndex: boolean;
   json?: boolean;
   requestedSkillTrigger?: SkillTriggerPreference;
+  takeoverSharedRuntime?: boolean;
 }
 
 export interface RepairDependencyIndexCoverage {
@@ -212,9 +220,19 @@ function normalizeRepairCommandOptions(
     adoptExisting: raw.adoptExisting === true,
     dependencyIndex: raw.dependencyIndex === true,
     json: raw.json === true,
+    takeoverSharedRuntime: raw.takeoverSharedRuntime,
     ...(requestedSkillTrigger === undefined
       ? {}
       : { requestedSkillTrigger: parseSkillTriggerPreference(requestedSkillTrigger) }),
+  };
+}
+
+function toCommandPluginLocation(location: PluginLocation): CommandPluginLocation {
+  return {
+    plugin: location.plugin,
+    platform: location.platform,
+    scope: location.scope,
+    projectKey: location.projectKey ?? null,
   };
 }
 
@@ -222,6 +240,51 @@ function renderLocationLabel(location: Pick<PluginLocation, 'platform' | 'scope'
   const platform = location.platform === 'codex' ? 'Codex' : 'Claude Code';
   const scope = location.scope === 'project' ? '当前项目' : '当前用户';
   return `${platform}（${scope}）`;
+}
+
+function createSkillTriggerMaterializationTarget(
+  platform: PlatformName,
+  scope: Scope,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): {
+  platform: 'codex';
+  scope: 'user';
+  kind: 'localMarketplaceRuntime';
+  root: string;
+} | {
+  platform: 'codex';
+  scope: 'project';
+  kind: 'repoSkill';
+  root: string;
+} | {
+  platform: 'claude';
+  scope: Scope;
+  kind: 'localMarketplaceRuntime';
+  root: string;
+} {
+  if (platform === 'codex' && scope === 'project') {
+    return {
+      platform: 'codex',
+      scope: 'project',
+      kind: 'repoSkill',
+      root: path.join(resolveProjectScopeRepoRoot(cwd), '.agents', 'skills'),
+    };
+  }
+  if (platform === 'codex') {
+    return {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: resolveAwHome(env),
+    };
+  }
+  return {
+    platform: 'claude',
+    scope,
+    kind: 'localMarketplaceRuntime',
+    root: resolveAwHome(env),
+  };
 }
 
 function shouldSuppressSharedOwnerConflict(location: PluginLocation): boolean {
@@ -1203,6 +1266,68 @@ async function maybeExecuteInstallLifecycle(options: {
   };
 }
 
+async function maybeCreateSharedRuntimeOwnerStage(options: {
+  location: PluginLocation;
+  recordFile: InstallRecordFile;
+  recordPath: string;
+  preference: SkillTriggerPreference;
+  repairOptions: RepairCommandOptions;
+  env: NodeJS.ProcessEnv;
+}): Promise<Awaited<ReturnType<typeof createSharedRuntimeOwnerWriteStage>> | null> {
+  const plan = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
+    location: options.location,
+    embeddedRoot: await resolveEmbeddedPluginsRoot(),
+    target: createSkillTriggerMaterializationTarget(
+      options.location.platform,
+      options.location.scope,
+      options.repairOptions.cwd,
+      options.env,
+    ),
+    preference: options.preference,
+    command: 'repair',
+    takeoverSharedRuntime: options.repairOptions.takeoverSharedRuntime,
+    targetCount: 1,
+    env: options.env,
+  });
+  if (plan.status !== 'ok') {
+    throw new Error(plan.takeoverRequired.message);
+  }
+  if (!plan.shouldWriteOwner) {
+    return null;
+  }
+  return createSharedRuntimeOwnerWriteStage({
+    recordFile: options.recordFile,
+    recordPath: options.recordPath,
+    env: options.env,
+  });
+}
+
+async function preflightRepairSharedRuntimeOwner(options: {
+  location: PluginLocation;
+  preference: SkillTriggerPreference;
+  repairOptions: RepairCommandOptions;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const plan = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
+    location: options.location,
+    embeddedRoot: await resolveEmbeddedPluginsRoot(),
+    target: createSkillTriggerMaterializationTarget(
+      options.location.platform,
+      options.location.scope,
+      options.repairOptions.cwd,
+      options.env,
+    ),
+    preference: options.preference,
+    command: 'repair',
+    takeoverSharedRuntime: options.repairOptions.takeoverSharedRuntime,
+    targetCount: 1,
+    env: options.env,
+  });
+  if (plan.status !== 'ok') {
+    throw new Error(plan.takeoverRequired.message);
+  }
+}
+
 async function repairInstalledLocation(options: {
   state: CollectedLocationState;
   repairOptions: RepairCommandOptions;
@@ -1340,6 +1465,12 @@ async function repairInstalledLocation(options: {
     ?? recordedSkillTriggerPreference
     ?? inferredRuntimePreference
     ?? 'default';
+  await preflightRepairSharedRuntimeOwner({
+    location,
+    preference: effectiveSkillTriggerPreference,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
@@ -1371,6 +1502,7 @@ async function repairInstalledLocation(options: {
     lifecycle: runtimeStage?.runtimeRef ?? record.record.lifecycle,
     requestedSkillTrigger: effectiveSkillTriggerPreference,
   });
+  const recordPath = state.evidence.installRecord.read.path;
   const stages = [];
   if (runtimeStage) {
     stages.push(runtimeStage);
@@ -1414,12 +1546,23 @@ async function repairInstalledLocation(options: {
     value: nextRecord,
     env: options.env,
   }));
+  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
+    location,
+    recordFile: nextRecord,
+    recordPath,
+    preference: effectiveSkillTriggerPreference,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  if (sharedRuntimeOwnerStage) {
+    stages.push(sharedRuntimeOwnerStage);
+  }
 
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
     recordFile: nextRecord,
-    recordPath: state.evidence.installRecord.read.path,
+    recordPath,
     env: options.env,
     postCommit: nativeMarkerPresent
       ? [createNativeTransactionMarkerDeletePostCommitAction({
@@ -1479,12 +1622,19 @@ async function repairMarkerOnlyLocation(options: {
   if (!nativeSatisfied) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
+  const requestedPreference = options.repairOptions.requestedSkillTrigger ?? 'default';
+  await preflightRepairSharedRuntimeOwner({
+    location,
+    preference: requestedPreference,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
     {
       event: 'install',
-      skillTriggerPreference: options.repairOptions.requestedSkillTrigger ?? 'default',
+      skillTriggerPreference: requestedPreference,
     },
   );
   let nativeInstallReplayed = !nativeSatisfied;
@@ -1529,15 +1679,27 @@ async function repairMarkerOnlyLocation(options: {
     value: recordFile,
     env: options.env,
   }));
+  const recordPath = path.join(
+    getInstallStatePrivateRoot(options.repairOptions.cwd, location, options.env),
+    'records',
+    `${recordFile.recordId}.json`,
+  );
+  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
+    location,
+    recordFile,
+    recordPath,
+    preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  if (sharedRuntimeOwnerStage) {
+    stages.push(sharedRuntimeOwnerStage);
+  }
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
     recordFile,
-    recordPath: path.join(
-      getInstallStatePrivateRoot(options.repairOptions.cwd, location, options.env),
-      'records',
-      `${recordFile.recordId}.json`,
-    ),
+    recordPath,
     env: options.env,
     postCommit: [createNativeTransactionMarkerDeletePostCommitAction({
       pluginNameOrId: location.plugin,
@@ -1618,12 +1780,19 @@ async function adoptExistingLocation(options: {
     options.repairOptions.cwd,
     createCommandExecutionContext(options.runtime),
   );
+  const requestedPreference = options.repairOptions.requestedSkillTrigger ?? 'default';
+  await preflightRepairSharedRuntimeOwner({
+    location,
+    preference: requestedPreference,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
     {
       event: 'install',
-      skillTriggerPreference: options.repairOptions.requestedSkillTrigger ?? 'default',
+      skillTriggerPreference: requestedPreference,
     },
   );
   const lifecycleResult = await maybeExecuteInstallLifecycle({
@@ -1694,6 +1863,17 @@ async function adoptExistingLocation(options: {
     value: recordFile,
     env: options.env,
   }));
+  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
+    location,
+    recordFile,
+    recordPath,
+    preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  if (sharedRuntimeOwnerStage) {
+    stages.push(sharedRuntimeOwnerStage);
+  }
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
@@ -1857,6 +2037,26 @@ export async function repairCommand(
   if (collected.locations.length === 0) {
     throw new Error('没有找到可修复的插件位置。');
   }
+
+  const writableStates = options.adoptExisting
+    ? collected.locations.filter((state) =>
+      state.location.scope === 'project' && state.projection.adoptExistingAvailable
+    )
+    : collected.locations.filter((state) =>
+      state.evidence.installRecord.present ||
+      state.evidence.nativeTransaction.classification === 'markerOnlyInstall'
+    );
+  await assertNoDuplicateInstalls({
+    cwd: options.cwd,
+    locations: writableStates
+      .filter((state) =>
+        shouldEnforceDuplicateInstallPreflight({
+          location: toCommandPluginLocation(state.location),
+          plugin: state.target.currentPlugin ?? state.target.historicalPlugin ?? null,
+        }))
+      .map((state) => toCommandPluginLocation(state.location)),
+    env,
+  });
 
   const locations: RepairLocationPayload[] = [];
   for (const state of collected.locations) {

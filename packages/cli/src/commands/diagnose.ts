@@ -2,6 +2,20 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import type {
+  ConsoleIssueSummary,
+  ConsoleLocationSummary,
+  DiagnosePageModel,
+  DiagnoseSupplementalCommand,
+  PluginConsoleFeatureSummary,
+  PluginConsoleStatus,
+} from './console-model.js';
+import type {
+  CleanupBlockingReason,
+  CleanupLocationSummary,
+  CleanupTargetPayload,
+} from './cleanup.js';
+import { cleanupCommand } from './cleanup.js';
 import type { CommandExecutionContextInput } from './runtime.js';
 import { createCommandExecutionContext } from './runtime.js';
 import { buildCommandCandidates } from './discovery.js';
@@ -19,6 +33,7 @@ import type {
   SkillTriggerPreference,
   StatusCommandOptions,
 } from '../types.js';
+import type { PluginConsoleReasonCode } from '../install-state/types.js';
 import type {
   CurrentCatalogArtifact,
   CurrentCatalogDynamicArtifact,
@@ -238,6 +253,16 @@ export interface StatusJsonLocation {
     required: boolean;
     backupItems: ForceCleanupBackupItem[];
   };
+  supplementalCommands: DiagnoseSupplementalCommand[];
+  cleanup: {
+    evaluated: boolean;
+    available: boolean;
+    forceRequired: boolean;
+    previewCommand?: string;
+    executeCommand?: string;
+    blockingReasons: CleanupBlockingReason[];
+    affectedDependents: CleanupLocationSummary[];
+  };
   deepDiagnose: DeepDiagnoseResult;
 }
 
@@ -254,6 +279,23 @@ export interface DiagnoseJsonPayload {
   generatedAt: string;
   deep: boolean;
   locations: StatusJsonLocation[];
+  pageModels: DiagnosePageModel[];
+}
+
+interface DiagnosedCleanupPath {
+  evaluated: boolean;
+  available: boolean;
+  forceRequired: boolean;
+  previewCommand?: string;
+  executeCommand?: string;
+  blockingReasons: CleanupBlockingReason[];
+  affectedDependents: CleanupLocationSummary[];
+}
+
+interface DiagnoseLocationPageInput {
+  state: CollectedLocationState;
+  cleanup: DiagnosedCleanupPath;
+  supplementalCommands: DiagnoseSupplementalCommand[];
 }
 
 function platformLabel(platform: PlatformName): string {
@@ -274,6 +316,229 @@ function renderLocationArgs(location: PluginLocation, pluginName: string): strin
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function cleanupLocationSummary(location: PluginLocation): CleanupLocationSummary {
+  return {
+    plugin: location.plugin,
+    platform: location.platform,
+    scope: location.scope,
+    ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+  };
+}
+
+function renderCleanupPlanCommand(location: PluginLocation, force = false): string {
+  return `aw cleanup ${renderLocationArgs(location, location.plugin)} --plan${force ? ' --force' : ''}`;
+}
+
+function consoleStatusForLocation(state: CollectedLocationState): PluginConsoleStatus {
+  if (state.projection.kind === 'installed') {
+    return state.projection.upgradeAvailable ? 'upgradeAvailable' : 'installed';
+  }
+  if (state.projection.kind === 'notInstalled') {
+    return 'notInstalled';
+  }
+  return 'abnormal';
+}
+
+function consoleStatusLabel(status: PluginConsoleStatus): string {
+  switch (status) {
+    case 'notInstalled':
+      return '未安装';
+    case 'installed':
+      return '已安装';
+    case 'upgradeAvailable':
+      return '可升级';
+    case 'abnormal':
+      return '异常';
+  }
+}
+
+function consoleReasonLabel(reason: PluginConsoleReasonCode): string {
+  switch (reason) {
+    case 'duplicateInstall':
+      return '重复安装';
+    case 'missingRequiredConfig':
+      return '配置缺失';
+    case 'artifactRefreshFailed':
+      return '内容刷新异常';
+    case 'recordCorrupted':
+      return '记录损坏';
+    case 'nativeIncomplete':
+      return '平台写入未完成';
+    case 'adoptableInstall':
+      return '可认领安装';
+    case 'foreignOwnershipConflict':
+      return '归属冲突';
+    case 'residueDetected':
+      return '残留待处理';
+    case 'dependencyBlocked':
+      return '依赖阻断';
+  }
+}
+
+function consoleReasonSeverity(reason: PluginConsoleReasonCode): ConsoleIssueSummary['severity'] {
+  switch (reason) {
+    case 'adoptableInstall':
+      return 'info';
+    case 'missingRequiredConfig':
+    case 'artifactRefreshFailed':
+    case 'residueDetected':
+    case 'dependencyBlocked':
+      return 'warning';
+    case 'duplicateInstall':
+    case 'recordCorrupted':
+    case 'nativeIncomplete':
+    case 'foreignOwnershipConflict':
+      return 'error';
+  }
+}
+
+function featureSummary(
+  kind: PluginConsoleFeatureSummary['kind'],
+  options: {
+    label?: string;
+    destructive?: boolean;
+    disabledReason?: string;
+    targetSelection?: PluginConsoleFeatureSummary['targetSelection'];
+  } = {},
+): PluginConsoleFeatureSummary {
+  const label = options.label ?? (() => {
+    switch (kind) {
+      case 'install':
+        return '安装';
+      case 'upgrade':
+        return '升级';
+      case 'configure':
+        return '配置';
+      case 'uninstall':
+        return '卸载';
+      case 'repair':
+        return '修复安装';
+      case 'cleanup':
+        return '清理';
+      case 'reinstall':
+        return '重新安装';
+      case 'adoptExisting':
+        return '认领现有安装';
+      case 'takeoverSharedRuntime':
+        return '接管共享触发策略';
+      case 'resolveDuplicateInstall':
+        return '处理重复安装';
+      case 'reapplyConfigRefresh':
+        return '重新应用配置';
+      case 'status':
+        return '查看状态';
+      case 'diagnose':
+        return '查看诊断';
+    }
+  })();
+
+  return {
+    kind,
+    label,
+    targetSelection: options.targetSelection ?? (kind === 'status' || kind === 'diagnose' ? 'none' : 'singleTarget'),
+    ...(options.destructive ? { destructive: true } : {}),
+    ...(options.disabledReason ? { disabledReason: options.disabledReason } : {}),
+  };
+}
+
+function dedupeFeatureSummaries(features: PluginConsoleFeatureSummary[]): PluginConsoleFeatureSummary[] {
+  const deduped = new Map<string, PluginConsoleFeatureSummary>();
+  for (const entry of features) {
+    const key = [
+      entry.kind,
+      entry.label,
+      entry.targetSelection,
+      entry.disabledReason ?? '',
+      entry.destructive === true ? 'yes' : 'no',
+    ].join('\0');
+    if (!deduped.has(key)) {
+      deduped.set(key, entry);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function collectConsoleReasonCodes(state: CollectedLocationState): PluginConsoleReasonCode[] {
+  const reasons = new Set<PluginConsoleReasonCode>();
+  if (state.projection.kind === 'adoptable' || state.projection.adoptExistingAvailable) {
+    reasons.add('adoptableInstall');
+  }
+  if (state.projection.kind === 'residual') {
+    reasons.add('residueDetected');
+  }
+  if (state.projection.kind === 'externallyManaged') {
+    reasons.add(state.projection.cleanupAvailable ? 'residueDetected' : 'foreignOwnershipConflict');
+  }
+  if (state.projection.kind === 'needsRepair') {
+    reasons.add('recordCorrupted');
+  }
+  if (state.projection.sharedRuntimeNeedsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
+    reasons.add('foreignOwnershipConflict');
+  }
+  if (
+    state.projection.nativeTransactionKind === 'recordInstallResidual' ||
+    state.projection.nativeTransactionKind === 'markerOnlyInstall'
+  ) {
+    reasons.add('nativeIncomplete');
+  }
+  if (state.projection.nativeTransactionKind === 'markerOnlyUninstall') {
+    reasons.add('residueDetected');
+  }
+  for (const issue of state.projection.issues) {
+    switch (issue.code) {
+      case 'dynamicRefreshFailed':
+      case 'artifactMissing':
+      case 'staticContentDrift':
+      case 'dynamicContentDrift':
+      case 'dynamicConfigStale':
+      case 'historicalLifecycleUnavailable':
+        reasons.add('artifactRefreshFailed');
+        break;
+      case 'projectSharedIdentityUnavailable':
+      case 'installRecordInvalid':
+        reasons.add('recordCorrupted');
+        break;
+      case 'nativeEvidenceMissing':
+        reasons.add('nativeIncomplete');
+        break;
+      case 'dependencyMissing':
+        reasons.add('dependencyBlocked');
+        break;
+    }
+  }
+  if (state.projection.dependents.length > 0) {
+    reasons.add('dependencyBlocked');
+  }
+  if (hasAwNativeResidueDiscoveryEvidence(state.target) &&
+    (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged')) {
+    reasons.add(state.projection.cleanupAvailable ? 'residueDetected' : 'foreignOwnershipConflict');
+  }
+  return [...reasons];
+}
+
+function shouldEvaluateCleanup(state: CollectedLocationState): boolean {
+  return state.projection.kind === 'needsRepair' ||
+    state.projection.kind === 'adoptable' ||
+    state.projection.kind === 'residual' ||
+    state.projection.kind === 'externallyManaged' ||
+    state.forceCleanup.required ||
+    state.projection.dependents.length > 0 ||
+    hasAwNativeResidueDiscoveryEvidence(state.target);
+}
+
+function createSupplementalCommands(
+  state: CollectedLocationState,
+): DiagnoseSupplementalCommand[] {
+  return state.dependencyIndexActions
+    .filter((action) => action.command)
+    .map((action) => ({
+      command: action.command!,
+      reason: action.type === 'staleProjectReference'
+        ? '清理依赖索引里的过期项目引用。'
+        : '处理无法读取的依赖索引项目引用。',
+    }));
 }
 
 function toLocation(target: InstallStateTarget): PluginLocation {
@@ -1182,6 +1447,7 @@ function createNextSteps(options: {
     steps.push(`aw install ${args}`);
   }
   if (forceCleanup.required) {
+    steps.push(`aw cleanup ${args} --plan --force`);
     steps.push(`aw cleanup ${args} --force`);
   }
   for (const action of dependencyIndexActions) {
@@ -1192,7 +1458,246 @@ function createNextSteps(options: {
   return uniqueStrings(steps);
 }
 
-function toStatusJsonLocation(state: CollectedLocationState): StatusJsonLocation {
+async function evaluateCleanupPath(
+  state: CollectedLocationState,
+  runtime: CommandExecutionContextInput,
+): Promise<DiagnosedCleanupPath> {
+  if (!shouldEvaluateCleanup(state)) {
+    return {
+      evaluated: false,
+      available: false,
+      forceRequired: false,
+      blockingReasons: [],
+      affectedDependents: state.projection.dependents.map((location) => cleanupLocationSummary(location)),
+    };
+  }
+
+  const baseResult = await cleanupCommand(
+    [state.location.plugin],
+    {
+      cwd: state.target.executionCwd,
+      platform: state.location.platform,
+      scope: state.location.scope,
+      plan: true,
+    },
+    runtime,
+  );
+  if (baseResult.payload.dependencyIndex) {
+    return {
+      evaluated: true,
+      available: false,
+      forceRequired: false,
+      blockingReasons: [],
+      affectedDependents: [],
+    };
+  }
+
+  const basePayload = baseResult.payload as CleanupTargetPayload;
+  const forceRequired = basePayload.blockingReasons.some((reason) =>
+    reason.code === 'forceRequired' || reason.code === 'verifiedDependents');
+  if (forceRequired) {
+    const forcePreviewResult = await cleanupCommand(
+      [state.location.plugin],
+      {
+        cwd: state.target.executionCwd,
+        platform: state.location.platform,
+        scope: state.location.scope,
+        plan: true,
+        force: true,
+      },
+      runtime,
+    );
+    const forcePayload = forcePreviewResult.payload as CleanupTargetPayload;
+    return {
+      evaluated: true,
+      available: forcePayload.blockingReasons.length === 0,
+      forceRequired: true,
+      previewCommand: basePayload.recommendedCommand,
+      ...(forcePayload.blockingReasons.length === 0 ? { executeCommand: forcePayload.recommendedCommand } : {}),
+      blockingReasons: forcePayload.blockingReasons,
+      affectedDependents: forcePayload.affectedDependents,
+    };
+  }
+
+  return {
+    evaluated: true,
+    available: basePayload.blockingReasons.length === 0,
+    forceRequired: false,
+    previewCommand: renderCleanupPlanCommand(state.location),
+    ...(basePayload.blockingReasons.length === 0 ? { executeCommand: basePayload.recommendedCommand } : {}),
+    blockingReasons: basePayload.blockingReasons,
+    affectedDependents: basePayload.affectedDependents,
+  };
+}
+
+function cleanupIssueSummary(
+  reason: CleanupBlockingReason,
+  cleanup: DiagnosedCleanupPath,
+): ConsoleIssueSummary {
+  const details = uniqueStrings([
+    ...(reason.suggestedCommand ? [`建议命令：${reason.suggestedCommand}`] : []),
+    ...(cleanup.affectedDependents.length > 0
+      ? [`已知冲突面：${cleanup.affectedDependents.map((dependent) => dependent.plugin).join('、')}`]
+      : []),
+    ...(reason.code === 'foreignOwnershipConflict'
+      ? ['当前现场存在无法安全证明归属的内容，需要人工确认后再处理。']
+      : []),
+  ]);
+
+  return {
+    code: reason.code,
+    label: reason.code,
+    severity: 'error',
+    summary: reason.message,
+    suggestedFeatures: reason.code === 'duplicateInstall'
+      ? [featureSummary('adoptExisting')]
+      : reason.code === 'foreignOwnershipConflict'
+        ? [featureSummary('diagnose')]
+        : [featureSummary('cleanup', {
+            label: cleanup.forceRequired ? '查看清理预览' : '清理',
+            destructive: cleanup.executeCommand !== undefined,
+          })],
+    ...(details.length > 0 ? { details } : {}),
+  };
+}
+
+function diagnoseIssueSummary(
+  state: CollectedLocationState,
+  reason: PluginConsoleReasonCode,
+  cleanup: DiagnosedCleanupPath,
+): ConsoleIssueSummary {
+  const suggestedFeatures: PluginConsoleFeatureSummary[] = [];
+  switch (reason) {
+    case 'adoptableInstall':
+      suggestedFeatures.push(featureSummary('adoptExisting'));
+      break;
+    case 'artifactRefreshFailed':
+      suggestedFeatures.push(featureSummary('repair'));
+      if (state.projection.issues.some((issue) => issue.code === 'dynamicRefreshFailed')) {
+        suggestedFeatures.push(featureSummary('reapplyConfigRefresh'));
+      }
+      break;
+    case 'recordCorrupted':
+    case 'nativeIncomplete':
+      suggestedFeatures.push(featureSummary('repair'));
+      break;
+    case 'duplicateInstall':
+      suggestedFeatures.push(featureSummary('resolveDuplicateInstall', {
+        label: '处理重复安装',
+        destructive: true,
+      }));
+      break;
+    case 'dependencyBlocked':
+      suggestedFeatures.push(featureSummary('repair'));
+      break;
+    case 'missingRequiredConfig':
+      suggestedFeatures.push(featureSummary('configure'));
+      break;
+    case 'foreignOwnershipConflict':
+      if (state.projection.sharedRuntimeNeedsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
+        suggestedFeatures.push(featureSummary('takeoverSharedRuntime'));
+      }
+      break;
+    case 'residueDetected':
+      break;
+  }
+  if (cleanup.evaluated) {
+    suggestedFeatures.push(featureSummary('cleanup', {
+      label: cleanup.forceRequired ? '查看清理预览' : '清理',
+      destructive: cleanup.executeCommand !== undefined,
+      ...(cleanup.available || cleanup.previewCommand
+        ? {}
+        : { disabledReason: cleanup.blockingReasons[0]?.message }),
+    }));
+  }
+
+  return {
+    code: reason,
+    label: consoleReasonLabel(reason),
+    severity: consoleReasonSeverity(reason),
+    summary: state.summary,
+    suggestedFeatures: dedupeFeatureSummaries(suggestedFeatures),
+    ...(state.findings.length > 0 ? { details: state.findings.slice(0, 4) } : {}),
+  };
+}
+
+function createDiagnoseLocationSummary(
+  input: DiagnoseLocationPageInput,
+): ConsoleLocationSummary {
+  const reasonCodes = collectConsoleReasonCodes(input.state);
+  const issues = [
+    ...reasonCodes.map((reason) => diagnoseIssueSummary(input.state, reason, input.cleanup)),
+    ...input.cleanup.blockingReasons.map((reason) => cleanupIssueSummary(reason, input.cleanup)),
+  ];
+  const suggestedFeatures = dedupeFeatureSummaries([
+    ...issues.flatMap((issue) => issue.suggestedFeatures),
+    featureSummary('diagnose'),
+  ]);
+
+  return {
+    platform: input.state.location.platform,
+    scope: input.state.location.scope,
+    ...(input.state.location.projectKey ? { projectKey: input.state.location.projectKey } : {}),
+    label: locationLabel(input.state.location),
+    status: consoleStatusForLocation(input.state),
+    statusLabel: consoleStatusLabel(consoleStatusForLocation(input.state)),
+    ...(issues[0] ? { issue: issues[0] } : {}),
+    issues,
+    suggestedFeatures,
+    nextSteps: uniqueStrings([
+      ...input.state.nextSteps,
+      ...(input.cleanup.previewCommand ? [input.cleanup.previewCommand] : []),
+      ...(input.cleanup.executeCommand ? [input.cleanup.executeCommand] : []),
+    ]),
+    ...(input.state.findings.length > 0 ? { details: input.state.findings } : {}),
+  };
+}
+
+function createDiagnosePageModels(
+  inputs: DiagnoseLocationPageInput[],
+): DiagnosePageModel[] {
+  const byPlugin = new Map<string, DiagnoseLocationPageInput[]>();
+  for (const input of inputs) {
+    byPlugin.set(input.state.location.plugin, [...(byPlugin.get(input.state.location.plugin) ?? []), input]);
+  }
+
+  return [...byPlugin.entries()].map(([pluginName, entries]) => {
+    const locations = entries.map((entry) => createDiagnoseLocationSummary(entry));
+    const issueMap = new Map<string, ConsoleIssueSummary>();
+    for (const issue of locations.flatMap((location) => location.issues)) {
+      const key = [issue.code, issue.summary].join('\0');
+      if (!issueMap.has(key)) {
+        issueMap.set(key, issue);
+      }
+    }
+    const commandMap = new Map<string, DiagnoseSupplementalCommand>();
+    for (const command of entries.flatMap((entry) => entry.supplementalCommands)) {
+      if (!commandMap.has(command.command)) {
+        commandMap.set(command.command, command);
+      }
+    }
+    const issues = [...issueMap.values()];
+    const supplementalCommands = [...commandMap.values()];
+    const conclusion = uniqueStrings(entries.map((entry) => entry.state.summary))[0]
+      ?? '当前没有需要额外处理的诊断结论。';
+
+    return {
+      pluginName,
+      conclusion,
+      issues,
+      locations,
+      supplementalCommands,
+    };
+  });
+}
+
+function toStatusJsonLocation(
+  state: CollectedLocationState,
+  options: {
+    supplementalCommands: DiagnoseSupplementalCommand[];
+    cleanup: DiagnosedCleanupPath;
+  },
+): StatusJsonLocation {
   const suppressOwnerConflict = shouldSuppressSharedOwnerConflict(state.location);
   const staleProjectReferences = state.dependencyIndexActions.filter((action) =>
     action.type === 'staleProjectReference');
@@ -1286,6 +1791,16 @@ function toStatusJsonLocation(state: CollectedLocationState): StatusJsonLocation
     findings: state.findings,
     issues: state.projection.issues,
     forceCleanup: state.forceCleanup,
+    supplementalCommands: options.supplementalCommands,
+    cleanup: {
+      evaluated: options.cleanup.evaluated,
+      available: options.cleanup.available,
+      forceRequired: options.cleanup.forceRequired,
+      ...(options.cleanup.previewCommand ? { previewCommand: options.cleanup.previewCommand } : {}),
+      ...(options.cleanup.executeCommand ? { executeCommand: options.cleanup.executeCommand } : {}),
+      blockingReasons: options.cleanup.blockingReasons,
+      affectedDependents: options.cleanup.affectedDependents,
+    },
     deepDiagnose: state.deepDiagnose,
   };
 }
@@ -1421,14 +1936,29 @@ export async function diagnoseCommand(
 ): Promise<{
   output: string;
   payload: DiagnoseJsonPayload;
+  pageModels: DiagnosePageModel[];
 }> {
   const collected = await collectP7Locations(pluginNames, rawOptions, runtime);
+  const locationInputs = await Promise.all(collected.locations.map(async (state) => {
+    const supplementalCommands = createSupplementalCommands(state);
+    const cleanup = await evaluateCleanupPath(state, runtime);
+    return {
+      state,
+      cleanup,
+      supplementalCommands,
+    } satisfies DiagnoseLocationPageInput;
+  }));
+  const pageModels = createDiagnosePageModels(locationInputs);
   const payload: DiagnoseJsonPayload = {
     ok: true,
     command: 'diagnose',
     generatedAt: new Date().toISOString(),
     deep: collected.options.deep === true,
-    locations: collected.locations.map(toStatusJsonLocation),
+    locations: locationInputs.map((input) => toStatusJsonLocation(input.state, {
+      supplementalCommands: input.supplementalCommands,
+      cleanup: input.cleanup,
+    })),
+    pageModels,
   };
   const output = collected.options.json
     ? JSON.stringify(payload, null, 2)
@@ -1438,5 +1968,6 @@ export async function diagnoseCommand(
   return {
     output,
     payload,
+    pageModels,
   };
 }

@@ -180,6 +180,10 @@ import {
 import { assertCodexProjectInstallableTargets } from './codex-project-installability.js';
 import { preflightCodexProjectWriteSafety } from './codex-project-safety.js';
 import {
+  assertNoDuplicateInstalls,
+  shouldEnforceDuplicateInstallPreflight,
+} from './scope-exclusivity-preflight.js';
+import {
   createInstallSource,
   markScopeRecordExplicitlyRequested,
   upsertDependencyEdges,
@@ -3497,6 +3501,17 @@ export async function installCommand(
       targets: plannerTargets,
     });
     installPlan = graphPlan;
+    await assertNoDuplicateInstalls({
+      cwd: options.cwd,
+      locations: graphPlan.preflight.scopeExclusivity.filter((location) =>
+        shouldEnforceDuplicateInstallPreflight({
+          location,
+          plugin: targetByPlugin.get(location.plugin)?.currentPlugin
+            ?? targetByPlugin.get(location.plugin)?.plugin
+            ?? null,
+        })),
+      env,
+    });
     const runtimeWritableMarketplace = requiresRuntimeWritableMarketplaceForGraphNodes(
       graphPlan.writeOrder,
       targetByPlugin,
@@ -3595,7 +3610,10 @@ export async function installCommand(
         await uninstallTargetsOnPlatforms(
           [target],
           [node.location.platform],
-          createScopedInstallOptions(options, node.location),
+          {
+            ...createScopedInstallOptions(options, node.location),
+            removeConfig: false,
+          },
           {
             ...context,
             adapters,

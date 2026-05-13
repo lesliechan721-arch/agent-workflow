@@ -22,6 +22,23 @@ export interface PluginLocation {
   projectKey?: string | null;
 }
 
+export type PluginConsoleStatus =
+  | 'notInstalled'
+  | 'installed'
+  | 'upgradeAvailable'
+  | 'abnormal';
+
+export type PluginConsoleReasonCode =
+  | 'duplicateInstall'
+  | 'missingRequiredConfig'
+  | 'artifactRefreshFailed'
+  | 'recordCorrupted'
+  | 'nativeIncomplete'
+  | 'adoptableInstall'
+  | 'foreignOwnershipConflict'
+  | 'residueDetected'
+  | 'dependencyBlocked';
+
 export interface HistoricalLifecycleRuntimeRef {
   runtimeRoot: string;
   bundleRoot: string;

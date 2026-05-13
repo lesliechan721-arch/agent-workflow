@@ -3,24 +3,38 @@ import type {
   CliConsoleView,
   CliExecutionContext,
   CliPromptChoice,
+  CliPromptAction,
   CliPromptResult,
 } from './runtime.js';
 import {
   createInstallWizardDecision,
+  planConsoleGraphWriteTargets,
   type ConsoleRequiredConfigPrompt,
   type ConsoleWriteWizardOperation,
 } from './console-wizard.js';
 import {
-  type PluginConsoleAction,
-  type PluginConsoleItem,
+  type DiagnosePageModel,
+  type DiagnoseSupplementalCommand,
+  type ConsoleControllerItem,
+  createConsolePluginDetailPageModel,
+  createPluginConsoleExecutableActions,
+  type PluginConsoleExecutableAction,
+  type PluginConsoleFeatureKind,
   type PluginConsoleLocation,
 } from './console-model.js';
 import {
   preparePluginTargetsForCommand,
   type ResolvedPluginTarget,
 } from './common.js';
+import { diagnoseCommand } from './diagnose.js';
 import { installCommand } from './install.js';
-import { statusCommand } from './status.js';
+import { cleanupCommand } from './cleanup.js';
+import { reinstallCommand } from './reinstall.js';
+import { repairCommand } from './repair.js';
+import {
+  loadConsoleItems as loadConsoleControllerItems,
+  statusCommand,
+} from './status.js';
 import { uninstallCommand } from './uninstall.js';
 import { upgradeCommand } from './upgrade.js';
 import { formatWarnings } from '../output/reporter.js';
@@ -28,9 +42,11 @@ import { renderCommandReceipt } from '../output/command-receipt.js';
 import { resolveSkillTriggerApplicabilityForPlugin } from '../utils/skill-trigger-preferences.js';
 import {
   coercePluginConfigValue,
+  createPluginConfigSchemaIdentity,
   createPluginConfigFormModel,
   readPluginConfigStore,
   resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
   type PluginConfigFormFieldModel,
   type PluginConfigValue,
 } from '../utils/plugin-config.js';
@@ -38,6 +54,11 @@ import { applyPluginConfigWrite } from '../utils/plugin-config-write.js';
 import { reapplyConfigRefresh } from '../utils/artifact-refresh.js';
 
 type ConsoleNavigation = 'back' | 'reload' | 'exit';
+
+interface ConsoleHomeState {
+  items: ConsoleControllerItem[];
+  banner?: string;
+}
 
 interface ScopedFieldState {
   configured: boolean;
@@ -51,6 +72,28 @@ interface ConfigSubmission {
   removeKeys: string[];
 }
 
+interface ConsoleResultPageState {
+  pluginName: string;
+  title: string;
+  lines: string[];
+  item?: ConsoleControllerItem;
+  focusLocations?: PluginConsoleLocation[];
+}
+
+interface ExecutableTargetSelection {
+  action: PluginConsoleExecutableAction;
+  location: PluginConsoleLocation;
+}
+
+interface ConfigWriteOutcome {
+  prompt: ConsoleRequiredConfigPrompt;
+  scope: Scope;
+  updatedKeys: string[];
+  removedKeys: string[];
+  artifactRefreshStatus: 'succeeded' | 'failed' | 'skipped';
+  artifactRefreshError?: string;
+}
+
 function renderView(context: CliExecutionContext, title: string, lines: string[]): Promise<unknown> {
   const view: CliConsoleView = { title, lines };
   return Promise.resolve(context.consoleDriver.render(view));
@@ -61,7 +104,14 @@ function joinNonEmpty(lines: Array<string | undefined>): string[] {
 }
 
 function promptCancelled<T>(result: CliPromptResult<T>): boolean {
-  return result.cancelled || result.value === undefined;
+  return result.action !== 'select' || result.value === undefined;
+}
+
+function hasLegacyPromptValue<T>(
+  result: CliPromptResult<T>,
+  legacyValue: string,
+): boolean {
+  return result.action === 'select' && result.value === legacyValue;
 }
 
 async function selectValue(
@@ -72,12 +122,33 @@ async function selectValue(
     defaultValue?: string;
     pageSize?: number;
   },
-): Promise<string | null> {
-  const result = await context.prompt.select!({
+): Promise<CliPromptResult<string>> {
+  return context.prompt.select!({
     ...options,
     pageSize: options.pageSize ?? Math.min(Math.max(options.choices.length, 6), 12),
   });
-  return promptCancelled(result) ? null : result.value!;
+}
+
+function isPromptAction<T>(
+  result: CliPromptResult<T>,
+  action: CliPromptAction,
+): boolean {
+  if (result.action === action) {
+    return true;
+  }
+  if (action === 'back') {
+    return hasLegacyPromptValue(result, '__back');
+  }
+  if (action === 'exit') {
+    return hasLegacyPromptValue(result, '__exit');
+  }
+  return false;
+}
+
+function selectedPromptValue<T>(result: CliPromptResult<T>): T | null {
+  return promptCancelled(result) || isPromptAction(result, 'back') || isPromptAction(result, 'exit')
+    ? null
+    : result.value!;
 }
 
 async function confirmValue(
@@ -89,64 +160,129 @@ async function confirmValue(
   return !promptCancelled(result) && result.value === true;
 }
 
-function buildHomeChoices(items: PluginConsoleItem[]): CliPromptChoice[] {
+function buildHomeChoices(items: ConsoleControllerItem[]): CliPromptChoice[] {
   return [
     ...items.map((item) => ({
-      value: item.pluginName,
-      label: `${item.title} · ${item.statusLabel}`,
-      description: `${item.locationSummary}${item.description ? ` · ${item.description}` : ''}`,
-      short: item.title,
+      value: item.summary.pluginName,
+      label: `${item.pageItem.statusIcon} ${item.summary.title} · ${item.summary.statusLabel}`,
+      description: joinNonEmpty([
+        item.pageItem.platformBadges.map((badge) => badge.label).join(' / '),
+        item.summary.locationSummary,
+        item.pageItem.primaryActionLabel ? `主操作：${item.pageItem.primaryActionLabel}` : undefined,
+        item.pageItem.summaryText,
+      ]).join(' · '),
+      short: item.summary.title,
     })),
-    { value: '__exit', label: '退出' },
+    { value: 'home-exit', label: '退出', role: 'exit' },
   ];
 }
 
-function buildLocationChoices(item: PluginConsoleItem): CliPromptChoice[] {
+function buildFeatureChoices(item: ConsoleControllerItem): CliPromptChoice[] {
   return [
-    ...item.locations.map((location) => ({
-      value: `${location.platform}:${location.scope}:${location.projectKey ?? '-'}`,
-      label: `${location.locationLabel} · ${location.statusLabel}`,
-      description: location.issueSummary ?? location.nextSteps[0] ?? '',
-      short: location.locationLabel,
+    ...item.summary.features.map((feature) => ({
+      value: feature.kind,
+      label: feature.label,
+      description: feature.disabledReason
+        ?? (feature.targetSelection === 'multiTargetAllowed'
+          ? '可继续选择单个平台或所有平台'
+          : feature.targetSelection === 'singleTargetOnly'
+            ? '继续选择目标位置'
+            : undefined),
+      short: feature.label,
+      disabled: feature.disabledReason,
     })),
-    { value: '__back', label: '返回' },
+    { value: 'feature-back', label: '返回', role: 'back' },
+    { value: 'feature-exit', label: '退出', role: 'exit' },
   ];
 }
 
-function buildActionChoices(location: PluginConsoleLocation): CliPromptChoice[] {
+function buildTargetChoiceValue(location: Pick<PluginConsoleLocation, 'platform' | 'scope' | 'projectKey'>): string {
+  return `${location.platform}:${location.scope}:${location.projectKey ?? '-'}`;
+}
+
+function buildTargetChoices(
+  item: ConsoleControllerItem,
+  featureKind: PluginConsoleFeatureKind,
+): CliPromptChoice[] {
+  const detail = createConsolePluginDetailPageModel(item, featureKind);
+  const platforms = [...new Set(detail.targetOptions
+    .filter((option) => !option.disabledReason)
+    .map((option) => option.platform))];
+  const feature = item.summary.features.find((entry) => entry.kind === featureKind);
+
   return [
-    ...location.actions.map((action) => ({
-      value: action.kind,
-      label: action.label,
-      description: action.disabledReason ?? action.command?.join(' ') ?? '',
-      short: action.label,
-      disabled: action.disabledReason,
+    ...(feature?.targetSelection === 'multiTargetAllowed' && platforms.length > 1
+      ? [{
+          value: '__all_platforms',
+          label: '所有平台',
+          description: platforms.map((platform) => platform === 'codex' ? 'Codex' : 'Claude Code').join('、'),
+          short: '所有平台',
+        } satisfies CliPromptChoice]
+      : []),
+    ...detail.targetOptions.map((option) => ({
+      value: buildTargetChoiceValue(option),
+      label: `${option.label} · ${option.status ?? 'unknown'}`,
+      description: option.disabledReason,
+      short: option.label,
+      disabled: option.disabledReason,
     })),
-    { value: '__back', label: '返回' },
+    { value: 'target-back', label: '返回', role: 'back' },
   ];
 }
 
 function findLocation(
-  item: PluginConsoleItem,
+  item: ConsoleControllerItem,
   value: string,
 ): PluginConsoleLocation | undefined {
-  return item.locations.find((location) =>
-    `${location.platform}:${location.scope}:${location.projectKey ?? '-'}` === value,
-  );
+  return item.locations.find((location) => buildTargetChoiceValue(location) === value);
 }
 
-function findAction(
-  location: PluginConsoleLocation,
-  value: string,
-): PluginConsoleAction | undefined {
-  return location.actions.find((action) => action.kind === value);
+function buildHomeLines(state: ConsoleHomeState): string[] {
+  return joinNonEmpty([
+    state.banner,
+    ...(state.banner ? [''] : []),
+    ...state.items.flatMap((item) => [
+      `${item.pageItem.statusIcon} ${item.summary.title} · ${item.summary.statusLabel}`,
+      `  ${joinNonEmpty([
+        item.pageItem.platformBadges.map((badge) => badge.label).join(' / '),
+        item.summary.locationSummary,
+        item.pageItem.primaryActionLabel ? `主操作：${item.pageItem.primaryActionLabel}` : undefined,
+        item.pageItem.summaryText,
+      ]).join(' · ')}`,
+    ]),
+  ]);
 }
 
-async function loadConsoleItems(context: CliExecutionContext): Promise<PluginConsoleItem[]> {
-  const result = await statusCommand([], {
+async function loadConsoleHomeState(context: CliExecutionContext): Promise<ConsoleHomeState> {
+  const base = await statusCommand([], {
     cwd: context.cwd,
   }, context);
-  return result.consoleItems;
+  const items = await loadConsoleControllerItems({
+    cwd: context.cwd,
+    includeCatalogOnly: true,
+  }, context);
+  const catalogUnavailable = base.matrix.cells.length > 0 &&
+    base.matrix.cells.every((cell) => cell.report?.currentCatalog?.available !== true);
+  return {
+    items,
+    ...(catalogUnavailable
+      ? { banner: '插件目录不可用，仅显示已发现安装；恢复后可安装或升级。' }
+      : {}),
+  };
+}
+
+function filterResultDiagnoseTargets(
+  item: ConsoleControllerItem,
+  focusLocations: PluginConsoleLocation[] = [],
+): PluginConsoleLocation[] {
+  const focusKeys = new Set(focusLocations.map((location) => buildTargetChoiceValue(location)));
+  const scopedLocations = focusKeys.size > 0
+    ? item.locations.filter((location) => focusKeys.has(buildTargetChoiceValue(location)))
+    : item.locations;
+  const diagnoseable = scopedLocations.filter((location) => location.status === 'abnormal');
+  return diagnoseable.length > 0
+    ? diagnoseable
+    : item.locations.filter((location) => location.status === 'abnormal');
 }
 
 function renderResultWithWarnings(
@@ -161,6 +297,10 @@ function renderResultWithWarnings(
 
 function configScopeLabel(scope: Scope): string {
   return scope === 'user' ? '个人' : '当前项目';
+}
+
+function platformLabel(platform: PluginConsoleLocation['platform']): string {
+  return platform === 'codex' ? 'Codex' : 'Claude Code';
 }
 
 function artifactRefreshStatusLabel(status: 'succeeded' | 'failed' | 'skipped'): string {
@@ -181,8 +321,8 @@ function artifactRefreshLine(status: 'succeeded' | 'failed' | 'skipped'): string
 function repairInstallOperation(location: PluginConsoleLocation): ConsoleWriteWizardOperation {
   if (
     location.status === 'upgradeAvailable' ||
-    location.reasonCodes.includes('artifactDrift') ||
-    location.reasonCodes.includes('catalogCapabilityChanged')
+    location.reasonCodes.includes('artifactRefreshFailed') ||
+    location.reasonCodes.includes('recordCorrupted')
   ) {
     return 'upgrade';
   }
@@ -208,24 +348,92 @@ function commandResultLines(
   );
 }
 
-function renderItemLines(item: PluginConsoleItem): string[] {
+function renderDetailLines(item: ConsoleControllerItem): string[] {
+  const detail = createConsolePluginDetailPageModel(item);
   return joinNonEmpty([
-    `状态：${item.statusLabel}`,
-    `位置：${item.locationSummary}`,
-    item.description ? `说明：${item.description}` : undefined,
-    item.issueSummary ? `原因：${item.issueSummary}` : undefined,
-    ...(item.detailHints ?? []).map((hint) => `- ${hint}`),
-    ...(item.nextSteps.length > 0 ? ['', '下一步：', ...item.nextSteps.map((step) => `- ${step}`)] : []),
+    `状态：${detail.summary.statusLabel}`,
+    `安装摘要：${detail.installationSummary}`,
+    detail.summary.version ? `版本：${detail.summary.version}` : undefined,
+    detail.summary.description ? `说明：${detail.summary.description}` : undefined,
+    detail.summary.issueSummary ? `主要原因：${detail.summary.issueSummary}` : undefined,
+    detail.recommendation ? `建议：${detail.recommendation}` : undefined,
   ]);
 }
 
-function renderLocationLines(location: PluginConsoleLocation): string[] {
+function renderSupplementalCommandLines(commands: DiagnoseSupplementalCommand[]): string[] {
+  if (commands.length === 0) {
+    return [];
+  }
+
+  return [
+    '',
+    '补充命令：',
+    ...commands.flatMap((entry) => [
+      `- ${entry.command}`,
+      `  ${entry.reason}`,
+    ]),
+  ];
+}
+
+function renderStatusPageLines(
+  item: ConsoleControllerItem,
+  locationLabel?: string,
+): string[] {
+  const locations = item.statusPage.locations
+    .filter((location) => !locationLabel || location.label === locationLabel);
+  const scopedLocations = locations.length > 0 ? locations : item.statusPage.locations;
+
   return joinNonEmpty([
-    `状态：${location.statusLabel}`,
-    `位置：${location.locationLabel}`,
-    location.issueSummary ? `原因：${location.issueSummary}` : undefined,
-    ...(location.detailHints ?? []).map((hint) => `- ${hint}`),
-    ...(location.nextSteps.length > 0 ? ['', '下一步：', ...location.nextSteps.map((step) => `- ${step}`)] : []),
+    `状态：${item.statusPage.summary.statusLabel}`,
+    item.statusPage.summary.issueSummary ? `主要原因：${item.statusPage.summary.issueSummary}` : undefined,
+    ...(scopedLocations.length > 0
+      ? [
+          '',
+          '位置：',
+          ...scopedLocations.flatMap((location) => [
+            `- ${location.label} · ${location.statusLabel}`,
+            ...(location.issue ? [`  问题：${location.issue.summary}`] : []),
+            ...(location.nextSteps.length > 0 ? [`  下一步：${location.nextSteps.join('；')}`] : []),
+          ]),
+        ]
+      : []),
+  ]);
+}
+
+function renderDiagnosePageLines(
+  page: DiagnosePageModel,
+  locationLabel?: string,
+  fallbackCommand?: string[],
+): string[] {
+  const locations = page.locations
+    .filter((location) => !locationLabel || location.label === locationLabel);
+  const scopedLocations = locations.length > 0 ? locations : page.locations;
+  const primaryIssue = scopedLocations.flatMap((location) => location.issues)[0] ?? page.issues[0];
+
+  return joinNonEmpty([
+    `结论：${page.conclusion}`,
+    primaryIssue ? `主要问题：${primaryIssue.summary}` : undefined,
+    ...(scopedLocations.length > 0
+      ? [
+          '',
+          '位置：',
+          ...scopedLocations.flatMap((location) => [
+            `- ${location.label} · ${location.statusLabel}`,
+            ...(location.issue ? [`  问题：${location.issue.summary}`] : []),
+            ...(location.suggestedFeatures.length > 0
+              ? [`  建议功能：${location.suggestedFeatures.map((feature) => feature.label).join('、')}`]
+              : []),
+            ...(location.nextSteps.length > 0
+              ? [`  下一步：${location.nextSteps.join('；')}`]
+              : []),
+          ]),
+        ]
+      : []),
+    ...(primaryIssue?.details?.length
+      ? ['', '说明：', ...primaryIssue.details.map((detail) => `- ${detail}`)]
+      : []),
+    ...renderSupplementalCommandLines(page.supplementalCommands),
+    ...(fallbackCommand ? ['', `当前入口命令：${fallbackCommand.join(' ')}`] : []),
   ]);
 }
 
@@ -248,14 +456,32 @@ async function selectSkillTrigger(
       { value: 'default', label: '默认' },
       { value: 'manual', label: '手动' },
       { value: 'auto', label: '自动' },
-      { value: '__back', label: '返回' },
+      { value: 'skill-trigger-back', label: '返回', role: 'back' },
     ],
     defaultValue: 'default',
   });
-  if (value === null || value === '__back') {
+  if (isPromptAction(value, 'back') || isPromptAction(value, 'cancel')) {
     return null;
   }
-  return value as SkillTriggerPreference;
+  return selectedPromptValue(value) as SkillTriggerPreference;
+}
+
+async function selectSkillTriggerForTargets(
+  context: CliExecutionContext,
+  targets: Array<{ target: ResolvedPluginTarget; platform: PluginConsoleLocation['platform'] }>,
+): Promise<SkillTriggerPreference | undefined> {
+  for (const entry of targets) {
+    const applicability = await resolveSkillTriggerApplicabilityForPlugin(
+      entry.target.currentPlugin ?? entry.target.plugin,
+      entry.platform,
+    );
+    if (applicability !== 'overridable') {
+      continue;
+    }
+    const selected = await selectSkillTrigger(context, entry.target, entry.platform);
+    return selected ?? undefined;
+  }
+  return undefined;
 }
 
 async function promptStringField(
@@ -308,7 +534,11 @@ async function promptFieldValue(
         ? String(field.enumValues?.[0] ?? '')
         : '__skip',
     });
-    if (selected === null || (!required && selected === '__skip')) {
+    if (promptCancelled(selected)) {
+      return null;
+    }
+    const value = selectedPromptValue(selected);
+    if (value === null || (!required && value === '__skip')) {
       return null;
     }
     return coercePluginConfigValue({
@@ -323,7 +553,7 @@ async function promptFieldValue(
         min: field.min,
         max: field.max,
       },
-      value: selected,
+      value,
       projectRoot,
     });
   }
@@ -338,7 +568,11 @@ async function promptFieldValue(
       ],
       defaultValue: required ? 'true' : '__skip',
     });
-    if (selected === null || (!required && selected === '__skip')) {
+    if (promptCancelled(selected)) {
+      return null;
+    }
+    const value = selectedPromptValue(selected);
+    if (value === null || (!required && value === '__skip')) {
       return null;
     }
     return coercePluginConfigValue({
@@ -352,7 +586,7 @@ async function promptFieldValue(
         min: field.min,
         max: field.max,
       },
-      value: selected === 'true',
+      value: value === 'true',
       projectRoot,
     });
   }
@@ -465,16 +699,17 @@ async function promptFullConfigSubmission(
         choices: [
           { value: 'user', label: '个人' },
           { value: 'project', label: '当前项目' },
-          { value: '__back', label: '返回' },
+          { value: 'config-scope-back', label: '返回', role: 'back' },
         ],
         defaultValue: form.initialScope,
       })
     : form.initialScope;
-  if (chosenScope === null || chosenScope === '__back') {
+  if (typeof chosenScope !== 'string' && promptCancelled(chosenScope)) {
     return null;
   }
-
-  const scope = chosenScope as Scope;
+  const scope = typeof chosenScope === 'string'
+    ? chosenScope as Scope
+    : selectedPromptValue(chosenScope) as Scope;
   const fieldStates = await buildScopedFieldStates({
     target,
     scope,
@@ -508,7 +743,7 @@ async function promptFullConfigSubmission(
             },
             { value: 'update', label: '更新' },
             ...(!field.required ? [{ value: 'clear', label: '清空' }] : []),
-            { value: '__back', label: '返回' },
+            { value: 'config-field-back', label: '返回', role: 'back' },
           ],
           defaultValue: 'keep',
         })
@@ -517,17 +752,18 @@ async function promptFullConfigSubmission(
           choices: [
             { value: 'skip', label: '跳过' },
             { value: 'set', label: '设置' },
-            { value: '__back', label: '返回' },
+            { value: 'config-field-back', label: '返回', role: 'back' },
           ],
           defaultValue: 'skip',
         });
-    if (action === null || action === '__back') {
+    if (promptCancelled(action)) {
       return null;
     }
-    if (action === 'keep' || action === 'skip') {
+    const resolvedAction = selectedPromptValue(action);
+    if (resolvedAction === 'keep' || resolvedAction === 'skip') {
       continue;
     }
-    if (action === 'clear') {
+    if (resolvedAction === 'clear') {
       removeKeys.push(field.key);
       continue;
     }
@@ -551,22 +787,7 @@ async function promptRequiredConfigSubmission(
   prompt: ConsoleRequiredConfigPrompt,
 ): Promise<ConfigSubmission | null> {
   const form = prompt.form;
-  const chosenScope = form.allowedScopes.length > 1
-    ? await selectValue(context, {
-        message: `选择 ${prompt.pluginName} 配置写入位置`,
-        choices: [
-          { value: 'user', label: '个人' },
-          { value: 'project', label: '当前项目' },
-          { value: '__back', label: '返回' },
-        ],
-        defaultValue: form.initialScope,
-      })
-    : form.initialScope;
-  if (chosenScope === null || chosenScope === '__back') {
-    return null;
-  }
-
-  const scope = chosenScope as Scope;
+  const scope = prompt.scope;
   const updates: Record<string, PluginConfigValue> = {};
   for (const field of form.fields.filter((entry) => form.requiredKeys.includes(entry.key))) {
     const value = await promptFieldValue(context, prompt.effective.projectRoot, field, true);
@@ -583,15 +804,148 @@ async function promptRequiredConfigSubmission(
   };
 }
 
-async function runConfigWizardAction(
+function hasHomogeneousScopeOptions(
+  groupedSelections: Map<PluginConsoleLocation['platform'], ExecutableTargetSelection[]>,
+): boolean {
+  const signatures = [...groupedSelections.values()].map((entries) =>
+    entries
+      .map((entry) => entry.location.scope)
+      .sort()
+      .join(','),
+  );
+  return signatures.length > 0 && new Set(signatures).size === 1;
+}
+
+async function selectTargetsForAllPlatforms(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
-  location: PluginConsoleLocation,
-): Promise<boolean> {
+  item: ConsoleControllerItem,
+  featureKind: PluginConsoleFeatureKind,
+  selections: ExecutableTargetSelection[],
+): Promise<ExecutableTargetSelection[] | null> {
+  const byPlatform = new Map<PluginConsoleLocation['platform'], ExecutableTargetSelection[]>();
+  for (const selection of selections) {
+    const bucket = byPlatform.get(selection.location.platform) ?? [];
+    bucket.push(selection);
+    byPlatform.set(selection.location.platform, bucket);
+  }
+
+  if (hasHomogeneousScopeOptions(byPlatform)) {
+    const firstPlatformEntries = [...byPlatform.values()][0] ?? [];
+    const scopeValue = await selectValue(context, {
+      message: '选择位置',
+      choices: [
+        ...firstPlatformEntries.map((entry) => ({
+          value: entry.location.scope,
+          label: configScopeLabel(entry.location.scope),
+        })),
+        { value: 'target-scope-back', label: '返回', role: 'back' },
+      ],
+      defaultValue: firstPlatformEntries[0]?.location.scope,
+    });
+    if (promptCancelled(scopeValue)) {
+      return null;
+    }
+    const resolvedScopeValue = selectedPromptValue(scopeValue);
+    return selections.filter((entry) => entry.location.scope === resolvedScopeValue);
+  }
+
+  const resolved: ExecutableTargetSelection[] = [];
+  for (const platform of [...byPlatform.keys()].sort()) {
+    const platformEntries = byPlatform.get(platform) ?? [];
+    const selectedValue = await selectValue(context, {
+      message: `选择 ${platformLabel(platform)} 位置`,
+      choices: [
+        ...platformEntries.map((entry) => ({
+          value: buildTargetChoiceValue(entry.location),
+          label: entry.location.locationLabel,
+        })),
+        { value: '__skip', label: '跳过此平台' },
+        { value: 'platform-location-back', label: '返回', role: 'back' },
+      ],
+      defaultValue: buildTargetChoiceValue(platformEntries[0]!.location),
+    });
+    if (promptCancelled(selectedValue)) {
+      return null;
+    }
+    const resolvedSelectedValue = selectedPromptValue(selectedValue);
+    if (resolvedSelectedValue === '__skip') {
+      continue;
+    }
+    const picked = platformEntries.find((entry) => buildTargetChoiceValue(entry.location) === resolvedSelectedValue);
+    if (picked) {
+      resolved.push(picked);
+    }
+  }
+
+  if (resolved.length === 0) {
+    await renderView(context, `${item.summary.title} · ${featureKind}`, ['本次没有选中任何平台。']);
+    return null;
+  }
+  return resolved;
+}
+
+async function selectExecutableTargets(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  featureKind: PluginConsoleFeatureKind,
+  enabledActions: PluginConsoleExecutableAction[],
+): Promise<ExecutableTargetSelection[] | null> {
+  const feature = item.summary.features.find((entry) => entry.kind === featureKind);
+  if (feature?.targetSelection === 'none') {
+    return [];
+  }
+
+  if (enabledActions.length === 1) {
+    const action = enabledActions[0]!;
+    const location = action.target
+      ? findLocation(item, buildTargetChoiceValue(action.target))
+      : undefined;
+    return location ? [{ action, location }] : null;
+  }
+
+  const targetValue = await selectValue(context, {
+    message: '选择目标',
+    choices: buildTargetChoices(item, featureKind),
+    defaultValue: enabledActions[0]?.target
+      ? buildTargetChoiceValue(enabledActions[0].target)
+      : undefined,
+  });
+  if (promptCancelled(targetValue)) {
+    return null;
+  }
+  const resolvedTargetValue = selectedPromptValue(targetValue);
+  if (resolvedTargetValue === '__all_platforms') {
+    const selections = enabledActions.flatMap((action) => {
+      if (!action.target) {
+        return [];
+      }
+      const location = findLocation(item, buildTargetChoiceValue(action.target));
+      return location ? [{ action, location }] : [];
+    });
+    return selectTargetsForAllPlatforms(context, item, featureKind, selections);
+  }
+
+  const action = enabledActions.find((entry) =>
+    entry.target && buildTargetChoiceValue(entry.target) === resolvedTargetValue,
+  );
+  if (!action) {
+    return null;
+  }
+  const location = action.target
+    ? findLocation(item, buildTargetChoiceValue(action.target))
+    : undefined;
+  return location ? [{ action, location }] : null;
+}
+
+async function buildConfigPromptForSelection(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selection: ExecutableTargetSelection,
+): Promise<ConsoleRequiredConfigPrompt | null> {
   const targets = await preparePluginTargetsForCommand(
     context.cwd,
-    location.scope,
-    [item.pluginName],
+    selection.location.scope,
+    [item.summary.pluginName],
     {
       catalogMode: 'readOnly',
       allowHistoricalFallback: true,
@@ -600,158 +954,165 @@ async function runConfigWizardAction(
   );
   const target = targets.targets[0];
   if (!target) {
-    throw new Error(`无法加载 ${item.pluginName} 的当前 catalog 信息。`);
+    throw new Error(`无法加载 ${item.summary.pluginName} 的当前 catalog 信息。`);
   }
-
-  const submission = await promptFullConfigSubmission(context, target, location.scope);
-  if (!submission) {
-    return false;
-  }
-  const receipt = await applyPluginConfigWrite({
-    plugin: target.currentPlugin ?? target.plugin,
-    pluginName: item.pluginName,
-    scope: submission.scope,
+  const plugin = target.currentPlugin ?? target.plugin;
+  const effective = await resolveEffectivePluginConfig({
+    pluginName: target.pluginName,
+    manifest: plugin.manifest,
     cwd: context.cwd,
     env: context.env,
-    request: {
-      updates: submission.updates,
-      removeKeys: submission.removeKeys,
-    },
   });
-  const lines = [
-    `已保存 ${item.pluginName} 的${configScopeLabel(submission.scope)}配置。`,
-    `更新字段：${receipt.updatedKeys.length > 0 ? receipt.updatedKeys.join('、') : '无'}`,
-    `清空字段：${receipt.removedKeys.length > 0 ? receipt.removedKeys.join('、') : '无'}`,
-    artifactRefreshLine(receipt.artifactRefresh.status),
-  ];
-  if (receipt.artifactRefresh.status === 'failed' && receipt.artifactRefresh.error) {
-    lines.push(`失败原因：${receipt.artifactRefresh.error}`);
-  }
-  await renderView(context, `${item.title} 配置`, lines);
-  return true;
+  const form = createPluginConfigFormModel({
+    pluginName: target.pluginName,
+    manifest: plugin.manifest,
+    effective,
+    initialScope: selection.location.scope,
+    allowedScopes: [selection.location.scope],
+  });
+
+  return {
+    pluginName: target.pluginName,
+    scope: selection.location.scope,
+    storePath: resolvePluginConfigStorePath({
+      pluginName: target.pluginName,
+      scope: selection.location.scope,
+      cwd: context.cwd,
+      env: context.env,
+    }),
+    formIdentity: `${createPluginConfigSchemaIdentity(plugin.manifest)}\0${form.fields.map((field) => field.key).join(',')}`,
+    schemaSourceIdentity: createPluginConfigSchemaIdentity(plugin.manifest),
+    manifest: plugin.manifest,
+    effective,
+    form,
+    targets: [{
+      target,
+      platform: selection.location.platform,
+      scope: selection.location.scope,
+      ...(selection.location.projectKey ? { projectKey: selection.location.projectKey } : {}),
+      requested: true,
+    }],
+  };
 }
 
-async function runInstallLikeAction(options: {
-  context: CliExecutionContext;
-  item: PluginConsoleItem;
-  defaultLocation: PluginConsoleLocation;
-  intent: 'install' | 'upgrade' | 'repairInstall';
-}): Promise<boolean> {
-  const { context, item, defaultLocation, intent } = options;
-  const installableLocations = item.locations.filter((location) =>
-    location.actions.some((action) =>
-      action.kind === 'openInstallWizard' ||
-      action.kind === 'runUpgrade' ||
-      action.kind === 'repairInstall',
-    ),
-  );
-  const platformValue = installableLocations.length > 1
-    ? await selectValue(context, {
-        message: '选择目标平台',
-        choices: [
-          ...Array.from(new Set(installableLocations.map((location) => location.platform))).map((platform) => ({
-            value: platform,
-            label: platform === 'codex' ? 'Codex' : 'Claude Code',
-          })),
-          { value: '__back', label: '返回' },
-        ],
-        defaultValue: defaultLocation.platform,
-      })
-    : defaultLocation.platform;
-  if (platformValue === null || platformValue === '__back') {
-    return false;
-  }
-
-  const scopedLocations = installableLocations.filter((location) => location.platform === platformValue);
-  const locationValue = scopedLocations.length > 1
-    ? await selectValue(context, {
-        message: '选择安装位置',
-        choices: [
-          ...scopedLocations.map((location) => ({
-            value: `${location.platform}:${location.scope}:${location.projectKey ?? '-'}`,
-            label: location.scope === 'user' ? '个人' : '当前项目',
-            description: location.issueSummary ?? '',
-          })),
-          { value: '__back', label: '返回' },
-        ],
-        defaultValue: `${defaultLocation.platform}:${defaultLocation.scope}:${defaultLocation.projectKey ?? '-'}`,
-      })
-    : `${scopedLocations[0].platform}:${scopedLocations[0].scope}:${scopedLocations[0].projectKey ?? '-'}`;
-  if (locationValue === null || locationValue === '__back') {
-    return false;
-  }
-  const selectedLocation = scopedLocations.find((location) =>
-    `${location.platform}:${location.scope}:${location.projectKey ?? '-'}` === locationValue,
-  ) ?? defaultLocation;
-
-  const prepared = await preparePluginTargetsForCommand(
-    context.cwd,
-    selectedLocation.scope,
-    [item.pluginName],
-    {
-      catalogMode: 'readOnly',
-      allowHistoricalFallback: false,
-      env: context.env,
-    },
-  );
-  const target = prepared.targets[0];
-  if (!target) {
-    throw new Error(`无法加载 ${item.pluginName}。`);
-  }
-  const requestedSkillTrigger = await selectSkillTrigger(
-    context,
-    target,
-    selectedLocation.platform,
-  );
-  if (
-    requestedSkillTrigger === null &&
-    await resolveSkillTriggerApplicabilityForPlugin(target.currentPlugin ?? target.plugin, selectedLocation.platform) === 'overridable'
-  ) {
-    return false;
-  }
-
-  const decision = await createInstallWizardDecision({
-    intent,
-    ...(intent === 'repairInstall'
-      ? { repairOperation: repairInstallOperation(selectedLocation) }
-      : {}),
-    targets: prepared.targets,
-    platforms: [selectedLocation.platform],
-    cwd: context.cwd,
-    scope: selectedLocation.scope,
-    env: context.env,
-    resolvedInstallOptions: [{
-      platform: selectedLocation.platform,
-      pluginName: item.pluginName,
-      options: requestedSkillTrigger
-        ? {
-            applicability: 'overridable',
-            skillTriggerPreference: requestedSkillTrigger,
-            skillTriggerSource: 'cli',
-            ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
-          }
-        : {
-            applicability: 'fixed',
-            ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
-          },
-    }],
-  });
-
-  if (decision.blockedReason) {
-    await renderView(context, `${item.title} 无法继续`, [
-      decision.blockedReason.message,
-      '',
-      ...decision.blockedReason.nextSteps.map((step) => `- ${step}`),
-    ]);
-    return false;
-  }
-
-  for (const prompt of decision.configPrompts) {
-    const submission = await promptRequiredConfigSubmission(context, prompt);
-    if (!submission) {
-      return false;
+function groupConfigPrompts(prompts: ConsoleRequiredConfigPrompt[]): ConsoleRequiredConfigPrompt[] {
+  const grouped = new Map<string, ConsoleRequiredConfigPrompt>();
+  for (const prompt of prompts) {
+    const key = `${prompt.storePath}\0${prompt.formIdentity}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.targets.push(...prompt.targets);
+      continue;
     }
-    await applyPluginConfigWrite({
+    grouped.set(key, prompt);
+  }
+  return [...grouped.values()];
+}
+
+async function promptConfigSubmissionForPrompt(
+  context: CliExecutionContext,
+  prompt: ConsoleRequiredConfigPrompt,
+  requiredOnly: boolean,
+): Promise<ConfigSubmission | null> {
+  const fieldStates = await buildScopedFieldStates({
+    target: prompt.targets[0]!.target,
+    scope: prompt.scope,
+    cwd: context.cwd,
+    env: context.env,
+  });
+  const updates: Record<string, PluginConfigValue> = {};
+  const removeKeys: string[] = [];
+  const fields = requiredOnly
+    ? prompt.form.fields.filter((entry) => prompt.form.requiredKeys.includes(entry.key))
+    : prompt.form.fields;
+
+  for (const field of fields) {
+    if (requiredOnly) {
+      const value = await promptFieldValue(context, prompt.effective.projectRoot, field, true);
+      if (value === null) {
+        return null;
+      }
+      updates[field.key] = value;
+      continue;
+    }
+
+    const state = fieldStates[field.key];
+    const needsFix = field.required && (prompt.form.requiredKeys.includes(field.key) || Boolean(state.issueMessage));
+    if (needsFix) {
+      const value = await promptFieldValue(context, prompt.effective.projectRoot, field, true);
+      if (value === null) {
+        return null;
+      }
+      updates[field.key] = value;
+      continue;
+    }
+
+    const action = state.configured
+      ? await selectValue(context, {
+          message: `${field.label}${state.issueMessage ? `（${state.issueMessage}）` : ''}`,
+          choices: [
+            {
+              value: 'keep',
+              label: field.sensitive
+                ? '保留当前值（已配置）'
+                : `保留当前值${state.currentValue === undefined ? '' : `（${String(state.currentValue)}）`}`,
+            },
+            { value: 'update', label: '更新' },
+            ...(!field.required ? [{ value: 'clear', label: '清空' }] : []),
+            { value: 'config-write-back', label: '返回', role: 'back' },
+          ],
+          defaultValue: 'keep',
+        })
+      : await selectValue(context, {
+          message: field.label,
+          choices: [
+            { value: 'skip', label: '跳过' },
+            { value: 'set', label: '设置' },
+            { value: 'config-write-back', label: '返回', role: 'back' },
+          ],
+          defaultValue: 'skip',
+        });
+    if (promptCancelled(action)) {
+      return null;
+    }
+    const resolvedAction = selectedPromptValue(action);
+    if (resolvedAction === 'keep' || resolvedAction === 'skip') {
+      continue;
+    }
+    if (resolvedAction === 'clear') {
+      removeKeys.push(field.key);
+      continue;
+    }
+
+    const value = await promptFieldValue(context, prompt.effective.projectRoot, field, field.required);
+    if (value === null) {
+      return null;
+    }
+    updates[field.key] = value;
+  }
+
+  return {
+    scope: prompt.scope,
+    updates,
+    removeKeys,
+  };
+}
+
+async function applyConfigPrompts(
+  context: CliExecutionContext,
+  prompts: ConsoleRequiredConfigPrompt[],
+  requiredOnly: boolean,
+): Promise<ConfigWriteOutcome[] | null> {
+  const outcomes: ConfigWriteOutcome[] = [];
+  for (const prompt of prompts) {
+    const submission = requiredOnly
+      ? await promptRequiredConfigSubmission(context, prompt)
+      : await promptConfigSubmissionForPrompt(context, prompt, false);
+    if (!submission) {
+      return null;
+    }
+    const target = prompt.targets[0]!.target;
+    const receipt = await applyPluginConfigWrite({
       plugin: target.currentPlugin ?? target.plugin,
       pluginName: prompt.pluginName,
       scope: submission.scope,
@@ -762,49 +1123,454 @@ async function runInstallLikeAction(options: {
         removeKeys: submission.removeKeys,
       },
     });
+    outcomes.push({
+      prompt,
+      scope: submission.scope,
+      updatedKeys: receipt.updatedKeys,
+      removedKeys: receipt.removedKeys,
+      artifactRefreshStatus: receipt.artifactRefresh.status,
+      ...(receipt.artifactRefresh.error ? { artifactRefreshError: receipt.artifactRefresh.error } : {}),
+    });
+  }
+  return outcomes;
+}
+
+async function maybeHandleConfigRefreshFailure(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  location: PluginConsoleLocation,
+  outcomes: ConfigWriteOutcome[],
+): Promise<void> {
+  const failed = outcomes.find((entry) => entry.artifactRefreshStatus === 'failed');
+  if (!failed) {
+    return;
+  }
+  await renderView(context, `${item.summary.title} 配置`, [
+    '配置已保存，但相关项目文件刷新失败。你可以重新应用配置，或进入诊断查看原因。',
+  ]);
+  const followup = await selectValue(context, {
+    message: '后续操作',
+    choices: [
+      { value: 'reapply', label: '重新应用配置' },
+      { value: 'diagnose', label: '诊断' },
+      { value: 'config-followup-back', label: '返回', role: 'back' },
+    ],
+    defaultValue: 'reapply',
+  });
+  if (promptCancelled(followup)) {
+    return;
+  }
+  const followupValue = selectedPromptValue(followup);
+  if (followupValue === 'reapply') {
+    await runReapplyAction(context, item, location);
+  } else if (followupValue === 'diagnose') {
+    await runDiagnoseAction(context, item, location, undefined);
+  }
+}
+
+async function runConfigWizardAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<ConsoleNavigation> {
+  const prompts = groupConfigPrompts(
+    (await Promise.all(selections.map((selection) => buildConfigPromptForSelection(context, item, selection))))
+      .filter((prompt): prompt is ConsoleRequiredConfigPrompt => prompt !== null),
+  );
+  const outcomes = await applyConfigPrompts(context, prompts, false);
+  if (!outcomes) {
+    return 'back';
+  }
+
+  const lines = outcomes.flatMap((outcome) => [
+    `${outcome.prompt.pluginName} · ${configScopeLabel(outcome.scope)}`,
+    `更新字段：${outcome.updatedKeys.length > 0 ? outcome.updatedKeys.join('、') : '无'}`,
+    `清空字段：${outcome.removedKeys.length > 0 ? outcome.removedKeys.join('、') : '无'}`,
+    artifactRefreshLine(outcome.artifactRefreshStatus),
+  ]);
+  await maybeHandleConfigRefreshFailure(context, item, selections[0]!.location, outcomes);
+  return showResultPage(context, {
+    pluginName: item.summary.pluginName,
+    title: `${item.summary.title} 配置`,
+    lines,
+    item,
+    focusLocations: selections.map((selection) => selection.location),
+  });
+}
+
+async function runInstallLikeAction(options: {
+  context: CliExecutionContext;
+  item: ConsoleControllerItem;
+  selections: ExecutableTargetSelection[];
+  intent: 'install' | 'upgrade' | 'repairInstall';
+}): Promise<ConsoleNavigation> {
+  const { context, item, selections, intent } = options;
+  const firstLocation = selections[0]!.location;
+  const prepared = await preparePluginTargetsForCommand(
+    context.cwd,
+    firstLocation.scope,
+    [item.summary.pluginName],
+    {
+      catalogMode: 'readOnly',
+      allowHistoricalFallback: false,
+      env: context.env,
+    },
+  );
+  const selectedPlatforms = [...new Set(selections.map((selection) => selection.location.platform))];
+  const graphPlan = intent === 'repairInstall' || selectedPlatforms.length === 1
+    ? null
+    : await planConsoleGraphWriteTargets({
+        operation: intent,
+        targets: prepared.targets,
+        platforms: selectedPlatforms,
+        cwd: context.cwd,
+        scope: firstLocation.scope,
+        ledger: prepared.ledger,
+        env: context.env,
+      });
+  const skillTargets = graphPlan
+    ? graphPlan.requestedTargets.map((entry) => ({ target: entry.target, platform: entry.platform }))
+    : prepared.targets.map((target) => ({ target, platform: firstLocation.platform }));
+  const requestedSkillTrigger = await selectSkillTriggerForTargets(context, skillTargets);
+
+  const decision = await createInstallWizardDecision({
+    intent,
+    ...(intent === 'repairInstall'
+      ? { repairOperation: repairInstallOperation(firstLocation) }
+      : {}),
+    targets: graphPlan
+      ? graphPlan.writeTargets.map((entry) => entry.target)
+      : prepared.targets,
+    scopedTargets: graphPlan?.writeTargets,
+    platforms: selectedPlatforms,
+    cwd: context.cwd,
+    scope: firstLocation.scope,
+    env: context.env,
+    resolvedInstallOptions: graphPlan
+      ? graphPlan.writeTargets
+        .map((entry) => entry.resolvedInstallOptions
+          ? {
+              platform: entry.platform,
+              pluginName: entry.target.pluginName,
+              options: entry.resolvedInstallOptions,
+            }
+          : null)
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [{
+          platform: firstLocation.platform,
+          pluginName: item.summary.pluginName,
+          options: requestedSkillTrigger
+            ? {
+                applicability: 'overridable',
+                skillTriggerPreference: requestedSkillTrigger,
+                skillTriggerSource: 'cli',
+                ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
+              }
+            : {
+                applicability: 'fixed',
+                ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
+              },
+        }],
+  });
+
+  if (decision.blockedReason) {
+    await renderView(context, `${item.summary.title} 无法继续`, [
+      decision.blockedReason.message,
+      '',
+      ...decision.blockedReason.nextSteps.map((step) => `- ${step}`),
+    ]);
+    return 'back';
+  }
+
+  if (decision.configPrompts.length > 0) {
+    const outcomes = await applyConfigPrompts(context, decision.configPrompts, true);
+    if (!outcomes) {
+      return 'back';
+    }
   }
 
   const commandOptions = {
     cwd: context.cwd,
-    scope: selectedLocation.scope,
-    platform: selectedLocation.platform,
+    scope: firstLocation.scope,
     ...(requestedSkillTrigger ? { requestedSkillTrigger } : {}),
   };
-
-  if (decision.commandAction === 'upgrade') {
-    const result = await upgradeCommand([item.pluginName], commandOptions, context);
-    await renderView(context, `${item.title} 升级`, commandResultLines('upgrade', selectedLocation.scope, result));
-    return true;
+  if (selectedPlatforms.length > 1) {
+    const lines: string[] = [];
+    for (const platform of selectedPlatforms) {
+      const scopedOptions = {
+        ...commandOptions,
+        platform,
+      };
+      const result = decision.commandAction === 'upgrade'
+        ? await upgradeCommand([item.summary.pluginName], scopedOptions, context)
+        : await installCommand([item.summary.pluginName], scopedOptions, context);
+      lines.push(
+        `${platformLabel(platform)}：`,
+        ...commandResultLines(
+          decision.commandAction === 'upgrade' ? 'upgrade' : 'install',
+          firstLocation.scope,
+          result,
+        ),
+        '',
+      );
+    }
+    return showResultPage(context, {
+      pluginName: item.summary.pluginName,
+      title: `${item.summary.title} ${decision.commandAction === 'upgrade' ? '升级' : '安装'}`,
+      lines: lines.slice(0, -1),
+      item,
+      focusLocations: selections.map((selection) => selection.location),
+    });
   }
 
-  const result = await installCommand([item.pluginName], commandOptions, context);
-  await renderView(context, `${item.title} 安装`, commandResultLines('install', selectedLocation.scope, result));
-  return true;
+  if (decision.commandAction === 'upgrade') {
+    const result = await upgradeCommand([item.summary.pluginName], {
+      ...commandOptions,
+      platform: firstLocation.platform,
+    }, context);
+    return showResultPage(context, {
+      pluginName: item.summary.pluginName,
+      title: `${item.summary.title} 升级`,
+      lines: commandResultLines('upgrade', firstLocation.scope, result),
+      item,
+      focusLocations: selections.map((selection) => selection.location),
+    });
+  }
+
+  const result = await installCommand([item.summary.pluginName], {
+    ...commandOptions,
+    platform: firstLocation.platform,
+  }, context);
+  return showResultPage(context, {
+    pluginName: item.summary.pluginName,
+    title: `${item.summary.title} 安装`,
+    lines: commandResultLines('install', firstLocation.scope, result),
+    item,
+    focusLocations: selections.map((selection) => selection.location),
+  });
+}
+
+async function promptRemoveConfigSelection(
+  context: CliExecutionContext,
+  message: string,
+): Promise<boolean | null> {
+  const choice = await selectValue(context, {
+    message,
+    choices: [
+      { value: 'keep', label: '保留配置' },
+      { value: 'remove', label: '同时删除配置' },
+      { value: 'remove-config-back', label: '返回', role: 'back' },
+    ],
+    defaultValue: 'keep',
+  });
+  if (promptCancelled(choice)) {
+    return null;
+  }
+  return selectedPromptValue(choice) === 'remove';
 }
 
 async function runUninstallAction(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
-  location: PluginConsoleLocation,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<ConsoleNavigation> {
+  const removeConfig = await promptRemoveConfigSelection(context, '配置处理');
+  if (removeConfig === null) {
+    return 'back';
+  }
+  const seenStores = new Set<string>();
+  const lines: string[] = [];
+  for (const selection of selections) {
+    const storePath = resolvePluginConfigStorePath({
+      pluginName: item.summary.pluginName,
+      scope: selection.location.scope,
+      cwd: context.cwd,
+      env: context.env,
+    });
+    const result = await uninstallCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+      removeConfig: removeConfig && !seenStores.has(storePath),
+    }, context);
+    seenStores.add(storePath);
+    lines.push(
+      `${selection.location.locationLabel}：`,
+      ...commandResultLines('uninstall', selection.location.scope, result),
+      '',
+    );
+  }
+  return showResultPage(context, {
+    pluginName: item.summary.pluginName,
+    title: `${item.summary.title} 卸载`,
+    lines: lines.slice(0, -1),
+    item,
+    focusLocations: selections.map((selection) => selection.location),
+  });
+}
+
+function renderCleanupPlanLines(payload: Awaited<ReturnType<typeof cleanupCommand>>['payload']): string[] {
+  if (payload.dependencyIndex) {
+    return ['当前 cleanup plan 不支持 dependency index 目标。'];
+  }
+
+  return joinNonEmpty([
+    payload.forceReason ? `风险来源：${payload.forceReason}` : '当前 target 可按标准 cleanup 处理。',
+    payload.plannedRemovals.length > 0
+      ? `删除计划：${payload.plannedRemovals.map((entry) => entry.label).join('、')}`
+      : '删除计划：当前没有可删除项。',
+    payload.affectedDependents.length > 0
+      ? `受影响依赖：${payload.affectedDependents.map((entry) => `${entry.platform}/${entry.plugin}/${entry.scope}`).join('、')}`
+      : '受影响依赖：无',
+    payload.wouldBackups.length > 0
+      ? `备份：${payload.wouldBackups.map((entry) => entry.label).join('、')}`
+      : '备份：当前计划没有可备份项。',
+    payload.blockingReasons.length > 0
+      ? `不可删除项：${payload.blockingReasons.map((entry) => entry.message).join('；')}`
+      : '不可删除项：无',
+  ]);
+}
+
+async function runCleanupAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
 ): Promise<boolean> {
-  const result = await uninstallCommand([item.pluginName], {
+  const removeConfig = await promptRemoveConfigSelection(context, '配置处理');
+  if (removeConfig === null) {
+    return false;
+  }
+  const seenStores = new Set<string>();
+  const lines: string[] = [];
+  for (const selection of selections) {
+    const plan = await cleanupCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+      plan: true,
+      removeConfig: false,
+    }, context);
+    const needsForce = !plan.payload.dependencyIndex && (
+      plan.payload.forceReason !== null ||
+      plan.payload.blockingReasons.length > 0
+    );
+    await renderView(context, `${item.summary.title} 清理风险`, renderCleanupPlanLines(plan.payload));
+    const confirmed = await confirmValue(
+      context,
+      needsForce ? `确定以恢复清理方式处理 ${selection.location.locationLabel} 吗？` : `确定清理 ${selection.location.locationLabel} 吗？`,
+      false,
+    );
+    if (!confirmed) {
+      await renderView(context, `${item.summary.title}`, ['已取消，本次没有写入任何状态。']);
+      return false;
+    }
+    const storePath = resolvePluginConfigStorePath({
+      pluginName: item.summary.pluginName,
+      scope: selection.location.scope,
+      cwd: context.cwd,
+      env: context.env,
+    });
+    const result = await cleanupCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+      force: needsForce,
+      removeConfig: removeConfig && !seenStores.has(storePath),
+    }, context);
+    seenStores.add(storePath);
+    lines.push(
+      `${selection.location.locationLabel}：`,
+      ...renderCleanupPlanLines(result.payload),
+      '',
+    );
+  }
+  await renderView(context, `${item.summary.title} 清理`, lines.slice(0, -1));
+  return true;
+}
+
+async function runRepairAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<boolean> {
+  const lines: string[] = [];
+  for (const selection of selections) {
+    const result = await repairCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+    }, context);
+    lines.push(
+      `${selection.location.locationLabel}：`,
+      result.output.trim() || '修复完成。',
+      '',
+    );
+  }
+  await renderView(context, `${item.summary.title} 修复`, lines.slice(0, -1));
+  return true;
+}
+
+async function runReinstallAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<boolean> {
+  const lines: string[] = [];
+  for (const selection of selections) {
+    const result = await reinstallCommand([item.summary.pluginName], {
+      cwd: context.cwd,
+      scope: selection.location.scope,
+      platform: selection.location.platform,
+    }, context);
+    lines.push(
+      `${selection.location.locationLabel}：`,
+      ...commandResultLines('install', selection.location.scope, result),
+      '',
+    );
+  }
+  await renderView(context, `${item.summary.title} 重新安装`, lines.slice(0, -1));
+  return true;
+}
+
+async function runAdoptExistingAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selection: ExecutableTargetSelection,
+): Promise<boolean> {
+  const result = await repairCommand([item.summary.pluginName], {
     cwd: context.cwd,
-    scope: location.scope,
-    platform: location.platform,
+    scope: selection.location.scope,
+    platform: selection.location.platform,
+    adoptExisting: true,
   }, context);
-  await renderView(context, `${item.title} 卸载`, commandResultLines('uninstall', location.scope, result));
+  await renderView(context, `${item.summary.title} 认领现有安装`, [result.output.trim() || '认领完成。']);
+  return true;
+}
+
+async function runTakeoverSharedRuntimeAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selection: ExecutableTargetSelection,
+): Promise<boolean> {
+  const result = await repairCommand([item.summary.pluginName], {
+    cwd: context.cwd,
+    scope: selection.location.scope,
+    platform: selection.location.platform,
+    takeoverSharedRuntime: true,
+  }, context);
+  await renderView(context, `${item.summary.title} 接管共享触发策略`, [result.output.trim() || '接管完成。']);
   return true;
 }
 
 async function runReapplyAction(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
+  item: ConsoleControllerItem,
   location: PluginConsoleLocation,
-): Promise<boolean> {
+): Promise<ConsoleNavigation> {
   const prepared = await preparePluginTargetsForCommand(
     context.cwd,
     location.scope,
-    [item.pluginName],
+    [item.summary.pluginName],
     {
       catalogMode: 'readOnly',
       allowHistoricalFallback: true,
@@ -813,7 +1579,7 @@ async function runReapplyAction(
   );
   const target = prepared.targets[0];
   if (!target) {
-    throw new Error(`无法加载 ${item.pluginName}。`);
+    throw new Error(`无法加载 ${item.summary.pluginName}。`);
   }
   const receipt = await reapplyConfigRefresh({
     plugin: target.currentPlugin ?? target.plugin,
@@ -821,144 +1587,249 @@ async function runReapplyAction(
     cwd: context.cwd,
     env: context.env,
   });
-  const lines = [
-    artifactRefreshLine(receipt.status),
-    ...(receipt.status === 'skipped'
-      ? ['没有需要重新应用的项目文件']
-      : []),
-    ...(receipt.error ? [`失败原因：${receipt.error}`] : []),
-  ];
-  await renderView(context, `${item.title} 重新应用配置`, lines);
-  return receipt.status !== 'skipped';
+  const lines = receipt.status === 'succeeded'
+    ? ['相关项目文件已更新。']
+    : receipt.status === 'skipped'
+      ? ['没有需要重新应用的项目文件。']
+      : ['重新应用配置失败。你可以进入诊断查看原因。'];
+  return showResultPage(context, {
+    pluginName: item.summary.pluginName,
+    title: `${item.summary.title} 重新应用配置`,
+    lines,
+    item,
+    focusLocations: [location],
+  });
 }
 
 async function runDiagnoseAction(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
-  location: PluginConsoleLocation,
-  action: PluginConsoleAction,
+  item: ConsoleControllerItem,
+  location: PluginConsoleLocation | undefined,
+  action?: { command?: string[] },
 ): Promise<void> {
-  const result = await statusCommand([item.pluginName], {
+  const result = await diagnoseCommand([item.summary.pluginName], {
     cwd: context.cwd,
-    scope: location.scope,
-    platform: location.platform,
-    verbose: true,
+    ...(location ? {
+      scope: location.scope,
+      platform: location.platform,
+    } : {}),
   }, context);
-  const lines = action.command
-    ? [`可复制命令：${action.command.join(' ')}`, '', ...result.output.split('\n')]
-    : result.output.split('\n');
-  await renderView(context, `${item.title} 诊断`, lines);
+  const page = result.pageModels.find((entry) => entry.pluginName === item.summary.pluginName);
+  const lines = page
+    ? renderDiagnosePageLines(page, location?.locationLabel, action?.command)
+    : action?.command
+      ? [`当前入口命令：${action.command.join(' ')}`]
+      : ['当前没有可展示的结构化诊断信息。'];
+  await renderView(context, `${item.summary.title} 诊断`, lines);
 }
 
-async function handleAction(
+async function runStatusAction(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
-  location: PluginConsoleLocation,
-  action: PluginConsoleAction,
+  item: ConsoleControllerItem,
+): Promise<void> {
+  await renderView(context, `${item.summary.title} 状态`, renderStatusPageLines(item));
+}
+
+async function loadResultPageItem(
+  context: CliExecutionContext,
+  pluginName: string,
+): Promise<ConsoleControllerItem | undefined> {
+  const homeState = await loadConsoleHomeState(context);
+  return homeState.items.find((entry) => entry.summary.pluginName === pluginName);
+}
+
+async function showResultPage(
+  context: CliExecutionContext,
+  state: ConsoleResultPageState,
 ): Promise<ConsoleNavigation> {
-  if (action.destructive) {
+  const reloadedItem = await loadResultPageItem(context, state.pluginName) ?? state.item;
+  const diagnoseTargets = reloadedItem
+    ? filterResultDiagnoseTargets(reloadedItem, state.focusLocations)
+    : [];
+
+  while (true) {
+    await renderView(context, state.title, joinNonEmpty([
+      ...state.lines,
+      ...(diagnoseTargets.length > 0 ? ['', '可继续查看目标诊断。'] : []),
+    ]));
+    const selection = await selectValue(context, {
+      message: '下一步',
+      choices: [
+        ...diagnoseTargets.map((location) => ({
+          value: buildTargetChoiceValue(location),
+          label: `诊断 · ${location.locationLabel}`,
+          description: location.issueSummary ?? location.statusLabel,
+        })),
+        { value: 'result-home', label: '返回首页', role: 'back' },
+        { value: 'result-exit', label: '退出', role: 'exit' },
+      ],
+      defaultValue: diagnoseTargets[0]
+        ? buildTargetChoiceValue(diagnoseTargets[0])
+        : 'result-home',
+    });
+    if (isPromptAction(selection, 'exit')) {
+      return 'exit';
+    }
+    if (isPromptAction(selection, 'back') || isPromptAction(selection, 'cancel')) {
+      return 'reload';
+    }
+    const selected = selectedPromptValue(selection);
+    if (!selected) {
+      return 'reload';
+    }
+    const location = diagnoseTargets.find((entry) => buildTargetChoiceValue(entry) === selected);
+    if (!location || !reloadedItem) {
+      return 'reload';
+    }
+    await runDiagnoseAction(context, reloadedItem, location, undefined);
+  }
+}
+
+async function handleExecutableAction(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  featureKind: PluginConsoleFeatureKind,
+  executableActions: ExecutableTargetSelection[],
+): Promise<ConsoleNavigation> {
+  const firstAction = executableActions[0]?.action;
+  if (firstAction?.destructive && firstAction.kind !== 'runCleanup') {
     const confirmed = await confirmValue(
       context,
-      action.confirmText ?? `确定执行 ${action.label} 吗？`,
+      firstAction.confirmText ?? `确定执行 ${firstAction.label} 吗？`,
       false,
     );
     if (!confirmed) {
-      await renderView(context, `${item.title}`, ['已取消，本次没有写入任何状态。']);
+      await renderView(context, `${item.summary.title}`, ['已取消，本次没有写入任何状态。']);
       return 'back';
     }
   }
 
-  switch (action.kind) {
-    case 'openInstallWizard':
-      return await runInstallLikeAction({
-        context,
-        item,
-        defaultLocation: location,
-        intent: 'install',
-      }) ? 'reload' : 'back';
-    case 'runUpgrade':
-      return await runInstallLikeAction({
-        context,
-        item,
-        defaultLocation: location,
-        intent: 'upgrade',
-      }) ? 'reload' : 'back';
-    case 'repairInstall':
-      return await runInstallLikeAction({
-        context,
-        item,
-        defaultLocation: location,
-        intent: 'repairInstall',
-      }) ? 'reload' : 'back';
-    case 'openConfigWizard':
-      return await runConfigWizardAction(context, item, location) ? 'reload' : 'back';
-    case 'runUninstall':
-    case 'cleanupRecovery':
-      return await runUninstallAction(context, item, location) ? 'reload' : 'back';
-    case 'reapplyConfigRefresh':
-      return await runReapplyAction(context, item, location) ? 'reload' : 'back';
-    case 'diagnoseCommand':
-      await runDiagnoseAction(context, item, location, action);
-      return 'back';
-    case 'back':
-      return 'back';
-    default:
-      throw new Error(`Unsupported console action "${action.kind}".`);
+  if (firstAction?.kind === 'openStatus') {
+    await runStatusAction(context, item);
+    return 'back';
+  }
+  if (firstAction?.kind === 'openDiagnose') {
+    await runDiagnoseAction(context, item, undefined, undefined);
+    return 'back';
+  }
+
+  const location = executableActions[0]?.location;
+  if (!location || !firstAction) {
+    throw new Error(`无法定位 ${item.summary.pluginName} 的目标位置。`);
+  }
+
+  try {
+    switch (firstAction.kind) {
+      case 'runInstall':
+        return runInstallLikeAction({
+          context,
+          item,
+          selections: executableActions,
+          intent: 'install',
+        });
+      case 'runUpgrade':
+        return runInstallLikeAction({
+          context,
+          item,
+          selections: executableActions,
+          intent: 'upgrade',
+        });
+      case 'runConfig':
+        return runConfigWizardAction(context, item, executableActions);
+      case 'runUninstall':
+        return runUninstallAction(context, item, executableActions);
+      case 'runCleanup':
+        return await runCleanupAction(context, item, executableActions) ? 'reload' : 'back';
+      case 'resolveDuplicateInstall': {
+        const removalTargets = item.locations.filter((entry) =>
+          entry.platform === location.platform &&
+          !(entry.scope === location.scope && entry.projectKey === location.projectKey) &&
+          entry.reasonCodes.includes('duplicateInstall'),
+        );
+        for (const removalTarget of removalTargets) {
+          await runUninstallAction(context, item, [{ action: firstAction, location: removalTarget }]);
+        }
+        return removalTargets.length > 0 ? 'reload' : 'back';
+      }
+      case 'runAdoptExisting':
+        return await runAdoptExistingAction(context, item, executableActions[0]!) ? 'reload' : 'back';
+      case 'runTakeoverSharedRuntime':
+        return await runTakeoverSharedRuntimeAction(context, item, executableActions[0]!) ? 'reload' : 'back';
+      case 'runReapplyConfigRefresh':
+        return runReapplyAction(context, item, location);
+      case 'runReinstall':
+        return await runReinstallAction(context, item, executableActions) ? 'reload' : 'back';
+      case 'runRepair':
+        return await runRepairAction(context, item, executableActions) ? 'reload' : 'back';
+      default:
+        throw new Error(`Unsupported console action "${firstAction.kind}".`);
+    }
+  } catch (error) {
+    return showResultPage(context, {
+      pluginName: item.summary.pluginName,
+      title: `${item.summary.title} 执行失败`,
+      lines: [
+        error instanceof Error ? error.message : String(error),
+        '你可以进入诊断查看原因。',
+      ],
+      item,
+      focusLocations: [location],
+    });
   }
 }
 
-async function browseLocation(
+async function browseFeature(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
-  location: PluginConsoleLocation,
+  item: ConsoleControllerItem,
+  featureKind: PluginConsoleFeatureKind,
 ): Promise<ConsoleNavigation> {
-  while (true) {
-    await renderView(context, `${item.title} · ${location.locationLabel}`, renderLocationLines(location));
-    const actionValue = await selectValue(context, {
-      message: '选择操作',
-      choices: buildActionChoices(location),
-      defaultValue: location.actions[0]?.kind,
-    });
-    if (actionValue === null || actionValue === '__back') {
-      return 'back';
+  const executableActions = createPluginConsoleExecutableActions(item, featureKind);
+  const feature = item.summary.features.find((entry) => entry.kind === featureKind);
+  const enabledActions = executableActions.filter((actionEntry) => !actionEntry.disabledReason);
+
+  if (enabledActions.length === 0) {
+    if (feature?.disabledReason) {
+      await renderView(context, `${item.summary.title} · ${feature.label}`, [feature.disabledReason]);
     }
-    const action = findAction(location, actionValue);
-    if (!action) {
-      continue;
-    }
-    const result = await handleAction(context, item, location, action);
-    if (result === 'reload') {
-      return 'reload';
-    }
+    return 'back';
   }
+
+  if (feature?.targetSelection === 'none') {
+    return handleExecutableAction(context, item, featureKind, [{
+      action: enabledActions[0]!,
+      location: item.locations[0]!,
+    }]);
+  }
+
+  const selections = await selectExecutableTargets(context, item, featureKind, enabledActions);
+  if (!selections || selections.length === 0) {
+    return 'back';
+  }
+  return handleExecutableAction(context, item, featureKind, selections);
 }
 
 async function browseItem(
   context: CliExecutionContext,
-  item: PluginConsoleItem,
+  item: ConsoleControllerItem,
 ): Promise<ConsoleNavigation> {
   while (true) {
-    await renderView(context, item.title, renderItemLines(item));
-    if (item.locations.length === 1) {
-      const result = await browseLocation(context, item, item.locations[0]);
-      if (result !== 'back') {
-        return result;
-      }
-      return 'back';
-    }
-    const locationValue = await selectValue(context, {
-      message: '选择位置',
-      choices: buildLocationChoices(item),
-      defaultValue: `${item.locations[0].platform}:${item.locations[0].scope}:${item.locations[0].projectKey ?? '-'}`,
+    await renderView(context, item.summary.title, renderDetailLines(item));
+    const featureValue = await selectValue(context, {
+      message: '选择功能',
+      choices: buildFeatureChoices(item),
+      defaultValue: item.summary.features[0]?.kind,
     });
-    if (locationValue === null || locationValue === '__back') {
+    if (isPromptAction(featureValue, 'back') || isPromptAction(featureValue, 'cancel')) {
       return 'back';
     }
-    const location = findLocation(item, locationValue);
-    if (!location) {
-      continue;
+    if (isPromptAction(featureValue, 'exit')) {
+      return 'exit';
     }
-    const result = await browseLocation(context, item, location);
+    const result = await browseFeature(
+      context,
+      item,
+      selectedPromptValue(featureValue) as PluginConsoleFeatureKind,
+    );
     if (result !== 'back') {
       return result;
     }
@@ -986,23 +1857,24 @@ export async function runConsoleController(
   context: CliExecutionContext,
 ): Promise<number> {
   while (true) {
-    const items = await loadConsoleItems(context);
-    if (items.length === 0) {
+    const homeState = await loadConsoleHomeState(context);
+    if (homeState.items.length === 0) {
       await renderView(context, 'AW 控制台', [
         '当前没有可展示的插件。',
         '可以先运行 `aw status` 检查当前环境。',
       ]);
       return 0;
     }
+    await renderView(context, 'AW 控制台', buildHomeLines(homeState));
     const selection = await selectValue(context, {
       message: '选择插件',
-      choices: buildHomeChoices(items),
-      defaultValue: items[0]?.pluginName,
+      choices: buildHomeChoices(homeState.items),
+      defaultValue: homeState.items[0]?.summary.pluginName,
     });
-    if (selection === null || selection === '__exit') {
+    if (isPromptAction(selection, 'exit') || isPromptAction(selection, 'cancel')) {
       return 0;
     }
-    const item = items.find((entry) => entry.pluginName === selection);
+    const item = homeState.items.find((entry) => entry.summary.pluginName === selectedPromptValue(selection));
     if (!item) {
       continue;
     }

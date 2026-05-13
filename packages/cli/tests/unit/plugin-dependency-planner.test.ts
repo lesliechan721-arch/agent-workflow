@@ -539,6 +539,7 @@ describe('plugin dependency planner', () => {
         scope: 'project',
       }),
     ]);
+    expect(plan.preflight.scopeExclusivity).toEqual(plan.preflight.requiredConfig);
     expect(plan.preflight.codexProjectInstallability).toEqual(plan.preflight.requiredConfig);
   });
 

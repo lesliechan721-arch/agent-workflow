@@ -26,6 +26,8 @@ import {
 import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
+import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
@@ -752,6 +754,117 @@ describe('upgrade command dependency graph', () => {
     );
 
     expect(codex.installOrder).toEqual([]);
+  });
+
+  it('fails upgrade scope preflight before required config when the sibling scope is already healthy', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-upgrade-duplicate-')),
+    );
+    tempDirs.push(builder.paths.rootDir);
+    const env = {
+      ...process.env,
+      AW_HOME: builder.paths.awHome,
+      AW_CODEX_HOME: builder.paths.codexHome,
+      AW_CLAUDE_HOME: builder.paths.claudeHome,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    } satisfies NodeJS.ProcessEnv;
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const pluginName = 'duplicate-upgrade-plugin';
+    const userTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'user',
+    });
+    const projectTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeRepoArtifact(userTarget);
+    const userLifecycle = await builder.writeHistoricalLifecycleRuntime(userTarget);
+    const userRecord = await builder.writeInstallRecord(userTarget, userLifecycle);
+    await builder.writeDiagnosticCache(userTarget);
+    await builder.writeExternalNativeEvidence(userTarget);
+    await builder.writeRepoArtifact(projectTarget);
+    const projectLifecycle = await builder.writeHistoricalLifecycleRuntime(projectTarget);
+    const projectRecord = await builder.writeInstallRecord(projectTarget, projectLifecycle);
+    await builder.writeDiagnosticCache(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    await builder.writeDependencyIndex([
+      { target: userTarget, record: userRecord },
+      { target: projectTarget, record: projectRecord },
+    ]);
+
+    const plugin = await writeSyntheticPlugin(builder.paths.repoRoot, {
+      ...createDependencyPluginManifest({
+        name: pluginName,
+      }),
+      config: {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+          },
+        },
+      },
+    });
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [pluginName]: {
+          lastResolvedVersion: plugin.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: plugin.manifest.version,
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const target = createResolvedTarget(plugin);
+    mockCatalogTargets({
+      explicitTargets: [target],
+      allTargets: [target],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', builder.paths.repoRoot, env, {
+      [pluginName]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    await expect(
+      upgradeCommand(
+        [pluginName],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex,
+            claude: new UpgradeTestAdapter('claude', builder.paths.repoRoot, env),
+          },
+        },
+      ),
+    ).rejects.toThrow(/duplicateInstall/);
+
+    expect(codex.installOrder).toEqual([]);
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName,
+      scope: 'user',
+      cwd: builder.paths.repoRoot,
+      env,
+    }))).resolves.toBe(false);
   });
 
   it('rejects upgrade --all takeover before any write', async () => {

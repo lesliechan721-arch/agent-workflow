@@ -16,6 +16,10 @@ import {
   rewriteSanitizedInstallRecordForP2,
 } from '../helpers/install-state-projection-fixtures.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
 import { removeCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
@@ -171,7 +175,7 @@ afterEach(async () => {
 });
 
 describe('cleanup command (P9)', () => {
-  it('rejects cleanup for healthy installed targets and points users back to uninstall', async () => {
+  it('cleans healthy installed targets through the standard uninstall-equivalent path', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'claude', scope: 'user' });
     await builder.writeRepoArtifact(target);
@@ -186,30 +190,68 @@ describe('cleanup command (P9)', () => {
     await rewriteSanitizedInstallRecordForP2(recordPath);
     await builder.writeDependencyIndex([{ target, record }]);
     await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
-    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit', 'cleanup-ran.txt');
+    await fs.remove(lifecycle.bundleRoot);
+    await fs.copy(path.join(builder.paths.repoRoot, 'plugins', 'git-commit'), lifecycle.bundleRoot);
+    const manifestPath = path.join(lifecycle.bundleRoot, '.agents-plugin', 'plugin.json');
+    await fs.writeJson(recordPath, {
+      ...record,
+      record: {
+        ...record.record,
+        source: {
+          ...record.record.source,
+          pluginVersion: plugin.manifest.version,
+          manifestDigest: await calculateFileDigest(manifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+        lifecycle: {
+          ...lifecycle,
+          manifestPath,
+          pluginVersion: plugin.manifest.version,
+          sourceManifestDigest: await calculateFileDigest(manifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+      },
+    }, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
 
-    await expect(
-      cleanupCommand(
-        ['git-commit'],
-        {
-          cwd: builder.paths.repoRoot,
-          scope: 'user',
-          platform: 'claude',
+    const claude = new FakeAdapter();
+    const result = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'claude',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
         },
-        {
-          env: {
-            ...process.env,
-            AW_HOME: builder.paths.awHome,
-            AW_CODEX_HOME: builder.paths.codexHome,
-            AW_CLAUDE_HOME: builder.paths.claudeHome,
-          },
-          adapters: {
-            codex: new FakeAdapter(),
-            claude: new FakeAdapter(),
-          } satisfies Record<PlatformName, PlatformAdapter>,
-        },
-      ),
-    ).rejects.toThrow(/aw uninstall/);
+        adapters: {
+          codex: new FakeAdapter(),
+          claude,
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      cleanupPlanSchemaVersion: 1,
+      dryRun: false,
+      target: {
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'user',
+        targetType: 'installed',
+      },
+    });
+    expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
+    await expect(fs.readFile(path.join(builder.paths.awHome, 'cleanup-ran.txt'), 'utf8')).resolves.toBe('ran');
+    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
   });
 
   it('cleans record plus install-marker residuals without running uninstall lifecycle', async () => {
@@ -387,12 +429,84 @@ describe('cleanup command (P9)', () => {
         recordPath: fixture.files.installRecordPath,
       }],
     });
-    expect(result.output).toContain('已退休的项目引用');
-    expect(result.output).toContain(fixture.files.installRecordPath);
+    expect(result.payload).toMatchObject({
+      nextSteps: ['运行 aw diagnose 查看最新依赖状态。'],
+    });
     await expect(fs.pathExists(fixture.target.repoArtifactPath)).resolves.toBe(true);
     const after = await fs.readJson(indexPath);
     expect(before.records).toHaveLength(1);
     expect(after.records).toEqual([]);
+  });
+
+  it('builds a cleanup --plan payload without writing state', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'cache-only', platform: 'codex', scope: 'user' });
+    const cacheRootPath = path.join(
+      builder.paths.codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      target.location.plugin,
+    );
+    await fs.outputJson(
+      path.join(cacheRootPath, '0.1.0', 'plugin.json'),
+      { id: `${target.location.plugin}@aw`, version: '0.1.0' },
+      { spaces: 2 },
+    );
+
+    const result = await cleanupCommand(
+      ['cache-only'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        plan: true,
+        force: true,
+        removeConfig: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      cleanupPlanSchemaVersion: 1,
+      dryRun: true,
+      force: true,
+      removeConfig: true,
+      target: {
+        plugin: 'cache-only',
+        platform: 'codex',
+        scope: 'user',
+        targetType: 'cache-only',
+      },
+      plannedRemovals: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'native-cache',
+        }),
+      ]),
+      wouldBackups: [],
+      wouldRemoveConfig: expect.arrayContaining([
+        expect.objectContaining({
+          status: 'planned',
+        }),
+      ]),
+      skippedForeignItems: [],
+      affectedDependents: [],
+      blockingReasons: [],
+    });
+    await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
   });
 
   it('fails closed for unreadable dependency-index references instead of pruning them as stale', async () => {

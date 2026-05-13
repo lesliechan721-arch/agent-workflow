@@ -110,6 +110,7 @@ export interface PluginDependencyNodePlan {
 
 export interface PluginDependencyPlannerPreflight {
   all: PluginLocation[];
+  scopeExclusivity: PluginLocation[];
   requiredConfig: PluginLocation[];
   externalOwnership: PluginLocation[];
   trackingIdentity: PluginLocation[];
@@ -736,6 +737,7 @@ function createPreflight(writeOrder: readonly PluginLocation[]): PluginDependenc
   const projectSafety = all.filter((location) => location.platform === 'codex' && location.scope === 'project');
   return {
     all,
+    scopeExclusivity: [...all],
     requiredConfig: [...all],
     externalOwnership: [...all],
     trackingIdentity: [...all],

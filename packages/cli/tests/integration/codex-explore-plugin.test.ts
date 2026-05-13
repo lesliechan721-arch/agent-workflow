@@ -784,6 +784,33 @@ function createCodexExploreRuntime(
   };
 }
 
+async function seedLegacyCodexExploreUserHealthySiblingInstall(options: {
+  repoRoot: string;
+  awHome: string;
+  codexHome: string;
+  embeddedRoot: string;
+  requestedSkillTrigger?: 'manual' | 'auto' | 'default';
+}): Promise<void> {
+  const sibling = await makeWorkspaceWithCodexExplore();
+  process.env.AW_HOME = options.awHome;
+  process.env.AW_CODEX_HOME = options.codexHome;
+  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+  isolateHostEnv(path.dirname(options.repoRoot));
+  setEmbeddedPluginsRootOverrideForTests(options.embeddedRoot);
+  await installCommand(
+    ['codex-explore'],
+    {
+      cwd: sibling.repoRoot,
+      scope: 'user',
+      platform: 'codex',
+      ...(options.requestedSkillTrigger
+        ? { requestedSkillTrigger: options.requestedSkillTrigger }
+        : {}),
+    },
+      createCodexExploreRuntime(sibling.repoRoot, process.env),
+  );
+}
+
 function userSkillMetadataPath(awHome: string, skillKey = 'codex-explore'): string {
   return path.join(
     awHome,
@@ -1471,7 +1498,7 @@ describe('codex-explore integration acceptance', () => {
     expect(roleContent).toContain('model_reasoning_effort = "low"');
   });
 
-  it('refreshes installed user and current-project Codex dynamic skills on user config writes and syncs accepted digests', async () => {
+  it('refreshes legacy dual-healthy user and current-project Codex dynamic skills on user config writes and syncs accepted digests', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -1505,21 +1532,19 @@ describe('codex-explore integration acceptance', () => {
       ['codex-explore'],
       {
         cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-      },
-      createCodexExploreRuntime(repoRoot, process.env),
-    );
-    await installCommand(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
         requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
+    await seedLegacyCodexExploreUserHealthySiblingInstall({
+      repoRoot,
+      awHome,
+      codexHome,
+      embeddedRoot,
+      requestedSkillTrigger: 'auto',
+    });
 
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'explorerModel', 'gpt-5.5', '--json'],
@@ -2144,7 +2169,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
   });
 
-  it('project repair keeps project trigger preference independent from user dynamic skill runtime', async () => {
+  it('project repair fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2159,22 +2184,19 @@ describe('codex-explore integration acceptance', () => {
       ['codex-explore'],
       {
         cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        requestedSkillTrigger: 'manual',
-      },
-      createCodexExploreRuntime(repoRoot, process.env),
-    );
-    await installCommand(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
         requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
+    await seedLegacyCodexExploreUserHealthySiblingInstall({
+      repoRoot,
+      awHome,
+      codexHome,
+      embeddedRoot,
+      requestedSkillTrigger: 'manual',
+    });
 
     expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
@@ -2204,7 +2226,7 @@ describe('codex-explore integration acceptance', () => {
       manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
     };
     const projectKey = await resolveCodexProjectKey(repoRoot);
-    const result = await repairCommand(
+    await expect(repairCommand(
       ['codex-explore'],
       {
         cwd: repoRoot,
@@ -2226,12 +2248,7 @@ describe('codex-explore integration acceptance', () => {
           'codex-explore': currentPlugin,
         },
       },
-    );
-    const payload = JSON.parse(result.output) as {
-      locations: Array<{
-        triggerPreferenceApplied?: string | null;
-      }>;
-    };
+    )).rejects.toThrow(/duplicateInstall/);
 
     const statusAfterRepair = await statusCommand(
       ['codex-explore'],
@@ -2252,7 +2269,6 @@ describe('codex-explore integration acceptance', () => {
     });
     const recordOptions = await readInstallRecordOptionsFromLocation(location);
 
-    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
     expect(recordOptions.skillTriggerPreference).toBe('auto');
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
     expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
@@ -3509,7 +3525,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('refreshes only current-project artifacts on project config writes and leaves user artifacts healthy', async () => {
+  it('refreshes only current-project artifacts on project config writes and leaves legacy user sibling artifacts healthy', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -3541,20 +3557,17 @@ describe('codex-explore integration acceptance', () => {
       ['codex-explore'],
       {
         cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-      },
-      createCodexExploreRuntime(repoRoot, process.env),
-    );
-    await installCommand(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
+    await seedLegacyCodexExploreUserHealthySiblingInstall({
+      repoRoot,
+      awHome,
+      codexHome,
+      embeddedRoot,
+    });
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
     const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
@@ -4217,7 +4230,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('records only the current repo in refreshReach while flagging other known project installs as potentially stale', async () => {
+  it('records only the current repo in refreshReach while flagging other known legacy project installs as potentially stale', async () => {
     const { repoA, repoB, awHome, codexHome, embeddedRoot } = await makeMultiRepoWorkspaceWithCodexExplore();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -4225,15 +4238,6 @@ describe('codex-explore integration acceptance', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
-    await installCommand(
-      ['codex-explore'],
-      {
-        cwd: repoA,
-        scope: 'user',
-        platform: 'codex',
-      },
-      createCodexExploreRuntime(repoA, process.env),
-    );
     await installCommand(
       ['codex-explore'],
       {
@@ -4252,6 +4256,12 @@ describe('codex-explore integration acceptance', () => {
       },
       createCodexExploreRuntime(repoB, process.env),
     );
+    await seedLegacyCodexExploreUserHealthySiblingInstall({
+      repoRoot: repoA,
+      awHome,
+      codexHome,
+      embeddedRoot,
+    });
 
     const repoAUserPaths = resolveCodexPaths(repoA, 'user', process.env);
     const repoAProjectPaths = resolveCodexPaths(repoA, 'project', process.env);

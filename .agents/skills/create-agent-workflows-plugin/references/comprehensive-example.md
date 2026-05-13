@@ -92,7 +92,7 @@ code-review/
 
 **依赖规划顺序**：安装或升级 `code-review` 时，AW 会先按当前 platform 过滤依赖。Codex 路径会先检查 / 自动安装 `git-commit`，再写入或升级 `code-review`；Claude 路径不会处理该依赖。`aw status --json` 会把这条声明放入 `dependencies.declared`，只有 Codex 位置会进入 `resolved` / `satisfied` / `missing`。
 
-**卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 install record 引用的 historical lifecycle runtime，避免 current catalog 已刷新时误用新版脚本。这个 runtime 不是完整 install snapshot，只用于安全卸载。`aw uninstall` 默认保留 AW config，清理残留配置需要显式运行 `aw config reset code-review -s user|project --yes`。
+**卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 install record 引用的 historical lifecycle runtime，避免 current catalog 已刷新时误用新版脚本。这个 runtime 不是完整 install snapshot，只用于安全卸载。`aw uninstall` 默认保留 AW config；需要随主体卸载成功一起删除当前 target 配置时传 `--remove-config`。只清配置、不动安装状态时运行 `aw config reset code-review -s user|project --yes`。
 
 **Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会注册本地 marketplace，并调用 `codex app-server` 的 `plugin/install` RPC。成功后 Codex 侧必须同时有 `[plugins."code-review@aw"].enabled = true`、active materialized cache、native transaction 状态和 AW per-plugin record；`aw status --json` 中 `native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled。友好状态只有在 enabled config、active cache 和 AW record 都健康时才显示为已安装；enabled-only、cache-only 或 native transaction marker 残留都不是普通已安装。若 RPC 成功但 AW 后续步骤失败，会留下 native transaction marker，重新 install / repair 可补齐 AW 状态；cleanup 可清残留且不运行 uninstall lifecycle。
 

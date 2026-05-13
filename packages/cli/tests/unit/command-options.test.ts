@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
   normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
@@ -68,6 +69,8 @@ describe('command options normalization', () => {
       dependencyIndex: true,
       pruneStale: 'stale-token',
       yes: true,
+      plan: false,
+      removeConfig: false,
       json: true,
     });
   });
@@ -84,6 +87,20 @@ describe('command options normalization', () => {
       dependencyIndex: true,
       pruneStale: 'stale-token',
     })).toThrow('cleanup --dependency-index --prune-stale 需要显式传入 --yes。');
+
+    expect(() => normalizeCleanupCommandOptions({
+      cwd: '/tmp/workspace',
+      dependencyIndex: true,
+      pruneStale: 'stale-token',
+      yes: true,
+      plan: true,
+    })).toThrow('cleanup --dependency-index --prune-stale 不支持 --plan。');
+
+    expect(() => normalizeCleanupCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      yes: true,
+    })).toThrow('cleanup --yes 只用于 --dependency-index --prune-stale。');
   });
 
   it('fails standard cleanup and reinstall when the platform is not a single explicit target', () => {
@@ -95,6 +112,33 @@ describe('command options normalization', () => {
       cwd: '/tmp/workspace',
       platform: 'both',
     })).toThrow('reinstall 命令需要显式指定单一平台。');
+  });
+
+  it('normalizes uninstall --remove-config and cleanup --plan --force --remove-config', () => {
+    expect(normalizeUninstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      removeConfig: true,
+    })).toMatchObject({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      removeConfig: true,
+    });
+
+    expect(normalizeCleanupCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      plan: true,
+      force: true,
+      removeConfig: true,
+    })).toMatchObject({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      plan: true,
+      force: true,
+      removeConfig: true,
+      yes: false,
+    });
   });
 
   it('normalizes takeover for install and rejects upgrade --all takeover', () => {

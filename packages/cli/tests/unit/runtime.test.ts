@@ -24,6 +24,7 @@ describe('command runtime', () => {
     });
 
     await expect(prompt.confirm!({ message: '继续吗？', defaultValue: true })).resolves.toEqual({
+      action: 'select',
       cancelled: false,
       value: true,
     });

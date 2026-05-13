@@ -78,6 +78,10 @@ import {
   preflightCodexProjectWriteSafety,
 } from './codex-project-safety.js';
 import {
+  assertNoDuplicateInstalls,
+  shouldEnforceDuplicateInstallPreflight,
+} from './scope-exclusivity-preflight.js';
+import {
   uninstallTargetsOnPlatforms,
 } from './uninstall.js';
 import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
@@ -120,6 +124,19 @@ type UpgradeCommandRuntime = CommandExecutionContextInput & {
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
 };
+
+function withEarlyDegradedLedgerWarning(
+  warnings: string[],
+  ledger: InstalledLedger,
+): string[] {
+  if (warnings.length > 0 || ledger.ledgerState.status !== 'degraded') {
+    return warnings;
+  }
+
+  return [
+    `installed.json 处于 degraded 状态（${ledger.ledgerState.reason ?? 'unknown'}），跳过 skill trigger 偏好 replay，保留 embedded pristine 默认策略。`,
+  ];
+}
 
 type UpgradeAllTrackingState = 'none' | 'managed' | 'invalid';
 
@@ -617,6 +634,90 @@ function createSkippedUpgradeTarget(
           dependencyOf: metadata.dependencyOf,
         }
       : {}),
+  };
+}
+
+interface PreparedExplicitUpgradeGraph {
+  plan: PluginDependencyWritePlan;
+  graphContext: InstallLocationGraphContext;
+}
+
+async function prepareExplicitUpgradeGraph(options: {
+  targets: ResolvedPluginTarget[];
+  platforms: PlatformName[];
+  commandOptions: UpgradeCommandOptions;
+  adapters: Record<PlatformName, PlatformAdapter>;
+  env: NodeJS.ProcessEnv;
+  ledger: InstalledLedger;
+}): Promise<PreparedExplicitUpgradeGraph> {
+  const allCatalogTargets = await loadPluginTargetsForCommand(
+    options.commandOptions.cwd,
+    options.commandOptions.scope,
+    undefined,
+    {
+      catalogMode: 'readOnly',
+      allowHistoricalFallback: false,
+      env: options.env,
+    },
+  );
+  const targetByPlugin = new Map<string, ResolvedPluginTarget>(
+    allCatalogTargets.map((target) => [target.pluginName, target]),
+  );
+  const projectKeysByPlatform = await resolveProjectKeysByPlatform(
+    options.commandOptions.cwd,
+    options.commandOptions.scope,
+    options.platforms,
+  );
+  const requestedLocations = options.platforms.flatMap((platform) =>
+    options.targets.map((target) => createPluginLocationForPlatform({
+      plugin: target.pluginName,
+      platform,
+      scope: options.commandOptions.scope,
+      projectKeysByPlatform,
+    })),
+  );
+  const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
+    'upgrade',
+    requestedLocations.map((location) => {
+      const target = targetByPlugin.get(location.plugin);
+      if (!target) {
+        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
+      }
+      return {
+        location,
+        target,
+        requestedSkillTrigger: options.commandOptions.requestedSkillTrigger,
+      };
+    }),
+    {
+      cwd: options.commandOptions.cwd,
+      env: options.env,
+    },
+    options.ledger,
+  );
+  const plannerTargets = requestedLocations.map((location) => ({
+    location,
+    installOptions: toInstalledScopeInstallOptions(rootInstallOptionsByLocation.get(serializePluginLocation(location))),
+  }));
+  const { plannerState, graphContext } = await buildInstallPlannerContext({
+    requestedLocations,
+    targetByPlugin,
+    adapters: options.adapters,
+    scope: options.commandOptions.scope,
+    cwd: options.commandOptions.cwd,
+    env: options.env,
+    ledger: options.ledger,
+    projectKeysByPlatform,
+    readStatusForRequestedLocations: true,
+  });
+
+  return {
+    plan: planPluginDependencyWrites({
+      mode: 'upgrade',
+      state: plannerState,
+      targets: plannerTargets,
+    }),
+    graphContext,
   };
 }
 
@@ -1538,6 +1639,7 @@ async function executeUpgradeGraphPlan(options: {
           platform: node.location.platform,
           scope: node.location.scope,
           scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
+          removeConfig: false,
         },
         {
           ...context,
@@ -1576,6 +1678,7 @@ async function runExplicitUpgrade(
   options: UpgradeCommandOptions,
   runtime: UpgradeCommandRuntime,
   preparedLedger: InstalledLedger,
+  preparedGraph?: PreparedExplicitUpgradeGraph,
 ): Promise<{
   warnings: string[];
   plugins: string[];
@@ -1583,76 +1686,20 @@ async function runExplicitUpgrade(
   repoManagedArtifacts: GeneratedArtifact[];
   receiptTargets: UpgradeCommandReceiptTarget[];
   receiptActions: UpgradeCommandReceiptAction[];
-}> {
+  }> {
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
-  const allCatalogTargets = await loadPluginTargetsForCommand(
-    options.cwd,
-    options.scope,
-    undefined,
-    {
-      catalogMode: 'readOnly',
-      allowHistoricalFallback: false,
-      env,
-    },
-  );
-  const targetByPlugin = new Map<string, ResolvedPluginTarget>(
-    allCatalogTargets.map((target) => [target.pluginName, target]),
-  );
-  const projectKeysByPlatform = await resolveProjectKeysByPlatform(
-    options.cwd,
-    options.scope,
+  const prepared = preparedGraph ?? await prepareExplicitUpgradeGraph({
+    targets,
     platforms,
-  );
-  const requestedLocations = platforms.flatMap((platform) =>
-    targets.map((target) => createPluginLocationForPlatform({
-      plugin: target.pluginName,
-      platform,
-      scope: options.scope,
-      projectKeysByPlatform,
-    })),
-  );
-  const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
-    'upgrade',
-    requestedLocations.map((location) => {
-      const target = targetByPlugin.get(location.plugin);
-      if (!target) {
-        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
-      }
-      return {
-        location,
-        target,
-        requestedSkillTrigger: options.requestedSkillTrigger,
-      };
-    }),
-    {
-      cwd: options.cwd,
-      env,
-    },
-    preparedLedger,
-  );
-
-  const plannerTargets = requestedLocations.map((location) => ({
-    location,
-    installOptions: toInstalledScopeInstallOptions(rootInstallOptionsByLocation.get(serializePluginLocation(location))),
-  }));
-  const { plannerState, graphContext } = await buildInstallPlannerContext({
-    requestedLocations,
-    targetByPlugin,
+    commandOptions: options,
     adapters,
-    scope: options.scope,
-    cwd: options.cwd,
     env,
     ledger: preparedLedger,
-    projectKeysByPlatform,
-    readStatusForRequestedLocations: true,
   });
-  const graphPlan = planPluginDependencyWrites({
-    mode: 'upgrade',
-    state: plannerState,
-    targets: plannerTargets,
-  });
+  const graphPlan = prepared.plan;
+  const graphContext = prepared.graphContext;
   const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
     mode: 'upgrade',
     plan: graphPlan,
@@ -2014,6 +2061,17 @@ async function runUpgradeAll(
     });
   }
 
+  await assertNoDuplicateInstalls({
+    cwd: options.cwd,
+    locations: graphPlan.preflight.scopeExclusivity.filter((location) =>
+      shouldEnforceDuplicateInstallPreflight({
+        location,
+        plugin: targetByPlugin.get(location.plugin)?.currentPlugin
+          ?? targetByPlugin.get(location.plugin)?.plugin
+          ?? null,
+      })),
+    env,
+  });
   const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
     mode: 'upgrade-all',
     plan: {
@@ -2192,7 +2250,10 @@ export async function upgradeCommand(
         ],
       };
     } catch (error) {
-      throw wrapCommandErrorWithWarnings(error, commandWarnings);
+      throw wrapCommandErrorWithWarnings(
+        error,
+        withEarlyDegradedLedgerWarning(commandWarnings, prepared.ledger),
+      );
     }
   }
 
@@ -2252,6 +2313,25 @@ export async function upgradeCommand(
       adapters,
       env,
     );
+    const preparedGraph = await prepareExplicitUpgradeGraph({
+      targets: prepared.targets,
+      platforms,
+      commandOptions: options,
+      adapters,
+      env,
+      ledger: prepared.ledger,
+    });
+    await assertNoDuplicateInstalls({
+      cwd: options.cwd,
+      locations: preparedGraph.plan.preflight.scopeExclusivity.filter((location) =>
+        shouldEnforceDuplicateInstallPreflight({
+          location,
+          plugin: prepared.targets.find((target) => target.pluginName === location.plugin)?.currentPlugin
+            ?? prepared.targets.find((target) => target.pluginName === location.plugin)?.plugin
+            ?? null,
+        })),
+      env,
+    });
     await preflightUpgradeConfigs(
       prepared.targets,
       options,
@@ -2277,6 +2357,7 @@ export async function upgradeCommand(
         adapters,
       },
       preparedForExecution.ledger,
+      preparedGraph,
     );
 
     return {
@@ -2295,6 +2376,9 @@ export async function upgradeCommand(
       ],
     };
   } catch (error) {
-    throw wrapCommandErrorWithWarnings(error, commandWarnings);
+    throw wrapCommandErrorWithWarnings(
+      error,
+      withEarlyDegradedLedgerWarning(commandWarnings, prepared.ledger),
+    );
   }
 }

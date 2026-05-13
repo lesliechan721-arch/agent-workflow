@@ -55,6 +55,72 @@ afterEach(async () => {
 });
 
 describe('reinstall command (P9)', () => {
+  it('fails reinstall scope preflight before uninstalling when the sibling scope is already healthy', async () => {
+    const builder = await makeBuilder();
+    const env = {
+      ...process.env,
+      AW_HOME: builder.paths.awHome,
+      AW_CODEX_HOME: builder.paths.codexHome,
+      AW_CLAUDE_HOME: builder.paths.claudeHome,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    } satisfies NodeJS.ProcessEnv;
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const pluginName = 'duplicate-reinstall-plugin';
+    const userTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'user',
+    });
+    const projectTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeRepoArtifact(userTarget);
+    const userLifecycle = await builder.writeHistoricalLifecycleRuntime(userTarget);
+    const userRecord = await builder.writeInstallRecord(userTarget, userLifecycle);
+    await builder.writeDiagnosticCache(userTarget);
+    await builder.writeExternalNativeEvidence(userTarget);
+    await builder.writeRepoArtifact(projectTarget);
+    const projectLifecycle = await builder.writeHistoricalLifecycleRuntime(projectTarget);
+    const projectRecord = await builder.writeInstallRecord(projectTarget, projectLifecycle);
+    await builder.writeDiagnosticCache(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    await builder.writeDependencyIndex([
+      { target: userTarget, record: userRecord },
+      { target: projectTarget, record: projectRecord },
+    ]);
+
+    const uninstallSpy = vi.fn<typeof import('../../src/commands/uninstall.js').uninstallCommand>();
+    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
+    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
+    await expect(
+      reinstallCommand(
+        [pluginName],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          adapters: {
+            codex: new FakeAdapter(),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+          uninstallCommandImpl: uninstallSpy,
+          cleanupCommandImpl: cleanupSpy,
+          installCommandImpl: installSpy,
+        },
+      ),
+    ).rejects.toThrow(/duplicateInstall/);
+
+    expect(uninstallSpy).not.toHaveBeenCalled();
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
   it('stops on adoptable project artifacts instead of deleting them as residuals', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-reinstall-adoptable-')),
@@ -258,8 +324,7 @@ describe('reinstall command (P9)', () => {
     );
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toMatch(/verified dependent/);
-    expect((error as Error).message).not.toMatch(/cleanup --force/);
+    expect((error as Error).message).toMatch(/可认领状态/);
     expect(cleanupSpy).not.toHaveBeenCalled();
     expect(installSpy).not.toHaveBeenCalled();
   });

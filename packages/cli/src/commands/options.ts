@@ -66,11 +66,21 @@ export interface RepairCommandOptions extends CommandOptions {
   takeoverSharedRuntime?: boolean;
 }
 
+export type RawUninstallCommandOptions = RawCommandOptions & {
+  removeConfig?: boolean;
+};
+
+export interface UninstallCommandOptions extends CommandOptions {
+  removeConfig: boolean;
+}
+
 export type RawCleanupCommandOptions = RawCommandOptions & {
   force?: boolean;
   dependencyIndex?: boolean;
   pruneStale?: string;
   yes?: boolean;
+  plan?: boolean;
+  removeConfig?: boolean;
   json?: boolean;
 };
 
@@ -79,6 +89,8 @@ export interface CleanupCommandOptions extends CommandOptions {
   dependencyIndex: boolean;
   pruneStale?: string;
   yes: boolean;
+  plan: boolean;
+  removeConfig: boolean;
   json?: boolean;
 }
 
@@ -301,6 +313,20 @@ export function normalizeRepairCommandOptions(
   };
 }
 
+export function normalizeUninstallCommandOptions(
+  raw: RawUninstallCommandOptions = {},
+  defaults: NormalizeCommandOptionsDefaults = {},
+): UninstallCommandOptions {
+  return {
+    ...normalizeCommandOptions(raw, {
+      defaultScope: 'user',
+      defaultPlatform: 'auto',
+      ...defaults,
+    }),
+    removeConfig: raw.removeConfig === true,
+  };
+}
+
 export function normalizeCleanupCommandOptions(
   raw: RawCleanupCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
@@ -315,6 +341,8 @@ export function normalizeCleanupCommandOptions(
     dependencyIndex: raw.dependencyIndex === true,
     pruneStale: raw.pruneStale,
     yes: raw.yes === true,
+    plan: raw.plan === true,
+    removeConfig: raw.removeConfig === true,
     json: raw.json === true,
   } satisfies CleanupCommandOptions;
 
@@ -325,6 +353,14 @@ export function normalizeCleanupCommandOptions(
     if (!normalized.yes) {
       throw new Error('cleanup --dependency-index --prune-stale 需要显式传入 --yes。');
     }
+    if (normalized.plan) {
+      throw new Error('cleanup --dependency-index --prune-stale 不支持 --plan。');
+    }
+    if (normalized.removeConfig) {
+      throw new Error('cleanup --dependency-index --prune-stale 不支持 --remove-config。');
+    }
+  } else if (normalized.yes) {
+    throw new Error('cleanup --yes 只用于 --dependency-index --prune-stale。');
   }
 
   if (!normalized.dependencyIndex && (normalized.platform === 'auto' || normalized.platform === 'both')) {

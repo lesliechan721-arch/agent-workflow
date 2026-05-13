@@ -125,16 +125,16 @@ plugins/<name>/
 - Codex `--scope user` 使用 native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写 enabled config 和 materialized cache；不要再按“只写 `[plugins."<plugin>@aw"]`”理解安装结果。`aw status` 只有在 enabled config、active materialized cache、native transaction 状态和 AW per-plugin record 都健康时才把它投影为已安装；enabled-only、cache-only 或 native transaction 残留都会显示为需要修复或清理的异常状态。
 - Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace add 或 app-server RPC，也不会改用户级 config/cache。缺少 `codex` 可执行文件时，repo-managed project 安装仍应可用。
 - 面向 Codex project 的插件必须有 repo-managed surface。纯 native-only 插件不能 project 安装；包含 `apps` 的插件 project scope 会 fail fast，请引导用户使用 `--scope user` 或拆分插件。
-- 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 native transaction marker 触发 repair install；只有 verified install record 引用的 historical lifecycle runtime 才能驱动普通 uninstall lifecycle，cleanup 不运行 lifecycle。
+- 带 lifecycle 的插件要保持幂等：Codex user native RPC 成功后如果 AW 后续步骤失败，用户可能通过 native transaction marker 触发 repair install；只有 verified install record 引用的 historical lifecycle runtime 才能驱动普通 uninstall lifecycle，cleanup 不运行 lifecycle。没有声明 lifecycle 只是表示插件没有安装/卸载脚本，不是 status 问题。
 
 ### CLI 入口与输出合同
 
 - `aw` 主命令是唯一交互入口；TTY 下进入插件控制台，配置向导也只在这里出现。脚本和文档示例不要再使用子命令交互 flag。
-- 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。
+- 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。`aw uninstall --remove-config` 和 `aw cleanup --remove-config` 只在主体成功后顺手删除当前 target 的 AW config store；单独清配置仍用 `aw config reset`。
 - `aw install`、显式 `aw upgrade` 和 `aw upgrade --all` 会自动解析并安装/升级缺失依赖；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后清理引用归零的自动依赖。文档和示例里不要要求用户手动按顺序安装普通依赖，除非该依赖需要用户先单独配置或选择特殊安装选项。
 - `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
 - 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等内部词。
-- `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段和每个位置的 `dependencies` 投影。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
+- `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段、`consoleItemsSchemaVersion: 2`、V2 `consoleItems.features` 和每个位置的 `dependencies` 投影。未声明 config、lifecycle 或动态 artifact target 不会被投影成默认问题。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
 
 ## 脚手架脚本
 

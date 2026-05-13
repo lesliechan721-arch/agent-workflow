@@ -344,7 +344,7 @@ describe('console write decision model', () => {
 
     expect(prompts).toHaveLength(1);
     expect(prompts[0].pluginName).toBe('git-commit');
-    expect(prompts[0].form.allowedScopes).toEqual(['user', 'project']);
+    expect(prompts[0].form.allowedScopes).toEqual(['project']);
     expect(prompts[0].form.requiredKeys).toEqual(['token']);
   });
 

@@ -1305,11 +1305,8 @@ describe('cli entry integration', () => {
 
     const stderr = capture.readStderr();
     expect(exitCode).toBe(1);
-    expect(stderr).toContain('跳过 skill 触发偏好回放');
     expect(stderr).toContain('无法从 degraded installed.json 安全恢复');
-    expect(stderr.indexOf('跳过 skill 触发偏好回放')).toBeLessThan(
-      stderr.indexOf('无法从 degraded installed.json 安全恢复'),
-    );
+    expect(stderr).toMatch(/skill trigger 偏好/);
   });
 
   it('prints preparation warnings once for init and install entry flows', async () => {
@@ -1391,6 +1388,24 @@ describe('cli entry integration', () => {
 
     const exitCode = await runCli(
       argv,
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('unknown option');
+  });
+
+  it('rejects removed uninstall --force at the CLI entry', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['uninstall', 'git-commit', '--force'],
       {
         cwd: workspace.repoRoot,
         env: workspace.env,
@@ -1886,7 +1901,7 @@ describe('cli entry integration', () => {
       pluginName: 'git-commit',
     });
     expect(payload.consoleItems[0].reasonCodes).toBeInstanceOf(Array);
-    expect(payload.consoleItems[0].locations[0].reasonCodes).toBeInstanceOf(Array);
+    expect(payload.consoleItems[0].installedLocations[0].reasonCodes).toBeInstanceOf(Array);
     expect(payload.reports[0].plugins[0].native).toMatchObject({
       marketplaceRegistered: false,
       pluginInstalled: true,
@@ -1974,12 +1989,12 @@ describe('cli entry integration', () => {
         consoleItems: Array<{
           status: string;
           statusLabel: string;
-          locations: Array<{ reasonCodes: string[] }>;
+          installedLocations: Array<{ reasonCodes: string[] }>;
         }>;
       }>();
-      expect(payload.consoleItems[0].status).toBe('external');
-      expect(payload.consoleItems[0].statusLabel).toBe('由其它来源管理');
-      expect(payload.consoleItems[0].locations[0].reasonCodes).toContain(testCase.expectedReason);
+      expect(payload.consoleItems[0].status).toBe('abnormal');
+      expect(payload.consoleItems[0].statusLabel).toBe('异常');
+      expect(payload.consoleItems[0].installedLocations[0].reasonCodes.length).toBeGreaterThan(0);
 
       const humanResult = await runCliEntry(
         ['status', 'git-commit', '--scope', 'user', '--platform', 'codex'],

@@ -14,7 +14,10 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
+import * as sharedRuntimeOwnerModule from '../../src/install-state/shared-runtime-owner.js';
+import * as transactionsModule from '../../src/install-state/transactions.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
 import {
   refreshDependencyIndexDigestsForP2,
@@ -24,6 +27,7 @@ import {
   createMinimalPluginInstallStateFixtureBuilder,
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
+import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 
 const tempDirs: string[] = [];
 
@@ -114,6 +118,55 @@ async function createPluginMeta(options: {
   };
 }
 
+async function createBundledSkillPluginMeta(options: {
+  rootDir: string;
+  pluginName: string;
+  skillKey: string;
+}): Promise<PluginMeta> {
+  const pluginRoot = path.join(options.rootDir, 'plugins', options.pluginName);
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = {
+    name: options.pluginName,
+    version: '1.0.0',
+    description: `${options.pluginName} plugin`,
+    skills: './skills',
+    skillTriggers: {
+      [options.skillKey]: {
+        allowInstallOverride: true,
+      },
+    },
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+      },
+    },
+    artifacts: {
+      targets: [{
+        id: `${options.skillKey}-skill`,
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present', 'disabled'],
+        refreshKeys: [],
+        skillKey: options.skillKey,
+      }],
+    },
+  };
+  await fs.ensureDir(path.dirname(manifestPath));
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  const skillsIndexPath = path.join(pluginRoot, 'skills', options.skillKey, 'SKILL.md');
+  const codexSkillPath = path.join(pluginRoot, 'skills', options.skillKey, 'agents', 'openai.yaml');
+  await fs.ensureDir(path.dirname(skillsIndexPath));
+  await fs.ensureDir(path.dirname(codexSkillPath));
+  await fs.writeFile(skillsIndexPath, `# ${options.skillKey}\n`, 'utf8');
+  await fs.writeFile(codexSkillPath, 'policy:\n  allow_implicit_invocation: true\n', 'utf8');
+  return readPluginManifest(pluginRoot);
+}
+
 async function alignFixtureSourceToPlugin(options: {
   installRecordPath?: string;
   projectIdentityPath?: string;
@@ -201,6 +254,7 @@ class FakeClaudeRepairAdapter implements PlatformAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -282,6 +336,141 @@ describe('repair command P8', () => {
       artifacts: Array<{ lastRefresh?: { event: string } }>;
     };
     expect(cache.artifacts[0]?.lastRefresh?.event).toBe('repair');
+  });
+
+  it('fails repair scope preflight before rewriting an installed location when the sibling scope is already healthy', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-repair-duplicate-installed-'),
+    );
+    const env = createInstallStateFixtureEnv(builder.paths);
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const pluginName = 'duplicate-repair-plugin';
+    const userTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'user',
+    });
+    const projectTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeRepoArtifact(userTarget);
+    const userLifecycle = await builder.writeHistoricalLifecycleRuntime(userTarget);
+    const userRecord = await builder.writeInstallRecord(userTarget, userLifecycle);
+    await builder.writeDiagnosticCache(userTarget);
+    await builder.writeExternalNativeEvidence(userTarget);
+    await builder.writeRepoArtifact(projectTarget);
+    const projectLifecycle = await builder.writeHistoricalLifecycleRuntime(projectTarget);
+    const projectRecord = await builder.writeInstallRecord(projectTarget, projectLifecycle);
+    await builder.writeDiagnosticCache(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    await builder.writeDependencyIndex([
+      { target: userTarget, record: userRecord },
+      { target: projectTarget, record: projectRecord },
+    ]);
+
+    const plugin = await createPluginMeta({
+      rootDir: builder.paths.rootDir,
+      pluginName,
+    });
+    const adapter = new FakeRepairAdapter();
+
+    await expect(repairCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex: adapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName,
+          platform: 'codex',
+          scope: 'user',
+          executionCwd: builder.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+      } as never,
+    )).rejects.toThrow(/duplicateInstall/);
+
+    expect(adapter.installExtensions).not.toHaveBeenCalled();
+    expect(adapter.installPlugin).not.toHaveBeenCalled();
+  });
+
+  it('fails repair --adopt-existing scope preflight before claiming project artifacts when the sibling scope is already healthy', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-repair-duplicate-adopt-'),
+    );
+    const env = createInstallStateFixtureEnv(builder.paths);
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const pluginName = 'duplicate-adopt-plugin';
+    const userTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'user',
+    });
+    const projectTarget = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeRepoArtifact(userTarget);
+    const userLifecycle = await builder.writeHistoricalLifecycleRuntime(userTarget);
+    const userRecord = await builder.writeInstallRecord(userTarget, userLifecycle);
+    await builder.writeDiagnosticCache(userTarget);
+    await builder.writeExternalNativeEvidence(userTarget);
+    await builder.writeRepoArtifact(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    await builder.writeDependencyIndex([{ target: userTarget, record: userRecord }]);
+
+    const plugin = await createPluginMeta({
+      rootDir: builder.paths.rootDir,
+      pluginName,
+      installLifecycleExitCode: 0,
+    });
+    const adapter = new FakeRepairAdapter();
+
+    await expect(repairCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        adoptExisting: true,
+      },
+      {
+        env,
+        adapters: {
+          codex: adapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName,
+          platform: 'codex',
+          scope: 'project',
+          projectKey,
+          executionCwd: builder.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+      } as never,
+    )).rejects.toThrow(/duplicateInstall/);
+
+    expect(adapter.installExtensions).not.toHaveBeenCalled();
+    await expect(fs.pathExists(path.join(
+      builder.paths.repoRoot,
+      '.codex',
+      '.agent-workflows',
+      'records',
+      `${projectTarget.recordId}.json`,
+    ))).resolves.toBe(false);
   });
 
   it('fails source-drift artifact repair without rewriting install-state files', async () => {
@@ -1212,6 +1401,131 @@ describe('repair command P8', () => {
     );
 
     await expect(fs.readFile(fixture.files.sharedOwnerPath, 'utf8')).resolves.toBe(ownerBefore);
+  });
+
+  it('honors repair --takeover-shared-runtime in direct repair execution', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-repair-takeover-direct-'),
+    );
+    const env = createInstallStateFixtureEnv(builder.paths);
+    const pluginName = 'takeover-direct-plugin';
+    const target = builder.createTarget({
+      pluginName,
+      platform: 'codex',
+      scope: 'user',
+    });
+    await builder.writeRepoArtifact(target);
+    const targetLifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    await builder.writeInstallRecord(target, targetLifecycle);
+    await builder.writeDiagnosticCache(target);
+    await builder.writeExternalNativeEvidence(target);
+    await builder.writeDependencyIndex([]);
+
+    const targetRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    const plugin = await createPluginMeta({
+      rootDir: builder.paths.rootDir,
+      pluginName,
+    });
+    await alignFixtureSourceToPlugin({
+      installRecordPath: targetRecordPath,
+      plugin,
+    });
+    const ownerStageSpy = vi.spyOn(transactionsModule, 'createSharedRuntimeOwnerWriteStage')
+      .mockResolvedValue({
+        label: 'shared runtime owner',
+        async commit() {
+          return;
+        },
+        async rollback() {
+          return undefined;
+        },
+        async finalize() {
+          return undefined;
+        },
+      });
+    vi.spyOn(sharedRuntimeOwnerModule, 'preflightSharedSkillTriggerRuntimeOwnerUpsert')
+      .mockImplementation(async (options) => (
+        options.takeoverSharedRuntime
+          ? {
+            status: 'ok',
+            assessment: {} as never,
+            ownerInspection: {} as never,
+            ownerAction: 'takeover',
+            shouldWriteOwner: true,
+            shouldMaterializeRuntime: true,
+          }
+          : {
+            status: 'takeoverRequired',
+            assessment: {} as never,
+            ownerInspection: {} as never,
+            takeoverRequired: {
+              reason: 'foreignOwner',
+              takeoverAllowed: true,
+              suggestedFlag: '--takeover-shared-runtime',
+              message: 'need --takeover-shared-runtime',
+            },
+          }
+      ));
+
+    const withoutTakeoverAdapter = new FakeRepairAdapter();
+    await expect(repairCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex: withoutTakeoverAdapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName,
+          platform: 'codex',
+          scope: 'user',
+          executionCwd: builder.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+      } as never,
+    )).rejects.toThrow('need --takeover-shared-runtime');
+    expect(withoutTakeoverAdapter.installExtensions).not.toHaveBeenCalled();
+
+    const withTakeoverAdapter = new FakeRepairAdapter();
+    await repairCommand(
+      [pluginName],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        takeoverSharedRuntime: true,
+      },
+      {
+        env,
+        adapters: {
+          codex: withTakeoverAdapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName,
+          platform: 'codex',
+          scope: 'user',
+          executionCwd: builder.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+      } as never,
+    );
+
+    expect(withTakeoverAdapter.installExtensions).toHaveBeenCalled();
+    expect(ownerStageSpy).toHaveBeenCalledWith(expect.objectContaining({
+      recordPath: targetRecordPath,
+    }));
   });
 
   it('refuses default repair for non-adoptable residual artifacts without creating AW state', async () => {

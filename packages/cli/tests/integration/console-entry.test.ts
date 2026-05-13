@@ -10,55 +10,118 @@ afterEach(() => {
 });
 
 describe('console entry', () => {
-  it('runs bare aw through the console controller with a fake prompt', async () => {
-    const statusCommand = vi.fn()
-      .mockResolvedValueOnce({
-        consoleItems: [{
-          pluginName: 'git-commit',
-          title: 'git-commit',
+  it('runs bare aw through the feature-first console controller', async () => {
+    const notInstalledSummary = {
+      pluginName: 'git-commit',
+      title: 'git-commit',
+      status: 'notInstalled',
+      statusLabel: '未安装',
+      locationSummary: 'Codex（个人）',
+      supportedPlatforms: ['codex'],
+      installedLocations: [{
+        platform: 'codex',
+        scope: 'user',
+        label: 'Codex（个人）',
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        reasonCodes: [],
+        nextSteps: [],
+      }],
+      features: [
+        { kind: 'install', label: '安装', targetSelection: 'singleTarget' },
+        { kind: 'status', label: '查看状态', targetSelection: 'none' },
+        { kind: 'diagnose', label: '查看诊断', targetSelection: 'none' },
+      ],
+      reasonCodes: [],
+      nextSteps: [],
+    };
+    const installedSummary = {
+      pluginName: 'git-commit',
+      title: 'git-commit',
+      status: 'installed',
+      statusLabel: '已安装',
+      locationSummary: 'Codex（个人）',
+      supportedPlatforms: ['codex'],
+      installedLocations: [{
+        platform: 'codex',
+        scope: 'user',
+        label: 'Codex（个人）',
+        status: 'installed',
+        statusLabel: '已安装',
+        reasonCodes: [],
+        nextSteps: [],
+      }],
+      features: [
+        { kind: 'status', label: '查看状态', targetSelection: 'none' },
+        { kind: 'diagnose', label: '查看诊断', targetSelection: 'none' },
+      ],
+      reasonCodes: [],
+      nextSteps: [],
+    };
+    const loadConsoleItems = vi.fn()
+      .mockResolvedValueOnce([{
+        summary: notInstalledSummary,
+        pageItem: {
+          summary: notInstalledSummary,
+          statusIcon: 'circle',
+          statusTone: 'neutral',
+          platformBadges: [{ label: 'Codex', icon: 'square-terminal', tone: 'neutral' }],
+          primaryActionLabel: '安装',
+        },
+        locations: [{
+          platform: 'codex',
+          scope: 'user',
+          locationLabel: 'Codex（个人）',
           status: 'notInstalled',
           statusLabel: '未安装',
-          locationSummary: 'Codex（个人）',
-          actions: [],
           reasonCodes: [],
           nextSteps: [],
-          locations: [{
-            platform: 'codex',
-            scope: 'user',
-            locationLabel: 'Codex（个人）',
-            status: 'notInstalled',
-            statusLabel: '未安装',
-            reasonCodes: [],
-            nextSteps: [],
-            actions: [{
-              kind: 'openInstallWizard',
-              label: '安装',
-              target: { platform: 'codex', scope: 'user' },
-            }],
+          actions: [{
+            kind: 'openInstallWizard',
+            label: '安装',
+            target: { platform: 'codex', scope: 'user' },
           }],
         }],
-      })
-      .mockResolvedValueOnce({
-        consoleItems: [{
-          pluginName: 'git-commit',
-          title: 'git-commit',
+      }])
+      .mockResolvedValueOnce([{
+        summary: installedSummary,
+        pageItem: {
+          summary: installedSummary,
+          statusIcon: 'check-circle',
+          statusTone: 'success',
+          platformBadges: [{ label: 'Codex', icon: 'square-terminal', tone: 'neutral' }],
+        },
+        locations: [{
+          platform: 'codex',
+          scope: 'user',
+          locationLabel: 'Codex（个人）',
           status: 'installed',
           statusLabel: '已安装',
-          locationSummary: 'Codex（个人）',
-          actions: [],
           reasonCodes: [],
           nextSteps: [],
-          locations: [{
-            platform: 'codex',
-            scope: 'user',
-            locationLabel: 'Codex（个人）',
-            status: 'installed',
-            statusLabel: '已安装',
-            reasonCodes: [],
-            nextSteps: [],
-            actions: [],
-          }],
+          actions: [],
         }],
+      }]);
+    const statusCommand = vi.fn()
+      .mockResolvedValueOnce({
+        output: '',
+        matrix: {
+          cells: [{
+            report: {
+              currentCatalog: { available: true },
+            },
+          }],
+        },
+      })
+      .mockResolvedValueOnce({
+        output: '',
+        matrix: {
+          cells: [{
+            report: {
+              currentCatalog: { available: true },
+            },
+          }],
+        },
       });
     const preparePluginTargetsForCommand = vi.fn().mockResolvedValue({
       ledger: { ledgerState: { status: 'available' } },
@@ -88,6 +151,20 @@ describe('console entry', () => {
       configPrompts: [],
       commandAction: 'install',
     });
+    const planConsoleGraphWriteTargets = vi.fn().mockImplementation(async (options: {
+      targets: Array<{ pluginName: string }>;
+      platforms: string[];
+    }) => ({
+      requestedTargets: options.targets.map((target) => ({
+        target,
+        platform: options.platforms[0] ?? 'codex',
+      })),
+      writeTargets: options.targets.map((target) => ({
+        target,
+        platform: options.platforms[0] ?? 'codex',
+        resolvedInstallOptions: undefined,
+      })),
+    }));
     const resolveSkillTriggerApplicabilityForPlugin = vi.fn().mockResolvedValue('fixed');
     const installCommand = vi.fn().mockResolvedValue({
       platforms: ['codex'],
@@ -95,15 +172,22 @@ describe('console entry', () => {
       warnings: [],
     });
 
-    vi.doMock('../../src/commands/status.js', () => ({ statusCommand }));
+    vi.doMock('../../src/commands/status.js', () => ({
+      loadConsoleItems,
+      statusCommand,
+    }));
     vi.doMock('../../src/commands/common.js', () => ({ preparePluginTargetsForCommand }));
-    vi.doMock('../../src/commands/console-wizard.js', () => ({ createInstallWizardDecision }));
+    vi.doMock('../../src/commands/console-wizard.js', () => ({
+      createInstallWizardDecision,
+      planConsoleGraphWriteTargets,
+    }));
     vi.doMock('../../src/utils/skill-trigger-preferences.js', () => ({ resolveSkillTriggerApplicabilityForPlugin }));
     vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
 
     const prompt = createFakePrompt([
       { method: 'select', value: 'git-commit' },
-      { method: 'select', value: 'openInstallWizard' },
+      { method: 'select', value: 'install' },
+      { method: 'select', action: 'exit' },
       { method: 'select', value: '__exit' },
     ]);
     const consoleDriver = createFakeConsoleDriver();
@@ -135,7 +219,7 @@ describe('console entry', () => {
     const prompt = {
       select: vi.fn(async () => {
         promptCalled = true;
-        return { cancelled: true } as const;
+        return { action: 'cancel', cancelled: true } as const;
       }),
     };
     const capture = createCapturedCliIo();

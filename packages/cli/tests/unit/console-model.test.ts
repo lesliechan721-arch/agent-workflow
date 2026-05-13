@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  createConsolePluginDetailPageModel,
+  createConsoleControllerItems,
+  createPluginConsoleExecutableActions,
   createPluginConsoleItems,
   createPluginConsoleLocationKey,
-  type PluginConsoleAction,
+  resolvePluginConsoleMeta,
   type PluginConsoleLocationDiagnostics,
   type PluginConsoleReasonCode,
 } from '../../src/commands/console-model.js';
@@ -15,32 +18,24 @@ import type {
 import type {
   ManagedArtifactStatus,
   NativePluginStatus,
+  PluginMeta,
   PluginStatusReport,
   RepoManagedProjectItemReport,
   RepoManagedSessionStateReport,
   ScopeManagedEvidence,
 } from '../../src/types.js';
 
-const FORBIDDEN_PROSE_TERMS = [
-  'ledger',
-  '账本',
-  'degraded',
-  'healthSource',
-  'repo-managed',
-  'tracking',
-  'scope',
-  'app-server',
-  'RPC',
-  'pluginEnabled',
-  'pluginInstalled',
-  'active cache',
-  'cacheStatus',
-  'artifactRefresh',
-  'refreshKeys',
-  'configDigest',
-  'contentDigest',
-  'sessionVisibility',
-  'projectTrust',
+const FORBIDDEN_PUBLIC_KEYS = [
+  'statusIcon',
+  'statusTone',
+  'platformBadges',
+  'primaryActionLabel',
+  'actions',
+  'target',
+  'command',
+  'confirmText',
+  'availableTargets',
+  'targetOptions',
 ];
 
 function native(overrides: Partial<NativePluginStatus> = {}): NativePluginStatus {
@@ -206,7 +201,7 @@ function matrix(cells: StatusMatrixCell[]): StatusMatrixReport {
   };
 }
 
-function singleItem(
+function singleSummary(
   inputCell: StatusMatrixCell,
   locationDiagnosticsByKey?: Record<string, PluginConsoleLocationDiagnostics>,
 ) {
@@ -214,42 +209,40 @@ function singleItem(
     locationDiagnosticsByKey,
   });
   expect(items).toHaveLength(1);
-  return items[0];
+  return items[0]!;
 }
 
-function sanitizeAndAssertProse(item: ReturnType<typeof singleItem>): void {
-  const prose = [
-    item.issueSummary ?? '',
-    ...(item.detailHints ?? []),
-    ...item.nextSteps,
-    ...item.locations.flatMap((location) => [
-      location.issueSummary ?? '',
-      ...(location.detailHints ?? []),
-      ...location.nextSteps,
-    ]),
-  ].join('\n');
-
-  for (const term of FORBIDDEN_PROSE_TERMS) {
-    expect(prose).not.toContain(term);
-  }
+function singleController(
+  inputCell: StatusMatrixCell,
+  locationDiagnosticsByKey?: Record<string, PluginConsoleLocationDiagnostics>,
+) {
+  const items = createConsoleControllerItems(matrix([inputCell]), {
+    locationDiagnosticsByKey,
+  });
+  expect(items).toHaveLength(1);
+  return items[0]!;
 }
 
-function writeActions(actions: PluginConsoleAction[]): PluginConsoleAction[] {
-  return actions.filter((action) =>
-    action.kind === 'runInstall' ||
-    action.kind === 'runUpgrade' ||
-    action.kind === 'runUninstall' ||
-    action.kind === 'repairInstall' ||
-    action.kind === 'cleanupRecovery' ||
-    action.kind === 'reapplyConfigRefresh',
-  );
-}
+type ReasonFixtureName =
+  | 'nativeIncomplete'
+  | 'nativeResidue'
+  | 'missingRecord'
+  | 'upgradeEvidenceUnknown'
+  | 'artifactRefreshFailed'
+  | 'artifactDrift'
+  | 'projectVisibilityBlocked'
+  | 'sessionVisibilityLimited'
+  | 'externalOwnership'
+  | 'requiredConfigMissing'
+  | 'invalidConfig'
+  | 'unreadableConfig'
+  | 'trackingIdentityBroken'
+  | 'roleOrMcpConflict'
+  | 'unmanagedArtifactConflict'
+  | 'catalogCapabilityChanged'
+  | 'catalogUnavailable';
 
-function actionKinds(actions: PluginConsoleAction[]): string[] {
-  return actions.map((action) => action.kind);
-}
-
-function reasonFixture(reason: PluginConsoleReasonCode): StatusMatrixCell {
+function reasonFixture(reason: ReasonFixtureName): StatusMatrixCell {
   switch (reason) {
     case 'nativeIncomplete':
       return cell({
@@ -349,11 +342,6 @@ function reasonFixture(reason: PluginConsoleReasonCode): StatusMatrixCell {
     case 'externalOwnership':
       return cell({
         report: report({
-          currentCatalog: {
-            rootDir: '/catalog/demo-plugin',
-            source: 'local',
-            available: true,
-          },
           externalOwnership: {
             present: true,
             checkState: 'known',
@@ -445,8 +433,8 @@ function reasonFixture(reason: PluginConsoleReasonCode): StatusMatrixCell {
 }
 
 describe('console-model', () => {
-  it('covers the six friendly top-level statuses', () => {
-    const notInstalled = singleItem(cell({
+  it('exports V2 summary statuses and keeps public shape clean', () => {
+    const notInstalled = singleSummary(cell({
       report: report({
         currentCatalog: {
           rootDir: '/catalog/demo-plugin',
@@ -455,17 +443,12 @@ describe('console-model', () => {
         },
       }),
     }));
-    const installed = singleItem(cell({
+    const installed = singleSummary(cell({
       platform: 'claude',
       report: report({
         native: native(),
         scopeInitialized: 'yes',
         scopeManagedEvidence: { ledger: true },
-        currentCatalog: {
-          rootDir: '/catalog/demo-plugin',
-          source: 'local',
-          available: true,
-        },
       }),
     }));
     const upgradeCell = cell({
@@ -476,445 +459,212 @@ describe('console-model', () => {
         scopeManagedEvidence: { ledger: true },
       }),
     });
-    const upgradeAvailable = singleItem(upgradeCell, {
+    const upgradeAvailable = singleSummary(upgradeCell, {
       [createPluginConsoleLocationKey(upgradeCell)]: { upgradeState: 'available' },
     });
-    const needsAction = singleItem(reasonFixture('requiredConfigMissing'));
-    const partial = singleItem(reasonFixture('sessionVisibilityLimited'));
-    const external = singleItem(reasonFixture('externalOwnership'));
+    const abnormal = singleSummary(reasonFixture('requiredConfigMissing'));
 
     expect(notInstalled.status).toBe('notInstalled');
     expect(installed.status).toBe('installed');
     expect(upgradeAvailable.status).toBe('upgradeAvailable');
-    expect(needsAction.status).toBe('needsAction');
-    expect(partial.status).toBe('partial');
-    expect(external.status).toBe('external');
+    expect(abnormal.status).toBe('abnormal');
 
-    expect(notInstalled.statusLabel).toBe('未安装');
-    expect(installed.statusLabel).toBe('已安装');
-    expect(upgradeAvailable.statusLabel).toBe('可升级');
-    expect(needsAction.statusLabel).toBe('需要处理');
-    expect(partial.statusLabel).toBe('部分可用');
-    expect(external.statusLabel).toBe('由其它来源管理');
+    expect(notInstalled.features.map((feature) => feature.kind)).toContain('install');
+    expect(installed.features.map((feature) => feature.kind)).toContain('uninstall');
+    expect(upgradeAvailable.features.map((feature) => feature.kind)).toContain('upgrade');
+    expect(abnormal.features.map((feature) => feature.kind)).toContain('configure');
+
+    const serialized = JSON.parse(JSON.stringify(abnormal)) as Record<string, unknown>;
+    for (const key of FORBIDDEN_PUBLIC_KEYS) {
+      expect(serialized).not.toHaveProperty(key);
+    }
+    expect(serialized).toHaveProperty('installedLocations');
+    expect(serialized).toHaveProperty('features');
   });
 
-  it('keeps not-installed and external location actions narrow', () => {
-    const notInstalled = singleItem(cell({
-      report: report({
-        currentCatalog: {
-          rootDir: '/catalog/demo-plugin',
-          source: 'local',
-          available: true,
-        },
-      }),
-    }));
-    const external = singleItem(reasonFixture('externalOwnership'));
-
-    expect(actionKinds(notInstalled.locations[0].actions)).toEqual(['openInstallWizard']);
-    expect(actionKinds(external.locations[0].actions)).toEqual([]);
-  });
-
-  it('maps every required reason code and keeps friendly prose clean', () => {
+  it('maps V2 reason codes and never leaks old ids in summaries', () => {
     const upgradeCell = reasonFixture('upgradeEvidenceUnknown');
     const diagnostics: Record<string, PluginConsoleLocationDiagnostics> = {
       [createPluginConsoleLocationKey(upgradeCell)]: { upgradeState: 'unknown' },
     };
+    const cases: Array<{ fixture: ReasonFixtureName; expected: PluginConsoleReasonCode | null }> = [
+      { fixture: 'nativeIncomplete', expected: 'nativeIncomplete' },
+      { fixture: 'nativeResidue', expected: 'residueDetected' },
+      { fixture: 'missingRecord', expected: 'recordCorrupted' },
+      { fixture: 'upgradeEvidenceUnknown', expected: null },
+      { fixture: 'artifactRefreshFailed', expected: 'artifactRefreshFailed' },
+      { fixture: 'artifactDrift', expected: 'artifactRefreshFailed' },
+      { fixture: 'projectVisibilityBlocked', expected: 'foreignOwnershipConflict' },
+      { fixture: 'sessionVisibilityLimited', expected: 'foreignOwnershipConflict' },
+      { fixture: 'externalOwnership', expected: 'foreignOwnershipConflict' },
+      { fixture: 'requiredConfigMissing', expected: 'missingRequiredConfig' },
+      { fixture: 'invalidConfig', expected: 'missingRequiredConfig' },
+      { fixture: 'unreadableConfig', expected: 'missingRequiredConfig' },
+      { fixture: 'trackingIdentityBroken', expected: 'recordCorrupted' },
+      { fixture: 'roleOrMcpConflict', expected: 'foreignOwnershipConflict' },
+      { fixture: 'unmanagedArtifactConflict', expected: 'foreignOwnershipConflict' },
+      { fixture: 'catalogCapabilityChanged', expected: 'recordCorrupted' },
+      { fixture: 'catalogUnavailable', expected: null },
+    ];
 
-    const cases: PluginConsoleReasonCode[] = [
-      'nativeIncomplete',
-      'nativeResidue',
+    const forbiddenLegacyCodes = [
       'missingRecord',
-      'upgradeEvidenceUnknown',
-      'artifactRefreshFailed',
-      'artifactDrift',
-      'projectVisibilityBlocked',
-      'sessionVisibilityLimited',
-      'externalOwnership',
+      'adoptExisting',
+      'ownerConflict',
+      'dependencyProtected',
       'requiredConfigMissing',
       'invalidConfig',
       'unreadableConfig',
-      'trackingIdentityBroken',
-      'roleOrMcpConflict',
-      'unmanagedArtifactConflict',
-      'catalogCapabilityChanged',
-      'catalogUnavailable',
+      'nativeResidue',
+      'artifactDrift',
     ];
 
-    for (const reason of cases) {
-      const fixture = reason === 'upgradeEvidenceUnknown' ? upgradeCell : reasonFixture(reason);
-      const item = singleItem(
+    for (const entry of cases) {
+      const fixture = entry.fixture === 'upgradeEvidenceUnknown' ? upgradeCell : reasonFixture(entry.fixture);
+      const summary = singleSummary(
         fixture,
-        reason === 'upgradeEvidenceUnknown' ? diagnostics : undefined,
+        entry.fixture === 'upgradeEvidenceUnknown' ? diagnostics : undefined,
       );
-      expect(item.locations[0].reasonCodes).toContain(reason);
-      sanitizeAndAssertProse(item);
+      if (entry.expected) {
+        expect(summary.reasonCodes).toContain(entry.expected);
+      } else {
+        expect(summary.reasonCodes).toEqual([]);
+      }
+
+      const serialized = JSON.stringify(summary);
+      for (const legacyCode of forbiddenLegacyCodes) {
+        expect(serialized).not.toContain(legacyCode);
+      }
+      expect(serialized).not.toContain('openInstallWizard');
+      expect(serialized).not.toContain('diagnoseCommand');
     }
   });
 
-  it('applies cross-location summary and status priority', () => {
-    const items = createPluginConsoleItems(matrix([
+  it('derives duplicate groups and summary-level features from controller locations', () => {
+    const summaries = createPluginConsoleItems(matrix([
       cell({
         platform: 'codex',
         scope: 'user',
-        report: report({
-          native: {
-            requiresNativePlugin: true,
-            pluginInstalled: true,
-            pluginEnabled: true,
-          },
-          scopeManagedEvidence: { ledger: false },
-        }),
+        installState: installState(),
+        report: undefined,
       }),
       cell({
-        platform: 'claude',
+        platform: 'codex',
         scope: 'project',
         projectKey: '/workspace',
-        report: report({
-          native: native(),
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true, tracking: true },
-        }),
+        installState: installState(),
+        report: undefined,
       }),
     ]));
 
-    expect(items).toHaveLength(1);
-    expect(items[0].status).toBe('needsAction');
-    expect(items[0].locationSummary).toBe('多个位置');
-    expect(items[0].actions).toEqual([]);
-    expect(items[0].locations.map((location) => location.locationLabel)).toEqual([
-      'Codex（个人）',
-      'Claude Code（当前项目）',
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.reasonCodes).toContain('duplicateInstall');
+    expect(summaries[0]!.duplicateInstallGroups).toHaveLength(1);
+    expect(summaries[0]!.features.map((feature) => feature.kind)).toContain('resolveDuplicateInstall');
+    expect(summaries[0]!.locationSummary).toBe('Codex（个人 + 当前项目）');
+  });
+
+  it('uses manifest interface metadata for title and short description', () => {
+    const plugin: PluginMeta = {
+      rootDir: '/catalog/demo-plugin',
+      manifestPath: '/catalog/demo-plugin/plugin.json',
+      manifest: {
+        name: 'demo-plugin',
+        version: '1.2.3',
+        description: 'fallback description',
+        interface: {
+          displayName: 'Demo Display Name',
+          shortDescription: 'Demo short description',
+        },
+        marketplace: {
+          category: 'test',
+          strict: false,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+      },
+    };
+
+    expect(resolvePluginConsoleMeta(plugin)).toEqual({
+      title: 'Demo Display Name',
+      description: 'Demo short description',
+      version: '1.2.3',
+    });
+  });
+
+  it('keeps controller-only actions and commands out of public summaries', () => {
+    const controller = singleController(reasonFixture('artifactRefreshFailed'));
+    const summary = controller.summary;
+
+    expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('reapplyConfigRefresh');
+    expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('diagnoseCommand');
+    expect(summary.features.map((feature) => feature.kind)).toContain('reapplyConfigRefresh');
+    expect(summary.features.map((feature) => feature.kind)).toContain('diagnose');
+
+    const publicJson = JSON.stringify(summary);
+    expect(publicJson).not.toContain('reapplyConfigRefresh","target');
+    expect(publicJson).not.toContain('command');
+    expect(publicJson).not.toContain('confirmText');
+  });
+
+  it('derives page model fields without leaking them into JSON summaries', () => {
+    const controller = singleController(reasonFixture('requiredConfigMissing'));
+
+    expect(controller.pageItem.statusIcon).toBe('alert-circle');
+    expect(controller.pageItem.statusTone).toBe('danger');
+    expect(controller.pageItem.platformBadges).toEqual([
+      {
+        label: 'Codex',
+        icon: 'square-terminal',
+        tone: 'neutral',
+      },
+    ]);
+    expect(controller.pageItem.primaryActionLabel).toBe('配置');
+
+    expect(controller.summary).not.toHaveProperty('statusIcon');
+    expect(controller.summary).not.toHaveProperty('statusTone');
+    expect(controller.summary).not.toHaveProperty('platformBadges');
+    expect(controller.summary).not.toHaveProperty('primaryActionLabel');
+  });
+
+  it('keeps controller action contracts intact, including internal diagnose commands', () => {
+    const controller = singleController(reasonFixture('nativeIncomplete'));
+    const writeActions = controller.locations[0]!.actions.filter((action) =>
+      action.kind === 'runUpgrade' ||
+      action.kind === 'runUninstall' ||
+      action.kind === 'repairInstall' ||
+      action.kind === 'cleanupRecovery' ||
+      action.kind === 'reapplyConfigRefresh',
+    );
+
+    expect(writeActions.length).toBeGreaterThan(0);
+    for (const action of writeActions) {
+      expect(action.target).toBeDefined();
+    }
+
+    const destructiveActions = controller.locations[0]!.actions.filter((action) => action.destructive);
+    for (const action of destructiveActions) {
+      expect(action.confirmText).toBeTruthy();
+    }
+
+    const diagnoseAction = singleController(reasonFixture('catalogUnavailable'))
+      .locations[0]!.actions.find((action) => action.kind === 'diagnoseCommand');
+    expect(diagnoseAction?.command).toEqual([
+      'aw',
+      'status',
+      'demo-plugin',
+      '--platform',
+      'codex',
+      '--scope',
+      'user',
+      '--verbose',
     ]);
   });
 
-  it('keeps upgrade checks conservative', () => {
-    const healthyCell = cell({
-      platform: 'claude',
-      report: report({
-        native: native(),
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true },
-      }),
-    });
-    const driftedCell = cell({
-      platform: 'claude',
-      report: report({
-        native: native(),
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        managedArtifacts: [managedArtifact({ health: 'contentDrift', diagnostics: ['content drift'] })],
-      }),
-    });
-    const unavailableCell = cell({
-      platform: 'claude',
-      report: report({
-        native: native(),
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true },
-        currentCatalog: {
-          rootDir: '/catalog/demo-plugin',
-          source: 'embedded',
-          available: false,
-          reason: 'missing',
-        },
-      }),
-    });
-
-    const healthyItem = singleItem(healthyCell, {
-      [createPluginConsoleLocationKey(healthyCell)]: { upgradeState: 'available' },
-    });
-    const driftedItem = singleItem(driftedCell, {
-      [createPluginConsoleLocationKey(driftedCell)]: { upgradeState: 'available' },
-    });
-    const unavailableItem = singleItem(unavailableCell, {
-      [createPluginConsoleLocationKey(unavailableCell)]: { upgradeState: 'available' },
-    });
-
-    expect(healthyItem.status).toBe('upgradeAvailable');
-    expect(driftedItem.status).toBe('needsAction');
-    expect(unavailableItem.status).toBe('installed');
-    expect(unavailableItem.locations[0].reasonCodes).toContain('catalogUnavailable');
-  });
-
-  it('handles Codex native enabled-only, cache-only, breadcrumb-only, missing record and unowned residue', () => {
-    const enabledOnly = singleItem(cell({
-      report: report({
-        native: {
-          requiresNativePlugin: true,
-          pluginInstalled: false,
-          pluginEnabled: true,
-        },
-      }),
-    }));
-    const cacheOnly = singleItem(cell({
-      report: report({
-        native: {
-          requiresNativePlugin: true,
-          pluginInstalled: true,
-          pluginEnabled: false,
-        },
-      }),
-    }));
-    const breadcrumbOnly = singleItem(cell({
-      report: report({
-        native: {
-          requiresNativePlugin: true,
-          recovery: {
-            present: true,
-            state: 'cleanup_failed',
-            reason: 'cleanup failed',
-            evidenceMatches: true,
-            suggestion: null,
-          },
-        },
-      }),
-    }));
-    const missingRecord = singleItem(reasonFixture('missingRecord'));
-    const nativeResidue = singleItem(reasonFixture('nativeResidue'));
-
-    expect(enabledOnly.status).toBe('needsAction');
-    expect(enabledOnly.locations[0].reasonCodes).toContain('nativeResidue');
-    expect(cacheOnly.status).toBe('needsAction');
-    expect(cacheOnly.locations[0].reasonCodes).toContain('nativeResidue');
-    expect(breadcrumbOnly.locations[0].reasonCodes).toContain('nativeIncomplete');
-    expect(breadcrumbOnly.locations[0].actions.map((action) => action.kind)).toContain('cleanupRecovery');
-    expect(missingRecord.locations[0].reasonCodes).toContain('missingRecord');
-    expect(nativeResidue.locations[0].actions.map((action) => action.kind)).not.toContain('cleanupRecovery');
-  });
-
-  it('maps dynamic artifact refresh failure, drift, missing and ignores disabled-by-config', () => {
-    const refreshFailed = singleItem(reasonFixture('artifactRefreshFailed'));
-    const drifted = singleItem(reasonFixture('artifactDrift'));
-    const missing = singleItem(cell({
-      scope: 'project',
-      report: report({
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        generatedArtifacts: [
-          {
-            path: '/workspace/.agents/skills/demo',
-            exists: false,
-            kind: 'skill',
-          },
-        ],
-      }),
-    }));
-    const disabledByConfig = singleItem(cell({
-      scope: 'project',
-      report: report({
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        managedArtifacts: [
-          managedArtifact({
-            health: 'disabledByConfig',
-            sessionVisibility: 'absent',
-            disabledReason: 'config',
-          }),
-        ],
-      }),
-    }));
-
-    expect(refreshFailed.locations[0].reasonCodes).toContain('artifactRefreshFailed');
-    expect(refreshFailed.locations[0].actions.map((action) => action.kind)).toContain('reapplyConfigRefresh');
-    expect(drifted.locations[0].reasonCodes).toContain('artifactDrift');
-    expect(drifted.locations[0].actions.find((action) => action.kind === 'repairInstall')?.label).toBe('重新安装/升级');
-    expect(missing.locations[0].reasonCodes).toContain('artifactDrift');
-    expect(disabledByConfig.status).toBe('installed');
-    expect(disabledByConfig.locations[0].reasonCodes).not.toContain('artifactDrift');
-  });
-
-  it('maps project trust and session visibility to partial', () => {
-    const trustUnknown = singleItem(cell({
-      scope: 'project',
-      projectKey: '/workspace',
-      report: report({
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        projectTrust: 'unknown',
-        repoManagedSessionState: {
-          items: [repoItem({ state: 'projectTrustUnknown' })],
-        },
-      }),
-    }));
-    const externalLayer = singleItem(cell({
-      report: report({
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true },
-        managedArtifacts: [
-          managedArtifact({
-            sessionVisibility: 'unknownByExternalLayer',
-          }),
-        ],
-      }),
-    }));
-
-    expect(trustUnknown.status).toBe('partial');
-    expect(trustUnknown.locations[0].reasonCodes).toContain('projectVisibilityBlocked');
-    expect(externalLayer.status).toBe('partial');
-    expect(externalLayer.locations[0].reasonCodes).toContain('sessionVisibilityLimited');
-  });
-
-  it('treats pure external ownership differently from external conflict', () => {
-    const pureExternal = singleItem(reasonFixture('externalOwnership'));
-    const conflict = singleItem(cell({
-      report: report({
-        externalOwnership: { present: true, checkState: 'known' },
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true },
-      }),
-    }));
-
-    expect(pureExternal.status).toBe('external');
-    expect(conflict.status).toBe('needsAction');
-    expect(conflict.locations[0].reasonCodes).toContain('externalOwnership');
-  });
-
-  it('covers the three catalogUnavailable scenarios and hides config/upgrade actions', () => {
-    const cases = [
-      cell({
-        report: report({
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true },
-          currentCatalog: null,
-        }),
-      }),
-      cell({
-        report: report({
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true },
-          currentCatalog: {
-            rootDir: '/catalog/demo-plugin',
-            source: 'embedded',
-            available: false,
-            reason: 'parse failed',
-          },
-        }),
-      }),
-      cell({
-        report: report({
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true },
-          currentCatalog: {
-            rootDir: '/catalog/demo-plugin',
-            source: 'local',
-            available: false,
-            reason: 'plugin removed',
-          },
-          catalogCompatibility: 'missing',
-        }),
-      }),
-    ];
-
-    for (const fixture of cases) {
-      const item = singleItem(fixture);
-      expect(item.locations[0].reasonCodes).toContain('catalogUnavailable');
-      expect(item.locations[0].actions.map((action) => action.kind)).not.toContain('runUpgrade');
-      expect(item.locations[0].actions.map((action) => action.kind)).not.toContain('openConfigWizard');
-      expect(item.locations[0].actions.map((action) => action.kind)).toContain('runUninstall');
-      expect(item.locations[0].actions.map((action) => action.kind)).toContain('diagnoseCommand');
-    }
-  });
-
-  it('surfaces dependency reasons without turning catalog drift into a hard failure', () => {
-    const dependencyMissing = singleItem(cell({
-      report: report({
-        native: native({
-          pluginInstalled: true,
-          pluginEnabled: true,
-        }),
-        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        dependencies: {
-          healthSource: 'currentCatalog',
-          declared: [{ name: 'helper-plugin' }],
-          resolved: [{ declaration: { name: 'helper-plugin' }, source: 'currentCatalog' }],
-          satisfied: [],
-          missing: [{ declaration: { name: 'helper-plugin' }, reason: 'missing helper' }],
-          dependents: [],
-          autoInstalled: false,
-          autoRemovable: false,
-          catalogDrift: {
-            kind: 'snapshotMissing',
-            snapshotDependencies: [],
-            currentDependencies: ['helper-plugin'],
-          },
-        },
-      }),
-    }));
-    const autoRemovable = singleItem(cell({
-      report: report({
-        native: native({
-          pluginInstalled: true,
-          pluginEnabled: true,
-        }),
-        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        dependencies: {
-          healthSource: 'installSnapshot',
-          declared: [],
-          resolved: [],
-          satisfied: [],
-          missing: [],
-          dependents: [],
-          autoInstalled: true,
-          autoRemovable: true,
-          catalogDrift: {
-            kind: 'none',
-            snapshotDependencies: [],
-            currentDependencies: [],
-          },
-        },
-      }),
-    }));
-    const protectedDependency = singleItem(cell({
-      report: report({
-        native: native({
-          pluginInstalled: true,
-          pluginEnabled: true,
-        }),
-        generatedArtifacts: [{ path: '/workspace/.agents/skills/demo', exists: true, kind: 'skill', platform: 'codex' }],
-        scopeInitialized: 'yes',
-        scopeManagedEvidence: { ledger: true, tracking: true },
-        dependencies: {
-          healthSource: 'installSnapshot',
-          declared: [],
-          resolved: [],
-          satisfied: [],
-          missing: [],
-          dependents: [{ plugin: 'parent-plugin', platform: 'codex', scope: 'user', projectKey: null }],
-          autoInstalled: true,
-          autoRemovable: false,
-          catalogDrift: {
-            kind: 'none',
-            snapshotDependencies: [],
-            currentDependencies: [],
-          },
-        },
-      }),
-    }));
-
-    expect(dependencyMissing.status).toBe('needsAction');
-    expect(dependencyMissing.locations[0].reasonCodes).toContain('dependencyMissing');
-    expect(dependencyMissing.locations[0].actions.find((action) => action.kind === 'repairInstall')?.label).toBe('补齐依赖');
-
-    expect(autoRemovable.status).toBe('installed');
-    expect(autoRemovable.locations[0].reasonCodes).toContain('autoDependencyRemovable');
-    expect(autoRemovable.locations[0].actions.find((action) => action.kind === 'runUninstall')?.label).toBe('清理自动依赖');
-
-    const protectedAction = protectedDependency.locations[0].actions.find((action) => action.kind === 'runUninstall');
-    expect(protectedDependency.status).toBe('installed');
-    expect(protectedDependency.locations[0].reasonCodes).toContain('dependencyProtected');
-    expect(protectedAction?.disabledReason).toContain('暂时不能直接卸载');
-
-    sanitizeAndAssertProse(dependencyMissing);
-    sanitizeAndAssertProse(autoRemovable);
-    sanitizeAndAssertProse(protectedDependency);
-  });
-
-  it('maps adopt-existing and owner conflict actions from install-state projection', () => {
-    const adoptable = singleItem(cell({
+  it('projects adopt-existing and takeover flows as features plus controller-only commands', () => {
+    const adoptable = singleController(cell({
       scope: 'project',
       projectKey: '/workspace',
       installState: installState({
@@ -925,7 +675,7 @@ describe('console-model', () => {
       }),
       report: undefined,
     }));
-    const ownerConflict = singleItem(cell({
+    const ownerConflict = singleController(cell({
       installState: installState({
         kind: 'needsRepair',
         summary: '共享触发策略当前由另一个安装位置控制。',
@@ -940,191 +690,86 @@ describe('console-model', () => {
       report: undefined,
     }));
 
-    expect(adoptable.status).toBe('needsAction');
-    expect(adoptable.locations[0].reasonCodes).toContain('adoptExisting');
-    expect(adoptable.locations[0].actions.find((entry) => entry.label === '认领现有安装')?.command).toEqual([
-      'aw',
-      'repair',
-      'demo-plugin',
-      '--platform',
-      'codex',
-      '--scope',
-      'project',
-      '--adopt-existing',
-    ]);
+    expect(adoptable.summary.features.map((feature) => feature.kind)).toContain('adoptExisting');
+    expect(adoptable.locations[0]!.actions.find((entry) => entry.label === '认领现有安装')?.kind).toBe('runAdoptExisting');
 
-    expect(ownerConflict.locations[0].reasonCodes).toContain('ownerConflict');
-    expect(ownerConflict.locations[0].actions.find((entry) => entry.label === '接管共享触发策略')?.command).toEqual([
-      'aw',
-      'repair',
-      'demo-plugin',
-      '--platform',
-      'codex',
-      '--scope',
-      'user',
-      '--takeover-shared-runtime',
-    ]);
-    expect(ownerConflict.locations[0].actions.map((entry) => entry.kind)).not.toContain('repairInstall');
+    expect(ownerConflict.summary.features.map((feature) => feature.kind)).toContain('takeoverSharedRuntime');
+    expect(ownerConflict.locations[0]!.actions.find((entry) => entry.label === '接管共享触发策略')?.kind).toBe('runTakeoverSharedRuntime');
   });
 
-  it('suppresses owner conflict for Codex project repo-local trigger locations', () => {
-    const item = singleItem(cell({
-      scope: 'project',
-      projectKey: '/workspace',
-      installState: installState({
-        kind: 'adoptable',
-        summary: '发现了一份可认领的已有项目安装。',
-        nextSteps: ['aw repair demo-plugin --platform codex --scope project --adopt-existing'],
-        adoptExistingAvailable: true,
-        sharedRuntimeOwnerPresent: true,
-        sharedRuntimeNeedsTakeover: true,
-        sharedRuntimeParticipatesInOwner: false,
-        sharedRuntimeSemanticDelta: 'noChange',
-        sharedRuntimeOwnerConflict: false,
-      }),
-      report: undefined,
-    }));
+  it('keeps public feature payload free of target, confirmText and command details', () => {
+    const summary = singleSummary(reasonFixture('requiredConfigMissing'));
 
-    expect(item.locations[0].reasonCodes).toContain('adoptExisting');
-    expect(item.locations[0].reasonCodes).not.toContain('ownerConflict');
-    expect(item.locations[0].actions.find((entry) => entry.label === '认领现有安装')?.command).toEqual([
-      'aw',
-      'repair',
-      'demo-plugin',
-      '--platform',
-      'codex',
-      '--scope',
-      'project',
-      '--adopt-existing',
-    ]);
+    for (const feature of summary.features) {
+      expect(feature).not.toHaveProperty('target');
+      expect(feature).not.toHaveProperty('confirmText');
+      expect(feature).not.toHaveProperty('command');
+      expect(feature).not.toHaveProperty('statusIcon');
+    }
   });
 
-  it('distinguishes retained auto dependencies from unused cleanup suggestions in install-state projection', () => {
-    const removable = singleItem(cell({
-      installState: installState({
-        summary: '这个自动依赖目前已经闲置。',
-        findings: ['这个目标是自动装上的依赖，现在看起来已经没人再依赖它了。'],
-        autoInstalled: true,
-        unusedDependencyHint: true,
+  it('marks ordinary cross-platform features as multi-target but keeps takeover single-target', () => {
+    const controller = createConsoleControllerItems(matrix([
+      cell({
+        platform: 'codex',
+        installState: installState(),
+        report: undefined,
       }),
-      report: undefined,
-    }));
-    const retained = singleItem(cell({
-      installState: installState({
-        summary: '当前安装状态正常。',
-        autoInstalled: true,
-        unusedDependencyHint: false,
-      }),
-      report: undefined,
-    }));
-
-    expect(removable.locations[0].reasonCodes).toContain('autoDependencyRemovable');
-    expect(removable.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.label).toBe('清理自动依赖');
-    expect(retained.locations[0].reasonCodes).not.toContain('autoDependencyRemovable');
-    expect(retained.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.label).toBe('卸载');
-    expect(retained.locations[0].detailHints).toEqual(
-      expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
-    );
-  });
-
-  it('keeps dependency-protected uninstall disabled in install-state projection', () => {
-    const item = singleItem(cell({
-      installState: installState({
-        dependents: [{
-          plugin: 'parent-plugin',
-          platform: 'codex',
-          scope: 'user',
-        }],
-      }),
-      report: undefined,
-    }));
-
-    expect(item.locations[0].reasonCodes).toContain('dependencyProtected');
-    expect(item.locations[0].actions.find((entry) => entry.kind === 'runUninstall')?.disabledReason).toContain(
-      'parent-plugin (codex/user)',
-    );
-  });
-
-  it('does not offer residual cleanup when dependency protection already blocks removal', () => {
-    const item = singleItem(cell({
-      installState: installState({
-        kind: 'residual',
-        summary: '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。',
-        dependents: [{
-          plugin: 'parent-plugin',
-          platform: 'codex',
-          scope: 'project',
-          projectKey: '/workspace',
-        }],
-        cleanupAvailable: false,
-      }),
-      report: undefined,
-    }));
-
-    expect(item.locations[0].reasonCodes).toEqual(expect.arrayContaining(['nativeResidue', 'dependencyProtected']));
-    expect(item.locations[0].actions.map((action) => action.label)).not.toContain('清理残留');
-  });
-
-  it('enforces the action contract', () => {
-    const disabledInstallCell = cell({
-      disabledReason: '当前项目暂时不能安装这个插件。',
-      report: report({
-        currentCatalog: {
-          rootDir: '/catalog/demo-plugin',
-          source: 'local',
-          available: true,
-        },
-      }),
-    });
-    const multiLocationItems = createPluginConsoleItems(matrix([
-      disabledInstallCell,
       cell({
         platform: 'claude',
-        scope: 'project',
-        projectKey: '/workspace',
-        report: report({
-          native: native(),
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true },
+        installState: installState(),
+        report: undefined,
+      }),
+      cell({
+        pluginName: 'takeover-plugin',
+        platform: 'codex',
+        installState: installState({
+          kind: 'needsRepair',
+          issueCodes: ['artifactMissing'],
+          sharedRuntimeOwnerPresent: true,
+          sharedRuntimeNeedsTakeover: true,
+          sharedRuntimeParticipatesInOwner: true,
+          sharedRuntimeSemanticDelta: 'change',
+          sharedRuntimeOwnerConflict: true,
         }),
+        report: undefined,
       }),
     ]));
-    const singleLocation = singleItem(reasonFixture('nativeIncomplete'));
-    const disabledInstall = singleItem(disabledInstallCell);
 
-    for (const item of multiLocationItems) {
-      expect(writeActions(item.actions)).toEqual([]);
-      for (const location of item.locations) {
-        for (const entry of writeActions(location.actions)) {
-          expect(entry.target).toBeDefined();
-        }
-      }
-    }
-
-    const destructiveActions = singleLocation.locations[0].actions.filter((action) => action.destructive);
-    expect(destructiveActions.length).toBeGreaterThan(0);
-    for (const entry of destructiveActions) {
-      expect(entry.confirmText).toBeTruthy();
-    }
-
-    const disabledAction = disabledInstall.locations[0].actions.find((action) => action.disabledReason);
-    expect(disabledAction?.disabledReason).toBe('当前项目暂时不能安装这个插件。');
+    const demo = controller.find((entry) => entry.summary.pluginName === 'demo-plugin');
+    const takeover = controller.find((entry) => entry.summary.pluginName === 'takeover-plugin');
+    expect(demo?.summary.features.find((feature) => feature.kind === 'uninstall')?.targetSelection).toBe('multiTargetAllowed');
+    expect(takeover?.summary.features.find((feature) => feature.kind === 'takeoverSharedRuntime')?.targetSelection).toBe('singleTargetOnly');
   });
 
-  it('allows technical identifiers in commands while keeping prose clean', () => {
-    const item = singleItem(reasonFixture('catalogUnavailable'));
-    const diagnoseAction = item.locations[0].actions.find((action) => action.kind === 'diagnoseCommand');
+  it('keeps detail target options empty until a feature is chosen and special-cases duplicate labels', () => {
+    const controller = singleController(cell({
+      installState: installState(),
+      report: undefined,
+    }));
 
-    expect(diagnoseAction?.command).toEqual([
-      'aw',
-      'status',
-      'demo-plugin',
-      '--platform',
-      'codex',
-      '--scope',
-      'user',
-      '--verbose',
-    ]);
-    sanitizeAndAssertProse(item);
+    expect(createConsolePluginDetailPageModel(controller).targetOptions).toEqual([]);
+
+    const duplicateController = createConsoleControllerItems(matrix([
+      cell({
+        platform: 'codex',
+        scope: 'user',
+        installState: installState(),
+        report: undefined,
+      }),
+      cell({
+        platform: 'codex',
+        scope: 'project',
+        projectKey: '/workspace',
+        installState: installState(),
+        report: undefined,
+      }),
+    ]))[0]!;
+
+    const detail = createConsolePluginDetailPageModel(duplicateController, 'resolveDuplicateInstall');
+    expect(detail.targetOptions.map((option) => option.label)).toEqual(['保留个人位置', '保留当前项目位置']);
+
+    const actions = createPluginConsoleExecutableActions(duplicateController, 'resolveDuplicateInstall');
+    expect(actions.every((action) => action.confirmText)).toBe(true);
   });
 });

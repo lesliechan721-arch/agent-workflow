@@ -675,11 +675,11 @@ describe('status P7', () => {
       }>;
       consoleItems: Array<{
         pluginName: string;
-        locations: Array<{
+        detailHints?: string[];
+        installedLocations: Array<{
           reasonCodes: string[];
-          detailHints?: string[];
-          actions: Array<{ kind: string; label: string }>;
         }>;
+        features: Array<{ kind: string; label: string }>;
       }>;
     };
     const locations = new Map(payload.locations.map((location) => [location.plugin, location]));
@@ -706,11 +706,11 @@ describe('status P7', () => {
         }),
       ]),
     );
-    expect(consoleItems.get('unused-dependency')?.locations[0]?.reasonCodes).toContain('autoDependencyRemovable');
-    expect(consoleItems.get('unused-dependency')?.locations[0]?.actions.find((action) => action.kind === 'runUninstall')?.label).toBe('清理自动依赖');
-    expect(consoleItems.get('retained-dependency')?.locations[0]?.reasonCodes).not.toContain('autoDependencyRemovable');
-    expect(consoleItems.get('retained-dependency')?.locations[0]?.actions.find((action) => action.kind === 'runUninstall')?.label).toBe('卸载');
-    expect(consoleItems.get('retained-dependency')?.locations[0]?.detailHints).toEqual(
+    expect(consoleItems.get('unused-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
+    expect(consoleItems.get('unused-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('retained-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
+    expect(consoleItems.get('retained-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('retained-dependency')?.detailHints).toEqual(
       expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
     );
   });
@@ -758,11 +758,11 @@ describe('status P7', () => {
       }>;
       consoleItems: Array<{
         pluginName: string;
-        locations: Array<{
+        detailHints?: string[];
+        installedLocations: Array<{
           reasonCodes: string[];
-          detailHints?: string[];
-          actions: Array<{ kind: string; label: string }>;
         }>;
+        features: Array<{ kind: string; label: string }>;
       }>;
     };
     const location = payload.locations[0];
@@ -780,12 +780,12 @@ describe('status P7', () => {
         }),
       ]),
     );
-    expect(consoleItem?.locations[0]?.reasonCodes).toContain('dependencyProtected');
-    expect(consoleItem?.locations[0]?.reasonCodes).not.toContain('autoDependencyRemovable');
-    expect(consoleItem?.locations[0]?.detailHints).toEqual(
+    expect(consoleItem?.installedLocations[0]?.reasonCodes).toContain('dependencyBlocked');
+    expect(consoleItem?.installedLocations[0]?.reasonCodes).not.toContain('dependencyProtected');
+    expect(consoleItem?.detailHints).toEqual(
       expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
     );
-    expect(consoleItem?.locations[0]?.actions.find((action) => action.kind === 'runUninstall')?.label).toBe('卸载');
+    expect(consoleItem?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
   });
 
   it('shows recovery details for untrusted dependency index coverage and suppresses unused dependency hints', async () => {

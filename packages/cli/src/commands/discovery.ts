@@ -179,6 +179,7 @@ export interface ResolveDiscoveredPluginTargetsOptions extends DiscoveryOptions 
 
 export interface BuildCommandCandidatesOptions extends ResolveDiscoveredPluginTargetsOptions {
   command: 'status' | 'uninstall' | 'upgrade';
+  includeCatalogOnly?: boolean;
 }
 
 interface DiscoveryContext {
@@ -1229,6 +1230,7 @@ export async function buildCommandCandidates(
   for (const discovered of discoveredTargets) {
     if (
       options.command === 'status' &&
+      options.includeCatalogOnly !== true &&
       requestedNames === undefined &&
       !evidenceHasDiscoverySource(discovered.evidence) &&
       !evidenceHasReadErrors(discovered.evidence) &&

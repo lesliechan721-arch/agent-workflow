@@ -1,15 +1,18 @@
 import { installCommand } from './install.js';
 import { uninstallCommand } from './uninstall.js';
-import { cleanupCommand, type RawCleanupCommandOptions } from './cleanup.js';
+import { cleanupCommand } from './cleanup.js';
 import {
   readInstallStateProjection,
   type InstallStateRemovalRuntime,
 } from './install-state-removal.js';
-import { normalizeCommandOptions, type RawInstallCommandOptions } from './options.js';
-import type { PlatformName } from '../types.js';
+import {
+  normalizeReinstallCommandOptions,
+  type RawCleanupCommandOptions,
+  type RawReinstallCommandOptions,
+} from './options.js';
+import { assertNoDuplicateInstall } from './scope-exclusivity-preflight.js';
+import type { PlatformName, PluginLocation } from '../types.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/paths.js';
-
-export interface RawReinstallCommandOptions extends RawInstallCommandOptions {}
 
 export interface ReinstallCommandRuntime extends InstallStateRemovalRuntime {
   installCommandImpl?: typeof installCommand;
@@ -28,26 +31,31 @@ export async function reinstallCommand(
   rawOptions: RawReinstallCommandOptions,
   runtime: ReinstallCommandRuntime = {},
 ): Promise<Awaited<ReturnType<typeof installCommand>>> {
-  const options = normalizeCommandOptions(rawOptions, {
+  const options = normalizeReinstallCommandOptions(rawOptions, {
     defaultScope: 'user',
     defaultPlatform: 'auto',
   });
   if (pluginNames.length !== 1) {
     throw new Error('reinstall 命令当前只支持单个插件目标。');
   }
-  if (options.platform === 'auto' || options.platform === 'both') {
-    throw new Error('reinstall 命令需要显式指定单一平台。');
-  }
 
   const platform = options.platform;
-  const location = {
+  if (platform === 'auto' || platform === 'both') {
+    throw new Error('reinstall 命令需要显式指定单一平台。');
+  }
+  const location: PluginLocation = {
     plugin: pluginNames[0]!,
     platform,
     scope: options.scope,
-    ...(options.scope === 'project'
-      ? { projectKey: await resolveProjectKey(platform, options.cwd) }
-      : {}),
+    projectKey: options.scope === 'project'
+      ? await resolveProjectKey(platform, options.cwd)
+      : null,
   };
+  await assertNoDuplicateInstall({
+    cwd: options.cwd,
+    location,
+    env: runtime.env ?? process.env,
+  });
   const projectionState = await readInstallStateProjection({
     cwd: options.cwd,
     location,

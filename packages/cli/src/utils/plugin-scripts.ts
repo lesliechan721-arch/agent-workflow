@@ -576,6 +576,14 @@ function createMissingLifecycleWarning(pluginName: string, event: PluginLifecycl
   return `No executable ${event} lifecycle script was found for ${pluginName}; continuing cleanup without running a lifecycle script.`;
 }
 
+function isMissingLifecycleDeclarationError(
+  error: unknown,
+  event: PluginLifecycleEvent,
+): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(`does not declare "${event}" lifecycle script`);
+}
+
 export async function resolveLifecycleScriptTarget(
   options: ResolveLifecycleScriptTargetOptions,
 ): Promise<LifecycleScriptTarget> {
@@ -592,9 +600,11 @@ export async function resolveLifecycleScriptTarget(
         runtimeOs: runtime,
       });
     } catch (error) {
-      warnings.push(
-        `Lifecycle install snapshot for ${options.pluginName} is unusable; falling back to current catalog. ${error instanceof Error ? error.message : String(error)}`,
-      );
+      if (!isMissingLifecycleDeclarationError(error, options.event)) {
+        warnings.push(
+          `Lifecycle install snapshot for ${options.pluginName} is unusable; falling back to current catalog. ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 

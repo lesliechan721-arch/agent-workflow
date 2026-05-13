@@ -47,6 +47,8 @@ import {
   getProjectArtifactSharedIdentityPath,
 } from '../../src/install-state/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
+import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import {
   createDependencyPluginManifest,
   createPluginDependencyScenarioFixtures,
@@ -1347,6 +1349,104 @@ describe('install command P6 install-state semantics', () => {
     })).resolves.toMatchObject({
       status: 'missing',
     });
+  });
+
+  it('fails install scope preflight before required config when the sibling scope is already healthy', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-duplicate-')),
+    );
+    tempDirs.push(builder.paths.rootDir);
+    const env = {
+      ...process.env,
+      AW_HOME: builder.paths.awHome,
+      AW_CODEX_HOME: builder.paths.codexHome,
+      AW_CLAUDE_HOME: builder.paths.claudeHome,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    } satisfies NodeJS.ProcessEnv;
+    const projectKey = await fs.realpath(builder.paths.repoRoot);
+    const projectTarget = builder.createTarget({
+      pluginName: 'duplicate-install-plugin',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeRepoArtifact(projectTarget);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(projectTarget);
+    const record = await builder.writeInstallRecord(projectTarget, lifecycle);
+    await builder.writeDiagnosticCache(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    await builder.writeDependencyIndex([{ target: projectTarget, record }]);
+
+    const plugin = await writeSyntheticPlugin(builder.paths.repoRoot, {
+      ...createDependencyPluginManifest({
+        name: projectTarget.location.plugin,
+      }),
+      config: {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+          },
+        },
+      },
+    });
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, 'plugins', 'marketplace-source.json'),
+      {
+        owner: {
+          name: 'Stage3 Test',
+          url: 'https://example.invalid/agent-workflows',
+        },
+        interface: {
+          displayName: 'Stage3 Test Catalog',
+        },
+      },
+      { spaces: 2 },
+    );
+    const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const codex = new GraphTestAdapter('codex', builder.paths.repoRoot, env, {
+      [plugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    await expect(installCommand(
+      [plugin.manifest.name],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new GraphTestAdapter('claude', builder.paths.repoRoot, env),
+        },
+      },
+    )).rejects.toThrow(/duplicateInstall/);
+
+    expect(codex.installOrder).toEqual([]);
+    await expect(readInstallRecord({
+      repoRoot: builder.paths.repoRoot,
+      env,
+      plugin: plugin.manifest.name,
+      scope: 'user',
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: builder.paths.repoRoot,
+      env,
+    }))).resolves.toBe(false);
   });
 
   it('writes project shared identity for repo-visible artifacts alongside the per-plugin install record', async () => {

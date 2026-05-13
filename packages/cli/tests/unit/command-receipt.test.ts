@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCommandReceiptJson,
+  buildCleanupReceiptJson,
   renderCommandReceipt,
+  renderCleanupReceipt,
 } from '../../src/output/command-receipt.js';
 
 describe('command receipt output', () => {
@@ -323,5 +325,64 @@ describe('command receipt output', () => {
     expect(output).toContain('已卸载 cleanup-parent。');
     expect(output).toContain('已清理相关文件和已安装项。');
     expect(output).not.toContain('已自动清理不再需要的依赖');
+  });
+
+  it('renders cleanup plan receipts with stable schema fields and empty collections', () => {
+    const payload = buildCleanupReceiptJson({
+      payload: {
+        ok: true,
+        command: 'cleanup',
+        generatedAt: '2026-05-13T00:00:00.000Z',
+        dependencyIndex: false,
+        cleanupPlanSchemaVersion: 1,
+        dryRun: true,
+        force: true,
+        removeConfig: true,
+        target: {
+          plugin: 'cache-only',
+          platform: 'codex',
+          scope: 'user' as const,
+          targetType: 'cache-only' as const,
+        },
+        forceReason: null,
+        plannedRemovals: [{
+          kind: 'native-cache',
+          label: 'Codex active cache',
+          path: '/tmp/cache',
+        }],
+        wouldBackups: [],
+        wouldRemoveConfig: [{
+          plugin: 'cache-only',
+          scope: 'user' as const,
+          path: '/tmp/config.json',
+          status: 'planned' as const,
+        }],
+        skippedForeignItems: [],
+        affectedDependents: [],
+        blockingReasons: [],
+        recommendedCommand: 'aw cleanup cache-only --platform codex --scope user --force --remove-config',
+      },
+      warnings: ['synthetic warning'],
+    });
+
+    expect(payload).toMatchObject({
+      cleanupPlanSchemaVersion: 1,
+      dryRun: true,
+      force: true,
+      removeConfig: true,
+      warnings: ['synthetic warning'],
+      plannedRemovals: [{
+        kind: 'native-cache',
+      }],
+    });
+
+    const output = renderCleanupReceipt({
+      payload,
+      warnings: [],
+    }).join('\n');
+    expect(output).toContain('cleanup 评估完成');
+    expect(output).toContain('计划删除项');
+    expect(output).toContain('受影响依赖');
+    expect(output).toContain('- 无');
   });
 });

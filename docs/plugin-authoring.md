@@ -9,8 +9,8 @@
 - 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`
 - `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
-- `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema
-- `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值
+- `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema；没有声明 `scripts.lifecycle` 或 `config.schema` 只是表示插件没有这些能力，不会被 status 当作默认问题
+- `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值；没有声明动态 target 的静态插件不会因此产生 artifact 缺失或刷新失败诊断
 - `marketplace.policy.products` 是插件最终支持平台的来源；它不仅控制安装和升级门禁，也会参与 build 裁剪、platform manifest/runtime 生成、平台 marketplace 过滤和 `pnpm plugin:test` 平台选择
 - `dependencies.plugins` 声明 AW 插件之间的直接依赖；安装、升级、卸载和 status 都会用同一套 location-aware planner 解释它
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
@@ -149,7 +149,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 ## AW Config
 
-`config.schema` 是 AW 自管配置的唯一 schema 真值，独立于 Claude 原生 `userConfig`。`aw config` 可以在插件未安装前写入配置，也可以为未安装的另一层 scope 预置覆盖值；`aw uninstall` 默认保留 AW config store，清理配置要显式运行 `aw config reset <plugin>`。
+`config.schema` 是 AW 自管配置的唯一 schema 真值，独立于 Claude 原生 `userConfig`。`aw config` 可以在插件未安装前写入配置，也可以为未安装的另一层 scope 预置覆盖值；`aw uninstall` 默认保留 AW config store。需要在主体卸载或清理成功后一起删除当前 target scope/store 的配置时，用户可以传 `aw uninstall --remove-config` 或 `aw cleanup --remove-config`；只想删除配置、不动插件安装状态时，用 `aw config reset <plugin> -s <scope> --yes`。
 
 配置分为 `user`、`project shared` 和 `project local`。读取 effective config 时按 `default < user < project shared < project local` 合并。脚本化写命令只有 `set` / `unset` / `reset`，默认写 `user`；读命令 `get` / `list` 默认读 effective config，传 `--scope user|project` 时展示对应层和 effective 值。project config root 在 git repo 或 workspace 内锚定仓库根；不在仓库内时退回 normalized command `cwd`。
 
@@ -158,6 +158,8 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 `file` / `directory` 类型是本机路径型配置，只能写 user store 或 project local store。写入时，相对路径按 AW project root 解析，落盘为 canonical absolute realpath；每次读取 effective config 都会重新校验路径存在且类型正确。失效路径会进入 `invalid-config`，install/upgrade preflight、lifecycle context 和 helper 都会 fail closed。路径型配置不能进入 project shared config，也不能参与 project-scope repo-visible artifact 的 render config、digest、stale 判断或 refresh；需要可提交路径语义时，作者应改用可移植字符串配置。插件名作为 config store 路径段时只允许安全的单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
 
 `scripts.helpers.config` 必须显式声明标准配置 helper。CLI 执行 lifecycle 或 `pnpm plugin:test` 时会通过 `AW_PLUGIN_CONTEXT` 传入已经解析好的 `config.values`、`config.sources` 和 schema；helper 没有 context 时，只读取当前 bundle 邻近的 `.agents-plugin/plugin.json` 来解释 schema/default/redaction。这意味着 helper 的 bundle 视图可能和 `aw config get/list` 的 current catalog 视图短暂不同，这是预期行为。
+
+未声明 `config.schema` 的插件没有 AW 配置面：`aw config` 不会为它解释 raw store，status 也不会因为 “no schema” 生成需要处理的问题。未声明 `scripts.lifecycle` 的插件没有 install/upgrade/uninstall lifecycle，普通安装、升级、卸载、status 和 cleanup 都不能把“没有 lifecycle”视为异常；cleanup 收口残留时也不会运行 lifecycle。未声明 `artifacts.targets` 表示插件没有动态 artifact，静态 skills、slashCommands、extensions、MCP 或 hooks 仍按各自静态合同管理。
 
 如果已安装的动态 artifact 声明了 `refreshKeys`，`aw config set` / `unset` / `reset` 写入后会按当前命令能定位到的 scope 自动刷新命中的 artifact。user config 写入会刷新 user target，并在当前 repo 也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project。刷新执行 renderer 时使用该 location 的 install record historical bundle，避免 current local marketplace 中的 runtime 文件覆盖模板源；historical bundle 缺失或校验失败时刷新失败并提示 repair。dynamic diagnostic cache 会用 `refreshReach` 记录本次覆盖了 user、当前 project，还是有其它已知 project target 可能仍 stale。刷新失败不会回滚已经写入的 config store，但会把受影响 artifact 标记为最近 refresh failed，`aw status` 和 JSON receipt 会给出稳定诊断。
 

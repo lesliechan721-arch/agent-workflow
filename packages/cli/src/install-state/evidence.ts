@@ -372,6 +372,10 @@ function resolveLocationCwd(location: PluginLocation, fallbackCwd: string): stri
   return fallbackCwd;
 }
 
+function sharedRuntimeOwnerCountsAsProjectPrivateState(location: PluginLocation): boolean {
+  return !(location.platform === 'codex' && location.scope === 'project');
+}
+
 async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
   const exists = await fs.pathExists(filePath);
   if (!exists) {
@@ -1031,12 +1035,13 @@ export async function collectInstallEvidence(
 
   const dynamicDiagnosticUnavailable = dynamicDiagnosticRead.status !== 'ok';
   const dynamicUnavailableReason = dynamicDiagnosticUnavailable ? dynamicDiagnosticRead.code : null;
+  const sharedOwnerCountsAsPrivateState = sharedRuntimeOwnerCountsAsProjectPrivateState(options.location);
 
   const privateStatePresent = Boolean(
     installRecordRead.status !== 'missing'
     || dynamicDiagnosticRead.status !== 'unavailable'
     || nativeTransaction.present
-    || sharedRuntimeOwnerRead.status === 'ok',
+    || (sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok'),
   );
   const repoVisibleArtifactPresent = identityArtifacts.some((artifact) => artifact.file.exists)
     || catalogArtifacts.some((artifact) => artifact.file.exists);
@@ -1056,7 +1061,7 @@ export async function collectInstallEvidence(
     if (dynamicDiagnosticRead.status !== 'unavailable') {
       adoptableBlockers.push('privateStateResidual');
     }
-    if (sharedRuntimeOwnerRead.status === 'ok') {
+    if (sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok') {
       adoptableBlockers.push('sharedOwnerResidual');
     }
     if (projectSharedIdentityRead && projectSharedIdentityRead.status !== 'missing' && projectSharedIdentityRead.status !== 'ok') {
@@ -1137,7 +1142,7 @@ export async function collectInstallEvidence(
       sharedIdentityPresent: Boolean(projectIdentityPresent),
       historicalLifecyclePresent: historicalLifecycle.expected,
       nativeMarkerPresent: nativeTransaction.present,
-      sharedOwnerPresent: sharedRuntimeOwnerRead.status === 'ok',
+      sharedOwnerPresent: sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok',
     },
   };
 }

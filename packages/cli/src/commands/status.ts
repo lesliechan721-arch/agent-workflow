@@ -63,14 +63,17 @@ import {
   hasScopeManagedEvidence,
 } from './common.js';
 import {
-  createPluginConsoleItems,
+  createConsoleControllerItems,
+  createStatusPageModel,
   createPluginConsoleLocationKey,
   pluginConsoleLocationLabel,
+  resolvePluginConsoleMeta,
   PLUGIN_CONSOLE_STATUS_LABELS,
-  type PluginConsoleItem,
+  type ConsoleControllerItem,
+  type PluginConsoleSummary,
   type PluginConsoleLocationDiagnostics,
-  type PluginConsolePluginMeta,
   type PluginConsoleStatus,
+  type StatusPageModel,
 } from './console-model.js';
 import { buildCommandCandidates, type CommandCandidate } from './discovery.js';
 import {
@@ -193,8 +196,9 @@ export interface FriendlyStatusSummary {
 export interface StatusJsonPayload extends StatusMatrixReport {
   ok: true;
   command: 'status';
+  consoleItemsSchemaVersion: 2;
   friendlySummaries: FriendlyStatusSummary[];
-  consoleItems: PluginConsoleItem[];
+  consoleItems: PluginConsoleSummary[];
 }
 
 function statusErrorMessage(error: unknown): string {
@@ -1326,16 +1330,14 @@ function mapStatusHealthToFriendlyStatus(health: StatusHealth): PluginConsoleSta
   switch (health) {
     case 'ready':
       return 'installed';
-    case 'partial':
-      return 'partial';
-    case 'external':
-      return 'external';
     case 'notInstalled':
       return 'notInstalled';
+    case 'partial':
+    case 'external':
     case 'needsAttention':
     case 'unknown':
     default:
-      return 'needsAction';
+      return 'abnormal';
   }
 }
 
@@ -1351,7 +1353,7 @@ function summarizeFallbackLocation(summary: StatusSummary): string {
 
 function buildFriendlySummaries(
   matrix: StatusMatrixReport,
-  consoleItems: PluginConsoleItem[],
+  consoleItems: PluginConsoleSummary[],
 ): FriendlyStatusSummary[] {
   const itemsByPlugin = new Map(
     consoleItems.map((item) => [item.pluginName, item] as const),
@@ -1370,7 +1372,7 @@ function buildFriendlySummaries(
         pluginName: summary.pluginName,
         status: item.status,
         statusLabel: item.statusLabel,
-        location: item.locationSummary,
+        location: item.locationSummary ?? summarizeFallbackLocation(summary),
         ...(nextStep ? { nextStep } : {}),
         nextSteps,
         ...(item.issueSummary ? { issueSummary: item.issueSummary } : {}),
@@ -1732,11 +1734,12 @@ async function createInstallStateForCell(options: {
 function createStatusJsonPayload(options: {
   matrix: StatusMatrixReport;
   friendlySummaries: FriendlyStatusSummary[];
-  consoleItems: PluginConsoleItem[];
+  consoleItems: PluginConsoleSummary[];
 }): StatusJsonPayload {
   return {
     ok: true,
     command: 'status',
+    consoleItemsSchemaVersion: 2,
     ...options.matrix,
     friendlySummaries: options.friendlySummaries,
     consoleItems: options.consoleItems,
@@ -1909,6 +1912,182 @@ async function createCompatibilityReports(options: {
   return sortReports([...reports.values()]);
 }
 
+function createPluginMetaByNameFromCollected(
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'],
+): Record<string, NonNullable<ReturnType<typeof resolvePluginConsoleMeta>>> {
+  const metaByName: Record<string, NonNullable<ReturnType<typeof resolvePluginConsoleMeta>>> = {};
+  for (const state of locations) {
+    const meta = resolvePluginConsoleMeta(state.target.currentPlugin ?? state.target.historicalPlugin);
+    if (meta) {
+      metaByName[state.location.plugin] = meta;
+    }
+  }
+  return metaByName;
+}
+
+function createPluginMetaByNameFromCandidates(
+  candidates: CommandCandidate[],
+): Record<string, NonNullable<ReturnType<typeof resolvePluginConsoleMeta>>> {
+  const metaByName: Record<string, NonNullable<ReturnType<typeof resolvePluginConsoleMeta>>> = {};
+  for (const candidate of candidates) {
+    const meta = resolvePluginConsoleMeta(candidate.target.currentPlugin ?? candidate.target.plugin);
+    if (meta) {
+      metaByName[candidate.pluginName] = meta;
+    }
+  }
+  return metaByName;
+}
+
+function fallbackNotInstalledState(): StatusMatrixInstallState {
+  return {
+    kind: 'notInstalled',
+    summary: '当前还没有发现安装。',
+    nextSteps: ['选择目标位置后安装。'],
+    findings: [],
+    issueCodes: [],
+    autoInstalled: false,
+    unusedDependencyHint: false,
+    dependents: [],
+    repairAvailable: false,
+    cleanupAvailable: false,
+    adoptExistingAvailable: false,
+    currentCatalogAvailable: true,
+    catalogDrift: false,
+    upgradeAvailable: false,
+    dynamicDiagnosticUnavailable: true,
+    nativeTransactionKind: 'none',
+    sharedRuntimeOwnerPresent: false,
+    sharedRuntimeNeedsTakeover: false,
+    sharedRuntimeParticipatesInOwner: false,
+    sharedRuntimeSemanticDelta: 'unknown',
+    sharedRuntimeOwnerConflict: false,
+  };
+}
+
+function summarizeCandidateInstallState(
+  candidate: CommandCandidate,
+): Pick<StatusMatrixInstallState, 'summary' | 'nextSteps'> {
+  const kind = candidate.installState?.kind ?? 'notInstalled';
+  switch (kind) {
+    case 'installed':
+      return {
+        summary: '已发现安装。',
+        nextSteps: ['运行 `aw status <plugin> --verbose` 查看详细状态。'],
+      };
+    case 'needsRepair':
+      return {
+        summary: '安装存在异常，需要修复。',
+        nextSteps: ['运行 `aw repair <plugin> --platform <platform> --scope <scope>` 修复安装。'],
+      };
+    case 'adoptable':
+      return {
+        summary: '发现可认领的现有安装。',
+        nextSteps: ['运行 `aw repair <plugin> --platform <platform> --scope <scope> --adopt-existing` 认领现有安装。'],
+      };
+    case 'residual':
+      return {
+        summary: '发现可清理的残留。',
+        nextSteps: ['运行 `aw cleanup <plugin> --platform <platform> --scope <scope>` 清理残留。'],
+      };
+    case 'externallyManaged':
+      return {
+        summary: '发现由其他来源管理的安装。',
+        nextSteps: ['先确认外部安装来源，再决定是否继续处理。'],
+      };
+    case 'notInstalled':
+    default:
+      return {
+        summary: '当前还没有发现安装。',
+        nextSteps: ['选择目标位置后安装。'],
+      };
+  }
+}
+
+function createCandidateInstallState(candidate: CommandCandidate): StatusMatrixInstallState {
+  const fallback = fallbackNotInstalledState();
+  if (!candidate.installState) {
+    return fallback;
+  }
+
+  const summarized = summarizeCandidateInstallState(candidate);
+  return {
+    ...fallback,
+    kind: candidate.installState.kind,
+    summary: summarized.summary,
+    nextSteps: summarized.nextSteps,
+    autoInstalled: candidate.installState.autoInstalled,
+    unusedDependencyHint: candidate.installState.unusedDependencyHint,
+    repairAvailable: candidate.installState.kind === 'needsRepair',
+    cleanupAvailable: candidate.installState.kind === 'residual' || candidate.installState.kind === 'externallyManaged',
+    adoptExistingAvailable: candidate.installState.adoptExistingAvailable,
+    currentCatalogAvailable: Boolean(candidate.target.currentPlugin),
+    sharedRuntimeOwnerConflict: candidate.installState.ownerConflict,
+    issueCodes: candidate.installState.kind === 'needsRepair'
+      ? ['installRecordInvalid']
+      : [],
+  };
+}
+
+function createStatusMatrixFromCandidates(options: {
+  candidates: CommandCandidate[];
+  detection: EnvironmentDetection;
+  requestedPlugins?: string[];
+  scope?: Scope;
+  platform?: PlatformName | 'both';
+}): StatusMatrixReport {
+  const cells: StatusMatrixCell[] = options.candidates.map((candidate) => {
+    const installState = createCandidateInstallState(candidate);
+    return {
+      pluginName: candidate.pluginName,
+      platform: candidate.platform,
+      scope: candidate.scope,
+      ...(candidate.projectKey ? { projectKey: candidate.projectKey } : {}),
+      executionCwd: candidate.executionCwd,
+      health: installState.kind === 'notInstalled' ? 'notInstalled' : 'ready',
+      evidenceSources: [],
+      healthSource: candidate.target.currentPlugin ? 'currentCatalog' : 'none',
+      config: 'no-schema',
+      scripts: 'not_declared',
+      installState,
+    };
+  });
+
+  const summaries: StatusSummary[] = [...new Set(cells.map((cell) => cell.pluginName))]
+    .map((pluginName) => {
+      const pluginCells = cells.filter((cell) => cell.pluginName === pluginName);
+      return {
+        pluginName,
+        health: combineHealth(pluginCells.map((cell) => cell.health)),
+        cells: pluginCells.map((cell) => ({
+          platform: cell.platform,
+          scope: cell.scope,
+          health: cell.health,
+          healthSource: cell.healthSource,
+          config: cell.config,
+          scripts: cell.scripts,
+          ...(cell.projectKey ? { projectKey: cell.projectKey } : {}),
+        })),
+        nextSteps: pluginCells.every((cell) => cell.installState?.kind === 'notInstalled')
+          ? ['选择目标位置后安装。']
+          : [],
+      };
+    })
+    .sort((left, right) => left.pluginName.localeCompare(right.pluginName));
+
+  return {
+    detection: options.detection,
+    filters: {
+      ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.scope ? { scope: options.scope } : {}),
+      ...(options.requestedPlugins ? { plugins: options.requestedPlugins } : {}),
+    },
+    health: cells.every((cell) => cell.health === 'notInstalled') ? 'notInstalled' : 'ready',
+    summaries,
+    cells: sortCells(cells),
+    reports: [],
+  };
+}
+
 export async function statusCommand(
   pluginNames: string[],
   rawOptions: RawStatusCommandOptions,
@@ -1918,7 +2097,9 @@ export async function statusCommand(
   output: string;
   matrix: StatusMatrixReport;
   friendlySummaries: FriendlyStatusSummary[];
-  consoleItems: PluginConsoleItem[];
+  consoleItems: PluginConsoleSummary[];
+  consoleControllerItems: ConsoleControllerItem[];
+  statusPageModels: StatusPageModel[];
 }> {
   const collected = await collectP7Locations(pluginNames, rawOptions, runtime);
   const options = collected.options;
@@ -1990,21 +2171,21 @@ export async function statusCommand(
     cells: sortCells(cells),
     reports: compatibilityReports,
   };
-  const consoleItems = createPluginConsoleItems(matrix);
+  const pluginMetaByName = createPluginMetaByNameFromCollected(collected.locations);
+  const consoleControllerItems = createConsoleControllerItems(matrix, {
+    pluginMetaByName,
+  });
+  const consoleItems = consoleControllerItems.map((item) => item.summary);
+  const statusPageModels = consoleControllerItems.map((item) => createStatusPageModel(item));
   const friendlySummaries = buildFriendlySummaries(matrix, consoleItems);
-  const jsonPayload: P7StatusJsonPayload & StatusMatrixReport & Pick<StatusJsonPayload, 'friendlySummaries' | 'consoleItems'> = {
-    ok: true,
-    command: 'status',
-    detection: matrix.detection,
-    filters: matrix.filters,
-    health: matrix.health,
-    summaries: matrix.summaries,
-    cells: matrix.cells,
-    reports: matrix.reports,
+  const jsonPayload: P7StatusJsonPayload & StatusJsonPayload = {
+    ...createStatusJsonPayload({
+      matrix,
+      friendlySummaries,
+      consoleItems,
+    }),
     generatedAt: new Date().toISOString(),
     locations: [],
-    friendlySummaries,
-    consoleItems,
   };
   const statusLocations: P7StatusJsonPayload['locations'] = collected.locations.map((state, index) => {
     const installState = installStates[index]!;
@@ -2128,6 +2309,14 @@ export async function statusCommand(
       findings: state.findings,
       issues: state.projection.issues,
       forceCleanup: state.forceCleanup,
+      supplementalCommands: [],
+      cleanup: {
+        evaluated: false,
+        available: false,
+        forceRequired: false,
+        blockingReasons: [],
+        affectedDependents: [],
+      },
       deepDiagnose: state.deepDiagnose,
     };
   });
@@ -2143,5 +2332,55 @@ export async function statusCommand(
     matrix,
     friendlySummaries,
     consoleItems,
+    consoleControllerItems,
+    statusPageModels,
   };
+}
+
+const CONSOLE_SUMMARY_PRIORITY: Record<PluginConsoleStatus, number> = {
+  abnormal: 4,
+  upgradeAvailable: 3,
+  installed: 2,
+  notInstalled: 0,
+};
+
+export async function loadConsoleItems(
+  rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
+  runtime: StatusCommandRuntime = {},
+): Promise<ConsoleControllerItem[]> {
+  const base = await statusCommand([], rawOptions, runtime);
+  if (!rawOptions.includeCatalogOnly) {
+    return base.consoleControllerItems;
+  }
+
+  const options = normalizeStatusCommandOptions(rawOptions);
+  const context = createCommandExecutionContext(runtime);
+  const candidates = await buildCommandCandidates({
+    command: 'status',
+    cwd: options.cwd,
+    scopeFilter: options.scope,
+    platformFilter: options.platform,
+    env: context.env,
+    includeCatalogOnly: true,
+  });
+  const discoveredNames = new Set(base.consoleItems.map((item) => item.pluginName));
+  const catalogOnlyCandidates = candidates.filter((candidate) => !discoveredNames.has(candidate.pluginName));
+  if (catalogOnlyCandidates.length === 0) {
+    return base.consoleControllerItems;
+  }
+
+  const extraMatrix = createStatusMatrixFromCandidates({
+    candidates: catalogOnlyCandidates,
+    detection: base.matrix.detection,
+    scope: options.scope,
+    platform: options.platform,
+  });
+  const extraItems = createConsoleControllerItems(extraMatrix, {
+    pluginMetaByName: createPluginMetaByNameFromCandidates(catalogOnlyCandidates),
+  });
+
+  return [...base.consoleControllerItems, ...extraItems].sort((left, right) =>
+    CONSOLE_SUMMARY_PRIORITY[right.summary.status] - CONSOLE_SUMMARY_PRIORITY[left.summary.status] ||
+    left.summary.title.localeCompare(right.summary.title),
+  );
 }
