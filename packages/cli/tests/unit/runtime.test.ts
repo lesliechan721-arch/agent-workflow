@@ -208,6 +208,66 @@ describe('command runtime', () => {
     expect(output.join('')).toContain('Retries（当前：1）');
   });
 
+  it('maps menu shortcuts to stable navigation results while preserving text input', async () => {
+    const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
+    const createPrompt = (answer: string) => createReadlinePrompt({
+      input: Readable.from([answer]),
+      outputSink: {
+        isTTY: true,
+        write: vi.fn(),
+      },
+    });
+    const menuChoices = [
+      { value: 'first', label: 'First' },
+      { value: 'menu-back', label: '返回', role: 'back' as const },
+      { value: 'menu-exit', label: '退出', role: 'exit' as const },
+    ];
+
+    await expect(createPrompt('b\n').select!({
+      message: '选择功能',
+      choices: menuChoices,
+    })).resolves.toMatchObject({
+      action: 'back',
+      cancelled: false,
+    });
+    await expect(createPrompt('q\n').select!({
+      message: '选择功能',
+      choices: menuChoices,
+    })).resolves.toMatchObject({
+      action: 'exit',
+      cancelled: false,
+    });
+    await expect(createPrompt('\u001B\n').select!({
+      message: '选择功能',
+      choices: menuChoices,
+    })).resolves.toMatchObject({
+      action: 'back',
+      cancelled: false,
+    });
+    await expect(createPrompt('\u0003\n').select!({
+      message: '选择功能',
+      choices: menuChoices,
+    })).resolves.toMatchObject({
+      action: 'exit',
+      cancelled: false,
+    });
+
+    await expect(createPrompt('b\n').input!({ message: 'Value' })).resolves.toMatchObject({
+      action: 'select',
+      cancelled: false,
+      value: 'b',
+    });
+    await expect(createPrompt('q\n').input!({ message: 'Value' })).resolves.toMatchObject({
+      action: 'select',
+      cancelled: false,
+      value: 'q',
+    });
+    await expect(createPrompt('\u001B\n').input!({ message: 'Value' })).resolves.toMatchObject({
+      action: 'cancel',
+      cancelled: true,
+    });
+  });
+
   it('passes the same native runner and env into default adapters', async () => {
     const CodexAdapter = vi.fn(function CodexAdapterMock() {
       return { name: 'codex' };

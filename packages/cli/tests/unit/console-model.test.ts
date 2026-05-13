@@ -564,6 +564,71 @@ describe('console-model', () => {
     expect(summaries[0]!.locationSummary).toBe('Codex（个人 + 当前项目）');
   });
 
+  it('covers the complete public reason-code floor without legacy status copy', () => {
+    const adoptable = singleSummary(cell({
+      scope: 'project',
+      projectKey: '/workspace',
+      installState: installState({
+        kind: 'adoptable',
+        summary: '发现了一份可认领的已有项目安装。',
+        adoptExistingAvailable: true,
+      }),
+      report: undefined,
+    }));
+    const dependencyBlocked = singleSummary(cell({
+      installState: installState({
+        kind: 'needsRepair',
+        summary: '缺少依赖。',
+        issueCodes: ['dependencyMissing'],
+      }),
+      report: undefined,
+    }));
+    const duplicate = createPluginConsoleItems(matrix([
+      cell({
+        platform: 'codex',
+        scope: 'user',
+        installState: installState(),
+        report: undefined,
+      }),
+      cell({
+        platform: 'codex',
+        scope: 'project',
+        projectKey: '/workspace',
+        installState: installState(),
+        report: undefined,
+      }),
+    ]))[0]!;
+    const alreadyCovered = [
+      singleSummary(reasonFixture('nativeIncomplete')),
+      singleSummary(reasonFixture('nativeResidue')),
+      singleSummary(reasonFixture('missingRecord')),
+      singleSummary(reasonFixture('artifactRefreshFailed')),
+      singleSummary(reasonFixture('externalOwnership')),
+      singleSummary(reasonFixture('requiredConfigMissing')),
+    ];
+
+    const allCodes = new Set([
+      ...alreadyCovered.flatMap((summary) => summary.reasonCodes),
+      ...adoptable.reasonCodes,
+      ...dependencyBlocked.reasonCodes,
+      ...duplicate.reasonCodes,
+    ]);
+
+    expect([...allCodes].sort()).toEqual([
+      'adoptableInstall',
+      'artifactRefreshFailed',
+      'dependencyBlocked',
+      'duplicateInstall',
+      'foreignOwnershipConflict',
+      'missingRequiredConfig',
+      'nativeIncomplete',
+      'recordCorrupted',
+      'residueDetected',
+    ]);
+    expect(JSON.stringify([...alreadyCovered, adoptable, dependencyBlocked, duplicate]))
+      .not.toMatch(/needsAction|partial|repoManaged|external|missingRecord|ownerConflict|dependencyProtected|requiredConfigMissing/);
+  });
+
   it('uses manifest interface metadata for title and short description', () => {
     const plugin: PluginMeta = {
       rootDir: '/catalog/demo-plugin',
@@ -592,6 +657,59 @@ describe('console-model', () => {
       description: 'Demo short description',
       version: '1.2.3',
     });
+  });
+
+  it('sorts home items by friendly status then display title and keeps catalog-only cells neutral', () => {
+    const items = createConsoleControllerItems(matrix([
+      cell({
+        pluginName: 'zeta-installed',
+        platform: 'codex',
+        report: report({
+          scopeInitialized: 'yes',
+          scopeManagedEvidence: { ledger: true },
+        }),
+      }),
+      cell({
+        pluginName: 'alpha-installed',
+        platform: 'codex',
+        report: report({
+          scopeInitialized: 'yes',
+          scopeManagedEvidence: { ledger: true },
+        }),
+      }),
+      reasonFixture('requiredConfigMissing'),
+      cell({
+        pluginName: 'catalog-only',
+        platform: 'claude',
+        report: report({
+          native: native(),
+          scopeManagedEvidence: {},
+          currentCatalog: {
+            rootDir: '/catalog/catalog-only',
+            source: 'local',
+            available: true,
+          },
+        }),
+      }),
+    ]), {
+      pluginMetaByName: {
+        'zeta-installed': { title: 'Zeta Tool' },
+        'alpha-installed': { title: 'Alpha Tool' },
+        'catalog-only': { title: 'Catalog Only', description: 'Available but not installed.' },
+      },
+    });
+
+    expect(items.map((entry) => entry.summary.title)).toEqual([
+      'demo-plugin',
+      'Alpha Tool',
+      'Zeta Tool',
+      'Catalog Only',
+    ]);
+    const catalogOnly = items.find((entry) => entry.summary.pluginName === 'catalog-only')!;
+    expect(catalogOnly.summary.status).toBe('notInstalled');
+    expect(catalogOnly.summary.reasonCodes).toEqual([]);
+    expect(catalogOnly.summary.issueSummary).toBeUndefined();
+    expect(catalogOnly.pageItem.primaryActionLabel).toBe('安装');
   });
 
   it('keeps controller-only actions and commands out of public summaries', () => {
@@ -661,6 +779,16 @@ describe('console-model', () => {
       'user',
       '--verbose',
     ]);
+
+    for (const feature of controller.summary.features) {
+      const executableActions = createPluginConsoleExecutableActions(controller, feature.kind);
+      for (const executableAction of executableActions) {
+        expect(executableAction).not.toHaveProperty('command');
+        if (executableAction.kind !== 'runCleanup') {
+          expect(executableAction).not.toHaveProperty('force');
+        }
+      }
+    }
   });
 
   it('projects adopt-existing and takeover flows as features plus controller-only commands', () => {

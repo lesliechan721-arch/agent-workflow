@@ -165,6 +165,79 @@ describe('cli entry JSON stdout harness', () => {
     }
   });
 
+  it('keeps status consoleItems V2 inside the existing JSON envelope without legacy reason ids', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-status-v2-'));
+    tempDirs.push(tempDir);
+
+    vi.doMock('../../src/commands/status.js', () => ({
+      statusCommand: vi.fn(async () => ({
+        reports: [],
+        output: JSON.stringify({
+          ok: true,
+          command: 'status',
+          health: 'needsAttention',
+          summaries: [],
+          cells: [],
+          reports: [],
+          friendlySummaries: [],
+          consoleItemsSchemaVersion: 2,
+          consoleItems: [{
+            pluginName: 'git-commit',
+            title: 'Git Commit',
+            status: 'abnormal',
+            statusLabel: '异常',
+            installedLocations: [{
+              platform: 'codex',
+              scope: 'user',
+              label: 'Codex（个人）',
+              status: 'abnormal',
+              statusLabel: '异常',
+              reasonCodes: ['recordCorrupted'],
+              nextSteps: [],
+            }],
+            features: [{ kind: 'repair', label: '修复安装', targetSelection: 'singleTarget' }],
+            reasonCodes: ['recordCorrupted'],
+            nextSteps: [],
+          }],
+        }),
+      })),
+    }));
+
+    const result = await runCliEntry(
+      ['status', 'git-commit', '--json'],
+      {
+        cwd: tempDir,
+        env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const payload = result.parseJsonStdout<{
+      ok: boolean;
+      command: string;
+      health: string;
+      summaries: unknown[];
+      cells: unknown[];
+      reports: unknown[];
+      friendlySummaries: unknown[];
+      consoleItemsSchemaVersion: number;
+      consoleItems: unknown[];
+    }>();
+    expect(payload).toMatchObject({
+      ok: true,
+      command: 'status',
+      health: 'needsAttention',
+      consoleItemsSchemaVersion: 2,
+    });
+    expect(payload.summaries).toBeInstanceOf(Array);
+    expect(payload.cells).toBeInstanceOf(Array);
+    expect(payload.reports).toBeInstanceOf(Array);
+    expect(payload.friendlySummaries).toBeInstanceOf(Array);
+    expect(JSON.stringify(payload.consoleItems)).not.toMatch(
+      /missingRecord|adoptExisting|ownerConflict|dependencyProtected|requiredConfigMissing|invalidConfig|unreadableConfig|nativeResidue|artifactDrift/,
+    );
+  });
+
   it('keeps install --json stdout parseable when warnings and diagnostics go to stderr', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-install-json-'));
     tempDirs.push(tempDir);
