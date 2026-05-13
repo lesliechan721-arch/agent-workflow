@@ -1,7 +1,7 @@
 {
   "name": "git-commit",
   "version": "0.1.0",
-  "description": "在用户请求提交时，按约定式提交规范完成 Git 提交。",
+  "description": "在用户请求提交时，核对变更范围并生成中文约定式 Git 提交。",
   "skills": "./skills",
   "skillTriggers": {
     "commit": {
@@ -19,7 +19,7 @@
   },
   "interface": {
     "displayName": "Git Commit",
-    "shortDescription": "约定式 Git 提交流程",
+    "shortDescription": "中文约定式 Git 提交",
     "capabilities": ["Skills"]
   },
   "buildConfig": {
@@ -31,8 +31,8 @@
           "codex": false
         },
         "gitInspectionStep": {
-          "claude": "1. 优先使用上方已注入的 Git 快照确认当前工作区有哪些变更；只有快照不足以判断提交范围时，才补充运行必要的 Git 查看命令。",
-          "codex": "1. 运行 `git status` 和必要的 `git diff`，确认当前工作区有哪些变更。"
+          "claude": "1. 优先使用上方注入的 Git 快照确认工作区变更；快照不足以判断提交范围时，再运行必要的 Git 查看命令。",
+          "codex": "1. 运行 `git status` 和必要的 `git diff`，确认当前工作区变更和提交范围。"
         }
       }
     }

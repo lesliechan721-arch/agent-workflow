@@ -942,6 +942,18 @@ function validateCodexMetadataString(record, key, fieldName, maxLength, required
   return sanitized;
 }
 
+function validateCodexDefaultPrompt(record, key, fieldName, maxLength, skillReference, required = false) {
+  const sanitized = validateCodexMetadataString(record, key, fieldName, maxLength, required);
+  if (sanitized === null) return null;
+
+  const mention = `$${skillReference}`;
+  if (!sanitized.includes(mention)) {
+    error(`${fieldName}.${key} must explicitly mention "${mention}"`);
+  }
+
+  return sanitized;
+}
+
 function validateCodexBrandColor(record, key, fieldName) {
   if (record[key] === undefined) return;
   if (typeof record[key] !== 'string') {
@@ -2353,11 +2365,12 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
         `${fieldName}.interface`,
         MAX_OPENAI_INTERFACE_DESCRIPTION_LEN,
       );
-      validateCodexMetadataString(
+      validateCodexDefaultPrompt(
         interfaceBlock,
         'default_prompt',
         `${fieldName}.interface`,
         MAX_OPENAI_DEFAULT_PROMPT_LEN,
+        skillName,
       );
       validateCodexIconPath(interfaceBlock, 'icon_small', `${fieldName}.interface`);
       validateCodexIconPath(interfaceBlock, 'icon_large', `${fieldName}.interface`);
@@ -2677,11 +2690,12 @@ function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, front
             `${fieldName}.codex.interface`,
             MAX_OPENAI_INTERFACE_DESCRIPTION_LEN,
           );
-          validateCodexMetadataString(
+          validateCodexDefaultPrompt(
             interfaceBlock,
             'default_prompt',
             `${fieldName}.codex.interface`,
             MAX_OPENAI_DEFAULT_PROMPT_LEN,
+            path.basename(commandRelativePath, path.extname(commandRelativePath)),
           );
           validateCodexBrandColor(interfaceBlock, 'brand_color', `${fieldName}.codex.interface`);
           validateSlashCommandAssetReference(

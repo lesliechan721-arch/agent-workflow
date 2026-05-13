@@ -69,7 +69,9 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 
 ## agents/openai.yaml 规范
 
-此文件只给 Codex 平台读取，Claude Code 不读取。只要插件没有通过 `marketplace.policy.products` 明确排除 Codex，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台；build 会裁掉 Codex platform manifest/runtime，安装和显式升级也会按这个字段拦截不匹配的平台。
+`SKILL.md` 是真正会注入模型上下文的 skill 指令体；`agents/openai.yaml` 是 Codex 读取的产品元数据，主要服务 UI、客户端、工具依赖和触发策略。不要把详细工作流或触发规则正文塞进 `default_prompt`。
+
+上游 Codex runtime 允许没有 `agents/openai.yaml` 也加载 `SKILL.md`，但 AW 需要用 `policy.allow_implicit_invocation` 管理安装时触发偏好。只要插件没有通过 `marketplace.policy.products` 明确排除 Codex，就把 skill 视为面向 Codex：必须提供 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。Claude-only skill 可以省略此文件，但需要在 manifest 的 `products` 中清楚收窄平台；build 会裁掉 Codex platform manifest/runtime，安装和显式升级也会按这个字段拦截不匹配的平台。
 
 ### 完整字段
 
@@ -80,7 +82,7 @@ interface:
   icon_small: "./assets/icon-small.png"    # 可选：小图标路径
   icon_large: "./assets/icon-large.svg"    # 可选：大图标路径
   brand_color: "#3B82F6"                   # 可选：品牌主色
-  default_prompt: "Use $repo-check to check the repository status."
+  default_prompt: "使用 $repo-check 检查仓库状态。"
 
 dependencies:                              # 可选：工具依赖
   tools:
@@ -100,7 +102,7 @@ policy:
 
 - `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行并校验非空且 ≤ 64 字符，不会把 `repo-check` 自动转换成 `Repo Check`
 - `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
-- `default_prompt`：示例触发语句，建议使用 `$skill-name` 引用；Codex loader 实际校验为非空且 ≤ 1024 字符
+- `default_prompt`：用户/UI 调起 skill 时使用的一句默认起手话，不是模型指令正文。写短句，必须显式包含 `$skill-name`，例如 `使用 $repo-check 检查仓库状态。`；Codex loader 实际校验为非空且 ≤ 1024 字符
 - `brand_color`：可选；填写时必须是 `#RRGGBB`
 - `icon_small` / `icon_large`：可选；填写时必须是相对路径，且位于当前 skill 的 `assets/` 目录下，例如 `./assets/icon-small.png`。不要使用绝对路径、`..` 或 `assets/` 之外的目录
 
@@ -115,7 +117,7 @@ policy:
 ### policy 块
 
 - `policy` block 必须存在，且必须显式声明 `allow_implicit_invocation`；作者工具不会接受缺失字段并套用隐式默认值。
-- `allow_implicit_invocation: true`：允许 Codex 自动注入和隐式识别
+- `allow_implicit_invocation: true`：允许 Codex 自动注入和隐式识别。具体什么时候该用这个 skill，仍要写在 `SKILL.md` 的 `description` 和正文里
 - `allow_implicit_invocation: false`：关闭自动注入，但仍可通过 `$skill-name` 显式触发
 - `products`：可选的 Codex-only per-skill override。一般不需要写；只有同一插件里的不同 skill 需要限制到不同 Codex 产品时才使用。当前 Codex runtime 支持 `codex` / `chatgpt` / `atlas` 及对应全大写别名
 
@@ -245,7 +247,7 @@ CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 
 
 ## 调试检查点
 
-- 自动触发不符合预期 → 先检查 `description` 是否足够具体，再看 `allow_implicit_invocation`。
+- 自动触发不符合预期 → 先检查 `SKILL.md` 的 `description` 是否足够具体，再看 `allow_implicit_invocation`。不要靠 `default_prompt` 修正自动触发边界。
 - 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用。
 - 不要把 Claude slash command 当作双端公共协议；手动触发命令请用公共 `slashCommands`，Codex 侧会生成 fixed/manual-only skill。
 - `disable-model-invocation: true` 不等于 Claude 不能手动调用（用户仍可调用）。

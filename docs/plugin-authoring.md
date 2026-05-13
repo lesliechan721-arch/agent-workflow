@@ -99,6 +99,7 @@ codex:
     icon_small: ./assets/review-16.svg
     icon_large: ./assets/review-64.svg
     brand_color: "#2563EB"
+    default_prompt: "使用 $review 审查当前改动。"
 ---
 
 对当前改动执行代码审查。
@@ -108,7 +109,7 @@ codex:
 
 - 顶层 `description` 必填，作为两平台默认描述。
 - Claude-only 字段只能放在 `claude` block：`description`、`allowed-tools`、`model`、`argument-hint`、`shell`。`allowed-tools` 可写字符串或字符串数组；`shell` 只接受 `bash` 或 `powershell`。
-- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
+- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`；`default_prompt` 是用户/UI 调起 generated skill 时的一句起手话，必须包含 `$command-name`，不是模型指令正文。
 - Codex 图标资源只能写 `./assets/...`，源文件必须位于 `slash-commands/assets/`，不能用绝对路径、`../`、反斜杠或其它目录。build 只复制被 frontmatter 引用的资源到对应 generated skill 的 `assets/`。
 - Codex 生成 skill 的 `policy.allow_implicit_invocation` 固定为 `false`。作者不能在 `codex.policy` 覆盖它；这类 skill 只能由用户显式 `$command-name` 或结构化 skill mention 调用。
 - 复杂、可复用的流程仍应放在源码 `skills/` 中；公共 `slashCommands` 适合作为手动快捷入口，不应替代实际 skill 工作流。
@@ -203,7 +204,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 - `refreshKeys`：必须完整保留 manifest 中该 artifact 声明的 config key，且 key 必须存在于 `config.schema`
 - `disabledReason`：`state = "disabled"` 时可写，例如 `config`；disabled artifact 可以没有 content，但仍要保留 `refreshKeys`
 
-`codex.skill` 管理 Codex skill 目录。manifest target 必须静态声明 `skillKey`，用于安装前路径冲突检查、install record artifact identity、project artifact shared identity 和后续 stale prune；renderer plan 里的 `skillKey` 必须完全匹配。`present` content 是对象，必须包含 `skillFile`（写成运行时 `SKILL.md`）和 `openaiYaml`（写成运行时 `agents/openai.yaml`）。renderer 不能提供任意路径，也不能自己写 `.agents/skills/<skillKey>` 或用户级 Codex runtime。project scope 下它的 `projectManagedKind` 应声明为 `skill`，且不要求 `requiresCodexProjectConfig: true`，因为它不依赖 `.codex/config.toml`。
+`codex.skill` 管理 Codex skill 目录。manifest target 必须静态声明 `skillKey`，用于安装前路径冲突检查、install record artifact identity、project artifact shared identity 和后续 stale prune；renderer plan 里的 `skillKey` 必须完全匹配。`present` content 是对象，必须包含 `skillFile`（写成运行时 `SKILL.md`）和 `openaiYaml`（写成运行时 `agents/openai.yaml`）。`SKILL.md` 是模型会读取的指令体；`agents/openai.yaml` 是 Codex 产品元数据和触发策略，`interface.default_prompt` 只放包含 `$skillKey` 的起手句。renderer 不能提供任意路径，也不能自己写 `.agents/skills/<skillKey>` 或用户级 Codex runtime。project scope 下它的 `projectManagedKind` 应声明为 `skill`，且不要求 `requiresCodexProjectConfig: true`，因为它不依赖 `.codex/config.toml`。
 
 `codex.skill` 的内容真值来自“静态模板 + 当前 artifact render config + 当前 skill trigger preference patch”。插件通常把 `skills/<skillKey>/SKILL.md` 和 `skills/<skillKey>/agents/openai.yaml` 作为静态模板，由 renderer 读取模板并插入配置值；config refresh 时这些模板应来自 install record 的 historical bundle，而不是当前可变 runtime。AW apply 阶段再按 install record 中的 `skillTriggerPreference` patch `openaiYaml`。`default` 和 `auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。重复 install、upgrade、repair 或 config refresh 不会因为 renderer 输出默认值而重置用户显式选择。
 
@@ -268,6 +269,7 @@ pnpm plugin:test --all
 
 - **Codex 自动触发**：取决于 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`
 - **Codex 显式触发**：用 `$skill-name` 或结构化 skill mention
+- **Codex 指令正文**：来自 `SKILL.md`。`agents/openai.yaml.interface.default_prompt` 只是 UI/客户端默认起手句，应包含 `$skill-name`，不要承载完整触发规则
 - **Claude 用户手动触发**：取决于 `SKILL.md` frontmatter 的 `user-invocable`
 - **Claude 模型自动调用**：取决于 `SKILL.md` frontmatter 的 `disable-model-invocation`
 

@@ -108,7 +108,7 @@ plugins/<name>/
 3. **脚手架**（可选）：新建插件先跑 `scripts/init_plugin.js`（见下方）；维护已有插件先读 `.agents-plugin/plugin.json`。
 4. **编辑 manifest**：按需补齐 `.agents-plugin/plugin.json` 字段。字段规范见 `references/plugin-manifest-spec.md`。
 5. **实现各能力**：
-   - Skills → 编写 `SKILL.md`；面向 Codex 的 skill 同时提供 `agents/openai.yaml`，配置触发策略
+   - Skills → 编写 `SKILL.md`；面向 Codex 的 skill 同时提供 `agents/openai.yaml`，配置产品元数据和触发策略
    - Extensions → 在 manifest 的 `extensions` 中声明
    - MCP/Apps → 创建 `.mcp.json` / `.app.json`
    - Public slashCommands → 创建 `slash-commands/*.md`；Claude 生成原生 `/command`，Codex 生成 manual-only skill，图标只能引用 `./assets/...`
@@ -176,7 +176,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - 手动触发命令只使用公共 `slashCommands`。
 - `slashCommands` 只为支持平台生成 Claude commands / Codex manual-only skills；Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
 - `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
-- 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。
+- 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。`SKILL.md` 才是模型指令体；`openai.yaml.interface.default_prompt` 只是 UI/客户端起手句，若填写必须包含 `$skill-name`，不要把详细触发规则放进去。
 - Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。配置驱动 skill 推荐声明 `target: "codex.skill"`、`projectManagedKind: "skill"` 和静态 `skillKey`；renderer plan / fixture 里的 `skillKey` 必须与之完全一致。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
 - Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。
 - `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。

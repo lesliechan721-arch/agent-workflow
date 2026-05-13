@@ -1,2 +1,7 @@
+interface:
+  display_name: "Git Commit"
+  short_description: "中文约定式 Git 提交"
+  default_prompt: "使用 $commit 核对当前改动，并生成中文约定式 Git 提交。"
+
 policy:
   allow_implicit_invocation: true

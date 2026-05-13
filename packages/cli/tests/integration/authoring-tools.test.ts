@@ -541,7 +541,7 @@ describe('authoring tools', () => {
     expect(openaiYamlContent).toContain('display_name: "Repo Diagnose"');
     expect(openaiYamlContent).toContain('short_description: "检查仓库状态并输出诊断结论"');
     expect(openaiYamlContent).toContain(
-      'default_prompt: "Use $repo-diagnose to 检查仓库状态并输出诊断结论."',
+      'default_prompt: "使用 $repo-diagnose：检查仓库状态并输出诊断结论。"',
     );
     expect(openaiYamlContent).not.toContain('display_name: "Automation Suite"');
     expect(openaiYamlContent).not.toContain('short_description: "自动化插件集合"');
@@ -964,7 +964,7 @@ describe('authoring tools', () => {
       'short_description: "Check \\"repo\\" state: produce report"',
     );
     expect(openaiYamlContent).toContain(
-      'default_prompt: "Use $repo-audit to check \\"repo\\" state: produce report."',
+      'default_prompt: "使用 $repo-audit：Check \\"repo\\" state: produce report。"',
     );
 
     await fs.writeFile(
@@ -1848,6 +1848,28 @@ describe('authoring tools', () => {
       }),
     ).resolves.toBeDefined();
 
+    const invalidPromptPluginDir = path.join(tempRoot, 'slash-commands-invalid-prompt');
+    await fs.copy(validPluginDir, invalidPromptPluginDir);
+    const reviewCommandPath = path.join(invalidPromptPluginDir, 'slash-commands', 'review.md');
+    const reviewCommand = await fs.readFile(reviewCommandPath, 'utf8');
+    await fs.writeFile(
+      reviewCommandPath,
+      reviewCommand.replace(
+        'Use $review to inspect the current change set.',
+        'Use this command to inspect the current change set.',
+      ),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, invalidPromptPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('codex.interface.default_prompt must explicitly mention "$review"'),
+    });
+
     const invalidPluginDir = fixturePath(
       'codex-project-repo-managed',
       'negative',
@@ -2060,6 +2082,26 @@ describe('authoring tools', () => {
     expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type is required');
     expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value is required');
     expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport must be "streamable_http" or "stdio"');
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  default_prompt: "Use this skill to validate metadata."',
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('interface.default_prompt must explicitly mention "$metadata-test"'),
+    });
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
@@ -2372,7 +2414,7 @@ describe('authoring tools', () => {
             },
             defaultPrompt: {
               claude: 'Use the Claude metadata workflow',
-              codex: 'Use the Codex metadata workflow',
+              codex: 'Use $templated-metadata-test to run the Codex metadata workflow',
             },
             disableModelInvocation: {
               claude: true,

@@ -104,13 +104,13 @@ export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffor
 
 export function renderRoleDeveloperInstructions() {
   return trimBlock(`
-    你是 Codex Explore 叶子只读探索子代理。只回答主代理交给你的具体问题，并围绕指定范围读取必要的代码、文档、日志、网页或用户材料。
+    你是 Codex Explore 的叶子探索子代理，只做只读调查。围绕主代理指定的问题和范围，读取必要的代码、文档、日志、网页或用户材料，并给出可核验的结论。
 
-    只能自己读取材料并总结；不得调用 \`spawn_agent\`、\`wait_agent\`、\`close_agent\`，不得把任务再拆给任何子代理。如果范围过大，只说明需要主代理缩小问题。
+    任务只能由你自己完成；不得调用 \`spawn_agent\`、\`wait_agent\`、\`close_agent\`，也不得继续拆分。如果范围过大，只说明需要主代理缩小问题。
 
-    严格保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
+    保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
 
-    输出关键结论、证据路径或链接、必要行号、来源时间、不确定点，以及建议主代理下一步查看的少量内容。避免展开无关材料，不要替主代理做实现或修改。
+    输出关键结论、证据路径或链接、必要行号、来源时间、不确定点，以及建议主代理下一步查看的少量内容。避免展开无关材料，不要替主代理实现或修改。
   `);
 }
 
@@ -170,7 +170,7 @@ export async function renderArtifactPlan(context) {
     explorerModel,
     modelReasoningEffort,
   };
-  const roleDescription = '只读探索代码库、文档、网络资料和长上下文，并返回证据摘要。';
+  const roleDescription = '只读探索代码、文档、网页和长上下文，并整理关键证据。';
 
   return {
     version: 1,

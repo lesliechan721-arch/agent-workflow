@@ -287,7 +287,7 @@ codex:
     icon_small: ./assets/review-16.svg
     icon_large: ./assets/review-64.svg
     brand_color: "#2563EB"
-    default_prompt: "Use $review to review current changes."
+    default_prompt: "使用 $review 审查当前改动。"
 ---
 
 {{#if supportsCommands}}
@@ -302,7 +302,7 @@ codex:
 
 - 顶层 `description` 必填。
 - Claude block 可写 `description`、`allowed-tools`、`model`、`argument-hint`、`shell`；Claude-only 字段不能放在顶层。`shell` 只接受 `bash` 或 `powershell`。
-- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。
+- Codex block 只允许 `description` 和 `interface`。`interface` 可写 `display_name`、`short_description`、`icon_small`、`icon_large`、`brand_color`、`default_prompt`。`default_prompt` 是用户/UI 起手句，必须包含 `$command-name`，不是 generated skill 的正文。
 - `codex.interface.icon_small` / `icon_large` 只能写 `./assets/...`；源文件必须位于 `slashCommands` 根目录下的 `assets/`，不能是绝对路径、`../`、反斜杠、其它目录或非普通文件。build 只复制被引用资源到对应 generated skill 的 `assets/`。
 - Codex generated skill 固定 manual-only：`policy.allow_implicit_invocation: false`。`codex.policy` 不可配置，写了会失败。
 - Codex 渲染结果不能残留 `$ARGUMENTS`、`$1`、`` !`command` `` 或 ```! 这类 Claude-only 参数 / 命令结果填充语法；这项校验只在插件支持 Codex、需要生成 Codex manual-only skill 时执行。需要差异内容时，用 `buildConfig.templates` 按平台渲染。

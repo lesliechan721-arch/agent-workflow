@@ -45,7 +45,7 @@ codex:
     icon_small: ./assets/review-16.svg
     icon_large: ./assets/review-64.svg
     brand_color: "#2563EB"
-    default_prompt: "Use $review to review current changes."
+    default_prompt: "使用 $review 审查当前改动。"
 ---
 
 对 $ARGUMENTS 指定的文件执行代码审查。
@@ -72,7 +72,7 @@ codex:
 | `codex.interface.short_description` | string | Codex generated skill 简短描述 |
 | `codex.interface.icon_small` / `icon_large` | string | 只能写 `./assets/...`，源文件位于 `slash-commands/assets/` |
 | `codex.interface.brand_color` | string | `#RRGGBB` |
-| `codex.interface.default_prompt` | string | Codex skill 默认提示 |
+| `codex.interface.default_prompt` | string | Codex skill 默认起手句；必须包含 `$command-name` |
 
 Claude-only 字段不能放在顶层。Codex block 只允许 `description` 和 `interface`；`codex.policy` 不可配置，因为 generated skill 固定 manual-only。
 
@@ -86,7 +86,7 @@ Claude-only 字段不能放在顶层。Codex block 只允许 `description` 和 `
 - 支持 Codex 的插件得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。
 - 原始 `slash-commands/` 源目录不作为 runtime 目录发布。
 
-Claude generated command 会固定写入 `disable-model-invocation: true`。Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此只能由用户显式 `$command-name` 或结构化 skill mention 调用。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并在 install record / project artifact shared identity 中以 `kind: "skill"` + `artifactKey: "<name>"` 记录最小 artifact identity。
+Claude generated command 会固定写入 `disable-model-invocation: true`。Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此只能由用户显式 `$command-name` 或结构化 skill mention 调用。`default_prompt` 只用于 UI/客户端的推荐起手话，不会替代 generated `SKILL.md` 正文。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并在 install record / project artifact shared identity 中以 `kind: "skill"` + `artifactKey: "<name>"` 记录最小 artifact identity。
 
 ## 动态参数与 Claude-only 语法
 

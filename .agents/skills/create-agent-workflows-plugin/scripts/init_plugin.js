@@ -160,7 +160,7 @@ metadata:
 }
 
 function renderOpenAiYaml(displayName, shortDescription, skillName) {
-  const defaultPrompt = `Use $${skillName} to ${shortDescription.toLowerCase().replace(/[。.]$/, '')}.`;
+  const defaultPrompt = `使用 $${skillName}：${shortDescription.replace(/[。.]$/, '')}。`;
   return `interface:
   display_name: ${yamlString(displayName)}
   short_description: ${yamlString(shortDescription)}
