@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "为 Codex 提供只读探索 workflow，支持代码库、多源资料与证据整合。",
   "skills": "./skills",
   "skillTriggers": {
@@ -28,7 +28,7 @@
       {
         "name": "delegation-authorization",
         "title": "Codex Explore 子代理授权",
-        "content": "只有主 agent 可以在 `$codex-explore`、`codex-explore` 技能 Gate 通过后启动第一层 Codex Explore 子代理；这份授权不传递给探索子代理。Gate 未通过时不得启动任何子代理。"
+        "content": "当调用 `codex-explore` 技能并且 Gate 判断通过，将这次委派视为用户明确请求在该 workflow 中使用子代理；如果 Gate 未通过则不得启动子代理。"
       }
     ]
   },
@@ -55,7 +55,7 @@
         "type": "enum",
         "title": "探索推理强度",
         "values": ["low", "medium", "high", "xhigh"],
-        "default": "medium",
+        "default": "low",
         "description": "Codex Explore 默认受管子代理使用的推理强度；skill 不会回退到内置 explorer。"
       }
     }
