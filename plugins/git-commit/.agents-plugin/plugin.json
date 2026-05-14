@@ -1,6 +1,6 @@
 {
   "name": "git-commit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "在用户请求提交时，核对变更范围并生成中文约定式 Git 提交。",
   "skills": "./skills",
   "skillTriggers": {
