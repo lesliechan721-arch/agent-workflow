@@ -101,19 +101,26 @@ async function testPresentSkillArtifact() {
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
-  assert.match(skill.content.skillFile, /description: 只读大范围探索委派 workflow/);
+  assert.match(skill.content.skillFile, /description: 只读证据探索委派 workflow/);
   assert.match(skill.content.skillFile, /用户明确要求使用 codex-explore 做只读探索时优先触发/);
-  assert.match(skill.content.skillFile, /大范围、只读的证据探索/);
+  assert.match(skill.content.skillFile, /容易污染主会话上下文的只读证据探索/);
   assert.match(skill.content.skillFile, /跨 6 个以上文件、3 个以上模块、多来源资料、长日志、官方文档\/网页/);
-  assert.match(skill.content.skillFile, /任务边界不明确、需要大量探查\/筛选\/排除材料/);
-  assert.match(skill.content.skillFile, /主 agent 直接探查会明显占用上下文时触发/);
-  assert.match(skill.content.skillFile, /探索范围足够大或边界不明确/);
-  assert.match(skill.content.skillFile, /如果由主 agent 独自完成，会明显占用当前会话上下文/);
+  assert.match(skill.content.skillFile, /取证范围边界不明确/);
+  assert.match(skill.content.skillFile, /陌生、外部、本轮尚未建立上下文/);
+  assert.match(skill.content.skillFile, /大量候选文件、搜索结果、日志、网页或用户材料/);
+  assert.match(skill.content.skillFile, /明显占用或污染当前会话上下文/);
+  assert.match(skill.content.skillFile, /即使最终答案是单个事实/);
+  assert.match(skill.content.skillFile, /单个事实查询只有在事实来源已知/);
+  assert.match(skill.content.skillFile, /在陌生或外部大型材料中搜索、筛选和核验证据，仍应触发/);
   assert.match(skill.content.skillFile, /普通实现、修改、调试、审查、解释、提交/);
+  assert.match(skill.content.skillFile, /上面的取证范围和上下文污染条件/);
   assert.match(skill.content.skillFile, /交叉验证不能单独作为启动子代理的理由/);
   assert.match(skill.content.skillFile, /或只是提到插件名时不要触发/);
   assert.match(skill.content.skillFile, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill.content.skillFile, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
+  assert.match(skill.content.skillFile, /问题本身不需要隔离探索上下文/);
+  assert.match(skill.content.skillFile, /探索 `\/path\/to\/external-project`/);
+  assert.match(skill.content.skillFile, /如果正反例与其它阈值发生冲突/);
   assert.match(skill.content.skillFile, /先做 Gate 判断/);
   assert.match(skill.content.skillFile, /默认使用 Codex Explore 自带的探索子代理/);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
@@ -131,7 +138,7 @@ async function testPresentSkillArtifact() {
   );
   assert.match(skill.content.skillFile, /叶子探索代理，不得调用 `spawn_agent`、`wait_agent`、`close_agent` 或再拆子任务/);
   assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
-  assert.match(skill.content.skillFile, /主 agent 不要重复调查同一个问题/);
+  assert.match(skill.content.skillFile, /主 agent 不要重复探索同一个问题/);
   assert.match(skill.content.skillFile, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill.content.skillFile, /读取并整合结果后，立即用 `close_agent`/);
   assert.match(skill.content.skillFile, /`wait_agent` 不等于关闭 agent/);
@@ -145,8 +152,8 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /大范围资料探索与证据整理/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 做大范围只读探索，并总结关键证据。/);
+  assert.match(skill.content.openaiYaml, /只读证据探索与上下文隔离/);
+  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 做只读证据探索，隔离大量候选材料并总结关键证据。/);
   assert.equal(skill.content.openaiYaml.includes('任务边界不明确'), false);
   assert.equal(skill.content.openaiYaml.includes('普通实现、修改、调试'), false);
 }
@@ -239,19 +246,26 @@ async function testStaticSkillContracts() {
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  assert.match(skill, /description: 只读大范围探索委派 workflow/);
+  assert.match(skill, /description: 只读证据探索委派 workflow/);
   assert.match(skill, /用户明确要求使用 codex-explore 做只读探索时优先触发/);
-  assert.match(skill, /大范围、只读的证据探索/);
+  assert.match(skill, /容易污染主会话上下文的只读证据探索/);
   assert.match(skill, /跨 6 个以上文件、3 个以上模块、多来源资料、长日志、官方文档\/网页/);
-  assert.match(skill, /任务边界不明确、需要大量探查\/筛选\/排除材料/);
-  assert.match(skill, /主 agent 直接探查会明显占用上下文时触发/);
-  assert.match(skill, /探索范围足够大或边界不明确/);
-  assert.match(skill, /如果由主 agent 独自完成，会明显占用当前会话上下文/);
+  assert.match(skill, /取证范围边界不明确/);
+  assert.match(skill, /陌生、外部、本轮尚未建立上下文/);
+  assert.match(skill, /大量候选文件、搜索结果、日志、网页或用户材料/);
+  assert.match(skill, /明显占用或污染当前会话上下文/);
+  assert.match(skill, /即使最终答案是单个事实/);
+  assert.match(skill, /单个事实查询只有在事实来源已知/);
+  assert.match(skill, /在陌生或外部大型材料中搜索、筛选和核验证据，仍应触发/);
   assert.match(skill, /普通实现、修改、调试、审查、解释、提交/);
+  assert.match(skill, /上面的取证范围和上下文污染条件/);
   assert.match(skill, /交叉验证不能单独作为启动子代理的理由/);
   assert.match(skill, /或只是提到插件名时不要触发/);
   assert.match(skill, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
+  assert.match(skill, /问题本身不需要隔离探索上下文/);
+  assert.match(skill, /探索 `\/path\/to\/external-project`/);
+  assert.match(skill, /如果正反例与其它阈值发生冲突/);
   assert.match(skill, /先做 Gate 判断/);
   assert.match(skill, /自带的探索子代理/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
@@ -264,7 +278,7 @@ async function testStaticSkillContracts() {
   assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/);
   assert.match(skill, /叶子探索代理，不得调用 `spawn_agent`、`wait_agent`、`close_agent` 或再拆子任务/);
   assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
-  assert.match(skill, /主 agent 不要重复调查同一个问题/);
+  assert.match(skill, /主 agent 不要重复探索同一个问题/);
   assert.match(skill, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
   assert.match(skill, /`wait_agent` 不等于关闭 agent/);
@@ -272,8 +286,8 @@ async function testStaticSkillContracts() {
   assert.equal(skill.includes('codex-explorer'), false);
 
   assert.match(metadata, /allow_implicit_invocation:\s*true/);
-  assert.match(metadata, /short_description: "大范围资料探索与证据整理"/);
-  assert.match(metadata, /使用 \$codex-explore 做大范围只读探索，并总结关键证据。/);
+  assert.match(metadata, /short_description: "只读证据探索与上下文隔离"/);
+  assert.match(metadata, /使用 \$codex-explore 做只读证据探索，隔离大量候选材料并总结关键证据。/);
   assert.equal(metadata.includes('任务边界不明确'), false);
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
