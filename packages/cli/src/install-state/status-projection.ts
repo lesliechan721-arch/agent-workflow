@@ -4,6 +4,7 @@ import type { PluginLocation } from './types.js';
 import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
 import { parseCodexConfig } from '../utils/codex-config.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
+import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
 
 export type ProjectInstallStateKind =
   | 'installed'
@@ -25,7 +26,9 @@ export interface ProjectInstallIssue {
     | 'historicalLifecycleUnavailable'
     | 'dependencyMissing'
     | 'projectSharedIdentityUnavailable'
-    | 'nativeEvidenceMissing';
+    | 'nativeEvidenceMissing'
+    | 'catalogVersionMismatch'
+    | 'catalogVersionNonCompliant';
   artifactPath?: string;
   dependency?: PluginLocation;
   detail?: string;
@@ -391,6 +394,43 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   return issues;
 }
 
+function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
+  const currentCatalogSource = evidence.currentCatalog.source;
+  if (!evidence.installRecord.present || !currentCatalogSource) {
+    return [];
+  }
+
+  const installedVersion = evidence.installRecord.read.status === 'ok'
+    ? evidence.installRecord.read.value.record.source.pluginVersion
+    : null;
+  if (!installedVersion) {
+    return [];
+  }
+
+  const parsedInstalledVersion = tryParseStrictSemVer(installedVersion);
+  const parsedCurrentVersion = tryParseStrictSemVer(currentCatalogSource.pluginVersion);
+  if (!parsedInstalledVersion || !parsedCurrentVersion) {
+    return [{
+      code: 'catalogVersionNonCompliant',
+      detail: !parsedInstalledVersion && !parsedCurrentVersion
+        ? `installed version "${installedVersion}" and current catalog version "${currentCatalogSource.pluginVersion}" are not strict SemVer 2.0.0 strings.`
+        : !parsedInstalledVersion
+          ? `installed version "${installedVersion}" is not a strict SemVer 2.0.0 string.`
+          : `current catalog version "${currentCatalogSource.pluginVersion}" is not a strict SemVer 2.0.0 string.`,
+    }];
+  }
+
+  const relation = compareStrictSemVer(parsedCurrentVersion, parsedInstalledVersion);
+  if (relation < 0) {
+    return [{
+      code: 'catalogVersionMismatch',
+      detail: `current catalog version ${parsedCurrentVersion.raw} is lower than installed version ${parsedInstalledVersion.raw}.`,
+    }];
+  }
+
+  return [];
+}
+
 export function projectInstallState(
   evidence: InstallEvidence,
 ): ProjectInstallStateProjection {
@@ -406,6 +446,7 @@ export function projectInstallState(
 
   const recordIssues = installRecordPresent ? collectRecordIssues(evidence) : [];
   issues.push(...recordIssues);
+  issues.push(...collectCatalogVersionIssues(evidence));
 
   let kind: ProjectInstallStateKind;
   if (installRecordPresent) {
@@ -429,13 +470,29 @@ export function projectInstallState(
     kind = 'notInstalled';
   }
 
+  const currentCatalogSource = evidence.currentCatalog.source;
+  const installedVersion = evidence.installRecord.read.status === 'ok'
+    ? evidence.installRecord.read.value.record.source.pluginVersion
+    : null;
+  const currentVersionComparison =
+    currentCatalogSource && installedVersion
+      ? (() => {
+          const parsedInstalledVersion = tryParseStrictSemVer(installedVersion);
+          const parsedCurrentVersion = tryParseStrictSemVer(currentCatalogSource.pluginVersion);
+          if (!parsedInstalledVersion || !parsedCurrentVersion) {
+            return null;
+          }
+          return compareStrictSemVer(parsedCurrentVersion, parsedInstalledVersion);
+        })()
+      : null;
+
   return {
     kind,
     issues,
     installRecordPresent,
     projectInstallState: kind,
     catalogDrift: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
-    upgradeAvailable: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
+    upgradeAvailable: currentVersionComparison !== null && currentVersionComparison > 0,
     dynamicDiagnosticUnavailable: evidence.dynamicDiagnostic.dynamicDiagnosticUnavailable,
     dependencyIndexTrusted: evidence.dependencyIndex.projection.coverage.trusted,
     dependencyIndexCoverageTrusted: evidence.dependencyIndex.projection.coverage.coverageTrusted,

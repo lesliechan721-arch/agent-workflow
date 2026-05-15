@@ -351,13 +351,16 @@ async function configureProjectDynamicSkillPlugin(
     };
     manifest.skillTriggers = {
       'repo-check': {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
+    delete manifest.skills;
     delete manifest.extensions;
     delete manifest.mcpServers;
     delete manifest.slashCommands;
   });
+  await fs.remove(path.join(repoRoot, 'plugins', pluginName, 'skills'));
   await writeFixtureArtifactRenderer(repoRoot, pluginName, rendererSource);
 }
 
@@ -1925,7 +1928,12 @@ describe('Codex project safety preflight', () => {
         items: [],
       },
     });
-    expect(result.matrix.summaries[0].nextSteps).toEqual([]);
+    expect(result.matrix.summaries[0].nextSteps).toEqual([
+      expect.objectContaining({
+        label: '查看详细状态',
+        uiAction: 'openStatus',
+      }),
+    ]);
   });
 
   it('keeps project status ready when read-only projection ignores unrelated user external ownership', async () => {
@@ -2120,7 +2128,7 @@ describe('Codex project safety preflight', () => {
     expect(result.friendlySummaries[0]).toMatchObject({
       pluginName: 'instructions-mcp',
       status: 'notInstalled',
-      nextStep: 'aw install instructions-mcp -p codex -s project',
+      nextStep: '开始安装。会进入安装流程，并为这个插件选择可用的目标位置。',
     });
   });
 });

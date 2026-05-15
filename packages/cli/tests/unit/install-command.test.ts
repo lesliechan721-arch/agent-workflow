@@ -90,6 +90,7 @@ async function makeWorkspace(): Promise<{
       AW_CODEX_HOME: path.join(root, 'codex-home'),
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_FORCE_CODEX_AVAILABLE: '1',
+      AW_FORCE_CLAUDE_AVAILABLE: '1',
     },
   };
 }
@@ -904,7 +905,11 @@ describe('install command P6 install-state semantics', () => {
       }],
     });
     expect(receipt).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       command: 'install',
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ description: expect.any(String) })],
       targets: expect.arrayContaining([
         expect.objectContaining({
           plugin: parentPlugin.manifest.name,
@@ -918,6 +923,26 @@ describe('install command P6 install-state semantics', () => {
             platform: 'codex',
             scope: 'user',
           }],
+        }),
+      ]),
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: parentPlugin.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }),
+          action: 'install',
+          state: 'completed',
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: childPlugin.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }),
+          action: 'installDependency',
+          state: 'completed',
         }),
       ]),
       actions: expect.arrayContaining([
@@ -1092,6 +1117,9 @@ describe('install command P6 install-state semantics', () => {
     const receipt = buildCommandReceiptJson('install', rawReceipt);
 
     expect(receipt).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
+      nextStepsSchemaVersion: 1,
       privateStateFiles: [{ path: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json' }],
       ignoredStateFiles: [{ repoRelativePath: '.gitignore' }],
       sharedConfigFiles: [{ path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json' }],
@@ -1118,6 +1146,8 @@ describe('install command P6 install-state semantics', () => {
 
     const human = renderCommandReceipt('install', rawReceipt).join('\n');
     expect(human).toContain('主要安装已经完成，但还需要收口本机原生状态');
+    expect(human).toContain('aw repair git-commit -p codex -s project');
+    expect(human).toContain('aw cleanup git-commit -p codex -s project');
     expect(human).toContain('已更新团队共享配置。');
     expect(human).toContain('已更新共享身份文件。');
     expect(human).toContain('已更新 AW 本地状态。');
@@ -1126,7 +1156,7 @@ describe('install command P6 install-state semantics', () => {
     expect(human).not.toContain('ownerConflict');
   });
 
-  it('keeps --platform auto based on explicit targets only, without letting dependencies influence platform selection', async () => {
+  it('keeps explicit single-platform installs scoped to requested targets, without letting dependencies widen the platform set', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const childPlugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
       name: 'claude-only-child',
@@ -1176,7 +1206,7 @@ describe('install command P6 install-state semantics', () => {
       {
         cwd: repoRoot,
         scope: 'user',
-        platform: 'auto',
+        platform: 'codex',
       },
       {
         env,
@@ -1193,6 +1223,78 @@ describe('install command P6 install-state semantics', () => {
       repoRoot,
       env,
       plugin: childPlugin.manifest.name,
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
+
+  it('expands --platform both by current manifest support without generating unsupported target pairs', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexOnly = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'codex-only-plugin',
+      products: ['codex'],
+    }));
+    const claudeOnly = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'claude-only-plugin',
+      products: ['claude'],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const codexTarget = {
+      pluginName: codexOnly.manifest.name,
+      plugin: codexOnly,
+      currentPlugin: codexOnly,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    const claudeTarget = {
+      pluginName: claudeOnly.manifest.name,
+      plugin: claudeOnly,
+      currentPlugin: claudeOnly,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [codexTarget, claudeTarget],
+      allTargets: [codexTarget, claudeTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env);
+    const claude = new GraphTestAdapter('claude', repoRoot, env);
+
+    const result = await installCommand(
+      [codexOnly.manifest.name, claudeOnly.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'both',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude,
+        },
+      },
+    );
+
+    expect(result.platforms).toEqual(['codex', 'claude']);
+    expect(codex.installOrder).toEqual([codexOnly.manifest.name]);
+    expect(claude.installOrder).toEqual([claudeOnly.manifest.name]);
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: codexOnly.manifest.name,
+      platform: 'claude',
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: claudeOnly.manifest.name,
+      platform: 'codex',
     })).resolves.toMatchObject({
       status: 'missing',
     });

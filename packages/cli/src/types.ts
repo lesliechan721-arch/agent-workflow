@@ -1,11 +1,60 @@
 export type PlatformName = 'codex' | 'claude';
 export type SupportedPlatformSet = ReadonlySet<PlatformName>;
-export type PlatformSelection = PlatformName | 'auto' | 'both';
+export type PlatformSelection = PlatformName | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
 export type SkillTriggerApplicability = 'none' | 'fixed' | 'overridable';
 export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
+export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
+export type TargetWriteState = 'completed' | 'rolledBack' | 'notRun' | 'failed';
+export type ReceiptOverallState = 'succeeded' | 'failed';
+export type ConfigStoreRemovalState = 'removed' | 'notFound' | 'skipped' | 'failed';
+
+export interface NextStepInstruction {
+  kind: NextStepKind;
+  label: string;
+  description: string;
+  uiAction?: string;
+  command?: string;
+}
+
+export interface NextStepsPayloadBoundary {
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
+}
+
+export interface ReceiptTargetIdentity {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey?: string;
+}
+
+export interface ReceiptTargetResult {
+  target: ReceiptTargetIdentity;
+  action: string;
+  state: TargetWriteState;
+  message?: string;
+  errorCode?: string;
+  rollbackState?: 'notNeeded' | 'completed' | 'failed';
+}
+
+export interface ConfigStoreIdentity {
+  pluginName: string;
+  storeKind: 'user' | 'projectShared' | 'projectLocal';
+  projectRoot?: string;
+}
+
+export interface ConfigStoreRemovalResult {
+  store: ConfigStoreIdentity;
+  state: ConfigStoreRemovalState;
+  subjectTargets: ReceiptTargetIdentity[];
+  reasonCode?: 'subjectFailed' | 'removeFailed';
+  message?: string;
+  path?: string;
+}
 
 export interface PluginInterfaceMeta {
   displayName?: string;
@@ -330,7 +379,8 @@ export type ArtifactPlanArtifact =
   | CodexSkillArtifact;
 
 export interface SkillTriggerPolicy {
-  allowInstallOverride: boolean;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
 }
 
 export interface PluginDependencyWhen {
@@ -682,6 +732,7 @@ export interface CurrentCatalogStatus {
   source: CatalogResolution['source'];
   available: boolean;
   reason?: string;
+  reasonCode?: CatalogResolution['reasonCode'];
 }
 
 export type PluginStatusDependencyHealthSource =
@@ -1089,4 +1140,14 @@ export interface CatalogResolution {
   rootDir: string;
   source: 'local' | 'embedded';
   reason?: string;
+  reasonCode?:
+    | 'localCatalogMissing'
+    | 'localCatalogConfigInvalid'
+    | 'localCatalogSourceVersionMissing'
+    | 'localCatalogSourceVersionInvalid'
+    | 'localCatalogSourceVersionAhead'
+    | 'localCatalogSourceVersionBehind'
+    | 'localCatalogFingerprintMismatch'
+    | 'localCatalogLayoutInvalid'
+    | 'localLedgerDegraded';
 }

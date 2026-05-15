@@ -66,6 +66,8 @@ import type {
 import type {
   CommandOptions,
   PluginLocation as CommandPluginLocation,
+  ReceiptOverallState,
+  ReceiptTargetResult,
   GeneratedArtifact,
   PlatformName,
   PluginLifecycleEvent,
@@ -192,8 +194,11 @@ export interface RepairDependencyIndexPayload {
 export interface RepairJsonPayload {
   ok: true;
   command: 'repair';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   generatedAt: string;
   dependencyIndexMode: boolean;
+  targetResults: ReceiptTargetResult[];
   locations: RepairLocationPayload[];
   dependencyIndex?: RepairDependencyIndexPayload;
 }
@@ -210,9 +215,20 @@ interface RepairRuntimeOverrides extends CommandExecutionContextInput {
 function normalizeRepairCommandOptions(
   raw: RawRepairCommandOptions = {},
 ): RepairCommandOptions {
+  if (raw.dependencyIndex && raw.adoptExisting) {
+    throw new Error('--dependency-index 不能与 --adopt-existing 一起使用。');
+  }
+  if (raw.dependencyIndex && raw.scope !== undefined) {
+    throw new Error('--dependency-index 不接受 `--scope`。');
+  }
+  if (raw.dependencyIndex && raw.platform !== undefined) {
+    throw new Error('--dependency-index 不接受 `--platform`。');
+  }
   const base = normalizeCommandOptions(raw, {
     defaultScope: 'user',
-    defaultPlatform: 'auto',
+    requirePlatform: raw.dependencyIndex !== true,
+    missingPlatformMessage: 'repair 命令需要显式指定 `--platform codex|claude|both`。',
+    ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
   });
   const requestedSkillTrigger = raw.requestedSkillTrigger ?? raw.skillTrigger;
   return {
@@ -240,6 +256,20 @@ function renderLocationLabel(location: Pick<PluginLocation, 'platform' | 'scope'
   const platform = location.platform === 'codex' ? 'Codex' : 'Claude Code';
   const scope = location.scope === 'project' ? '当前项目' : '当前用户';
   return `${platform}（${scope}）`;
+}
+
+function buildRepairTargetResults(locations: RepairLocationPayload[]): ReceiptTargetResult[] {
+  return locations.map((location) => ({
+    target: {
+      pluginName: location.plugin,
+      platform: location.platform,
+      scope: location.scope,
+      ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+    },
+    action: 'repair',
+    state: 'completed',
+    rollbackState: 'notNeeded',
+  }));
 }
 
 function createSkillTriggerMaterializationTarget(
@@ -315,11 +345,11 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
     dependencyIndexRecoveryMessage: state.projection.dependencyIndexCoverageTrusted
       ? null
       : state.projection.dependencyIndexRevisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 diagnose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 diagnose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`,
     triggerPreferenceApplied: state.evidence.installRecord.read.status === 'ok'
       ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
@@ -1025,11 +1055,11 @@ async function runDependencyIndexRepair(options: {
     dependencyIndexRecoveryMessage: repaired.coverage.coverageTrusted
       ? null
       : repaired.coverage.revisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 diagnose 或 repair：${repaired.coverage.revisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose 或 repair：${repaired.coverage.revisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : repaired.coverage.recoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 diagnose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
           : `依赖索引覆盖仍不完整：${repaired.coverage.reasons.join('、') || 'unknown'}。`,
   };
 }
@@ -1744,12 +1774,12 @@ async function adoptExistingLocation(options: {
     const identityRead = state.evidence.projectSharedIdentity.read;
     if (identityRead && identityRead.status !== 'ok' && identityRead.status !== 'missing') {
       throw new Error(
-        `${location.plugin} 的 project artifact shared identity 已损坏，repair --adopt-existing 不会覆盖共享文件。请先运行 aw diagnose、aw cleanup 或 aw reinstall。`,
+        `${location.plugin} 的 project artifact shared identity 已损坏，repair --adopt-existing 不会覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
       );
     }
     if (state.evidence.adoptable.blockers.includes('artifactIdentityUnverifiable')) {
       throw new Error(
-        `${location.plugin} 的共享 artifacts 归属无法验证，或 shared file marker 无法安全定位，repair --adopt-existing 不会静默覆盖共享文件。请先运行 aw diagnose、aw cleanup 或 aw reinstall。`,
+        `${location.plugin} 的共享 artifacts 归属无法验证，或 shared file marker 无法安全定位，repair --adopt-existing 不会静默覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
       );
     }
     if (state.evidence.residualEvidence.repoVisibleArtifactPresent) {
@@ -1929,7 +1959,7 @@ function renderHumanOutput(payload: RepairJsonPayload): string {
       if (coverage.revisitProjectLocations.length > 0) {
         lines.push(`- 需要回访的位置：${coverage.revisitProjectLocations.map((location) => `${location.plugin}:${location.projectKey ?? '.'}`).join('，')}`);
       } else if (coverage.recoverySuggestion === 'revisitRelatedProjects') {
-        lines.push('- 还需要回到可能相关的仓库重新运行 diagnose 或 repair。');
+        lines.push('- 还需要回到可能相关的仓库重新运行 status --verbose 或 repair。');
       }
     }
     return lines.join('\n');
@@ -2014,8 +2044,11 @@ export async function repairCommand(
     const payload: RepairJsonPayload = {
       ok: true,
       command: 'repair',
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       generatedAt: new Date().toISOString(),
       dependencyIndexMode: true,
+      targetResults: [],
       locations: [],
       dependencyIndex,
     };
@@ -2032,7 +2065,7 @@ export async function repairCommand(
   const collected = await collectP7Locations(pluginNames, {
     cwd: options.cwd,
     scope: options.scope,
-    platform: options.platform === 'auto' ? undefined : options.platform,
+    platform: options.platform,
   }, runtime);
   if (collected.locations.length === 0) {
     throw new Error('没有找到可修复的插件位置。');
@@ -2046,9 +2079,15 @@ export async function repairCommand(
       state.evidence.installRecord.present ||
       state.evidence.nativeTransaction.classification === 'markerOnlyInstall'
     );
+  const repairStates = options.platform === 'both'
+    ? writableStates
+    : collected.locations;
+  if (repairStates.length === 0) {
+    throw new Error('没有找到可修复的插件位置。');
+  }
   await assertNoDuplicateInstalls({
     cwd: options.cwd,
-    locations: writableStates
+    locations: repairStates
       .filter((state) =>
         shouldEnforceDuplicateInstallPreflight({
           location: toCommandPluginLocation(state.location),
@@ -2059,7 +2098,7 @@ export async function repairCommand(
   });
 
   const locations: RepairLocationPayload[] = [];
-  for (const state of collected.locations) {
+  for (const state of repairStates) {
     if (options.adoptExisting) {
       locations.push(await adoptExistingLocation({
         state,
@@ -2104,8 +2143,11 @@ export async function repairCommand(
   const payload: RepairJsonPayload = {
     ok: true,
     command: 'repair',
+    receiptSchemaVersion: 2,
+    overallState: 'succeeded',
     generatedAt: new Date().toISOString(),
     dependencyIndexMode: false,
+    targetResults: buildRepairTargetResults(locations),
     locations,
   };
   return {

@@ -1,4 +1,5 @@
-import type { Scope, SkillTriggerPreference } from '../types.js';
+import type { Scope } from '../types.js';
+import { formatNextStepForUi } from '../output/model.js';
 import type {
   CliConsoleView,
   CliExecutionContext,
@@ -9,6 +10,7 @@ import type {
 import {
   createInstallWizardDecision,
   planConsoleGraphWriteTargets,
+  type ConsoleGraphWritePlan,
   type ConsoleRequiredConfigPrompt,
   type ConsoleWriteWizardOperation,
 } from './console-wizard.js';
@@ -26,7 +28,6 @@ import {
   preparePluginTargetsForCommand,
   type ResolvedPluginTarget,
 } from './common.js';
-import { diagnoseCommand } from './diagnose.js';
 import { installCommand } from './install.js';
 import { cleanupCommand, isCleanupExecutionFailure } from './cleanup.js';
 import { reinstallCommand } from './reinstall.js';
@@ -42,7 +43,6 @@ import {
   renderCleanupReceipt,
   renderCommandReceipt,
 } from '../output/command-receipt.js';
-import { resolveSkillTriggerApplicabilityForPlugin } from '../utils/skill-trigger-preferences.js';
 import {
   coercePluginConfigValue,
   createPluginConfigSchemaIdentity,
@@ -219,7 +219,9 @@ function buildHomeChoices(items: ConsoleControllerItem[]): CliPromptChoice[] {
 
 function buildFeatureChoices(item: ConsoleControllerItem): CliPromptChoice[] {
   return [
-    ...item.summary.features.map((feature) => ({
+    ...item.summary.features
+      .filter((feature) => feature.kind !== 'diagnose')
+      .map((feature) => ({
       value: feature.kind,
       label: feature.label,
       description: feature.disabledReason
@@ -254,9 +256,9 @@ function buildTargetChoices(
     ...(feature?.targetSelection === 'multiTargetAllowed' && platforms.length > 1
       ? [{
           value: '__all_platforms',
-          label: '所有平台',
+          label: '全部支持平台',
           description: platforms.map((platform) => platform === 'codex' ? 'Codex' : 'Claude Code').join('、'),
-          short: '所有平台',
+          short: '全部支持平台',
         } satisfies CliPromptChoice]
       : []),
     ...detail.targetOptions.map((option) => ({
@@ -752,7 +754,9 @@ function renderStatusPageLines(
           ...scopedLocations.flatMap((location) => [
             `- ${location.label} · ${location.statusLabel}`,
             ...(location.issue ? [`  问题：${location.issue.summary}`] : []),
-            ...(location.nextSteps.length > 0 ? [`  下一步：${location.nextSteps.join('；')}`] : []),
+            ...(location.nextSteps.length > 0
+              ? [`  下一步：${location.nextSteps.map((step) => formatNextStepForUi(step)).join('；')}`]
+              : []),
           ]),
         ]
       : []),
@@ -783,7 +787,7 @@ function renderDiagnosePageLines(
               ? [`  建议功能：${location.suggestedFeatures.map((feature) => feature.label).join('、')}`]
               : []),
             ...(location.nextSteps.length > 0
-              ? [`  下一步：${location.nextSteps.join('；')}`]
+              ? [`  下一步：${location.nextSteps.map((step) => formatNextStepForUi(step)).join('；')}`]
               : []),
           ]),
         ]
@@ -794,53 +798,6 @@ function renderDiagnosePageLines(
     ...renderSupplementalCommandLines(page.supplementalCommands),
     ...(fallbackCommand ? ['', `当前入口命令：${fallbackCommand.join(' ')}`] : []),
   ]);
-}
-
-async function selectSkillTrigger(
-  context: CliExecutionContext,
-  target: ResolvedPluginTarget,
-  platform: PluginConsoleLocation['platform'],
-): Promise<SkillTriggerPreference | null> {
-  const applicability = await resolveSkillTriggerApplicabilityForPlugin(
-    target.currentPlugin ?? target.plugin,
-    platform,
-  );
-  if (applicability !== 'overridable') {
-    return null;
-  }
-
-  const value = await selectValue(context, {
-    message: '选择触发方式',
-    choices: [
-      { value: 'default', label: '默认' },
-      { value: 'manual', label: '手动' },
-      { value: 'auto', label: '自动' },
-      { value: 'skill-trigger-back', label: '返回', role: 'back' },
-    ],
-    defaultValue: 'default',
-  });
-  if (isPromptAction(value, 'back') || isPromptAction(value, 'cancel')) {
-    return null;
-  }
-  return selectedPromptValue(value) as SkillTriggerPreference;
-}
-
-async function selectSkillTriggerForTargets(
-  context: CliExecutionContext,
-  targets: Array<{ target: ResolvedPluginTarget; platform: PluginConsoleLocation['platform'] }>,
-): Promise<SkillTriggerPreference | undefined> {
-  for (const entry of targets) {
-    const applicability = await resolveSkillTriggerApplicabilityForPlugin(
-      entry.target.currentPlugin ?? entry.target.plugin,
-      entry.platform,
-    );
-    if (applicability !== 'overridable') {
-      continue;
-    }
-    const selected = await selectSkillTrigger(context, entry.target, entry.platform);
-    return selected ?? undefined;
-  }
-  return undefined;
 }
 
 async function promptStringField(
@@ -1175,6 +1132,133 @@ function hasHomogeneousScopeOptions(
   return signatures.length > 0 && new Set(signatures).size === 1;
 }
 
+function uniqueScopesForSelections(selections: ExecutableTargetSelection[]): Scope[] {
+  return [...new Set(selections.map((entry) => entry.location.scope))]
+    .sort((left, right) => {
+      if (left === right) {
+        return 0;
+      }
+      return left === 'user' ? -1 : 1;
+    });
+}
+
+function commonScopesForPlatforms(
+  groupedSelections: Map<PluginConsoleLocation['platform'], ExecutableTargetSelection[]>,
+): Scope[] {
+  const scopeSets = [...groupedSelections.values()].map((entries) => new Set(uniqueScopesForSelections(entries)));
+  if (scopeSets.length === 0) {
+    return [];
+  }
+  return (['user', 'project'] as const).filter((scope) => scopeSets.every((scopeSet) => scopeSet.has(scope)));
+}
+
+function buildPlatformChoices(
+  platforms: PluginConsoleLocation['platform'][],
+  includeAllPlatforms: boolean,
+): CliPromptChoice[] {
+  return [
+    ...platforms.map((platform) => ({
+      value: platform,
+      label: platformLabel(platform),
+      short: platformLabel(platform),
+    })),
+    ...(includeAllPlatforms
+      ? [{
+          value: '__all_platforms',
+          label: '全部支持平台',
+          description: platforms.map((platform) => platformLabel(platform)).join('、'),
+          short: '全部支持平台',
+        } satisfies CliPromptChoice]
+      : []),
+    { value: 'install-platform-back', label: '返回', role: 'back' },
+  ];
+}
+
+function buildScopeChoices(scopes: Scope[]): CliPromptChoice[] {
+  return [
+    ...scopes.map((scope) => ({
+      value: scope,
+      label: configScopeLabel(scope),
+      short: configScopeLabel(scope),
+    })),
+    { value: 'install-scope-back', label: '返回', role: 'back' },
+  ];
+}
+
+async function selectInstallTargets(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  selections: ExecutableTargetSelection[],
+): Promise<ExecutableTargetSelection[] | null> {
+  const byPlatform = new Map<PluginConsoleLocation['platform'], ExecutableTargetSelection[]>();
+  for (const selection of selections) {
+    const bucket = byPlatform.get(selection.location.platform) ?? [];
+    bucket.push(selection);
+    byPlatform.set(selection.location.platform, bucket);
+  }
+
+  const platforms = [...byPlatform.keys()].sort();
+  while (true) {
+    const platformResult = await selectValue(context, {
+      message: '选择平台',
+      choices: buildPlatformChoices(platforms, platforms.length > 1),
+      defaultValue: platforms.length > 1 ? '__all_platforms' : platforms[0],
+    });
+    if (promptCancelled(platformResult) || isPromptAction(platformResult, 'back')) {
+      return null;
+    }
+
+    const selectedPlatform = selectedPromptValue(platformResult);
+    if (selectedPlatform === '__all_platforms') {
+      const commonScopes = commonScopesForPlatforms(byPlatform);
+      if (commonScopes.length === 0) {
+        await renderView(context, `${item.summary.title} 安装`, [
+          '这些平台没有共同可用的位置，暂时不能一起安装。',
+          '请改为选择单个平台，或回到上一步调整目标。',
+        ]);
+        return null;
+      }
+      const scopeResult = await selectValue(context, {
+        message: '选择位置',
+        choices: buildScopeChoices(commonScopes),
+        defaultValue: commonScopes[0],
+      });
+      if (promptCancelled(scopeResult)) {
+        return null;
+      }
+      if (isPromptAction(scopeResult, 'back')) {
+        continue;
+      }
+      const selectedScope = selectedPromptValue(scopeResult) as Scope;
+      return selections.filter((entry) => entry.location.scope === selectedScope);
+    }
+
+    const platformEntries = byPlatform.get(selectedPlatform as PluginConsoleLocation['platform']) ?? [];
+    const availableScopes = uniqueScopesForSelections(platformEntries);
+    const scopeResult = await selectValue(context, {
+      message: '选择位置',
+      choices: buildScopeChoices(availableScopes),
+      defaultValue: availableScopes[0],
+    });
+    if (promptCancelled(scopeResult)) {
+      return null;
+    }
+    if (isPromptAction(scopeResult, 'back')) {
+      continue;
+    }
+    const selectedScope = selectedPromptValue(scopeResult) as Scope;
+    const resolved = platformEntries.filter((entry) => entry.location.scope === selectedScope);
+    if (resolved.length === 0) {
+      await renderView(context, `${item.summary.title} 安装`, [
+        `${platformLabel(selectedPlatform as PluginConsoleLocation['platform'])} 在${configScopeLabel(selectedScope)}已没有可继续的目标。`,
+        '请返回平台页重新选择。',
+      ]);
+      continue;
+    }
+    return resolved;
+  }
+}
+
 async function selectTargetsForAllPlatforms(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
@@ -1260,6 +1344,17 @@ async function selectExecutableTargets(
       ? findLocation(item, buildTargetChoiceValue(action.target))
       : undefined;
     return location ? [{ action, location }] : null;
+  }
+
+  if (featureKind === 'install' || featureKind === 'upgrade') {
+    const selections = enabledActions.flatMap((action) => {
+      if (!action.target) {
+        return [];
+      }
+      const location = findLocation(item, buildTargetChoiceValue(action.target));
+      return location ? [{ action, location }] : [];
+    });
+    return selectInstallTargets(context, item, selections);
   }
 
   const targetValue = await selectValue(context, {
@@ -1511,7 +1606,7 @@ async function maybeHandleConfigRefreshFailure(
     message: '后续操作',
     choices: [
       { value: 'reapply', label: '重新应用配置' },
-      { value: 'diagnose', label: '诊断' },
+      { value: 'status', label: '状态' },
       { value: 'config-followup-back', label: '返回', role: 'back' },
     ],
     defaultValue: 'reapply',
@@ -1522,8 +1617,8 @@ async function maybeHandleConfigRefreshFailure(
   const followupValue = selectedPromptValue(followup);
   if (followupValue === 'reapply') {
     await runReapplyAction(context, item, location);
-  } else if (followupValue === 'diagnose') {
-    await runDiagnoseAction(context, item, location, undefined);
+  } else if (followupValue === 'status') {
+    await runStatusAction(context, item, location);
   }
 }
 
@@ -1557,6 +1652,49 @@ async function runConfigWizardAction(
   });
 }
 
+function dependencyWriteTargets(graphPlan: ConsoleGraphWritePlan | null): Array<{
+  pluginName: string;
+  platform: PluginConsoleLocation['platform'];
+  scope: Scope;
+}> {
+  if (!graphPlan) {
+    return [];
+  }
+  return graphPlan.writeTargets
+    .filter((entry) => !entry.requested)
+    .map((entry) => ({
+      pluginName: entry.target.pluginName,
+      platform: entry.platform,
+      scope: entry.scope,
+    }));
+}
+
+async function confirmDependencyWrites(
+  context: CliExecutionContext,
+  item: ConsoleControllerItem,
+  graphPlan: ConsoleGraphWritePlan | null,
+): Promise<boolean> {
+  const dependencies = dependencyWriteTargets(graphPlan);
+  if (dependencies.length === 0) {
+    return true;
+  }
+
+  await renderView(context, `${item.summary.title} 安装依赖确认`, [
+    '这次写入会一并处理以下依赖：',
+    ...dependencies.map((entry) =>
+      `- ${entry.pluginName} · ${platformLabel(entry.platform)} · ${configScopeLabel(entry.scope)}`),
+  ]);
+  const selected = await selectValue(context, {
+    message: '确认依赖变更',
+    choices: [
+      { value: 'continue', label: '继续安装' },
+      { value: 'dependency-back', label: '返回', role: 'back' },
+    ],
+    defaultValue: 'continue',
+  });
+  return !promptCancelled(selected) && !isPromptAction(selected, 'back');
+}
+
 async function runInstallLikeAction(options: {
   context: CliExecutionContext;
   item: ConsoleControllerItem;
@@ -1576,7 +1714,7 @@ async function runInstallLikeAction(options: {
     },
   );
   const selectedPlatforms = [...new Set(selections.map((selection) => selection.location.platform))];
-  const graphPlan = intent === 'repairInstall' || selectedPlatforms.length === 1
+  const graphPlan = intent === 'repairInstall'
     ? null
     : await planConsoleGraphWriteTargets({
         operation: intent,
@@ -1587,10 +1725,6 @@ async function runInstallLikeAction(options: {
         ledger: prepared.ledger,
         env: context.env,
       });
-  const skillTargets = graphPlan
-    ? graphPlan.requestedTargets.map((entry) => ({ target: entry.target, platform: entry.platform }))
-    : prepared.targets.map((target) => ({ target, platform: firstLocation.platform }));
-  const requestedSkillTrigger = await selectSkillTriggerForTargets(context, skillTargets);
 
   const decision = await createInstallWizardDecision({
     intent,
@@ -1618,17 +1752,10 @@ async function runInstallLikeAction(options: {
       : [{
           platform: firstLocation.platform,
           pluginName: item.summary.pluginName,
-          options: requestedSkillTrigger
-            ? {
-                applicability: 'overridable',
-                skillTriggerPreference: requestedSkillTrigger,
-                skillTriggerSource: 'cli',
-                ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
-              }
-            : {
-                applicability: 'fixed',
-                ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
-              },
+          options: {
+            applicability: 'fixed',
+            ledgerTrust: prepared.ledger.ledgerState.status === 'available' ? 'available' : 'degraded',
+          },
         }],
   });
 
@@ -1638,6 +1765,11 @@ async function runInstallLikeAction(options: {
       '',
       ...decision.blockedReason.nextSteps.map((step) => `- ${step}`),
     ]);
+    return 'back';
+  }
+
+  const dependenciesConfirmed = await confirmDependencyWrites(context, item, graphPlan);
+  if (!dependenciesConfirmed) {
     return 'back';
   }
 
@@ -1651,7 +1783,6 @@ async function runInstallLikeAction(options: {
   const commandOptions = {
     cwd: context.cwd,
     scope: firstLocation.scope,
-    ...(requestedSkillTrigger ? { requestedSkillTrigger } : {}),
   };
   const outcomes: ConsoleExecutionOutcome[] = [];
   for (const selection of selections) {
@@ -2046,33 +2177,16 @@ async function runReapplyAction(
   });
 }
 
-async function runDiagnoseAction(
-  context: CliExecutionContext,
-  item: ConsoleControllerItem,
-  location: PluginConsoleLocation | undefined,
-  action?: { command?: string[] },
-): Promise<void> {
-  const result = await diagnoseCommand([item.summary.pluginName], {
-    cwd: context.cwd,
-    ...(location ? {
-      scope: location.scope,
-      platform: location.platform,
-    } : {}),
-  }, context);
-  const page = result.pageModels.find((entry) => entry.pluginName === item.summary.pluginName);
-  const lines = page
-    ? renderDiagnosePageLines(page, location?.locationLabel, action?.command)
-    : action?.command
-      ? [`当前入口命令：${action.command.join(' ')}`]
-      : ['当前没有可展示的结构化诊断信息。'];
-  await renderView(context, `${item.summary.title} 诊断`, lines);
-}
-
 async function runStatusAction(
   context: CliExecutionContext,
   item: ConsoleControllerItem,
+  location?: PluginConsoleLocation,
 ): Promise<void> {
-  await renderView(context, `${item.summary.title} 状态`, renderStatusPageLines(item));
+  await renderView(
+    context,
+    `${item.summary.title} 状态`,
+    renderStatusPageLines(item, location?.locationLabel),
+  );
 }
 
 async function loadResultPageItem(
@@ -2097,14 +2211,14 @@ async function showResultPage(
   while (true) {
     await renderView(context, state.title, joinNonEmpty([
       ...state.lines,
-      ...(diagnoseTargets.length > 0 ? ['', '可继续查看目标诊断。'] : []),
+      ...(diagnoseTargets.length > 0 ? ['', '可继续查看目标状态。'] : []),
     ]));
     const selection = await selectValue(context, {
       message: '下一步',
       choices: [
         ...diagnoseTargets.map((target) => ({
           value: buildTargetChoiceValue(target.location),
-          label: `诊断 · ${target.location.locationLabel}`,
+          label: `状态 · ${target.location.locationLabel}`,
           description: target.description ?? target.location.issueSummary ?? target.location.statusLabel,
         })),
         { value: 'result-home', label: '返回首页', role: 'back' },
@@ -2128,12 +2242,7 @@ async function showResultPage(
     if (!target || !reloadedItem) {
       return 'reload';
     }
-    await runDiagnoseAction(
-      context,
-      reloadedItem,
-      target.location,
-      target.command ? { command: target.command } : undefined,
-    );
+    await runStatusAction(context, reloadedItem, target.location);
   }
 }
 
@@ -2157,7 +2266,7 @@ async function handleExecutableAction(
     return 'back';
   }
   if (firstAction?.kind === 'openDiagnose') {
-    await runDiagnoseAction(context, item, undefined, undefined);
+    await runStatusAction(context, item);
     return 'back';
   }
 

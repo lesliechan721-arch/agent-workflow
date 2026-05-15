@@ -27,12 +27,19 @@ import {
 import { detectEnvironment } from '../utils/detect.js';
 import type {
   GeneratedArtifact,
+  NextStepInstruction,
   PluginMeta,
   PlatformName,
   Scope,
   SkillTriggerPreference,
   StatusCommandOptions,
 } from '../types.js';
+import {
+  createLegacyCommandNextStep,
+  createNextStepsBoundary,
+  createUiActionNextStep,
+  formatNextStepForHuman,
+} from '../output/model.js';
 import type { PluginConsoleReasonCode } from '../install-state/types.js';
 import type {
   CurrentCatalogArtifact,
@@ -161,7 +168,9 @@ export interface StatusJsonLocation {
   summary: string;
   locationLabel: string;
   state: ProjectInstallStateProjection['kind'];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   record: {
     present: boolean;
     status: InstallEvidence['installRecord']['read']['status'];
@@ -605,10 +614,10 @@ function buildDependencyIndexRecoveryMessage(
     const revisit = projection.dependencyIndexRevisitProjectLocations
       .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
       .join('，');
-    return `请回到这些位置重新运行 diagnose 或 repair：${revisit}。`;
+    return `请回到这些位置重新运行 status --verbose 或 repair：${revisit}。`;
   }
   if (projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects') {
-    return '请回到可能相关的仓库重新运行 diagnose 或 repair。';
+    return '请回到可能相关的仓库重新运行 status --verbose 或 repair。';
   }
   return `依赖索引覆盖仍不完整：${projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`;
 }
@@ -1278,10 +1287,10 @@ function createDependencyCoverageFinding(projection: ProjectInstallStateProjecti
     const revisit = projection.dependencyIndexRevisitProjectLocations
       .map((location) => `${location.plugin}@${location.projectKey ?? scopeLabel(location.scope)}`)
       .join('、');
-    return `依赖索引当前不可信（${reasons}）；请回到这些项目重新运行 diagnose 或 repair：${revisit}。`;
+    return `依赖索引当前不可信（${reasons}）；请回到这些项目重新运行 status --verbose 或 repair：${revisit}。`;
   }
   if (projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects') {
-    return '依赖索引当前不可信，且还没有足够的已知项目位置可回访；请回到可能相关的仓库重新运行 diagnose 或 repair。';
+    return '依赖索引当前不可信，且还没有足够的已知项目位置可回访；请回到可能相关的仓库重新运行 status --verbose 或 repair。';
   }
   return `依赖索引当前不可信（${reasons}）。`;
 }
@@ -1433,7 +1442,7 @@ function createNextSteps(options: {
     }
   } else if (projection.kind === 'adoptable') {
     steps.push(`aw repair ${args} --adopt-existing`);
-    steps.push(`aw diagnose ${args} --deep`);
+    steps.push(`aw status ${args} --verbose`);
   } else if (projection.kind === 'residual' && projection.cleanupAvailable) {
     steps.push(`aw cleanup ${args}`);
   } else if (projection.kind === 'externallyManaged' && projection.cleanupAvailable) {
@@ -1442,7 +1451,7 @@ function createNextSteps(options: {
     steps.push(`aw upgrade ${args}`);
     steps.push(`aw reinstall ${args}`);
   } else if (projection.kind === 'installed' && projection.dynamicDiagnosticUnavailable) {
-    steps.push(`aw diagnose ${args} --deep`);
+    steps.push(`aw status ${args} --verbose`);
   } else if (projection.kind === 'notInstalled') {
     steps.push(`aw install ${args}`);
   }
@@ -1456,6 +1465,73 @@ function createNextSteps(options: {
     }
   }
   return uniqueStrings(steps);
+}
+
+function nextStepFromLegacyCommand(step: string): NextStepInstruction {
+  if (step.startsWith('aw cleanup ')) {
+    return createUiActionNextStep(
+      '清理残留',
+      '会进入 cleanup 流程，评估并清理当前残留状态。',
+      'runCleanup',
+      step,
+    );
+  }
+  if (step.startsWith('aw repair ') && step.includes('--adopt-existing')) {
+    return createUiActionNextStep(
+      '认领现有安装',
+      '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
+      'runAdoptExisting',
+      step,
+    );
+  }
+  if (step.startsWith('aw repair ')) {
+    return createUiActionNextStep(
+      '修复安装',
+      '会进入修复流程，补齐当前安装缺失或不一致的状态。',
+      'runRepair',
+      step,
+    );
+  }
+  if (step.startsWith('aw upgrade ')) {
+    return createUiActionNextStep(
+      '升级插件',
+      '会进入升级流程，让当前安装重新对齐最新版本和能力。',
+      'runUpgrade',
+      step,
+    );
+  }
+  if (step.startsWith('aw reinstall ')) {
+    return createUiActionNextStep(
+      '重新安装',
+      '会进入重新安装流程，先收口当前状态，再按最新版本重新写入。',
+      'runReinstall',
+      step,
+    );
+  }
+  if (step.startsWith('aw install ')) {
+    return createUiActionNextStep(
+      '开始安装',
+      '会进入安装流程，并为这个插件选择可用的目标位置。',
+      'runInstall',
+      step,
+    );
+  }
+  if (step.startsWith('aw status ')) {
+    return createUiActionNextStep(
+      '查看详细状态',
+      '可以查看安装证据、残留和可恢复动作。',
+      'openStatus',
+      step,
+    );
+  }
+  return createLegacyCommandNextStep(step, {
+    label: '继续处理',
+    description: '可以进入下一步处理流程。',
+  });
+}
+
+function nextStepsBoundaryFromLegacy(steps: string[]) {
+  return createNextStepsBoundary(steps.map(nextStepFromLegacyCommand), steps);
 }
 
 async function evaluateCleanupPath(
@@ -1644,11 +1720,11 @@ function createDiagnoseLocationSummary(
     ...(issues[0] ? { issue: issues[0] } : {}),
     issues,
     suggestedFeatures,
-    nextSteps: uniqueStrings([
+    ...nextStepsBoundaryFromLegacy(uniqueStrings([
       ...input.state.nextSteps,
       ...(input.cleanup.previewCommand ? [input.cleanup.previewCommand] : []),
       ...(input.cleanup.executeCommand ? [input.cleanup.executeCommand] : []),
-    ]),
+    ])),
     ...(input.state.findings.length > 0 ? { details: input.state.findings } : {}),
   };
 }
@@ -1714,7 +1790,7 @@ function toStatusJsonLocation(
     summary: state.summary,
     locationLabel: locationLabel(state.location),
     state: state.projection.kind,
-    nextSteps: state.nextSteps,
+    ...nextStepsBoundaryFromLegacy(state.nextSteps),
     record: {
       present: state.evidence.installRecord.present,
       status: state.evidence.installRecord.read.status,

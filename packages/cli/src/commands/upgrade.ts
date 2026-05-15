@@ -32,9 +32,9 @@ import {
   pluginSupportsPlatform,
   prepareCommandEnvironment,
   preparePluginTargetsForCommand,
+  resolveCurrentCatalogWriteTargetPairs,
   resolveInstallOptionsForLocationTargets,
   resolveInstallOptionsForTargets,
-  resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
   type ResolvedPluginTarget,
 } from './common.js';
@@ -62,8 +62,6 @@ import {
 } from './options.js';
 import {
   listExecutablePlatformsForNativeAndCodexProject,
-  resolveEvidenceFirstAutoPlatform,
-  type PlatformEvidenceState,
 } from './platform-resolution.js';
 import {
   createPluginConfigSchemaIdentity,
@@ -84,7 +82,6 @@ import {
 import {
   uninstallTargetsOnPlatforms,
 } from './uninstall.js';
-import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
 import {
   resolveClaudeProjectKey,
   resolveClaudePaths,
@@ -143,11 +140,6 @@ type UpgradeAllTrackingState = 'none' | 'managed' | 'invalid';
 interface UpgradeAllTrackingEvidence {
   state: UpgradeAllTrackingState;
   reason?: string;
-}
-
-interface UpgradeAllCandidatePlatformState {
-  pluginNames: string[];
-  evidenceState: PlatformEvidenceState;
 }
 
 interface UpgradeAllReadyTarget {
@@ -551,65 +543,67 @@ async function readUpgradeTargetStatus(
 }
 
 async function preflightExplicitUpgradeTargets(
-  targets: ResolvedPluginTarget[],
-  platforms: PlatformName[],
+  requestedLocations: PluginLocation[],
+  targetByPlugin: Map<string, ResolvedPluginTarget>,
   options: UpgradeCommandOptions,
   adapters: Record<PlatformName, PlatformAdapter>,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  for (const platform of platforms) {
-    for (const target of targets) {
-      const pluginStatus = await readUpgradeTargetStatus(
-        adapters,
-        platform,
-        target,
-        options.scope,
-      );
+  for (const location of requestedLocations) {
+    const target = targetByPlugin.get(location.plugin);
+    if (!target) {
+      throw new Error(`Unknown plugin "${location.plugin}".`);
+    }
+    const pluginStatus = await readUpgradeTargetStatus(
+      adapters,
+      location.platform,
+      target,
+      options.scope,
+    );
 
-      if (
-        pluginStatus.externalOwnership?.present &&
-        !(platform === 'codex' && options.scope === 'project')
-      ) {
-        throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
-      }
+    if (
+      pluginStatus.externalOwnership?.present &&
+      !(location.platform === 'codex' && options.scope === 'project')
+    ) {
+      throw new Error(pluginStatus.externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
+    }
 
-      const codexUserUpgradeBlockReason = getCodexUserUpgradeBlockReason(
-        target.pluginName,
-        pluginStatus,
-        options.scope,
-        platform,
-      );
-      if (codexUserUpgradeBlockReason) {
-        throw new Error(codexUserUpgradeBlockReason);
-      }
+    const codexUserUpgradeBlockReason = getCodexUserUpgradeBlockReason(
+      target.pluginName,
+      pluginStatus,
+      options.scope,
+      location.platform,
+    );
+    if (codexUserUpgradeBlockReason) {
+      throw new Error(codexUserUpgradeBlockReason);
+    }
 
-      if (target.source === 'historical' && !hasHistoricalEvidence(pluginStatus)) {
-        throw new Error(`Unknown plugin "${target.pluginName}".`);
-      }
+    if (target.source === 'historical' && !hasHistoricalEvidence(pluginStatus)) {
+      throw new Error(`Unknown plugin "${target.pluginName}".`);
+    }
 
-      const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
-        cwd: options.cwd,
-        env,
-        platform,
-        scope: options.scope,
-        pluginName: target.pluginName,
-      });
-      if (trackingIdentityRefusal) {
-        throw new Error(trackingIdentityRefusal);
-      }
+    const trackingIdentityRefusal = await getTrackingArtifactIdentityRefusal({
+      cwd: options.cwd,
+      env,
+      platform: location.platform,
+      scope: options.scope,
+      pluginName: target.pluginName,
+    });
+    if (trackingIdentityRefusal) {
+      throw new Error(trackingIdentityRefusal);
+    }
 
-      const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
-      if (identityRefusal) {
-        throw new Error(identityRefusal);
-      }
+    const identityRefusal = getGeneratedArtifactIdentityRefusal(pluginStatus);
+    if (identityRefusal) {
+      throw new Error(identityRefusal);
+    }
 
-      if (pluginStatus.catalogCompatibility === 'missing') {
-        throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
-      }
+    if (pluginStatus.catalogCompatibility === 'missing') {
+      throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
+    }
 
-      if (!target.currentPlugin) {
-        throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
-      }
+    if (!target.currentPlugin) {
+      throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
     }
   }
 }
@@ -643,8 +637,7 @@ interface PreparedExplicitUpgradeGraph {
 }
 
 async function prepareExplicitUpgradeGraph(options: {
-  targets: ResolvedPluginTarget[];
-  platforms: PlatformName[];
+  requestedLocations: PluginLocation[];
   commandOptions: UpgradeCommandOptions;
   adapters: Record<PlatformName, PlatformAdapter>;
   env: NodeJS.ProcessEnv;
@@ -663,19 +656,19 @@ async function prepareExplicitUpgradeGraph(options: {
   const targetByPlugin = new Map<string, ResolvedPluginTarget>(
     allCatalogTargets.map((target) => [target.pluginName, target]),
   );
+  const platforms = [...new Set(options.requestedLocations.map((location) => location.platform))];
   const projectKeysByPlatform = await resolveProjectKeysByPlatform(
     options.commandOptions.cwd,
     options.commandOptions.scope,
-    options.platforms,
+    platforms,
   );
-  const requestedLocations = options.platforms.flatMap((platform) =>
-    options.targets.map((target) => createPluginLocationForPlatform({
-      plugin: target.pluginName,
-      platform,
-      scope: options.commandOptions.scope,
+  const requestedLocations = options.requestedLocations.map((location) =>
+    createPluginLocationForPlatform({
+      plugin: location.plugin,
+      platform: location.platform,
+      scope: location.scope,
       projectKeysByPlatform,
-    })),
-  );
+    }));
   const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
     'upgrade',
     requestedLocations.map((location) => {
@@ -814,35 +807,6 @@ async function readUpgradeAllTrackingManifest(
   }
 }
 
-function collectUpgradeAllTrackingPluginNames(
-  manifest: TrackingManifest | undefined,
-  platform: PlatformName,
-): string[] {
-  if (!manifest) {
-    return [];
-  }
-
-  return Object.entries(manifest.plugins)
-    .filter(([, record]) => record.artifacts.some((artifact) => artifact.platform === platform))
-    .map(([pluginName]) => pluginName)
-    .sort();
-}
-
-function trackingManifestHasIntegrityErrors(
-  manifest: TrackingManifest | undefined,
-  platform: PlatformName,
-): boolean {
-  if (!manifest) {
-    return false;
-  }
-
-  return Object.values(manifest.plugins).some((record) =>
-    getTrackingArtifactIntegrityErrors(
-      record.artifacts.filter((artifact) => artifact.platform === platform),
-    ).length > 0,
-  );
-}
-
 function getUpgradeAllTrackingEvidenceForTarget(
   manifest: TrackingManifest | undefined,
   readError: string | undefined,
@@ -874,104 +838,6 @@ function getUpgradeAllTrackingEvidenceForTarget(
 
   return {
     state: 'managed',
-  };
-}
-
-async function collectUpgradeAllCandidateStateByPlatform(
-  scope: Scope,
-  cwd: string,
-  ledger: InstalledLedger,
-  env: NodeJS.ProcessEnv,
-): Promise<Record<PlatformName, UpgradeAllCandidatePlatformState>> {
-  const scopeKeys = await resolveUpgradeAllScopeKeys(cwd, scope);
-  const managedNamesByPlatform = {
-    codex: await listManagedPluginNamesForPreparedLedger('codex', scope, cwd, ledger),
-    claude: await listManagedPluginNamesForPreparedLedger('claude', scope, cwd, ledger),
-  };
-
-  if (scope !== 'project') {
-    const codexBreadcrumbNames = [...new Set(
-      (await listCodexNativeRecoveryBreadcrumbs(env)).map((breadcrumb) => breadcrumb.pluginName),
-    )].sort();
-    const codexPluginNames = [...new Set([
-      ...managedNamesByPlatform.codex,
-      ...codexBreadcrumbNames,
-    ])].sort();
-    return {
-      codex: {
-        pluginNames: codexPluginNames,
-        evidenceState: codexPluginNames.length > 0 ? 'yes' : 'no',
-      },
-      claude: {
-        pluginNames: managedNamesByPlatform.claude,
-        evidenceState: managedNamesByPlatform.claude.length > 0 ? 'yes' : 'no',
-      },
-    };
-  }
-
-  const [codexTracking, claudeTracking] = await Promise.all([
-    readUpgradeAllTrackingManifest(cwd, 'codex', scope, env),
-    readUpgradeAllTrackingManifest(cwd, 'claude', scope, env),
-  ]);
-
-  const codexTrackingNames = collectUpgradeAllTrackingPluginNames(codexTracking.manifest, 'codex');
-  const claudeTrackingNames = collectUpgradeAllTrackingPluginNames(claudeTracking.manifest, 'claude');
-  const legacyProjectCandidateNamesByPlatform = {
-    codex: Object.entries(ledger.plugins)
-      .filter(([, record]) => {
-        const platformRecord = record.platforms.codex;
-        if (!platformRecord || platformRecord.lastRequestedScope !== 'project') {
-          return false;
-        }
-        return !platformRecord.projectScopes?.[scopeKeys.codex ?? '']?.managed;
-      })
-      .map(([pluginName]) => pluginName)
-      .sort(),
-    claude: Object.entries(ledger.plugins)
-      .filter(([, record]) => {
-        const platformRecord = record.platforms.claude;
-        if (!platformRecord || platformRecord.lastRequestedScope !== 'project') {
-          return false;
-        }
-        return !platformRecord.projectScopes?.[scopeKeys.claude ?? '']?.managed;
-      })
-      .map(([pluginName]) => pluginName)
-      .sort(),
-  };
-
-  return {
-    codex: {
-      pluginNames: [
-        ...new Set([
-          ...managedNamesByPlatform.codex,
-          ...codexTrackingNames,
-          ...legacyProjectCandidateNamesByPlatform.codex,
-        ]),
-      ].sort(),
-      evidenceState: codexTracking.readError || trackingManifestHasIntegrityErrors(codexTracking.manifest, 'codex')
-        ? 'unknown'
-        : managedNamesByPlatform.codex.length > 0 ||
-            codexTrackingNames.length > 0 ||
-            legacyProjectCandidateNamesByPlatform.codex.length > 0
-          ? 'yes'
-          : 'no',
-    },
-    claude: {
-      pluginNames: [
-        ...new Set([
-          ...managedNamesByPlatform.claude,
-          ...claudeTrackingNames,
-          ...legacyProjectCandidateNamesByPlatform.claude,
-        ]),
-      ].sort(),
-      evidenceState: claudeTracking.readError || trackingManifestHasIntegrityErrors(claudeTracking.manifest, 'claude')
-        ? 'unknown'
-        : managedNamesByPlatform.claude.length > 0 ||
-            claudeTrackingNames.length > 0 ||
-            legacyProjectCandidateNamesByPlatform.claude.length > 0
-          ? 'yes'
-          : 'no',
-    },
   };
 }
 
@@ -1059,12 +925,6 @@ async function resolveUpgradeAllPlatforms(
 ): Promise<PlatformName[]> {
   const detection = await detectEnvironment(cwd, env);
   const nativeAvailablePlatforms = listDetectedPlatforms(detection);
-  const candidateStateByPlatform = await collectUpgradeAllCandidateStateByPlatform(
-    scope,
-    cwd,
-    preparedLedger,
-    env,
-  );
   const codexNativeRunnerRequiredNames =
     scope === 'project'
       ? await listCodexProjectUpgradeAllNativeRunnerRequiredNames(cwd, preparedLedger)
@@ -1095,44 +955,8 @@ async function resolveUpgradeAllPlatforms(
     return ['codex', 'claude'];
   }
 
-  if (availablePlatforms.length === 0) {
-    throw new Error('当前环境没有检测到可用平台。');
-  }
-
-  if (requestedPlatform === 'auto' && scope === 'project') {
-    const inferred = resolveEvidenceFirstAutoPlatform({
-      evidenceStateByPlatform: {
-        codex: candidateStateByPlatform.codex.evidenceState,
-        claude: candidateStateByPlatform.claude.evidenceState,
-      },
-      availablePlatforms,
-      unknownMessage: '当前 scope 至少一侧平台 evidence = unknown，`upgrade --all --platform auto` 无法安全推断；请先修复 tracking / status 诊断，或显式传入 `--platform codex|claude|both`。',
-      ambiguousMessage: '当前 scope 同时存在 Claude 与 Codex project 受管证据，`upgrade --all --platform auto` 无法唯一推断目标平台；请显式传入 `--platform codex|claude|both`。',
-      createUnavailableError: (platform) => platform === 'codex'
-        ? createCodexUpgradeAllNativeRunnerRequiredError(scope, codexNativeRunnerRequiredNames)
-        : new Error(`${platform} 当前环境不可用。`),
-    });
-    if (inferred) {
-      return [inferred];
-    }
-  }
-
-  if (availablePlatforms.length === 1) {
-    return availablePlatforms;
-  }
-
-  const counts: Record<PlatformName, number> = {
-    codex: candidateStateByPlatform.codex.pluginNames.length,
-    claude: candidateStateByPlatform.claude.pluginNames.length,
-  };
-  const inferred = availablePlatforms.filter((platform) => counts[platform] > 0);
-  if (inferred.length === 1) {
-    return inferred;
-  }
-
-  throw new Error(
-    '当前环境同时检测到双平台，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
-  );
+  const exhaustive: never = requestedPlatform;
+  throw new Error(`Unsupported platform "${exhaustive}". Expected one of: codex, claude, both.`);
 }
 
 async function requiresRuntimeWritableMarketplaceForUpgradeAll(
@@ -1690,14 +1514,30 @@ async function runExplicitUpgrade(
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const adapters = createAdapters(options.cwd, context);
-  const prepared = preparedGraph ?? await prepareExplicitUpgradeGraph({
-    targets,
-    platforms,
-    commandOptions: options,
-    adapters,
-    env,
-    ledger: preparedLedger,
-  });
+  const prepared = preparedGraph ?? await (async () => {
+    const projectKeysByPlatform = await resolveProjectKeysByPlatform(
+      options.cwd,
+      options.scope,
+      platforms,
+    );
+    const requestedLocations = targets.flatMap((target) =>
+      platforms
+        .filter((platform) => pluginSupportsPlatform(target.currentPlugin ?? target.plugin, platform))
+        .map((platform) => createPluginLocationForPlatform({
+          plugin: target.pluginName,
+          platform,
+          scope: options.scope,
+          projectKeysByPlatform,
+        })),
+    );
+    return prepareExplicitUpgradeGraph({
+      requestedLocations,
+      commandOptions: options,
+      adapters,
+      env,
+      ledger: preparedLedger,
+    });
+  })();
   const graphPlan = prepared.plan;
   const graphContext = prepared.graphContext;
   const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
@@ -2183,7 +2023,7 @@ export async function upgradeCommand(
   }
 
   if (options.all && options.requestedSkillTrigger) {
-    throw new Error('`upgrade --all` 首版不支持 `--skill-trigger`，请改用显式插件名逐个升级。');
+    throw new Error('`upgrade` 不再接受 `--skill-trigger` / `-t`；请改用配置管理维护 skill trigger 偏好后再重试。');
   }
 
   if (options.all && options.takeoverSharedRuntime) {
@@ -2195,6 +2035,7 @@ export async function upgradeCommand(
     const prepared = await prepareCommandEnvironment({
       catalogMode: options.scope === 'project' ? 'readOnly' : 'runtimeWritable',
       env,
+      context,
     });
     let commandWarnings = prepared.warnings;
     try {
@@ -2221,6 +2062,7 @@ export async function upgradeCommand(
       const preparedForExecution = await prepareCommandEnvironment({
         catalogMode: 'runtimeWritable',
         env,
+        context,
       });
       const executionWarnings = preparedForExecution === prepared
         ? []
@@ -2280,14 +2122,30 @@ export async function upgradeCommand(
     },
   });
   try {
-    const platforms = await resolveTargetPlatforms(
+    const requestedPlatformPairs = await resolveCurrentCatalogWriteTargetPairs(
       'upgrade',
       options.platform,
       options.cwd,
       options.scope,
-      prepared.targets.map((target) => target.plugin),
+      prepared.targets,
       adapters,
       env,
+    );
+    const platforms = [...new Set(requestedPlatformPairs.map((entry) => entry.platform))];
+    const projectKeysByPlatform = await resolveProjectKeysByPlatform(
+      options.cwd,
+      options.scope,
+      platforms,
+    );
+    const requestedLocations = requestedPlatformPairs.map(({ pluginName, platform }) =>
+      createPluginLocationForPlatform({
+        plugin: pluginName,
+        platform,
+        scope: options.scope,
+        projectKeysByPlatform,
+      }));
+    const targetByPlugin = new Map(
+      prepared.targets.map((target) => [target.pluginName, target] as const),
     );
     await emitCommandEvent(context, {
       type: 'platform:resolved',
@@ -2307,15 +2165,14 @@ export async function upgradeCommand(
       operation: 'upgrade',
     });
     await preflightExplicitUpgradeTargets(
-      prepared.targets,
-      platforms,
+      requestedLocations,
+      targetByPlugin,
       options,
       adapters,
       env,
     );
     const preparedGraph = await prepareExplicitUpgradeGraph({
-      targets: prepared.targets,
-      platforms,
+      requestedLocations,
       commandOptions: options,
       adapters,
       env,
@@ -2340,6 +2197,7 @@ export async function upgradeCommand(
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: 'runtimeWritable',
       env,
+      context,
     });
     const executionWarnings = preparedForExecution === prepared
       ? []

@@ -835,7 +835,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         message: message ?? '选择目标平台',
         choices: available.map((value) => ({
           value,
-          label: value === 'both' ? 'Codex + Claude Code' : value === 'codex' ? 'Codex' : 'Claude Code',
+          label: value === 'both' ? '全部支持平台' : value === 'codex' ? 'Codex' : 'Claude Code',
         })),
         defaultValue,
       })),

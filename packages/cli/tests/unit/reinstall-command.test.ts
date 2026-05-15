@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import {
   createMinimalPluginInstallStateFixtureBuilder,
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { rewriteSanitizedInstallRecordForP2 } from '../helpers/install-state-projection-fixtures.js';
 import type {
   GeneratedArtifact,
@@ -18,13 +20,30 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
+import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 
 const tempDirs: string[] = [];
+
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
 
 async function makeBuilder() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-reinstall-'));
   tempDirs.push(root);
   return createMinimalPluginInstallStateFixtureBuilder(root);
+}
+
+async function seedRepoPlugin(repoRoot: string): Promise<void> {
+  await fs.copy(
+    fixturePath('repo-template'),
+    repoRoot,
+  );
 }
 
 class FakeAdapter implements PlatformAdapter {
@@ -51,10 +70,172 @@ class FakeAdapter implements PlatformAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('reinstall command (P9)', () => {
+  it('fails fast when reinstall --platform both mixes current-supported targets with historical unsupported evidence', async () => {
+    const builder = await makeBuilder();
+    await seedRepoPlugin(builder.paths.repoRoot);
+    const manifestPath = path.join(
+      builder.paths.repoRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    manifest.marketplace = {
+      ...(manifest.marketplace as Record<string, unknown>),
+      policy: {
+        ...((manifest.marketplace as Record<string, unknown>).policy as Record<string, unknown>),
+        products: ['CLAUDE'],
+      },
+    };
+    delete manifest.apps;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.remove(path.join(builder.paths.repoRoot, 'plugins', 'git-commit', '.app.json'));
+    const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    const codexTarget = builder.createTarget({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    });
+    await builder.writeNativeMarker(codexTarget, 'install');
+
+    const uninstallSpy = vi.fn<typeof import('../../src/commands/uninstall.js').uninstallCommand>();
+    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
+    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
+
+    await expect(
+      reinstallCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'both',
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+            AW_FORCE_CODEX_AVAILABLE: '1',
+            AW_FORCE_CLAUDE_AVAILABLE: '1',
+          },
+          adapters: {
+            codex: new FakeAdapter(),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+          uninstallCommandImpl: uninstallSpy,
+          cleanupCommandImpl: cleanupSpy,
+          installCommandImpl: installSpy,
+        },
+      ),
+    ).rejects.toThrow(/不能在同一次写入里同时清理历史不再支持的平台并重建当前支持的平台/);
+
+    expect(uninstallSpy).not.toHaveBeenCalled();
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  it('expands reinstall --platform both into concrete supported targets', async () => {
+    const builder = await makeBuilder();
+    await seedRepoPlugin(builder.paths.repoRoot);
+    const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
+    tempDirs.push(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    const codexTarget = builder.createTarget({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const claudeTarget = builder.createTarget({
+      pluginName: 'git-commit',
+      platform: 'claude',
+      scope: 'user',
+    });
+    await builder.writeRepoArtifact(codexTarget);
+    const codexLifecycle = await builder.writeHistoricalLifecycleRuntime(codexTarget);
+    const codexRecord = await builder.writeInstallRecord(codexTarget, codexLifecycle);
+    await rewriteSanitizedInstallRecordForP2(path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${codexTarget.recordId}.json`,
+    ));
+
+    await builder.writeRepoArtifact(claudeTarget);
+    const claudeLifecycle = await builder.writeHistoricalLifecycleRuntime(claudeTarget);
+    const claudeRecord = await builder.writeInstallRecord(claudeTarget, claudeLifecycle);
+    await rewriteSanitizedInstallRecordForP2(path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${claudeTarget.recordId}.json`,
+    ));
+    await builder.writeDependencyIndex([
+      { target: codexTarget, record: codexRecord },
+      { target: claudeTarget, record: claudeRecord },
+    ]);
+
+    const uninstallSpy = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+      repoManagedArtifacts: [],
+    }));
+    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
+    const installSpy = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex', 'claude'],
+      warnings: [],
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+    }));
+
+    const result = await reinstallCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'both',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+          AW_FORCE_CODEX_AVAILABLE: '1',
+          AW_FORCE_CLAUDE_AVAILABLE: '1',
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+        uninstallCommandImpl: uninstallSpy,
+        cleanupCommandImpl: cleanupSpy,
+        installCommandImpl: installSpy,
+      },
+    );
+
+    const removalPlatforms = [
+      ...uninstallSpy.mock.calls.map((call) => call[1].platform),
+      ...cleanupSpy.mock.calls.map((call) => call[1].platform),
+    ].sort();
+    expect(removalPlatforms).toEqual(['claude', 'codex']);
+    expect(removalPlatforms.includes('both')).toBe(false);
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    expect(result.platforms).toEqual(['codex', 'claude']);
+    expect(result.platforms.includes('both')).toBe(false);
+  });
+
   it('fails reinstall scope preflight before uninstalling when the sibling scope is already healthy', async () => {
     const builder = await makeBuilder();
     const env = {

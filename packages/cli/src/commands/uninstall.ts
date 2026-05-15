@@ -12,6 +12,7 @@ import {
 } from '../adapters/helpers.js';
 import type {
   CommandOptions,
+  ConfigStoreRemovalResult,
   GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
@@ -20,6 +21,7 @@ import type {
   LedgerStateReason,
   PlatformName,
   PluginStatusReport,
+  ReceiptTargetIdentity,
   Scope,
 } from '../types.js';
 import {
@@ -85,6 +87,10 @@ import {
   resolveTargetPlatforms,
   type ResolvedPluginTarget,
 } from './common.js';
+import {
+  buildCommandCandidates,
+  type CommandCandidate,
+} from './discovery.js';
 import {
   createCommandExecutionContext,
   emitCommandEvent,
@@ -1380,6 +1386,60 @@ async function assertStandardUninstallableLocations(options: {
   }
 }
 
+function createRecoverySelectionError(
+  pluginName: string,
+  candidate: CommandCandidate | undefined,
+): Error {
+  if (candidate?.disabledReason) {
+    return new Error(candidate.disabledReason);
+  }
+  return new Error(`Unknown plugin "${pluginName}".`);
+}
+
+function selectRequestedUninstallCandidates(options: {
+  pluginNames: string[];
+  requestedPlatform: UninstallCommandOptions['platform'];
+  candidates: CommandCandidate[];
+}): CommandCandidate[] {
+  const selected: CommandCandidate[] = [];
+  const seen = new Set<string>();
+
+  for (const pluginName of options.pluginNames) {
+    const pluginCandidates = options.candidates.filter((candidate) => candidate.pluginName === pluginName);
+    const selectable = pluginCandidates.filter((candidate) => candidate.selectable);
+
+    if (options.requestedPlatform === 'both') {
+      if (selectable.length === 0) {
+        throw createRecoverySelectionError(pluginName, pluginCandidates[0]);
+      }
+      for (const candidate of selectable) {
+        if (seen.has(candidate.id)) {
+          continue;
+        }
+        seen.add(candidate.id);
+        selected.push(candidate);
+      }
+      continue;
+    }
+
+    const selectedCandidate = pluginCandidates.find((candidate) =>
+      candidate.platform === options.requestedPlatform && candidate.selectable,
+    );
+    if (!selectedCandidate) {
+      const matchingCandidate = pluginCandidates.find((candidate) =>
+        candidate.platform === options.requestedPlatform,
+      );
+      throw createRecoverySelectionError(pluginName, matchingCandidate ?? pluginCandidates[0]);
+    }
+    if (!seen.has(selectedCandidate.id)) {
+      seen.add(selectedCandidate.id);
+      selected.push(selectedCandidate);
+    }
+  }
+
+  return selected;
+}
+
 export async function uninstallCommand(
   pluginNames: string[],
   rawOptions: RawUninstallCommandOptions,
@@ -1399,11 +1459,11 @@ export async function uninstallCommand(
       status: 'removed' | 'skipped' | 'failed';
       reason?: string;
     }>;
+    configStoreRemovals?: ConfigStoreRemovalResult[];
   };
 }> {
   const options = normalizeUninstallCommandOptions(rawOptions, {
     defaultScope: 'user',
-    defaultPlatform: 'auto',
   });
   if (pluginNames.length === 0) {
     throw new Error('uninstall 命令至少需要一个插件名。非交互模式下请运行 `aw uninstall <插件名>`。');
@@ -1420,26 +1480,50 @@ export async function uninstallCommand(
       env,
     },
   );
+  const selectedCandidates = options.platform === 'both'
+    ? selectRequestedUninstallCandidates({
+        pluginNames,
+        requestedPlatform: options.platform,
+        candidates: await buildCommandCandidates({
+          command: 'uninstall',
+          cwd: options.cwd,
+          scopeFilter: options.scope,
+          platformFilter: options.platform,
+          pluginNames,
+          env,
+        }),
+      })
+    : [];
   await emitCommandEvent(context, {
     type: 'catalog:resolved',
     data: {
-      plugins: targets.map((target) => ({
-        name: target.pluginName,
-        source: target.source,
-        current: Boolean(target.currentPlugin),
-      })),
+      plugins: (
+        options.platform === 'both'
+          ? selectedCandidates.map((candidate) => ({
+              name: candidate.pluginName,
+              source: candidate.target.source,
+              current: Boolean(candidate.target.currentPlugin),
+            }))
+          : targets.map((target) => ({
+              name: target.pluginName,
+              source: target.source,
+              current: Boolean(target.currentPlugin),
+            }))
+      ),
     },
   });
   const adapters = createAdapters(options.cwd, context);
-  const platforms = await resolveTargetPlatforms(
-    'uninstall',
-    options.platform,
-    options.cwd,
-    options.scope,
-    targets.map((target) => target.plugin),
-    adapters,
-    env,
-  );
+  const platforms = options.platform === 'both'
+    ? [...new Set(selectedCandidates.map((candidate) => candidate.platform))]
+    : await resolveTargetPlatforms(
+        'uninstall',
+        options.platform,
+        options.cwd,
+        options.scope,
+        targets.map((target) => target.plugin),
+        adapters,
+        env,
+      );
   await emitCommandEvent(context, {
     type: 'platform:resolved',
     data: {
@@ -1453,14 +1537,21 @@ export async function uninstallCommand(
     platforms,
     options.scope,
   );
-  const requestedLocations = targets.flatMap((target) =>
-    platforms.map((platform) => createCommandLocation({
-      plugin: target.pluginName,
-      platform,
-      scope: options.scope,
-      currentProjectKeysByPlatform,
-    })),
-  );
+  const requestedLocations = options.platform === 'both'
+    ? selectedCandidates.map((candidate) =>
+      createCommandLocation({
+        plugin: candidate.pluginName,
+        platform: candidate.platform,
+        scope: options.scope,
+        currentProjectKeysByPlatform,
+      }))
+    : targets.flatMap((target) =>
+      platforms.map((platform) => createCommandLocation({
+        plugin: target.pluginName,
+        platform,
+        scope: options.scope,
+        currentProjectKeysByPlatform,
+      })));
   const baselineLedger = await readInstalledLedger(env);
   await assertStandardUninstallableLocations({
     cwd: options.cwd,
@@ -1506,6 +1597,7 @@ export async function uninstallCommand(
   const warnings: string[] = [];
   let repoManagedArtifacts: GeneratedArtifact[] = [];
   const removedConfigStores: Array<{ path: string }> = [];
+  const configStoreRemovals: ConfigStoreRemovalResult[] = [];
   const configRemovalActions: Array<{
     path: string;
     plugin: string;
@@ -1514,6 +1606,18 @@ export async function uninstallCommand(
     status: 'removed' | 'skipped' | 'failed';
     reason?: string;
   }> = [];
+  const subjectTargetsByPlugin = new Map<string, ReceiptTargetIdentity[]>();
+  for (const location of requestedLocations) {
+    subjectTargetsByPlugin.set(location.plugin, [
+      ...(subjectTargetsByPlugin.get(location.plugin) ?? []),
+      {
+        pluginName: location.plugin,
+        platform: location.platform,
+        scope: location.scope,
+        ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+      },
+    ]);
+  }
   for (const execution of executions) {
     const result = await uninstallTargetOnPlatform(
       execution.target,
@@ -1558,6 +1662,15 @@ export async function uninstallCommand(
             path: reset.path,
             status: 'removed',
           });
+          configStoreRemovals.push({
+            store: {
+              pluginName,
+              storeKind: options.scope === 'project' ? 'projectShared' : 'user',
+            },
+            state: 'removed',
+            subjectTargets: subjectTargetsByPlugin.get(pluginName) ?? [],
+            path: reset.path,
+          });
         } else {
           configRemovalActions.push({
             plugin: pluginName,
@@ -1565,6 +1678,15 @@ export async function uninstallCommand(
             path: reset.path,
             status: 'skipped',
             reason: '当前 target scope 没有可删除的 AW 自管配置。',
+          });
+          configStoreRemovals.push({
+            store: {
+              pluginName,
+              storeKind: options.scope === 'project' ? 'projectShared' : 'user',
+            },
+            state: 'notFound',
+            subjectTargets: subjectTargetsByPlugin.get(pluginName) ?? [],
+            path: reset.path,
           });
         }
       } catch (error) {
@@ -1577,13 +1699,26 @@ export async function uninstallCommand(
           status: 'failed',
           reason,
         });
+        configStoreRemovals.push({
+          store: {
+            pluginName,
+            storeKind: options.scope === 'project' ? 'projectShared' : 'user',
+          },
+          state: 'failed',
+          reasonCode: 'removeFailed',
+          subjectTargets: subjectTargetsByPlugin.get(pluginName) ?? [],
+          path: storePath,
+          message: reason,
+        });
       }
     }
   }
 
   return {
     platforms,
-    plugins: targets.map((target) => target.pluginName),
+    plugins: options.platform === 'both'
+      ? [...new Set(selectedCandidates.map((candidate) => candidate.pluginName))]
+      : targets.map((target) => target.pluginName),
     repoManagedArtifacts,
     warnings: [
       ...collectCommandWarnings(platforms, options.scope),
@@ -1595,6 +1730,7 @@ export async function uninstallCommand(
           receiptDetails: {
             ...(removedConfigStores.length > 0 ? { removedConfigStores } : {}),
             ...(configRemovalActions.length > 0 ? { configRemovalActions } : {}),
+            ...(configStoreRemovals.length > 0 ? { configStoreRemovals } : {}),
           },
         }
       : {}),

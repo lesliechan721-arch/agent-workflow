@@ -399,6 +399,100 @@ describe('projectInstallState', () => {
     expect(projection.issues).toEqual([]);
   });
 
+  it('does not surface upgradeAvailable when only same-version content drifts', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-same-version-drift-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const driftedCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(fixture.target),
+      source: {
+        pluginVersion: fixture.target.source.pluginVersion,
+        manifestDigest: 'same-version-manifest-drift',
+        bundleFingerprint: 'same-version-bundle-drift',
+      },
+    };
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: driftedCatalog,
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.issues).toEqual([]);
+  });
+
+  it('projects an abnormal state when the current catalog version is lower than the installed version', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-version-regression-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const driftedCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(fixture.target),
+      source: {
+        pluginVersion: '0.0.9',
+        manifestDigest: 'older-manifest',
+        bundleFingerprint: 'older-bundle',
+      },
+    };
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: driftedCatalog,
+    }));
+
+    expect(projection.kind).toBe('needsRepair');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'catalogVersionMismatch',
+      }),
+    ]));
+  });
+
+  it('projects an abnormal state when the current catalog version is not strict SemVer', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-invalid-version-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const driftedCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(fixture.target),
+      source: {
+        pluginVersion: 'latest',
+        manifestDigest: 'invalid-version-manifest',
+        bundleFingerprint: 'invalid-version-bundle',
+      },
+    };
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: driftedCatalog,
+    }));
+
+    expect(projection.kind).toBe('needsRepair');
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'catalogVersionNonCompliant',
+      }),
+    ]));
+  });
+
   it('uses the Claude project subdirectory when reading project artifact shared identity', async () => {
     const root = await makeTempDir('aw-install-state-claude-project-locator-');
     const repoRoot = path.join(root, 'repo');

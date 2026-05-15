@@ -767,7 +767,7 @@ function createSkillTriggerDecision(
   );
 
   return {
-    show: true,
+    show: false,
     selected: selected.length === 1
       ? selected[0] as SkillTriggerPreference
       : 'default',
@@ -775,16 +775,11 @@ function createSkillTriggerDecision(
   };
 }
 
-function createBaseSteps(skillTrigger: ConsoleSkillTriggerDecision): ConsoleWizardStep[] {
+function createBaseSteps(_skillTrigger: ConsoleSkillTriggerDecision): ConsoleWizardStep[] {
   return [
     { kind: 'selectPlugin', status: 'completed' },
     { kind: 'selectPlatform', status: 'completed' },
     { kind: 'selectLocation', status: 'completed' },
-    {
-      kind: 'selectSkillTrigger',
-      status: skillTrigger.show ? 'ready' : 'skipped',
-      ...(skillTrigger.show ? { detail: '可选：默认 / 手动 / 自动' } : {}),
-    },
   ];
 }
 

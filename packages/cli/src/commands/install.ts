@@ -161,9 +161,9 @@ import {
   loadPluginTargetsForCommand,
   prepareCommandEnvironment,
   preparePluginTargetsForCommand,
+  resolveCurrentCatalogWriteTargetPairs,
   resolveInstallOptionsForLocationTargets,
   resolveInstallOptionsForTargets,
-  resolveTargetPlatforms,
   wrapCommandErrorWithWarnings,
   type PreparedMarketplaceState,
   type ResolvedPluginTarget,
@@ -3416,15 +3416,16 @@ export async function installCommand(
   let installPlan: PluginDependencyWritePlan | undefined;
   try {
     const adapters = createAdapters(options.cwd, context);
-    const platforms = await resolveTargetPlatforms(
+    const requestedPlatformPairs = await resolveCurrentCatalogWriteTargetPairs(
       'install',
       options.platform,
       options.cwd,
       options.scope,
-      prepared.targets.map((target) => target.plugin),
+      prepared.targets,
       adapters,
       env,
     );
+    const platforms = [...new Set(requestedPlatformPairs.map((entry) => entry.platform))];
     await emitCommandEvent(context, {
       type: 'platform:resolved',
       data: {
@@ -3451,14 +3452,13 @@ export async function installCommand(
       options.scope,
       platforms,
     );
-    const requestedLocations = platforms.flatMap((platform) =>
-      prepared.targets.map((target) => createPluginLocationForPlatform({
-        plugin: target.pluginName,
+    const requestedLocations = requestedPlatformPairs.map(({ pluginName, platform }) =>
+      createPluginLocationForPlatform({
+        plugin: pluginName,
         platform,
         scope: options.scope,
         projectKeysByPlatform,
-      })),
-    );
+      }));
     const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
       'install',
       requestedLocations.map((location) => {
@@ -3519,6 +3519,7 @@ export async function installCommand(
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: runtimeWritableMarketplace ? 'runtimeWritable' : 'readOnly',
       env,
+      context,
     });
     commandWarnings = [
       ...prepared.warnings,

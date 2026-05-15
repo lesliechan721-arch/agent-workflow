@@ -510,7 +510,19 @@ describe('uninstall command (P9 install-state path)', () => {
       }),
     );
 
-    expect(result.receiptDetails?.removedConfigStores).toEqual([{ path: configStorePath }]);
+    expect(result.receiptDetails?.configStoreRemovals).toEqual([{
+      store: {
+        pluginName: 'git-commit',
+        storeKind: 'user',
+      },
+      state: 'removed',
+      subjectTargets: [{
+        pluginName: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+      }],
+      path: configStorePath,
+    }]);
     await expect(fs.pathExists(configStorePath)).resolves.toBe(false);
   });
 
@@ -597,6 +609,21 @@ describe('uninstall command (P9 install-state path)', () => {
         path: configStorePath,
         status: 'failed',
         reason: 'synthetic config removal failure',
+      }],
+      configStoreRemovals: [{
+        store: {
+          pluginName: 'git-commit',
+          storeKind: 'user',
+        },
+        state: 'failed',
+        reasonCode: 'removeFailed',
+        subjectTargets: [{
+          pluginName: 'git-commit',
+          platform: 'codex',
+          scope: 'user',
+        }],
+        path: configStorePath,
+        message: 'synthetic config removal failure',
       }],
     });
     expect(result.warnings.join('\n')).toContain('主体卸载已完成，但删除 git-commit 的 AW 自管配置失败');

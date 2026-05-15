@@ -60,7 +60,8 @@ describe('manifest coverage', () => {
       slashCommands: './slash-commands',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       mcpServers: './.mcp.json',
@@ -206,7 +207,8 @@ describe('manifest coverage', () => {
       slashCommands: './slash-commands',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       mcpServers: './.mcp.json',
@@ -475,7 +477,8 @@ describe('manifest coverage', () => {
         skills: './skills',
         skillTriggers: {
           review: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
           },
         },
         marketplace: {
@@ -557,7 +560,7 @@ describe('manifest coverage', () => {
       command: 'echo stop',
     });
     if (bundleSource.skillTriggers?.review) {
-      bundleSource.skillTriggers.review.allowInstallOverride = false;
+      bundleSource.skillTriggers.review.allowDynamicTrigger = false;
     }
     if (bundleSource.dependencies?.plugins[0]) {
       bundleSource.dependencies.plugins[0].name = 'mutated-helper';
@@ -618,7 +621,8 @@ describe('manifest coverage', () => {
     });
     expect(plugin.manifest.skillTriggers).toEqual({
       review: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     });
     expect(plugin.manifest.dependencies).toEqual({
@@ -637,7 +641,8 @@ describe('manifest coverage', () => {
     });
     expect(bundleSource.skillTriggers).toEqual({
       review: {
-        allowInstallOverride: false,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: false,
       },
     });
     expect(noExtensionsBundle.extensions).toBeUndefined();

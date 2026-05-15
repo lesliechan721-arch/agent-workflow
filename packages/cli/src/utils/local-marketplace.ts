@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  CatalogResolution,
   InstalledDependencyEdge,
   CodexSharedNativeRefs,
   GeneratedArtifact,
@@ -25,6 +26,11 @@ import {
   resolveEmbeddedPluginsRoot,
 } from './paths.js';
 import { validateBundleLayout } from './bundle-layout.js';
+import {
+  assertStrictSemVer,
+  compareStrictSemVer,
+  tryParseStrictSemVer,
+} from './manifest.js';
 import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
 
 function resolveCliPackageJsonPath(): string {
@@ -47,11 +53,46 @@ export function getLocalMarketplaceCodexSkillRoot(
   return path.join(getLocalMarketplaceCodexSkillsRoot(rootDir, pluginName), skillKey);
 }
 
-async function readCliPackageInfo(): Promise<{ name: string; version: string }> {
+export interface LocalMarketplaceGateOptions {
+  interactive?: boolean;
+  confirmOverwrite?: (options: { message: string; defaultValue: boolean }) => Promise<boolean>;
+  onNotice?: (message: string) => void | Promise<void>;
+}
+
+interface LocalMarketplaceConfigInspection {
+  state: 'missing' | 'valid' | 'invalid';
+  config: LocalMarketplaceConfig | null;
+  sourceVersion: string | null | undefined;
+}
+
+type LocalMarketplaceSourceVersionStatus =
+  | 'absent'
+  | 'missing'
+  | 'invalid'
+  | 'ahead'
+  | 'equal'
+  | 'behind';
+
+interface LocalMarketplaceInspection {
+  awHome: string;
+  embeddedRoot: string;
+  packageInfo: {
+    name: string;
+    version: string;
+  };
+  bundleFingerprint: string;
+  configInspection: LocalMarketplaceConfigInspection;
+  sourceVersionStatus: LocalMarketplaceSourceVersionStatus;
+  layoutHealthy: boolean;
+  layoutError?: string;
+}
+
+export async function readCliPackageInfo(): Promise<{ name: string; version: string }> {
   const packageJson = await readJsonFile<{ name: string; version: string }>(resolveCliPackageJsonPath());
+  const version = assertStrictSemVer(packageJson.version, 'packages/cli/package.json version');
   return {
     name: packageJson.name,
-    version: packageJson.version,
+    version,
   };
 }
 
@@ -590,6 +631,227 @@ export async function readLocalMarketplaceConfig(rootDir: string): Promise<Local
   return isLocalMarketplaceConfig(rawConfig) ? rawConfig : null;
 }
 
+async function inspectLocalMarketplaceConfig(
+  rootDir: string,
+): Promise<LocalMarketplaceConfigInspection> {
+  const configPath = path.join(rootDir, 'config.json');
+  if (!(await fs.pathExists(configPath))) {
+    return {
+      state: 'missing',
+      config: null,
+      sourceVersion: null,
+    };
+  }
+
+  let rawConfig: unknown;
+  try {
+    rawConfig = await fs.readJson(configPath);
+  } catch {
+    return {
+      state: 'invalid',
+      config: null,
+      sourceVersion: undefined,
+    };
+  }
+
+  if (isLocalMarketplaceConfig(rawConfig)) {
+    return {
+      state: 'valid',
+      config: rawConfig,
+      sourceVersion: rawConfig.sourceVersion,
+    };
+  }
+
+  return {
+    state: 'invalid',
+    config: null,
+    sourceVersion: isRecord(rawConfig) && typeof rawConfig.sourceVersion === 'string'
+      ? rawConfig.sourceVersion
+      : null,
+  };
+}
+
+function classifyLocalSourceVersionStatus(options: {
+  inspection: LocalMarketplaceConfigInspection;
+  cliVersion: string;
+}): LocalMarketplaceSourceVersionStatus {
+  if (options.inspection.state === 'missing') {
+    return 'absent';
+  }
+
+  if (options.inspection.sourceVersion === undefined) {
+    return 'invalid';
+  }
+  if (typeof options.inspection.sourceVersion !== 'string' || options.inspection.sourceVersion.trim() === '') {
+    return 'missing';
+  }
+
+  const parsedSourceVersion = tryParseStrictSemVer(options.inspection.sourceVersion);
+  if (!parsedSourceVersion) {
+    return 'invalid';
+  }
+
+  const relation = compareStrictSemVer(parsedSourceVersion.raw, options.cliVersion);
+  if (relation > 0) {
+    return 'ahead';
+  }
+  if (relation < 0) {
+    return 'behind';
+  }
+  return 'equal';
+}
+
+async function inspectLocalMarketplaceState(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<LocalMarketplaceInspection> {
+  const awHome = resolveAwHome(env);
+  const embeddedRoot = await resolveEmbeddedPluginsRoot();
+  const [packageInfo, bundleFingerprint, configInspection] = await Promise.all([
+    readCliPackageInfo(),
+    calculateBundleFingerprint(embeddedRoot),
+    inspectLocalMarketplaceConfig(awHome),
+  ]);
+  const sourceVersionStatus = classifyLocalSourceVersionStatus({
+    inspection: configInspection,
+    cliVersion: packageInfo.version,
+  });
+  const validConfig = configInspection.state === 'valid' ? configInspection.config : null;
+
+  let layoutHealthy = false;
+  let layoutError: string | undefined;
+  if (
+    validConfig &&
+    sourceVersionStatus === 'equal' &&
+    validConfig.bundleFingerprint === bundleFingerprint
+  ) {
+    try {
+      await validateLocalMarketplaceLayout(awHome);
+      layoutHealthy = true;
+    } catch (error) {
+      layoutError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return {
+    awHome,
+    embeddedRoot,
+    packageInfo,
+    bundleFingerprint,
+    configInspection,
+    sourceVersionStatus,
+    layoutHealthy,
+    ...(layoutError ? { layoutError } : {}),
+  };
+}
+
+function createCatalogReason(
+  code: NonNullable<CatalogResolution['reasonCode']>,
+  message: string,
+): Required<Pick<CatalogResolution, 'reason' | 'reasonCode'>> {
+  return {
+    reason: message,
+    reasonCode: code,
+  };
+}
+
+function resolveEmbeddedCatalogFallback(
+  inspection: LocalMarketplaceInspection,
+): Required<Pick<CatalogResolution, 'reason' | 'reasonCode'>> {
+  const validConfig = inspection.configInspection.state === 'valid'
+    ? inspection.configInspection.config
+    : null;
+  if (inspection.sourceVersionStatus === 'absent') {
+    return createCatalogReason(
+      'localCatalogMissing',
+      'local marketplace config is missing.',
+    );
+  }
+  if (inspection.sourceVersionStatus === 'missing') {
+    return createCatalogReason(
+      'localCatalogSourceVersionMissing',
+      'local marketplace sourceVersion is missing.',
+    );
+  }
+  if (
+    inspection.configInspection.state === 'invalid' &&
+    inspection.configInspection.sourceVersion === undefined
+  ) {
+    return createCatalogReason(
+      'localCatalogConfigInvalid',
+      'local marketplace config is unreadable or uses an unsupported schema.',
+    );
+  }
+  if (inspection.sourceVersionStatus === 'invalid') {
+    return createCatalogReason(
+      'localCatalogSourceVersionInvalid',
+      `local marketplace sourceVersion "${inspection.configInspection.sourceVersion ?? ''}" is not a strict SemVer 2.0.0 string.`,
+    );
+  }
+  if (inspection.sourceVersionStatus === 'ahead') {
+    return createCatalogReason(
+      'localCatalogSourceVersionAhead',
+      `local marketplace sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} is newer than current CLI version ${inspection.packageInfo.version}.`,
+    );
+  }
+  if (inspection.sourceVersionStatus === 'behind') {
+    return createCatalogReason(
+      'localCatalogSourceVersionBehind',
+      `local marketplace sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} is older than current CLI version ${inspection.packageInfo.version}.`,
+    );
+  }
+  if (inspection.configInspection.state === 'invalid') {
+    return createCatalogReason(
+      'localCatalogConfigInvalid',
+      'local marketplace config is unreadable or uses an unsupported schema.',
+    );
+  }
+  if (
+    validConfig &&
+    validConfig.bundleFingerprint !== inspection.bundleFingerprint
+  ) {
+    return createCatalogReason(
+      'localCatalogFingerprintMismatch',
+      'local marketplace fingerprint does not match the current embedded bundle.',
+    );
+  }
+  if (inspection.layoutError) {
+    return createCatalogReason(
+      'localCatalogLayoutInvalid',
+      inspection.layoutError,
+    );
+  }
+  return createCatalogReason(
+    'localCatalogConfigInvalid',
+    'local marketplace is not usable.',
+  );
+}
+
+export async function resolveReadOnlyCatalogResolution(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CatalogResolution> {
+  const inspection = await inspectLocalMarketplaceState(env);
+  const validConfig = inspection.configInspection.state === 'valid'
+    ? inspection.configInspection.config
+    : null;
+  if (
+    validConfig &&
+    inspection.sourceVersionStatus === 'equal' &&
+    validConfig.bundleFingerprint === inspection.bundleFingerprint &&
+    inspection.layoutHealthy
+  ) {
+    return {
+      rootDir: inspection.awHome,
+      source: 'local',
+    };
+  }
+
+  return {
+    rootDir: inspection.embeddedRoot,
+    source: 'embedded',
+    ...resolveEmbeddedCatalogFallback(inspection),
+  };
+}
+
 async function isFreshLocalMarketplace(
   awHome: string,
   sourceVersion: string,
@@ -732,6 +994,54 @@ async function replaceDirectoryAtomically(targetDir: string, stagingDir: string)
   }
 }
 
+function localMarketplaceRequiresConfirmation(
+  inspection: LocalMarketplaceInspection,
+): boolean {
+  return (
+    inspection.sourceVersionStatus === 'missing' ||
+    inspection.sourceVersionStatus === 'invalid' ||
+    inspection.sourceVersionStatus === 'ahead'
+  );
+}
+
+function createLocalMarketplaceOverwriteMessage(
+  inspection: LocalMarketplaceInspection,
+): string {
+  if (
+    inspection.configInspection.state === 'invalid' &&
+    inspection.configInspection.sourceVersion === undefined
+  ) {
+    return `本地插件目录 ${inspection.awHome} 的 config.json 无法读取或 schema 不受支持，当前 CLI 无法安全判断是否应该覆盖。继续会用当前 embedded bundle 重建本地目录。`;
+  }
+  if (inspection.sourceVersionStatus === 'ahead') {
+    return `本地插件目录 ${inspection.awHome} 的 sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} 高于当前 CLI 版本 ${inspection.packageInfo.version}。继续会用当前 embedded bundle 覆盖这份本地目录。`;
+  }
+  if (inspection.sourceVersionStatus === 'missing') {
+    return `本地插件目录 ${inspection.awHome} 的 sourceVersion 缺失，当前 CLI 无法安全判断是否应该覆盖。继续会用当前 embedded bundle 重建本地目录。`;
+  }
+  return `本地插件目录 ${inspection.awHome} 的 sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} 不符合严格 SemVer 2.0.0，当前 CLI 无法安全判断是否应该覆盖。继续会用当前 embedded bundle 重建本地目录。`;
+}
+
+async function confirmLocalMarketplaceOverwrite(options: {
+  inspection: LocalMarketplaceInspection;
+  gate?: LocalMarketplaceGateOptions;
+}): Promise<void> {
+  const message = createLocalMarketplaceOverwriteMessage(options.inspection);
+  await options.gate?.onNotice?.(message);
+
+  if (!options.gate?.interactive || !options.gate.confirmOverwrite) {
+    throw new Error(`${message} 非交互环境不会自动覆盖；请在交互模式下确认后重试。`);
+  }
+
+  const confirmed = await options.gate.confirmOverwrite({
+    message: `${message} 是否继续覆盖？`,
+    defaultValue: false,
+  });
+  if (!confirmed) {
+    throw new Error('已取消覆盖本地插件目录，本次没有写入任何状态。');
+  }
+}
+
 export interface EnsureLocalMarketplaceResult {
   rootDir: string;
   changed: boolean;
@@ -740,51 +1050,60 @@ export interface EnsureLocalMarketplaceResult {
 
 export async function ensureLocalMarketplace(
   env: NodeJS.ProcessEnv = process.env,
+  gate?: LocalMarketplaceGateOptions,
 ): Promise<EnsureLocalMarketplaceResult> {
-  return initializeLocalMarketplace({ force: false, env });
+  return initializeLocalMarketplace({ force: false, env, gate });
 }
 
 export async function initializeLocalMarketplace(
-  options: { force: boolean; env?: NodeJS.ProcessEnv },
+  options: { force: boolean; env?: NodeJS.ProcessEnv; gate?: LocalMarketplaceGateOptions },
 ): Promise<EnsureLocalMarketplaceResult> {
   const env = options.env ?? process.env;
-  const awHome = resolveAwHome(env);
-  const embeddedRoot = await resolveEmbeddedPluginsRoot();
-  const [packageInfo, bundleFingerprint] = await Promise.all([
-    readCliPackageInfo(),
-    calculateBundleFingerprint(embeddedRoot),
-  ]);
+  const inspection = await inspectLocalMarketplaceState(env);
+  const validConfig = inspection.configInspection.state === 'valid'
+    ? inspection.configInspection.config
+    : null;
 
-  if (!options.force) {
-    const isFresh = await isFreshLocalMarketplace(awHome, packageInfo.version, bundleFingerprint);
-    if (isFresh) {
-      return {
-        rootDir: awHome,
-        changed: false,
-        warnings: [],
-      };
-    }
+  if (
+    !options.force &&
+    validConfig &&
+    inspection.sourceVersionStatus === 'equal' &&
+    validConfig.bundleFingerprint === inspection.bundleFingerprint &&
+    inspection.layoutHealthy
+  ) {
+    return {
+      rootDir: inspection.awHome,
+      changed: false,
+      warnings: [],
+    };
   }
 
-  const parentDir = path.dirname(awHome);
+  if (localMarketplaceRequiresConfirmation(inspection)) {
+    await confirmLocalMarketplaceOverwrite({
+      inspection,
+      gate: options.gate,
+    });
+  }
+
+  const parentDir = path.dirname(inspection.awHome);
   await fs.ensureDir(parentDir);
   const stagingDir = await fs.mkdtemp(path.join(parentDir, '.aw-staging-'));
   const warnings: string[] = [];
 
   try {
-    await copyBundleToStaging(embeddedRoot, stagingDir);
-    const { ledger, ledgerFileExists } = await readPreservedLedger(awHome);
-    await preserveLocalRuntimeStateDirectories(awHome, stagingDir);
+    await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
+    const { ledger, ledgerFileExists } = await readPreservedLedger(inspection.awHome);
+    await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir);
     const replay = await replaySkillTriggerPreferencesFromLedger({
       ledger,
       marketplaceRoot: stagingDir,
-      embeddedRoot,
-      previousMarketplaceRoot: awHome,
+      embeddedRoot: inspection.embeddedRoot,
+      previousMarketplaceRoot: inspection.awHome,
       warnOnDegraded: ledgerFileExists,
     });
     warnings.push(...replay.warnings);
     const dynamicSkillReplay = await replayCodexUserDynamicSkillsToMarketplace({
-      previousMarketplaceRoot: awHome,
+      previousMarketplaceRoot: inspection.awHome,
       marketplaceRoot: stagingDir,
       env,
     });
@@ -793,19 +1112,19 @@ export async function initializeLocalMarketplace(
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
       version: 1,
       initializedAt: new Date().toISOString(),
-      sourcePackage: packageInfo.name,
-      sourceVersion: packageInfo.version,
-      bundleFingerprint,
+      sourcePackage: inspection.packageInfo.name,
+      sourceVersion: inspection.packageInfo.version,
+      bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);
-    await replaceDirectoryAtomically(awHome, stagingDir);
+    await replaceDirectoryAtomically(inspection.awHome, stagingDir);
   } catch (error) {
     await fs.remove(stagingDir);
     throw error;
   }
 
   return {
-    rootDir: awHome,
+    rootDir: inspection.awHome,
     changed: true,
     warnings,
   };

@@ -717,9 +717,8 @@ describe('console-model', () => {
     const summary = controller.summary;
 
     expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('reapplyConfigRefresh');
-    expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('diagnoseCommand');
     expect(summary.features.map((feature) => feature.kind)).toContain('reapplyConfigRefresh');
-    expect(summary.features.map((feature) => feature.kind)).toContain('diagnose');
+    expect(summary.features.map((feature) => feature.kind)).toContain('status');
 
     const publicJson = JSON.stringify(summary);
     expect(publicJson).not.toContain('reapplyConfigRefresh","target');
@@ -747,7 +746,7 @@ describe('console-model', () => {
     expect(controller.summary).not.toHaveProperty('primaryActionLabel');
   });
 
-  it('keeps controller action contracts intact, including internal diagnose commands', () => {
+  it('keeps controller action contracts intact and exposes status detail commands', () => {
     const controller = singleController(reasonFixture('nativeIncomplete'));
     const writeActions = controller.locations[0]!.actions.filter((action) =>
       action.kind === 'runUpgrade' ||
@@ -767,9 +766,9 @@ describe('console-model', () => {
       expect(action.confirmText).toBeTruthy();
     }
 
-    const diagnoseAction = singleController(reasonFixture('catalogUnavailable'))
-      .locations[0]!.actions.find((action) => action.kind === 'diagnoseCommand');
-    expect(diagnoseAction?.command).toEqual([
+    const statusAction = singleController(reasonFixture('catalogUnavailable'))
+      .locations[0]!.actions.find((action) => action.kind === 'openStatus');
+    expect(statusAction?.command).toEqual([
       'aw',
       'status',
       'demo-plugin',
@@ -798,7 +797,12 @@ describe('console-model', () => {
       installState: installState({
         kind: 'adoptable',
         summary: '发现了一份可认领的已有项目安装。',
-        nextSteps: ['aw repair demo-plugin --platform codex --scope project --adopt-existing'],
+        nextSteps: [{
+          kind: 'uiAction',
+          label: '认领现有安装',
+          description: '会进入认领流程，把当前项目里已有的安装纳入 AW 管理。',
+          uiAction: 'runAdoptExisting',
+        }],
         adoptExistingAvailable: true,
       }),
       report: undefined,
@@ -807,7 +811,12 @@ describe('console-model', () => {
       installState: installState({
         kind: 'needsRepair',
         summary: '共享触发策略当前由另一个安装位置控制。',
-        nextSteps: ['aw repair demo-plugin --platform codex --scope user --takeover-shared-runtime'],
+        nextSteps: [{
+          kind: 'uiAction',
+          label: '接管共享触发策略',
+          description: '会进入接管流程，把共享 runtime 的控制权切换到当前安装位置。',
+          uiAction: 'runTakeoverSharedRuntime',
+        }],
         issueCodes: ['artifactMissing'],
         sharedRuntimeOwnerPresent: true,
         sharedRuntimeNeedsTakeover: true,

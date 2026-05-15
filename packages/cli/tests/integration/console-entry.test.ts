@@ -30,7 +30,6 @@ describe('console entry', () => {
       features: [
         { kind: 'install', label: '安装', targetSelection: 'singleTarget' },
         { kind: 'status', label: '查看状态', targetSelection: 'none' },
-        { kind: 'diagnose', label: '查看诊断', targetSelection: 'none' },
       ],
       reasonCodes: [],
       nextSteps: [],
@@ -53,7 +52,6 @@ describe('console entry', () => {
       }],
       features: [
         { kind: 'status', label: '查看状态', targetSelection: 'none' },
-        { kind: 'diagnose', label: '查看诊断', targetSelection: 'none' },
       ],
       reasonCodes: [],
       nextSteps: [],
@@ -158,14 +156,17 @@ describe('console entry', () => {
       requestedTargets: options.targets.map((target) => ({
         target,
         platform: options.platforms[0] ?? 'codex',
+        scope: 'user',
+        requested: true,
       })),
       writeTargets: options.targets.map((target) => ({
         target,
         platform: options.platforms[0] ?? 'codex',
+        scope: 'user',
+        requested: true,
         resolvedInstallOptions: undefined,
       })),
     }));
-    const resolveSkillTriggerApplicabilityForPlugin = vi.fn().mockResolvedValue('fixed');
     const installCommand = vi.fn().mockResolvedValue({
       platforms: ['codex'],
       plugins: ['git-commit'],
@@ -181,7 +182,6 @@ describe('console entry', () => {
       createInstallWizardDecision,
       planConsoleGraphWriteTargets,
     }));
-    vi.doMock('../../src/utils/skill-trigger-preferences.js', () => ({ resolveSkillTriggerApplicabilityForPlugin }));
     vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
 
     const prompt = createFakePrompt([

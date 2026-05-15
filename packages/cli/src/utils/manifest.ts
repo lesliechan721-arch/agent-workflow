@@ -83,6 +83,17 @@ const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
   codex: 'CODEX',
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const STRICT_SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+export interface StrictSemVer {
+  raw: string;
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string[];
+  build: string[];
+}
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -110,6 +121,111 @@ function ensureString(value: unknown, fieldName: string): string {
   }
 
   return value;
+}
+
+export function assertStrictSemVer(value: unknown, fieldPath: string): string {
+  return parseStrictSemVer(value, fieldPath).raw;
+}
+
+export function tryParseStrictSemVer(value: unknown): StrictSemVer | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = STRICT_SEMVER_PATTERN.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    raw: value,
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split('.') : [],
+    build: match[5] ? match[5].split('.') : [],
+  };
+}
+
+export function parseStrictSemVer(value: unknown, fieldPath: string): StrictSemVer {
+  const parsed = tryParseStrictSemVer(value);
+  if (!parsed) {
+    throw new Error(`Invalid ${fieldPath}: expected a strict SemVer 2.0.0 string.`);
+  }
+
+  return parsed;
+}
+
+function isNumericSemVerIdentifier(value: string): boolean {
+  return /^\d+$/.test(value);
+}
+
+function comparePrereleaseIdentifiers(left: string, right: string): number {
+  const leftNumeric = isNumericSemVerIdentifier(left);
+  const rightNumeric = isNumericSemVerIdentifier(right);
+  if (leftNumeric && rightNumeric) {
+    if (left.length !== right.length) {
+      return left.length - right.length;
+    }
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+  if (leftNumeric) {
+    return -1;
+  }
+  if (rightNumeric) {
+    return 1;
+  }
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function compareStrictSemVer(
+  left: string | StrictSemVer,
+  right: string | StrictSemVer,
+): number {
+  const resolvedLeft = typeof left === 'string'
+    ? parseStrictSemVer(left, 'left version')
+    : left;
+  const resolvedRight = typeof right === 'string'
+    ? parseStrictSemVer(right, 'right version')
+    : right;
+
+  if (resolvedLeft.major !== resolvedRight.major) {
+    return resolvedLeft.major - resolvedRight.major;
+  }
+  if (resolvedLeft.minor !== resolvedRight.minor) {
+    return resolvedLeft.minor - resolvedRight.minor;
+  }
+  if (resolvedLeft.patch !== resolvedRight.patch) {
+    return resolvedLeft.patch - resolvedRight.patch;
+  }
+
+  if (resolvedLeft.prerelease.length === 0 && resolvedRight.prerelease.length === 0) {
+    return 0;
+  }
+  if (resolvedLeft.prerelease.length === 0) {
+    return 1;
+  }
+  if (resolvedRight.prerelease.length === 0) {
+    return -1;
+  }
+
+  const maxLength = Math.max(resolvedLeft.prerelease.length, resolvedRight.prerelease.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftIdentifier = resolvedLeft.prerelease[index];
+    const rightIdentifier = resolvedRight.prerelease[index];
+    if (leftIdentifier === undefined) {
+      return -1;
+    }
+    if (rightIdentifier === undefined) {
+      return 1;
+    }
+    const result = comparePrereleaseIdentifiers(leftIdentifier, rightIdentifier);
+    if (result !== 0) {
+      return result;
+    }
+  }
+
+  return 0;
 }
 
 function ensureStringArray(value: unknown, fieldName: string): string[] {
@@ -526,14 +642,19 @@ function normalizeSkillTriggerPolicies(
   for (const [skillName, entry] of Object.entries(input)) {
     const policyFieldName = `${fieldName}.${skillName}`;
     const policy = assertObject(entry, policyFieldName);
-    assertAllowedKeys(policy, policyFieldName, ['allowInstallOverride']);
+    assertAllowedKeys(policy, policyFieldName, ['defaultTrigger', 'allowDynamicTrigger']);
 
-    if (typeof policy.allowInstallOverride !== 'boolean') {
-      throw new Error(`Invalid ${policyFieldName}.allowInstallOverride: expected a boolean.`);
+    const defaultTrigger = ensureString(policy.defaultTrigger, `${policyFieldName}.defaultTrigger`);
+    if (defaultTrigger !== 'manual' && defaultTrigger !== 'auto') {
+      throw new Error(`Invalid ${policyFieldName}.defaultTrigger: expected "manual" or "auto".`);
+    }
+    if (typeof policy.allowDynamicTrigger !== 'boolean') {
+      throw new Error(`Invalid ${policyFieldName}.allowDynamicTrigger: expected a boolean.`);
     }
 
     policies[skillName] = {
-      allowInstallOverride: policy.allowInstallOverride,
+      defaultTrigger,
+      allowDynamicTrigger: policy.allowDynamicTrigger,
     };
   }
 
@@ -1969,7 +2090,7 @@ export function validatePluginManifest(
 
   const manifest: PluginManifestSource = {
     name: ensureString(input.name, 'name'),
-    version: ensureString(input.version, 'version'),
+    version: assertStrictSemVer(input.version, 'plugin manifest.version'),
     description: ensureString(input.description, 'description'),
     marketplace: normalizeMarketplaceMeta(input.marketplace, 'marketplace'),
   };
@@ -1988,14 +2109,6 @@ export function validatePluginManifest(
       ensureString(input.slashCommands, 'slashCommands'),
       'slashCommands',
     );
-  }
-
-  if (input.skillTriggers !== undefined) {
-    if (manifest.skills === undefined) {
-      throw new Error('Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory.');
-    }
-
-    manifest.skillTriggers = normalizeSkillTriggerPolicies(input.skillTriggers, 'skillTriggers');
   }
 
   if (input.mcpServers !== undefined) {
@@ -2044,6 +2157,19 @@ export function validatePluginManifest(
 
   if (input.artifacts !== undefined) {
     manifest.artifacts = normalizeArtifacts(input.artifacts, 'artifacts', manifest.config);
+  }
+
+  if (input.skillTriggers !== undefined) {
+    const hasDynamicCodexSkill = manifest.artifacts?.targets?.some(
+      (target) => target.platform === 'codex' && target.target === 'codex.skill',
+    ) ?? false;
+    if (manifest.skills === undefined && !hasDynamicCodexSkill) {
+      throw new Error(
+        'Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory or codex.skill artifact.',
+      );
+    }
+
+    manifest.skillTriggers = normalizeSkillTriggerPolicies(input.skillTriggers, 'skillTriggers');
   }
 
   assertManifestPlatformSupport(manifest.name, manifest);
@@ -2104,12 +2230,74 @@ async function validateSourceSkillTriggerPolicies(
   pluginRoot: string,
   manifest: PluginManifestSource,
 ): Promise<void> {
-  if (!manifest.skills || !manifest.skillTriggers || Object.keys(manifest.skillTriggers).length === 0) {
-    return;
+  const skillsRoot = manifest.skills ? path.join(pluginRoot, stripDotSlash(manifest.skills)) : null;
+  const skillEntries = skillsRoot
+    ? await fs.readdir(skillsRoot, { withFileTypes: true }).catch(() => [])
+    : [];
+  const staticSkillNames = skillEntries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  const staticSkillNameSet = new Set(staticSkillNames);
+  const dynamicCodexSkillNames = (manifest.artifacts?.targets ?? [])
+    .filter((target) => target.platform === 'codex' && target.target === 'codex.skill')
+    .map((target) => target.skillKey?.trim())
+    .filter((skillKey): skillKey is string => Boolean(skillKey))
+    .sort();
+  const dynamicCodexSkillNameSet = new Set(dynamicCodexSkillNames);
+
+  for (const skillName of dynamicCodexSkillNames) {
+    if (staticSkillNameSet.has(skillName)) {
+      throw new Error(
+        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a codex.skill artifact.`,
+      );
+    }
   }
 
-  const skillsRoot = path.join(pluginRoot, stripDotSlash(manifest.skills));
-  for (const skillName of Object.keys(manifest.skillTriggers)) {
+  const slashCommandNames = manifest.slashCommands
+    ? (await resolveSlashCommands(pluginRoot, manifest, {
+        targetPlatforms: resolveSupportedPlatforms(manifest),
+      }))?.commands
+      .map((command) => command.name)
+      .sort() ?? []
+    : [];
+  const slashCommandNameSet = new Set(slashCommandNames);
+  const explicitSkillTriggers = manifest.skillTriggers ?? {};
+  const explicitKeys = Object.keys(explicitSkillTriggers).sort();
+
+  for (const skillName of explicitKeys) {
+    if (slashCommandNameSet.has(skillName)) {
+      throw new Error(
+        `Invalid skillTriggers.${skillName}: slashCommands "${skillName}" uses an implicit fixed/manual trigger entry and must not be declared explicitly.`,
+      );
+    }
+    if (!staticSkillNameSet.has(skillName) && !dynamicCodexSkillNameSet.has(skillName)) {
+      throw new Error(
+        `Invalid skillTriggers.${skillName}: expected a declared static skill or codex.skill artifact.`,
+      );
+    }
+  }
+
+  for (const skillName of staticSkillNames) {
+    if (!Object.hasOwn(explicitSkillTriggers, skillName)) {
+      throw new Error(
+        `Invalid plugin manifest: static skill "${skillName}" must declare skillTriggers.${skillName}.`,
+      );
+    }
+  }
+
+  for (const skillName of dynamicCodexSkillNames) {
+    if (!Object.hasOwn(explicitSkillTriggers, skillName)) {
+      throw new Error(
+        `Invalid plugin manifest: codex.skill "${skillName}" must declare skillTriggers.${skillName}.`,
+      );
+    }
+  }
+
+  for (const skillName of staticSkillNames) {
+    if (!skillsRoot) {
+      continue;
+    }
     const skillDir = path.join(skillsRoot, skillName);
     const stats = await fs.stat(skillDir).catch(() => null);
     if (!stats?.isDirectory()) {
@@ -2178,9 +2366,6 @@ export async function validateSourcePluginManifest(
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillTriggerPolicies(pluginRoot, manifest),
-    resolveSlashCommands(pluginRoot, manifest, {
-      targetPlatforms: resolveSupportedPlatforms(manifest),
-    }),
   ]);
   return manifest;
 }

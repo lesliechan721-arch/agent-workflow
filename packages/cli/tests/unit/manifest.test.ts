@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  compareStrictSemVer,
   createBundleSourceManifest,
   createPlatformManifestBase,
   readMarketplaceSourceMeta,
@@ -158,6 +159,28 @@ describe('manifest utils', () => {
     ).rejects.toThrow('unknown field "claude"');
   });
 
+  it('rejects non-strict SemVer plugin versions in source manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const invalidVersions = ['v1.2.3', '1.2', '^1.2.3', 'latest', '1.2.3 || 2.0.0'];
+
+    for (const version of invalidVersions) {
+      const manifest = await readFixturePluginManifest(repoRoot);
+      manifest.version = version;
+      await writeFixturePluginManifest(repoRoot, manifest);
+
+      await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+        'Invalid plugin manifest.version: expected a strict SemVer 2.0.0 string.',
+      );
+    }
+  });
+
+  it('compares strict SemVer precedence and ignores build metadata', () => {
+    expect(compareStrictSemVer('1.2.3+build.1', '1.2.3+build.2')).toBe(0);
+    expect(compareStrictSemVer('1.2.3-beta.1', '1.2.3')).toBeLessThan(0);
+    expect(compareStrictSemVer('1.2.4', '1.2.3')).toBeGreaterThan(0);
+  });
+
   it('rejects hook fields and permission patterns outside the public source contract', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
@@ -244,7 +267,8 @@ describe('manifest utils', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
@@ -253,7 +277,8 @@ describe('manifest utils', () => {
       manifest: {
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
           },
         },
       },
@@ -812,6 +837,16 @@ describe('manifest utils', () => {
         },
       ],
     };
+    manifest.skillTriggers = {
+      commit: {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+      'codex-explore': {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+    };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
@@ -1034,7 +1069,7 @@ describe('manifest utils', () => {
     ]);
   });
 
-  it('rejects skillTriggers without skills or with unknown fields', async () => {
+  it('rejects skillTriggers without skills or codex.skill artifacts and rejects unknown fields', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -1043,18 +1078,20 @@ describe('manifest utils', () => {
     delete manifest.skills;
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      '"skillTriggers" requires a declared "skills" directory',
+      '"skillTriggers" requires a declared "skills" directory or codex.skill artifact',
     );
 
     manifest.skills = './skills';
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
         mode: 'manual',
       },
     };
@@ -1065,13 +1102,55 @@ describe('manifest utils', () => {
 
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: 'yes',
+        defaultTrigger: 'yes',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'allowInstallOverride: expected a boolean',
+      'defaultTrigger: expected "manual" or "auto"',
     );
+  });
+
+  it('accepts skillTriggers declared only for dynamic codex.skill artifacts', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    delete manifest.skills;
+    await fs.remove(path.join(pluginRoot, 'skills'));
+    manifest.artifacts = {
+      targets: [
+        {
+          id: 'dynamic-review',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic-review',
+        },
+      ],
+    };
+    manifest.skillTriggers = {
+      'dynamic-review': {
+        defaultTrigger: 'manual',
+        allowDynamicTrigger: false,
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        skillTriggers: {
+          'dynamic-review': {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: false,
+          },
+        },
+      },
+    });
   });
 
   it('rejects skillTriggers entries that do not match a source skill directory', async () => {
@@ -1081,13 +1160,14 @@ describe('manifest utils', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.skillTriggers = {
       missing: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid skillTriggers.missing: expected a skill directory at "skills/missing".',
+      'Invalid skillTriggers.missing: expected a declared static skill or codex.skill artifact.',
     );
   });
 
@@ -1193,7 +1273,8 @@ describe('manifest utils', () => {
     );
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(
@@ -1208,7 +1289,8 @@ describe('manifest utils', () => {
       manifest: {
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
           },
         },
       },

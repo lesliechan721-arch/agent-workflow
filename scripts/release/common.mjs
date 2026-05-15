@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
@@ -141,7 +141,26 @@ export async function findLatestTarball(directoryPath = tarballDir) {
   return tarballs[0];
 }
 
+export async function assertRepoAndCliPackageVersions() {
+  const [rootPackageJson, cliPackageJson] = await Promise.all([
+    readPackageJson(rootPackageJsonPath),
+    readPackageJson(cliPackageJsonPath),
+  ]);
+  const rootVersion = assertValidVersion(rootPackageJson.version);
+  const cliVersion = assertValidVersion(cliPackageJson.version);
+  if (rootVersion !== cliVersion) {
+    throw new Error(
+      `Version mismatch: package.json version "${rootVersion}" must match packages/cli/package.json version "${cliVersion}".`,
+    );
+  }
+  return {
+    rootVersion,
+    cliVersion,
+  };
+}
+
 export async function packCli({ destination = tarballDir } = {}) {
+  await assertRepoAndCliPackageVersions();
   const targetDir = path.resolve(repoRoot, destination);
   await cleanTarballs(targetDir);
   await runCommand('pnpm', ['pack:cli', '--pack-destination', targetDir]);

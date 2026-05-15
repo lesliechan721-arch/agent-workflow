@@ -5,7 +5,8 @@
   "skills": "./skills",
   "skillTriggers": {
     "app-helper": {
-      "allowInstallOverride": true
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
     }
   },
   "apps": "./.app.json",

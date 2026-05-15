@@ -236,12 +236,12 @@ async function testStaticSkillContracts() {
   const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
   const [skill, metadata] = await Promise.all([
     readFirstExisting([
-      new URL('../skills/codex-explore/SKILL.md', import.meta.url),
-      new URL('../codex/skills/codex-explore/SKILL.md', import.meta.url),
+      new URL('../templates/codex-explore/SKILL.md', import.meta.url),
+      new URL('../codex/templates/codex-explore/SKILL.md', import.meta.url),
     ]),
     readFirstExisting([
-      new URL('../skills/codex-explore/agents/openai.yaml', import.meta.url),
-      new URL('../codex/skills/codex-explore/agents/openai.yaml', import.meta.url),
+      new URL('../templates/codex-explore/agents/openai.yaml', import.meta.url),
+      new URL('../codex/templates/codex-explore/agents/openai.yaml', import.meta.url),
     ]),
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -290,7 +290,8 @@ async function testStaticSkillContracts() {
   assert.match(metadata, /使用 \$codex-explore 做只读证据探索，隔离大量候选材料并总结关键证据。/);
   assert.equal(metadata.includes('任务边界不明确'), false);
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
-  assert.equal(manifest.skillTriggers?.['codex-explore']?.allowInstallOverride, true);
+  assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
+  assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
   assert.match(manifest.extensions.instructions[0].content, /调用 `codex-explore` 技能/);

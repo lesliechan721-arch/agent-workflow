@@ -4,12 +4,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  CatalogResolution,
   EnvironmentDetection,
   GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
   LifecycleConfigSnapshotMetadata,
   ManagedArtifactStatus,
+  NextStepInstruction,
   PlatformName,
   PluginLocation,
   PluginStatusReport,
@@ -29,7 +31,7 @@ import { readCodexNativePluginState } from '../utils/codex-native-state.js';
 import { detectEnvironment } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { readPluginManifest } from '../utils/manifest.js';
-import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
+import { resolveCatalogPlugins, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
   iterateInstalledScopeRecords,
 } from '../utils/plugin-dependency-graph.js';
@@ -86,10 +88,20 @@ import {
 } from './options.js';
 import {
   collectP7Locations,
-  renderStatusHumanOutput,
+  renderDiagnoseHumanOutput,
+  type CollectedLocationState,
   type StatusJsonPayload as P7StatusJsonPayload,
 } from './diagnose.js';
 import { isCodexProjectStatusFatalError } from './codex-project-safety.js';
+import {
+  createLegacyCommandNextStep,
+  createLegacyNextStepText,
+  createManualNextStep,
+  createNextStepsBoundary,
+  createUiActionNextStep,
+  dedupeNextSteps,
+  formatNextStepForHuman,
+} from '../output/model.js';
 
 type StatusCommandRuntime = CommandExecutionContextInput;
 
@@ -125,7 +137,9 @@ export interface StatusMatrixCell {
 export interface StatusMatrixInstallState {
   kind: 'installed' | 'needsRepair' | 'adoptable' | 'residual' | 'externallyManaged' | 'notInstalled';
   summary: string;
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   findings: string[];
   issueCodes: string[];
   autoInstalled: boolean;
@@ -161,7 +175,9 @@ export interface StatusSummary {
   pluginName: string;
   health: StatusHealth;
   cells: Array<Pick<StatusMatrixCell, 'platform' | 'scope' | 'health' | 'healthSource' | 'config' | 'scripts' | 'projectKey' | 'configIssues'>>;
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
 }
 
 interface StatusHealthManifestSource {
@@ -189,14 +205,16 @@ export interface FriendlyStatusSummary {
   statusLabel: string;
   location: string;
   nextStep?: string;
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   issueSummary?: string;
 }
 
 export interface StatusJsonPayload extends StatusMatrixReport {
   ok: true;
   command: 'status';
-  consoleItemsSchemaVersion: 2;
+  statusSchemaVersion: 2;
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }
@@ -252,6 +270,58 @@ function cellLocation(cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | '
     scope: cell.scope,
     projectKey: cell.projectKey ?? null,
   });
+}
+
+function statusCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+  options: { verbose?: boolean } = {},
+): string {
+  return `aw status ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}${options.verbose ? ' --verbose' : ''}`;
+}
+
+function installCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+): string {
+  return `aw install ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`;
+}
+
+function repairCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+  options: { adoptExisting?: boolean; takeoverSharedRuntime?: boolean } = {},
+): string {
+  return `aw repair ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`
+    + `${options.adoptExisting ? ' --adopt-existing' : ''}`
+    + `${options.takeoverSharedRuntime ? ' --takeover-shared-runtime' : ''}`;
+}
+
+function cleanupCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+): string {
+  return `aw cleanup ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`;
+}
+
+function uninstallCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+): string {
+  return `aw uninstall ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`;
+}
+
+function upgradeCommandForCell(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+): string {
+  return `aw upgrade ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`;
+}
+
+function detailStatusNextStep(
+  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
+  description = '可以查看安装证据、残留和可恢复动作。',
+): NextStepInstruction {
+  return createUiActionNextStep(
+    '查看详细状态',
+    description,
+    'openStatus',
+    statusCommandForCell(cell, { verbose: true }),
+  );
 }
 
 async function loadSnapshotPlugin(
@@ -1187,70 +1257,130 @@ function describeCell(cell: StatusMatrixCell): string {
   return descriptions.join('；') || '未发现更多诊断。';
 }
 
-function nextStepForCell(cell: StatusMatrixCell): string | undefined {
-  const suffix = ` -p ${cell.platform} -s ${cell.scope}`;
+function nextStepForCell(cell: StatusMatrixCell): NextStepInstruction | undefined {
   if (cell.health === 'notInstalled') {
-    return `安装 ${cell.pluginName}：aw install ${cell.pluginName}${suffix}`;
+    return createUiActionNextStep(
+      '开始安装',
+      '会进入安装流程，并为这个插件选择可用的目标位置。',
+      'runInstall',
+      installCommandForCell(cell),
+    );
   }
   if (cell.health === 'external') {
-    return `检查 ${cell.pluginName} 的外部 marketplace 占用后，再决定是否迁移到 AW 管理。`;
+    return createManualNextStep(
+      '确认外部占用来源',
+      `先确认 ${cell.pluginName} 当前是否被外部 marketplace 占用，再决定是否迁移到 AW 管理。`,
+    );
   }
   if (cell.report?.externalOwnership?.present && hasRuntimeEvidence(cell.report)) {
-    return `先解除 ${cell.pluginName} 的同名外部 native 插件冲突，再重新检查当前 repo-managed 状态。`;
+    return createManualNextStep(
+      '处理外部 native 冲突',
+      `先解除 ${cell.pluginName} 的同名外部 native 插件冲突，再重新检查当前 repo-managed 状态。`,
+    );
   }
   if (cell.error) {
-    return `重新运行 aw status ${cell.pluginName}${suffix} --verbose 查看读取失败细节。`;
+    return detailStatusNextStep(cell, '可以查看这次状态读取失败的具体原因。');
   }
   const unknownItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
     item.state === 'unknown' || item.state === 'projectTrustUnknown',
   );
   if (unknownItem) {
-    return `先修复 ${formatRepoManagedItemLabel(unknownItem)} 的不可判定状态，再重新运行 aw status ${cell.pluginName}${suffix}。`;
+    return createManualNextStep(
+      '处理不可判定状态',
+      `先修复 ${formatRepoManagedItemLabel(unknownItem)} 的不可判定状态，再重新查看当前插件的详细状态。`,
+    );
   }
   const blockedItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
     item.state === 'blockedByProjectTrust',
   );
   if (blockedItem) {
-    return `先让 Codex 信任当前仓库，再重新检查 ${formatRepoManagedItemLabel(blockedItem)} 的 project scope 状态。`;
+    return createManualNextStep(
+      '让 Codex 信任当前仓库',
+      `先让 Codex 信任当前仓库，再重新检查 ${formatRepoManagedItemLabel(blockedItem)} 的 project scope 状态。`,
+    );
   }
   const orphanItem = cell.report?.repoManagedSessionState?.items?.find((item) =>
     item.state === 'orphan',
   );
   if (orphanItem) {
-    return `先处理未受管的 ${formatRepoManagedItemLabel(orphanItem)}，再决定是重新受管还是手动保留。`;
+    return createManualNextStep(
+      '处理未受管内容',
+      `先处理未受管的 ${formatRepoManagedItemLabel(orphanItem)}，再决定是重新受管还是手动保留。`,
+    );
   }
   if ((cell.report?.dependencies?.missing.length ?? 0) > 0) {
-    return `先补齐 ${cell.pluginName} 当前安装缺失的依赖，再重新检查状态。`;
+    return createManualNextStep(
+      '补齐缺失依赖',
+      `先补齐 ${cell.pluginName} 当前安装缺失的依赖，再重新检查状态。`,
+    );
   }
   if (cell.report?.dependencies?.autoRemovable) {
-    return `${cell.pluginName} 是当前已闲置的自动依赖；确认没人再用后，可运行 aw uninstall ${cell.pluginName}${suffix} 清理。`;
+    return createUiActionNextStep(
+      '清理闲置自动依赖',
+      `${cell.pluginName} 当前已经是闲置的自动依赖；确认没人再使用后，可以进入卸载流程清理。`,
+      'runUninstall',
+      uninstallCommandForCell(cell),
+    );
   }
   if (cell.report?.catalogCompatibility === 'missing') {
-    return `当前插件目录缺失；如需清理历史状态，运行 aw uninstall ${cell.pluginName}${suffix}`;
+    return createUiActionNextStep(
+      '清理历史状态',
+      '当前插件目录已经缺失；如果只想收口历史状态，可以进入卸载流程继续清理。',
+      'runUninstall',
+      uninstallCommandForCell(cell),
+    );
   }
   if (cell.platform === 'codex' && cell.scope === 'user' && cell.report?.native.requiresNativePlugin) {
     if (cell.report.native.recovery?.present) {
       if (cell.report.native.recovery.evidenceMatches === false) {
-        return `重新运行 aw uninstall ${cell.pluginName}${suffix} 清理 recovery breadcrumb；如果 Codex cache/config 已手动清掉，AW 仍需要移除这条恢复记录。`;
+        return createUiActionNextStep(
+          '清理恢复标记',
+          '如果 Codex cache 或 config 已手动清掉，仍需要通过卸载流程移除这条恢复记录。',
+          'runUninstall',
+          uninstallCommandForCell(cell),
+        );
       }
-      return `当前 Codex native 安装未完整收口；运行 aw install ${cell.pluginName}${suffix} 修复，或运行 aw uninstall ${cell.pluginName}${suffix} 清理残留。`;
+      return createUiActionNextStep(
+        '修复未完整收口的安装',
+        '可以重新进入安装流程，补齐当前 Codex native 安装缺失的状态和产物。',
+        'runInstall',
+        installCommandForCell(cell),
+      );
     }
     if (cell.report.native.pluginInstalled && cell.report.native.pluginEnabled !== true) {
-      return `先确认 ${cell.pluginName} 的 Codex cache 残留来源；当前 AW 不会在缺少归属证据时静默删除它。`;
+      return createManualNextStep(
+        '确认 Codex cache 残留来源',
+        `先确认 ${cell.pluginName} 的 Codex cache 残留来源；当前 AW 不会在缺少归属证据时静默删除它。`,
+      );
     }
     if (!cell.report.native.pluginInstalled && cell.report.native.pluginEnabled === true) {
-      return `重新运行 aw install ${cell.pluginName}${suffix}，让 Codex 同时补齐 enabled config 和 active cache。`;
+      return createUiActionNextStep(
+        '补齐 Codex native 状态',
+        '可以重新进入安装流程，同时补齐 enabled config 和 active cache。',
+        'runInstall',
+        installCommandForCell(cell),
+      );
     }
     if (
       cell.report.native.pluginInstalled &&
       cell.report.native.pluginEnabled === true &&
       cell.report.scopeManagedEvidence?.ledger !== true
     ) {
-      return `当前 Codex native 状态已存在，但 AW 缺少成功 scope record；请先运行 aw install ${cell.pluginName}${suffix} 修复账本。`;
+      return createUiActionNextStep(
+        '修复 AW 账本',
+        '当前 Codex native 状态已经存在，但 AW 缺少成功的 scope record；可以重新进入安装流程补齐账本。',
+        'runInstall',
+        installCommandForCell(cell),
+      );
     }
   }
   if (cell.report?.catalogCompatibility === 'capabilityChanged') {
-    return `插件能力声明已变化，运行 aw upgrade ${cell.pluginName}${suffix}`;
+    return createUiActionNextStep(
+      '升级插件',
+      '当前插件的能力声明已经变化；可以进入升级流程，让当前安装重新对齐最新能力。',
+      'runUpgrade',
+      upgradeCommandForCell(cell),
+    );
   }
   if (
     cell.report?.ledgerStateStatus === 'degraded' &&
@@ -1260,19 +1390,40 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
       !cell.report.skillTriggerPreference
     )
   ) {
-    return `本机安装账本处于 degraded 状态；下一次 install/upgrade 请显式传 --skill-trigger default|manual|auto。`;
+    return createManualNextStep(
+      '显式指定 skill trigger',
+      '本机安装账本处于 degraded 状态；下一次 install 或 upgrade 时，请显式指定 skill trigger。',
+    );
   }
   if (
     cell.platform === 'codex' &&
     cell.report?.native.marketplaceRegistered === false &&
     cell.report.driftWarnings.some((warning) => warning.includes('Codex marketplace'))
   ) {
-    return `重新注册 Codex marketplace：aw install ${cell.pluginName} --platform codex --scope ${cell.scope}`;
+    return createUiActionNextStep(
+      '重新注册 Codex marketplace',
+      '可以重新进入安装流程，把当前插件重新注册到 Codex marketplace。',
+      'runInstall',
+      installCommandForCell({
+        ...cell,
+        platform: 'codex',
+      }),
+    );
   }
   if (cell.report?.skillTriggerDrift === 'yes') {
     return cell.report.skillTriggerApplicability === 'overridable'
-      ? `重新应用 skill trigger 偏好：aw upgrade ${cell.pluginName}${suffix} --skill-trigger ${cell.report.skillTriggerPreference ?? 'default'}`
-      : `刷新当前 skill runtime：aw upgrade ${cell.pluginName}${suffix}`;
+      ? createUiActionNextStep(
+        '重新应用 skill trigger 偏好',
+        '可以进入升级流程，重新把当前 skill trigger 偏好应用到运行时产物。',
+        'runUpgrade',
+        upgradeCommandForCell(cell),
+      )
+      : createUiActionNextStep(
+        '刷新当前 skill runtime',
+        '可以进入升级流程，重新刷新当前 skill 的运行时内容。',
+        'runUpgrade',
+        upgradeCommandForCell(cell),
+      );
   }
 
   return undefined;
@@ -1280,16 +1431,19 @@ function nextStepForCell(cell: StatusMatrixCell): string | undefined {
 
 function createSummary(pluginName: string, cells: StatusMatrixCell[]): StatusSummary {
   const health = combineHealth(cells.map((cell) => cell.health));
-  const nextSteps = [
-    ...new Set(
-      cells
-        .map(nextStepForCell)
-        .filter((step): step is string => Boolean(step)),
-    ),
-  ];
+  const nextSteps = dedupeNextSteps(
+    cells
+      .map(nextStepForCell)
+      .filter((step): step is NextStepInstruction => Boolean(step)),
+  );
 
   if (nextSteps.length === 0) {
-    nextSteps.push(`查看详情：aw status ${pluginName} --verbose`);
+    nextSteps.push(createUiActionNextStep(
+      '查看详细状态',
+      '可以查看当前插件的详细状态、安装证据和可恢复动作。',
+      'openStatus',
+      `aw status ${pluginName} --verbose`,
+    ));
   }
 
   return {
@@ -1305,7 +1459,7 @@ function createSummary(pluginName: string, cells: StatusMatrixCell[]): StatusSum
       projectKey: cell.projectKey,
       ...(cell.configIssues ? { configIssues: cell.configIssues } : {}),
     })),
-    nextSteps,
+    ...createNextStepsBoundary(nextSteps),
   };
 }
 
@@ -1314,8 +1468,82 @@ function createNotInstalledSummary(pluginName: string): StatusSummary {
     pluginName,
     health: 'notInstalled',
     cells: [],
-    nextSteps: [`安装 ${pluginName}：aw install ${pluginName}`],
+    ...createNextStepsBoundary([createUiActionNextStep(
+      '开始安装',
+      '会进入安装流程，并为这个插件选择可用的目标位置。',
+      'runInstall',
+      `aw install ${pluginName}`,
+    )]),
   };
+}
+
+function instructionFromCollectedNextStep(step: string): NextStepInstruction {
+  if (step.startsWith('aw repair ') && step.includes('--adopt-existing')) {
+    return createUiActionNextStep(
+      '认领现有安装',
+      '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
+      'runAdoptExisting',
+      step,
+    );
+  }
+  if (step.startsWith('aw repair ')) {
+    return createUiActionNextStep(
+      '修复安装',
+      '会进入修复流程，补齐当前安装缺失或不一致的状态。',
+      'runRepair',
+      step,
+    );
+  }
+  if (step.startsWith('aw cleanup ')) {
+    return createUiActionNextStep(
+      '清理残留',
+      '会进入 cleanup 流程，评估并清理当前残留状态。',
+      'runCleanup',
+      step,
+    );
+  }
+  if (step.startsWith('aw install ')) {
+    return createUiActionNextStep(
+      '开始安装',
+      '会进入安装流程，并为这个插件选择可用的目标位置。',
+      'runInstall',
+      step,
+    );
+  }
+  if (step.startsWith('aw upgrade ')) {
+    return createUiActionNextStep(
+      '升级插件',
+      '会进入升级流程，让当前安装重新对齐最新版本和能力。',
+      'runUpgrade',
+      step,
+    );
+  }
+  if (step.startsWith('aw uninstall ')) {
+    return createUiActionNextStep(
+      '卸载插件',
+      '会进入卸载流程，清理当前安装及其 AW 托管状态。',
+      'runUninstall',
+      step,
+    );
+  }
+  if (step.startsWith('aw status ')) {
+    return createUiActionNextStep(
+      '查看详细状态',
+      '可以查看安装证据、残留和可恢复动作。',
+      'openStatus',
+      step,
+    );
+  }
+  return createManualNextStep('继续处理', step);
+}
+
+function nextStepsForCollectedLocation(state: CollectedLocationState): NextStepInstruction[] {
+  const nextSteps = dedupeNextSteps(state.nextSteps.map(instructionFromCollectedNextStep));
+  return nextSteps.length > 0 ? nextSteps : [detailStatusNextStep({
+    pluginName: state.location.plugin,
+    platform: state.location.platform,
+    scope: state.location.scope,
+  })];
 }
 
 function formatDetectionSummary(detection: EnvironmentDetection): string {
@@ -1366,15 +1594,20 @@ function buildFriendlySummaries(
         ? item.nextSteps
         : item.status === 'notInstalled'
           ? summary.nextSteps
-          : [`查看详情：aw status ${summary.pluginName} --verbose`];
+          : [createUiActionNextStep(
+            '查看详细状态',
+            '可以查看当前插件的详细状态、安装证据和可恢复动作。',
+            'openStatus',
+            `aw status ${summary.pluginName} --verbose`,
+          )];
       const nextStep = nextSteps[0];
       return {
         pluginName: summary.pluginName,
         status: item.status,
         statusLabel: item.statusLabel,
         location: item.locationSummary ?? summarizeFallbackLocation(summary),
-        ...(nextStep ? { nextStep } : {}),
-        nextSteps,
+        ...(nextStep ? { nextStep: formatNextStepForHuman(nextStep) } : {}),
+        ...createNextStepsBoundary(nextSteps, item.legacyNextSteps ?? summary.legacyNextSteps),
         ...(item.issueSummary ? { issueSummary: item.issueSummary } : {}),
       };
     }
@@ -1387,8 +1620,8 @@ function buildFriendlySummaries(
       status,
       statusLabel: PLUGIN_CONSOLE_STATUS_LABELS[status],
       location: summarizeFallbackLocation(summary),
-      ...(nextStep ? { nextStep } : {}),
-      nextSteps,
+      ...(nextStep ? { nextStep: formatNextStepForHuman(nextStep) } : {}),
+      ...createNextStepsBoundary(nextSteps, summary.legacyNextSteps),
     };
   });
 }
@@ -1443,6 +1676,45 @@ function formatVerboseStatusOutput(
     '命令诊断',
     formatStatusOutput(matrix.detection, reports),
   ].join('\n').trimEnd();
+}
+
+function renderCollectedStatusHumanOutput(
+  locations: CollectedLocationState[],
+  options: { requestedPlugins?: string[] } = {},
+): string {
+  const stateLabel = (state: CollectedLocationState): string => {
+    switch (state.projection.kind) {
+      case 'installed':
+        return '已安装';
+      case 'needsRepair':
+        return '需要处理';
+      case 'adoptable':
+        return '可认领';
+      case 'residual':
+        return '残留待清理';
+      case 'externallyManaged':
+        return '外部管理';
+      case 'notInstalled':
+        return '未安装';
+    }
+  };
+  const lines = ['插件状态'];
+  for (const state of locations) {
+    const explicitNotInstalled = state.projection.kind === 'notInstalled' && options.requestedPlugins?.includes(state.location.plugin);
+    lines.push(`- ${state.location.plugin}`);
+    lines.push(`  状态：${stateLabel(state)}`);
+    lines.push(`  摘要：${state.summary}`);
+    if (!explicitNotInstalled) {
+      lines.push(`  位置：${state.location.platform === 'codex'
+        ? `Codex（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`
+        : `Claude Code（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`}`);
+      const nextStep = nextStepsForCollectedLocation(state)[0];
+      if (nextStep) {
+        lines.push(`  下一步：${formatNextStepForHuman(nextStep)}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 function formatStatusJsonPayload(
@@ -1703,7 +1975,7 @@ async function createInstallStateForCell(options: {
   return {
     kind: state.projection.kind,
     summary: state.summary,
-    nextSteps: state.nextSteps,
+    ...createNextStepsBoundary(nextStepsForCollectedLocation(state), state.nextSteps),
     findings: state.findings,
     issueCodes: state.projection.issues.map((issue) => issue.code),
     autoInstalled: state.projection.autoInstalled,
@@ -1739,7 +2011,7 @@ function createStatusJsonPayload(options: {
   return {
     ok: true,
     command: 'status',
-    consoleItemsSchemaVersion: 2,
+    statusSchemaVersion: 2,
     ...options.matrix,
     friendlySummaries: options.friendlySummaries,
     consoleItems: options.consoleItems,
@@ -1748,6 +2020,23 @@ function createStatusJsonPayload(options: {
 
 function nativeRecoverySuggestion(pluginName: string): string {
   return `aw uninstall ${pluginName} -p codex -s user`;
+}
+
+async function resolveStatusCatalog(
+  env: NodeJS.ProcessEnv,
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'],
+): Promise<CatalogResolution> {
+  try {
+    return await resolveCurrentCatalog(env);
+  } catch (error) {
+    const fallbackRoot = locations.find((state) => state.target.currentPlugin)?.target.currentPlugin?.rootDir
+      ?? process.cwd();
+    return {
+      rootDir: path.dirname(fallbackRoot),
+      source: 'embedded',
+      reason: statusErrorMessage(error),
+    };
+  }
 }
 
 function isHistoricalCodexRoleWithoutRecoverableIdentity(
@@ -1852,6 +2141,7 @@ async function createCompatNativeStatus(options: {
 async function createCompatibilityReports(options: {
   locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
   env: NodeJS.ProcessEnv;
+  catalog: CatalogResolution;
 }): Promise<StatusReport[]> {
   const reports = new Map<string, StatusReport>();
   for (const state of options.locations) {
@@ -1899,9 +2189,11 @@ async function createCompatibilityReports(options: {
       },
       currentCatalog: state.currentCatalog
         ? {
-            rootDir: state.target.currentPlugin?.rootDir ?? '',
-            source: 'local',
+            rootDir: options.catalog.rootDir,
+            source: options.catalog.source,
             available: true,
+            ...(options.catalog.reason ? { reason: options.catalog.reason } : {}),
+            ...(options.catalog.reasonCode ? { reasonCode: options.catalog.reasonCode } : {}),
           }
         : undefined,
       artifactsInitialized: !state.projection.dynamicDiagnosticUnavailable,
@@ -1942,7 +2234,12 @@ function fallbackNotInstalledState(): StatusMatrixInstallState {
   return {
     kind: 'notInstalled',
     summary: '当前还没有发现安装。',
-    nextSteps: ['选择目标位置后安装。'],
+    ...createNextStepsBoundary([
+      createManualNextStep(
+        '选择目标位置',
+        '先选择要安装到哪个位置，再继续安装流程。',
+      ),
+    ]),
     findings: [],
     issueCodes: [],
     autoInstalled: false,
@@ -1968,37 +2265,69 @@ function summarizeCandidateInstallState(
   candidate: CommandCandidate,
 ): Pick<StatusMatrixInstallState, 'summary' | 'nextSteps'> {
   const kind = candidate.installState?.kind ?? 'notInstalled';
+  const detailCommand = `aw status ${candidate.pluginName} --verbose`;
+  const baseLocation = {
+    pluginName: candidate.pluginName,
+    platform: candidate.platform,
+    scope: candidate.scope,
+  };
   switch (kind) {
     case 'installed':
       return {
         summary: '已发现安装。',
-        nextSteps: ['运行 `aw status <plugin> --verbose` 查看详细状态。'],
+        nextSteps: [createUiActionNextStep(
+          '查看详细状态',
+          '可以查看当前安装的详细状态、安装证据和可恢复动作。',
+          'openStatus',
+          detailCommand,
+        )],
       };
     case 'needsRepair':
       return {
         summary: '安装存在异常，需要修复。',
-        nextSteps: ['运行 `aw repair <plugin> --platform <platform> --scope <scope>` 修复安装。'],
+        nextSteps: [createUiActionNextStep(
+          '修复安装',
+          '会进入修复流程，补齐当前安装缺失或不一致的状态。',
+          'runRepair',
+          repairCommandForCell(baseLocation),
+        )],
       };
     case 'adoptable':
       return {
         summary: '发现可认领的现有安装。',
-        nextSteps: ['运行 `aw repair <plugin> --platform <platform> --scope <scope> --adopt-existing` 认领现有安装。'],
+        nextSteps: [createUiActionNextStep(
+          '认领现有安装',
+          '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
+          'runAdoptExisting',
+          repairCommandForCell(baseLocation, { adoptExisting: true }),
+        )],
       };
     case 'residual':
       return {
         summary: '发现可清理的残留。',
-        nextSteps: ['运行 `aw cleanup <plugin> --platform <platform> --scope <scope>` 清理残留。'],
+        nextSteps: [createUiActionNextStep(
+          '清理残留',
+          '会进入 cleanup 流程，评估并清理当前残留状态。',
+          'runCleanup',
+          cleanupCommandForCell(baseLocation),
+        )],
       };
     case 'externallyManaged':
       return {
         summary: '发现由其他来源管理的安装。',
-        nextSteps: ['先确认外部安装来源，再决定是否继续处理。'],
+        nextSteps: [createManualNextStep(
+          '确认外部安装来源',
+          '先确认这份安装是否由外部来源管理，再决定是否继续处理。',
+        )],
       };
     case 'notInstalled':
     default:
       return {
         summary: '当前还没有发现安装。',
-        nextSteps: ['选择目标位置后安装。'],
+        nextSteps: [createManualNextStep(
+          '选择目标位置',
+          '先选择要安装到哪个位置，再继续安装流程。',
+        )],
       };
   }
 }
@@ -2014,7 +2343,7 @@ function createCandidateInstallState(candidate: CommandCandidate): StatusMatrixI
     ...fallback,
     kind: candidate.installState.kind,
     summary: summarized.summary,
-    nextSteps: summarized.nextSteps,
+    ...createNextStepsBoundary(summarized.nextSteps),
     autoInstalled: candidate.installState.autoInstalled,
     unusedDependencyHint: candidate.installState.unusedDependencyHint,
     repairAvailable: candidate.installState.kind === 'needsRepair',
@@ -2067,9 +2396,9 @@ function createStatusMatrixFromCandidates(options: {
           scripts: cell.scripts,
           ...(cell.projectKey ? { projectKey: cell.projectKey } : {}),
         })),
-        nextSteps: pluginCells.every((cell) => cell.installState?.kind === 'notInstalled')
-          ? ['选择目标位置后安装。']
-          : [],
+        ...createNextStepsBoundary(pluginCells.every((cell) => cell.installState?.kind === 'notInstalled')
+          ? [createManualNextStep('选择目标位置', '先选择要安装到哪个位置，再继续安装流程。')]
+          : []),
       };
     })
     .sort((left, right) => left.pluginName.localeCompare(right.pluginName));
@@ -2101,7 +2430,10 @@ export async function statusCommand(
   consoleControllerItems: ConsoleControllerItem[];
   statusPageModels: StatusPageModel[];
 }> {
-  const collected = await collectP7Locations(pluginNames, rawOptions, runtime);
+  const collected = await collectP7Locations(pluginNames, {
+    ...rawOptions,
+    deep: rawOptions.verbose === true,
+  }, runtime);
   const options = collected.options;
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
@@ -2109,9 +2441,11 @@ export async function statusCommand(
   const installStates = await Promise.all(collected.locations.map((state) =>
     createInstallStateForCell({ state, env }),
   ));
+  const catalog = await resolveStatusCatalog(env, collected.locations);
   const compatibilityReports = await createCompatibilityReports({
     locations: collected.locations,
     env,
+    catalog,
   });
   const cells: StatusMatrixCell[] = collected.locations.map((state, index) => ({
     pluginName: state.location.plugin,
@@ -2149,7 +2483,7 @@ export async function statusCommand(
           scripts: cell.scripts,
           ...(cell.projectKey ? { projectKey: cell.projectKey } : {}),
         })),
-        nextSteps: [...new Set(pluginStates.flatMap((state) => state.nextSteps))],
+        ...createNextStepsBoundary(dedupeNextSteps(pluginStates.flatMap((state) => nextStepsForCollectedLocation(state)))),
       };
     })
     .sort((left, right) => left.pluginName.localeCompare(right.pluginName));
@@ -2189,16 +2523,17 @@ export async function statusCommand(
   };
   const statusLocations: P7StatusJsonPayload['locations'] = collected.locations.map((state, index) => {
     const installState = installStates[index]!;
+    const locationNextSteps = nextStepsForCollectedLocation(state);
     const staleProjectReferences = state.dependencyIndexActions.filter((action) =>
       action.type === 'staleProjectReference');
     const dependencyIndexRecoveryMessage = state.projection.dependencyIndexCoverageTrusted
       ? null
       : state.projection.dependencyIndexRevisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 diagnose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 diagnose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`;
     return {
       plugin: state.location.plugin,
@@ -2210,7 +2545,7 @@ export async function statusCommand(
         ? `Codex（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`
         : `Claude Code（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`,
       state: state.projection.kind,
-      nextSteps: state.nextSteps,
+      ...createNextStepsBoundary(locationNextSteps, state.nextSteps),
       record: {
         present: state.evidence.installRecord.present,
         status: state.evidence.installRecord.read.status,
@@ -2324,8 +2659,13 @@ export async function statusCommand(
   const output = options.json
     ? JSON.stringify(jsonPayload, null, 2)
     : options.verbose
-      ? `${renderStatusHumanOutput(collected.locations)}\n\n详细信息\n${JSON.stringify(jsonPayload, null, 2)}`
-      : renderStatusHumanOutput(collected.locations);
+      ? [
+          renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins }),
+          '',
+          '状态详情',
+          renderDiagnoseHumanOutput(collected.locations),
+        ].join('\n')
+      : renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins });
   return {
     reports: compatibilityReports,
     output,

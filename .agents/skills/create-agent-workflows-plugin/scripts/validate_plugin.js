@@ -358,6 +358,9 @@ async function tryLoadCliManifestTools() {
 // Lightweight manifest checks (fallback when CLI not built)
 // ---------------------------------------------------------------------------
 
+const STRICT_SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
 function validateManifestLightweight(manifest) {
   const input = expectRecord(manifest, 'plugin manifest');
   if (!input) return;
@@ -391,6 +394,9 @@ function validateManifestLightweight(manifest) {
 
   if (manifest.name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.name)) {
     error(`manifest name "${manifest.name}" is not lowercase-hyphen-case`);
+  }
+  if (manifest.version && !STRICT_SEMVER_PATTERN.test(manifest.version)) {
+    error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
   }
 
   validateManifestDependenciesLightweight(manifest.name, manifest.dependencies);

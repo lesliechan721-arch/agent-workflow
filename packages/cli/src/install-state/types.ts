@@ -218,7 +218,7 @@ export interface SharedSkillTriggerRuntimeOwner {
   owner: PluginLocation;
   ownerRecordPath: string;
   ownerRecordDigest: string;
-  preference: SkillTriggerPreference;
+  preference?: SkillTriggerPreference;
   updatedAt: string;
 }
 

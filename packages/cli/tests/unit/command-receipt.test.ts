@@ -67,9 +67,20 @@ describe('command receipt output', () => {
     };
 
     expect(buildCommandReceiptJson('install', receipt)).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       command: 'install',
       plugins: ['workflow-parent-a', 'workflow-parent-b', 'workflow-child'],
       warnings: [dependencyWarning],
+      nextStepsSchemaVersion: 1,
+      nextSteps: [
+        expect.objectContaining({
+          label: expect.any(String),
+          description: expect.any(String),
+          command: expect.stringContaining('aw status workflow-parent-a'),
+        }),
+      ],
+      legacyNextSteps: expect.any(Array),
       targets: [
         {
           plugin: 'workflow-parent-a',
@@ -128,10 +139,42 @@ describe('command receipt output', () => {
         },
       ]),
     });
+    expect(buildCommandReceiptJson('install', receipt).targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: 'workflow-parent-a',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'install',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'workflow-parent-b',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'install',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'workflow-child',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'installDependency',
+        state: 'completed',
+      }),
+    ]));
 
     const output = renderCommandReceipt('install', receipt).join('\n');
     expect(output).toContain('已安装 workflow-parent-a、workflow-parent-b。');
     expect(output).toContain('已自动安装依赖：workflow-child。');
+    expect(output).toContain('下一步：');
+    expect(output).toContain('运行 aw status workflow-parent-a');
+    expect(output).not.toContain('下一步：aw status');
     expect(output).not.toMatch(/ledger|ref-count|dependencyEdges/i);
   });
 
@@ -195,7 +238,11 @@ describe('command receipt output', () => {
     };
 
     expect(buildCommandReceiptJson('upgrade', receipt)).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       command: 'upgrade',
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ command: expect.stringContaining('aw status upgrade-root') })],
       upgraded: expect.arrayContaining([
         {
           plugin: 'upgrade-root',
@@ -263,6 +310,35 @@ describe('command receipt output', () => {
         },
       ]),
     });
+    expect(buildCommandReceiptJson('upgrade', receipt).targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: 'upgrade-root',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'upgrade',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'upgrade-child',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'upgradeDependency',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'new-upgrade-child',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'installDependency',
+        state: 'completed',
+      }),
+    ]));
   });
 
   it('keeps auto-cleaned dependencies in uninstall JSON while leaving the human summary concise', () => {
@@ -294,8 +370,12 @@ describe('command receipt output', () => {
     };
 
     expect(buildCommandReceiptJson('uninstall', receipt)).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       command: 'uninstall',
       plugins: ['cleanup-parent', 'cleanup-child', 'cleanup-grandchild'],
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ command: expect.stringContaining('aw status cleanup-parent') })],
       actions: expect.arrayContaining([
         {
           type: 'uninstall',
@@ -320,11 +400,114 @@ describe('command receipt output', () => {
         },
       ]),
     });
+    expect(buildCommandReceiptJson('uninstall', receipt).targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: 'cleanup-parent',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'uninstall',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'cleanup-child',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'uninstallAutoDependency',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: 'cleanup-grandchild',
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'uninstallAutoDependency',
+        state: 'completed',
+      }),
+    ]));
 
     const output = renderCommandReceipt('uninstall', receipt).join('\n');
     expect(output).toContain('已卸载 cleanup-parent。');
     expect(output).toContain('已清理相关文件和已安装项。');
+    expect(output).toContain('运行 aw status cleanup-parent');
+    expect(output).not.toContain('下一步：aw status');
     expect(output).not.toContain('已自动清理不再需要的依赖');
+  });
+
+  it('preserves explicit receipt v2 target result states for multi-target failures', () => {
+    const receipt = {
+      result: {
+        platforms: ['codex', 'claude'],
+        plugins: ['multi-state'],
+        warnings: [],
+        targetResults: [
+          {
+            target: {
+              pluginName: 'multi-state',
+              platform: 'codex' as const,
+              scope: 'user' as const,
+            },
+            action: 'install',
+            state: 'completed' as const,
+            rollbackState: 'notNeeded' as const,
+          },
+          {
+            target: {
+              pluginName: 'multi-state',
+              platform: 'claude' as const,
+              scope: 'user' as const,
+            },
+            action: 'install',
+            state: 'rolledBack' as const,
+            rollbackState: 'completed' as const,
+            message: 'Claude 写入失败后已回滚。',
+          },
+          {
+            target: {
+              pluginName: 'multi-state',
+              platform: 'codex' as const,
+              scope: 'project' as const,
+            },
+            action: 'install',
+            state: 'notRun' as const,
+            errorCode: 'preflightBlocked',
+            message: '前置检查失败，未执行。',
+          },
+          {
+            target: {
+              pluginName: 'multi-state',
+              platform: 'claude' as const,
+              scope: 'project' as const,
+            },
+            action: 'install',
+            state: 'failed' as const,
+            rollbackState: 'failed' as const,
+            errorCode: 'rollbackFailed',
+            message: '写入和回滚都失败。',
+          },
+        ],
+      },
+      groups: [{
+        scope: 'user' as const,
+        platforms: ['codex', 'claude'],
+        plugins: ['multi-state'],
+      }],
+    };
+
+    expect(buildCommandReceiptJson('install', receipt)).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'failed',
+      targetResults: [
+        expect.objectContaining({ state: 'completed' }),
+        expect.objectContaining({ state: 'rolledBack', rollbackState: 'completed' }),
+        expect.objectContaining({ state: 'notRun', errorCode: 'preflightBlocked' }),
+        expect.objectContaining({ state: 'failed', rollbackState: 'failed', errorCode: 'rollbackFailed' }),
+      ],
+    });
   });
 
   it('renders cleanup plan receipts with stable schema fields and empty collections', () => {
@@ -366,11 +549,19 @@ describe('command receipt output', () => {
     });
 
     expect(payload).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       cleanupPlanSchemaVersion: 1,
       dryRun: true,
       force: true,
       removeConfig: true,
       warnings: ['synthetic warning'],
+      targetResults: [{
+        action: 'cleanup',
+        state: 'notRun',
+      }],
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
       plannedRemovals: [{
         kind: 'native-cache',
       }],
@@ -384,6 +575,7 @@ describe('command receipt output', () => {
     expect(output).toContain('计划删除项');
     expect(output).toContain('受影响依赖');
     expect(output).toContain('- 无');
+    expect(output).not.toContain('下一步：aw ');
   });
 
   it('renders cleanup execution receipts as failed when remaining items are still present', () => {
@@ -488,7 +680,7 @@ describe('command receipt output', () => {
   });
 
   it('renders uninstall receipts with config removal failure without losing the main result', () => {
-    const output = renderCommandReceipt('uninstall', {
+    const receipt = {
       result: {
         platforms: ['codex'],
         plugins: ['git-commit'],
@@ -508,7 +700,24 @@ describe('command receipt output', () => {
         platforms: ['codex'],
         plugins: ['git-commit'],
       }],
-    }).join('\n');
+    };
+    expect(buildCommandReceiptJson('uninstall', receipt)).toMatchObject({
+      configStoreRemovals: [{
+        store: {
+          pluginName: 'git-commit',
+          storeKind: 'user',
+        },
+        state: 'failed',
+        reasonCode: 'removeFailed',
+        subjectTargets: [{
+          pluginName: 'git-commit',
+          platform: 'codex',
+          scope: 'user',
+        }],
+      }],
+    });
+
+    const output = renderCommandReceipt('uninstall', receipt).join('\n');
 
     expect(output).toContain('已卸载 git-commit。');
     expect(output).toContain('配置处理：主体已完成，但 AW 自管配置删除失败。');

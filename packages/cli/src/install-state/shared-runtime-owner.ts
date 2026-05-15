@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.js';
@@ -19,7 +21,6 @@ import { sha256Hex } from './internal.js';
 import { getSharedSkillTriggerRuntimeOwnerPath } from './paths.js';
 import {
   createSharedRuntimeOwnerDeleteStage,
-  createSharedRuntimeOwnerWriteStage,
   type InstallStateReceiptWarning,
   type InstallStateTransactionStage,
 } from './transactions.js';
@@ -36,7 +37,6 @@ export interface SharedSkillTriggerRuntimeOwnerInspection {
   digestVerified: boolean;
   ownerRecordRead: InstallStateReadResult<InstallRecordFile> | null;
   ownerRecordMatchesLocation: boolean;
-  ownerRecordMatchesPreference: boolean;
   usable: boolean;
 }
 
@@ -140,9 +140,6 @@ function formatOwnerInvalidReason(inspection: SharedSkillTriggerRuntimeOwnerInsp
   if (!inspection.ownerRecordMatchesLocation) {
     return 'owner record location 与 owner 文件不一致';
   }
-  if (!inspection.ownerRecordMatchesPreference) {
-    return 'owner record preference 与 owner 文件不一致';
-  }
   return 'owner 状态不可验证';
 }
 
@@ -228,7 +225,6 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
       digestVerified: false,
       ownerRecordRead: null,
       ownerRecordMatchesLocation: false,
-      ownerRecordMatchesPreference: false,
       usable: false,
     };
   }
@@ -238,9 +234,6 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
   const ownerRecordMatchesLocation = ownerRecordRead.status === 'ok'
     ? sameLocation(locationFromRecord(ownerRecordRead.value), read.value.owner)
     : false;
-  const ownerRecordMatchesPreference = ownerRecordRead.status === 'ok'
-    ? preferenceFromRecord(ownerRecordRead.value) === read.value.preference
-    : false;
 
   return {
     ownerPath: read.path,
@@ -248,12 +241,86 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
     digestVerified,
     ownerRecordRead,
     ownerRecordMatchesLocation,
-    ownerRecordMatchesPreference,
     usable:
       digestVerified
       && ownerRecordRead.status === 'ok'
-      && ownerRecordMatchesLocation
-      && ownerRecordMatchesPreference,
+      && ownerRecordMatchesLocation,
+  };
+}
+
+async function createSharedRuntimeOwnerIdentityWriteStage(options: {
+  recordFile: InstallRecordFile;
+  recordPath: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<InstallStateTransactionStage> {
+  const ownerPath = getSharedSkillTriggerRuntimeOwnerPath({
+    pluginName: options.recordFile.record.pluginName,
+    platform: options.recordFile.record.platform,
+    env: options.env,
+  });
+  const stagingPath = `${ownerPath}.aw-staging`;
+  const backupPath = `${ownerPath}.aw-backup`;
+  let committed = false;
+
+  return {
+    label: 'shared runtime owner',
+    async commit() {
+      if (committed) {
+        return;
+      }
+      const value: SharedSkillTriggerRuntimeOwner = {
+        version: 1,
+        pluginName: options.recordFile.record.pluginName,
+        platform: options.recordFile.record.platform,
+        owner: locationFromRecord(options.recordFile),
+        ownerRecordPath: options.recordPath,
+        ownerRecordDigest: sha256Hex(await fs.readFile(options.recordPath)),
+        updatedAt: options.recordFile.record.updatedAt,
+      };
+      await fs.ensureDir(path.dirname(ownerPath));
+      await fs.writeJson(stagingPath, value, { spaces: 2 });
+      if (await fs.pathExists(ownerPath)) {
+        await fs.move(ownerPath, backupPath, { overwrite: true });
+      }
+      await fs.move(stagingPath, ownerPath, { overwrite: true });
+      committed = true;
+    },
+    async rollback(): Promise<InstallStateReceiptWarning | void> {
+      try {
+        if (committed) {
+          if (await fs.pathExists(backupPath)) {
+            await fs.remove(ownerPath).catch(() => undefined);
+            await fs.move(backupPath, ownerPath, { overwrite: true });
+          } else {
+            await fs.remove(ownerPath).catch(() => undefined);
+          }
+        } else {
+          await fs.remove(stagingPath).catch(() => undefined);
+        }
+        return undefined;
+      } catch (error) {
+        return {
+          code: 'sharedRuntimeOwnerRollbackFailed',
+          message: 'Shared runtime owner rollback failed.',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    async finalize(): Promise<InstallStateReceiptWarning | void> {
+      try {
+        await Promise.all([
+          fs.remove(stagingPath).catch(() => undefined),
+          fs.remove(backupPath).catch(() => undefined),
+        ]);
+        return undefined;
+      } catch (error) {
+        return {
+          code: 'sharedRuntimeOwnerFinalizeFailed',
+          message: 'Shared runtime owner finalize failed.',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
   };
 }
 
@@ -464,7 +531,7 @@ export async function createSharedSkillTriggerRuntimeUpsertStages(options: {
   }
 
   if (options.plan.shouldWriteOwner) {
-    stages.push(await createSharedRuntimeOwnerWriteStage({
+    stages.push(await createSharedRuntimeOwnerIdentityWriteStage({
       recordFile: options.recordFile,
       recordPath: options.recordPath,
       env: options.env,
@@ -538,9 +605,7 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     env: options.env,
   });
   const source = ownerInspection.usable ? 'owner' : 'embeddedDefault';
-  const preference = ownerInspection.usable && ownerInspection.read.status === 'ok'
-    ? ownerInspection.read.value.preference
-    : 'default';
+  const preference: SkillTriggerPreference = 'default';
   const warnings: string[] = [];
 
   if (!ownerInspection.usable && ownerInspection.read.status !== 'missing') {

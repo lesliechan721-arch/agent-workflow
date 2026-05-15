@@ -85,7 +85,7 @@ async function writeBundlePlugin(options: {
   rootDir: string;
   pluginName?: string;
   version?: string;
-  skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
+  skillTriggers?: Record<string, { defaultTrigger: 'manual' | 'auto'; allowDynamicTrigger: boolean }>;
   artifacts?: {
     targets: Array<Record<string, unknown>>;
   };
@@ -204,7 +204,8 @@ describe('skill trigger preferences', () => {
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -225,7 +226,8 @@ describe('skill trigger preferences', () => {
         skills: './skills',
         skillTriggers: {
           commit: {
-            allowInstallOverride: false,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
           },
         },
         marketplace: {
@@ -248,7 +250,8 @@ describe('skill trigger preferences', () => {
     expect(policies.policies).toEqual([
       expect.objectContaining({
         skillName: 'commit',
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
       }),
     ]);
     expect(policies.applicability).toBe('overridable');
@@ -296,7 +299,8 @@ describe('skill trigger preferences', () => {
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       artifacts: {
@@ -372,7 +376,8 @@ describe('skill trigger preferences', () => {
       version: '0.1.0',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -388,7 +393,8 @@ describe('skill trigger preferences', () => {
       version: '0.2.0',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -453,7 +459,8 @@ describe('skill trigger preferences', () => {
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -500,7 +507,8 @@ describe('skill trigger preferences', () => {
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -560,7 +568,12 @@ describe('skill trigger preferences', () => {
       pluginName: 'platform-scoped-plugin',
       skillTriggers: {
         'codex-only': {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+        'claude-only': {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
         },
       },
       skills: {
@@ -602,7 +615,12 @@ describe('skill trigger preferences', () => {
       pluginName: 'repo-skill-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+        locked: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
         },
       },
       skills: {
@@ -638,7 +656,7 @@ describe('skill trigger preferences', () => {
     expect(result.rollbackHandle.committed).toBe(false);
   });
 
-  it('keeps pristine skills and warns when manual or auto targets non-overridable skills', async () => {
+  it('keeps pristine skills when manual or auto targets fixed-default skills', async () => {
     const embeddedRoot = await makeTempDir('aw-skill-trigger-embedded-');
     const invalidYaml = 'policy: [\n';
     const invalidFrontmatter = `---
@@ -651,7 +669,12 @@ user-invocable: "true"
 `;
     await writeBundlePlugin({
       rootDir: embeddedRoot,
-      skillTriggers: {},
+      skillTriggers: {
+        commit: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
+        },
+      },
       skills: {
         commit: {
           claude: invalidFrontmatter,
@@ -672,7 +695,7 @@ user-invocable: "true"
       mode: 'strictExplicit',
     });
     expect(codexResult.summary.status).toBe('skipped');
-    expect(codexResult.warnings[0]).toContain('allowInstallOverride');
+    expect(codexResult.warnings).toEqual([]);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(invalidYaml);
 
     const claudeResult = await materializeSkillTriggerPreference({
@@ -686,7 +709,7 @@ user-invocable: "true"
       mode: 'strictExplicit',
     });
     expect(claudeResult.summary.status).toBe('skipped');
-    expect(claudeResult.warnings[0]).toContain('allowInstallOverride');
+    expect(claudeResult.warnings).toEqual([]);
     await expect(readFile(claudeSkillPath(marketplaceRoot))).resolves.toBe(invalidFrontmatter);
   });
 
@@ -696,7 +719,12 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+        locked: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
         },
       },
       skills: {
@@ -740,7 +768,8 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -808,7 +837,8 @@ user-invocable: "true"
         rootDir: embeddedRoot,
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
         skills: {
@@ -881,7 +911,8 @@ user-invocable: "true"
         rootDir: embeddedRoot,
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
         skills: {
@@ -925,7 +956,8 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -961,7 +993,8 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1008,7 +1041,8 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1050,7 +1084,8 @@ user-invocable: "true"
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1097,7 +1132,8 @@ user-invocable: "true"
       pluginName: 'equivalent-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1121,7 +1157,8 @@ user-invocable: true
       pluginName: 'equivalent-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1173,7 +1210,8 @@ user-invocable: true
       pluginName: 'different-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1220,7 +1258,8 @@ user-invocable: true
         pluginName: testCase.pluginName,
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
         skills: {
@@ -1251,7 +1290,8 @@ user-invocable: true
         expect(defaultSignature.entries).toEqual([
           {
             skillName: 'commit',
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             allowImplicitInvocation: true,
           },
         ]);
@@ -1278,7 +1318,8 @@ user-invocable: true
       pluginName: 'claude-defaults-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1308,7 +1349,8 @@ user-invocable: true
       expect(defaultSignature.entries).toEqual([
         {
           skillName: 'commit',
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           disableModelInvocation: false,
           userInvocable: true,
         },
@@ -1344,7 +1386,8 @@ user-invocable: true
       rootDir: embeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1379,7 +1422,8 @@ user-invocable: true
       rootDir: readableEmbeddedRoot,
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1493,7 +1537,8 @@ user-invocable: true
       pluginName: 'changing-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1557,7 +1602,8 @@ user-invocable: true
       pluginName: 'equivalent-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {
@@ -1618,7 +1664,8 @@ user-invocable: true
       pluginName: 'unknown-plugin',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       skills: {

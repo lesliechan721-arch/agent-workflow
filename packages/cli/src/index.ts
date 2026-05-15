@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
@@ -24,7 +24,6 @@ import {
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
 import { statusCommand } from './commands/status.js';
-import { diagnoseCommand } from './commands/diagnose.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
@@ -33,6 +32,7 @@ import {
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
+  assertNoDeprecatedSkillTriggerOption,
   normalizeCommandOptions,
   normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
@@ -40,7 +40,6 @@ import {
   normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
-  parseSkillTriggerPreference,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -72,12 +71,38 @@ import {
   applyPluginConfigWrite,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
+import { assertStrictSemVer } from './utils/manifest.js';
 import type { PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export { parseSkillTriggerPreference } from './commands/options.js';
 
 export type CliRuntimeOptions = CliExecutionContextInput;
+
+function createDeprecatedSkillTriggerOption(): Option {
+  return new Option('-t, --skill-trigger <preference>').hideHelp();
+}
+
+function assertNoDeprecatedSkillTriggerArgv(argv: string[]): void {
+  const commandName = argv.find((token) => !token.startsWith('-'));
+  if (
+    commandName !== 'install' &&
+    commandName !== 'upgrade' &&
+    commandName !== 'repair' &&
+    commandName !== 'reinstall'
+  ) {
+    return;
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === '-t' || token === '--skill-trigger' || token?.startsWith('--skill-trigger=')) {
+      throw new Error(
+        `\`${commandName}\` 不再接受 \`--skill-trigger\` / \`-t\`；请改用配置管理维护 skill trigger 偏好后再重试。`,
+      );
+    }
+  }
+}
 
 function createDefaultIo(): CliIo {
   return {
@@ -105,10 +130,7 @@ function resolveCliVersion(): string {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
     version?: unknown;
   };
-  if (typeof packageJson.version !== 'string' || packageJson.version.trim().length === 0) {
-    throw new Error('Unable to resolve @yiliang/aw version from package.json.');
-  }
-  return packageJson.version;
+  return assertStrictSemVer(packageJson.version, 'packages/cli/package.json version');
 }
 
 function resolveCommandReceiptExitCode(
@@ -178,6 +200,9 @@ function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean
 }
 
 function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (dependencyIndex && pluginNames.length > 0) {
+    throw new Error('repair --dependency-index 不接受插件名。');
+  }
   if (pluginNames.length > 0 || dependencyIndex) {
     return;
   }
@@ -185,6 +210,9 @@ function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boo
 }
 
 function assertCleanupRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (dependencyIndex && pluginNames.length > 0) {
+    throw new Error('cleanup --dependency-index 不接受插件名。');
+  }
   if (dependencyIndex || pluginNames.length === 1) {
     return;
   }
@@ -636,7 +664,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (rawOptions: { force?: boolean; json?: boolean } & RawDiagnosticsOptions) => {
       const context = createActionContext('init', rawOptions);
       const result = await runActionWithContext(context, () =>
-        initCommand({ force: rawOptions.force, env: context.env }),
+        initCommand({
+          force: rawOptions.force,
+          env: context.env,
+          gate: {
+            interactive: context.interactive,
+            confirmOverwrite: async ({ message, defaultValue }) => {
+              const promptResult = await context.prompt.confirm?.({ message, defaultValue });
+              return promptResult?.action === 'select' && promptResult.value === true;
+            },
+            onNotice: async (message) => {
+              await context.reporter.notice({
+                level: 'warning',
+                message,
+                identity: `local-marketplace:${message}`,
+                target: 'stderr',
+              });
+            },
+          },
+        }),
       );
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
@@ -651,9 +697,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('install')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -676,11 +722,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = await runActionWithContext(
           context,
           async () => {
+            assertInstallPluginsProvided(plugins ?? []);
+            assertNoDeprecatedSkillTriggerOption(rawOptions, 'install');
             const commandOptions = normalizeInstallCommandOptions({
               cwd,
               ...rawOptions,
             });
-            assertInstallPluginsProvided(plugins ?? []);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -714,8 +761,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('uninstall')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--remove-config', 'remove the AW-managed config store after uninstall succeeds', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -736,11 +783,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(
         context,
         async () => {
+          assertUninstallPluginsProvided(plugins ?? []);
           const commandOptions = normalizeUninstallCommandOptions({
             cwd,
             ...rawOptions,
           });
-          assertUninstallPluginsProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',
             data: {
@@ -774,9 +821,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('upgrade')
     .argument('[plugins...]')
     .option('-a, --all', 'upgrade all plugins', false)
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -800,11 +847,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = await runActionWithContext(
           context,
           async () => {
+            assertUpgradeRequestProvided(plugins ?? [], rawOptions.all === true);
+            assertNoDeprecatedSkillTriggerOption(rawOptions, 'upgrade');
             const commandOptions = normalizeUpgradeCommandOptions({
               cwd,
               ...rawOptions,
             });
-            assertUpgradeRequestProvided(plugins ?? [], commandOptions.all === true);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -838,9 +886,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('repair')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
     .option('--dependency-index', 'repair the global dependency index only', false)
@@ -866,6 +914,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const result = await runActionWithContext(
         context,
         async () => {
+          assertNoDeprecatedSkillTriggerOption(rawOptions, 'repair');
           const commandOptions = normalizeRepairCommandOptions({
             cwd,
             ...rawOptions,
@@ -888,8 +937,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('cleanup')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
     .option('--plan', 'preview the cleanup plan without writing state', false)
     .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
@@ -949,9 +998,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('reinstall')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -973,6 +1022,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(
         context,
         async () => {
+          assertNoDeprecatedSkillTriggerOption(rawOptions, 'reinstall');
           const commandOptions = normalizeReinstallCommandOptions({
             cwd,
             ...rawOptions,
@@ -1373,7 +1423,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   program
-    .command('diagnose')
+    .command('diagnose', { hidden: true })
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'filter by scope')
     .option('-p, --platform <platform>', 'filter by platform')
@@ -1391,25 +1441,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         deep?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
-      const context = createActionContext('diagnose', rawOptions);
-      const result = await runActionWithContext(
-        context,
-        async () => {
-          const commandOptions = normalizeDiagnoseCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          return diagnoseCommand(plugins ?? [], commandOptions, context);
-        },
-      );
-      writeLine(io.stdout, result.output);
+      const commandOptions = normalizeDiagnoseCommandOptions({
+        cwd,
+        ...rawOptions,
+      });
+      const renderedPlugins = (plugins ?? []).join(' ').trim();
+      const suggested = renderedPlugins.length > 0
+        ? `aw status ${renderedPlugins} --verbose`
+        : 'aw status --verbose';
+      const details = commandOptions.deep ? '（原 `--deep` 诊断已并入 `status --verbose`）' : '';
+      throw new Error(`\`aw diagnose\` 已移除，请改用 \`${suggested}\`${details}。`);
     });
 
   Object.assign(program, { __awCommandExitState: commandExitState });
@@ -1463,6 +1504,7 @@ export async function runCli(
       }
       return await runActionWithContext(context, () => runConsoleController(context));
     }
+    assertNoDeprecatedSkillTriggerArgv(argv);
     const program = buildProgram({
       ...options,
       io,

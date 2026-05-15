@@ -6,6 +6,7 @@ import type {
 import type {
   GeneratedArtifactSessionVisibility,
   ManagedArtifactStatus,
+  NextStepInstruction,
   PlatformName,
   PluginMeta,
   PluginStatusReport,
@@ -13,6 +14,13 @@ import type {
   RepoManagedProjectItemState,
   Scope,
 } from '../types.js';
+import {
+  createManualNextStep,
+  createNextStepsBoundary,
+  dedupeNextSteps,
+  formatNextStepForUi,
+  stripCommandFromNextStep,
+} from '../output/model.js';
 export type {
   PluginConsoleReasonCode,
   PluginConsoleStatus,
@@ -55,7 +63,9 @@ export interface PluginConsoleLocationSummary {
   statusLabel: string;
   reasonCodes: PluginConsoleReasonCode[];
   issueSummary?: string;
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
 }
 
 export interface PluginConsoleSummary {
@@ -77,7 +87,9 @@ export interface PluginConsoleSummary {
   reasonCodes: PluginConsoleReasonCode[];
   issueSummary?: string;
   detailHints?: string[];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
 }
 
 export type PluginConsoleTone = 'neutral' | 'success' | 'info' | 'danger';
@@ -134,7 +146,9 @@ export interface ConsoleLocationSummary {
   issue?: ConsoleIssueSummary;
   issues: ConsoleIssueSummary[];
   suggestedFeatures: PluginConsoleFeatureSummary[];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   details?: string[];
 }
 
@@ -196,6 +210,7 @@ export interface ConsoleControllerItem {
 export type PluginConsoleActionKind =
   | 'openInstallWizard'
   | 'openConfigWizard'
+  | 'openStatus'
   | 'runInstall'
   | 'runUpgrade'
   | 'runUninstall'
@@ -235,7 +250,9 @@ export interface PluginConsoleLocation {
   reasonCodes: PluginConsoleReasonCode[];
   issueSummary?: string;
   detailHints?: string[];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
 }
 
 export interface PluginConsoleItem {
@@ -252,7 +269,9 @@ export interface PluginConsoleItem {
   reasonCodes: PluginConsoleReasonCode[];
   issueSummary?: string;
   detailHints?: string[];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
 }
 
 export interface PluginConsolePluginMeta {
@@ -356,6 +375,14 @@ function formatDependentLabel(dependent: { plugin: string; platform: PlatformNam
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function dedupeConsoleNextSteps(steps: NextStepInstruction[]): NextStepInstruction[] {
+  return dedupeNextSteps(steps.map(stripCommandFromNextStep));
+}
+
+function consoleNextStepsBoundary(steps: NextStepInstruction[]) {
+  return createNextStepsBoundary(dedupeConsoleNextSteps(steps));
 }
 
 function dedupeReasons(values: PluginConsoleReasonCode[]): PluginConsoleReasonCode[] {
@@ -806,7 +833,7 @@ function buildInstallStateActions(
 
   const target = locationTarget(cell);
   const commandArgs = formatCommandArgs(cell);
-  const diagnose = action('diagnoseCommand', '查看诊断命令', target, {
+  const diagnose = action('openStatus', '查看状态', target, {
     command: ['aw', 'status', ...commandArgs, '--verbose'],
   });
   const dependencyProtected = installState.dependents.length > 0;
@@ -919,61 +946,61 @@ function buildInstallStateActions(
 function buildReasonCopy(
   reason: PluginConsoleReasonCode,
   cell: StatusMatrixCell,
-): { issueSummary: string; detailHints: string[]; nextSteps: string[] } {
+): { issueSummary: string; detailHints: string[]; nextSteps: NextStepInstruction[] } {
   switch (reason) {
     case 'duplicateInstall':
       return {
         issueSummary: '同一平台同时存在两个可生效安装。',
         detailHints: ['先决定保留个人还是当前项目这一侧，再处理另一个位置。'],
-        nextSteps: ['先卸载或清理其中一侧，再重新检查状态。'],
+        nextSteps: [createManualNextStep('处理重复安装', '先卸载或清理其中一侧，再重新检查状态。')],
       };
     case 'missingRequiredConfig':
       return {
         issueSummary: '这个插件还缺少可用配置。',
         detailHints: ['先补齐必填项，或修正当前无效的配置值。'],
-        nextSteps: ['先打开配置向导补齐或修正配置。'],
+        nextSteps: [createManualNextStep('补齐或修正配置', '先打开配置向导补齐或修正配置。')],
       };
     case 'artifactRefreshFailed':
       return {
         issueSummary: '已写入内容和当前期望不一致，或最近一次刷新没有成功。',
         detailHints: ['如果只是刷新失败，可以先重试；如果内容已经漂移，再考虑修复安装。'],
-        nextSteps: ['先重试刷新或修复安装，再重新检查状态。'],
+        nextSteps: [createManualNextStep('重试刷新或修复安装', '先重试刷新或修复安装，再重新检查状态。')],
       };
     case 'recordCorrupted':
       return {
         issueSummary: 'AW 记录和当前安装状态对不上。',
         detailHints: ['通常需要先修复记录，再继续升级、卸载或接管。'],
-        nextSteps: ['先执行修复安装，再重新检查状态。'],
+        nextSteps: [createManualNextStep('修复安装', '先执行修复安装，再重新检查状态。')],
       };
     case 'nativeIncomplete':
       return {
         issueSummary: '平台侧写入没有完整收口。',
         detailHints: ['可以先尝试修复；如果只想撤掉未完成写入，再执行受控清理。'],
-        nextSteps: ['先处理这个位置的修复动作，再重新检查状态。'],
+        nextSteps: [createManualNextStep('处理修复动作', '先处理这个位置的修复动作，再重新检查状态。')],
       };
     case 'adoptableInstall':
       return {
         issueSummary: '发现了一份可认领的已有安装。',
         detailHints: ['认领只会补齐当前机器上的 AW 状态，不会直接改动已有仓库文件。'],
-        nextSteps: ['先执行认领，再继续管理这个位置。'],
+        nextSteps: [createManualNextStep('认领现有安装', '先执行认领，再继续管理这个位置。')],
       };
     case 'foreignOwnershipConflict':
       return {
         issueSummary: '当前安装位置的归属或生效环境存在冲突。',
         detailHints: ['先确认冲突来源，再决定是接管、认领，还是保留现有内容。'],
-        nextSteps: ['先查看诊断，再处理冲突来源。'],
+        nextSteps: [createManualNextStep('查看诊断', '先查看诊断，再处理冲突来源。')],
       };
     case 'residueDetected':
       return {
         issueSummary: '发现了残留文件或本机状态。',
         detailHints: ['先确认来源，再决定是清理还是补齐记录。'],
-        nextSteps: ['先查看诊断，再处理当前残留。'],
+        nextSteps: [createManualNextStep('查看诊断', '先查看诊断，再处理当前残留。')],
       };
     case 'dependencyBlocked':
       return {
         issueSummary: '依赖关系正在阻止当前操作。',
         detailHints: ['有的目标缺少上游依赖，也有的目标还在被下游安装引用。'],
-        nextSteps: ['先处理依赖链，再重新尝试当前操作。'],
+        nextSteps: [createManualNextStep('处理依赖链', '先处理依赖链，再重新尝试当前操作。')],
       };
   }
 }
@@ -1021,7 +1048,7 @@ function reasonSeverity(reason: PluginConsoleReasonCode): ConsoleIssueSummary['s
 function composeCopy(
   reasons: PluginConsoleReasonCode[],
   cell: StatusMatrixCell,
-): { issueSummary?: string; detailHints?: string[]; nextSteps: string[] } {
+): { issueSummary?: string; detailHints?: string[]; nextSteps: NextStepInstruction[] } {
   if (cell.installState) {
     const installState = cell.installState;
     const copies = reasons.map((reason) => buildReasonCopy(reason, cell));
@@ -1035,7 +1062,7 @@ function composeCopy(
     return {
       ...(copies[0]?.issueSummary ? { issueSummary: copies[0].issueSummary } : {}),
       detailHints: dedupeStrings(detailHints).slice(0, 6),
-      nextSteps: dedupeStrings(installState.nextSteps.length > 0
+      nextSteps: dedupeConsoleNextSteps(installState.nextSteps.length > 0
         ? installState.nextSteps
         : copies.flatMap((copy) => copy.nextSteps)),
     };
@@ -1049,7 +1076,7 @@ function composeCopy(
   return {
     issueSummary: copies[0]?.issueSummary,
     detailHints: dedupeStrings(copies.flatMap((copy) => copy.detailHints)),
-    nextSteps: dedupeStrings(copies.flatMap((copy) => copy.nextSteps)),
+    nextSteps: dedupeConsoleNextSteps(copies.flatMap((copy) => copy.nextSteps)),
   };
 }
 
@@ -1084,7 +1111,7 @@ function buildLocationActions(
   }
 
   const target = locationTarget(cell);
-  const diagnose = action('diagnoseCommand', '查看诊断命令', target, {
+  const diagnose = action('openStatus', '查看状态', target, {
     command: baseStatusCommand(cell),
   });
   const dependencyProtected = (cell.report?.dependencies?.dependents.length ?? 0) > 0;
@@ -1268,7 +1295,7 @@ function buildLocation(
     reasonCodes,
     ...(copy.issueSummary ? { issueSummary: copy.issueSummary } : {}),
     ...(copy.detailHints && copy.detailHints.length > 0 ? { detailHints: copy.detailHints } : {}),
-    nextSteps: copy.nextSteps,
+    ...consoleNextStepsBoundary(copy.nextSteps),
   };
 }
 
@@ -1328,10 +1355,10 @@ function applyDuplicateInstallProjection(
         duplicateCopy.detailHints[0] ?? '',
         ...(location.detailHints ?? []),
       ]).slice(0, 6),
-      nextSteps: dedupeStrings([
+      ...consoleNextStepsBoundary(dedupeConsoleNextSteps([
         ...duplicateCopy.nextSteps,
         ...location.nextSteps,
-      ]),
+      ])),
     };
   });
 }
@@ -1395,7 +1422,7 @@ function toLocationSummary(location: PluginConsoleLocation): PluginConsoleLocati
     statusLabel: location.statusLabel,
     reasonCodes: location.reasonCodes,
     ...(location.issueSummary ? { issueSummary: location.issueSummary } : {}),
-    nextSteps: location.nextSteps,
+    ...createNextStepsBoundary(location.nextSteps, location.legacyNextSteps),
   };
 }
 
@@ -1430,7 +1457,7 @@ function buildDuplicateInstallGroups(
             statusLabel: left.statusLabel,
             actions: [],
             reasonCodes: left.reasonCodes,
-            nextSteps: left.nextSteps,
+            ...createNextStepsBoundary(left.nextSteps, left.legacyNextSteps),
           },
           {
             platform: right.platform,
@@ -1441,7 +1468,7 @@ function buildDuplicateInstallGroups(
             statusLabel: right.statusLabel,
             actions: [],
             reasonCodes: right.reasonCodes,
-            nextSteps: right.nextSteps,
+            ...createNextStepsBoundary(right.nextSteps, right.legacyNextSteps),
           },
         ),
       ),
@@ -1472,8 +1499,9 @@ function featureKindForAction(actionEntry: PluginConsoleAction): PluginConsoleFe
       return 'repair';
     case 'reapplyConfigRefresh':
       return 'reapplyConfigRefresh';
+    case 'openStatus':
     case 'diagnoseCommand':
-      return 'diagnose';
+      return 'status';
     default:
       return undefined;
   }
@@ -1596,7 +1624,7 @@ export function createConsoleLocationSummary(
     ...(issues[0] ? { issue: issues[0] } : {}),
     issues,
     suggestedFeatures,
-    nextSteps: location.nextSteps,
+    ...createNextStepsBoundary(location.nextSteps, location.legacyNextSteps),
     ...(location.detailHints && location.detailHints.length > 0 ? { details: location.detailHints } : {}),
   };
 }
@@ -1719,13 +1747,6 @@ function buildSummaryFeatures(
     locations: [],
     destructive: false,
   });
-  if (!featureMap.has('diagnose')) {
-    featureMap.set('diagnose', {
-      actions: [],
-      locations: [],
-      destructive: false,
-    });
-  }
 
   return [...featureMap.entries()]
     .map(([kind, aggregate]) => {
@@ -1972,7 +1993,7 @@ export function createConsolePluginDetailPageModel(
   return {
     summary: item.summary,
     installationSummary: item.summary.locationSummary ?? '未安装',
-    ...(item.summary.nextSteps[0] ? { recommendation: item.summary.nextSteps[0] } : {}),
+    ...(item.summary.nextSteps[0] ? { recommendation: formatNextStepForUi(item.summary.nextSteps[0]) } : {}),
     targetOptions,
   };
 }
@@ -2018,7 +2039,7 @@ export function createConsoleControllerItems(
         ? {
             issueSummary: primaryLocation.issueSummary,
             detailHints: dedupeStrings(locations.flatMap((location) => location.detailHints ?? [])).slice(0, 6),
-            nextSteps: dedupeStrings(locations.flatMap((location) => location.nextSteps)),
+            nextSteps: dedupeConsoleNextSteps(locations.flatMap((location) => location.nextSteps)),
           }
         : { nextSteps: [] };
       const meta = options.pluginMetaByName?.[pluginName];
@@ -2038,7 +2059,7 @@ export function createConsoleControllerItems(
         reasonCodes,
         ...(itemCopy.issueSummary ? { issueSummary: itemCopy.issueSummary } : {}),
         ...(itemCopy.detailHints && itemCopy.detailHints.length > 0 ? { detailHints: itemCopy.detailHints } : {}),
-        nextSteps: itemCopy.nextSteps,
+        ...createNextStepsBoundary(itemCopy.nextSteps),
       };
       return {
         summary,

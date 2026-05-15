@@ -77,7 +77,8 @@ async function writeBundlePlugin(options: {
       skills: './skills',
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
       artifacts: options.artifacts,
@@ -493,7 +494,7 @@ describe('install-state shared runtime owner', () => {
     expect(owner.status).toBe('ok');
     if (owner.status === 'ok') {
       expect(owner.value.owner).toEqual(contenderLocation);
-      expect(owner.value.preference).toBe('auto');
+      expect(owner.value.preference).toBeUndefined();
     }
     const oldOwnerRecord = await fs.readJson(ownerRecordPath);
     expect(oldOwnerRecord.record.options.skillTriggerPreference).toBe('manual');
@@ -663,7 +664,7 @@ describe('install-state shared runtime owner', () => {
     });
 
     expect(replay.source).toBe('owner');
-    expect(replay.preference).toBe('manual');
+    expect(replay.preference).toBe('default');
     expect(replay.materialization.generatedArtifacts).toEqual([]);
     await expectRuntimePreference({
       embeddedRoot,

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { preparePluginTargetsForCommand } from '../../src/commands/common.js';
 import { createHistoricalPluginTarget } from '../../src/commands/common.js';
+import { statusCommand } from '../../src/commands/status.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
@@ -91,6 +92,17 @@ async function writeStaleLocalMarketplaceConfig(awHome: string): Promise<void> {
   );
 }
 
+async function writeAheadLocalMarketplaceConfig(
+  env: NodeJS.ProcessEnv,
+  awHome: string,
+): Promise<void> {
+  await initializeLocalMarketplace({ force: true, env });
+  const configPath = path.join(awHome, 'config.json');
+  const config = await fs.readJson(configPath);
+  config.sourceVersion = '999.0.0';
+  await fs.writeJson(configPath, config, { spaces: 2 });
+}
+
 async function breakLocalMarketplaceLayout(
   env: NodeJS.ProcessEnv,
   awHome: string,
@@ -124,6 +136,13 @@ describe.each([
       label: '~/.aw stale',
       setup: async (workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {
         await writeStaleLocalMarketplaceConfig(workspace.awHome);
+      },
+      expectedCatalogSource: 'embedded',
+    },
+    {
+      label: '~/.aw sourceVersion 领先',
+      setup: async (workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {
+        await writeAheadLocalMarketplaceConfig(workspace.env, workspace.awHome);
       },
       expectedCatalogSource: 'embedded',
     },
@@ -217,6 +236,48 @@ it('keeps Codex project upgrade --all read-only preflight zero-write when ledger
       ),
     ),
   ).rejects.toThrow('installed.json 处于 degraded 状态');
+});
+
+it('exposes embedded catalog fallback diagnostics in status JSON without repairing ~/.aw', async () => {
+  const workspace = await makeWorkspace(['mcp-only']);
+  await writeAheadLocalMarketplaceConfig(workspace.env, workspace.awHome);
+
+  await expect(
+    runWithZeroWriteSnapshot(
+      {
+        repoRoot: workspace.repoRoot,
+        env: workspace.env,
+      },
+      async () => {
+        const result = await statusCommand(
+          ['mcp-only'],
+          {
+            cwd: workspace.repoRoot,
+            platform: 'codex',
+            scope: 'project',
+            verbose: true,
+            json: true,
+          },
+          { env: workspace.env },
+        );
+        const payload = JSON.parse(result.output) as {
+          reports: Array<{
+            plugins: Array<{
+              currentCatalog?: {
+                source: string;
+                reasonCode?: string;
+              };
+            }>;
+          }>;
+        };
+
+        expect(payload.reports[0]?.plugins[0]?.currentCatalog).toMatchObject({
+          source: 'embedded',
+          reasonCode: 'localCatalogSourceVersionAhead',
+        });
+      },
+    ),
+  ).resolves.toBeUndefined();
 });
 
 it('reconstructs historical codex.skill targets as project-managed skills without project config backing', async () => {

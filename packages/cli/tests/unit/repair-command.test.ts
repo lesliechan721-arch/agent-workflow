@@ -1688,8 +1688,8 @@ describe('repair command P8', () => {
     );
     expect(human.payload.dependencyIndex?.coverage.coverageTrusted).toBe(false);
     expect(human.payload.dependencyIndex?.coverage.recoverySuggestion).toBe('revisitRelatedProjects');
-    expect(human.payload.dependencyIndex?.dependencyIndexRecoveryMessage).toBe('请回到可能相关的仓库重新运行 diagnose 或 repair。');
-    expect(human.output).toContain('回到可能相关的仓库重新运行 diagnose 或 repair');
+    expect(human.payload.dependencyIndex?.dependencyIndexRecoveryMessage).toBe('请回到可能相关的仓库重新运行 status --verbose 或 repair。');
+    expect(human.output).toContain('回到可能相关的仓库重新运行 status --verbose 或 repair');
   });
 
   it('refuses to implicitly migrate legacy dynamic tracking that the current manifest no longer declares', async () => {

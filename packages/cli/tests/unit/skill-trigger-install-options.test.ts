@@ -21,7 +21,7 @@ async function createPlugin(
     codexSkills?: string[];
     claudeSkills?: string[];
     dynamicCodexSkills?: string[];
-    skillTriggers?: Record<string, { allowInstallOverride: boolean }>;
+    skillTriggers?: Record<string, { defaultTrigger: 'manual' | 'auto'; allowDynamicTrigger: boolean }>;
   } = {},
 ): Promise<PluginMeta> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), `aw-skill-trigger-plugin-${pluginName}-`));
@@ -143,7 +143,8 @@ describe('skill trigger install options resolver', () => {
     const target = await createTarget('git-commit', {
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
     });
@@ -256,14 +257,16 @@ describe('skill trigger install options resolver', () => {
         await createTarget('plugin-a', {
           skillTriggers: {
             commit: {
-              allowInstallOverride: true,
+              defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             },
           },
         }),
         await createTarget('plugin-b', {
           skillTriggers: {
             commit: {
-              allowInstallOverride: true,
+              defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             },
           },
         }),
@@ -332,7 +335,8 @@ describe('skill trigger install options resolver', () => {
         [await createTarget('git-commit', {
           skillTriggers: {
             commit: {
-              allowInstallOverride: true,
+              defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             },
           },
         })],
@@ -351,7 +355,8 @@ describe('skill trigger install options resolver', () => {
         [await createTarget('git-commit', {
           skillTriggers: {
             commit: {
-              allowInstallOverride: true,
+              defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             },
           },
         })],
@@ -371,7 +376,8 @@ describe('skill trigger install options resolver', () => {
       [await createTarget('git-commit', {
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
       })],
@@ -387,7 +393,8 @@ describe('skill trigger install options resolver', () => {
       [await createTarget('git-commit', {
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
       })],
@@ -427,7 +434,8 @@ describe('skill trigger install options resolver', () => {
         dynamicCodexSkills: ['explore'],
         skillTriggers: {
           explore: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
       })],
@@ -472,6 +480,12 @@ describe('skill trigger install options resolver', () => {
       [await createTarget('slash-commands-only', {
         codexSkills: ['review'],
         claudeSkills: [],
+        skillTriggers: {
+          review: {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: false,
+          },
+        },
       })],
       ['codex'],
       {
@@ -538,7 +552,8 @@ describe('skill trigger install options resolver', () => {
         [await createTarget('overridable-plugin', {
           skillTriggers: {
             commit: {
-              allowInstallOverride: true,
+              defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
             },
           },
         })],
@@ -556,7 +571,8 @@ describe('skill trigger install options resolver', () => {
       [await createTarget('overridable-plugin', {
         skillTriggers: {
           commit: {
-            allowInstallOverride: true,
+            defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
           },
         },
       })],
@@ -582,6 +598,12 @@ describe('skill trigger install options resolver', () => {
       [await createTarget('fixed-plugin', {
         codexSkills: ['review'],
         claudeSkills: [],
+        skillTriggers: {
+          review: {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: false,
+          },
+        },
       })],
       ['codex'],
       {

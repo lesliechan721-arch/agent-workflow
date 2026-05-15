@@ -66,7 +66,7 @@ describe('cli entry', () => {
     expect(readStderr()).toBe('');
   });
 
-  it('rejects invalid --skill-trigger values at the entry layer', async () => {
+  it('rejects deprecated --skill-trigger at the entry layer', async () => {
     const { io, readStderr } = createCapturedIo();
     const { runCli } = await import('../../src/index.js');
 
@@ -80,10 +80,10 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('Unsupported skill trigger preference "sometimes"');
+    expect(readStderr()).toContain('`install` 不再接受 `--skill-trigger` / `-t`');
   });
 
-  it('passes install --skill-trigger to installCommand', async () => {
+  it('rejects install --skill-trigger before dispatching installCommand', async () => {
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -106,23 +106,8 @@ describe('cli entry', () => {
       },
     );
 
-    expect(exitCode).toBe(0);
-    expect(installCommand).toHaveBeenCalledWith(
-      ['git-commit'],
-      expect.objectContaining({
-        cwd: '/tmp/workspace',
-        scope: 'user',
-        platform: 'codex',
-        requestedSkillTrigger: 'manual',
-      }),
-      expect.objectContaining({
-        env,
-        nativeCliRunner: expect.any(Function),
-        diagnostics: expect.objectContaining({
-          commandName: 'install',
-        }),
-      }),
-    );
+    expect(exitCode).toBe(1);
+    expect(installCommand).not.toHaveBeenCalled();
   });
 
   it('prints a readable install receipt without English warning prefixes', async () => {
@@ -161,7 +146,7 @@ describe('cli entry', () => {
     expect(exitCode).toBe(0);
     expect(readStdout()).toContain('已安装 git-commit。');
     expect(readStdout()).toContain('目标：Codex；当前用户。');
-    expect(readStdout()).toContain('下一步：运行 aw status git-commit -p codex 查看当前状态。');
+    expect(readStdout()).toContain('下一步：查看当前状态。运行 aw status git-commit -p codex 后');
     expect(readStderr()).not.toContain('Warning:');
     expect(readStderr()).toContain('注意：Codex 已写入当前仓库需要的项目文件');
   });
@@ -292,7 +277,7 @@ describe('cli entry', () => {
     )).toBe(0);
     expect(capture.readStdout()).toContain('已升级 git-commit。');
     expect(capture.readStdout()).toContain('目标：Claude Code；当前用户。');
-    expect(capture.readStdout()).toContain('下一步：运行 aw status git-commit -p claude 查看当前状态。');
+    expect(capture.readStdout()).toContain('下一步：查看当前状态。运行 aw status git-commit -p claude 后');
   });
 
   it.each([
@@ -446,15 +431,15 @@ describe('cli entry', () => {
     const { runCli } = await import('../../src/index.js');
 
     expect(await runCli(
-      ['install', 'git-commit'],
+      ['install', 'git-commit', '--platform', 'codex'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
     )).toBe(0);
     expect(await runCli(
-      ['uninstall', 'git-commit'],
+      ['uninstall', 'git-commit', '--platform', 'codex'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
     )).toBe(0);
     expect(await runCli(
-      ['upgrade', 'git-commit'],
+      ['upgrade', 'git-commit', '--platform', 'codex'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io, prompt },
     )).toBe(0);
 
@@ -466,7 +451,7 @@ describe('cli entry', () => {
       ['git-commit'],
       expect.objectContaining({
         cwd: '/tmp/workspace',
-        platform: 'auto',
+        platform: 'codex',
       }),
       expect.anything(),
     );
@@ -474,7 +459,7 @@ describe('cli entry', () => {
       ['git-commit'],
       expect.objectContaining({
         cwd: '/tmp/workspace',
-        platform: 'auto',
+        platform: 'codex',
       }),
       expect.anything(),
     );
@@ -482,13 +467,13 @@ describe('cli entry', () => {
       ['git-commit'],
       expect.objectContaining({
         cwd: '/tmp/workspace',
-        platform: 'auto',
+        platform: 'codex',
       }),
       expect.anything(),
     );
   });
 
-  it('passes upgrade --skill-trigger to upgradeCommand', async () => {
+  it('rejects upgrade --skill-trigger before dispatching upgradeCommand', async () => {
     const upgradeCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['claude'],
@@ -511,23 +496,8 @@ describe('cli entry', () => {
       },
     );
 
-    expect(exitCode).toBe(0);
-    expect(upgradeCommand).toHaveBeenCalledWith(
-      ['git-commit'],
-      expect.objectContaining({
-        cwd: '/tmp/workspace',
-        scope: 'user',
-        platform: 'claude',
-        requestedSkillTrigger: 'auto',
-      }),
-      expect.objectContaining({
-        env,
-        nativeCliRunner: expect.any(Function),
-        diagnostics: expect.objectContaining({
-          commandName: 'upgrade',
-        }),
-      }),
-    );
+    expect(exitCode).toBe(1);
+    expect(upgradeCommand).not.toHaveBeenCalled();
   });
 
   it('passes --script-timeout to install, upgrade, and uninstall handlers', async () => {
@@ -554,15 +524,15 @@ describe('cli entry', () => {
     const runOptions = { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv };
 
     expect(await runCli(
-      ['install', 'git-commit', '--script-timeout', '45000'],
+      ['install', 'git-commit', '--platform', 'codex', '--script-timeout', '45000'],
       { ...runOptions, io: createCapturedIo().io },
     )).toBe(0);
     expect(await runCli(
-      ['upgrade', 'git-commit', '--script-timeout', '46000'],
+      ['upgrade', 'git-commit', '--platform', 'codex', '--script-timeout', '46000'],
       { ...runOptions, io: createCapturedIo().io },
     )).toBe(0);
     expect(await runCli(
-      ['uninstall', 'git-commit', '--script-timeout', '47000'],
+      ['uninstall', 'git-commit', '--platform', 'codex', '--script-timeout', '47000'],
       { ...runOptions, io: createCapturedIo().io },
     )).toBe(0);
 
@@ -615,10 +585,6 @@ describe('cli entry', () => {
       reports: [],
       output: JSON.stringify({ ok: true }),
     }));
-    const diagnoseCommand = vi.fn(async () => ({
-      output: JSON.stringify({ ok: true, command: 'diagnose' }),
-      payload: { ok: true, command: 'diagnose' },
-    }));
     const initCommand = vi.fn(async () => ({
       changed: true,
       rootDir: '/tmp/aw',
@@ -627,7 +593,6 @@ describe('cli entry', () => {
     vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
     vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
     vi.doMock('../../src/commands/status.js', () => ({ statusCommand }));
-    vi.doMock('../../src/commands/diagnose.js', () => ({ diagnoseCommand }));
     vi.doMock('../../src/commands/init.js', () => ({ initCommand }));
 
     const { runCli } = await import('../../src/index.js');
@@ -637,7 +602,7 @@ describe('cli entry', () => {
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
     )).toBe(0);
     expect(await runCli(
-      ['install', 'git-commit', '-p', 'codex', '-s', 'user', '-t', 'manual'],
+      ['install', 'git-commit', '-p', 'codex', '-s', 'user'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
     )).toBe(0);
     expect(await runCli(
@@ -648,11 +613,6 @@ describe('cli entry', () => {
       ['status', '-j'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
     )).toBe(0);
-    expect(await runCli(
-      ['diagnose', 'git-commit', '-j', '--deep'],
-      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
-    )).toBe(0);
-
     expect(initCommand).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
     expect(installCommand).toHaveBeenCalledWith(
       ['git-commit'],
@@ -660,7 +620,6 @@ describe('cli entry', () => {
         cwd: '/tmp/workspace',
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       }),
       expect.anything(),
     );
@@ -683,19 +642,12 @@ describe('cli entry', () => {
       expect.anything(),
     );
     expect(statusCommand.mock.calls[0][1]).not.toHaveProperty('scope');
-    expect(statusCommand.mock.calls[0][1]).not.toHaveProperty('platform');
-    expect(diagnoseCommand).toHaveBeenCalledWith(
-      ['git-commit'],
-      expect.objectContaining({
-        cwd: '/tmp/workspace',
-        json: true,
-        deep: true,
-      }),
-      expect.anything(),
-    );
+    expect(statusCommand.mock.calls[0][1]).toMatchObject({
+      platform: 'both',
+    });
   });
 
-  it('includes diagnose, repair, cleanup, and reinstall in CLI help output', async () => {
+  it('does not list diagnose in CLI help output', async () => {
     const { io, readStdout, readStderr } = createCapturedIo();
     const { runCli } = await import('../../src/index.js');
 
@@ -705,11 +657,80 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(readStdout()).toContain('diagnose');
+    expect(readStdout()).not.toContain('diagnose');
     expect(readStdout()).toContain('repair');
     expect(readStdout()).toContain('cleanup');
     expect(readStdout()).toContain('reinstall');
     expect(readStderr()).toBe('');
+  });
+
+  it.each([
+    ['install'],
+    ['upgrade'],
+    ['repair'],
+    ['reinstall'],
+  ])('does not list --skill-trigger in %s help output', async (commandName) => {
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      [commandName, '--help'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(readStdout()).not.toContain('skill-trigger');
+    expect(readStderr()).toBe('');
+  });
+
+  it('fails diagnose entrypoints with a migration error and empty stdout', async () => {
+    const { runCli } = await import('../../src/index.js');
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['diagnose', 'git-commit'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStdout()).toBe('');
+    expect(capture.readStderr()).toContain('请改用 `aw status git-commit --verbose`');
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['diagnose', 'git-commit', '--json', '--deep'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStdout()).toBe('');
+    expect(capture.readStderr()).toContain('请改用 `aw status git-commit --verbose`');
+  });
+
+  it('rejects legacy --platform auto before dispatching public write commands', async () => {
+    const installCommand = vi.fn();
+    const cleanupCommand = vi.fn();
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
+    vi.doMock('../../src/commands/cleanup.js', () => ({
+      cleanupCommand,
+      isCleanupExecutionFailure: () => false,
+    }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    let capture = createCapturedIo();
+    expect(await runCli(
+      ['install', 'git-commit', '--platform', 'auto'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStdout()).toBe('');
+    expect(capture.readStderr()).toContain('Unsupported platform "auto". Expected one of: codex, claude, both.');
+    expect(installCommand).not.toHaveBeenCalled();
+
+    capture = createCapturedIo();
+    expect(await runCli(
+      ['cleanup', 'git-commit', '--platform', 'auto'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+    )).toBe(1);
+    expect(capture.readStdout()).toBe('');
+    expect(capture.readStderr()).toContain('Unsupported platform "auto". Expected one of: codex, claude, both.');
+    expect(cleanupCommand).not.toHaveBeenCalled();
   });
 
   it('routes repair, cleanup, and reinstall through the CLI entry with parseable JSON stdout', async () => {
@@ -722,7 +743,39 @@ describe('cli entry', () => {
       platforms: ['codex'],
       warnings: [],
       repoManagedArtifacts: [],
-      payload: { ok: true, command: 'cleanup', locations: [] },
+      payload: {
+        ok: true,
+        command: 'cleanup',
+        receiptSchemaVersion: 2,
+        overallState: 'succeeded',
+        dependencyIndex: false,
+        cleanupPlanSchemaVersion: 1,
+        generatedAt: '2026-05-15T00:00:00.000Z',
+        dryRun: false,
+        force: false,
+        removeConfig: false,
+        nextStepsSchemaVersion: 1,
+        nextSteps: [],
+        targetResults: [],
+        target: {
+          plugin: 'git-commit',
+          platform: 'codex',
+          scope: 'user',
+          targetType: 'installed',
+        },
+        forceReason: null,
+        plannedRemovals: [],
+        wouldBackups: [],
+        wouldRemoveConfig: [],
+        skippedForeignItems: [],
+        affectedDependents: [],
+        blockingReasons: [],
+        recommendedCommand: 'aw status git-commit --platform codex --scope user',
+        actualRemovals: [],
+        actualBackups: [],
+        skippedItems: [],
+        remainingItems: [],
+      },
     }));
     const isCleanupExecutionFailure = vi.fn(() => false);
     const reinstallCommand = vi.fn(async () => ({
@@ -1558,7 +1611,8 @@ describe('cli entry', () => {
       changed: true,
       rootDir: '/tmp/aw-home',
       warnings: ['init warning'],
-      nextSteps: expect.any(Array),
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
     });
 
     const installCapture = createCapturedIo();
@@ -1569,6 +1623,8 @@ describe('cli entry', () => {
     expect(JSON.parse(installCapture.readStdout())).toMatchObject({
       ok: true,
       command: 'install',
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       plugins: ['git-commit'],
       targets: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
       actions: [{ type: 'install', plugin: 'git-commit', platform: 'codex', scope: 'user', status: 'succeeded' }],
@@ -1577,7 +1633,9 @@ describe('cli entry', () => {
         plugins: [{ platform: 'codex', plugin: 'git-commit' }],
       },
       warnings: ['install warning'],
-      nextSteps: expect.any(Array),
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
+      targetResults: [expect.objectContaining({ action: 'install', state: 'completed' })],
     });
 
     const uninstallCapture = createCapturedIo();
@@ -1588,6 +1646,8 @@ describe('cli entry', () => {
     expect(JSON.parse(uninstallCapture.readStdout())).toMatchObject({
       ok: true,
       command: 'uninstall',
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       plugins: ['git-commit'],
       targets: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
       actions: [{ type: 'uninstall', plugin: 'git-commit', platform: 'codex', scope: 'user', status: 'succeeded' }],
@@ -1596,7 +1656,9 @@ describe('cli entry', () => {
         plugins: [],
       },
       warnings: ['uninstall warning'],
-      nextSteps: expect.any(Array),
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
+      targetResults: [expect.objectContaining({ action: 'uninstall', state: 'completed' })],
     });
 
     const upgradeCapture = createCapturedIo();
@@ -1607,6 +1669,8 @@ describe('cli entry', () => {
     expect(JSON.parse(upgradeCapture.readStdout())).toMatchObject({
       ok: true,
       command: 'upgrade',
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       upgraded: [{ plugin: 'git-commit', platform: 'codex', scope: 'user' }],
       skipped: [{
         platform: 'claude',
@@ -1625,7 +1689,20 @@ describe('cli entry', () => {
         plugins: [{ platform: 'codex', plugin: 'git-commit' }],
       },
       warnings: ['upgrade warning'],
-      nextSteps: expect.any(Array),
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({ action: 'upgrade', state: 'completed' }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: 'git-commit',
+            platform: 'claude',
+            scope: 'user',
+          }),
+          action: 'upgrade',
+          state: 'notRun',
+        }),
+      ]),
     });
   });
 
@@ -1642,7 +1719,7 @@ describe('cli entry', () => {
     const { runCli } = await import('../../src/index.js');
 
     const exitCode = await runCli(
-      ['install', 'git-commit', '--json'],
+      ['install', 'git-commit', '--platform', 'codex', '--json'],
       {
         cwd: '/tmp/workspace',
         env: {} as NodeJS.ProcessEnv,
@@ -2014,7 +2091,7 @@ describe('cli entry', () => {
     const { runCli } = await import('../../src/index.js');
 
     const exitCode = await runCli(
-      ['upgrade', 'git-commit'],
+      ['upgrade', 'git-commit', '--platform', 'codex'],
       {
         cwd: '/tmp/workspace',
         env: {} as NodeJS.ProcessEnv,
@@ -2054,7 +2131,7 @@ describe('cli entry', () => {
 
     expect(exitCode).toBe(0);
     expect(readStderr()).toContain('本地安装记录处于异常恢复状态');
-    expect(readStderr()).toContain('--skill-trigger default|manual|auto');
+    expect(readStderr()).toContain('配置管理维护 skill trigger 偏好');
     expect(readStderr()).not.toContain('[codex/git-commit]');
     expect(readStderr()).not.toContain('Warning:');
   });

@@ -272,7 +272,7 @@ describe('console write decision model', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
-  it('shows skill trigger choices only when the target is overridable and keeps the labels fixed', async () => {
+  it('keeps skill trigger metadata hidden in the wizard even for overridable targets', async () => {
     const plugin = syntheticPlugin();
     const decision = await createInstallWizardDecision({
       intent: 'install',
@@ -297,7 +297,7 @@ describe('console write decision model', () => {
       resolveRequiredConfigPrompts: async () => [],
     });
 
-    expect(decision.skillTrigger.show).toBe(true);
+    expect(decision.skillTrigger.show).toBe(false);
     expect(decision.skillTrigger.selected).toBe('manual');
     expect(decision.skillTrigger.options).toEqual([
       { value: 'default', label: '默认' },

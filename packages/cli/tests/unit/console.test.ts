@@ -41,7 +41,6 @@ const createInstallWizardDecision = vi.fn();
 const planConsoleGraphWriteTargets = vi.fn();
 const applyPluginConfigWrite = vi.fn();
 const reapplyConfigRefresh = vi.fn();
-const resolveSkillTriggerApplicabilityForPlugin = vi.fn();
 const resolveEffectivePluginConfig = vi.fn();
 const readPluginConfigStore = vi.fn();
 
@@ -52,10 +51,14 @@ planConsoleGraphWriteTargets.mockImplementation(async (options: {
   requestedTargets: options.targets.map((target) => ({
     target,
     platform: options.platforms[0] ?? 'codex',
+    scope: 'user',
+    requested: true,
   })),
   writeTargets: options.targets.map((target) => ({
     target,
     platform: options.platforms[0] ?? 'codex',
+    scope: 'user',
+    requested: true,
     resolvedInstallOptions: undefined,
   })),
 }));
@@ -75,7 +78,6 @@ vi.mock('../../src/commands/console-wizard.js', () => ({
 }));
 vi.mock('../../src/utils/plugin-config-write.js', () => ({ applyPluginConfigWrite }));
 vi.mock('../../src/utils/artifact-refresh.js', () => ({ reapplyConfigRefresh }));
-vi.mock('../../src/utils/skill-trigger-preferences.js', () => ({ resolveSkillTriggerApplicabilityForPlugin }));
 vi.mock('../../src/utils/plugin-config.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
   return {
@@ -390,7 +392,6 @@ describe('console controller stage 5', () => {
       ledger: { ledgerState: { status: 'available' } },
       targets: [{ pluginName: 'git-commit', plugin: plugin() }],
     });
-    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('fixed');
     createInstallWizardDecision.mockResolvedValue({
       blockedReason: undefined,
       configPrompts: [],
@@ -628,6 +629,95 @@ describe('console controller stage 5', () => {
       .toContainEqual(expect.objectContaining({ value: '__all_platforms' }));
   });
 
+  it('selects install targets in platform-then-scope order and renders all-platform in Chinese', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        supportedPlatforms: ['codex', 'claude'],
+        locationSummary: 'Codex、Claude Code',
+        features: [
+          feature('install', { targetSelection: 'multiTargetAllowed' }),
+          feature('status'),
+          feature('diagnose'),
+        ],
+      },
+      locations: [
+        location({
+          status: 'notInstalled',
+          statusLabel: '未安装',
+          actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'codex', scope: 'user' } }],
+        }),
+        location({
+          scope: 'project',
+          projectKey: '/workspace',
+          locationLabel: 'Codex（当前项目）',
+          status: 'notInstalled',
+          statusLabel: '未安装',
+          actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'codex', scope: 'project', projectKey: '/workspace' } }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          status: 'notInstalled',
+          statusLabel: '未安装',
+          actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'claude', scope: 'user' } }],
+        }),
+      ],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [{ pluginName: 'git-commit', plugin: plugin() }],
+    });
+    planConsoleGraphWriteTargets.mockResolvedValue({
+      requestedTargets: [{ target: { pluginName: 'git-commit', plugin: plugin() }, platform: 'claude', scope: 'user' }],
+      writeTargets: [{ target: { pluginName: 'git-commit', plugin: plugin() }, platform: 'claude', scope: 'user', requested: true, resolvedInstallOptions: undefined }],
+    });
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'install',
+    });
+    installCommand.mockResolvedValue({
+      platforms: ['claude'],
+      plugins: ['git-commit'],
+      warnings: [],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'install' },
+      { method: 'select', value: 'claude' },
+      { method: 'select', value: 'user' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(prompt.calls
+      .filter((call) => call.method === 'select')
+      .map((call) => (call.options as { message?: string }).message))
+      .toEqual(expect.arrayContaining(['选择平台', '选择位置']));
+    const platformPrompt = prompt.calls.find((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '选择平台',
+    );
+    expect((platformPrompt!.options as { choices: Array<{ value: string; label: string }> }).choices)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ value: 'codex', label: 'Codex' }),
+        expect.objectContaining({ value: 'claude', label: 'Claude Code' }),
+        expect.objectContaining({ value: '__all_platforms', label: '全部支持平台' }),
+      ]));
+    expect(installCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({ platform: 'claude', scope: 'user' }),
+      context,
+    );
+  });
+
   it('expands all-platform install into concrete platforms and preserves the selected skill trigger', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
@@ -667,15 +757,14 @@ describe('console controller stage 5', () => {
     });
     planConsoleGraphWriteTargets.mockResolvedValue({
       requestedTargets: [
-        { target: preparedTarget, platform: 'codex' },
-        { target: preparedTarget, platform: 'claude' },
+        { target: preparedTarget, platform: 'codex', scope: 'user', requested: true },
+        { target: preparedTarget, platform: 'claude', scope: 'user', requested: true },
       ],
       writeTargets: [
-        { target: preparedTarget, platform: 'codex', resolvedInstallOptions: undefined },
-        { target: preparedTarget, platform: 'claude', resolvedInstallOptions: undefined },
+        { target: preparedTarget, platform: 'codex', scope: 'user', requested: true, resolvedInstallOptions: undefined },
+        { target: preparedTarget, platform: 'claude', scope: 'user', requested: true, resolvedInstallOptions: undefined },
       ],
     });
-    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('overridable');
     createInstallWizardDecision.mockResolvedValue({
       blockedReason: undefined,
       configPrompts: [],
@@ -693,7 +782,6 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'install' },
       { method: 'select', value: '__all_platforms' },
       { method: 'select', value: 'user' },
-      { method: 'select', value: 'manual' },
       { method: 'select', action: 'exit' },
     ]);
 
@@ -706,25 +794,84 @@ describe('console controller stage 5', () => {
     expect(installCommand).toHaveBeenNthCalledWith(
       1,
       ['git-commit'],
-      expect.objectContaining({ platform: 'codex', requestedSkillTrigger: 'manual' }),
+      expect.objectContaining({ platform: 'codex' }),
       context,
     );
     expect(installCommand).toHaveBeenNthCalledWith(
       2,
       ['git-commit'],
-      expect.objectContaining({ platform: 'claude', requestedSkillTrigger: 'manual' }),
+      expect.objectContaining({ platform: 'claude' }),
       context,
     );
-    const triggerPrompt = prompt.calls.find((call) =>
+    expect(prompt.calls.some((call) =>
       call.method === 'select' &&
       (call.options as { message?: string }).message === '选择触发方式',
+    )).toBe(false);
+  });
+
+  it('cancels dependency confirmation before any install write', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    const preparedTarget = { pluginName: 'git-commit', plugin: plugin() };
+    const dependencyTarget = { pluginName: 'skill-a', plugin: plugin() };
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        supportedPlatforms: ['codex'],
+        locationSummary: 'Codex',
+        features: [feature('install'), feature('status'), feature('diagnose')],
+      },
+      locations: [
+        location({
+          status: 'notInstalled',
+          statusLabel: '未安装',
+          actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'codex', scope: 'user' } }],
+        }),
+      ],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [preparedTarget],
+    });
+    planConsoleGraphWriteTargets.mockResolvedValue({
+      requestedTargets: [{ target: preparedTarget, platform: 'codex', scope: 'user', requested: true }],
+      writeTargets: [
+        { target: dependencyTarget, platform: 'codex', scope: 'user', requested: false, resolvedInstallOptions: undefined },
+        { target: preparedTarget, platform: 'codex', scope: 'user', requested: true, resolvedInstallOptions: undefined },
+      ],
+      dependencyPlan: {
+        writeOrder: [
+          { plugin: 'skill-a', platform: 'codex', scope: 'user' },
+          { plugin: 'git-commit', platform: 'codex', scope: 'user' },
+        ],
+      },
+    });
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'install',
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'install' },
+      { method: 'select', action: 'back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const dependencyPrompt = prompt.calls.find((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '确认依赖变更',
     );
-    expect((triggerPrompt!.options as { choices: Array<{ label: string }> }).choices)
-      .toEqual(expect.arrayContaining([
-        expect.objectContaining({ label: '默认' }),
-        expect.objectContaining({ label: '手动' }),
-        expect.objectContaining({ label: '自动' }),
-      ]));
+    expect(dependencyPrompt).toBeTruthy();
+    expect(installCommand).not.toHaveBeenCalled();
+    expect(applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 安装依赖确认' &&
+      view.lines.some((line) => line.includes('会一并处理以下依赖')),
+    )).toBe(true);
   });
 
   it('uses per-platform selection for heterogeneous all-platform targets and can skip a platform', async () => {
@@ -1387,7 +1534,7 @@ describe('console controller stage 5', () => {
     )).toBe(true);
   });
 
-  it('continues all-platform installs after one target fails and still exposes diagnose for the failed non-abnormal target', async () => {
+  it('continues all-platform installs after one target fails and still exposes status for the failed non-abnormal target', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -1442,7 +1589,6 @@ describe('console controller stage 5', () => {
       ledger: { ledgerState: { status: 'available' } },
       targets: [{ pluginName: 'git-commit', plugin: plugin() }],
     });
-    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('fixed');
     createInstallWizardDecision.mockResolvedValue({
       blockedReason: undefined,
       configPrompts: [],
@@ -1458,16 +1604,6 @@ describe('console controller stage 5', () => {
         warnings: [],
       };
     });
-    diagnoseCommand.mockResolvedValue({
-      output: '',
-      pageModels: [createDiagnosePage({
-        locations: [{
-          ...createDiagnosePage().locations[0]!,
-          label: 'Codex（个人）',
-        }],
-      })],
-    });
-
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, prompt, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
@@ -1498,7 +1634,7 @@ describe('console controller stage 5', () => {
     );
     expect((resultPrompt!.options as { choices: Array<{ label: string }> }).choices)
       .toContainEqual(expect.objectContaining({
-        label: '诊断 · Codex（个人）',
+        label: '状态 · Codex（个人）',
         description: 'codex install failed',
       }));
     expect(consoleDriver.views.some((view) =>
@@ -1506,8 +1642,8 @@ describe('console controller stage 5', () => {
       view.lines.includes('已完成 2 个目标，其中 1 个成功，1 个失败。'),
     )).toBe(true);
     expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 诊断' &&
-      view.lines.some((line) => line.includes('AW 记录和当前安装状态对不上')),
+      view.title === 'Git Commit 状态' &&
+      view.lines.some((line) => line.includes('Codex（个人）')),
     )).toBe(true);
   });
 
@@ -1832,65 +1968,40 @@ describe('console controller stage 5', () => {
     expect(consoleDriver.views.some((view) => view.title === expectedTitle)).toBe(true);
   });
 
-  it('opens diagnose from the feature menu without asking for a target', async () => {
+  it('opens status from the feature menu without asking for a target', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
-    diagnoseCommand.mockResolvedValue({
-      output: 'misleading human output',
-      pageModels: [{
-        pluginName: 'git-commit',
-        conclusion: '诊断完成',
-        issues: [],
-        locations: [],
-        supplementalCommands: [],
-      }],
-    });
     loadConsoleItems.mockResolvedValue([item({
       summary: {
         features: [feature('status'), feature('diagnose')],
       },
+      locations: [location({
+        status: 'abnormal',
+        statusLabel: '异常',
+        issueSummary: '安装后仍有异常。',
+        nextSteps: ['先修复安装，再重新检查状态。'],
+      })],
     })]);
 
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, prompt, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
-      { method: 'select', value: 'diagnose' },
+      { method: 'select', value: 'status' },
       { method: 'select', value: '__back' },
       { method: 'select', value: '__exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    expect(diagnoseCommand).toHaveBeenCalledWith(
-      ['git-commit'],
-      expect.objectContaining({
-        cwd: '/workspace',
-      }),
-      context,
-    );
     expect(prompt.calls.some((call) =>
       call.method === 'select' &&
       (call.options as { message?: string }).message === '选择目标',
     )).toBe(false);
-    expect(consoleDriver.views.some((view) =>
-      view.lines.some((line) => line.includes('诊断完成')),
-    )).toBe(true);
-    expect(consoleDriver.views.some((view) =>
-      view.lines.some((line) => line.includes('misleading human output')),
-    )).toBe(false);
+    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 状态')).toBe(true);
   });
 
-  it('renders diagnose supplemental commands without promoting them to ordinary features', async () => {
+  it('hides the legacy diagnose entry from the feature menu', async () => {
     statusCommand.mockResolvedValue(createBaseStatusResult());
-    diagnoseCommand.mockResolvedValue({
-      output: 'raw output with JSON and debug log path',
-      pageModels: [createDiagnosePage({
-        supplementalCommands: [{
-          command: 'aw cleanup --dependency-index --prune-stale token --yes',
-          reason: '全局依赖索引有过期引用。',
-        }],
-      })],
-    });
     loadConsoleItems.mockResolvedValue([item({
       summary: {
         features: [feature('status'), feature('diagnose')],
@@ -1898,9 +2009,9 @@ describe('console controller stage 5', () => {
     })]);
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, prompt, consoleDriver } = createContext([
+    const { context, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
-      { method: 'select', value: 'diagnose' },
+      { method: 'select', value: 'status' },
       { method: 'select', value: '__back' },
       { method: 'select', value: '__exit' },
     ]);
@@ -1911,17 +2022,12 @@ describe('console controller stage 5', () => {
       (call.options as { message?: string }).message === '选择功能',
     );
     expect((featurePrompt!.options as { choices: Array<{ value: string }> }).choices.map((choice) => choice.value))
+      .not.toContain('diagnose');
+    expect((featurePrompt!.options as { choices: Array<{ value: string }> }).choices.map((choice) => choice.value))
       .not.toContain('cleanup');
-    const diagnoseView = consoleDriver.views.find((view) => view.title === 'Git Commit 诊断');
-    expect(diagnoseView?.lines).toEqual(expect.arrayContaining([
-      '补充命令：',
-      '- aw cleanup --dependency-index --prune-stale token --yes',
-      '  全局依赖索引有过期引用。',
-    ]));
-    expect(JSON.stringify(consoleDriver.views)).not.toContain('raw output with JSON');
   });
 
-  it('offers diagnose entries on the result page for abnormal targets', async () => {
+  it('offers status entries on the result page for abnormal targets', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -1956,7 +2062,6 @@ describe('console controller stage 5', () => {
       ledger: { ledgerState: { status: 'available' } },
       targets: [{ pluginName: 'git-commit', plugin: plugin() }],
     });
-    resolveSkillTriggerApplicabilityForPlugin.mockResolvedValue('fixed');
     createInstallWizardDecision.mockResolvedValue({
       blockedReason: undefined,
       configPrompts: [],
@@ -1967,15 +2072,12 @@ describe('console controller stage 5', () => {
       plugins: ['git-commit'],
       warnings: [],
     });
-    diagnoseCommand.mockResolvedValue({
-      output: '',
-      pageModels: [createDiagnosePage()],
-    });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, prompt, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'install' },
+      { method: 'select', value: 'codex:user:-' },
       { method: 'select', value: 'codex:user:-' },
       { method: 'select', action: 'exit' },
     ]);
@@ -1987,10 +2089,10 @@ describe('console controller stage 5', () => {
     );
     expect(resultPrompt).toBeTruthy();
     expect((resultPrompt!.options as { choices: Array<{ label: string }> }).choices)
-      .toContainEqual(expect.objectContaining({ label: '诊断 · Codex（个人）' }));
+      .toContainEqual(expect.objectContaining({ label: '状态 · Codex（个人）' }));
     expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 诊断' &&
-      view.lines.some((line) => line.includes('AW 记录和当前安装状态对不上')),
+      view.title === 'Git Commit 状态' &&
+      view.lines.some((line) => line.includes('状态：异常')),
     )).toBe(true);
   });
 
