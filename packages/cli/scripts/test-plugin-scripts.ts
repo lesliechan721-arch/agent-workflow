@@ -33,7 +33,7 @@ import type {
   Scope,
 } from './plugin-staging.js';
 
-type PluginTestPlatformSelection = PlatformName | 'both' | 'auto';
+type PluginTestPlatformSelection = PlatformName | 'both';
 
 export interface PluginTestRunnerOptions {
   repoRoot?: string;
@@ -69,6 +69,10 @@ interface StagedPluginTestBundleSource {
   cleanup(): Promise<void>;
 }
 
+interface PreparedPluginTestSelection extends StagedPluginTestBundleSource {
+  platforms: PlatformName[];
+}
+
 interface NodeTestResult {
   exitCode: number | null;
   stdout: string;
@@ -91,7 +95,7 @@ function parseArgs(args: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     all: false,
     scope: 'user',
-    platform: 'auto',
+    platform: 'both',
   };
   const positional: string[] = [];
 
@@ -109,8 +113,8 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.scope = value;
     } else if (arg === '--platform') {
       const value = args[++index];
-      if (value !== 'codex' && value !== 'claude' && value !== 'both' && value !== 'auto') {
-        throw new Error('--platform must be one of: codex, claude, both, auto.');
+      if (value !== 'codex' && value !== 'claude' && value !== 'both') {
+        throw new Error('--platform must be one of: codex, claude, both.');
       }
       parsed.platform = value;
     } else if (arg === '--test-name') {
@@ -129,7 +133,7 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both|auto] [--test-name <pattern>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>].');
   }
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
@@ -263,21 +267,24 @@ function resolveSelectedPlatforms(
   pluginName: string,
 ): PlatformName[] {
   const supportedPlatforms = resolveSupportedPlatforms(manifest);
-  if (selection === 'auto') {
-    return TEST_PLATFORM_ORDER.filter((platform) => supportedPlatforms.has(platform));
-  }
-
   if (selection === 'both') {
-    if (!supportedPlatforms.has('codex') || !supportedPlatforms.has('claude')) {
+    const platforms = TEST_PLATFORM_ORDER.filter((platform) => supportedPlatforms.has(platform));
+    if (platforms.length === 0) {
       throw platformSelectionError({ pluginName, selection, manifest });
     }
-    return ['codex', 'claude'];
+    return platforms;
   }
 
   if (!supportedPlatforms.has(selection)) {
     throw platformSelectionError({ pluginName, selection, manifest });
   }
   return [selection];
+}
+
+function isExplicitSinglePlatformSelection(
+  selection: PluginTestPlatformSelection,
+): selection is PlatformName {
+  return selection === 'codex' || selection === 'claude';
 }
 
 function resolveRelativeImport(importer: string, specifier: string): string | null {
@@ -678,13 +685,10 @@ async function runPreparedPluginTests(options: {
   }
 }
 
-async function runOnePlugin(options: {
+async function preparePluginSelection(options: {
   plugin: PluginMeta;
   parsed: ParsedArgs;
-  env: NodeJS.ProcessEnv;
-  stdout: (text: string) => void;
-  stderr: (text: string) => void;
-}): Promise<number> {
+}): Promise<PreparedPluginTestSelection> {
   const staged = await stagePluginTestBundleSource(options.plugin);
   try {
     const platforms = resolveSelectedPlatforms(
@@ -692,25 +696,57 @@ async function runOnePlugin(options: {
       options.parsed.platform,
       staged.pluginName,
     );
-    const prepared = await buildPreparedPluginTestBundle(staged);
-    let exitCode = 0;
-    for (const platform of platforms) {
-      const platformExitCode = await runPreparedPluginTests({
-        prepared,
-        scope: options.parsed.scope,
-        platform,
-        testName: options.parsed.testName,
-        env: options.env,
-        stdout: options.stdout,
-        stderr: options.stderr,
-      });
-      if (platformExitCode !== 0) {
-        exitCode = platformExitCode;
-      }
-    }
-    return exitCode;
-  } finally {
+    return {
+      ...staged,
+      platforms,
+    };
+  } catch (error) {
     await staged.cleanup();
+    throw error;
+  }
+}
+
+async function runPreparedPluginSelection(options: {
+  selection: PreparedPluginTestSelection;
+  parsed: ParsedArgs;
+  env: NodeJS.ProcessEnv;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}): Promise<number> {
+  let cleaned = false;
+  const cleanup = async (): Promise<void> => {
+    if (cleaned) {
+      return;
+    }
+    cleaned = true;
+    await options.selection.cleanup();
+  };
+
+  try {
+    const prepared = await buildPreparedPluginTestBundle(options.selection);
+    try {
+      let exitCode = 0;
+      for (const platform of options.selection.platforms) {
+        const platformExitCode = await runPreparedPluginTests({
+          prepared,
+          scope: options.parsed.scope,
+          platform,
+          testName: options.parsed.testName,
+          env: options.env,
+          stdout: options.stdout,
+          stderr: options.stderr,
+        });
+        if (platformExitCode !== 0) {
+          exitCode = platformExitCode;
+        }
+      }
+      return exitCode;
+    } finally {
+      await cleanup();
+    }
+  } catch (error) {
+    await cleanup();
+    throw error;
   }
 }
 
@@ -718,19 +754,75 @@ export async function runPluginScriptTests(
   args: string[],
   options: PluginTestRunnerOptions = {},
 ): Promise<number> {
-  const parsed = parseArgs(args);
   const env = options.env ?? process.env;
-  const configuredRepoRoot = options.repoRoot ?? env[REPO_ROOT_ENV];
-  const repoRoot = configuredRepoRoot ? path.resolve(configuredRepoRoot) : resolveRepoRoot();
   const stdout = options.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = options.stderr ?? ((text: string) => process.stderr.write(text));
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseArgs(args);
+  } catch (error) {
+    print(stderr, error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const configuredRepoRoot = options.repoRoot ?? env[REPO_ROOT_ENV];
+  const repoRoot = configuredRepoRoot ? path.resolve(configuredRepoRoot) : resolveRepoRoot();
 
   if (parsed.all) {
     const plugins = await discoverPlugins(repoRoot);
+    if (isExplicitSinglePlatformSelection(parsed.platform)) {
+      const preparedSelections: PreparedPluginTestSelection[] = [];
+      const failures: string[] = [];
+      for (const plugin of plugins) {
+        try {
+          preparedSelections.push(await preparePluginSelection({ plugin, parsed }));
+        } catch (error) {
+          failures.push(
+            `${plugin.manifest.name}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
+      if (failures.length > 0) {
+        await Promise.all(preparedSelections.map(async (selection) => selection.cleanup()));
+        failures.forEach((failure) => print(stderr, failure));
+        return 1;
+      }
+
+      let exitCode = 0;
+      for (const selection of preparedSelections) {
+        try {
+          const pluginExitCode = await runPreparedPluginSelection({
+            selection,
+            parsed,
+            env,
+            stdout,
+            stderr,
+          });
+          if (pluginExitCode !== 0) {
+            exitCode = pluginExitCode;
+          }
+        } catch (error) {
+          print(
+            stderr,
+            `${selection.pluginName}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          exitCode = 1;
+        }
+      }
+      return exitCode;
+    }
+
     let exitCode = 0;
     for (const plugin of plugins) {
       try {
-        const pluginExitCode = await runOnePlugin({ plugin, parsed, env, stdout, stderr });
+        const selection = await preparePluginSelection({ plugin, parsed });
+        const pluginExitCode = await runPreparedPluginSelection({
+          selection,
+          parsed,
+          env,
+          stdout,
+          stderr,
+        });
         if (pluginExitCode !== 0) {
           exitCode = pluginExitCode;
         }
@@ -744,7 +836,8 @@ export async function runPluginScriptTests(
 
   try {
     const plugin = await findSourcePlugin(repoRoot, parsed.pluginName!);
-    return await runOnePlugin({ plugin, parsed, env, stdout, stderr });
+    const selection = await preparePluginSelection({ plugin, parsed });
+    return await runPreparedPluginSelection({ selection, parsed, env, stdout, stderr });
   } catch (error) {
     print(stderr, error instanceof Error ? error.message : String(error));
     return 1;

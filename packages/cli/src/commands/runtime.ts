@@ -199,6 +199,7 @@ export type CommandExecutionContextInput =
 export interface CliExecutionContext extends CommandExecutionContext {
   cwd: string;
   io: CliIo;
+  stdin: NodeJS.ReadableStream;
   isTty: boolean;
   isCi: boolean;
   consoleDriver: CliConsoleDriver;
@@ -1450,6 +1451,7 @@ export function createCliExecutionContext(
     ...commandContext,
     cwd,
     io,
+    stdin,
     isTty,
     isCi,
     consoleDriver,

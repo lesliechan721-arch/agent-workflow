@@ -1089,7 +1089,7 @@ describe('cli entry', () => {
     expect(readStderr()).toContain('configure');
   });
 
-  it('reads project local config with explicit human notice and no repo-visible ambiguity', async () => {
+  it('reads project local config through configSchemaVersion 2 field entries', async () => {
     vi.doMock('../../src/utils/plugin-catalog.js', () => ({
       resolveCatalogPlugins: vi.fn(async () => ({
         plugins: [{
@@ -1120,29 +1120,33 @@ describe('cli entry', () => {
       const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
       return {
         ...actual,
-        resolveProjectLocalPluginConfigView: vi.fn(async () => ({
+        resolveConfigReadV2: vi.fn(async () => ({
           pluginName: 'git-commit',
-          projectRoot: '/tmp/workspace',
-          schema: {
-            token: { type: 'string', sensitive: true },
-            mode: { type: 'enum', values: ['fast', 'safe'] },
-          },
-          localStore: {
-            path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
-            exists: true,
-            values: { token: 'local-secret' },
-          },
-          values: { token: 'local-secret' },
-          redactedValues: { token: '[redacted]' },
-          sources: { token: 'projectLocal', mode: 'missing' },
-          issues: [],
-          ignoredUnknownKeys: [],
-          repoVisibleArtifactConfig: {
-            values: { mode: 'safe' },
-            sources: { token: 'missing', mode: 'project' },
-            issues: [],
-            boundaryIssues: [],
-          },
+          scope: 'project',
+          projectLayer: 'local',
+          fields: [
+            {
+              key: 'token',
+              title: 'token',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'configured',
+              effectiveValue: '[redacted]',
+              sourceLayer: 'local',
+            },
+            {
+              key: 'mode',
+              title: 'mode',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'default',
+              effectiveValue: null,
+              sourceLayer: null,
+            },
+          ],
+          legacyConfigStores: [],
         })),
       };
     });
@@ -1160,12 +1164,12 @@ describe('cli entry', () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(readStdout()).toContain('当前显示的是当前项目的本机私有覆盖层，不作为 repo-visible artifact 渲染输入。');
+    expect(readStdout()).toContain('token: configured');
     expect(readStdout()).toContain('[redacted]');
     expect(readStderr()).toBe('');
   });
 
-  it('prints project local config JSON with local-only metadata and separate repo-visible artifact truth', async () => {
+  it('prints project local config JSON via configSchemaVersion 2 fields', async () => {
     vi.doMock('../../src/utils/plugin-catalog.js', () => ({
       resolveCatalogPlugins: vi.fn(async () => ({
         plugins: [{
@@ -1196,29 +1200,23 @@ describe('cli entry', () => {
       const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
       return {
         ...actual,
-        resolveProjectLocalPluginConfigView: vi.fn(async () => ({
+        resolveConfigReadV2: vi.fn(async () => ({
           pluginName: 'git-commit',
-          projectRoot: '/tmp/workspace',
-          schema: {
-            token: { type: 'string', sensitive: true },
-            mode: { type: 'enum', values: ['fast', 'safe'] },
-          },
-          localStore: {
-            path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
-            exists: true,
-            values: { token: 'local-secret' },
-          },
-          values: { token: 'local-secret' },
-          redactedValues: { token: '[redacted]' },
-          sources: { token: 'projectLocal', mode: 'missing' },
-          issues: [],
-          ignoredUnknownKeys: [],
-          repoVisibleArtifactConfig: {
-            values: { mode: 'safe' },
-            sources: { token: 'missing', mode: 'project' },
-            issues: [],
-            boundaryIssues: [],
-          },
+          scope: 'project',
+          projectLayer: 'local',
+          fields: [
+            {
+              key: 'token',
+              title: 'token',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'configured',
+              effectiveValue: '[redacted]',
+              sourceLayer: 'local',
+            },
+          ],
+          legacyConfigStores: [],
         })),
       };
     });
@@ -1239,25 +1237,25 @@ describe('cli entry', () => {
     const payload = JSON.parse(readStdout()) as Record<string, unknown>;
     expect(payload).toMatchObject({
       ok: true,
+      configSchemaVersion: 2,
       command: 'config:list',
       plugin: 'git-commit',
       scope: 'project',
       projectLayer: 'local',
-      localOnly: true,
-      note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
-      localStorePath: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json',
-      summary: {
-        values: { token: '[redacted]' },
-        sources: { token: 'projectLocal', mode: 'missing' },
-      },
-      repoVisibleArtifactConfig: {
-        values: { mode: 'safe' },
-        sources: { token: 'missing', mode: 'project' },
-      },
+      fields: [{
+        key: 'token',
+        title: 'token',
+        kind: 'manifest',
+        reserved: false,
+        writable: true,
+        valueState: 'configured',
+        effectiveValue: '[redacted]',
+        sourceLayer: 'local',
+      }],
     });
   });
 
-  it('prints project-scope config JSON with layered values and separate repo-visible artifact truth', async () => {
+  it('prints project-scope config JSON via configSchemaVersion 2 fields', async () => {
     vi.doMock('../../src/utils/plugin-catalog.js', () => ({
       resolveCatalogPlugins: vi.fn(async () => ({
         plugins: [{
@@ -1288,49 +1286,33 @@ describe('cli entry', () => {
       const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
       return {
         ...actual,
-        resolveProjectScopedPluginConfigView: vi.fn(async () => ({
+        resolveConfigReadV2: vi.fn(async () => ({
           pluginName: 'git-commit',
-          projectRoot: '/tmp/workspace',
-          schema: {
-            token: { type: 'string', sensitive: true },
-            mode: { type: 'enum', values: ['fast', 'safe'] },
-          },
-          stores: {
-            user: { path: '/tmp/aw/plugin-config/git-commit/config.json', exists: true, values: { token: 'user-secret' } },
-            project: { path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json', exists: true, values: { mode: 'safe' } },
-            projectLocal: { path: '/tmp/workspace/.agent-workflows/plugin-config.local/git-commit/config.json', exists: true, values: { token: 'local-secret' } },
-          },
-          redactedValues: { token: '[redacted]', mode: 'safe' },
-          sources: { token: 'projectLocal', mode: 'project' },
-          entries: {
-            token: {
+          scope: 'project',
+          projectLayer: 'shared',
+          fields: [
+            {
               key: 'token',
-              userValue: '[redacted]',
-              projectLocalValue: '[redacted]',
+              title: 'token',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'configured',
               effectiveValue: '[redacted]',
-              effectiveSource: 'projectLocal',
-              repoVisibleArtifactSource: 'missing',
-              repoVisibleArtifactUsesSharedTruth: true,
+              sourceLayer: 'local',
             },
-            mode: {
+            {
               key: 'mode',
-              defaultValue: 'fast',
-              projectSharedValue: 'safe',
+              title: 'mode',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'configured',
               effectiveValue: 'safe',
-              effectiveSource: 'project',
-              repoVisibleArtifactValue: 'safe',
-              repoVisibleArtifactSource: 'project',
-              repoVisibleArtifactUsesSharedTruth: true,
+              sourceLayer: 'project',
             },
-          },
-          issues: [],
-          ignoredUnknownKeys: [],
-          repoVisibleArtifactConfig: {
-            values: { mode: 'safe' },
-            sources: { token: 'missing', mode: 'project' },
-            issues: [],
-            boundaryIssues: [],
-          },
+          ],
+          legacyConfigStores: [],
         })),
       };
     });
@@ -1351,30 +1333,33 @@ describe('cli entry', () => {
     const payload = JSON.parse(readStdout()) as Record<string, unknown>;
     expect(payload).toMatchObject({
       ok: true,
+      configSchemaVersion: 2,
       command: 'config:list',
       plugin: 'git-commit',
       scope: 'project',
       projectLayer: 'shared',
-      localOnly: false,
-      note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
-      summary: {
-        values: { token: '[redacted]', mode: 'safe' },
-        sources: { token: 'projectLocal', mode: 'project' },
-      },
-      layers: {
-        token: {
-          effectiveSource: 'projectLocal',
-          repoVisibleArtifactSource: 'missing',
+      fields: [
+        {
+          key: 'token',
+          title: 'token',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: '[redacted]',
+          sourceLayer: 'local',
         },
-        mode: {
-          effectiveSource: 'project',
-          repoVisibleArtifactSource: 'project',
+        {
+          key: 'mode',
+          title: 'mode',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: 'safe',
+          sourceLayer: 'project',
         },
-      },
-      repoVisibleArtifactConfig: {
-        values: { mode: 'safe' },
-        sources: { token: 'missing', mode: 'project' },
-      },
+      ],
     });
   });
 

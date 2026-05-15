@@ -18,7 +18,9 @@ vi.mock('../../src/utils/artifact-refresh.js', () => ({
 import { refreshArtifactsAfterConfigWrite } from '../../src/utils/artifact-refresh.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
+  applyBuiltInConfigWrite,
   applyPluginConfigWrite,
+  replayBuiltInConfigRuntime,
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import {
@@ -37,7 +39,9 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import * as skillTriggerModule from '../../src/utils/skill-trigger-preferences.js';
 import { writeTrackingManifest } from '../../src/utils/tracking.js';
 
 const tempDirs: string[] = [];
@@ -158,6 +162,139 @@ describe('plugin config write helper', () => {
       env,
     }))).resolves.toBe(false);
     expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('writes built-in SkillTrigger values into the reserved namespace and returns per-target apply results', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+
+    const basePlugin = createPlugin('skill-plugin');
+    const plugin = await materializePlugin(root, {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: './skills',
+        skillTriggers: {
+          commit: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        config: undefined,
+      },
+    } as PluginMeta);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+
+    vi.spyOn(localMarketplaceModule, 'readInstalledLedger').mockResolvedValue({
+      ledgerState: { status: 'available' },
+      plugins: {
+        [plugin.manifest.name]: {
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+              },
+            },
+            claude: {
+              userScope: {
+                managed: true,
+              },
+            },
+          },
+        },
+      },
+    } as never);
+    vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+    vi.spyOn(skillTriggerModule, 'commitMaterializedSkillTriggerPreference').mockResolvedValue(undefined);
+
+    const receipt = await applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    });
+
+    expect(receipt.affectedFields).toEqual([expect.objectContaining({
+      key: 'aw.skillTriggers.commit.trigger',
+      kind: 'builtIn',
+      reserved: true,
+      action: 'set',
+      scope: 'user',
+    })]);
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'claude',
+          scope: 'user',
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+    ]));
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('returns a no-op when replaying built-in runtime for plugins without SkillTrigger fields', async () => {
+    const root = await makeTempRoot('aw-config-write-no-built-in-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+
+    await expect(replayBuiltInConfigRuntime({
+      plugin: createPlugin('plain-plugin'),
+      scope: 'user',
+      cwd,
+      env: {} as NodeJS.ProcessEnv,
+    })).resolves.toEqual([]);
   });
 
   it('prewrites project shared config without refresh when the current project has no local record', async () => {
@@ -385,6 +522,20 @@ describe('plugin config write helper', () => {
       scope: 'project',
       cwd,
       env,
+      applyTargets: [
+        {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+          projectKey,
+        },
+        {
+          pluginName: plugin.manifest.name,
+          platform: 'claude',
+          scope: 'project',
+          projectKey,
+        },
+      ],
       request: {
         updates: {
           mode: 'fast',
@@ -397,6 +548,28 @@ describe('plugin config write helper', () => {
       status: 'succeeded',
       triggerKeys: ['mode'],
     });
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+          projectKey,
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'claude',
+          scope: 'project',
+          projectKey,
+        },
+        action: 'configApply',
+        state: 'notRun',
+      }),
+    ]));
     expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledTimes(1);
 
     const updatedRecord = await fs.readJson(recordPath);

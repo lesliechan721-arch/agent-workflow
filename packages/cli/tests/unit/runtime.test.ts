@@ -282,6 +282,11 @@ describe('command runtime', () => {
       cancelled: false,
       value: 'q',
     });
+    await expect(createPrompt('b\n').password!({ message: 'Secret' })).resolves.toMatchObject({
+      action: 'select',
+      cancelled: false,
+      value: 'b',
+    });
     await expect(createPrompt('\u001B\n').input!({ message: 'Value' })).resolves.toMatchObject({
       action: 'cancel',
       cancelled: true,

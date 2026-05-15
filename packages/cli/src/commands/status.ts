@@ -26,6 +26,7 @@ import type {
   StatusReport,
   NativePluginStatus,
 } from '../types.js';
+import type { PluginLocation as InstallStatePluginLocation } from '../install-state/types.js';
 import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recovery.js';
 import { readCodexNativePluginState } from '../utils/codex-native-state.js';
 import { detectEnvironment } from '../utils/detect.js';
@@ -47,7 +48,12 @@ import {
   normalizePluginLocation,
   serializePluginLocation,
 } from '../utils/plugin-dependency-location.js';
-import { resolveEffectivePluginConfig, type PluginConfigIssue } from '../utils/plugin-config.js';
+import {
+  listPluginConfigStorePluginNames,
+  resolveConfigReadV2,
+  resolveEffectivePluginConfig,
+  type PluginConfigIssue,
+} from '../utils/plugin-config.js';
 import {
   assessSharedSkillTriggerRuntimeSemantics,
   type SharedSkillTriggerRuntimeSemanticsAssessment,
@@ -65,13 +71,17 @@ import {
   hasScopeManagedEvidence,
 } from './common.js';
 import {
+  createLegacyConfigPlaceholderControllerItem,
   createConsoleControllerItems,
+  type ConsoleDependencyEntry,
+  type ConsoleLocationReadModel,
   createStatusPageModel,
   createPluginConsoleLocationKey,
   pluginConsoleLocationLabel,
   resolvePluginConsoleMeta,
   PLUGIN_CONSOLE_STATUS_LABELS,
   type ConsoleControllerItem,
+  type PluginConsoleConfigProjection,
   type PluginConsoleSummary,
   type PluginConsoleLocationDiagnostics,
   type PluginConsoleStatus,
@@ -215,6 +225,7 @@ export interface StatusJsonPayload extends StatusMatrixReport {
   ok: true;
   command: 'status';
   statusSchemaVersion: 2;
+  consoleItemsSchemaVersion: 3;
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }
@@ -2012,6 +2023,7 @@ function createStatusJsonPayload(options: {
     ok: true,
     command: 'status',
     statusSchemaVersion: 2,
+    consoleItemsSchemaVersion: 3,
     ...options.matrix,
     friendlySummaries: options.friendlySummaries,
     consoleItems: options.consoleItems,
@@ -2230,6 +2242,281 @@ function createPluginMetaByNameFromCandidates(
   return metaByName;
 }
 
+function createPluginMetaByNameFromConsoleItems(
+  items: ConsoleControllerItem[],
+): Record<string, {
+  title?: string;
+  description?: string;
+  version?: string;
+}> {
+  return Object.fromEntries(items.map((item) => [
+    item.summary.pluginName,
+    {
+      title: item.summary.title,
+      ...(item.summary.description ? { description: item.summary.description } : {}),
+      ...(item.summary.version ? { version: item.summary.version } : {}),
+    },
+  ]));
+}
+
+function createCurrentPluginByNameFromCollected(
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'],
+): Record<string, PluginMeta> {
+  const pluginByName: Record<string, PluginMeta> = {};
+  for (const state of locations) {
+    if (state.target.currentPlugin) {
+      pluginByName[state.location.plugin] = state.target.currentPlugin;
+    }
+  }
+  return pluginByName;
+}
+
+function createCurrentPluginByNameFromCandidates(
+  candidates: CommandCandidate[],
+): Record<string, PluginMeta> {
+  const pluginByName: Record<string, PluginMeta> = {};
+  for (const candidate of candidates) {
+    const plugin = candidate.target.currentPlugin
+      ?? (candidate.target.source === 'currentCatalog' ? candidate.target.plugin : undefined);
+    if (plugin) {
+      pluginByName[candidate.pluginName] = plugin;
+    }
+  }
+  return pluginByName;
+}
+
+async function resolveConsoleConfigProjection(options: {
+  pluginName: string;
+  plugin?: PluginMeta;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<PluginConsoleConfigProjection | null> {
+  try {
+    const views = (await Promise.all([
+      resolveConfigReadV2({
+        pluginName: options.pluginName,
+        plugin: options.plugin,
+        scope: 'effective',
+        projectLayer: 'shared',
+        cwd: options.cwd,
+        env: options.env,
+      }),
+      resolveConfigReadV2({
+        pluginName: options.pluginName,
+        plugin: options.plugin,
+        scope: 'user',
+        projectLayer: 'shared',
+        cwd: options.cwd,
+        env: options.env,
+      }),
+      resolveConfigReadV2({
+        pluginName: options.pluginName,
+        plugin: options.plugin,
+        scope: 'project',
+        projectLayer: 'shared',
+        cwd: options.cwd,
+        env: options.env,
+      }),
+      resolveConfigReadV2({
+        pluginName: options.pluginName,
+        plugin: options.plugin,
+        scope: 'project',
+        projectLayer: 'local',
+        cwd: options.cwd,
+        env: options.env,
+      }),
+    ])).map((result) => ({
+      scope: result.scope,
+      projectLayer: result.projectLayer,
+      fields: result.fields,
+      legacyConfigStores: result.legacyConfigStores,
+    })).filter((view) => view.fields.length > 0 || view.legacyConfigStores.length > 0);
+
+    if (views.length === 0) {
+      return null;
+    }
+
+    return {
+      configSchemaVersion: 2,
+      views,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveConsoleConfigProjectionByPluginName(options: {
+  pluginNames: string[];
+  currentPluginByName: Record<string, PluginMeta>;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<Record<string, PluginConsoleConfigProjection>> {
+  const entries = await Promise.all(options.pluginNames.map(async (pluginName) => {
+    const projection = await resolveConsoleConfigProjection({
+      pluginName,
+      plugin: options.currentPluginByName[pluginName],
+      cwd: options.cwd,
+      env: options.env,
+    });
+    return projection ? [pluginName, projection] as const : null;
+  }));
+  return Object.fromEntries(entries.filter((entry): entry is [string, PluginConsoleConfigProjection] => entry !== null));
+}
+
+function hasLegacyConfigStores(projection: PluginConsoleConfigProjection | undefined): boolean {
+  return projection?.views.some((view) => view.legacyConfigStores.length > 0) === true;
+}
+
+function classifyDependencyEntry(options: {
+  pluginName: string;
+  location: PluginLocation;
+  healthStatus: 'ok' | 'missingRecord' | 'invalidRecord' | 'missingArtifact' | 'nativeMarkerPresent' | 'nativeEvidenceMissing' | null;
+  reason: string | null;
+}): ConsoleDependencyEntry {
+  if (options.healthStatus === 'ok' || options.healthStatus === null) {
+    return {
+      pluginName: options.pluginName,
+      locationLabel: pluginConsoleLocationLabel(options.location),
+      symbol: '✓',
+      tone: 'success',
+      summary: '正常',
+    };
+  }
+
+  if (
+    options.healthStatus === 'missingRecord' ||
+    options.healthStatus === 'missingArtifact'
+  ) {
+    return {
+      pluginName: options.pluginName,
+      locationLabel: pluginConsoleLocationLabel(options.location),
+      symbol: '×',
+      tone: 'danger',
+      summary: '缺失',
+    };
+  }
+
+  return {
+    pluginName: options.pluginName,
+    locationLabel: pluginConsoleLocationLabel(options.location),
+    symbol: '!',
+    tone: 'danger',
+    summary: options.reason ?? '状态异常',
+  };
+}
+
+function toCommandPluginLocation(location: InstallStatePluginLocation): PluginLocation {
+  return {
+    plugin: location.plugin,
+    platform: location.platform,
+    scope: location.scope,
+    projectKey: location.projectKey ?? null,
+  };
+}
+
+function buildConsoleLocationReadModelByKey(options: {
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
+  catalog: CatalogResolution;
+}): Record<string, ConsoleLocationReadModel> {
+  const entries: Array<[string, ConsoleLocationReadModel]> = [];
+
+  for (const state of options.locations) {
+    const key = createPluginConsoleLocationKey({
+      pluginName: state.location.plugin,
+      platform: state.location.platform,
+      scope: state.location.scope,
+      ...(state.location.projectKey ? { projectKey: state.location.projectKey } : {}),
+    });
+    const diagnostics: ConsoleLocationReadModel['diagnostics'] = [];
+    const dependencyEntries: ConsoleDependencyEntry[] = [];
+    const record = state.evidence.installRecord.read.status === 'ok'
+      ? state.evidence.installRecord.read.value.record
+      : null;
+    const dependencyHealthByKey = new Map(
+      state.evidence.dependencyIndex.projection.dependencyHealth.map((entry) => [
+        serializePluginLocation(toCommandPluginLocation(entry.dependency)),
+        entry,
+      ] as const),
+    );
+
+    if (record) {
+      for (const edge of record.dependencyEdges) {
+        const health = dependencyHealthByKey.get(serializePluginLocation(toCommandPluginLocation(edge.dependency)));
+        dependencyEntries.push(classifyDependencyEntry({
+          pluginName: edge.dependency.plugin,
+          location: toCommandPluginLocation(edge.dependency),
+          healthStatus: health?.status ?? null,
+          reason: health?.reason ?? null,
+        }));
+      }
+    }
+
+    if (
+      options.catalog.source === 'embedded' &&
+      state.target.currentPlugin
+    ) {
+      diagnostics.push({
+        label: 'catalog',
+        value: `当前使用 embedded catalog；本地插件列表未被使用：${options.catalog.reason ?? '原因未知'}`,
+        tone: 'info',
+      });
+    } else if (!state.target.currentPlugin && state.target.historicalPlugin) {
+      diagnostics.push({
+        label: 'catalog',
+        value: '当前详情来自历史证据；current catalog 已不再提供这个插件目录。',
+        tone: 'info',
+      });
+    }
+
+    if (!state.projection.dependencyIndexCoverageTrusted) {
+      diagnostics.push({
+        label: '依赖索引',
+        value: state.projection.dependencyIndexRevisitProjectLocations.length > 0
+          ? `覆盖仍不完整；请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+            .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
+            .join('，')}`
+          : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
+            ? '覆盖仍不完整；请回到可能相关的仓库重新运行 status --verbose 或 repair。'
+            : `覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}`,
+        tone: 'info',
+      });
+    }
+
+    for (const finding of state.findings) {
+      diagnostics.push({
+        label: '说明',
+        value: finding,
+        tone: 'info',
+      });
+    }
+
+    for (const readError of state.target.discoveryEvidence?.readErrors ?? []) {
+      diagnostics.push({
+        label: '读取失败',
+        value: readError,
+        tone: 'danger',
+      });
+    }
+
+    entries.push([key, {
+      hasEvidence: Boolean(
+        state.evidence.installRecord.present ||
+        state.evidence.projectSharedIdentity.present ||
+        state.evidence.dynamicDiagnostic.available ||
+        state.evidence.platform.codexNative?.anyNativeEvidence ||
+        (state.target.discoveryEvidence?.sources.length ?? 0) > 0 ||
+        (state.target.discoveryEvidence?.readErrors.length ?? 0) > 0 ||
+        state.projection.kind !== 'notInstalled'
+      ),
+      summary: state.summary,
+      diagnostics,
+      ...(dependencyEntries.length > 0 ? { dependencyEntries } : {}),
+    }]);
+  }
+
+  return Object.fromEntries(entries);
+}
+
 function fallbackNotInstalledState(): StatusMatrixInstallState {
   return {
     kind: 'notInstalled',
@@ -2429,6 +2716,9 @@ export async function statusCommand(
   consoleItems: PluginConsoleSummary[];
   consoleControllerItems: ConsoleControllerItem[];
   statusPageModels: StatusPageModel[];
+  locationReadModelByKey: Record<string, ConsoleLocationReadModel>;
+  currentPluginByName: Record<string, PluginMeta>;
+  configProjectionByPluginName: Record<string, PluginConsoleConfigProjection>;
 }> {
   const collected = await collectP7Locations(pluginNames, {
     ...rawOptions,
@@ -2448,6 +2738,13 @@ export async function statusCommand(
     catalog,
   });
   const cells: StatusMatrixCell[] = collected.locations.map((state, index) => ({
+    ...(() => {
+      const compatibilityReport = compatibilityReports.find((report) =>
+        report.platform === state.location.platform &&
+        report.scope === state.location.scope,
+      )?.plugins.find((plugin) => plugin.pluginName === state.location.plugin);
+      return compatibilityReport ? { report: compatibilityReport } : {};
+    })(),
     pluginName: state.location.plugin,
     platform: state.location.platform,
     scope: state.location.scope,
@@ -2506,8 +2803,21 @@ export async function statusCommand(
     reports: compatibilityReports,
   };
   const pluginMetaByName = createPluginMetaByNameFromCollected(collected.locations);
+  const currentPluginByName = createCurrentPluginByNameFromCollected(collected.locations);
+  const locationReadModelByKey = buildConsoleLocationReadModelByKey({
+    locations: collected.locations,
+    catalog,
+  });
+  const configProjectionByPluginName = await resolveConsoleConfigProjectionByPluginName({
+    pluginNames: [...new Set(matrix.cells.map((cell) => cell.pluginName))],
+    currentPluginByName,
+    cwd: options.cwd,
+    env,
+  });
   const consoleControllerItems = createConsoleControllerItems(matrix, {
     pluginMetaByName,
+    locationReadModelByKey,
+    configProjectionByPluginName,
   });
   const consoleItems = consoleControllerItems.map((item) => item.summary);
   const statusPageModels = consoleControllerItems.map((item) => createStatusPageModel(item));
@@ -2674,6 +2984,9 @@ export async function statusCommand(
     consoleItems,
     consoleControllerItems,
     statusPageModels,
+    locationReadModelByKey,
+    currentPluginByName,
+    configProjectionByPluginName,
   };
 }
 
@@ -2695,6 +3008,10 @@ export async function loadConsoleItems(
 
   const options = normalizeStatusCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
+  const configStorePluginNames = await listPluginConfigStorePluginNames({
+    cwd: options.cwd,
+    env: context.env,
+  });
   const candidates = await buildCommandCandidates({
     command: 'status',
     cwd: options.cwd,
@@ -2704,22 +3021,57 @@ export async function loadConsoleItems(
     includeCatalogOnly: true,
   });
   const discoveredNames = new Set(base.consoleItems.map((item) => item.pluginName));
-  const catalogOnlyCandidates = candidates.filter((candidate) => !discoveredNames.has(candidate.pluginName));
-  if (catalogOnlyCandidates.length === 0) {
-    return base.consoleControllerItems;
-  }
-
+  const baseCellKeys = new Set(base.matrix.cells.map((cell) => createPluginConsoleLocationKey(cell)));
   const extraMatrix = createStatusMatrixFromCandidates({
-    candidates: catalogOnlyCandidates,
+    candidates,
     detection: base.matrix.detection,
     scope: options.scope,
     platform: options.platform,
   });
-  const extraItems = createConsoleControllerItems(extraMatrix, {
-    pluginMetaByName: createPluginMetaByNameFromCandidates(catalogOnlyCandidates),
+  const extraCells = extraMatrix.cells.filter((cell) => !baseCellKeys.has(createPluginConsoleLocationKey(cell)));
+  const mergedMatrix: StatusMatrixReport = extraCells.length === 0
+    ? base.matrix
+    : {
+        ...base.matrix,
+        cells: sortCells([...base.matrix.cells, ...extraCells]),
+      };
+  const pluginMetaByName = {
+    ...createPluginMetaByNameFromConsoleItems(base.consoleControllerItems),
+    ...createPluginMetaByNameFromCandidates(candidates.filter((candidate) => !discoveredNames.has(candidate.pluginName))),
+  };
+  const currentPluginByName = {
+    ...(base.currentPluginByName ?? {}),
+    ...createCurrentPluginByNameFromCandidates(candidates),
+  };
+  const pluginNames = [...new Set([
+    ...mergedMatrix.cells.map((cell) => cell.pluginName),
+    ...configStorePluginNames,
+  ])];
+  const resolvedConfigProjectionByPluginName = await resolveConsoleConfigProjectionByPluginName({
+    pluginNames,
+    currentPluginByName,
+    cwd: options.cwd,
+    env: context.env,
   });
+  const configProjectionByPluginName = {
+    ...(base.configProjectionByPluginName ?? {}),
+    ...resolvedConfigProjectionByPluginName,
+  };
+  const mergedItems = createConsoleControllerItems(mergedMatrix, {
+    pluginMetaByName,
+    locationReadModelByKey: base.locationReadModelByKey,
+    configProjectionByPluginName,
+  });
+  const existingNames = new Set(mergedItems.map((item) => item.summary.pluginName));
+  const legacyPlaceholderItems = pluginNames
+    .filter((pluginName) => !existingNames.has(pluginName) && configProjectionByPluginName[pluginName])
+    .map((pluginName) => createLegacyConfigPlaceholderControllerItem({
+      pluginName,
+      title: pluginMetaByName[pluginName]?.title,
+      config: configProjectionByPluginName[pluginName]!,
+    }));
 
-  return [...base.consoleControllerItems, ...extraItems].sort((left, right) =>
+  return [...mergedItems, ...legacyPlaceholderItems].sort((left, right) =>
     CONSOLE_SUMMARY_PRIORITY[right.summary.status] - CONSOLE_SUMMARY_PRIORITY[left.summary.status] ||
     left.summary.title.localeCompare(right.summary.title),
   );

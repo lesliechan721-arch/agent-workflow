@@ -9,6 +9,10 @@ import type {
   DiagnoseSupplementalCommand,
   PluginConsoleFeatureSummary,
   PluginConsoleStatus,
+  PluginConsoleTone,
+} from './console-model.js';
+import {
+  createPluginConsoleLocationKey,
 } from './console-model.js';
 import type {
   CleanupBlockingReason,
@@ -363,6 +367,32 @@ function consoleStatusLabel(status: PluginConsoleStatus): string {
   }
 }
 
+function diagnoseStatusSymbol(status: PluginConsoleStatus): string {
+  switch (status) {
+    case 'abnormal':
+      return '!';
+    case 'upgradeAvailable':
+      return '↑';
+    case 'installed':
+      return '✓';
+    case 'notInstalled':
+      return '○';
+  }
+}
+
+function diagnoseStatusTone(status: PluginConsoleStatus): PluginConsoleTone {
+  switch (status) {
+    case 'abnormal':
+      return 'danger';
+    case 'upgradeAvailable':
+      return 'info';
+    case 'installed':
+      return 'success';
+    case 'notInstalled':
+      return 'neutral';
+  }
+}
+
 function consoleReasonLabel(reason: PluginConsoleReasonCode): string {
   switch (reason) {
     case 'duplicateInstall':
@@ -440,6 +470,8 @@ function featureSummary(
         return '查看状态';
       case 'diagnose':
         return '查看诊断';
+      case 'dependencies':
+        return '依赖';
     }
   })();
 
@@ -1710,13 +1742,24 @@ function createDiagnoseLocationSummary(
     featureSummary('diagnose'),
   ]);
 
+  const status = consoleStatusForLocation(input.state);
   return {
+    key: createPluginConsoleLocationKey({
+      pluginName: input.state.location.plugin,
+      platform: input.state.location.platform,
+      scope: input.state.location.scope,
+      ...(input.state.location.projectKey ? { projectKey: input.state.location.projectKey } : {}),
+    }),
     platform: input.state.location.platform,
     scope: input.state.location.scope,
     ...(input.state.location.projectKey ? { projectKey: input.state.location.projectKey } : {}),
     label: locationLabel(input.state.location),
-    status: consoleStatusForLocation(input.state),
-    statusLabel: consoleStatusLabel(consoleStatusForLocation(input.state)),
+    status,
+    statusLabel: consoleStatusLabel(status),
+    statusSymbol: diagnoseStatusSymbol(status),
+    statusTone: diagnoseStatusTone(status),
+    hasEvidence: true,
+    summary: input.state.summary,
     ...(issues[0] ? { issue: issues[0] } : {}),
     issues,
     suggestedFeatures,
@@ -1725,7 +1768,11 @@ function createDiagnoseLocationSummary(
       ...(input.cleanup.previewCommand ? [input.cleanup.previewCommand] : []),
       ...(input.cleanup.executeCommand ? [input.cleanup.executeCommand] : []),
     ])),
-    ...(input.state.findings.length > 0 ? { details: input.state.findings } : {}),
+    diagnostics: input.state.findings.map((finding) => ({
+      label: '说明',
+      value: finding,
+      tone: 'info' as const,
+    })),
   };
 }
 

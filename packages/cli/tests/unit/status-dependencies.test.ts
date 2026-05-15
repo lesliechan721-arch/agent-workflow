@@ -671,6 +671,7 @@ describe('status P7', () => {
         })),
       } as never,
     )).output) as {
+      consoleItemsSchemaVersion: number;
       locations: Array<{
         plugin: string;
         dependents: Array<{ plugin: string }>;
@@ -689,6 +690,7 @@ describe('status P7', () => {
     const locations = new Map(payload.locations.map((location) => [location.plugin, location]));
     const consoleItems = new Map(payload.consoleItems.map((item) => [item.pluginName, item]));
 
+    expect(payload.consoleItemsSchemaVersion).toBe(3);
     expect(locations.get('unused-dependency')).toMatchObject({
       dependents: [],
       autoInstalled: true,
@@ -712,8 +714,10 @@ describe('status P7', () => {
     );
     expect(consoleItems.get('unused-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
     expect(consoleItems.get('unused-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('unused-dependency')?.features.find((feature) => feature.kind === 'cleanup')).toBeUndefined();
     expect(consoleItems.get('retained-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
     expect(consoleItems.get('retained-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('retained-dependency')?.features.find((feature) => feature.kind === 'cleanup')).toBeUndefined();
     expect(consoleItems.get('retained-dependency')?.detailHints).toEqual(
       expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
     );

@@ -6,7 +6,8 @@
   "slashCommands": "./slash-commands",
   "skillTriggers": {
     "review-workflow": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   },
   "mcpServers": "./.mcp.json",

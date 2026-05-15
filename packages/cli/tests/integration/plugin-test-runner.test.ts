@@ -160,6 +160,32 @@ async function addInvalidNeighborPlugin(repoRoot: string): Promise<void> {
   );
 }
 
+async function clonePlugin(repoRoot: string, sourceName: string, targetName: string): Promise<void> {
+  const sourceRoot = path.join(repoRoot, 'plugins', sourceName);
+  const targetRoot = path.join(repoRoot, 'plugins', targetName);
+  await fs.copy(sourceRoot, targetRoot);
+  const manifestPath = path.join(targetRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.name = targetName;
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function writeMarkerTest(repoRoot: string, pluginName: string, fileName: string): Promise<void> {
+  await fs.outputFile(
+    path.join(repoRoot, 'plugins', pluginName, 'scripts', fileName),
+    [
+      'import test from "node:test";',
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'import path from "node:path";',
+      'test("marker", async () => {',
+      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      '  await writeFile(path.join(context.sourceRoot, "test-ran.marker"), "ran", "utf8");',
+      '});',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -343,7 +369,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).toBe('');
   });
 
-  it('uses the staging manifest supported platforms for --platform auto on codex-only plugins', async () => {
+  it('defaults to both and expands to the staging manifest supported platforms on codex-only plugins', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
@@ -353,7 +379,7 @@ describe('plugin script test runner', () => {
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
     const output = captureOutput();
 
-    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+    const exitCode = await runPluginScriptTests(['git-commit'], {
       repoRoot,
       stdout: output.stdout,
       stderr: output.stderr,
@@ -366,7 +392,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).toBe('');
   });
 
-  it('uses the staging manifest supported platforms for --platform auto on claude-only plugins', async () => {
+  it('expands --platform both to the staging manifest supported platforms on claude-only plugins', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
@@ -376,7 +402,7 @@ describe('plugin script test runner', () => {
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
     const output = captureOutput();
 
-    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
       repoRoot,
       stdout: output.stdout,
       stderr: output.stderr,
@@ -389,7 +415,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).toBe('');
   });
 
-  it('uses the full staging manifest supported platform set for --platform auto on dual-platform plugins', async () => {
+  it('expands --platform both to the full staging manifest supported platform set on dual-platform plugins', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
@@ -399,7 +425,7 @@ describe('plugin script test runner', () => {
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
     const output = captureOutput();
 
-    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
       repoRoot,
       stdout: output.stdout,
       stderr: output.stderr,
@@ -410,6 +436,22 @@ describe('plugin script test runner', () => {
     expect(output.readStdout()).toContain('git-commit / codex: passed');
     expect(output.readStdout()).toContain('git-commit / claude: passed');
     expect(output.readStderr()).toBe('');
+  });
+
+  it('rejects --platform auto with the public platform list', async () => {
+    const repoRoot = await makeTempRepo();
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(output.readStdout()).toBe('');
+    expect(output.readStderr()).toContain('--platform must be one of: codex, claude, both.');
+    expect(output.readStderr()).not.toContain('auto');
   });
 
   it('fails fast for unsupported explicit platform selections before runtime bundling', async () => {
@@ -436,7 +478,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('missing-platform-probe');
   });
 
-  it('rejects --platform both for codex-only plugins', async () => {
+  it('expands --platform both for codex-only plugins without requiring claude support', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
@@ -452,13 +494,13 @@ describe('plugin script test runner', () => {
       stderr: output.stderr,
     });
 
-    expect(exitCode).toBe(1);
-    expect(output.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=both');
-    expect(output.readStderr()).toContain('marketplace.policy.products=[CODEX]');
-    expect(output.readStderr()).toContain('supported platforms=codex');
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStdout()).not.toContain('git-commit / claude');
+    expect(output.readStderr()).toBe('');
   });
 
-  it('rejects unsupported explicit codex and both selections for claude-only plugins', async () => {
+  it('rejects unsupported explicit codex selections for claude-only plugins', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
@@ -477,17 +519,6 @@ describe('plugin script test runner', () => {
     expect(codexOutput.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=codex');
     expect(codexOutput.readStderr()).toContain('marketplace.policy.products=[CLAUDE]');
     expect(codexOutput.readStderr()).toContain('supported platforms=claude');
-
-    const bothOutput = captureOutput();
-    const bothExitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
-      repoRoot,
-      stdout: bothOutput.stdout,
-      stderr: bothOutput.stderr,
-    });
-    expect(bothExitCode).toBe(1);
-    expect(bothOutput.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=both');
-    expect(bothOutput.readStderr()).toContain('marketplace.policy.products=[CLAUDE]');
-    expect(bothOutput.readStderr()).toContain('supported platforms=claude');
   });
 
   it('uses the staging manifest products when source and staging products differ', async () => {
@@ -502,7 +533,7 @@ describe('plugin script test runner', () => {
     await writeProductRewriteBuild(repoRoot, 'rewrite-products.mjs', ['CODEX']);
     const output = captureOutput();
 
-    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'auto'], {
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
       repoRoot,
       stdout: output.stdout,
       stderr: output.stderr,
@@ -520,6 +551,54 @@ describe('plugin script test runner', () => {
         },
       },
     });
+  });
+
+  it('fails before running any tests when --all --platform codex selects an unsupported plugin', async () => {
+    const repoRoot = await makeTempRepo();
+    await clonePlugin(repoRoot, 'git-commit', 'claude-only');
+    await configureTestManifest({
+      repoRoot,
+      products: ['CODEX'],
+      testEntries: ['./scripts/git-commit-marker.test.mjs'],
+    });
+    await writeMarkerTest(repoRoot, 'git-commit', 'git-commit-marker.test.mjs');
+
+    const claudeOnlyManifestPath = path.join(
+      repoRoot,
+      'plugins',
+      'claude-only',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const claudeOnlyManifest = await fs.readJson(claudeOnlyManifestPath);
+    claudeOnlyManifest.marketplace.policy.products = ['CLAUDE'];
+    claudeOnlyManifest.scripts = {
+      tests: {
+        node: ['./scripts/claude-only-marker.test.mjs'],
+      },
+    };
+    delete claudeOnlyManifest.apps;
+    await fs.writeJson(claudeOnlyManifestPath, claudeOnlyManifest, { spaces: 2 });
+    await fs.remove(path.join(repoRoot, 'plugins', 'claude-only', '.app.json'));
+    await writeMarkerTest(repoRoot, 'claude-only', 'claude-only-marker.test.mjs');
+
+    const output = captureOutput();
+    const exitCode = await runPluginScriptTests(['--all', '--platform', 'codex'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(output.readStdout()).toBe('');
+    expect(output.readStderr()).toContain('Cannot run plugin tests for "claude-only" with --platform=codex');
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'git-commit', 'test-ran.marker')),
+    ).resolves.toBe(false);
+    await expect(
+      fs.pathExists(path.join(repoRoot, 'plugins', 'claude-only', 'test-ran.marker')),
+    ).resolves.toBe(false);
   });
 
   it('rejects undeclared bare package imports in tests without scripts.node', async () => {

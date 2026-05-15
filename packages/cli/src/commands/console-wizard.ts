@@ -13,6 +13,7 @@ import {
   createPluginConfigSchemaIdentity,
   resolvePluginConfigStorePath,
   resolveEffectivePluginConfig,
+  toBuiltInSkillTriggerLogicalKey,
   type PluginConfigFormModel,
   type ResolvedEffectivePluginConfig,
 } from '../utils/plugin-config.js';
@@ -43,6 +44,7 @@ import {
   type PluginDependencyWritePlan,
 } from '../utils/plugin-dependency-planner.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
+import { resolveSkillTriggerConfigEntries } from '../utils/skill-trigger-preferences.js';
 
 export type ConsoleWriteWizardOperation = 'install' | 'upgrade';
 export type ConsoleWriteIntent = ConsoleWriteWizardOperation | 'repairInstall' | 'cleanupRecovery';
@@ -76,6 +78,7 @@ export interface ConsoleWritePreflightResult {
 export interface ConsoleRequiredConfigPrompt {
   pluginName: string;
   scope: Scope;
+  projectLayer: 'shared' | 'local';
   storePath: string;
   formIdentity: string;
   schemaSourceIdentity: string;
@@ -556,8 +559,26 @@ function toScopedTargets(
   }));
 }
 
-function createConfigFormIdentity(form: PluginConfigFormModel, schemaSourceIdentity: string): string {
-  return `${schemaSourceIdentity}\0${[...form.requiredKeys].sort().join(',')}`;
+export async function createConsoleConfigFormIdentity(options: {
+  plugin: PluginMeta;
+  form: PluginConfigFormModel;
+  scope: Scope;
+  projectLayer?: 'shared' | 'local';
+  platform: PlatformName;
+}): Promise<string> {
+  const schemaSourceIdentity = createPluginConfigSchemaIdentity(options.plugin.manifest);
+  const builtInFieldKeys = options.scope === 'project' && options.projectLayer === 'local'
+    ? []
+    : (await resolveSkillTriggerConfigEntries(options.plugin))
+      .filter((entry) => entry.platforms.includes(options.platform))
+      .map((entry) => toBuiltInSkillTriggerLogicalKey(entry.skillName))
+      .sort();
+  return [
+    schemaSourceIdentity,
+    [...options.form.fields.map((field) => field.key)].sort().join(','),
+    [...options.form.requiredKeys].sort().join(','),
+    builtInFieldKeys.join(','),
+  ].join('\0');
 }
 
 export async function resolveConsoleRequiredConfigPrompts(
@@ -600,7 +621,13 @@ export async function resolveConsoleRequiredConfigPrompts(
       cwd: options.cwd,
       env: options.env,
     });
-    const formIdentity = createConfigFormIdentity(form, schemaSourceIdentity);
+    const formIdentity = await createConsoleConfigFormIdentity({
+      plugin,
+      form,
+      scope: scopedTarget.scope,
+      projectLayer: 'shared',
+      platform: scopedTarget.platform,
+    });
     const dedupeKey = `${storePath}\0${formIdentity}`;
     const existing = grouped.get(dedupeKey);
     if (existing) {
@@ -611,6 +638,7 @@ export async function resolveConsoleRequiredConfigPrompts(
     grouped.set(dedupeKey, {
       pluginName: target.pluginName,
       scope: scopedTarget.scope,
+      projectLayer: 'shared',
       storePath,
       formIdentity,
       schemaSourceIdentity,

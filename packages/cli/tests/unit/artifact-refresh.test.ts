@@ -427,8 +427,8 @@ describe('artifact refresh reapply helper', () => {
       },
     };
     plugin.manifest.skillTriggers = {
-      'static-skill': { allowInstallOverride: true },
-      'codex-explore': { allowInstallOverride: true },
+      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
+      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
     };
     plugin.manifest.artifacts = {
       targets: [{

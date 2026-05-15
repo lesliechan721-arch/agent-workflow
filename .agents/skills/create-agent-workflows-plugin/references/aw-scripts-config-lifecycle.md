@@ -116,7 +116,7 @@ aw config list <plugin> --scope project --local
 
 所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt，可直接 `JSON.parse`。`init/install/uninstall/upgrade/config set/unset/reset --json` 至少包含 `ok`、`command`、`warnings`、`nextSteps`；安装、卸载、升级会按实际结果补充 `plugins`、`targets`、`actions`、`artifacts`、`native` 等字段；配置写命令会返回 `updatedKeys` / `removedKeys` 和稳定的 `artifactRefresh`。`config list/get --json` 保留既有数据结构，同时包含稳定的 `ok` 和 `command`。
 
-`aw status` 是只读投影：默认输出是友好摘要，`aw status --verbose` 在诊断小节展示内部字段，`aw status --json` 保留旧矩阵字段并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
+`aw status` 是只读投影：默认输出是友好摘要，`aw status --verbose` 展示内部排查字段，`aw status --json` 输出 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries` 和 `consoleItems`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
 
 ## 标准配置 Helper
 
@@ -200,13 +200,13 @@ renderer stdout 必须只输出 JSON：
 }
 ```
 
-`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.skill` 必须在 manifest 静态声明 `skillKey`，renderer plan 的 `skillKey` 必须完全一致；`present` content 只能包含 `skillFile` 和 `openaiYaml`，不能携带任意落盘路径。AW apply 阶段会按当前 `skillTriggerPreference` patch `openaiYaml`：`default` / `auto` 让 `policy.allow_implicit_invocation` 为 `true`，`manual` 改为 `false`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.skill` 必须在 manifest 静态声明 `skillKey`，renderer plan 的 `skillKey` 必须完全一致；`present` content 只能包含 `skillFile` 和 `openaiYaml`，不能携带任意落盘路径。AW apply 阶段会按当前 effective SkillTrigger built-in config patch `openaiYaml`：`auto` 让 `policy.allow_implicit_invocation` 为 `true`，`manual` 改为 `false`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
 
 renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / V2 `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 在 V2 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 在 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
 
-refresh-only 动作用于重新应用已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 和后续 status 可读取的 diagnostic cache；没有可定位 dynamic artifact 时返回 `artifactRefresh.status = "skipped"`。
+重新应用配置动作用于重放已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys，并同时运行 SkillTrigger built-in apply pipeline。成功后更新对应 artifact 的 accepted state 和 refresh 诊断，并让 runtime 触发策略对齐当前 effective 配置；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 或 built-in apply 结果，后续 status 可从 diagnostic cache 读取；没有可定位 dynamic artifact 但存在 SkillTrigger 内建字段时仍会运行 built-in apply pipeline。
 
 动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、install record、diagnostic cache 或 project artifact identity。
 
@@ -358,7 +358,7 @@ pnpm plugin:test <plugin> --test-name "reads config"
 pnpm plugin:test --all
 ```
 
-`pnpm plugin:test` 会先编译 CLI，再用 staging 模式准备 source，并从 build 后 staging manifest 解析最终支持平台。`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能在最终 `marketplace.policy.products` 允许的平台内缩小目标，不能越过 build 裁剪。`both` 只适用于同时支持 Claude 和 Codex 的插件，单平台插件显式传 `both` 会 fail fast。
+`pnpm plugin:test` 会先编译 CLI，再用 staging 模式准备 source，并从 build 后 staging manifest 解析最终支持平台。省略 `--platform` 时按 `both` 处理；`--platform auto` 无效并会失败；显式 `claude` 或 `codex` 遇到任一选中插件不支持该平台时，会在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。
 
 校验通过后，runner 会准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。无匹配测试时是 skipped/no-op，退出码为 0。
 

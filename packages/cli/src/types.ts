@@ -5,6 +5,8 @@ export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
 export type SkillTriggerApplicability = 'none' | 'fixed' | 'overridable';
+export type ConfigFieldKind = 'manifest' | 'builtIn';
+export type ConfigValueState = 'default' | 'configured' | 'fixed' | 'ignored' | 'orphaned' | 'invalid';
 export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type TargetWriteState = 'completed' | 'rolledBack' | 'notRun' | 'failed';
@@ -54,6 +56,42 @@ export interface ConfigStoreRemovalResult {
   reasonCode?: 'subjectFailed' | 'removeFailed';
   message?: string;
   path?: string;
+}
+
+export interface LegacyConfigStoreEntryV2 {
+  plugin: string;
+  storeKind: 'user' | 'projectShared' | 'projectLocal';
+  projectRoot?: string;
+  reason: 'pluginRemoved' | 'schemaUnavailable';
+  fieldVisibility: 'storeOnly';
+  cleanupOnly: true;
+}
+
+export interface ConfigFieldEntryV2 {
+  key: string;
+  title: string;
+  kind: ConfigFieldKind;
+  reserved: boolean;
+  writable: boolean;
+  valueState: ConfigValueState;
+  effectiveValue: unknown | null;
+  sourceLayer: 'default' | 'user' | 'project' | 'local' | null;
+  storedValue?: unknown;
+  storedSourceLayer?: 'user' | 'project' | 'local';
+  ignoredReason?: 'fixedSkillTrigger';
+  orphanedReason?: 'pluginRemoved' | 'skillRemoved';
+  invalidReason?: 'unsupportedProjectLocalLayer';
+}
+
+export interface ConfigReceiptFieldEntryV2 {
+  key: string;
+  title: string;
+  kind: ConfigFieldKind;
+  reserved: boolean;
+  action: 'set' | 'unset' | 'reset';
+  scope: Scope;
+  projectLayer?: 'shared' | 'local';
+  valueState?: ConfigValueState;
 }
 
 export interface PluginInterfaceMeta {

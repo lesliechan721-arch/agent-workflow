@@ -45,7 +45,7 @@ describe('plugin scripts staging smoke', () => {
 
     const result = await execFileAsync(
       'pnpm',
-      ['plugin:test', 'git-commit', '--platform', 'auto', '--test-name', 'staged smoke generated test'],
+      ['plugin:test', 'git-commit', '--test-name', 'staged smoke generated test'],
       {
         cwd: root,
         env: {
@@ -79,6 +79,31 @@ describe('plugin scripts staging smoke', () => {
           node: ['./scripts/source-only.test.mjs'],
         },
       },
+    });
+  }, 120_000);
+
+  it('rejects the removed public auto platform value', async () => {
+    const root = repoRoot();
+    const tempRepo = await makeTempRepo();
+    await writeNodeScriptFixture(tempRepo);
+
+    await expect(
+      execFileAsync(
+        'pnpm',
+        ['plugin:test', 'git-commit', '--platform', 'auto'],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            AW_PLUGIN_TEST_REPO_ROOT: tempRepo,
+            NO_COLOR: '1',
+          },
+          maxBuffer: 30 * 1024 * 1024,
+          timeout: 120_000,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('--platform must be one of: codex, claude, both.'),
     });
   }, 120_000);
 

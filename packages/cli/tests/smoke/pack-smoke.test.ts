@@ -95,8 +95,8 @@ describe('pack smoke', () => {
       path.join(codexExplorePluginRoot, '.agents-plugin', 'plugin.json'),
       path.join(codexExplorePluginRoot, '.codex-plugin', 'plugin.json'),
       path.join(codexExplorePluginRoot, 'scripts', 'render-artifacts.mjs'),
-      path.join(codexExplorePluginRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md'),
-      path.join(codexExplorePluginRoot, 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      path.join(codexExplorePluginRoot, 'codex', 'templates', 'codex-explore', 'SKILL.md'),
+      path.join(codexExplorePluginRoot, 'codex', 'templates', 'codex-explore', 'agents', 'openai.yaml'),
     ];
     await Promise.all(requiredPaths.map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
@@ -220,7 +220,6 @@ describe('pack smoke', () => {
     });
     expect(codexExploreCodexManifest).toMatchObject({
       name: 'codex-explore',
-      skills: './codex/skills',
     });
 
     const codexBundlePaths = collectStringPaths([

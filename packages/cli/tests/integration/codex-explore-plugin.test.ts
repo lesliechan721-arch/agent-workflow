@@ -248,6 +248,12 @@ async function configureCodexExploreSingleSkillArtifact(options: {
   skillKey: string;
 }): Promise<void> {
   await mutateCodexExploreManifest(options.rootDir, (manifest) => {
+    manifest.skillTriggers = {
+      [options.skillKey]: {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+    };
     manifest.artifacts = {
       targets: [{
         id: options.id,
@@ -649,6 +655,22 @@ function codexExploreNativeCachePath(env: NodeJS.ProcessEnv, pluginName: string)
   return path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName, '0.1.0');
 }
 
+function resolveCodexExploreNativeCachePath(env: NodeJS.ProcessEnv, pluginName: string): string {
+  const cacheRoot = path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName);
+  if (!fs.existsSync(cacheRoot)) {
+    return codexExploreNativeCachePath(env, pluginName);
+  }
+
+  const versions = fs.readdirSync(cacheRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+
+  return versions.length > 0
+    ? path.join(cacheRoot, versions[versions.length - 1])
+    : codexExploreNativeCachePath(env, pluginName);
+}
+
 function resolveMarketplacePluginRootSync(
   marketplacePath: string | undefined,
   fallbackRoot: string,
@@ -838,7 +860,7 @@ function userDynamicSkillPath(awHome: string, skillKey = 'codex-explore'): strin
 
 function cachedDynamicSkillPath(env: NodeJS.ProcessEnv, skillKey = 'codex-explore'): string {
   return path.join(
-    codexExploreNativeCachePath(env, 'codex-explore'),
+    resolveCodexExploreNativeCachePath(env, 'codex-explore'),
     'codex',
     'skills',
     skillKey,
@@ -848,7 +870,7 @@ function cachedDynamicSkillPath(env: NodeJS.ProcessEnv, skillKey = 'codex-explor
 
 function cachedDynamicSkillMetadataPath(env: NodeJS.ProcessEnv, skillKey = 'codex-explore'): string {
   return path.join(
-    codexExploreNativeCachePath(env, 'codex-explore'),
+    resolveCodexExploreNativeCachePath(env, 'codex-explore'),
     'codex',
     'skills',
     skillKey,
@@ -1242,7 +1264,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('installs Codex user dynamic skill into AW runtime and native cache with current user config', async () => {
+  it('installs Codex user dynamic skill into AW runtime without requiring a native cache runtime skill copy', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -1284,9 +1306,8 @@ describe('codex-explore integration acceptance', () => {
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
-    const [runtimeSkill, cachedSkill, statusResult] = await Promise.all([
+    const [runtimeSkill, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
-      fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
       statusCommand(
         ['codex-explore'],
         {
@@ -1309,9 +1330,7 @@ describe('codex-explore integration acceptance', () => {
 
     expect(runtimeSkill).toContain('model=gpt-5.5');
     expect(runtimeSkill).toContain('reasoning=high');
-    expect(cachedSkill).toContain('model=gpt-5.5');
-    expect(cachedSkill).toContain('reasoning=high');
-    expect(cachedSkill).not.toContain('agent_type` 设为 `"codex-explorer"`');
+    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
     expect(skillArtifact).toMatchObject({
       target: 'codex.skill',
       state: 'present',
@@ -1697,7 +1716,6 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const beforeRuntimeSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    const beforeCachedSkill = await fs.readFile(cachedDynamicSkillPath(process.env), 'utf8');
     const statusBefore = await statusCommand(
       ['codex-explore'],
       {
@@ -1755,9 +1773,8 @@ describe('codex-explore integration acceptance', () => {
       },
     });
 
-    const [afterRuntimeSkill, afterCachedSkill, statusResult] = await Promise.all([
+    const [afterRuntimeSkill, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
-      fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
       statusCommand(
         ['codex-explore'],
         {
@@ -1779,7 +1796,7 @@ describe('codex-explore integration acceptance', () => {
     const skillArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-skill');
 
     expect(afterRuntimeSkill).toBe(beforeRuntimeSkill);
-    expect(afterCachedSkill).toBe(beforeCachedSkill);
+    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
     expect(skillArtifact.lastRefresh).toMatchObject({
       status: 'failed',
       event: 'config',
@@ -1916,7 +1933,7 @@ describe('codex-explore integration acceptance', () => {
     });
   }, 15_000);
 
-  it('repair re-renders codex.skill from current config and trigger preference, and refreshes the native cache', async () => {
+  it('repair re-renders codex.skill from current config and current built-in trigger resolution, and prunes stale native cache runtime files', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -1959,7 +1976,6 @@ describe('codex-explore integration acceptance', () => {
       },
     });
     await fs.writeFile(userDynamicSkillPath(awHome), '# stale runtime\n', 'utf8');
-    await fs.writeFile(cachedDynamicSkillPath(process.env), '# stale cache\n', 'utf8');
 
     const statusBeforeRepair = await statusCommand(
       ['codex-explore'],
@@ -2022,7 +2038,7 @@ describe('codex-explore integration acceptance', () => {
       }>;
     };
     const repairedSkill = payload.locations[0]?.dynamicArtifacts?.find((artifact) => artifact.id === 'codex-explore-skill');
-    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('manual');
+    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
     expect(repairedSkill).toMatchObject({
       target: 'codex.skill',
       artifactKey: 'codex-explore',
@@ -2030,11 +2046,9 @@ describe('codex-explore integration acceptance', () => {
       contentDigest: expect.stringMatching(/^sha256:/),
     });
 
-    const [runtimeSkill, cachedSkill, runtimeManual, cachedManual, statusResult] = await Promise.all([
+    const [runtimeSkill, runtimeAllowsImplicitInvocation, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
-      fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
       readAllowImplicitInvocation(userSkillMetadataPath(awHome)),
-      readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env)),
       statusCommand(
         ['codex-explore'],
         {
@@ -2057,10 +2071,9 @@ describe('codex-explore integration acceptance', () => {
 
     expect(runtimeSkill).toContain('model=gpt-5.5');
     expect(runtimeSkill).toContain('reasoning=high');
-    expect(cachedSkill).toContain('model=gpt-5.5');
-    expect(cachedSkill).toContain('reasoning=high');
-    expect(runtimeManual).toBe(false);
-    expect(cachedManual).toBe(false);
+    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
+    await expect(fs.pathExists(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(false);
+    expect(runtimeAllowsImplicitInvocation).toBe(true);
     expect(statusSkill).toMatchObject({
       configDigest: repairedSkill?.configDigest,
       contentDigest: repairedSkill?.contentDigest,
@@ -2090,7 +2103,6 @@ describe('codex-explore integration acceptance', () => {
     );
 
     await fs.writeFile(userDynamicSkillPath(awHome), '# stale runtime\n', 'utf8');
-    await fs.writeFile(cachedDynamicSkillPath(process.env), '# stale cache\n', 'utf8');
 
     const statusBeforeRepair = await statusCommand(
       ['codex-explore'],
@@ -2166,7 +2178,7 @@ describe('codex-explore integration acceptance', () => {
     expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
     expect(recordOptions.skillTriggerPreference).toBe('auto');
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
-    await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
+    await expect(fs.pathExists(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(false);
   });
 
   it('project repair fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
@@ -2325,15 +2337,8 @@ describe('codex-explore integration acceptance', () => {
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
-    const [restoredRuntimeSkill, restoredRuntimeMetadata, embeddedRuntimeSkill, embeddedRuntimeMetadata] = await Promise.all([
-      fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
-      fs.readFile(userSkillMetadataPath(awHome), 'utf8'),
-      fs.readFile(path.join(rebuiltEmbeddedRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
-      fs.readFile(path.join(rebuiltEmbeddedRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'), 'utf8'),
-    ]);
-
-    expect(restoredRuntimeSkill).toBe(embeddedRuntimeSkill);
-    expect(restoredRuntimeMetadata).toBe(embeddedRuntimeMetadata);
+    await expect(fs.pathExists(userDynamicSkillPath(awHome))).resolves.toBe(false);
+    await expect(fs.pathExists(userSkillMetadataPath(awHome))).resolves.toBe(false);
     await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
     await expect(fs.readFile(foreignRuntimeSkillPath, 'utf8')).resolves.toBe('# foreign runtime\n');
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
@@ -2350,7 +2355,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     await expect(fs.readFile(userDynamicSkillPath(awHome), 'utf8')).resolves.toContain('Dynamic Explore');
-    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
+    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(false);
   });
 
@@ -2453,9 +2458,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(userDynamicSkillPath(awHome, 'codex-explore-v2'), 'utf8')).resolves.toContain(
       'Dynamic Explore V2',
     );
-    await expect(fs.readFile(cachedDynamicSkillPath(process.env, 'codex-explore-v2'), 'utf8')).resolves.toContain(
-      'Dynamic Explore V2',
-    );
+    await expect(fs.pathExists(cachedDynamicSkillPath(process.env, 'codex-explore-v2'))).resolves.toBe(false);
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome, 'codex-explore-v2'))).resolves.toBe(false);
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
     expect(trackingArtifacts.find((artifact) => artifact.id === 'codex-explore-skill-v2')).toMatchObject({
@@ -2894,7 +2897,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.pathExists(path.join(awHome, 'lifecycle.log'))).resolves.toBe(false);
   });
 
-  it('keeps $codex-explore auto-triggerable with explicit --skill-trigger auto install', async () => {
+  it('keeps $codex-explore auto-triggerable under the default built-in trigger policy on project install', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -2908,7 +2911,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );

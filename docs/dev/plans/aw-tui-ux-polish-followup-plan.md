@@ -426,63 +426,63 @@ graph TD
 
 主要文件：
 
-- [ ] `packages/cli/src/utils/plugin-config.ts`
-- [ ] `packages/cli/src/utils/plugin-config-write.ts`
-- [ ] `packages/cli/src/utils/artifact-refresh.ts`
-- [ ] `packages/cli/src/commands/repair.ts`
-- [ ] `packages/cli/src/commands/console-wizard.ts`
-- [ ] `packages/cli/src/output/command-receipt.ts`
-- [ ] `packages/cli/src/output/model.ts`
-- [ ] `packages/cli/src/index.ts`
-- [ ] `packages/cli/src/types.ts`
+- [x] `packages/cli/src/utils/plugin-config.ts`
+- [x] `packages/cli/src/utils/plugin-config-write.ts`
+- [x] `packages/cli/src/utils/artifact-refresh.ts`
+- [x] `packages/cli/src/commands/repair.ts`
+- [x] `packages/cli/src/commands/console-wizard.ts`
+- [x] `packages/cli/src/output/command-receipt.ts`
+- [x] `packages/cli/src/output/model.ts`
+- [x] `packages/cli/src/index.ts`
+- [x] `packages/cli/src/types.ts`
 
 待办：
 
-- [ ] 定义 `ConfigFieldEntryV2`、`LegacyConfigStoreEntryV2`、`configSchemaVersion: 2` 和配置读命令主输出结构。
-- [ ] 普通 manifest 字段标记为 `kind: "manifest"`、`reserved: false`；AW 注入字段标记为 `kind: "builtIn"`、`reserved: true`。
-- [ ] SkillTrigger 用户可操作逻辑 key 固定为 `aw.skillTriggers.<skill>.trigger`，内部持久化使用 `$aw.skillTriggers` namespace。
-- [ ] `aw config list/get --json` 用 `fields` 作为主合同，不把旧 `summary.values` / `layers` 当作新语义唯一出口。
-- [ ] `aw config set/unset/reset --json` 输出 `receiptSchemaVersion: 2` 和 `affectedFields`，不输出 `configSchemaVersion: 2` 冒充读命令。
-- [ ] 普通旧配置无法被 current `config.schema` 解释时，通过 `legacyConfigStores` 暴露 store 级残留，不枚举普通 raw key 或 raw value。
-- [ ] `aw config get <plugin> <普通key> --json` 在 store-only 旧普通配置场景确定性失败，stdout 为空，stderr 说明只能整层清理。
-- [ ] SkillTrigger built-in 字段不依赖普通 `config.schema`；没有普通 schema 的插件也能 list/get/set/unset/reset 内建字段。
-- [ ] project scope 的 SkillTrigger effective 只由默认值和 project shared 配置决定；project local 存量值显示为 `invalid`，不能改变 runtime 真值。
-- [ ] `aw config get/set/unset <plugin> aw.skillTriggers.<skill>.trigger --scope project --local` 确定性失败，不写 store，不触发 apply。
-- [ ] fixed、ignored、orphaned、invalid 的 JSON、CLI 人类输出和 TUI 字段语义保持一致。
-- [ ] `aw config set/unset/reset --scope project` 与 `--scope project --local` 的普通字段写入在目标展开后只命中 project shared 或 project local config store，且保存后的自动应用只涉及 Codex project repo-managed target 或无可应用 runtime 时，复用 embedded catalog，不触发本地 catalog gate。
-- [ ] 配置写入后触发 built-in apply pipeline，并对同 store apply group 的 sibling target 输出 per-target 结果。
-- [ ] `aw repair` 处理配置驱动 runtime drift 时读取当前 effective config，重放 built-in apply 和 tracked dynamic artifact refresh，不修改 config store。
-- [ ] `aw repair <plugin> --platform codex --scope project` 处理配置驱动 runtime drift 时，如果只需要 repo-visible artifact refresh 或 SkillTrigger built-in apply pipeline，保持 embedded catalog 零写入；实际转入 native runtime、shared runtime 或本地 marketplace 分支前再运行 catalog gate。
+- [x] 定义 `ConfigFieldEntryV2`、`LegacyConfigStoreEntryV2`、`configSchemaVersion: 2` 和配置读命令主输出结构。
+- [x] 普通 manifest 字段标记为 `kind: "manifest"`、`reserved: false`；AW 注入字段标记为 `kind: "builtIn"`、`reserved: true`。
+- [x] SkillTrigger 用户可操作逻辑 key 固定为 `aw.skillTriggers.<skill>.trigger`，内部持久化使用 `$aw.skillTriggers` namespace。
+- [x] `aw config list/get --json` 用 `fields` 作为主合同，不把旧 `summary.values` / `layers` 当作新语义唯一出口。
+- [x] `aw config set/unset/reset --json` 输出 `receiptSchemaVersion: 2` 和 `affectedFields`，不输出 `configSchemaVersion: 2` 冒充读命令。
+- [x] 普通旧配置无法被 current `config.schema` 解释时，通过 `legacyConfigStores` 暴露 store 级残留，不枚举普通 raw key 或 raw value。
+- [x] `aw config get <plugin> <普通key> --json` 在 store-only 旧普通配置场景确定性失败，stdout 为空，stderr 说明只能整层清理。
+- [x] SkillTrigger built-in 字段不依赖普通 `config.schema`；没有普通 schema 的插件也能 list/get/set/unset/reset 内建字段。
+- [x] project scope 的 SkillTrigger effective 只由默认值和 project shared 配置决定；project local 存量值显示为 `invalid`，不能改变 runtime 真值。
+- [x] `aw config get/set/unset <plugin> aw.skillTriggers.<skill>.trigger --scope project --local` 确定性失败，不写 store，不触发 apply。
+- [x] fixed、ignored、orphaned、invalid 的 JSON、CLI 人类输出和 TUI 字段语义保持一致。
+- [x] `aw config set/unset/reset --scope project` 与 `--scope project --local` 的普通字段写入在目标展开后只命中 project shared 或 project local config store，且保存后的自动应用只涉及 Codex project repo-managed target 或无可应用 runtime 时，复用 embedded catalog，不触发本地 catalog gate。
+- [x] 配置写入后触发 built-in apply pipeline，并对同 store apply group 的 sibling target 输出 per-target 结果。
+- [x] `aw repair` 处理配置驱动 runtime drift 时读取当前 effective config，重放 built-in apply 和 tracked dynamic artifact refresh，不修改 config store。
+- [x] `aw repair <plugin> --platform codex --scope project` 处理配置驱动 runtime drift 时，如果只需要 repo-visible artifact refresh 或 SkillTrigger built-in apply pipeline，保持 embedded catalog 零写入；实际转入 native runtime、shared runtime 或本地 marketplace 分支前再运行 catalog gate。
 
 测试验收：
 
-- [ ] `packages/cli/tests/unit/plugin-config.test.ts`
-- [ ] `packages/cli/tests/unit/config-write.test.ts`
-- [ ] `packages/cli/tests/unit/command-receipt.test.ts`
-- [ ] `packages/cli/tests/unit/repair-command.test.ts`
-- [ ] `packages/cli/tests/unit/console-wizard.test.ts`
-- [ ] `packages/cli/tests/integration/cli-entry-json-harness.test.ts`
-- [ ] `packages/cli/tests/integration/plugin-lifecycle-command.test.ts`
-- [ ] 覆盖 `aw config list/get --json` 顶层 `configSchemaVersion: 2` 和 `fields`，`set/unset/reset --json` 顶层 `receiptSchemaVersion: 2` 和 `affectedFields`。
-- [ ] 覆盖普通字段 `kind: "manifest"`、AW 内建字段 `kind: "builtIn"` / `reserved: true`，以及 `aw.skillTriggers.<skill>.trigger` 到 `$aw.skillTriggers` 的持久化边界。
-- [ ] 覆盖没有普通 `config.schema` 的插件仍能 list/get/set/unset/reset SkillTrigger 内建字段。
-- [ ] 覆盖 store-only 旧普通配置只通过 `legacyConfigStores` 暴露，不能按 raw key 读取、更新、清空或删除。
-- [ ] 覆盖 project scope 的 SkillTrigger effective 不受 project local 存量值影响，`--scope project --local` 命中 SkillTrigger key 时确定性失败且不写 store。
-- [ ] 覆盖 fixed、ignored、orphaned、invalid 的 JSON、CLI 人类输出和 TUI 字段语义一致。
-- [ ] 覆盖 `aw config set/unset/reset --scope project` 和 `--scope project --local` 在 repo-managed / no-runtime 分支不初始化、刷新或覆盖确认 `~/.aw`，保存后自动 apply 也不触发 gate。
-- [ ] 覆盖配置写入后触发 built-in apply pipeline，同 store apply group 的 sibling target 输出 per-target 结果。
-- [ ] 覆盖 `aw repair` 处理配置驱动 runtime drift 时读取当前 effective config，不修改 config store。
-- [ ] 覆盖 `aw repair <plugin> --platform codex --scope project` 在 repo-visible artifact refresh 或 built-in apply 分支不触发 catalog gate，转入 native / shared / marketplace 分支前才进入 gate。
+- [x] `packages/cli/tests/unit/plugin-config.test.ts`
+- [x] `packages/cli/tests/unit/config-write.test.ts`
+- [x] `packages/cli/tests/unit/command-receipt.test.ts`
+- [x] `packages/cli/tests/unit/repair-command.test.ts`
+- [x] `packages/cli/tests/unit/console-wizard.test.ts`
+- [x] `packages/cli/tests/integration/cli-entry-json-harness.test.ts`
+- [x] `packages/cli/tests/integration/plugin-lifecycle-command.test.ts`
+- [x] 覆盖 `aw config list/get --json` 顶层 `configSchemaVersion: 2` 和 `fields`，`set/unset/reset --json` 顶层 `receiptSchemaVersion: 2` 和 `affectedFields`。
+- [x] 覆盖普通字段 `kind: "manifest"`、AW 内建字段 `kind: "builtIn"` / `reserved: true`，以及 `aw.skillTriggers.<skill>.trigger` 到 `$aw.skillTriggers` 的持久化边界。
+- [x] 覆盖没有普通 `config.schema` 的插件仍能 list/get/set/unset/reset SkillTrigger 内建字段。
+- [x] 覆盖 store-only 旧普通配置只通过 `legacyConfigStores` 暴露，不能按 raw key 读取、更新、清空或删除。
+- [x] 覆盖 project scope 的 SkillTrigger effective 不受 project local 存量值影响，`--scope project --local` 命中 SkillTrigger key 时确定性失败且不写 store。
+- [x] 覆盖 fixed、ignored、orphaned、invalid 的 JSON、CLI 人类输出和 TUI 字段语义一致。
+- [x] 覆盖 `aw config set/unset/reset --scope project` 和 `--scope project --local` 在 repo-managed / no-runtime 分支不初始化、刷新或覆盖确认 `~/.aw`，保存后自动 apply 也不触发 gate。
+- [x] 覆盖配置写入后触发 built-in apply pipeline，同 store apply group 的 sibling target 输出 per-target 结果。
+- [x] 覆盖 `aw repair` 处理配置驱动 runtime drift 时读取当前 effective config，不修改 config store。
+- [x] 覆盖 `aw repair <plugin> --platform codex --scope project` 在 repo-visible artifact refresh 或 built-in apply 分支不触发 catalog gate，转入 native / shared / marketplace 分支前才进入 gate。
 
 阶段验收：
 
-- [ ] `aw config list/get --json` 顶层包含 `configSchemaVersion: 2` 和 `fields`。
-- [ ] `aw config set/unset/reset --json` 顶层包含 `receiptSchemaVersion: 2` 和 `affectedFields`。
-- [ ] fixed skill 展示为只读固定默认值，写入失败。
-- [ ] ignored 旧 `$aw` 覆盖不会影响 effective，也不会被读路径自动删除。
-- [ ] orphaned SkillTrigger 可以在 user 或 project shared 层按 key 清理，不能 set 新值。
-- [ ] project local 的 SkillTrigger 存量值只能作为 invalid 暴露，不能写入或参与 apply。
-- [ ] project-only 配置写入和项目级 repair 的 repo-managed / no-runtime 分支不触发本地 catalog gate，也不写入 `~/.aw`。
+- [x] `aw config list/get --json` 顶层包含 `configSchemaVersion: 2` 和 `fields`。
+- [x] `aw config set/unset/reset --json` 顶层包含 `receiptSchemaVersion: 2` 和 `affectedFields`。
+- [x] fixed skill 展示为只读固定默认值，写入失败。
+- [x] ignored 旧 `$aw` 覆盖不会影响 effective，也不会被读路径自动删除。
+- [x] orphaned SkillTrigger 可以在 user 或 project shared 层按 key 清理，不能 set 新值。
+- [x] project local 的 SkillTrigger 存量值只能作为 invalid 暴露，不能写入或参与 apply。
+- [x] project-only 配置写入和项目级 repair 的 repo-managed / no-runtime 分支不触发本地 catalog gate，也不写入 `~/.aw`。
 
 ## 阶段 7A/7B：Console item V3 与 TUI 页面模型
 
@@ -490,75 +490,75 @@ graph TD
 
 执行切分：
 
-- [ ] 阶段 7A 先做只读页面骨架：在阶段 4 的 `statusSchemaVersion: 2` 基础上补 `consoleItemsSchemaVersion: 3`、结构化 nextSteps、首页/详情/状态/依赖页面模型和展示边界，依赖阶段 2、4、5。
-- [ ] 阶段 7B 再接配置与 legacy 语义：在阶段 5 的 resolver 和阶段 6 的 `configSchemaVersion: 2` 都稳定后，接入 SkillTrigger 公共投影、当前用户/项目配置 store 残留、旧配置占位项和 config V2 驱动的入口状态，必须等 `LegacyConfigStoreEntryV2`、`ignored` / `orphaned` / `invalid` 语义稳定后开始。
+- [x] 阶段 7A 先做只读页面骨架：在阶段 4 的 `statusSchemaVersion: 2` 基础上补 `consoleItemsSchemaVersion: 3`、结构化 nextSteps、首页/详情/状态/依赖页面模型和展示边界，依赖阶段 2、4、5。
+- [x] 阶段 7B 再接配置与 legacy 语义：在阶段 5 的 resolver 和阶段 6 的 `configSchemaVersion: 2` 都稳定后，接入 SkillTrigger 公共投影、当前用户/项目配置 store 残留、旧配置占位项和 config V2 驱动的入口状态，必须等 `LegacyConfigStoreEntryV2`、`ignored` / `orphaned` / `invalid` 语义稳定后开始。
 
 主要文件：
 
-- [ ] `packages/cli/src/commands/console-model.ts`
-- [ ] `packages/cli/src/commands/console.ts`
-- [ ] `packages/cli/src/commands/discovery.ts`
-- [ ] `packages/cli/src/commands/status.ts`
-- [ ] `packages/cli/src/install-state/status-projection.ts`
-- [ ] `packages/cli/src/utils/plugin-catalog.ts`
-- [ ] `packages/cli/tests/helpers/fake-console.ts`
+- [x] `packages/cli/src/commands/console-model.ts`
+- [x] `packages/cli/src/commands/console.ts`
+- [x] `packages/cli/src/commands/discovery.ts`
+- [x] `packages/cli/src/commands/status.ts`
+- [x] `packages/cli/src/install-state/status-projection.ts`
+- [x] `packages/cli/src/utils/plugin-catalog.ts`
+- [x] `packages/cli/tests/helpers/fake-console.ts`
 
 待办：
 
-- [ ] 7A：`consoleItemsSchemaVersion` 提升到 `3`，承载结构化 nextSteps，并移除旧 SkillTrigger 字段。
-- [ ] 7B：在阶段 6 稳定后接入 SkillTrigger 公共投影，字段语义与 config V2 的 built-in 字段、fixed、ignored、orphaned、invalid 保持一致。
-- [ ] 7A：首页 loader 合并 current catalog 未安装插件、已安装证据、状态证据和历史恢复目标。
-- [ ] 7B：首页 loader 合并当前用户/项目配置 store 残留，并基于 `LegacyConfigStoreEntryV2` 生成旧配置占位项。
-- [ ] 首页按异常、可升级、已安装、未安装分组，空分组不渲染。
-- [ ] 页面模型使用终端可见符号：`!`、`↑`、`✓`、`○`，不能输出 icon id。
-- [ ] 首页卡片展示显示名、简介、版本、平台摘要和主操作，不展示长摘要、命令建议、完整诊断或内部词。
-- [ ] 7B：首页旧配置占位项只进入异常分组，不参与安装、升级或 runtime apply 候选。
-- [ ] 详情页模型合并插件名、版本、简介、状态、异常原因、平台与安装、依赖摘要、最近操作结果和功能菜单。
-- [ ] 详情页主体使用固定位置、状态符号和颜色层级表达简介、平台、状态和版本，不为这些字段添加冗余行内标题。
-- [ ] 推荐动作只标在功能菜单上，不渲染 raw command。
-- [ ] 依赖详情页按真实平台和 scope 分组，只展示已安装目标下的依赖状态。
-- [ ] 依赖详情页模型为正常、异常和缺失依赖同时提供符号、颜色层级和文案：`✓ 正常`、`! <异常原因>`、`× 缺失`。
-- [ ] 没有依赖时，详情页不生成 `依赖` 功能入口。
-- [ ] 状态摘要页默认只展示有证据位置；状态详细信息页消费结构化诊断数据。
-- [ ] 状态详细信息页展示 embedded catalog 回退诊断；本地插件列表存在但未被使用时只在详情层说明，不影响默认状态摘要。
-- [ ] 历史不支持但有现场证据的平台必须在首页和详情页平台区域可见，不能只藏到状态页。
-- [ ] 同一平台同一插件同时拥有健康的 user 和 project 安装时，首页和详情页列出两个 scope，但不能仅因 dual-scope 归到异常。
-- [ ] 健康安装功能菜单只显示 `卸载`，不同时显示 `清理`。
+- [x] 7A：`consoleItemsSchemaVersion` 提升到 `3`，承载结构化 nextSteps，并移除旧 SkillTrigger 字段。
+- [x] 7B：在阶段 6 稳定后接入 SkillTrigger 公共投影，字段语义与 config V2 的 built-in 字段、fixed、ignored、orphaned、invalid 保持一致。
+- [x] 7A：首页 loader 合并 current catalog 未安装插件、已安装证据、状态证据和历史恢复目标。
+- [x] 7B：首页 loader 合并当前用户/项目配置 store 残留，并基于 `LegacyConfigStoreEntryV2` 生成旧配置占位项。
+- [x] 首页按异常、可升级、已安装、未安装分组，空分组不渲染。
+- [x] 页面模型使用终端可见符号：`!`、`↑`、`✓`、`○`，不能输出 icon id。
+- [x] 首页卡片展示显示名、简介、版本、平台摘要和主操作，不展示长摘要、命令建议、完整诊断或内部词。
+- [x] 7B：首页旧配置占位项只进入异常分组，不参与安装、升级或 runtime apply 候选。
+- [x] 详情页模型合并插件名、版本、简介、状态、异常原因、平台与安装、依赖摘要、最近操作结果和功能菜单。
+- [x] 详情页主体使用固定位置、状态符号和颜色层级表达简介、平台、状态和版本，不为这些字段添加冗余行内标题。
+- [x] 推荐动作只标在功能菜单上，不渲染 raw command。
+- [x] 依赖详情页按真实平台和 scope 分组，只展示已安装目标下的依赖状态。
+- [x] 依赖详情页模型为正常、异常和缺失依赖同时提供符号、颜色层级和文案：`✓ 正常`、`! <异常原因>`、`× 缺失`。
+- [x] 没有依赖时，详情页不生成 `依赖` 功能入口。
+- [x] 状态摘要页默认只展示有证据位置；状态详细信息页消费结构化诊断数据。
+- [x] 状态详细信息页展示 embedded catalog 回退诊断；本地插件列表存在但未被使用时只在详情层说明，不影响默认状态摘要。
+- [x] 历史不支持但有现场证据的平台必须在首页和详情页平台区域可见，不能只藏到状态页。
+- [x] 同一平台同一插件同时拥有健康的 user 和 project 安装时，首页和详情页列出两个 scope，但不能仅因 dual-scope 归到异常。
+- [x] 健康安装功能菜单只显示 `卸载`，不同时显示 `清理`。
 
 测试验收：
 
-- [ ] `packages/cli/tests/unit/console-model.test.ts`
-- [ ] `packages/cli/tests/unit/console.test.ts`
-- [ ] `packages/cli/tests/unit/status-dependencies.test.ts`
-- [ ] `packages/cli/tests/unit/install-state-status-projection.test.ts`
-- [ ] `packages/cli/tests/integration/console-entry.test.ts`
-- [ ] 覆盖 7A 的 `consoleItemsSchemaVersion: 3` 基础 shape：结构化 nextSteps，以及旧 SkillTrigger 字段移除。
-- [ ] 覆盖 7B 的 SkillTrigger 公共投影，语义与 config V2 内建字段一致。
-- [ ] 覆盖 7A 首页 loader 合并 catalog-only 插件、已安装证据、状态证据和历史恢复目标。
-- [ ] 覆盖 7B 首页 loader 合并当前用户/项目配置 store 残留，旧配置占位项只进入异常分组。
-- [ ] 覆盖首页按异常、可升级、已安装、未安装分组，空分组不渲染。
-- [ ] 覆盖页面模型使用终端可见符号 `!`、`↑`、`✓`、`○` 或 ASCII 降级，不输出 icon id。
-- [ ] 覆盖首页和详情页展示边界：不显示 raw command、长摘要、完整诊断、内部词或命令建议。
-- [ ] 覆盖详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
-- [ ] 覆盖依赖详情页按真实平台和 scope 分组，状态摘要页默认只展示有证据位置。
-- [ ] 覆盖 TUI 状态详情能显示本地插件列表未被使用的结构化诊断，状态摘要页不显示。
-- [ ] 覆盖依赖详情页正常、异常、缺失状态同时输出符号、颜色层级和文案；无依赖时不显示 `依赖` 入口。
-- [ ] 覆盖历史不支持但有现场证据的平台在首页和详情页可见，健康安装功能菜单只显示 `卸载`。
-- [ ] 覆盖同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
+- [x] `packages/cli/tests/unit/console-model.test.ts`
+- [x] `packages/cli/tests/unit/console.test.ts`
+- [x] `packages/cli/tests/unit/status-dependencies.test.ts`
+- [x] `packages/cli/tests/unit/install-state-status-projection.test.ts`
+- [x] `packages/cli/tests/integration/console-entry.test.ts`
+- [x] 覆盖 7A 的 `consoleItemsSchemaVersion: 3` 基础 shape：结构化 nextSteps，以及旧 SkillTrigger 字段移除。
+- [x] 覆盖 7B 的 SkillTrigger 公共投影，语义与 config V2 内建字段一致。
+- [x] 覆盖 7A 首页 loader 合并 catalog-only 插件、已安装证据、状态证据和历史恢复目标。
+- [x] 覆盖 7B 首页 loader 合并当前用户/项目配置 store 残留，旧配置占位项只进入异常分组。
+- [x] 覆盖首页按异常、可升级、已安装、未安装分组，空分组不渲染。
+- [x] 覆盖页面模型使用终端可见符号 `!`、`↑`、`✓`、`○` 或 ASCII 降级，不输出 icon id。
+- [x] 覆盖首页和详情页展示边界：不显示 raw command、长摘要、完整诊断、内部词或命令建议。
+- [x] 覆盖详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
+- [x] 覆盖依赖详情页按真实平台和 scope 分组，状态摘要页默认只展示有证据位置。
+- [x] 覆盖 TUI 状态详情能显示本地插件列表未被使用的结构化诊断，状态摘要页不显示。
+- [x] 覆盖依赖详情页正常、异常、缺失状态同时输出符号、颜色层级和文案；无依赖时不显示 `依赖` 入口。
+- [x] 覆盖历史不支持但有现场证据的平台在首页和详情页可见，健康安装功能菜单只显示 `卸载`。
+- [x] 覆盖同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
 
 阶段验收：
 
-- [ ] 7A 完成后，裸 `aw` 首页能看到 catalog-only 未安装插件。
-- [ ] 7B 完成后，裸 `aw` 首页能看到旧配置占位项，且该占位项只进入异常分组。
-- [ ] 首页不会输出 `arrow-up-circle`、`check-circle` 等 icon id。
-- [ ] 详情页不显示 `aw upgrade ...` 这类 raw command。
-- [ ] 详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
-- [ ] 依赖页用符号、颜色和文案同时区分正常、异常和缺失状态；无依赖插件没有 `依赖` 入口。
-- [ ] 详情页只有一个 `状态` 入口，不再同时显示 `诊断`。
-- [ ] 状态页默认不列纯未安装平台/scope 矩阵。
-- [ ] TUI 状态详情能说明本地插件列表未被使用，默认状态页保持简洁。
-- [ ] 同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
-- [ ] 健康安装不会同时出现 `卸载` 和 `清理`。
+- [x] 7A 完成后，裸 `aw` 首页能看到 catalog-only 未安装插件。
+- [x] 7B 完成后，裸 `aw` 首页能看到旧配置占位项，且该占位项只进入异常分组。
+- [x] 首页不会输出 `arrow-up-circle`、`check-circle` 等 icon id。
+- [x] 详情页不显示 `aw upgrade ...` 这类 raw command。
+- [x] 详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
+- [x] 依赖页用符号、颜色和文案同时区分正常、异常和缺失状态；无依赖插件没有 `依赖` 入口。
+- [x] 详情页只有一个 `状态` 入口，不再同时显示 `诊断`。
+- [x] 状态页默认不列纯未安装平台/scope 矩阵。
+- [x] TUI 状态详情能说明本地插件列表未被使用，默认状态页保持简洁。
+- [x] 同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
+- [x] 健康安装不会同时出现 `卸载` 和 `清理`。
 
 ## 阶段 8：TUI 导航、确认、目标选择和写动作结果
 
@@ -566,63 +566,63 @@ graph TD
 
 主要文件：
 
-- [ ] `packages/cli/src/commands/runtime.ts`
-- [ ] `packages/cli/src/commands/interactive.ts`
-- [ ] `packages/cli/src/commands/console.ts`
-- [ ] `packages/cli/src/commands/console-wizard.ts`
-- [ ] `packages/cli/src/commands/console-model.ts`
-- [ ] `packages/cli/src/commands/install.ts`
-- [ ] `packages/cli/src/commands/upgrade.ts`
-- [ ] `packages/cli/src/commands/uninstall.ts`
-- [ ] `packages/cli/src/commands/cleanup.ts`
-- [ ] `packages/cli/src/commands/repair.ts`
-- [ ] `packages/cli/src/commands/reinstall.ts`
-- [ ] `packages/cli/tests/helpers/fake-console.ts`
+- [x] `packages/cli/src/commands/runtime.ts`
+- [x] `packages/cli/src/commands/interactive.ts`
+- [x] `packages/cli/src/commands/console.ts`
+- [x] `packages/cli/src/commands/console-wizard.ts`
+- [x] `packages/cli/src/commands/console-model.ts`
+- [x] `packages/cli/src/commands/install.ts`
+- [x] `packages/cli/src/commands/upgrade.ts`
+- [x] `packages/cli/src/commands/uninstall.ts`
+- [x] `packages/cli/src/commands/cleanup.ts`
+- [x] `packages/cli/src/commands/repair.ts`
+- [x] `packages/cli/src/commands/reinstall.ts`
+- [x] `packages/cli/tests/helpers/fake-console.ts`
 
 待办：
 
-- [ ] 修复任意页面 `退出`、`q`、首页 `Esc`、子页面 `Esc` 返回和 `Ctrl+C` 安全退出。
-- [ ] 输入框和密码框内 `q`、`b` 作为普通字符，`Esc` 取消当前输入。
-- [ ] 写操作执行中页的 `q` 和 `Ctrl+C` 只记录延后退出意图，不中断已开始写入、回滚、receipt 写入或诊断状态写回。
-- [ ] 操作完成后默认刷新当前插件数据并返回插件详情页，不返回首页，不停留独立结果页。
-- [ ] 最近结果只保留最新一次操作，并按真实 target 展示完成、回滚、未执行和失败状态。
-- [ ] 危险动作统一使用选项确认页，默认选中取消，不使用文本式 `y/N`。
-- [ ] 卸载、重装、认领、接管、重复安装处理、删除配置、重置配置、清理都走确认页。
-- [ ] 多目标危险动作确认页列出展开后的真实目标和失败处理口径，不只展示 `both` 或“所有平台”。
-- [ ] 认领现有安装、接管共享运行时等高风险恢复动作保持单目标确认。
-- [ ] 清理先展示计划；需要 force 语义时进入高风险确认页，列出风险来源、备份、不可删除项和受影响依赖。
-- [ ] 卸载或清理附带删除配置时，确认页按 config store 分组展示删除范围和主体成功依赖。
-- [ ] 安装/升级平台页、scope 页、依赖确认页和写入前预检按阶段 3 的目标解析结果串起来。
-- [ ] 卸载失败后详情页最近结果提供 `状态` 和 `清理` UI 动作。
-- [ ] 升级成功后刷新状态，不能继续显示旧 `可升级`。
+- [x] 修复任意页面 `退出`、`q`、首页 `Esc`、子页面 `Esc` 返回和 `Ctrl+C` 安全退出。
+- [x] 输入框和密码框内 `q`、`b` 作为普通字符，`Esc` 取消当前输入。
+- [x] 写操作执行中页的 `q` 和 `Ctrl+C` 只记录延后退出意图，不中断已开始写入、回滚、receipt 写入或诊断状态写回。
+- [x] 操作完成后默认刷新当前插件数据并返回插件详情页，不返回首页，不停留独立结果页。
+- [x] 最近结果只保留最新一次操作，并按真实 target 展示完成、回滚、未执行和失败状态。
+- [x] 危险动作统一使用选项确认页，默认选中取消，不使用文本式 `y/N`。
+- [x] 卸载、重装、认领、接管、重复安装处理、删除配置、重置配置、清理都走确认页。
+- [x] 多目标危险动作确认页列出展开后的真实目标和失败处理口径，不只展示 `both` 或“所有平台”。
+- [x] 认领现有安装、接管共享运行时等高风险恢复动作保持单目标确认。
+- [x] 清理先展示计划；需要 force 语义时进入高风险确认页，列出风险来源、备份、不可删除项和受影响依赖。
+- [x] 卸载或清理附带删除配置时，确认页按 config store 分组展示删除范围和主体成功依赖。
+- [x] 安装/升级平台页、scope 页、依赖确认页和写入前预检按阶段 3 的目标解析结果串起来。
+- [x] 卸载失败后详情页最近结果提供 `状态` 和 `清理` UI 动作。
+- [x] 升级成功后刷新状态，不能继续显示旧 `可升级`。
 
 测试验收：
 
-- [ ] `packages/cli/tests/unit/runtime.test.ts`
-- [ ] `packages/cli/tests/unit/console.test.ts`
-- [ ] `packages/cli/tests/unit/console-wizard.test.ts`
-- [ ] `packages/cli/tests/unit/command-receipt.test.ts`
-- [ ] `packages/cli/tests/unit/uninstall-command.test.ts`
-- [ ] `packages/cli/tests/unit/cleanup-command.test.ts`
-- [ ] `packages/cli/tests/integration/console-entry.test.ts`
-- [ ] `packages/cli/tests/integration/console-duplicate-resolution.test.ts`
-- [ ] 覆盖任意页面 `退出`、`q`、首页 `Esc`、子页面 `Esc` 返回和 `Ctrl+C` 安全退出，输入框和密码框内 `q` / `b` 不触发导航。
-- [ ] 覆盖写操作执行中 `q` / `Ctrl+C` 只记录延后退出意图，不中断已开始写入、回滚、receipt 写入或诊断状态写回。
-- [ ] 覆盖操作完成后刷新当前插件数据并返回插件详情页，最近结果只保留最新一次并按真实 target 展示状态。
-- [ ] 覆盖危险动作统一使用默认选中取消的选项确认页，取消后不写状态、写配置或删除文件。
-- [ ] 覆盖多目标危险确认页列出展开后的真实目标，认领和接管等高风险恢复动作保持单目标确认。
-- [ ] 覆盖清理先展示计划，高风险确认页列出风险来源、备份、不可删除项和受影响依赖。
-- [ ] 覆盖卸载或清理附带删除配置时，确认页按 config store 分组展示删除范围和主体成功依赖。
-- [ ] 覆盖卸载失败后最近结果提供 `状态` 和 `清理` UI 动作，升级成功后刷新状态不再显示旧 `可升级`。
+- [x] `packages/cli/tests/unit/runtime.test.ts`
+- [x] `packages/cli/tests/unit/console.test.ts`
+- [x] `packages/cli/tests/unit/console-wizard.test.ts`
+- [x] `packages/cli/tests/unit/command-receipt.test.ts`
+- [x] `packages/cli/tests/unit/uninstall-command.test.ts`
+- [x] `packages/cli/tests/unit/cleanup-command.test.ts`
+- [x] `packages/cli/tests/integration/console-entry.test.ts`
+- [x] `packages/cli/tests/integration/console-duplicate-resolution.test.ts`
+- [x] 覆盖任意页面 `退出`、`q`、首页 `Esc`、子页面 `Esc` 返回和 `Ctrl+C` 安全退出，输入框和密码框内 `q` / `b` 不触发导航。
+- [x] 覆盖写操作执行中 `q` / `Ctrl+C` 只记录延后退出意图，不中断已开始写入、回滚、receipt 写入或诊断状态写回。
+- [x] 覆盖操作完成后刷新当前插件数据并返回插件详情页，最近结果只保留最新一次并按真实 target 展示状态。
+- [x] 覆盖危险动作统一使用默认选中取消的选项确认页，取消后不写状态、写配置或删除文件。
+- [x] 覆盖多目标危险确认页列出展开后的真实目标，认领和接管等高风险恢复动作保持单目标确认。
+- [x] 覆盖清理先展示计划，高风险确认页列出风险来源、备份、不可删除项和受影响依赖。
+- [x] 覆盖卸载或清理附带删除配置时，确认页按 config store 分组展示删除范围和主体成功依赖。
+- [x] 覆盖卸载失败后最近结果提供 `状态` 和 `清理` UI 动作，升级成功后刷新状态不再显示旧 `可升级`。
 
 阶段验收：
 
-- [ ] 首页和任意子页面选择 `退出` 后进程 exit code 为 `0`，不刷新首页，不等待后续输入。
-- [ ] 写操作执行中请求退出后，操作收口结果完整，随后退出控制台。
-- [ ] 取消危险确认不会写状态、写配置或删除文件。
-- [ ] 清理页和高风险清理确认页不把多个平台压成一句总括文案。
-- [ ] 写操作完成后详情页展示刷新后的最新状态和最近结果。
-- [ ] TUI 全流程不显示 `aw ...` 命令建议。
+- [x] 首页和任意子页面选择 `退出` 后进程 exit code 为 `0`，不刷新首页，不等待后续输入。
+- [x] 写操作执行中请求退出后，操作收口结果完整，随后退出控制台。
+- [x] 取消危险确认不会写状态、写配置或删除文件。
+- [x] 清理页和高风险清理确认页不把多个平台压成一句总括文案。
+- [x] 写操作完成后详情页展示刷新后的最新状态和最近结果。
+- [x] TUI 全流程不显示 `aw ...` 命令建议。
 
 ## 阶段 9：TUI 配置管理页与应用/重新应用流程
 
@@ -630,67 +630,67 @@ graph TD
 
 主要文件：
 
-- [ ] `packages/cli/src/commands/console.ts`
-- [ ] `packages/cli/src/commands/console-model.ts`
-- [ ] `packages/cli/src/commands/console-wizard.ts`
-- [ ] `packages/cli/src/utils/plugin-config.ts`
-- [ ] `packages/cli/src/utils/plugin-config-write.ts`
-- [ ] `packages/cli/src/utils/artifact-refresh.ts`
-- [ ] `packages/cli/src/output/command-receipt.ts`
+- [x] `packages/cli/src/commands/console.ts`
+- [x] `packages/cli/src/commands/console-model.ts`
+- [x] `packages/cli/src/commands/console-wizard.ts`
+- [x] `packages/cli/src/utils/plugin-config.ts`
+- [x] `packages/cli/src/utils/plugin-config-write.ts`
+- [x] `packages/cli/src/utils/artifact-refresh.ts`
+- [x] `packages/cli/src/output/command-receipt.ts`
 
 待办：
 
-- [ ] 详情页 `配置` 入口先解析明确可配置 target：location target、未安装预配置 target、config store target。
-- [ ] 单一可配置 target 直接进入配置页；多个平台、scope、project 或 config store target 时先进入配置目标选择页。
-- [ ] 未安装插件只在 current manifest 存在普通 schema 或 SkillTrigger 内建字段时提供预配置入口，默认写个人配置。
-- [ ] 未安装插件只有存在真实 project-installable target 时才展示当前项目预配置。
-- [ ] 插件退场、schema 撤掉或只有 orphaned SkillTrigger 时，配置页提供 store-only 查看和清理，不展示普通 raw key/raw value。
-- [ ] 配置页展示当前 target，作用层按 target 裁剪：`生效`、`个人`、`项目`、`本地`。
-- [ ] `生效` 只是只读合并视图，不生成或依赖 `valueState: "effective"`。
-- [ ] 普通字段和 SkillTrigger 内建字段合并展示，SkillTrigger 标题使用 `<skill> 触发方式` 这类用户文案。
-- [ ] 敏感字段只显示已配置或脱敏状态。
-- [ ] 更新、清空、重置和删除配置使用字段选择页、输入控件和选项确认页。
-- [ ] SkillTrigger 内建字段使用枚举选择，不允许动态变更的字段只读展示，不进入编辑。
-- [ ] project scope 的本地视图不提供 SkillTrigger 内建字段编辑、清空或字段级 reset。
-- [ ] 配置保存按最终 config store 去重；同 store、表单 identity 一致的 sibling location target 形成 apply group。
-- [ ] 跨 `user`、`project shared`、`project local` store，或同 store 但表单 identity 不一致时，拆成多个 config write group；每个 group 分别填写、分别确认、分别写入、分别展示结果，不能静默合并。
-- [ ] 保存成功后 built-in apply pipeline 和 dynamic artifact refresh fan-out 到 apply group 全部 target，并在最近结果和 JSON receipt 中按 target 展示。
-- [ ] `应用` / `重新应用配置` 不修改 config store，只按当前 effective config 重放可重放 runtime 写入。
-- [ ] TUI 项目级配置保存、保存后的自动应用、`应用` 和 `重新应用配置` 在最终目标仍是纯 Codex project repo-managed target，且不需要 native runtime、shared runtime 或本地 marketplace 时，跳过本地插件列表校验页并使用 embedded catalog 继续。
-- [ ] 没有普通 schema 或 tracked dynamic artifact、但存在 SkillTrigger 内建字段的插件，仍可运行 built-in apply pipeline。
-- [ ] 没有任何可重放 runtime 写入时展示 no-op 文案，不当作失败。
+- [x] 详情页 `配置` 入口先解析明确可配置 target：location target、未安装预配置 target、config store target。
+- [x] 单一可配置 target 直接进入配置页；多个平台、scope、project 或 config store target 时先进入配置目标选择页。
+- [x] 未安装插件只在 current manifest 存在普通 schema 或 SkillTrigger 内建字段时提供预配置入口，默认写个人配置。
+- [x] 未安装插件只有存在真实 project-installable target 时才展示当前项目预配置。
+- [x] 插件退场、schema 撤掉或只有 orphaned SkillTrigger 时，配置页提供 store-only 查看和清理，不展示普通 raw key/raw value。
+- [x] 配置页展示当前 target，作用层按 target 裁剪：`生效`、`个人`、`项目`、`本地`。
+- [x] `生效` 只是只读合并视图，不生成或依赖 `valueState: "effective"`。
+- [x] 普通字段和 SkillTrigger 内建字段合并展示，SkillTrigger 标题使用 `<skill> 触发方式` 这类用户文案。
+- [x] 敏感字段只显示已配置或脱敏状态。
+- [x] 更新、清空、重置和删除配置使用字段选择页、输入控件和选项确认页。
+- [x] SkillTrigger 内建字段使用枚举选择，不允许动态变更的字段只读展示，不进入编辑。
+- [x] project scope 的本地视图不提供 SkillTrigger 内建字段编辑、清空或字段级 reset。
+- [x] 配置保存按最终 config store 去重；同 store、表单 identity 一致的 sibling location target 形成 apply group。
+- [x] 跨 `user`、`project shared`、`project local` store，或同 store 但表单 identity 不一致时，拆成多个 config write group；每个 group 分别填写、分别确认、分别写入、分别展示结果，不能静默合并。
+- [x] 保存成功后 built-in apply pipeline 和 dynamic artifact refresh fan-out 到 apply group 全部 target，并在最近结果和 JSON receipt 中按 target 展示。
+- [x] `应用` / `重新应用配置` 不修改 config store，只按当前 effective config 重放可重放 runtime 写入。
+- [x] TUI 项目级配置保存、保存后的自动应用、`应用` 和 `重新应用配置` 在最终目标仍是纯 Codex project repo-managed target，且不需要 native runtime、shared runtime 或本地 marketplace 时，跳过本地插件列表校验页并使用 embedded catalog 继续。
+- [x] 没有普通 schema 或 tracked dynamic artifact、但存在 SkillTrigger 内建字段的插件，仍可运行 built-in apply pipeline。
+- [x] 没有任何可重放 runtime 写入时展示 no-op 文案，不当作失败。
 
 测试验收：
 
-- [ ] `packages/cli/tests/unit/console.test.ts`
-- [ ] `packages/cli/tests/unit/console-wizard.test.ts`
-- [ ] `packages/cli/tests/unit/console-model.test.ts`
-- [ ] `packages/cli/tests/unit/plugin-config.test.ts`
-- [ ] `packages/cli/tests/unit/config-write.test.ts`
-- [ ] `packages/cli/tests/unit/command-receipt.test.ts`
-- [ ] `packages/cli/tests/integration/console-entry.test.ts`
-- [ ] 覆盖配置入口解析明确可配置 target，多个平台、scope、project 或 config store target 时先进入配置目标选择页。
-- [ ] 覆盖未安装插件只在 current manifest 有普通 schema 或 SkillTrigger 内建字段时提供预配置入口，项目预配置只在真实 project-installable target 存在时出现。
-- [ ] 覆盖插件退场、schema 撤掉或只有 orphaned SkillTrigger 时提供 store-only 查看和整层清理，不展示 raw key/raw value。
-- [ ] 覆盖配置页的 target、作用层、只读 `生效` 视图、普通字段和 SkillTrigger 内建字段合并展示、敏感字段脱敏展示。
-- [ ] 覆盖更新、清空、重置和删除配置使用字段选择页、输入控件和选项确认页。
-- [ ] 覆盖 SkillTrigger 内建字段的只读、枚举编辑和 project local 禁止编辑语义。
-- [ ] 覆盖配置保存按 config store 去重，同 store 同表单 identity 的 sibling location target 形成 apply group。
-- [ ] 覆盖跨 `user` / `project shared` / `project local` store 时拆成多个 config write group，分别确认、分别保存、分别展示结果。
-- [ ] 覆盖同 store 但表单 identity 不一致时拆成多个 config write group，不能复用同一份表单输入或静默合并结果。
-- [ ] 覆盖 `应用` / `重新应用配置` 不修改 config store，只按当前 effective config 重放 runtime 写入；无可重放写入时展示 no-op。
-- [ ] 覆盖 TUI 项目级配置保存、保存后自动应用、`应用` 和 `重新应用配置` 在纯 repo-managed target 不进入本地插件列表校验页，也不触发 `~/.aw` 初始化、刷新或覆盖确认。
+- [x] `packages/cli/tests/unit/console.test.ts`
+- [x] `packages/cli/tests/unit/console-wizard.test.ts`
+- [x] `packages/cli/tests/unit/console-model.test.ts`
+- [x] `packages/cli/tests/unit/plugin-config.test.ts`
+- [x] `packages/cli/tests/unit/config-write.test.ts`
+- [x] `packages/cli/tests/unit/command-receipt.test.ts`
+- [x] `packages/cli/tests/integration/console-entry.test.ts`
+- [x] 覆盖配置入口解析明确可配置 target，多个平台、scope、project 或 config store target 时先进入配置目标选择页。
+- [x] 覆盖未安装插件只在 current manifest 有普通 schema 或 SkillTrigger 内建字段时提供预配置入口，项目预配置只在真实 project-installable target 存在时出现。
+- [x] 覆盖插件退场、schema 撤掉或只有 orphaned SkillTrigger 时提供 store-only 查看和整层清理，不展示 raw key/raw value。
+- [x] 覆盖配置页的 target、作用层、只读 `生效` 视图、普通字段和 SkillTrigger 内建字段合并展示、敏感字段脱敏展示。
+- [x] 覆盖更新、清空、重置和删除配置使用字段选择页、输入控件和选项确认页。
+- [x] 覆盖 SkillTrigger 内建字段的只读、枚举编辑和 project local 禁止编辑语义。
+- [x] 覆盖配置保存按 config store 去重，同 store 同表单 identity 的 sibling location target 形成 apply group。
+- [x] 覆盖跨 `user` / `project shared` / `project local` store 时拆成多个 config write group，分别确认、分别保存、分别展示结果。
+- [x] 覆盖同 store 但表单 identity 不一致时拆成多个 config write group，不能复用同一份表单输入或静默合并结果。
+- [x] 覆盖 `应用` / `重新应用配置` 不修改 config store，只按当前 effective config 重放 runtime 写入；无可重放写入时展示 no-op。
+- [x] 覆盖 TUI 项目级配置保存、保存后自动应用、`应用` 和 `重新应用配置` 在纯 repo-managed target 不进入本地插件列表校验页，也不触发 `~/.aw` 初始化、刷新或覆盖确认。
 
 阶段验收：
 
-- [ ] 详情页有清晰 `配置` 入口，且不会静默挑选多个 target 中的一个。
-- [ ] 未安装但可配置的插件能预配置个人配置；项目预配置只在真实可消费时出现。
-- [ ] fixed、ignored、orphaned、invalid 字段在 TUI 配置页的含义与 CLI JSON 一致。
-- [ ] 本地层不能编辑 SkillTrigger 内建字段。
-- [ ] 配置保存、应用和重新应用的结果按 target 展示，而不是只显示整体成功或失败。
-- [ ] TUI 项目级配置保存、应用和重新应用在纯 Codex project repo-managed 分支不进入本地插件列表校验页。
-- [ ] 多 config write group 的保存流程会按 group 分别确认、写入和展示结果。
-- [ ] store-only 旧普通配置只提供整层清理，不展示 raw key/raw value。
+- [x] 详情页有清晰 `配置` 入口，且不会静默挑选多个 target 中的一个。
+- [x] 未安装但可配置的插件能预配置个人配置；项目预配置只在真实可消费时出现。
+- [x] fixed、ignored、orphaned、invalid 字段在 TUI 配置页的含义与 CLI JSON 一致。
+- [x] 本地层不能编辑 SkillTrigger 内建字段。
+- [x] 配置保存、应用和重新应用的结果按 target 展示，而不是只显示整体成功或失败。
+- [x] TUI 项目级配置保存、应用和重新应用在纯 Codex project repo-managed 分支不进入本地插件列表校验页。
+- [x] 多 config write group 的保存流程会按 group 分别确认、写入和展示结果。
+- [x] store-only 旧普通配置只提供整层清理，不展示 raw key/raw value。
 
 ## 阶段 10：作者工具、公开文档与最终回归
 
@@ -698,70 +698,70 @@ graph TD
 
 主要文件：
 
-- [ ] `README.md`
-- [ ] `docs/architecture.md`
-- [ ] `docs/coding-conventions.md`
-- [ ] `docs/testing.md`
-- [ ] `docs/plugin-installation.md`
-- [ ] `docs/plugin-installation-technical-details.md`
-- [ ] `docs/plugin-authoring.md`
-- [ ] `.agents/skills/create-agent-workflows-plugin/SKILL.md`
-- [ ] `.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js`
-- [ ] `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js`
-- [ ] `.agents/skills/create-agent-workflows-plugin/references/`
-- [ ] `.agents/skills/create-agent-workflows-plugin/references/.examples/`
-- [ ] `packages/cli/scripts/test-plugin-scripts.js` 或等价 plugin test runner
-- [ ] `packages/cli/tests/integration/plugin-test-runner.test.ts`
-- [ ] `packages/cli/tests/smoke/build-smoke.test.ts`
-- [ ] `packages/cli/tests/smoke/pack-smoke.test.ts`
-- [ ] `packages/cli/tests/smoke/plugin-scripts-staging-smoke.test.ts`
+- [x] `README.md`
+- [x] `docs/architecture.md`
+- [x] `docs/coding-conventions.md`
+- [x] `docs/testing.md`
+- [x] `docs/plugin-installation.md`
+- [x] `docs/plugin-installation-technical-details.md`
+- [x] `docs/plugin-authoring.md`
+- [x] `.agents/skills/create-agent-workflows-plugin/SKILL.md`
+- [x] `.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js`
+- [x] `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js`
+- [x] `.agents/skills/create-agent-workflows-plugin/references/`
+- [x] `.agents/skills/create-agent-workflows-plugin/references/.examples/`
+- [x] `packages/cli/scripts/test-plugin-scripts.js` 或等价 plugin test runner
+- [x] `packages/cli/tests/integration/plugin-test-runner.test.ts`
+- [x] `packages/cli/tests/smoke/build-smoke.test.ts`
+- [x] `packages/cli/tests/smoke/pack-smoke.test.ts`
+- [x] `packages/cli/tests/smoke/plugin-scripts-staging-smoke.test.ts`
 
 待办：
 
-- [ ] 公开文档移除 `aw diagnose`、`aw diagnose --deep`、`--platform auto` 和安装期 `--skill-trigger` 使用方式。
-- [ ] 文档把排查入口改为 `aw status --verbose`，dependency index 恢复改为 `aw repair --dependency-index` / `aw cleanup --dependency-index --prune-stale <token> --yes`。
-- [ ] 文档把触发策略调整改为 `aw config` / TUI 配置页，配置驱动 runtime drift 的脚本化恢复改为 `aw repair`。
-- [ ] `docs/architecture.md` 移除 `diagnose` 公开命令、默认 `platform=auto`、install record 偏好真值、shared runtime owner preference 真值和 apply 阶段 preference patch。
-- [ ] `docs/coding-conventions.md` 的 SkillTrigger 检查清单更新为 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。
-- [ ] 插件作者文档、脚手架、校验脚本和参考夹具同步 `{ defaultTrigger, allowDynamicTrigger }` 合同。
-- [ ] 脚手架不再生成或推荐 `allowInstallOverride`。
-- [ ] 作者工具校验静态 skill 和动态 `codex.skill` 必须声明 `skillTriggers` entry；公共 `slashCommands` 隐式 fixed/manual 不要求作者补 entry。
-- [ ] `pnpm plugin:test` help、runner、错误提示、smoke test 和作者 skill 不再把 `auto` 当作 platform 值。
-- [ ] `pnpm plugin:test --platform auto` 失败并提示 `codex`、`claude`、`both`。
-- [ ] `pnpm plugin:test` 未传 `--platform` 时按 `both` 处理；`both` 按每个插件最终支持平台集合展开。
-- [ ] `pnpm plugin:test --platform codex|claude` 遇到任一选中插件不支持该平台时，在测试执行前失败。
-- [ ] 补充迁移说明：`consoleItemsSchemaVersion: 3`、`statusSchemaVersion: 2`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2` 和 `nextStepsSchemaVersion: 1`。
-- [ ] 完整运行相关单元、集成和必要 smoke 测试，修复文档与 help 不一致问题。
+- [x] 公开文档移除 `aw diagnose`、`aw diagnose --deep`、`--platform auto` 和安装期 `--skill-trigger` 使用方式。
+- [x] 文档把排查入口改为 `aw status --verbose`，dependency index 恢复改为 `aw repair --dependency-index` / `aw cleanup --dependency-index --prune-stale <token> --yes`。
+- [x] 文档把触发策略调整改为 `aw config` / TUI 配置页，配置驱动 runtime drift 的脚本化恢复改为 `aw repair`。
+- [x] `docs/architecture.md` 移除 `diagnose` 公开命令、默认 `platform=auto`、install record 偏好真值、shared runtime owner preference 真值和 apply 阶段 preference patch。
+- [x] `docs/coding-conventions.md` 的 SkillTrigger 检查清单更新为 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。
+- [x] 插件作者文档、脚手架、校验脚本和参考夹具同步 `{ defaultTrigger, allowDynamicTrigger }` 合同。
+- [x] 脚手架不再生成或推荐 `allowInstallOverride`。
+- [x] 作者工具校验静态 skill 和动态 `codex.skill` 必须声明 `skillTriggers` entry；公共 `slashCommands` 隐式 fixed/manual 不要求作者补 entry。
+- [x] `pnpm plugin:test` help、runner、错误提示、smoke test 和作者 skill 不再把 `auto` 当作 platform 值。
+- [x] `pnpm plugin:test --platform auto` 失败并提示 `codex`、`claude`、`both`。
+- [x] `pnpm plugin:test` 未传 `--platform` 时按 `both` 处理；`both` 按每个插件最终支持平台集合展开。
+- [x] `pnpm plugin:test --platform codex|claude` 遇到任一选中插件不支持该平台时，在测试执行前失败。
+- [x] 补充迁移说明：`consoleItemsSchemaVersion: 3`、`statusSchemaVersion: 2`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2` 和 `nextStepsSchemaVersion: 1`。
+- [x] 完整运行相关单元、集成和必要 smoke 测试，修复文档与 help 不一致问题。
 
 测试验收：
 
-- [ ] `packages/cli/tests/unit/public-docs.test.ts`
-- [ ] `packages/cli/tests/unit/manifest.test.ts`
-- [ ] `packages/cli/tests/integration/plugin-test-runner.test.ts`
-- [ ] `packages/cli/tests/smoke/build-smoke.test.ts`
-- [ ] `packages/cli/tests/smoke/pack-smoke.test.ts`
-- [ ] `packages/cli/tests/smoke/plugin-scripts-staging-smoke.test.ts`
-- [ ] `packages/cli/tests/integration/cli-entry.test.ts`
-- [ ] `packages/cli/tests/integration/cli-entry-json-harness.test.ts`
-- [ ] `pnpm test:unit`
-- [ ] `pnpm test:integration`
-- [ ] `pnpm test:smoke:build`
-- [ ] `pnpm test:smoke:pack`
-- [ ] 覆盖 README、公开文档、CLI help 和作者工具不再引用 `aw diagnose`、`aw diagnose --deep`、`--platform auto` 或安装期 `--skill-trigger`。
-- [ ] 覆盖排查入口迁移到 `aw status --verbose`，dependency index 恢复入口迁移到 `aw repair --dependency-index` / `aw cleanup --dependency-index --prune-stale <token> --yes`。
-- [ ] 覆盖触发策略调整迁移到 `aw config` / TUI 配置页，配置驱动 runtime drift 的脚本化恢复迁移到 `aw repair`。
-- [ ] 覆盖作者文档、脚手架、校验脚本、参考夹具和示例同步 `{ defaultTrigger, allowDynamicTrigger }`，且不再生成或推荐 `allowInstallOverride`。
-- [ ] 覆盖 build smoke 的 bundle 产物断言同步新 SkillTrigger 合同，不再断言 `allowInstallOverride`。
-- [ ] 覆盖 `pnpm plugin:test` 平台语义：`auto` 失败，省略平台按 `both`，`both` 按最终支持平台展开，显式单平台不支持时执行前失败。
-- [ ] 覆盖迁移说明包含 `consoleItemsSchemaVersion: 3`、`statusSchemaVersion: 2`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2` 和 `nextStepsSchemaVersion: 1`。
+- [x] `packages/cli/tests/unit/public-docs.test.ts`
+- [x] `packages/cli/tests/unit/manifest.test.ts`
+- [x] `packages/cli/tests/integration/plugin-test-runner.test.ts`
+- [x] `packages/cli/tests/smoke/build-smoke.test.ts`
+- [x] `packages/cli/tests/smoke/pack-smoke.test.ts`
+- [x] `packages/cli/tests/smoke/plugin-scripts-staging-smoke.test.ts`
+- [x] `packages/cli/tests/integration/cli-entry.test.ts`
+- [x] `packages/cli/tests/integration/cli-entry-json-harness.test.ts`
+- [x] `pnpm test:unit`
+- [x] `pnpm test:integration`
+- [x] `pnpm test:smoke:build`
+- [x] `pnpm test:smoke:pack`
+- [x] 覆盖 README、公开文档、CLI help 和作者工具不再引用 `aw diagnose`、`aw diagnose --deep`、`--platform auto` 或安装期 `--skill-trigger`。
+- [x] 覆盖排查入口迁移到 `aw status --verbose`，dependency index 恢复入口迁移到 `aw repair --dependency-index` / `aw cleanup --dependency-index --prune-stale <token> --yes`。
+- [x] 覆盖触发策略调整迁移到 `aw config` / TUI 配置页，配置驱动 runtime drift 的脚本化恢复迁移到 `aw repair`。
+- [x] 覆盖作者文档、脚手架、校验脚本、参考夹具和示例同步 `{ defaultTrigger, allowDynamicTrigger }`，且不再生成或推荐 `allowInstallOverride`。
+- [x] 覆盖 build smoke 的 bundle 产物断言同步新 SkillTrigger 合同，不再断言 `allowInstallOverride`。
+- [x] 覆盖 `pnpm plugin:test` 平台语义：`auto` 失败，省略平台按 `both`，`both` 按最终支持平台展开，显式单平台不支持时执行前失败。
+- [x] 覆盖迁移说明包含 `consoleItemsSchemaVersion: 3`、`statusSchemaVersion: 2`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2` 和 `nextStepsSchemaVersion: 1`。
 
 阶段验收：
 
-- [ ] README、公开 docs、CLI help、作者工具和测试夹具都不再推荐被移除入口。
-- [ ] 作者脚手架和校验脚本生成的新插件满足新 SkillTrigger 合同。
-- [ ] plugin:test 平台语义与 CLI 平台语义一致。
-- [ ] 公开 JSON schema、TUI 文案、CLI help 和 docs 对版本号、平台、status、config、nextSteps 和 receipt 的说法一致。
-- [ ] 全量单元和集成测试通过；如影响构建产物、pack 产物或发布门禁，smoke build 和 smoke pack 通过。
+- [x] README、公开 docs、CLI help、作者工具和测试夹具都不再推荐被移除入口。
+- [x] 作者脚手架和校验脚本生成的新插件满足新 SkillTrigger 合同。
+- [x] plugin:test 平台语义与 CLI 平台语义一致。
+- [x] 公开 JSON schema、TUI 文案、CLI help 和 docs 对版本号、平台、status、config、nextSteps 和 receipt 的说法一致。
+- [x] 全量单元和集成测试通过；如影响构建产物、pack 产物或发布门禁，smoke build 和 smoke pack 通过。
 
 ## 测试用例明细
 
@@ -806,7 +806,7 @@ graph TD
 - [x] `aw status` 默认简洁输出，不列纯未安装位置。
 - [x] `aw status --verbose` 输出诊断级只读信息，不写状态、缓存、备份、配置或本地 catalog。
 - [x] `aw status --json` 顶层包含 `statusSchemaVersion: 2`。
-- [ ] `aw status --json` 顶层包含 `consoleItemsSchemaVersion: 3`。
+- [x] `aw status --json` 顶层包含 `consoleItemsSchemaVersion: 3`。
 - [x] `aw diagnose` 不出现在 help 中。
 - [x] 直接运行 `aw diagnose ...` 返回 exit code `1`，stdout 为空，stderr 提示使用 `status --verbose`。
 - [x] `aw diagnose --json` 不输出 diagnose JSON。
@@ -838,55 +838,55 @@ graph TD
 - [x] TUI 目标选择页不展示触发策略选择。
 - [x] install record 旧 `skillTriggerPreference` 不影响 status、runtime、refresh、repair 或 drift。
 - [x] fixed skill 历史覆盖显示为 ignored，effective 仍为默认策略。
-- [ ] orphaned SkillTrigger 显示为 orphaned，可清理但不可 set。
-- [ ] project local SkillTrigger 存量值显示为 invalid，不影响 project runtime 真值。
+- [x] orphaned SkillTrigger 显示为 orphaned，可清理但不可 set。
+- [x] project local SkillTrigger 存量值显示为 invalid，不影响 project runtime 真值。
 - [x] built-in apply 覆盖静态 Codex、Claude Code、动态 `codex.skill` 和 slashCommands fixed/manual。
 - [x] shared runtime replay 从 owner location 当前 effective config 计算，不读 owner preference 真值。
 
 ### 配置管理（阶段 6 / 阶段 7B / 阶段 9）
 
-- [ ] `aw config list/get --json` 顶层包含 `configSchemaVersion: 2` 和 `fields`。
-- [ ] `aw config set/unset/reset --json` 顶层包含 `receiptSchemaVersion: 2` 和 `affectedFields`。
-- [ ] 普通字段为 `kind: "manifest"`，内建字段为 `kind: "builtIn"` 且 `reserved: true`。
-- [ ] 普通旧配置无法被 current schema 解释时只通过 `legacyConfigStores` 暴露 store 级残留。
-- [ ] store-only 普通旧字段不能按 raw key 读取、更新、清空或按 key 删除。
-- [ ] SkillTrigger 内建字段不依赖普通 `config.schema`。
-- [ ] `aw config get/set/unset ... --scope project --local` 命中 SkillTrigger key 时确定性失败。
-- [ ] `aw config set/unset/reset --scope project` 和 `--scope project --local` 普通字段写入在 repo-managed / no-runtime 分支不触发本地 catalog gate。
-- [ ] 配置保存按 config store 去重，同 store apply group fan-out 输出 per-target 结果。
-- [ ] 跨 user / project shared / project local store，或同 store 但表单 identity 不一致时，配置保存拆成多个 config write group 并分别确认、保存、展示结果。
-- [ ] `应用` / `重新应用配置` 不修改 config store，只重放 runtime 写入。
-- [ ] TUI 项目级配置保存、自动应用、`应用` 和 `重新应用配置` 在纯 repo-managed target 不进入本地插件列表校验页。
+- [x] `aw config list/get --json` 顶层包含 `configSchemaVersion: 2` 和 `fields`。
+- [x] `aw config set/unset/reset --json` 顶层包含 `receiptSchemaVersion: 2` 和 `affectedFields`。
+- [x] 普通字段为 `kind: "manifest"`，内建字段为 `kind: "builtIn"` 且 `reserved: true`。
+- [x] 普通旧配置无法被 current schema 解释时只通过 `legacyConfigStores` 暴露 store 级残留。
+- [x] store-only 普通旧字段不能按 raw key 读取、更新、清空或按 key 删除。
+- [x] SkillTrigger 内建字段不依赖普通 `config.schema`。
+- [x] `aw config get/set/unset ... --scope project --local` 命中 SkillTrigger key 时确定性失败。
+- [x] `aw config set/unset/reset --scope project` 和 `--scope project --local` 普通字段写入在 repo-managed / no-runtime 分支不触发本地 catalog gate。
+- [x] 配置保存按 config store 去重，同 store apply group fan-out 输出 per-target 结果。
+- [x] 跨 user / project shared / project local store，或同 store 但表单 identity 不一致时，配置保存拆成多个 config write group 并分别确认、保存、展示结果。
+- [x] `应用` / `重新应用配置` 不修改 config store，只重放 runtime 写入。
+- [x] TUI 项目级配置保存、自动应用、`应用` 和 `重新应用配置` 在纯 repo-managed target 不进入本地插件列表校验页。
 
 ### TUI 页面和导航（阶段 7A / 阶段 7B / 阶段 8 / 阶段 9）
 
-- [ ] 首页按异常、可升级、已安装、未安装分组，空分组不显示。
-- [ ] 首页状态符号使用 `!`、`↑`、`✓`、`○` 或 ASCII 降级，不输出 icon id。
-- [ ] 首页展示旧配置占位项，但不提供安装、升级或 runtime apply。
-- [ ] 详情页显示最近一次操作结果，没有结果时不显示该区域。
-- [ ] 详情页推荐动作标在功能菜单，不显示 raw command。
-- [ ] 详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
-- [ ] 详情页有依赖入口时，依赖页按真实平台和 scope 分组。
-- [ ] 依赖页用符号、颜色和文字同时标记正常、异常和缺失状态。
-- [ ] 没有依赖时不显示 `依赖` 入口。
-- [ ] 详情页只显示一个 `状态` 入口。
-- [ ] 同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
-- [ ] 健康安装不同时显示 `卸载` 和 `清理`。
-- [ ] 卸载失败后最近结果提供 `状态` 和 `清理`。
-- [ ] 危险确认页默认选中取消，取消后无写入。
-- [ ] 多目标危险确认页列出每个真实目标。
-- [ ] 写操作完成后刷新并返回插件详情页。
-- [ ] 任意页面 `退出`、`q`、`Esc`、`Ctrl+C` 行为符合 Spec。
-- [ ] 写操作执行中请求退出不会中断写入，收口结果后退出。
+- [x] 首页按异常、可升级、已安装、未安装分组，空分组不显示。
+- [x] 首页状态符号使用 `!`、`↑`、`✓`、`○` 或 ASCII 降级，不输出 icon id。
+- [x] 首页展示旧配置占位项，但不提供安装、升级或 runtime apply。
+- [x] 详情页显示最近一次操作结果，没有结果时不显示该区域。
+- [x] 详情页推荐动作标在功能菜单，不显示 raw command。
+- [x] 详情页主体不显示 `简介`、`状态`、`版本` 等冗余行内标题。
+- [x] 详情页有依赖入口时，依赖页按真实平台和 scope 分组。
+- [x] 依赖页用符号、颜色和文字同时标记正常、异常和缺失状态。
+- [x] 没有依赖时不显示 `依赖` 入口。
+- [x] 详情页只显示一个 `状态` 入口。
+- [x] 同一平台双 scope 的健康安装列出两个 scope，但不会仅因 dual-scope 被归到异常。
+- [x] 健康安装不同时显示 `卸载` 和 `清理`。
+- [x] 卸载失败后最近结果提供 `状态` 和 `清理`。
+- [x] 危险确认页默认选中取消，取消后无写入。
+- [x] 多目标危险确认页列出每个真实目标。
+- [x] 写操作完成后刷新并返回插件详情页。
+- [x] 任意页面 `退出`、`q`、`Esc`、`Ctrl+C` 行为符合 Spec。
+- [x] 写操作执行中请求退出不会中断写入，收口结果后退出。
 
 ### 作者工具和文档（阶段 10）
 
-- [ ] `pnpm plugin:test --platform auto` 失败。
-- [ ] `pnpm plugin:test` 未传平台时按 `both` 处理。
-- [ ] `pnpm plugin:test --platform both` 按每个插件最终支持平台集合展开。
-- [ ] `pnpm plugin:test --platform codex|claude` 遇到不支持平台的插件时执行前失败。
-- [ ] README 和公开文档不再引用 `aw diagnose`、`--platform auto` 或安装期 `--skill-trigger`。
-- [ ] 作者 skill、模板、示例、校验脚本和脚手架同步新 SkillTrigger 合同。
+- [x] `pnpm plugin:test --platform auto` 失败。
+- [x] `pnpm plugin:test` 未传平台时按 `both` 处理。
+- [x] `pnpm plugin:test --platform both` 按每个插件最终支持平台集合展开。
+- [x] `pnpm plugin:test --platform codex|claude` 遇到不支持平台的插件时执行前失败。
+- [x] README 和公开文档不再引用 `aw diagnose`、`--platform auto` 或安装期 `--skill-trigger`。
+- [x] 作者 skill、模板、示例、校验脚本和脚手架同步新 SkillTrigger 合同。
 
 ## 并行实施建议
 
@@ -900,11 +900,11 @@ graph TD
 
 ## 最终回归
 
-- [ ] 运行 `pnpm test:unit`。
-- [ ] 运行 `pnpm test:integration`。
-- [ ] 如改动 build 产物、插件 bundle staging、作者 runner 或发布门禁，运行 `pnpm test:smoke:build`；如改动 pack 产物、tarball 内容或发布 pack 门禁，运行 `pnpm test:smoke:pack`。
-- [ ] 手工或 fake console 覆盖裸 `aw` 首页、详情、状态、配置、安装、升级、卸载、清理、退出和执行中延后退出。
-- [ ] 手工或集成覆盖 `--json` stdout 纯度：catalog gate、status、config、dependency index maintenance、diagnose migration error。
-- [ ] 检查 `README.md`、`docs/`、CLI help、作者 skill、脚手架和示例中不再出现被移除的公开用法。
-- [ ] 检查 TUI 页面不显示 `aw ...` 命令建议、内部词或 icon id。
-- [ ] 检查 `git diff`，确认改动范围只对应本轮需求和必要文档同步。
+- [x] 运行 `pnpm test:unit`。
+- [x] 运行 `pnpm test:integration`。
+- [x] 如改动 build 产物、插件 bundle staging、作者 runner 或发布门禁，运行 `pnpm test:smoke:build`；如改动 pack 产物、tarball 内容或发布 pack 门禁，运行 `pnpm test:smoke:pack`。
+- [x] 手工或 fake console 覆盖裸 `aw` 首页、详情、状态、配置、安装、升级、卸载、清理、退出和执行中延后退出。
+- [x] 手工或集成覆盖 `--json` stdout 纯度：catalog gate、status、config、dependency index maintenance、diagnose migration error。
+- [x] 检查 `README.md`、`docs/`、CLI help、作者 skill、脚手架和示例中不再出现被移除的公开用法。
+- [x] 检查 TUI 页面不显示 `aw ...` 命令建议、内部词或 icon id。
+- [x] 检查 `git diff`，确认改动范围只对应本轮需求和必要文档同步。

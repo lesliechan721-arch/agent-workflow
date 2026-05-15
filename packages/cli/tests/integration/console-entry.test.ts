@@ -1,12 +1,56 @@
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createFakeConsoleDriver, createFakePrompt } from '../helpers/fake-console.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 
-afterEach(() => {
+const tempDirs: string[] = [];
+
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
+
+async function makeWorkspace(): Promise<{
+  repoRoot: string;
+  awHome: string;
+  embeddedRoot: string;
+  env: NodeJS.ProcessEnv;
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-console-entry-'));
+  tempDirs.push(root);
+  const repoRoot = path.join(root, 'repo');
+  await fs.copy(fixturePath('repo-template'), repoRoot);
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  const awHome = path.join(root, 'aw-home');
+  return {
+    repoRoot,
+    awHome,
+    embeddedRoot,
+    env: {
+      ...process.env,
+      AW_HOME: awHome,
+    },
+  };
+}
+
+afterEach(async () => {
   vi.resetModules();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  setEmbeddedPluginsRootOverrideForTests(null);
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('console entry', () => {
@@ -61,10 +105,27 @@ describe('console entry', () => {
         summary: notInstalledSummary,
         pageItem: {
           summary: notInstalledSummary,
-          statusIcon: 'circle',
+          statusSymbol: '○',
           statusTone: 'neutral',
-          platformBadges: [{ label: 'Codex', icon: 'square-terminal', tone: 'neutral' }],
+          platformSummary: 'Codex（个人）',
+          description: 'demo',
+          version: '1.0.0',
           primaryActionLabel: '安装',
+        },
+        detailPage: {
+          summary: notInstalledSummary,
+          statusSymbol: '○',
+          statusTone: 'neutral',
+          platformSummary: 'Codex（个人）',
+          platformDetails: [{
+            label: 'Codex（个人）',
+            status: 'notInstalled',
+            statusLabel: '未安装',
+            statusSymbol: '○',
+            statusTone: 'neutral',
+          }],
+          featureMenu: notInstalledSummary.features,
+          targetOptions: [],
         },
         locations: [{
           platform: 'codex',
@@ -80,14 +141,51 @@ describe('console entry', () => {
             target: { platform: 'codex', scope: 'user' },
           }],
         }],
+        statusPage: {
+          pluginName: 'git-commit',
+          summary: notInstalledSummary,
+          locations: [{
+            key: 'codex:user:-',
+            platform: 'codex',
+            scope: 'user',
+            label: 'Codex（个人）',
+            status: 'notInstalled',
+            statusLabel: '未安装',
+            statusSymbol: '○',
+            statusTone: 'neutral',
+            hasEvidence: false,
+            summary: '未安装',
+            issues: [],
+            suggestedFeatures: [],
+            nextSteps: [],
+            diagnostics: [],
+          }],
+        },
       }])
       .mockResolvedValueOnce([{
         summary: installedSummary,
         pageItem: {
           summary: installedSummary,
-          statusIcon: 'check-circle',
+          statusSymbol: '✓',
           statusTone: 'success',
-          platformBadges: [{ label: 'Codex', icon: 'square-terminal', tone: 'neutral' }],
+          platformSummary: 'Codex（个人）',
+          description: 'demo',
+          version: '1.0.0',
+        },
+        detailPage: {
+          summary: installedSummary,
+          statusSymbol: '✓',
+          statusTone: 'success',
+          platformSummary: 'Codex（个人）',
+          platformDetails: [{
+            label: 'Codex（个人）',
+            status: 'installed',
+            statusLabel: '已安装',
+            statusSymbol: '✓',
+            statusTone: 'success',
+          }],
+          featureMenu: installedSummary.features,
+          targetOptions: [],
         },
         locations: [{
           platform: 'codex',
@@ -99,6 +197,26 @@ describe('console entry', () => {
           nextSteps: [],
           actions: [],
         }],
+        statusPage: {
+          pluginName: 'git-commit',
+          summary: installedSummary,
+          locations: [{
+            key: 'codex:user:-',
+            platform: 'codex',
+            scope: 'user',
+            label: 'Codex（个人）',
+            status: 'installed',
+            statusLabel: '已安装',
+            statusSymbol: '✓',
+            statusTone: 'success',
+            hasEvidence: true,
+            summary: '已安装',
+            issues: [],
+            suggestedFeatures: [],
+            nextSteps: [],
+            diagnostics: [],
+          }],
+        },
       }]);
     const statusCommand = vi.fn()
       .mockResolvedValueOnce({
@@ -237,5 +355,100 @@ describe('console entry', () => {
     expect(promptCalled).toBe(false);
     expect(capture.readStderr()).toContain('当前运行环境不可交互');
     expect(capture.readStderr()).toContain('`aw status --json`');
+  });
+
+  it('shows legacy config placeholders on bare-aw home inside the abnormal section only', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    vi.doUnmock('../../src/commands/status.js');
+    vi.doUnmock('../../src/commands/common.js');
+    vi.doUnmock('../../src/commands/console-wizard.js');
+    vi.doUnmock('../../src/commands/install.js');
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
+      {
+        token: 'legacy-secret',
+      },
+      { spaces: 2 },
+    );
+
+    const prompt = createFakePrompt([
+      { method: 'select', value: '__exit' },
+    ]);
+    const consoleDriver = createFakeConsoleDriver();
+    const capture = createCapturedCliIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli([], {
+      cwd: workspace.repoRoot,
+      env: workspace.env,
+      io: capture.io,
+      prompt,
+      consoleDriver,
+    });
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    const homeView = consoleDriver.views[0];
+    expect(homeView).toBeDefined();
+    expect(homeView!.lines).toContain('异常');
+    const abnormalIndex = homeView!.lines.indexOf('异常');
+    const legacyIndex = homeView!.lines.findIndex((line) => line.includes('! missing-plugin'));
+    expect(legacyIndex).toBeGreaterThan(abnormalIndex);
+    const notInstalledIndex = homeView!.lines.indexOf('未安装');
+    if (notInstalledIndex >= 0) {
+      expect(legacyIndex).toBeLessThan(notInstalledIndex);
+    }
+    const legacyBlock = homeView!.lines.slice(legacyIndex, legacyIndex + 4).join('\n');
+    expect(legacyBlock).toContain('配置残留');
+    expect(legacyBlock).not.toContain('主操作：安装');
+    expect(legacyBlock).not.toContain('主操作：升级');
+  });
+
+  it('shows orphaned built-in config placeholders on bare-aw home', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    vi.doUnmock('../../src/commands/status.js');
+    vi.doUnmock('../../src/commands/common.js');
+    vi.doUnmock('../../src/commands/console-wizard.js');
+    vi.doUnmock('../../src/commands/install.js');
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
+      {
+        $aw: {
+          skillTriggers: {
+            retired: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const prompt = createFakePrompt([
+      { method: 'select', value: '__exit' },
+    ]);
+    const consoleDriver = createFakeConsoleDriver();
+    const capture = createCapturedCliIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli([], {
+      cwd: workspace.repoRoot,
+      env: workspace.env,
+      io: capture.io,
+      prompt,
+      consoleDriver,
+    });
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    const homeView = consoleDriver.views[0];
+    expect(homeView).toBeDefined();
+    expect(homeView!.lines).toContain('异常');
+    const legacyIndex = homeView!.lines.findIndex((line) => line.includes('! missing-plugin'));
+    expect(legacyIndex).toBeGreaterThanOrEqual(0);
+    const legacyBlock = homeView!.lines
+      .slice(legacyIndex, legacyIndex + 8)
+      .join('\n');
+    expect(legacyBlock).toContain('配置残留');
   });
 });

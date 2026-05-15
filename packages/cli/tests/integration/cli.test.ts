@@ -470,7 +470,10 @@ async function addGitCommitReviewSkill(repoRoot: string): Promise<void> {
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
   manifest.skillTriggers ??= {};
-  manifest.skillTriggers.review = { allowInstallOverride: true };
+  manifest.skillTriggers.review = {
+    defaultTrigger: 'auto',
+    allowDynamicTrigger: true,
+  };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
@@ -775,7 +778,7 @@ describe('CLI integration', () => {
     await expect(fs.pathExists(path.join(awHome, 'plugins', 'git-commit'))).resolves.toBe(false);
   });
 
-  it('supports historical status fallback and shows both platforms for status --platform auto', async () => {
+  it('supports historical status fallback and queries both platforms when status omits --platform', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -790,7 +793,6 @@ describe('CLI integration', () => {
       {
         cwd: repoRoot,
         scope: 'project',
-        platform: 'auto',
         verbose: true,
       },
       {
@@ -919,7 +921,7 @@ describe('CLI integration', () => {
     expect(result.output).toContain('插件状态');
     expect(result.output).toContain('git-commit');
     expect(result.output).toContain('状态：');
-    expect(result.output).toContain('位置：');
+    expect(result.output).not.toContain('位置：');
     expect(result.output).not.toContain('catalogCompatibility=');
     expect(result.output).not.toContain('scopeInitialized=');
     expect(result.output).not.toContain('driftWarnings=');
@@ -1369,7 +1371,7 @@ describe('CLI integration', () => {
     });
   });
 
-  it('enforces marketplace.policy.products during install platform resolution', async () => {
+  it('resolves install targets with marketplace.policy.products under the new platform contract', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
     );
@@ -1413,7 +1415,10 @@ describe('CLI integration', () => {
           },
         },
       ),
-    ).rejects.toThrow('marketplace.policy.products=[CODEX]');
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['prompt-guard'],
+    });
 
     await expect(
       installCommand(
@@ -1425,22 +1430,15 @@ describe('CLI integration', () => {
         },
         {
           adapters: {
-            codex: new FakeAdapter('codex', repoRoot, {
-              'prompt-guard': {
-                currentCatalogAvailable: true,
-              },
-            }),
+            codex: new FakeAdapter('codex', repoRoot, {}),
             claude: new FakeAdapter('claude', repoRoot, {}),
           },
         },
       ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['prompt-guard'],
-    });
+    ).rejects.toThrow('Unsupported platform "auto"');
   });
 
-  it('shows single-platform current catalog plugins in status while keeping auto scoped to supported platforms', async () => {
+  it('shows single-platform current catalog plugins in status when status omits --platform', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
     );
@@ -1457,7 +1455,6 @@ describe('CLI integration', () => {
       {
         cwd: repoRoot,
         scope: 'project',
-        platform: 'auto',
       },
       {
         adapters: {
@@ -1686,7 +1683,7 @@ describe('CLI integration', () => {
       artifact.kind === 'mcpServer' && artifact.artifactKey === 'git-commit')).toBe(true);
   });
 
-  it('rejects upgrade --all on degraded ledger and blocks auto platform inference when scopeInitialized is unknown', async () => {
+  it('rejects upgrade --all on degraded ledger and still installs both targets when fresh install preflight tolerates unknown scopeInitialized', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -1729,7 +1726,7 @@ describe('CLI integration', () => {
         {
           cwd: repoRoot,
           scope: 'project',
-          platform: 'auto',
+          platform: 'both',
         },
         {
           adapters: {
@@ -1748,7 +1745,10 @@ describe('CLI integration', () => {
           },
         },
       ),
-    ).rejects.toThrow('scopeInitialized = unknown');
+    ).resolves.toMatchObject({
+      platforms: ['codex', 'claude'],
+      plugins: ['git-commit'],
+    });
   });
 
   it('keeps capability-changed and missing managed plugins non-fatal during upgrade --all', async () => {
@@ -2743,7 +2743,7 @@ describe('CLI integration', () => {
         verbose: true,
       },
     );
-    expect(verboseResult.output).toContain('详细信息');
+    expect(verboseResult.output).toContain('状态详情');
     expect(verboseResult.output).not.toContain('Codex hooks artifact 中缺少当前插件声明的 hook handlers。');
   });
 

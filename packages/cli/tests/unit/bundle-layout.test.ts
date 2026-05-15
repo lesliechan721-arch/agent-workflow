@@ -476,7 +476,8 @@ describe('bundle layout validation', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });

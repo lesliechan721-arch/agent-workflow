@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,7 @@ import type { CliExecutionContext } from '../../src/commands/runtime.js';
 import type {
   ConsoleControllerItem,
   DiagnosePageModel,
+  PluginConsoleConfigProjection,
   PluginConsoleFeatureSummary,
   PluginConsoleLocation,
   PluginConsoleSummary,
@@ -38,8 +40,14 @@ const repairCommand = vi.fn();
 const reinstallCommand = vi.fn();
 const preparePluginTargetsForCommand = vi.fn();
 const createInstallWizardDecision = vi.fn();
+const createConsoleConfigFormIdentity = vi.fn(async (options: { plugin: PluginMeta; form: { fields: Array<{ key: string }> }; platform: string }) =>
+  `${options.plugin.manifest.name}\0${options.platform}\0${options.form.fields.map((field) => field.key).join(',')}`);
 const planConsoleGraphWriteTargets = vi.fn();
 const applyPluginConfigWrite = vi.fn();
+const applyBuiltInConfigWrite = vi.fn();
+const replayConfigRuntimeWrites = vi.fn();
+const replayBuiltInConfigRuntime = vi.fn();
+const resetPluginConfigWithHelper = vi.fn();
 const reapplyConfigRefresh = vi.fn();
 const resolveEffectivePluginConfig = vi.fn();
 const readPluginConfigStore = vi.fn();
@@ -74,9 +82,16 @@ vi.mock('../../src/commands/reinstall.js', () => ({ reinstallCommand }));
 vi.mock('../../src/commands/common.js', () => ({ preparePluginTargetsForCommand }));
 vi.mock('../../src/commands/console-wizard.js', () => ({
   createInstallWizardDecision,
+  createConsoleConfigFormIdentity,
   planConsoleGraphWriteTargets,
 }));
-vi.mock('../../src/utils/plugin-config-write.js', () => ({ applyPluginConfigWrite }));
+vi.mock('../../src/utils/plugin-config-write.js', () => ({
+  applyPluginConfigWrite,
+  applyBuiltInConfigWrite,
+  replayConfigRuntimeWrites,
+  replayBuiltInConfigRuntime,
+  resetPluginConfigWithHelper,
+}));
 vi.mock('../../src/utils/artifact-refresh.js', () => ({ reapplyConfigRefresh }));
 vi.mock('../../src/utils/plugin-config.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/utils/plugin-config.js')>('../../src/utils/plugin-config.js');
@@ -128,10 +143,13 @@ function feature(
       takeoverSharedRuntime: '接管共享触发策略',
       resolveDuplicateInstall: '处理重复安装',
       reapplyConfigRefresh: '重新应用配置',
+      dependencies: '依赖',
       status: '查看状态',
       diagnose: '查看诊断',
     }[kind],
-    targetSelection: kind === 'status' || kind === 'diagnose' ? 'none' : 'singleTarget',
+    targetSelection: kind === 'status' || kind === 'diagnose' || kind === 'dependencies'
+      ? 'none'
+      : 'singleTarget',
     ...overrides,
   };
 }
@@ -181,44 +199,98 @@ function summary(overrides: Partial<PluginConsoleSummary> = {}): PluginConsoleSu
   };
 }
 
+function configProjection(overrides: Partial<PluginConsoleConfigProjection> = {}): PluginConsoleConfigProjection {
+  return {
+    configSchemaVersion: 2,
+    views: [{
+      scope: 'effective',
+      projectLayer: 'shared',
+      fields: [],
+      legacyConfigStores: [],
+    }, {
+      scope: 'user',
+      projectLayer: 'shared',
+      fields: [{
+        key: 'token',
+        title: 'token',
+        kind: 'manifest',
+        reserved: false,
+        writable: true,
+        valueState: 'default',
+        effectiveValue: null,
+        sourceLayer: null,
+      }],
+      legacyConfigStores: [],
+    }],
+    ...overrides,
+  };
+}
+
 function item(overrides: {
   summary?: Partial<PluginConsoleSummary>;
   locations?: PluginConsoleLocation[];
+  dependencyPage?: ConsoleControllerItem['dependencyPage'];
 } = {}): ConsoleControllerItem {
   const builtSummary = summary(overrides.summary);
   const locations = overrides.locations ?? [location()];
+  const recommendedKind = builtSummary.features.find((entry) =>
+    entry.kind !== 'status' && entry.kind !== 'diagnose' && entry.kind !== 'dependencies'
+  )?.kind;
   return {
     summary: builtSummary,
     pageItem: {
       summary: builtSummary,
-      statusIcon: builtSummary.status === 'abnormal' ? 'alert-circle' : builtSummary.status === 'notInstalled' ? 'circle' : 'check-circle',
+      statusSymbol: builtSummary.status === 'abnormal' ? '!' : builtSummary.status === 'notInstalled' ? '○' : builtSummary.status === 'upgradeAvailable' ? '↑' : '✓',
       statusTone: builtSummary.status === 'abnormal' ? 'danger' : builtSummary.status === 'notInstalled' ? 'neutral' : 'success',
-      platformBadges: (builtSummary.supportedPlatforms ?? ['codex']).map((platform) => ({
-        label: platform === 'codex' ? 'Codex' : 'Claude Code',
-        icon: platform === 'codex' ? 'square-terminal' : 'bot',
-        tone: 'neutral',
-      })),
+      platformSummary: builtSummary.locationSummary ?? 'Codex（个人）',
+      ...(builtSummary.description ? { description: builtSummary.description } : {}),
+      ...(builtSummary.version ? { version: builtSummary.version } : {}),
       ...(builtSummary.features.find((entry) => entry.kind !== 'status' && entry.kind !== 'diagnose')
         ? { primaryActionLabel: builtSummary.features.find((entry) => entry.kind !== 'status' && entry.kind !== 'diagnose')!.label }
         : {}),
-      ...(builtSummary.issueSummary ? { summaryText: builtSummary.issueSummary } : {}),
+    },
+    detailPage: {
+      summary: builtSummary,
+      statusSymbol: builtSummary.status === 'abnormal' ? '!' : builtSummary.status === 'notInstalled' ? '○' : builtSummary.status === 'upgradeAvailable' ? '↑' : '✓',
+      statusTone: builtSummary.status === 'abnormal' ? 'danger' : builtSummary.status === 'notInstalled' ? 'neutral' : builtSummary.status === 'upgradeAvailable' ? 'info' : 'success',
+      platformSummary: builtSummary.locationSummary ?? 'Codex（个人）',
+      platformDetails: locations.map((entry) => ({
+        label: entry.locationLabel,
+        status: entry.status,
+        statusLabel: entry.statusLabel,
+        statusSymbol: entry.status === 'abnormal' ? '!' : entry.status === 'notInstalled' ? '○' : entry.status === 'upgradeAvailable' ? '↑' : '✓',
+        statusTone: entry.status === 'abnormal' ? 'danger' : entry.status === 'notInstalled' ? 'neutral' : entry.status === 'upgradeAvailable' ? 'info' : 'success',
+      })),
+      ...(overrides.dependencyPage?.summary ? { dependencySummary: overrides.dependencyPage.summary } : {}),
+      featureMenu: builtSummary.features.map((entry) => ({
+        ...entry,
+        ...(entry.kind === recommendedKind ? { recommended: true } : {}),
+      })),
+      targetOptions: [],
     },
     locations,
     statusPage: {
       pluginName: builtSummary.pluginName,
       summary: builtSummary,
       locations: locations.map((entry) => ({
+        key: `${entry.platform}:${entry.scope}:${entry.projectKey ?? '-'}`,
         platform: entry.platform,
         scope: entry.scope,
         ...(entry.projectKey ? { projectKey: entry.projectKey } : {}),
         label: entry.locationLabel,
         status: entry.status,
         statusLabel: entry.statusLabel,
+        statusSymbol: entry.status === 'abnormal' ? '!' : entry.status === 'notInstalled' ? '○' : entry.status === 'upgradeAvailable' ? '↑' : '✓',
+        statusTone: entry.status === 'abnormal' ? 'danger' : entry.status === 'notInstalled' ? 'neutral' : entry.status === 'upgradeAvailable' ? 'info' : 'success',
+        hasEvidence: entry.status !== 'notInstalled',
+        summary: entry.issueSummary ?? entry.statusLabel,
         issues: [],
         suggestedFeatures: [],
         nextSteps: entry.nextSteps,
+        diagnostics: [],
       })),
     },
+    ...(overrides.dependencyPage ? { dependencyPage: overrides.dependencyPage } : {}),
     ...(builtSummary.issueSummary ? { blockingMessage: builtSummary.issueSummary } : {}),
   };
 }
@@ -306,9 +378,15 @@ function cleanupPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createContext(promptReplies: Parameters<typeof createFakePrompt>[0]) {
+function createContext(
+  promptReplies: Parameters<typeof createFakePrompt>[0],
+  options: {
+    stdin?: NodeJS.ReadableStream;
+  } = {},
+) {
   const prompt = createFakePrompt(promptReplies);
   const consoleDriver = createFakeConsoleDriver();
+  const stdin = options.stdin ?? new PassThrough();
   const context = {
     cwd: '/workspace',
     env: {} as NodeJS.ProcessEnv,
@@ -335,6 +413,7 @@ function createContext(promptReplies: Parameters<typeof createFakePrompt>[0]) {
       stdout: vi.fn(),
       stderr: vi.fn(),
     },
+    stdin,
     isTty: false,
     isCi: false,
   } as unknown as CliExecutionContext;
@@ -369,8 +448,53 @@ describe('console controller stage 5', () => {
     expect(consoleDriver.views[0]?.lines.some((line) => line.includes('Git Commit'))).toBe(true);
   });
 
+  it('renders legacy config placeholders on home without install-style primary actions', async () => {
+    const legacyConfig = {
+      configSchemaVersion: 2,
+      views: [{
+        scope: 'effective',
+        projectLayer: 'shared',
+        fields: [],
+        legacyConfigStores: [{
+          plugin: 'legacy-plugin',
+          storeKind: 'user',
+          reason: 'pluginRemoved',
+          fieldVisibility: 'storeOnly',
+          cleanupOnly: true,
+        }],
+      }],
+    } satisfies PluginConsoleConfigProjection;
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        pluginName: 'legacy-plugin',
+        title: 'legacy-plugin',
+        status: 'abnormal',
+        statusLabel: '异常',
+        locationSummary: '个人配置残留',
+        installedLocations: [],
+        features: [],
+        reasonCodes: [],
+        issueSummary: '检测到旧配置残留。',
+        config: legacyConfig,
+      },
+      locations: [],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(consoleDriver.views[0]?.lines).toContain('异常');
+    expect(consoleDriver.views[0]?.lines.some((line) => line.includes('! legacy-plugin'))).toBe(true);
+    expect(consoleDriver.views[0]?.lines.join('\n')).not.toContain('主操作：安装');
+  });
+
   it('runs install from the feature menu and skips target selection for a single target', async () => {
     statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
     loadConsoleItems
@@ -467,11 +591,13 @@ describe('console controller stage 5', () => {
 
     await expect(runConsoleController(context)).resolves.toBe(0);
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
-    expect(detailView?.lines).toContain('状态：异常');
-    expect(detailView?.lines).toContain('安装摘要：Codex（个人 + 当前项目）');
-    expect(detailView?.lines).toContain('版本：1.2.3');
-    expect(detailView?.lines).toContain('主要原因：同一平台同时存在两个可生效安装。');
-    expect(detailView?.lines).toContain('建议：先决定保留哪一侧，再处理另一侧。');
+    expect(detailView?.lines).toContain('! 异常');
+    expect(detailView?.lines).toContain('Git Commit 1.2.3');
+    expect(detailView?.lines).toContain('帮助生成 commit 信息');
+    expect(detailView?.lines).toContain('Codex（个人 + 当前项目）');
+    expect(detailView?.lines).toContain('同一平台同时存在两个可生效安装。');
+    expect(detailView?.lines.join('\n')).not.toContain('建议：');
+    expect(detailView?.lines.join('\n')).not.toContain('aw ');
 
     const selectMessages = prompt.calls
       .filter((call) => call.method === 'select')
@@ -566,10 +692,9 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'uninstall' },
       { method: 'select', value: 'codex:project:/workspace' },
-      { method: 'confirm', value: true },
       { method: 'select', value: 'keep' },
+      { method: 'confirm', value: true },
       { method: 'select', action: 'exit' },
-      { method: 'select', value: '__exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
@@ -863,7 +988,7 @@ describe('console controller stage 5', () => {
     await expect(runConsoleController(context)).resolves.toBe(0);
     const dependencyPrompt = prompt.calls.find((call) =>
       call.method === 'select' &&
-      (call.options as { message?: string }).message === '确认依赖变更',
+      (call.options as { message?: string }).message === '确认操作',
     );
     expect(dependencyPrompt).toBeTruthy();
     expect(installCommand).not.toHaveBeenCalled();
@@ -939,7 +1064,7 @@ describe('console controller stage 5', () => {
     );
   });
 
-  it('supports config writes through the feature menu', async () => {
+  it('supports config writes through the feature menu with explicit layer and field selection', async () => {
     const tempRoot = await makeTempDir('aw-console-config-');
     const configFile = path.join(tempRoot, 'token.txt');
     await fs.outputFile(configFile, 'token');
@@ -988,7 +1113,7 @@ describe('console controller stage 5', () => {
       values: {},
     });
     applyPluginConfigWrite.mockResolvedValue({
-      updatedKeys: ['token', 'workspaceFile'],
+      updatedKeys: ['token'],
       removedKeys: [],
       artifactRefresh: { status: 'succeeded' },
     });
@@ -997,28 +1122,28 @@ describe('console controller stage 5', () => {
     const { context } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'configure' },
-      { method: 'select', value: 'set' },
+      { method: 'select', value: 'switch-view' },
+      { method: 'select', value: 'project:shared' },
+      { method: 'select', value: 'update-field' },
+      { method: 'select', value: 'token' },
       { method: 'password', value: 'project-token' },
-      { method: 'select', value: 'set' },
-      { method: 'input', value: configFile },
+      { method: 'select', value: 'confirm' },
       { method: 'select', action: 'exit' },
-      { method: 'select', value: '__exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
     expect(applyPluginConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'project',
+      projectLayer: 'shared',
       request: {
         updates: {
           token: 'project-token',
-          workspaceFile: expect.stringMatching(/token\.txt$/),
         },
-        removeKeys: [],
       },
     }));
   });
 
-  it('shows the config refresh failure follow-up without leaking artifact internals', async () => {
+  it('renders config refresh failures without leaking artifact internals', async () => {
     const tempRoot = await makeTempDir('aw-console-config-refresh-');
     const configPlugin = plugin({
       schema: {
@@ -1067,20 +1192,392 @@ describe('console controller stage 5', () => {
     const { context, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'configure' },
-      { method: 'select', value: 'set' },
+      { method: 'select', value: 'location:codex:user:-' },
+      { method: 'select', value: 'switch-view' },
+      { method: 'select', value: 'user:shared' },
+      { method: 'select', value: 'update-field' },
+      { method: 'select', value: 'token' },
       { method: 'input', value: 'secret' },
-      { method: 'select', value: 'reapply' },
-      { method: 'select', action: 'exit' },
+      { method: 'select', value: 'confirm' },
       { method: 'select', action: 'exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    const failureView = consoleDriver.views.find((view) => view.title === 'Git Commit 配置');
-    expect(failureView?.lines).toEqual([
-      '配置已保存，但相关项目文件刷新失败。你可以重新应用配置，或进入诊断查看原因。',
-    ]);
+    expect(consoleDriver.views.some((view) =>
+      view.lines.some((line) => line.includes('相关项目文件：刷新失败')))).toBe(true);
     expect(JSON.stringify(consoleDriver.views)).not.toContain('renderer stack trace');
-    expect(reapplyConfigRefresh).toHaveBeenCalled();
+    expect(reapplyConfigRefresh).not.toHaveBeenCalled();
+  });
+
+  it('asks for an explicit config target when multiple configure targets are available', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    preparePluginTargetsForCommand.mockResolvedValue({ targets: [] });
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        config: configProjection(),
+      },
+      locations: [
+        location({
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'claude', scope: 'user' } }],
+        }),
+      ],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', value: 'location:claude:user:-' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(prompt.calls
+      .filter((call) => call.method === 'select')
+      .map((call) => (call.options as { message?: string }).message))
+      .toContain('选择配置目标');
+    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 配置目标')).toBe(true);
+  });
+
+  it('renders store-only config targets without exposing raw keys or values', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    preparePluginTargetsForCommand.mockResolvedValue({ targets: [] });
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'abnormal',
+        statusLabel: '异常',
+        features: [feature('configure'), feature('status')],
+        config: configProjection({
+          views: [{
+            scope: 'project',
+            projectLayer: 'shared',
+            fields: [],
+            legacyConfigStores: [{
+              plugin: 'git-commit',
+              storeKind: 'projectShared',
+              projectRoot: '/workspace',
+              reason: 'schemaUnavailable',
+              fieldVisibility: 'storeOnly',
+              cleanupOnly: true,
+            }],
+          }],
+        }),
+      },
+      locations: [],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const configView = consoleDriver.views.find((view) => view.title === 'Git Commit 配置');
+    expect(configView?.lines).toContain('当前层存在 store-only 旧配置，只能整层清理。');
+    expect(configView?.lines.join('\n')).not.toContain('legacy-secret');
+    expect(configView?.lines.join('\n')).not.toContain('raw key');
+  });
+
+  it('replays config from the config page without writing config stores', async () => {
+    const configPlugin = plugin({
+      schema: {
+        token: { type: 'string', sensitive: true },
+      },
+    });
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        config: configProjection(),
+      },
+      locations: [location({
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+      })],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{ pluginName: 'git-commit', plugin: configPlugin, currentPlugin: configPlugin }],
+    });
+    replayConfigRuntimeWrites.mockResolvedValue({
+      artifactRefresh: { status: 'skipped' },
+      targetResults: [],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', value: 'apply-config' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(applyBuiltInConfigWrite).not.toHaveBeenCalled();
+    expect(resetPluginConfigWithHelper).not.toHaveBeenCalled();
+    expect(replayConfigRuntimeWrites).toHaveBeenCalledWith(expect.objectContaining({
+      plugin: configPlugin,
+      scope: 'user',
+    }));
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 应用配置' &&
+      view.lines.some((line) => line.includes('当前没有可重放的 runtime 写入。')))).toBe(true);
+  });
+
+  it('defaults uninstalled personal preconfigure targets to the personal layer', async () => {
+    const configPlugin = plugin({
+      schema: {
+        token: { type: 'string', sensitive: true },
+      },
+    });
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        config: configProjection(),
+      },
+      locations: [location({
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+      })],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{ pluginName: 'git-commit', plugin: configPlugin, currentPlugin: configPlugin }],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const configView = consoleDriver.views.find((view) => view.title === 'Git Commit 配置');
+    expect(configView?.lines).toContain('作用层：个人');
+  });
+
+  it('splits same-store config writes into separate groups when form identity differs', async () => {
+    const configPlugin = plugin({
+      schema: {
+        token: { type: 'string', sensitive: true },
+      },
+    });
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        config: configProjection(),
+      },
+      locations: [
+        location({
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'claude', scope: 'user' } }],
+        }),
+      ],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{ pluginName: 'git-commit', plugin: configPlugin, currentPlugin: configPlugin }],
+    });
+    resolveEffectivePluginConfig.mockResolvedValue({
+      pluginName: 'git-commit',
+      projectRoot: '/workspace',
+      values: {},
+      redactedValues: {},
+      sources: {},
+      issues: [],
+      ignoredUnknownKeys: [],
+      schema: configPlugin.manifest.config!.schema,
+      stores: {
+        user: { path: '', exists: false, values: {} },
+        project: { path: '', exists: false, values: {} },
+      },
+    });
+    readPluginConfigStore.mockResolvedValue({
+      path: '',
+      exists: false,
+      values: {},
+    });
+    createConsoleConfigFormIdentity
+      .mockResolvedValueOnce('form-codex')
+      .mockResolvedValueOnce('form-claude');
+    applyPluginConfigWrite
+      .mockResolvedValueOnce({
+        updatedKeys: ['token'],
+        removedKeys: [],
+        artifactRefresh: { status: 'skipped' },
+        targetResults: [{
+          target: { pluginName: 'git-commit', platform: 'codex', scope: 'user' },
+          action: 'configApply',
+          state: 'notRun',
+          message: '当前没有可重放的 runtime 写入。',
+        }],
+      })
+      .mockResolvedValueOnce({
+        updatedKeys: ['token'],
+        removedKeys: [],
+        artifactRefresh: { status: 'skipped' },
+        targetResults: [{
+          target: { pluginName: 'git-commit', platform: 'claude', scope: 'user' },
+          action: 'configApply',
+          state: 'notRun',
+          message: '当前没有可重放的 runtime 写入。',
+        }],
+      });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', value: 'location:codex:user:-' },
+      { method: 'select', value: 'switch-view' },
+      { method: 'select', value: 'user:shared' },
+      { method: 'select', value: 'update-field' },
+      { method: 'select', value: 'token' },
+      { method: 'password', value: 'codex-secret' },
+      { method: 'select', value: 'confirm' },
+      { method: 'password', value: 'claude-secret' },
+      { method: 'select', value: 'confirm' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(applyPluginConfigWrite).toHaveBeenCalledTimes(2);
+    expect(applyPluginConfigWrite).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      applyTargets: [{
+        pluginName: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+      }],
+      request: {
+        updates: {
+          token: 'codex-secret',
+        },
+      },
+    }));
+    expect(applyPluginConfigWrite).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      applyTargets: [{
+        pluginName: 'git-commit',
+        platform: 'claude',
+        scope: 'user',
+      }],
+      request: {
+        updates: {
+          token: 'claude-secret',
+        },
+      },
+    }));
+    expect(consoleDriver.views.some((view) =>
+      view.lines.some((line) => line.includes('个人配置 · Codex（个人）')))).toBe(true);
+    expect(consoleDriver.views.some((view) =>
+      view.lines.some((line) => line.includes('个人配置 · Claude Code（个人）')))).toBe(true);
+  });
+
+  it('shows helper-provided per-target config apply results on the detail page', async () => {
+    const configPlugin = plugin({
+      schema: {
+        token: { type: 'string', sensitive: true },
+      },
+    });
+    const configuredItem = item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        config: configProjection(),
+      },
+      locations: [
+        location({
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'claude', scope: 'user' } }],
+        }),
+      ],
+    });
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([configuredItem]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{ pluginName: 'git-commit', plugin: configPlugin, currentPlugin: configPlugin }],
+    });
+    resolveEffectivePluginConfig.mockResolvedValue({
+      pluginName: 'git-commit',
+      projectRoot: '/workspace',
+      values: {},
+      redactedValues: {},
+      sources: {},
+      issues: [],
+      ignoredUnknownKeys: [],
+      schema: configPlugin.manifest.config!.schema,
+      stores: {
+        user: { path: '', exists: false, values: {} },
+        project: { path: '', exists: false, values: {} },
+      },
+    });
+    readPluginConfigStore.mockResolvedValue({
+      path: '',
+      exists: false,
+      values: {},
+    });
+    createConsoleConfigFormIdentity.mockResolvedValue('shared-form');
+    applyPluginConfigWrite.mockResolvedValue({
+      updatedKeys: ['token'],
+      removedKeys: [],
+      artifactRefresh: { status: 'skipped' },
+      targetResults: [
+        {
+          target: { pluginName: 'git-commit', platform: 'codex', scope: 'user' },
+          action: 'configApply',
+          state: 'completed',
+        },
+        {
+          target: { pluginName: 'git-commit', platform: 'claude', scope: 'user' },
+          action: 'configApply',
+          state: 'notRun',
+          message: '当前 target 没有可重放的 dynamic artifact。',
+        },
+      ],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', value: 'location:codex:user:-' },
+      { method: 'select', value: 'switch-view' },
+      { method: 'select', value: 'user:shared' },
+      { method: 'select', value: 'update-field' },
+      { method: 'select', value: 'token' },
+      { method: 'password', value: 'shared-secret' },
+      { method: 'select', value: 'confirm' },
+      { method: 'select', value: 'result-home' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const detailView = consoleDriver.views.find((view) =>
+      view.title === 'Git Commit' &&
+      view.lines.includes('最近结果 · 配置'));
+    expect(detailView?.lines).toContain('- Codex（个人） · 已完成');
+    expect(detailView?.lines).toContain('- Claude Code（个人） · 未执行：当前 target 没有可重放的 dynamic artifact。');
   });
 
   it('renders cleanup risk details and cancels before the write command', async () => {
@@ -1117,8 +1614,7 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'cleanup' },
       { method: 'select', value: 'keep' },
       { method: 'confirm', value: false },
-      { method: 'select', value: '__back' },
-      { method: 'select', value: '__exit' },
+      { method: 'select', action: 'exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
@@ -1128,8 +1624,8 @@ describe('console controller stage 5', () => {
       expect.objectContaining({ plan: true, removeConfig: false }),
       context,
     );
-    const riskView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理风险');
-    expect(riskView?.lines).toEqual(expect.arrayContaining([
+    const planView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理计划');
+    expect(planView?.lines).toEqual(expect.arrayContaining([
       'Codex：',
       '- Codex（个人） · 已评估',
       '  cleanup 评估完成：git-commit。',
@@ -1144,6 +1640,7 @@ describe('console controller stage 5', () => {
       '  阻断原因：',
       '  - [foreign] 外部归属未确认。',
     ]));
+    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 清理风险')).toBe(false);
     expect(consoleDriver.views.some((view) =>
       view.lines.includes('已取消，本次没有写入任何状态。'),
     )).toBe(true);
@@ -1191,9 +1688,9 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'uninstall' },
       { method: 'select', value: '__all_platforms' },
       { method: 'select', value: 'user' },
+      { method: 'select', value: 'keep' },
       { method: 'confirm', value: false },
-      { method: 'select', value: '__back' },
-      { method: 'select', value: '__exit' },
+      { method: 'select', action: 'exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
@@ -1277,6 +1774,7 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'user' },
       { method: 'select', value: 'remove' },
       { method: 'confirm', value: true },
+      { method: 'confirm', value: true },
       { method: 'select', value: '__exit' },
     ]);
     context.cwd = cwd;
@@ -1318,10 +1816,9 @@ describe('console controller stage 5', () => {
       'Claude Code：',
       '- Claude Code（个人） · 已评估',
     ]));
-    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
-    expect(resultView?.lines.some((line) =>
-      line.includes('配置处理：已在当前用户这一组主体全部成功后删除 AW 自管配置。'),
-    )).toBe(true);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 清理');
+    expect(detailView?.lines).toContain('- 个人 AW 自管配置 · 已删除 · 主体：Codex（个人）、Claude Code（个人）');
   });
 
   it('keeps grouped config when a later all-platform uninstall target fails in the same store', async () => {
@@ -1391,8 +1888,8 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'uninstall' },
       { method: 'select', value: '__all_platforms' },
       { method: 'select', value: 'user' },
-      { method: 'confirm', value: true },
       { method: 'select', value: 'remove' },
+      { method: 'confirm', value: true },
       { method: 'select', action: 'exit' },
     ]);
     context.cwd = cwd;
@@ -1413,13 +1910,12 @@ describe('console controller stage 5', () => {
       context,
     );
     await expect(fs.pathExists(configStorePath)).resolves.toBe(true);
-    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 卸载');
-    expect(resultView?.lines.some((line) =>
-      line.includes('配置处理：已保留当前用户的 AW 自管配置；同一配置位置仍有主体失败。'),
-    )).toBe(true);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 卸载');
+    expect(detailView?.lines).toContain('- 个人 AW 自管配置 · 已保留 · 主体：Codex（个人）、Claude Code（个人）：已保留当前用户的 AW 自管配置；同一配置位置仍有主体失败。');
   });
 
-  it('resolves duplicate installs through cleanup instead of uninstall and shows the unified result page', async () => {
+  it('resolves duplicate installs through cleanup and returns to the plugin detail with the latest result', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -1527,11 +2023,10 @@ describe('console controller stage 5', () => {
       }),
       context,
     );
-    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 重复安装处理风险')).toBe(true);
-    expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 处理重复安装' &&
-      view.lines.includes('cleanup 已完成：git-commit。'),
-    )).toBe(true);
+    expect(consoleDriver.views.some((view) => view.title === 'Git Commit 重复安装处理计划')).toBe(true);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 处理重复安装');
+    expect(detailView?.lines).toContain('- Codex（当前项目） · 已完成');
   });
 
   it('continues all-platform installs after one target fails and still exposes status for the failed non-abnormal target', async () => {
@@ -1610,7 +2105,6 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'install' },
       { method: 'select', value: '__all_platforms' },
       { method: 'select', value: 'user' },
-      { method: 'select', value: 'codex:user:-' },
       { method: 'select', action: 'exit' },
     ]);
 
@@ -1628,23 +2122,10 @@ describe('console controller stage 5', () => {
       expect.objectContaining({ platform: 'claude' }),
       context,
     );
-    const resultPrompt = prompt.calls.find((call) =>
-      call.method === 'select' &&
-      (call.options as { message?: string }).message === '下一步',
-    );
-    expect((resultPrompt!.options as { choices: Array<{ label: string }> }).choices)
-      .toContainEqual(expect.objectContaining({
-        label: '状态 · Codex（个人）',
-        description: 'codex install failed',
-      }));
-    expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 安装' &&
-      view.lines.includes('已完成 2 个目标，其中 1 个成功，1 个失败。'),
-    )).toBe(true);
-    expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 状态' &&
-      view.lines.some((line) => line.includes('Codex（个人）')),
-    )).toBe(true);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 安装');
+    expect(detailView?.lines).toContain('- Codex（个人） · 失败：codex install failed');
+    expect(detailView?.lines).toContain('- Claude Code（个人） · 已完成');
   });
 
   it('renders cleanup failure when actual cleanup still has skipped items and remaining items', async () => {
@@ -1694,19 +2175,9 @@ describe('console controller stage 5', () => {
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
-    expect(resultView?.lines).toEqual(expect.arrayContaining([
-      'cleanup 失败：git-commit。',
-      '实际删除项：',
-      '- 真正删除的记录',
-      '实际备份项：',
-      '- 真正生成的备份',
-      '执行跳过项：',
-      '- 跳过的条目',
-      '未清项：',
-      '- 仍然保留的条目',
-    ]));
-    expect(resultView?.lines).not.toContain('- 计划删除的记录');
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 清理');
+    expect(detailView?.lines).toContain('- Codex（个人） · 失败');
   });
 
   it('shows affected dependents in the cleanup force flow and executes the confirmed force cleanup', async () => {
@@ -1764,6 +2235,7 @@ describe('console controller stage 5', () => {
       { method: 'select', value: 'cleanup' },
       { method: 'select', value: 'keep' },
       { method: 'confirm', value: true },
+      { method: 'confirm', value: true },
       { method: 'select', action: 'exit' },
     ]);
 
@@ -1775,8 +2247,8 @@ describe('console controller stage 5', () => {
     const riskView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理风险');
     expect(riskView?.lines.join('\n')).toContain('受影响依赖：');
     expect(riskView?.lines.join('\n')).toContain('helper-local-dependent');
-    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 清理');
-    expect(resultView?.lines.join('\n')).toContain('repair、reinstall 或 cleanup');
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 清理');
   });
 
   it('renders reinstall outcome lines with a reinstall headline instead of an install headline', async () => {
@@ -1816,18 +2288,16 @@ describe('console controller stage 5', () => {
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    const resultView = consoleDriver.views.find((view) => view.title === 'Git Commit 重新安装');
-    expect(resultView?.lines).toEqual(expect.arrayContaining([
-      '已重新安装 git-commit。',
-    ]));
-    expect(resultView?.lines).not.toContain('已安装 git-commit。');
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 重新安装');
+    expect(detailView?.lines).not.toContain('最近结果 · 安装');
   });
 
   it.each([
     {
       name: 'repair',
       featureKind: 'repair',
-      expectedTitle: 'Git Commit 修复',
+      expectedLabel: '最近结果 · 修复安装',
       replies: [
         { method: 'select', value: 'git-commit' },
         { method: 'select', value: 'repair' },
@@ -1852,7 +2322,7 @@ describe('console controller stage 5', () => {
     {
       name: 'reinstall',
       featureKind: 'reinstall',
-      expectedTitle: 'Git Commit 重新安装',
+      expectedLabel: '最近结果 · 重新安装',
       replies: [
         { method: 'select', value: 'git-commit' },
         { method: 'select', value: 'reinstall' },
@@ -1888,7 +2358,7 @@ describe('console controller stage 5', () => {
     {
       name: 'adoptExisting',
       featureKind: 'adoptExisting',
-      expectedTitle: 'Git Commit 认领现有安装',
+      expectedLabel: '最近结果 · 认领现有安装',
       replies: [
         { method: 'select', value: 'git-commit' },
         { method: 'select', value: 'adoptExisting' },
@@ -1921,7 +2391,7 @@ describe('console controller stage 5', () => {
     {
       name: 'takeoverSharedRuntime',
       featureKind: 'takeoverSharedRuntime',
-      expectedTitle: 'Git Commit 接管共享触发策略',
+      expectedLabel: '最近结果 · 接管共享触发策略',
       replies: [
         { method: 'select', value: 'git-commit' },
         { method: 'select', value: 'takeoverSharedRuntime' },
@@ -1951,7 +2421,7 @@ describe('console controller stage 5', () => {
         });
       },
     },
-  ] as const)('shows the unified result page for $name', async ({ setup, replies, expectedTitle }) => {
+  ] as const)('returns to the detail page with the latest result for $name', async ({ setup, replies, expectedLabel }) => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -1964,8 +2434,186 @@ describe('console controller stage 5', () => {
     expect(prompt.calls.some((call) =>
       call.method === 'select' &&
       (call.options as { message?: string }).message === '下一步',
-    )).toBe(true);
-    expect(consoleDriver.views.some((view) => view.title === expectedTitle)).toBe(true);
+    )).toBe(false);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain(expectedLabel);
+  });
+
+  it('keeps only the latest result on the detail page after multiple writes', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'abnormal',
+        statusLabel: '异常',
+        features: [
+          feature('repair'),
+          feature('reinstall', { destructive: true }),
+          feature('status'),
+        ],
+      },
+      locations: [location({
+        status: 'abnormal',
+        statusLabel: '异常',
+        actions: [
+          { kind: 'repairInstall', label: '修复安装', target: { platform: 'codex', scope: 'user' } },
+          {
+            kind: 'runReinstall',
+            label: '重新安装',
+            target: { platform: 'codex', scope: 'user' },
+            destructive: true,
+            confirmText: 'reinstall?',
+          },
+        ],
+      })],
+    })]);
+    repairCommand.mockResolvedValue({ output: 'repair done' });
+    reinstallCommand.mockResolvedValue({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'repair' },
+      { method: 'select', value: 'reinstall' },
+      { method: 'confirm', value: true },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 重新安装');
+    expect(detailView?.lines).not.toContain('最近结果 · 修复安装');
+  });
+
+  it('refreshes the plugin detail after upgrade and drops the stale upgrade state', async () => {
+    statusCommand
+      .mockResolvedValueOnce(createBaseStatusResult())
+      .mockResolvedValueOnce(createBaseStatusResult());
+    loadConsoleItems
+      .mockResolvedValueOnce([item({
+        summary: {
+          status: 'upgradeAvailable',
+          statusLabel: '可升级',
+          features: [feature('upgrade'), feature('status'), feature('diagnose')],
+        },
+        locations: [location({
+          status: 'upgradeAvailable',
+          statusLabel: '可升级',
+          actions: [{ kind: 'runUpgrade', label: '升级', target: { platform: 'codex', scope: 'user' } }],
+        })],
+      })])
+      .mockResolvedValueOnce([item({
+        summary: {
+          status: 'installed',
+          statusLabel: '已安装',
+          features: [feature('status'), feature('diagnose')],
+        },
+        locations: [location({
+          status: 'installed',
+          statusLabel: '已安装',
+          actions: [],
+        })],
+      })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [{ pluginName: 'git-commit', plugin: plugin() }],
+    });
+    planConsoleGraphWriteTargets.mockResolvedValue({
+      requestedTargets: [{ target: { pluginName: 'git-commit', plugin: plugin() }, platform: 'codex', scope: 'user', requested: true }],
+      writeTargets: [{ target: { pluginName: 'git-commit', plugin: plugin() }, platform: 'codex', scope: 'user', requested: true, resolvedInstallOptions: undefined }],
+    });
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'upgrade',
+    });
+    upgradeCommand.mockResolvedValue({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'upgrade' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('✓ 已安装');
+    expect(detailView?.lines).not.toContain('↑ 可升级');
+    const featurePrompt = [...prompt.calls].reverse().find((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '选择功能',
+    );
+    expect((featurePrompt!.options as { choices: Array<{ value: string }> }).choices.map((choice) => choice.value))
+      .not.toContain('upgrade');
+  });
+
+  it('records a deferred exit request during a write and exits only after the write finishes', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        features: [feature('install'), feature('status'), feature('diagnose')],
+      },
+      locations: [location({
+        status: 'notInstalled',
+        statusLabel: '未安装',
+        actions: [{ kind: 'openInstallWizard', label: '安装', target: { platform: 'codex', scope: 'user' } }],
+      })],
+    })]);
+    preparePluginTargetsForCommand.mockResolvedValue({
+      ledger: { ledgerState: { status: 'available' } },
+      targets: [{ pluginName: 'git-commit', plugin: plugin() }],
+    });
+    createInstallWizardDecision.mockResolvedValue({
+      blockedReason: undefined,
+      configPrompts: [],
+      commandAction: 'install',
+    });
+    let resolveInstall: (() => void) | undefined;
+    installCommand.mockImplementation(async () => new Promise<void>((resolve) => {
+      resolveInstall = resolve;
+    }).then(() => ({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+    })));
+
+    const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+    stdin.isTTY = true;
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, prompt, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'install' },
+    ], { stdin });
+
+    const controllerPromise = runConsoleController(context);
+    await vi.waitFor(() => {
+      expect(consoleDriver.views.some((view) => view.title === 'Git Commit 安装中')).toBe(true);
+    });
+    stdin.write('q');
+    await vi.waitFor(() => {
+      expect(consoleDriver.views.some((view) =>
+        view.title === 'Git Commit 安装中' &&
+        view.lines.includes('已收到退出请求；当前操作完成后会安全退出。'),
+      )).toBe(true);
+    });
+    resolveInstall?.();
+
+    await expect(controllerPromise).resolves.toBe(0);
+    expect(installCommand).toHaveBeenCalledTimes(1);
+    expect(prompt.calls
+      .filter((call) => call.method === 'select')
+      .map((call) => (call.options as { message?: string }).message))
+      .toEqual(['选择插件', '选择功能']);
   });
 
   it('opens status from the feature menu without asking for a target', async () => {
@@ -2027,7 +2675,45 @@ describe('console controller stage 5', () => {
       .not.toContain('cleanup');
   });
 
-  it('offers status entries on the result page for abnormal targets', async () => {
+  it('opens the dependency page from the feature menu when dependency data is present', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('dependencies'), feature('status')],
+      },
+      dependencyPage: {
+        pluginName: 'git-commit',
+        groups: [{
+          platform: 'codex',
+          scope: 'user',
+          label: 'Codex（个人）',
+          entries: [{
+            pluginName: 'helper-plugin',
+            locationLabel: 'Codex（个人）',
+            symbol: '✓',
+            tone: 'success',
+            summary: '正常',
+          }],
+        }],
+      },
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'dependencies' },
+      { method: 'select', value: '__back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 依赖' &&
+      view.lines.some((line) => line.includes('helper-plugin')),
+    )).toBe(true);
+  });
+
+  it('shows the latest result on the detail page and keeps status available for abnormal targets', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -2077,23 +2763,22 @@ describe('console controller stage 5', () => {
     const { context, prompt, consoleDriver } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'install' },
-      { method: 'select', value: 'codex:user:-' },
-      { method: 'select', value: 'codex:user:-' },
       { method: 'select', action: 'exit' },
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    const resultPrompt = prompt.calls.find((call) =>
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('最近结果 · 安装');
+    expect(detailView?.lines).toContain('- Codex（个人） · 已完成');
+    const featurePrompt = [...prompt.calls].reverse().find((call) =>
       call.method === 'select' &&
-      (call.options as { message?: string }).message === '下一步',
+      (call.options as { message?: string }).message === '选择功能',
     );
-    expect(resultPrompt).toBeTruthy();
-    expect((resultPrompt!.options as { choices: Array<{ label: string }> }).choices)
-      .toContainEqual(expect.objectContaining({ label: '状态 · Codex（个人）' }));
-    expect(consoleDriver.views.some((view) =>
-      view.title === 'Git Commit 状态' &&
-      view.lines.some((line) => line.includes('状态：异常')),
-    )).toBe(true);
+    expect((featurePrompt!.options as { choices: Array<{ value: string }> }).choices)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ value: 'repair' }),
+        expect.objectContaining({ value: 'status' }),
+      ]));
   });
 
   it('renders the status feature from the structured page model', async () => {
@@ -2134,10 +2819,47 @@ describe('console controller stage 5', () => {
     )).toBe(true);
   });
 
+  it('hides pure catalog-only locations from the status summary by default', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        status: 'installed',
+        statusLabel: '已安装',
+        locationSummary: 'Codex（个人）',
+        features: [feature('status')],
+      },
+      locations: [
+        location({
+          status: 'installed',
+          statusLabel: '已安装',
+        }),
+        location({
+          platform: 'claude',
+          locationLabel: 'Claude Code（个人）',
+          status: 'notInstalled',
+          statusLabel: '未安装',
+        }),
+      ],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'status' },
+      { method: 'select', value: '__back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const statusView = consoleDriver.views.find((view) => view.title === 'Git Commit 状态');
+    expect(statusView?.lines.some((line) => line.includes('Codex（个人）'))).toBe(true);
+    expect(statusView?.lines.some((line) => line.includes('Claude Code（个人）'))).toBe(false);
+  });
+
   it.each([
     ['succeeded', '相关项目文件已更新。'],
     ['skipped', '没有需要重新应用的项目文件。'],
-    ['failed', '重新应用配置失败。你可以进入诊断查看原因。'],
+    ['failed', '重新应用配置失败。你可以进入状态页查看原因。'],
   ] as const)('renders reapply-config %s results without writing config', async (status, expectedLine) => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())

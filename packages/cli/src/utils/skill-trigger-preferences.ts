@@ -195,6 +195,14 @@ export interface SkillTriggerPolicyResolution {
   policies: SkillTriggerPolicyEntry[];
 }
 
+export interface SkillTriggerConfigEntry {
+  skillName: string;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
+  source: 'declared' | 'implicitSlashCommand';
+  platforms: PlatformName[];
+}
+
 export interface SkillTriggerDiagnostic {
   pluginName: string;
   platform: PlatformName;
@@ -780,6 +788,57 @@ export async function resolveSkillTriggerApplicabilityForPlugin(
       platform,
     }),
   ]);
+}
+
+export async function resolveSkillTriggerConfigEntries(
+  plugin: PluginMeta,
+): Promise<SkillTriggerConfigEntry[]> {
+  const inventory = new Map<string, SkillTriggerConfigEntry>();
+  for (const platform of ['codex', 'claude'] as const) {
+    try {
+      const resolution = await resolveSkillTriggerPoliciesFromPluginRoot({
+        pluginRoot: plugin.rootDir,
+        pluginName: plugin.manifest.name,
+        manifestPath: plugin.manifestPath,
+        manifest: plugin.manifest,
+        platform,
+      });
+      for (const policy of resolution.policies) {
+        const current = inventory.get(policy.skillName);
+        if (current) {
+          if (!current.platforms.includes(platform)) {
+            current.platforms.push(platform);
+          }
+          continue;
+        }
+        inventory.set(policy.skillName, {
+          skillName: policy.skillName,
+          defaultTrigger: policy.defaultTrigger,
+          allowDynamicTrigger: policy.allowDynamicTrigger,
+          source: policy.source,
+          platforms: [platform],
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  for (const [skillName, policy] of Object.entries(plugin.manifest.skillTriggers ?? {})) {
+    const current = inventory.get(skillName);
+    if (current) {
+      continue;
+    }
+    inventory.set(skillName, {
+      skillName,
+      defaultTrigger: policy.defaultTrigger,
+      allowDynamicTrigger: policy.allowDynamicTrigger,
+      source: 'declared',
+      platforms: ['codex'],
+    });
+  }
+
+  return [...inventory.values()].sort((left, right) => left.skillName.localeCompare(right.skillName));
 }
 
 interface ParsedCodexSkill {

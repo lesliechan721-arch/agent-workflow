@@ -16,6 +16,7 @@ import type {
 } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
+import * as pluginConfigModule from '../../src/utils/plugin-config.js';
 import * as sharedRuntimeOwnerModule from '../../src/install-state/shared-runtime-owner.js';
 import * as transactionsModule from '../../src/install-state/transactions.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
@@ -132,7 +133,8 @@ async function createBundledSkillPluginMeta(options: {
     skills: './skills',
     skillTriggers: {
       [options.skillKey]: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     },
     marketplace: {
@@ -336,6 +338,105 @@ describe('repair command P8', () => {
       artifacts: Array<{ lastRefresh?: { event: string } }>;
     };
     expect(cache.artifacts[0]?.lastRefresh?.event).toBe('repair');
+  });
+
+  it('uses the current effective config for repair instead of the install record skill trigger preference', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-repair-effective-config-'),
+      scenario: 'installed',
+    });
+    const plugin = await createPluginMeta({
+      rootDir: fixture.paths.rootDir,
+      pluginName: fixture.target.location.plugin,
+    });
+    await alignFixtureSourceToPlugin({
+      installRecordPath: fixture.files.installRecordPath,
+      projectIdentityPath: fixture.files.projectIdentityPath,
+      plugin,
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const record = await fs.readJson(fixture.files.installRecordPath) as {
+      record: {
+        options?: {
+          skillTriggerPreference?: 'default' | 'manual' | 'auto';
+        };
+      };
+    };
+    record.record.options = {
+      ...(record.record.options ?? {}),
+      skillTriggerPreference: 'manual',
+    };
+    await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
+
+    const configStorePath = path.join(
+      fixture.paths.awHome,
+      'plugin-config',
+      fixture.target.location.plugin,
+      'config.json',
+    );
+    await fs.outputJson(
+      configStorePath,
+      {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'auto',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const preferenceSpy = vi.spyOn(pluginConfigModule, 'resolveUniformSkillTriggerPreference')
+      .mockResolvedValue('auto');
+
+    const adapter = new FakeRepairAdapter();
+    adapter.installExtensions.mockImplementation(async (_plugin, _scope, options) => {
+      expect(options?.skillTriggerPreference).toBe('auto');
+      return [];
+    });
+
+    await repairCommand(
+      [fixture.target.location.plugin],
+      {
+        cwd: fixture.paths.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        adapters: {
+          codex: adapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: 'codex',
+          scope: 'project',
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+          currentPlugin: plugin,
+        }],
+      } as never,
+    );
+
+    expect(preferenceSpy).toHaveBeenCalledWith(expect.objectContaining({
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+    }));
+    await expect(fs.readJson(configStorePath)).resolves.toMatchObject({
+      $aw: {
+        skillTriggers: {
+          commit: {
+            trigger: 'auto',
+          },
+        },
+      },
+    });
   });
 
   it('fails repair scope preflight before rewriting an installed location when the sibling scope is already healthy', async () => {

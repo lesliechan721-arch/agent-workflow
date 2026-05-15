@@ -76,6 +76,7 @@ import type {
   SkillTriggerPreference,
 } from '../types.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
+import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScript } from '../utils/plugin-scripts.js';
 import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
 import { resolveAwHome, resolveEmbeddedPluginsRoot } from '../utils/paths.js';
@@ -1478,23 +1479,14 @@ async function repairInstalledLocation(options: {
   if (needsNativeInstall) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
-  const recordedSkillTriggerPreference = record.record.options?.skillTriggerPreference;
-  const inferredRuntimePreference = (
-    options.repairOptions.requestedSkillTrigger === undefined
-    && recordedSkillTriggerPreference === undefined
-    && location.platform === 'codex'
-    && location.scope === 'user'
-  )
-    ? await inferCodexUserDynamicSkillPreferenceFromRuntime({
-      pluginName: location.plugin,
-      artifacts: record.record.artifacts,
-      env: options.env,
-    })
-    : undefined;
   const effectiveSkillTriggerPreference = options.repairOptions.requestedSkillTrigger
-    ?? recordedSkillTriggerPreference
-    ?? inferredRuntimePreference
-    ?? 'default';
+    ?? await resolveUniformSkillTriggerPreference({
+      plugin: currentPlugin,
+      platform: location.platform,
+      scope: location.scope,
+      cwd: options.repairOptions.cwd,
+      env: options.env,
+    });
   await preflightRepairSharedRuntimeOwner({
     location,
     preference: effectiveSkillTriggerPreference,

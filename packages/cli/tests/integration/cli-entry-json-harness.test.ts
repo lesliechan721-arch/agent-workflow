@@ -203,7 +203,7 @@ describe('cli entry JSON stdout harness', () => {
     }
   });
 
-  it('keeps status JSON on schema version 2 without advertising consoleItems schema version 3', async () => {
+  it('keeps status JSON on schema version 2 while carrying consoleItems schema version 3', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-status-v2-'));
     tempDirs.push(tempDir);
 
@@ -214,6 +214,7 @@ describe('cli entry JSON stdout harness', () => {
           ok: true,
           command: 'status',
           statusSchemaVersion: 2,
+          consoleItemsSchemaVersion: 3,
           health: 'needsAttention',
           summaries: [],
           cells: [],
@@ -267,9 +268,9 @@ describe('cli entry JSON stdout harness', () => {
       ok: true,
       command: 'status',
       statusSchemaVersion: 2,
+      consoleItemsSchemaVersion: 3,
       health: 'needsAttention',
     });
-    expect(payload).not.toHaveProperty('consoleItemsSchemaVersion');
     expect(payload.summaries).toBeInstanceOf(Array);
     expect(payload.cells).toBeInstanceOf(Array);
     expect(payload.reports).toBeInstanceOf(Array);
@@ -277,6 +278,103 @@ describe('cli entry JSON stdout harness', () => {
     expect(JSON.stringify(payload.consoleItems)).not.toMatch(
       /missingRecord|adoptExisting|ownerConflict|dependencyProtected|requiredConfigMissing|invalidConfig|unreadableConfig|nativeResidue|artifactDrift/,
     );
+  });
+
+  it('projects built-in SkillTrigger config through status --json consoleItems', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    vi.doUnmock('../../src/commands/status.js');
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+      {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await fs.outputJson(
+      path.join(
+        workspace.repoRoot,
+        '.agent-workflows',
+        'plugin-config.local',
+        'git-commit',
+        'config.json',
+      ),
+      {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    const result = await runCliEntry(
+      ['status', 'git-commit', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const payload = result.parseJsonStdout<{
+      consoleItems: Array<{
+        pluginName: string;
+        config?: {
+          configSchemaVersion: number;
+          views: Array<{
+            scope: 'effective' | 'user' | 'project';
+            projectLayer: 'shared' | 'local';
+            fields: Array<Record<string, unknown>>;
+            legacyConfigStores: Array<Record<string, unknown>>;
+          }>;
+        };
+      }>;
+    }>();
+    const gitCommit = payload.consoleItems.find((entry) => entry.pluginName === 'git-commit');
+    expect(gitCommit?.config).toMatchObject({
+      configSchemaVersion: 2,
+      views: expect.arrayContaining([
+        expect.objectContaining({
+          scope: 'effective',
+          projectLayer: 'shared',
+          fields: expect.arrayContaining([
+            expect.objectContaining({
+              key: 'aw.skillTriggers.commit.trigger',
+              kind: 'builtIn',
+              reserved: true,
+              valueState: 'configured',
+              effectiveValue: 'manual',
+              sourceLayer: 'user',
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          scope: 'project',
+          projectLayer: 'shared',
+          fields: expect.arrayContaining([
+            expect.objectContaining({
+              key: 'aw.skillTriggers.commit.trigger',
+              kind: 'builtIn',
+              reserved: true,
+              valueState: 'invalid',
+              storedValue: 'manual',
+              storedSourceLayer: 'local',
+              invalidReason: 'unsupportedProjectLocalLayer',
+            }),
+          ]),
+        }),
+      ]),
+    });
   });
 
   it('keeps install --json stdout parseable when warnings and diagnostics go to stderr', async () => {

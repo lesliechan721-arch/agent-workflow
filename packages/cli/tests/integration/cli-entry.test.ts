@@ -218,6 +218,16 @@ async function addConfigSchemaWithFileToGitCommit(repoRoot: string): Promise<voi
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function makeGitCommitSkillTriggerFixed(repoRoot: string): Promise<void> {
+  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+  manifest.skillTriggers.commit = {
+    defaultTrigger: 'auto',
+    allowDynamicTrigger: false,
+  };
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
   const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
@@ -556,9 +566,18 @@ describe('cli entry integration', () => {
     expect(exitCode).toBe(0);
     expect(JSON.parse(capture.readStdout())).toMatchObject({
       ok: true,
+      receiptSchemaVersion: 2,
       command: 'config:set',
       plugin: 'git-commit',
       scope: 'user',
+      affectedFields: [{
+        key: 'token',
+        title: 'token',
+        kind: 'manifest',
+        reserved: false,
+        action: 'set',
+        scope: 'user',
+      }],
       updatedKeys: ['token'],
       effective: {
         values: {
@@ -584,8 +603,20 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(0);
     expect(JSON.parse(capture.readStdout())).toMatchObject({
-      value: '[redacted]',
-      source: 'user',
+      configSchemaVersion: 2,
+      command: 'config:get',
+      plugin: 'git-commit',
+      key: 'token',
+      fields: [{
+        key: 'token',
+        title: 'token',
+        kind: 'manifest',
+        reserved: false,
+        writable: true,
+        valueState: 'configured',
+        effectiveValue: '[redacted]',
+        sourceLayer: 'user',
+      }],
     });
     expect(capture.readStdout()).not.toContain('super-secret');
 
@@ -605,10 +636,22 @@ describe('cli entry integration', () => {
         io: capture.io,
       },
     );
-    expect(exitCode).toBe(1);
-    expect(capture.readStderr()).toContain('Unknown plugin "missing-plugin"');
-    expect(capture.readStderr()).toContain('aw config reset missing-plugin -s user --yes');
-    expect(capture.readStderr()).not.toContain('old-secret');
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      configSchemaVersion: 2,
+      command: 'config:get',
+      plugin: 'missing-plugin',
+      fields: [],
+      legacyConfigStores: [{
+        plugin: 'missing-plugin',
+        storeKind: 'user',
+        reason: 'pluginRemoved',
+        fieldVisibility: 'storeOnly',
+        cleanupOnly: true,
+      }],
+    });
+    expect(capture.readStdout()).not.toContain('old-secret');
 
     capture = createCapturedIo();
     exitCode = await runCli(
@@ -619,7 +662,34 @@ describe('cli entry integration', () => {
         io: capture.io,
       },
     );
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      configSchemaVersion: 2,
+      command: 'config:list',
+      plugin: 'missing-plugin',
+      fields: [],
+      legacyConfigStores: [{
+        plugin: 'missing-plugin',
+        storeKind: 'user',
+        reason: 'pluginRemoved',
+        fieldVisibility: 'storeOnly',
+        cleanupOnly: true,
+      }],
+    });
+    expect(capture.readStdout()).not.toContain('old-secret');
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'missing-plugin', 'token', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
     expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('storeOnly');
     expect(capture.readStderr()).toContain('aw config reset missing-plugin -s user --yes');
     expect(capture.readStderr()).not.toContain('old-secret');
 
@@ -635,6 +705,7 @@ describe('cli entry integration', () => {
     expect(exitCode).toBe(0);
     expect(JSON.parse(capture.readStdout())).toMatchObject({
       ok: true,
+      receiptSchemaVersion: 2,
       command: 'config:reset',
       plugin: 'missing-plugin',
       existed: true,
@@ -643,6 +714,279 @@ describe('cli entry integration', () => {
     await expect(fs.pathExists(
       path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
     )).resolves.toBe(false);
+  });
+
+  it('supports built-in SkillTrigger config for plugins without ordinary config schema', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    let capture = createCapturedIo();
+
+    let exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'manual', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      receiptSchemaVersion: 2,
+      command: 'config:set',
+      plugin: 'git-commit',
+      scope: 'user',
+      affectedFields: [{
+        key: 'aw.skillTriggers.commit.trigger',
+        title: 'commit 触发方式',
+        kind: 'builtIn',
+        reserved: true,
+        action: 'set',
+        scope: 'user',
+      }],
+    });
+    await expect(fs.readJson(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+    )).resolves.toMatchObject({
+      $aw: {
+        skillTriggers: {
+          commit: {
+            trigger: 'manual',
+          },
+        },
+      },
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'user', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      configSchemaVersion: 2,
+      command: 'config:get',
+      plugin: 'git-commit',
+      key: 'aw.skillTriggers.commit.trigger',
+      scope: 'user',
+      fields: [{
+        key: 'aw.skillTriggers.commit.trigger',
+        title: 'commit 触发方式',
+        kind: 'builtIn',
+        reserved: true,
+        writable: true,
+        valueState: 'configured',
+        effectiveValue: 'manual',
+        sourceLayer: 'user',
+      }],
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'unset', 'git-commit', 'aw.skillTriggers.commit.trigger', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      receiptSchemaVersion: 2,
+      command: 'config:unset',
+      plugin: 'git-commit',
+      affectedFields: [{
+        key: 'aw.skillTriggers.commit.trigger',
+        title: 'commit 触发方式',
+        kind: 'builtIn',
+        reserved: true,
+        action: 'unset',
+        scope: 'user',
+      }],
+    });
+  });
+
+  it('treats fixed and orphaned SkillTrigger entries as built-in config fields', async () => {
+    const workspace = await makeWorkspaceWithMutator(makeGitCommitSkillTriggerFixed);
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    await fs.outputJson(
+      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
+      {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+            retired: {
+              trigger: 'auto',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    let capture = createCapturedIo();
+    let exitCode = await runCli(
+      ['config', 'list', 'git-commit', '--scope', 'user', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      configSchemaVersion: 2,
+      command: 'config:list',
+      plugin: 'git-commit',
+      scope: 'user',
+      fields: expect.arrayContaining([
+        {
+          key: 'aw.skillTriggers.commit.trigger',
+          title: 'commit 触发方式',
+          kind: 'builtIn',
+          reserved: true,
+          writable: false,
+          valueState: 'ignored',
+          effectiveValue: 'auto',
+          sourceLayer: 'default',
+          storedValue: 'manual',
+          storedSourceLayer: 'user',
+          ignoredReason: 'fixedSkillTrigger',
+        },
+        {
+          key: 'aw.skillTriggers.retired.trigger',
+          title: 'retired 触发方式',
+          kind: 'builtIn',
+          reserved: true,
+          writable: false,
+          valueState: 'orphaned',
+          effectiveValue: null,
+          sourceLayer: null,
+          storedValue: 'auto',
+          storedSourceLayer: 'user',
+          orphanedReason: 'skillRemoved',
+        },
+      ]),
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'manual', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('ignored');
+  });
+
+  it('rejects project-local SkillTrigger reads and writes while surfacing invalid stored values in project scope', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const localStorePath = path.join(
+      workspace.repoRoot,
+      '.agent-workflows',
+      'plugin-config.local',
+      'git-commit',
+      'config.json',
+    );
+    await fs.outputJson(
+      localStorePath,
+      {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+
+    let capture = createCapturedIo();
+    let exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'project', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    expect(JSON.parse(capture.readStdout())).toMatchObject({
+      ok: true,
+      configSchemaVersion: 2,
+      command: 'config:get',
+      plugin: 'git-commit',
+      key: 'aw.skillTriggers.commit.trigger',
+      scope: 'project',
+      fields: [{
+        key: 'aw.skillTriggers.commit.trigger',
+        title: 'commit 触发方式',
+        kind: 'builtIn',
+        reserved: true,
+        writable: false,
+        valueState: 'invalid',
+        effectiveValue: 'auto',
+        sourceLayer: 'default',
+        storedValue: 'manual',
+        storedSourceLayer: 'local',
+        invalidReason: 'unsupportedProjectLocalLayer',
+      }],
+    });
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'project', '--local', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('project local');
+
+    capture = createCapturedIo();
+    exitCode = await runCli(
+      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'auto', '--scope', 'project', '--local', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.readStderr()).toContain('project local');
+    await expect(fs.readJson(localStorePath)).resolves.toMatchObject({
+      $aw: {
+        skillTriggers: {
+          commit: {
+            trigger: 'manual',
+          },
+        },
+      },
+    });
   });
 
   it('rejects removed config configure subcommand', async () => {
@@ -784,17 +1128,24 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(0);
     let payload = JSON.parse(capture.readStdout());
-    expect(payload.summary.ignoredUnknownKeys).toEqual([{
-      scope: 'user',
-      projectLayer: 'shared',
-      source: 'user',
-      key: 'legacyUser',
+    expect(payload.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'token',
+        sourceLayer: 'user',
+      }),
+      expect.objectContaining({
+        key: 'retries',
+        sourceLayer: 'default',
+      }),
+    ]));
+    expect(payload.legacyConfigStores).toEqual([{
+      plugin: 'git-commit',
+      storeKind: 'user',
+      reason: 'schemaUnavailable',
+      fieldVisibility: 'storeOnly',
+      cleanupOnly: true,
     }]);
     expect(JSON.stringify(payload)).not.toContain('legacyProject');
-    expect(payload.summary.sources).toMatchObject({
-      token: 'user',
-      retries: 'default',
-    });
 
     capture = createCapturedIo();
     exitCode = await runCli(
@@ -807,24 +1158,32 @@ describe('cli entry integration', () => {
     );
     expect(exitCode).toBe(0);
     payload = JSON.parse(capture.readStdout());
-    expect(payload.summary.ignoredUnknownKeys).toEqual(expect.arrayContaining([
-      {
-        scope: 'user',
-        projectLayer: 'shared',
-        source: 'user',
-        key: 'legacyUser',
-      },
-      {
-        scope: 'project',
-        projectLayer: 'shared',
-        source: 'project',
-        key: 'legacyProject',
-      },
+    expect(payload.legacyConfigStores).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'git-commit',
+        storeKind: 'user',
+        reason: 'schemaUnavailable',
+        fieldVisibility: 'storeOnly',
+        cleanupOnly: true,
+      }),
+      expect.objectContaining({
+        plugin: 'git-commit',
+        storeKind: 'projectShared',
+        reason: 'schemaUnavailable',
+        fieldVisibility: 'storeOnly',
+        cleanupOnly: true,
+      }),
     ]));
-    expect(payload.source).toMatchObject({
-      token: 'user',
-      retries: 'project',
-    });
+    expect(payload.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'token',
+        sourceLayer: 'user',
+      }),
+      expect.objectContaining({
+        key: 'retries',
+        sourceLayer: 'project',
+      }),
+    ]));
   });
 
   it('prints repair guidance for invalid config in get and list output', async () => {
@@ -1965,6 +2324,7 @@ describe('cli entry integration', () => {
             marketplaceSource?: string;
             marketplaceSourceType?: string;
             marketplaceRootResolution?: string;
+            pluginEnabled?: boolean;
             pluginInstalled: boolean;
           };
         }>;
@@ -1989,8 +2349,10 @@ describe('cli entry integration', () => {
     expect(payload.consoleItems[0].installedLocations[0].reasonCodes).toBeInstanceOf(Array);
     expect(payload.reports[0].plugins[0].native).toMatchObject({
       marketplaceRegistered: false,
+      pluginEnabled: true,
       pluginInstalled: true,
     });
+    expect(JSON.stringify(payload)).toContain('"currentCatalog"');
 
     capture = createCapturedIo();
     expect(await runCli(
@@ -2018,10 +2380,10 @@ describe('cli entry integration', () => {
         io: capture.io,
       },
     ), capture.readStderr()).toBe(0);
-    expect(capture.readStdout()).toContain('诊断信息');
-    expect(capture.readStdout()).toContain('"pluginEnabled": true');
-    expect(capture.readStdout()).toContain('"pluginInstalled": true');
-    expect(capture.readStdout()).toContain('"currentCatalog": {');
+    expect(capture.readStdout()).toContain('状态详情');
+    expect(capture.readStdout()).toContain('诊断结果');
+    expect(capture.readStdout()).toContain('检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。');
+    expect(capture.readStdout()).toContain('可执行操作：repair=no，cleanup=yes');
   });
 
   it('renders Codex enabled-only, cache-only and recovery residue as external-friendly summaries with native reason codes', async () => {

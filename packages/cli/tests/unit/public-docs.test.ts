@@ -26,15 +26,19 @@ describe('public docs', () => {
     expect(readme).not.toContain('为 Codex 提供只读代码库探索流程');
   });
 
-  it('documents consoleItems V2 without leaking page-only fields into the public JSON contract', async () => {
+  it('documents consoleItems V3 without leaking page-only fields into the public JSON contract', async () => {
     const architecture = await readRepoFile('docs/architecture.md');
 
-    expect(architecture).toContain('consoleItemsSchemaVersion: 2');
+    expect(architecture).toContain('statusSchemaVersion: 2');
+    expect(architecture).toContain('consoleItemsSchemaVersion: 3');
+    expect(architecture).toContain('configSchemaVersion: 2');
+    expect(architecture).toContain('receiptSchemaVersion: 2');
+    expect(architecture).toContain('nextStepsSchemaVersion: 1');
     expect(architecture).toContain('`PluginConsoleSummary.features`：功能菜单 summary');
     expect(architecture).toContain('只表达“可以进入哪些功能”和目标选择策略');
     expect(architecture).toContain('这些字段不进入 `status --json.consoleItems`');
     expect(architecture).toContain('`loadConsoleItems({ includeCatalogOnly: true })`');
-    expect(architecture).toContain('V2 的变化边界只覆盖 `consoleItemsSchemaVersion` 和 `consoleItems`');
+    expect(architecture).toContain('V3 `consoleItems` 是公开 summary 合同');
 
     const legacyReasonCodes = [
       'missingRecord',
@@ -66,13 +70,17 @@ describe('public docs', () => {
     expect(publicDocs).toContain('`reset` 是单纯的 config store 级删除');
   });
 
-  it('documents consoleItems V2 migration mappings for statuses, actions, and reason codes', async () => {
+  it('documents consoleItems V3 migration mappings for statuses, actions, and reason codes', async () => {
     const installation = await readRepoFile('docs/plugin-installation.md');
 
-    expect(installation).toContain('V2 的变化边界只切换 `consoleItemsSchemaVersion` 和 `consoleItems` 合同');
+    expect(installation).toContain('`statusSchemaVersion` | `2`');
+    expect(installation).toContain('`consoleItemsSchemaVersion` | `3`');
+    expect(installation).toContain('`configSchemaVersion` | `2`');
+    expect(installation).toContain('`receiptSchemaVersion` | `2`');
+    expect(installation).toContain('`nextStepsSchemaVersion` | `1`');
     expect(installation).toContain('| `needsAction`、`partial`、`repoManaged`');
     expect(installation).toContain('| `openInstallWizard`、安装入口 | `install` | `runInstall` |');
-    expect(installation).toContain('| `diagnoseCommand`、状态/诊断入口 | `status` / `diagnose` |');
+    expect(installation).toContain('| 状态详情入口 | `status` | 状态页 supplemental action，不属于公开写动作 |');
 
     const reasonMappings = [
       ['`missingRecord`', '`recordCorrupted`'],
@@ -93,6 +101,42 @@ describe('public docs', () => {
     for (const [legacyCode, v2Code] of reasonMappings) {
       expect(installation).toContain(`| ${legacyCode} | ${v2Code} |`);
     }
-    expect(installation).toContain('`consoleItemsSchemaVersion: 2` 下不会再输出旧 id');
+    expect(installation).toContain('`consoleItemsSchemaVersion: 3` 下不会再输出旧 id');
+  });
+
+  it('keeps removed public CLI entry points out of public docs', async () => {
+    const publicDocs = [
+      'README.md',
+      'docs/plugin-installation.md',
+      'docs/plugin-installation-technical-details.md',
+    ];
+
+    const combined = (await Promise.all(publicDocs.map((file) => readRepoFile(file)))).join('\n');
+
+    expect(combined).not.toContain('aw diagnose');
+    expect(combined).not.toContain('diagnose --deep');
+    expect(combined).not.toContain('--platform auto');
+    expect(combined).not.toContain('--skill-trigger');
+    expect(combined).toContain('aw status --verbose');
+    expect(combined).toContain('aw repair --dependency-index');
+    expect(combined).toContain('aw cleanup --dependency-index --prune-stale <token> --yes');
+  });
+
+  it('documents the SkillTrigger author contract without install-time override fields', async () => {
+    const authorDocs = [
+      'docs/plugin-authoring.md',
+      '.agents/skills/create-agent-workflows-plugin/SKILL.md',
+      '.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md',
+      '.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md',
+      '.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md',
+    ];
+
+    const combined = (await Promise.all(authorDocs.map((file) => readRepoFile(file)))).join('\n');
+
+    expect(combined).toContain('defaultTrigger');
+    expect(combined).toContain('allowDynamicTrigger');
+    expect(combined).not.toContain('allowInstallOverride');
+    expect(combined).not.toContain('--skill-trigger');
+    expect(combined).not.toContain('skillTriggerPreference');
   });
 });

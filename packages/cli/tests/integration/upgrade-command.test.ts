@@ -1310,7 +1310,7 @@ describe('upgrade command coverage', () => {
     expect(claude.extensionInstallCalls).toEqual(['git-commit']);
   });
 
-  it('auto-infers the only managed platform for upgrade --all', async () => {
+  it('requires an explicit platform for upgrade --all even when only one managed platform remains', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -1365,7 +1365,6 @@ describe('upgrade command coverage', () => {
           all: true,
           cwd: repoRoot,
           scope: 'project',
-          platform: 'auto',
         },
         {
           adapters: {
@@ -1374,10 +1373,7 @@ describe('upgrade command coverage', () => {
           },
         },
       ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['git-commit'],
-    });
+    ).rejects.toThrow('upgrade 命令需要显式指定 `--platform codex|claude|both`');
 
     expect(codex.installCalls).toEqual([]);
     expect(claude.installCalls).toEqual([]);
@@ -1421,7 +1417,7 @@ describe('upgrade command coverage', () => {
     ).rejects.toThrow('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
   });
 
-  it('blocks upgrade --platform auto when products narrowing would skip a managed platform', async () => {
+  it('keeps explicit single-platform upgrade scoped to the selected supported platform after products narrowing', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       restrictGitCommitToCodex,
     );
@@ -1504,7 +1500,7 @@ describe('upgrade command coverage', () => {
         {
           cwd: repoRoot,
           scope: 'project',
-          platform: 'auto',
+          platform: 'codex',
         },
         {
           adapters: {
@@ -1513,7 +1509,10 @@ describe('upgrade command coverage', () => {
           },
         },
       ),
-    ).rejects.toThrow('被排除的平台上保留受管安装');
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+    });
 
     expect(codex.installCalls).toEqual([]);
     expect(claude.installCalls).toEqual([]);

@@ -192,56 +192,56 @@ Codex 没有完全等价的"隐藏手动入口"字段；即使 `allow_implicit_i
 
 ---
 
-## 安装时触发偏好
+## AW 内建触发配置
 
-平台原生文件定义的是 skill 的默认策略。`aw install` / 显式 `aw upgrade` 还提供安装时偏好：
-
-常用写法是 `aw install <plugin> --skill-trigger manual`。
+平台原生文件提供 runtime 表达，AW 的长期真值来自 manifest 默认策略和内建配置。安装、升级、修复和重装不再接收触发策略参数；用户通过 `aw config` 或主控制台配置页调整触发策略：
 
 ```bash
-aw install <plugin> --skill-trigger manual
-aw install <plugin> --skill-trigger auto
-aw install <plugin> --skill-trigger default
+aw config set <plugin> aw.skillTriggers.<skill>.trigger manual
+aw config set <plugin> aw.skillTriggers.<skill>.trigger auto
+aw config unset <plugin> aw.skillTriggers.<skill>.trigger
 ```
 
-偏好映射：
+触发值映射：
 
-| 偏好 | Codex | Claude Code |
+| 值 | Codex | Claude Code |
 |------|-------|-------------|
 | `manual` | `allow_implicit_invocation: false` | `disable-model-invocation: true`，并保留 `user-invocable: true` |
 | `auto` | `allow_implicit_invocation: true` | `disable-model-invocation: false`，`user-invocable` 继承默认文件 |
-| `default` | 恢复 `agents/openai.yaml` 默认值 | 恢复 `SKILL.md` 默认 frontmatter |
 
-只有 manifest 中允许安装时覆盖的 skill 才会受这个参数影响：
+manifest 中的每个显式受管 skill 都必须声明默认策略和是否允许动态变更：
 
 ```json
 {
   "skills": "./skills",
   "skillTriggers": {
     "your-skill": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   }
 }
 ```
 
-`allowInstallOverride` 只是覆盖许可，不代表默认策略。省略 `skillTriggers` 或写 `allowInstallOverride: false` 时，CLI 会保留该 skill 的默认触发配置，并在用户显式传入 `manual|auto` 时提示 warning。
+`defaultTrigger` 只允许 `manual` 或 `auto`。未写入内建配置时，effective 值等于 `defaultTrigger`；清空字段或 reset 配置层后也回到该默认值。`allowDynamicTrigger: true` 表示用户可以修改 `aw.skillTriggers.<skill>.trigger`；`allowDynamicTrigger: false` 表示字段固定只读，历史 `$aw.skillTriggers` 覆盖值会作为 ignored 旧配置展示，不参与 runtime、status 或 drift 判断。新 manifest 中只允许 `defaultTrigger` 和 `allowDynamicTrigger`，不能再写旧的安装期覆盖字段。
 
-本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner。非 owner 安装、修复或升级如果会改变共享策略，必须让用户显式重跑并加 `--takeover-shared-runtime`。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
+静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 声明的 `skillKey` 都必须有对应 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。
+
+本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner 身份和完整性证据。owner 文件不保存 SkillTrigger 真值；`aw init` replay、marketplace refresh、shared runtime takeover 和卸载后 rematerialize 都从 owner location 的 current effective built-in config 重新计算。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
 
 `marketplace.policy.products` 也会影响 bundle 裁剪：Claude-only 插件只生成 Claude skill 产物，不生成 Codex bundle，也不要求 `agents/openai.yaml`；Codex-only 插件只生成 Codex skill 产物，不生成 Claude platform manifest/runtime。省略或空 `products` 时才按双平台 skill 处理。
 
-### `skillTriggerApplicability`
+### 公开配置投影
 
-CLI 会先按目标产物计算 skill trigger 适用性，再决定是否需要 install record 中的本位置偏好：
+`aw config list/get --json` 顶层使用 `configSchemaVersion: 2`，AW 注入的触发字段会出现在 `fields` 中：
 
-| 值 | 含义 |
-|----|------|
-| `none` | 目标没有 skill trigger 面，例如 mcp-only 或 extensions-only |
-| `fixed` | 有 skill artifact，但运行时固定；公共 `slashCommands` 生成的 Codex manual-only skill 属于这一类 |
-| `overridable` | 至少一个 skill 允许 `--skill-trigger` 覆盖 |
+- `key` 是逻辑 key：`aw.skillTriggers.<skill>.trigger`
+- `kind: "builtIn"`，`reserved: true`
+- 可动态修改的字段返回当前 `effectiveValue`、`sourceLayer` 和 `valueState`
+- fixed 字段返回 `valueState: "fixed"`，历史覆盖返回 `valueState: "ignored"` 和 `ignoredReason: "fixedSkillTrigger"`
+- 插件退场或 skill key 删除后的旧值返回 `valueState: "orphaned"`，只允许清理，不能继续写入
 
-只有 `overridable` 需要从 install record 恢复 `skillTriggerPreference`。project artifact identity 或现场 artifact evidence 不能反推出旧偏好；若 target 是 `overridable` 且缺少可恢复 install options，显式 install / upgrade 必须要求用户传 `--skill-trigger default|manual|auto`，`upgrade --all` 会把它记为 `installOptionsUnavailable`。
+`aw config set/unset/reset --json` 顶层使用 `receiptSchemaVersion: 2`，并通过 `affectedFields` 回显本次触碰的 built-in 字段。project scope 下，SkillTrigger effective 值只由默认值和 project shared 配置决定；project local 中误写的旧 `$aw.skillTriggers` 只能作为 invalid 存量值展示，不能改变 repo-visible runtime。
 
 ---
 

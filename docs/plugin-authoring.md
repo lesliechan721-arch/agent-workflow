@@ -7,7 +7,7 @@
 - `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明简单静态产物，不新增顶层 `claude` block
 - 路径字段（`skills`、`slashCommands`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`
-- `skillTriggers` 只声明哪些 skill 允许用户在安装时用 `--skill-trigger` 覆盖触发策略；省略时全部 skill 都不可覆盖
+- `skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`；静态 `skills/<skill>` 和动态 `codex.skill` 必须有对应 entry，公共 `slashCommands` 生成的 Codex manual-only skill 由 AW 注入 fixed/manual 字段
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema；没有声明 `scripts.lifecycle` 或 `config.schema` 只是表示插件没有这些能力，不会被 status 当作默认问题
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值；没有声明动态 target 的静态插件不会因此产生 artifact 缺失或刷新失败诊断
@@ -59,7 +59,7 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
 - `name` 使用和插件名相同的小写短横线格式，不能指向自己，且必须能在当前 AW catalog 中解析。
 - `when.platforms` 只允许非空的 `codex` / `claude` 数组；省略 `when` 表示两个平台都生效。同一 manifest 内，同名依赖的平台条件不能重叠。
 - `target.scope` 只允许 `user` 或 `project`。不支持 `target.platform`，依赖永远跟随父插件本次安装或升级时已经确定的平台。
-- `inheritInstallOptions` 只能是 boolean。省略或 `false` 时，依赖不会继承父插件的 `--skill-trigger` 等插件级安装选项；设为 `true` 时只对需要自动安装的依赖生效，多个父插件给同一依赖传入冲突选项会 fail fast。
+- `inheritInstallOptions` 只能是 boolean。省略或 `false` 时，依赖不会继承父插件的插件级安装选项；设为 `true` 时只对需要自动安装的依赖生效，多个父插件给同一依赖传入冲突选项会 fail fast。SkillTrigger 已迁移为 AW 内建配置，不通过依赖安装选项传递。
 - 首版不支持 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、跨 marketplace 依赖、外部 URL/npm/git/local path 依赖或 dependency entry 覆盖 platform。
 
 scope 选择是 location-aware 的。父插件安装到 `user` scope 时，只能依赖同平台的 `user` scope 健康安装；如果当前平台生效的依赖写了 `target.scope: "project"`，命令会在写入前失败。父插件安装到 `project` scope 且依赖省略 `target.scope` 时，AW 会优先选择当前 project，当前 project 缺失或不健康时可复用 user scope；显式 `target.scope: "user"` 只看 user，显式 `target.scope: "project"` 只看当前 project，不做 fallback。
@@ -175,7 +175,8 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
   "skills": "./skills",
   "skillTriggers": {
     "codex-explore": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   },
   "artifacts": {
@@ -206,7 +207,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 `codex.skill` 管理 Codex skill 目录。manifest target 必须静态声明 `skillKey`，用于安装前路径冲突检查、install record artifact identity、project artifact shared identity 和后续 stale prune；renderer plan 里的 `skillKey` 必须完全匹配。`present` content 是对象，必须包含 `skillFile`（写成运行时 `SKILL.md`）和 `openaiYaml`（写成运行时 `agents/openai.yaml`）。`SKILL.md` 是模型会读取的指令体；`agents/openai.yaml` 是 Codex 产品元数据和触发策略，`interface.default_prompt` 只放包含 `$skillKey` 的起手句。renderer 不能提供任意路径，也不能自己写 `.agents/skills/<skillKey>` 或用户级 Codex runtime。project scope 下它的 `projectManagedKind` 应声明为 `skill`，且不要求 `requiresCodexProjectConfig: true`，因为它不依赖 `.codex/config.toml`。
 
-`codex.skill` 的内容真值来自“静态模板 + 当前 artifact render config + 当前 skill trigger preference patch”。插件通常把 `skills/<skillKey>/SKILL.md` 和 `skills/<skillKey>/agents/openai.yaml` 作为静态模板，由 renderer 读取模板并插入配置值；config refresh 时这些模板应来自 install record 的 historical bundle，而不是当前可变 runtime。AW apply 阶段再按 install record 中的 `skillTriggerPreference` patch `openaiYaml`。`default` 和 `auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。重复 install、upgrade、repair 或 config refresh 不会因为 renderer 输出默认值而重置用户显式选择。
+`codex.skill` 的内容真值来自“静态模板 + 当前 artifact render config + 当前 effective SkillTrigger 配置 patch”。插件通常把 `skills/<skillKey>/SKILL.md` 和 `skills/<skillKey>/agents/openai.yaml` 作为静态模板，由 renderer 读取模板并插入配置值；config refresh 时这些模板应来自 install record 的 historical bundle，而不是当前可变 runtime。AW apply 阶段再按 `defaultTrigger` 和用户写入的 `aw.skillTriggers.<skill>.trigger` effective 值 patch `openaiYaml`。`auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。重复 install、upgrade、repair 或 config refresh 不会因为 renderer 输出默认值而重置用户配置。
 
 renderer plan 示例：
 
@@ -252,7 +253,7 @@ pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:test --all
 ```
 
-它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，并从 build 后 staging manifest 解析最终支持平台。`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能缩小到最终 `products` 允许的平台，不能越过 build 裁剪。`both` 只适用于同时支持 Claude 和 Codex 的插件。
+它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，并从 build 后 staging manifest 解析最终支持平台。省略 `--platform` 时按 `both` 处理；`--platform auto` 无效并会失败；显式 `claude` 或 `codex` 遇到任一选中插件不支持该平台时会在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。
 
 测试会在隔离 `AW_HOME`、受管临时 project root 和平台 home/temp 环境中运行 `scripts.tests.node` 匹配到的 Node 测试。测试进程的 `cwd` 是临时 project root；`AW_PLUGIN_CONTEXT.sourceRoot` 指向原始插件源码根，适合测试需要读取源码 fixture 的场景，但运行时 import 仍应命中临时 bundle。没有匹配测试时是 skipped/no-op，退出码为 0；双平台插件使用 `--platform both` 时，Codex 和 Claude 两轮会分别复制独立可写 bundle。
 
@@ -273,20 +274,23 @@ pnpm plugin:test --all
 - **Claude 用户手动触发**：取决于 `SKILL.md` frontmatter 的 `user-invocable`
 - **Claude 模型自动调用**：取决于 `SKILL.md` frontmatter 的 `disable-model-invocation`
 
-`.agents-plugin/plugin.json` 里的 `skillTriggers` 不定义默认触发策略，只定义安装时是否允许用户覆盖。例如：
+`.agents-plugin/plugin.json` 里的 `skillTriggers` 为显式受管 skill 定义默认触发策略，以及用户是否可以通过 AW 配置动态修改。例如：
 
 ```json
 {
   "skills": "./skills",
   "skillTriggers": {
     "commit": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   }
 }
 ```
 
-`allowInstallOverride: true` 表示 `aw install --skill-trigger manual|auto|default` 可以改写运行时 skill 文件；默认值仍由源码中的 `SKILL.md` 和 `agents/openai.yaml` 决定。Codex project scope 只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，不改共享 `~/.aw` runtime。`allowInstallOverride: false` 或省略 `skillTriggers` 都会保持保守策略，不允许安装命令覆盖该 skill。
+`defaultTrigger` 只允许 `manual` 或 `auto`。`manual` 禁止模型自动触发但保留显式调用入口；`auto` 允许模型自动触发。`allowDynamicTrigger: true` 表示用户可以通过 `aw config set <plugin> aw.skillTriggers.<skill>.trigger manual|auto` 或主控制台配置页修改该 skill；`allowDynamicTrigger: false` 表示字段固定只读，effective 值永远等于 `defaultTrigger`。旧的安装期覆盖字段不再是有效合同，新 manifest 中不能继续使用。
+
+静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 的 `skillKey` 必须有 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。SkillTrigger 内建配置存储在 AW 保留 namespace `$aw.skillTriggers` 下，不进入插件作者的普通 `config.schema`，JSON 读命令会把字段标记为 `kind: "builtIn"`、`reserved: true`。
 
 详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 

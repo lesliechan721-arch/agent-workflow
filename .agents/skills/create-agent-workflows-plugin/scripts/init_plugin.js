@@ -51,6 +51,14 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 
   if (!opts.noSkills) {
     manifest.skills = './skills';
+    if (opts.initialSkillName) {
+      manifest.skillTriggers = {
+        [opts.initialSkillName]: {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
+        },
+      };
+    }
   }
 
   if (opts.withMcp) {
@@ -296,8 +304,9 @@ Options:
   -h, --help                    Show this help message.
 
 Note:
-  New skill scaffolds do not generate skillTriggers by default. This keeps install-time
-  trigger overrides disabled until the plugin author explicitly opts in from plugin.json.
+  New skill scaffolds generate a matching skillTriggers entry:
+  { defaultTrigger: "manual", allowDynamicTrigger: false }.
+  If you want a configurable trigger, edit plugin.json and update that skill entry explicitly.
 `);
 }
 
@@ -412,6 +421,9 @@ function main() {
   const pluginName = requireHyphenName(args.pluginName, 'plugin_name');
   const displayName = args.displayName || titleCaseSlug(pluginName);
   const shortDescription = args.shortDescription || args.description;
+  const initialSkillName = args.noSkills
+    ? undefined
+    : requireHyphenName(args.skillName || pluginName, 'skill_name');
   const repoRoot = path.resolve(args.repoRoot);
 
   const pluginsRoot = path.join(repoRoot, 'plugins');
@@ -440,6 +452,7 @@ function main() {
       withConfigApi: args.withConfigApi,
       withLifecycle: args.withLifecycle,
       noSkills: args.noSkills,
+      initialSkillName,
     },
   );
 
@@ -449,7 +462,7 @@ function main() {
   writeJson(manifestPath, pluginManifest);
 
   if (!args.noSkills) {
-    const skillName = requireHyphenName(args.skillName || pluginName, 'skill_name');
+    const skillName = initialSkillName;
     const skillDescription = args.skillDescription || args.description;
     const skillDisplayName = titleCaseSlug(skillName);
     const skillShortDescription = args.skillDescription || shortDescription;
