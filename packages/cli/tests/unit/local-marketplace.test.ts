@@ -509,7 +509,7 @@ describe('local marketplace', () => {
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
-  it('rebuilds ~/.aw when config.json is malformed during a non-force refresh', async () => {
+  it('requires confirmation when config.json is malformed during a non-force refresh', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
@@ -517,11 +517,9 @@ describe('local marketplace', () => {
     await initializeLocalMarketplace({ force: true, env: process.env });
     await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
 
-    await expect(initializeLocalMarketplace({ force: false, env: process.env })).resolves.toMatchObject({
-      rootDir: awHome,
-      changed: true,
-    });
-    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+    await expect(initializeLocalMarketplace({ force: false, env: process.env })).rejects.toThrow(
+      '非交互环境不会自动覆盖',
+    );
   });
 
   it('rebuilds ~/.aw when config.json uses an unsupported schema version during a non-force refresh', async () => {
@@ -744,7 +742,7 @@ describe('local marketplace', () => {
     await writeCodexAllowImplicitInvocation(awHome, true);
     const localManifestPath = path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
     const localManifest = await fs.readJson(localManifestPath);
-    localManifest.skillTriggers.commit.allowInstallOverride = false;
+    localManifest.skillTriggers.commit.allowDynamicTrigger = false;
     await fs.writeJson(localManifestPath, localManifest, { spaces: 2 });
 
     const result = await initializeLocalMarketplace({ force: true, env: process.env });
@@ -761,6 +759,13 @@ describe('local marketplace', () => {
 
   it('does not replay manifest-declared codex.skill entries back into ~/.aw during rebuild', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
+      manifest.skillTriggers = {
+        ...manifest.skillTriggers,
+        'generated-commit': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      };
       manifest.artifacts = {
         targets: [{
           id: 'commit-skill',
@@ -770,7 +775,7 @@ describe('local marketplace', () => {
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
-          skillKey: 'commit',
+          skillKey: 'generated-commit',
         }],
       };
     });
@@ -805,7 +810,17 @@ describe('local marketplace', () => {
 
     const result = await initializeLocalMarketplace({ force: true, env: process.env });
 
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
+    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
+    await expect(fs.pathExists(path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+      'agents',
+      'openai.yaml',
+    ))).resolves.toBe(false);
     expect(await listSkillBackupDirs(awHome)).toEqual([]);
     expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
   });
@@ -975,7 +990,14 @@ describe('local marketplace', () => {
 
     await writeCodexAllowImplicitInvocation(awHome, true);
     await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
-    await initializeLocalMarketplace({ force: false, env: process.env });
+    await initializeLocalMarketplace({
+      force: false,
+      env: process.env,
+      gate: {
+        interactive: true,
+        confirmOverwrite: async () => true,
+      },
+    });
     expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
 
     await writeCodexAllowImplicitInvocation(awHome, true);

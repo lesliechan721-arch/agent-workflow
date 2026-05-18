@@ -71,7 +71,7 @@ function translateDegradedReplay(message: string): string | null {
   }
 
   if (message === 'installed.json 处于 degraded 状态，跳过卸载后的 skill trigger 重选。') {
-    return '本地安装记录处于异常恢复状态，本次没有自动重选 skill 触发偏好。继续安装或升级时请显式传 --skill-trigger default|manual|auto。';
+    return '本地安装记录处于异常恢复状态，本次没有自动重选 skill 触发偏好。如需调整，请改用配置管理维护 skill trigger 偏好。';
   }
 
   return null;

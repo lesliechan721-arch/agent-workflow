@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   createConsolePluginDetailPageModel,
   createConsoleControllerItems,
+  createLegacyConfigPlaceholderControllerItem,
   createPluginConsoleExecutableActions,
   createPluginConsoleItems,
   createPluginConsoleLocationKey,
   resolvePluginConsoleMeta,
+  type PluginConsoleConfigProjection,
   type PluginConsoleLocationDiagnostics,
   type PluginConsoleReasonCode,
 } from '../../src/commands/console-model.js';
@@ -198,6 +200,83 @@ function matrix(cells: StatusMatrixCell[]): StatusMatrixReport {
     summaries: [],
     cells,
     reports: [],
+  };
+}
+
+function configProjection(
+  overrides: Partial<PluginConsoleConfigProjection> = {},
+): PluginConsoleConfigProjection {
+  return {
+    configSchemaVersion: 2,
+    views: [
+      {
+        scope: 'effective',
+        projectLayer: 'shared',
+        fields: [{
+          key: 'aw.skillTriggers.commit.trigger',
+          title: 'commit 触发方式',
+          kind: 'builtIn',
+          reserved: true,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: 'manual',
+          sourceLayer: 'user',
+        }],
+        legacyConfigStores: [],
+      },
+      {
+        scope: 'user',
+        projectLayer: 'shared',
+        fields: [
+          {
+            key: 'aw.skillTriggers.review.trigger',
+            title: 'review 触发方式',
+            kind: 'builtIn',
+            reserved: true,
+            writable: false,
+            valueState: 'ignored',
+            effectiveValue: 'auto',
+            sourceLayer: 'default',
+            storedValue: 'manual',
+            storedSourceLayer: 'user',
+            ignoredReason: 'fixedSkillTrigger',
+          },
+          {
+            key: 'aw.skillTriggers.retired.trigger',
+            title: 'retired 触发方式',
+            kind: 'builtIn',
+            reserved: true,
+            writable: false,
+            valueState: 'orphaned',
+            effectiveValue: null,
+            sourceLayer: null,
+            storedValue: 'auto',
+            storedSourceLayer: 'user',
+            orphanedReason: 'skillRemoved',
+          },
+        ],
+        legacyConfigStores: [],
+      },
+      {
+        scope: 'project',
+        projectLayer: 'shared',
+        fields: [{
+          key: 'aw.skillTriggers.commit.trigger',
+          title: 'commit 触发方式',
+          kind: 'builtIn',
+          reserved: true,
+          writable: false,
+          valueState: 'invalid',
+          effectiveValue: 'auto',
+          sourceLayer: 'default',
+          storedValue: 'manual',
+          storedSourceLayer: 'local',
+          invalidReason: 'unsupportedProjectLocalLayer',
+        }],
+        legacyConfigStores: [],
+      },
+    ],
+    ...overrides,
   };
 }
 
@@ -462,7 +541,11 @@ describe('console-model', () => {
     const upgradeAvailable = singleSummary(upgradeCell, {
       [createPluginConsoleLocationKey(upgradeCell)]: { upgradeState: 'available' },
     });
-    const abnormal = singleSummary(reasonFixture('requiredConfigMissing'));
+    const abnormal = createPluginConsoleItems(matrix([reasonFixture('requiredConfigMissing')]), {
+      configProjectionByPluginName: {
+        'demo-plugin': configProjection(),
+      },
+    })[0]!;
 
     expect(notInstalled.status).toBe('notInstalled');
     expect(installed.status).toBe('installed');
@@ -558,9 +641,9 @@ describe('console-model', () => {
     ]));
 
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]!.reasonCodes).toContain('duplicateInstall');
-    expect(summaries[0]!.duplicateInstallGroups).toHaveLength(1);
-    expect(summaries[0]!.features.map((feature) => feature.kind)).toContain('resolveDuplicateInstall');
+    expect(summaries[0]!.reasonCodes).toEqual([]);
+    expect(summaries[0]!.duplicateInstallGroups).toBeUndefined();
+    expect(summaries[0]!.features.map((feature) => feature.kind)).not.toContain('resolveDuplicateInstall');
     expect(summaries[0]!.locationSummary).toBe('Codex（个人 + 当前项目）');
   });
 
@@ -583,7 +666,7 @@ describe('console-model', () => {
       }),
       report: undefined,
     }));
-    const duplicate = createPluginConsoleItems(matrix([
+    const duplicateHealthy = createPluginConsoleItems(matrix([
       cell({
         platform: 'codex',
         scope: 'user',
@@ -596,7 +679,7 @@ describe('console-model', () => {
         projectKey: '/workspace',
         installState: installState(),
         report: undefined,
-      }),
+        }),
     ]))[0]!;
     const alreadyCovered = [
       singleSummary(reasonFixture('nativeIncomplete')),
@@ -611,21 +694,20 @@ describe('console-model', () => {
       ...alreadyCovered.flatMap((summary) => summary.reasonCodes),
       ...adoptable.reasonCodes,
       ...dependencyBlocked.reasonCodes,
-      ...duplicate.reasonCodes,
+      ...duplicateHealthy.reasonCodes,
     ]);
 
     expect([...allCodes].sort()).toEqual([
       'adoptableInstall',
       'artifactRefreshFailed',
       'dependencyBlocked',
-      'duplicateInstall',
       'foreignOwnershipConflict',
       'missingRequiredConfig',
       'nativeIncomplete',
       'recordCorrupted',
       'residueDetected',
     ]);
-    expect(JSON.stringify([...alreadyCovered, adoptable, dependencyBlocked, duplicate]))
+    expect(JSON.stringify([...alreadyCovered, adoptable, dependencyBlocked, duplicateHealthy]))
       .not.toMatch(/needsAction|partial|repoManaged|external|missingRecord|ownerConflict|dependencyProtected|requiredConfigMissing/);
   });
 
@@ -717,9 +799,8 @@ describe('console-model', () => {
     const summary = controller.summary;
 
     expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('reapplyConfigRefresh');
-    expect(controller.locations[0]!.actions.map((action) => action.kind)).toContain('diagnoseCommand');
     expect(summary.features.map((feature) => feature.kind)).toContain('reapplyConfigRefresh');
-    expect(summary.features.map((feature) => feature.kind)).toContain('diagnose');
+    expect(summary.features.map((feature) => feature.kind)).toContain('status');
 
     const publicJson = JSON.stringify(summary);
     expect(publicJson).not.toContain('reapplyConfigRefresh","target');
@@ -727,18 +808,78 @@ describe('console-model', () => {
     expect(publicJson).not.toContain('confirmText');
   });
 
-  it('derives page model fields without leaking them into JSON summaries', () => {
-    const controller = singleController(reasonFixture('requiredConfigMissing'));
-
-    expect(controller.pageItem.statusIcon).toBe('alert-circle');
-    expect(controller.pageItem.statusTone).toBe('danger');
-    expect(controller.pageItem.platformBadges).toEqual([
-      {
-        label: 'Codex',
-        icon: 'square-terminal',
-        tone: 'neutral',
+  it('projects built-in SkillTrigger config with config V2 semantics on public summaries', () => {
+    const projection = configProjection();
+    const summary = createPluginConsoleItems(matrix([
+      cell({
+        report: report({
+          scopeInitialized: 'yes',
+          scopeManagedEvidence: { ledger: true },
+        }),
+      }),
+    ]), {
+      configProjectionByPluginName: {
+        'demo-plugin': projection,
       },
-    ]);
+    })[0]!;
+
+    expect(summary.config).toEqual(projection);
+    expect(summary.config?.views).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: 'effective',
+        projectLayer: 'shared',
+        fields: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'aw.skillTriggers.commit.trigger',
+            kind: 'builtIn',
+            reserved: true,
+            valueState: 'configured',
+            effectiveValue: 'manual',
+            sourceLayer: 'user',
+          }),
+        ]),
+      }),
+      expect.objectContaining({
+        scope: 'user',
+        projectLayer: 'shared',
+        fields: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'aw.skillTriggers.review.trigger',
+            valueState: 'ignored',
+            ignoredReason: 'fixedSkillTrigger',
+          }),
+          expect.objectContaining({
+            key: 'aw.skillTriggers.retired.trigger',
+            valueState: 'orphaned',
+            orphanedReason: 'skillRemoved',
+          }),
+        ]),
+      }),
+      expect.objectContaining({
+        scope: 'project',
+        projectLayer: 'shared',
+        fields: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'aw.skillTriggers.commit.trigger',
+            valueState: 'invalid',
+            storedSourceLayer: 'local',
+            invalidReason: 'unsupportedProjectLocalLayer',
+          }),
+        ]),
+      }),
+    ]));
+  });
+
+  it('derives page model fields without leaking them into JSON summaries', () => {
+    const controller = createConsoleControllerItems(matrix([reasonFixture('requiredConfigMissing')]), {
+      configProjectionByPluginName: {
+        'demo-plugin': configProjection(),
+      },
+    })[0]!;
+
+    expect(controller.pageItem.statusSymbol).toBe('!');
+    expect(controller.pageItem.statusTone).toBe('danger');
+    expect(controller.pageItem.platformSummary).toBe('Codex（个人）');
     expect(controller.pageItem.primaryActionLabel).toBe('配置');
 
     expect(controller.summary).not.toHaveProperty('statusIcon');
@@ -747,7 +888,52 @@ describe('console-model', () => {
     expect(controller.summary).not.toHaveProperty('primaryActionLabel');
   });
 
-  it('keeps controller action contracts intact, including internal diagnose commands', () => {
+  it('creates legacy config placeholder items that stay abnormal without write actions', () => {
+    const projection = configProjection({
+      views: [{
+        scope: 'effective',
+        projectLayer: 'shared',
+        fields: [],
+        legacyConfigStores: [
+          {
+            plugin: 'legacy-plugin',
+            storeKind: 'user',
+            reason: 'pluginRemoved',
+            fieldVisibility: 'storeOnly',
+            cleanupOnly: true,
+          },
+          {
+            plugin: 'legacy-plugin',
+            storeKind: 'projectShared',
+            projectRoot: '/workspace',
+            reason: 'schemaUnavailable',
+            fieldVisibility: 'storeOnly',
+            cleanupOnly: true,
+          },
+        ],
+      }],
+    });
+    const controller = createLegacyConfigPlaceholderControllerItem({
+      pluginName: 'legacy-plugin',
+      config: projection,
+    });
+
+    expect(controller.summary.status).toBe('abnormal');
+    expect(controller.summary.features).toEqual([{
+      kind: 'configure',
+      label: '配置',
+      targetSelection: 'none',
+    }]);
+    expect(controller.summary.installedLocations).toEqual([]);
+    expect(controller.summary.config).toEqual(projection);
+    expect(controller.summary.issueSummary).toContain('配置残留');
+    expect(controller.pageItem.primaryActionLabel).toBe('配置');
+    expect(controller.detailPage.platformDetails).toEqual([]);
+    expect(controller.statusPage.locations).toEqual([]);
+    expect(controller.blockingMessage).toBe(controller.summary.issueSummary);
+  });
+
+  it('keeps controller action contracts intact and exposes status detail commands', () => {
     const controller = singleController(reasonFixture('nativeIncomplete'));
     const writeActions = controller.locations[0]!.actions.filter((action) =>
       action.kind === 'runUpgrade' ||
@@ -767,9 +953,9 @@ describe('console-model', () => {
       expect(action.confirmText).toBeTruthy();
     }
 
-    const diagnoseAction = singleController(reasonFixture('catalogUnavailable'))
-      .locations[0]!.actions.find((action) => action.kind === 'diagnoseCommand');
-    expect(diagnoseAction?.command).toEqual([
+    const statusAction = singleController(reasonFixture('catalogUnavailable'))
+      .locations[0]!.actions.find((action) => action.kind === 'openStatus');
+    expect(statusAction?.command).toEqual([
       'aw',
       'status',
       'demo-plugin',
@@ -798,7 +984,12 @@ describe('console-model', () => {
       installState: installState({
         kind: 'adoptable',
         summary: '发现了一份可认领的已有项目安装。',
-        nextSteps: ['aw repair demo-plugin --platform codex --scope project --adopt-existing'],
+        nextSteps: [{
+          kind: 'uiAction',
+          label: '认领现有安装',
+          description: '会进入认领流程，把当前项目里已有的安装纳入 AW 管理。',
+          uiAction: 'runAdoptExisting',
+        }],
         adoptExistingAvailable: true,
       }),
       report: undefined,
@@ -807,7 +998,12 @@ describe('console-model', () => {
       installState: installState({
         kind: 'needsRepair',
         summary: '共享触发策略当前由另一个安装位置控制。',
-        nextSteps: ['aw repair demo-plugin --platform codex --scope user --takeover-shared-runtime'],
+        nextSteps: [{
+          kind: 'uiAction',
+          label: '接管共享触发策略',
+          description: '会进入接管流程，把共享 runtime 的控制权切换到当前安装位置。',
+          uiAction: 'runTakeoverSharedRuntime',
+        }],
         issueCodes: ['artifactMissing'],
         sharedRuntimeOwnerPresent: true,
         sharedRuntimeNeedsTakeover: true,
@@ -849,6 +1045,26 @@ describe('console-model', () => {
         report: undefined,
       }),
       cell({
+        pluginName: 'adoptable-plugin',
+        platform: 'codex',
+        installState: installState({
+          kind: 'adoptable',
+          adoptExistingAvailable: true,
+          cleanupAvailable: true,
+        }),
+        report: undefined,
+      }),
+      cell({
+        pluginName: 'adoptable-plugin',
+        platform: 'claude',
+        installState: installState({
+          kind: 'adoptable',
+          adoptExistingAvailable: true,
+          cleanupAvailable: true,
+        }),
+        report: undefined,
+      }),
+      cell({
         pluginName: 'takeover-plugin',
         platform: 'codex',
         installState: installState({
@@ -865,39 +1081,64 @@ describe('console-model', () => {
     ]));
 
     const demo = controller.find((entry) => entry.summary.pluginName === 'demo-plugin');
+    const adoptable = controller.find((entry) => entry.summary.pluginName === 'adoptable-plugin');
     const takeover = controller.find((entry) => entry.summary.pluginName === 'takeover-plugin');
     expect(demo?.summary.features.find((feature) => feature.kind === 'uninstall')?.targetSelection).toBe('multiTargetAllowed');
+    expect(adoptable?.summary.features.find((feature) => feature.kind === 'adoptExisting')?.targetSelection).toBe('singleTargetOnly');
     expect(takeover?.summary.features.find((feature) => feature.kind === 'takeoverSharedRuntime')?.targetSelection).toBe('singleTargetOnly');
   });
 
-  it('keeps detail target options empty until a feature is chosen and special-cases duplicate labels', () => {
+  it('keeps detail target options empty until a feature is chosen', () => {
     const controller = singleController(cell({
       installState: installState(),
       report: undefined,
     }));
 
     expect(createConsolePluginDetailPageModel(controller).targetOptions).toEqual([]);
+  });
 
-    const duplicateController = createConsoleControllerItems(matrix([
-      cell({
-        platform: 'codex',
-        scope: 'user',
-        installState: installState(),
-        report: undefined,
+  it('exposes a dependency entry only when installed targets have dependency state', () => {
+    const withDependencies = singleController(cell({
+      report: report({
+        scopeInitialized: 'yes',
+        scopeManagedEvidence: { ledger: true },
+        dependencies: {
+          healthSource: 'installSnapshot',
+          declared: [{
+            name: 'helper-plugin',
+          }],
+          resolved: [{
+            declaration: { name: 'helper-plugin' },
+            source: 'installSnapshot',
+          }],
+          satisfied: [{
+            declaration: { name: 'helper-plugin' },
+            location: {
+              plugin: 'helper-plugin',
+              platform: 'codex',
+              scope: 'user',
+            },
+          }],
+          missing: [],
+          dependents: [],
+          autoInstalled: false,
+          autoRemovable: false,
+          catalogDrift: {
+            kind: 'none',
+            snapshotDependencies: ['helper-plugin'],
+            currentDependencies: ['helper-plugin'],
+          },
+        },
       }),
-      cell({
-        platform: 'codex',
-        scope: 'project',
-        projectKey: '/workspace',
-        installState: installState(),
-        report: undefined,
+    }));
+    const withoutDependencies = singleController(cell({
+      report: report({
+        scopeInitialized: 'yes',
+        scopeManagedEvidence: { ledger: true },
       }),
-    ]))[0]!;
+    }));
 
-    const detail = createConsolePluginDetailPageModel(duplicateController, 'resolveDuplicateInstall');
-    expect(detail.targetOptions.map((option) => option.label)).toEqual(['保留个人位置', '保留当前项目位置']);
-
-    const actions = createPluginConsoleExecutableActions(duplicateController, 'resolveDuplicateInstall');
-    expect(actions.every((action) => action.confirmText)).toBe(true);
+    expect(withDependencies.summary.features.map((feature) => feature.kind)).toContain('dependencies');
+    expect(withoutDependencies.summary.features.map((feature) => feature.kind)).not.toContain('dependencies');
   });
 });

@@ -34,7 +34,6 @@ describe('command options normalization', () => {
       scope: 'project',
       platform: 'codex',
       adoptExisting: true,
-      skillTrigger: 'manual',
       takeoverSharedRuntime: true,
       json: true,
     })).toMatchObject({
@@ -43,7 +42,6 @@ describe('command options normalization', () => {
       platform: 'codex',
       adoptExisting: true,
       dependencyIndex: false,
-      requestedSkillTrigger: 'manual',
       takeoverSharedRuntime: true,
       json: true,
     });
@@ -103,15 +101,31 @@ describe('command options normalization', () => {
     })).toThrow('cleanup --yes 只用于 --dependency-index --prune-stale。');
   });
 
-  it('fails standard cleanup and reinstall when the platform is not a single explicit target', () => {
+  it('requires an explicit platform for standard cleanup and reinstall', () => {
     expect(() => normalizeCleanupCommandOptions({
       cwd: '/tmp/workspace',
-    })).toThrow('cleanup 命令需要显式指定单一平台。');
+    })).toThrow('cleanup 命令需要显式指定 `--platform codex|claude|both`。');
 
     expect(() => normalizeReinstallCommandOptions({
       cwd: '/tmp/workspace',
-      platform: 'both',
-    })).toThrow('reinstall 命令需要显式指定单一平台。');
+    })).toThrow('reinstall 命令需要显式指定 `--platform codex|claude|both`。');
+  });
+
+  it('rejects legacy platform auto for public write commands', () => {
+    expect(() => normalizeInstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'auto',
+    })).toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
+
+    expect(() => normalizeCleanupCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'auto',
+    })).toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
+
+    expect(() => normalizeReinstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'auto',
+    })).toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
   });
 
   it('normalizes uninstall --remove-config and cleanup --plan --force --remove-config', () => {

@@ -314,7 +314,7 @@ afterEach(async () => {
 });
 
 describe('console duplicate resolution integration', () => {
-  it('keeps the selected location and routes duplicate resolution through real cleanup evaluation and execution', async () => {
+  it('does not surface duplicate-resolution cleanup for a healthy dual-scope sibling state', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -340,9 +340,6 @@ describe('console duplicate resolution integration', () => {
 
     const prompt = createFakePrompt([
       { method: 'select', value: 'git-commit' },
-      { method: 'select', value: 'resolveDuplicateInstall' },
-      { method: 'select', value: 'codex:user:-' },
-      { method: 'confirm', value: true },
       { method: 'select', action: 'exit' },
     ]);
     const consoleDriver = createFakeConsoleDriver();
@@ -360,13 +357,17 @@ describe('console duplicate resolution integration', () => {
     });
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'project')).resolves.toHaveLength(0);
+    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'project')).resolves.toHaveLength(1);
     await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'user')).resolves.toHaveLength(1);
-    const resultView = consoleDriver.views.find((view) => view.title.includes('处理重复安装'));
-    expect(resultView).toBeDefined();
-    expect(resultView?.lines).toEqual(expect.arrayContaining([
-      '实际删除项：',
-    ]));
-    expect(resultView?.lines.some((line) => line.startsWith('cleanup '))).toBe(true);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('✓ 已安装');
+    expect(detailView?.lines).toContain('✓ Codex（个人）');
+    expect(detailView?.lines).toContain('✓ Codex（当前项目）');
+    const featurePrompt = prompt.calls.find((call) =>
+      call.method === 'select' &&
+      (call.options as { message?: string }).message === '选择功能',
+    );
+    expect((featurePrompt!.options as { choices: Array<{ value: string }> }).choices.map((choice) => choice.value))
+      .not.toContain('resolveDuplicateInstall');
   }, 15_000);
 });

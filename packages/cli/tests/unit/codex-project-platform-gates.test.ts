@@ -440,7 +440,7 @@ describe('Codex project platform gates', () => {
     expect(codex.installExtensionsCalls).toEqual(['mcp-only']);
   });
 
-  it('keeps upgrade --all executable on auto when the current scope only has Codex project evidence', async () => {
+  it('keeps upgrade --all executable on explicit Codex when the current scope only has Codex project evidence', async () => {
     const workspace = await makeCodexProjectWorkspace(['mcp-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
@@ -462,7 +462,7 @@ describe('Codex project platform gates', () => {
           all: true,
           cwd: workspace.repoRoot,
           scope: 'project',
-          platform: 'auto',
+          platform: 'codex',
         },
         {
           env: workspace.env,
@@ -478,7 +478,7 @@ describe('Codex project platform gates', () => {
     expect(claude.installExtensionsCalls).toEqual([]);
   });
 
-  it('auto-infers Codex project uninstall from full tracking and ledger evidence without a Codex native executable', async () => {
+  it('uses explicit Codex project uninstall with full tracking and ledger evidence without a Codex native executable', async () => {
     const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
@@ -501,7 +501,7 @@ describe('Codex project platform gates', () => {
         {
           cwd: workspace.repoRoot,
           scope: 'project',
-          platform: 'auto',
+          platform: 'codex',
         },
         {
           env: workspace.env,
@@ -517,7 +517,7 @@ describe('Codex project platform gates', () => {
     expect(claude.uninstallPluginCalls).toEqual([]);
   });
 
-  it('keeps interactive project uninstall platform choices on Codex evidence even without a Codex native executable', async () => {
+  it('keeps interactive project uninstall candidates on explicit Codex evidence even without a Codex native executable', async () => {
     const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.PATH = '';
@@ -551,13 +551,13 @@ describe('Codex project platform gates', () => {
       {
         cwd: workspace.repoRoot,
         scope: 'project',
-        platform: 'auto',
+        platform: 'codex',
       },
       context,
       false,
     );
 
-    expect(seenPlatforms).toEqual([['codex']]);
+    expect(seenPlatforms).toEqual([]);
     expect(plan?.groups).toHaveLength(1);
     expect(plan?.groups[0]).toMatchObject({
       pluginNames: ['slash-commands-only'],
@@ -568,7 +568,7 @@ describe('Codex project platform gates', () => {
     });
   });
 
-  it('rejects auto project uninstall when another executable platform is evidence-unknown and leaves state untouched', async () => {
+  it('rejects removed auto project uninstall before evidence inference and leaves state untouched', async () => {
     const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
@@ -585,7 +585,7 @@ describe('Codex project platform gates', () => {
           {
             cwd: workspace.repoRoot,
             scope: 'project',
-            platform: 'auto',
+            platform: 'auto' as PlatformName,
           },
           {
             env: workspace.env,
@@ -604,10 +604,10 @@ describe('Codex project platform gates', () => {
           },
         ),
       ),
-    ).rejects.toThrow('scopeInitialized = unknown');
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
   });
 
-  it('rejects interactive auto project uninstall before prompting when Claude and Codex evidence both exist', async () => {
+  it('rejects removed interactive auto project uninstall before prompting', async () => {
     const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
     workspace.env.AW_FORCE_CODEX_AVAILABLE = '1';
@@ -663,17 +663,17 @@ describe('Codex project platform gates', () => {
           {
             cwd: workspace.repoRoot,
             scope: 'project',
-            platform: 'auto',
+            platform: 'auto' as PlatformName,
           },
           context,
           false,
         ),
       ),
-    ).rejects.toThrow('同时存在 Claude Code 和 Codex');
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
     expect(promptCalled).toBe(false);
   });
 
-  it('rejects interactive auto project upgrade before prompting when current evidence is unknown', async () => {
+  it('rejects removed interactive auto project upgrade before prompting', async () => {
     const workspace = await makeCodexProjectWorkspace(['mcp-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.PATH = '';
@@ -713,13 +713,13 @@ describe('Codex project platform gates', () => {
             all: false,
             cwd: workspace.repoRoot,
             scope: 'project',
-            platform: 'auto',
+            platform: 'auto' as PlatformName,
           },
           context,
           false,
         ),
       ),
-    ).rejects.toThrow('unknown');
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
     expect(promptCalled).toBe(false);
   });
 

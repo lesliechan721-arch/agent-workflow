@@ -1316,24 +1316,24 @@ export async function pruneDependencyIndexStaleEntry(options: {
   };
   const inspection = await inspectGlobalDependencyIndex(options.env);
   if (inspection.status !== 'ok') {
-    throw new Error('dependency index 当前不可读，请先重新运行 diagnose 或 repair。');
+    throw new Error('dependency index 当前不可读，请先重新运行 status --verbose 或 repair。');
   }
   const indexDigest = sha256Hex(await fs.readFile(inspection.path));
   if (indexDigest !== parsed.indexDigest) {
-    throw new Error('prune token 已过期：dependency index digest 已变化，请重新运行 diagnose 生成新 token。');
+    throw new Error('prune token 已过期：dependency index digest 已变化，请重新运行 status --verbose 生成新 token。');
   }
   const matchedIndex = inspection.value.records.findIndex((entry) =>
     entry.recordPath === parsed.recordPath);
   if (matchedIndex < 0) {
-    throw new Error('prune token 对应的 dependency index entry 已不存在，请重新运行 diagnose。');
+    throw new Error('prune token 对应的 dependency index entry 已不存在，请重新运行 status --verbose。');
   }
   const matchedEntry = inspection.value.records[matchedIndex]!;
   if (!sameLocation(matchedEntry.location, parsed.location)) {
-    throw new Error('prune token 与当前 dependency index entry 的 location 不匹配，请重新运行 diagnose。');
+    throw new Error('prune token 与当前 dependency index entry 的 location 不匹配，请重新运行 status --verbose。');
   }
   const reference = inspection.references[matchedIndex];
   if (!reference || reference.recordPath !== parsed.recordPath) {
-    throw new Error('prune token 与当前 dependency index reference 不匹配，请重新运行 diagnose。');
+    throw new Error('prune token 与当前 dependency index reference 不匹配，请重新运行 status --verbose。');
   }
   if (reference.status === 'verified') {
     throw new Error('该 dependency index entry 目前仍可验证，不能按 stale prune 删除。');

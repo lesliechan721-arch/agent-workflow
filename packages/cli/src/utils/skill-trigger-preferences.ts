@@ -14,11 +14,13 @@ import type {
   PluginMeta,
   Scope,
   SkillTriggerApplicability,
+  SkillTriggerPolicy,
   SkillTriggerPreference,
 } from '../types.js';
 import { renderCodexOpenAiYamlWithAllowImplicitInvocation } from './codex-skill-staging.js';
 import { readPluginManifest } from './manifest.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from './plugin-scripts.js';
+import { resolveSlashCommands } from './slash-commands.js';
 
 type ParsedTriggerBoolean = boolean | 'absent';
 
@@ -176,8 +178,10 @@ function normalizeYamlError(error: unknown): string {
 
 export interface SkillTriggerPolicyEntry {
   skillName: string;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
   allowInstallOverride: boolean;
-  allowInstallOverrideDeclared: boolean;
+  source: 'declared' | 'implicitSlashCommand';
   codexFilePath: string;
   claudeFilePath: string;
 }
@@ -191,6 +195,14 @@ export interface SkillTriggerPolicyResolution {
   policies: SkillTriggerPolicyEntry[];
 }
 
+export interface SkillTriggerConfigEntry {
+  skillName: string;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
+  source: 'declared' | 'implicitSlashCommand';
+  platforms: PlatformName[];
+}
+
 export interface SkillTriggerDiagnostic {
   pluginName: string;
   platform: PlatformName;
@@ -201,13 +213,15 @@ export interface SkillTriggerDiagnostic {
 
 interface CodexSkillSignatureEntry {
   skillName: string;
-  allowInstallOverride: boolean;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
   allowImplicitInvocation: boolean;
 }
 
 interface ClaudeSkillSignatureEntry {
   skillName: string;
-  allowInstallOverride: boolean;
+  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
+  allowDynamicTrigger: boolean;
   disableModelInvocation: boolean;
   userInvocable: boolean;
 }
@@ -601,7 +615,7 @@ function getSkillTriggerApplicabilityFromPolicies(
   policies: SkillTriggerPolicyEntry[],
 ): SkillTriggerApplicability {
   return getSkillTriggerApplicabilityFromAllowInstallOverrides(
-    policies.map((policy) => policy.allowInstallOverride),
+    policies.map((policy) => policy.allowDynamicTrigger),
   );
 }
 
@@ -617,7 +631,7 @@ function mergeSkillTriggerApplicability(
   return 'none';
 }
 
-function getExcludedDynamicCodexSkillKeys(options: {
+function getDeclaredDynamicCodexSkillKeys(options: {
   manifest: PluginMeta['manifest'];
   platform: PlatformName;
 }): Set<string> {
@@ -638,15 +652,37 @@ function getDynamicCodexSkillTriggerApplicability(options: {
   manifest: PluginMeta['manifest'];
   platform: PlatformName;
 }): SkillTriggerApplicability {
-  const skillKeys = [...getExcludedDynamicCodexSkillKeys(options)];
+  const skillKeys = [...getDeclaredDynamicCodexSkillKeys(options)];
   if (skillKeys.length === 0) {
     return 'none';
   }
 
   const manifestPolicies = options.manifest.skillTriggers ?? {};
   return getSkillTriggerApplicabilityFromAllowInstallOverrides(
-    skillKeys.map((skillName) => manifestPolicies[skillName]?.allowInstallOverride === true),
+    skillKeys.map((skillName) => manifestPolicies[skillName]?.allowDynamicTrigger === true),
   );
+}
+
+function resolveEffectiveSkillTriggerPreference(
+  policy: Pick<SkillTriggerPolicyEntry, 'defaultTrigger' | 'allowDynamicTrigger'>,
+  preference: SkillTriggerPreference,
+): Exclude<SkillTriggerPreference, 'default'> {
+  if (preference === 'default' || !policy.allowDynamicTrigger) {
+    return policy.defaultTrigger;
+  }
+  return preference;
+}
+
+function createImplicitSlashCommandPolicy(skillName: string): SkillTriggerPolicyEntry {
+  return {
+    skillName,
+    defaultTrigger: 'manual',
+    allowDynamicTrigger: false,
+    allowInstallOverride: false,
+    source: 'implicitSlashCommand',
+    codexFilePath: '',
+    claudeFilePath: '',
+  };
 }
 
 async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
@@ -657,21 +693,50 @@ async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
   platform: PlatformName;
 }): Promise<SkillTriggerPolicyResolution> {
   const manifestPolicies = options.manifest.skillTriggers ?? {};
-  const excludedDynamicSkillKeys = getExcludedDynamicCodexSkillKeys({
+  const dynamicCodexSkillKeys = getDeclaredDynamicCodexSkillKeys({
     manifest: options.manifest,
     platform: options.platform,
   });
   const skillNames = await listSkillDirectories(
     getPlatformSkillsRoot(options.pluginRoot, options.platform),
   );
+  const implicitSlashCommandsRoot = options.manifest.slashCommands
+    ? path.join(options.pluginRoot, stripDotSlash(options.manifest.slashCommands))
+    : null;
+  const implicitSlashCommandNames = new Set<string>();
+  if (options.platform === 'codex' && implicitSlashCommandsRoot) {
+    if (await fs.pathExists(implicitSlashCommandsRoot)) {
+      for (const command of (await resolveSlashCommands(options.pluginRoot, options.manifest, {
+        targetPlatforms: new Set(['codex']),
+      }))?.commands ?? []) {
+        implicitSlashCommandNames.add(command.name);
+      }
+    } else if (!options.manifest.skills) {
+      for (const skillName of skillNames) {
+        implicitSlashCommandNames.add(skillName);
+      }
+    }
+  }
   const policies = skillNames
-    .filter((skillName) => !excludedDynamicSkillKeys.has(skillName))
+    .filter((skillName) => !dynamicCodexSkillKeys.has(skillName))
     .map((skillName) => {
-      const policy = manifestPolicies[skillName];
+      const declaredPolicy = manifestPolicies[skillName];
+      const policy: SkillTriggerPolicy | undefined = declaredPolicy ?? (
+        implicitSlashCommandNames.has(skillName)
+          ? createImplicitSlashCommandPolicy(skillName)
+          : undefined
+      );
+      if (!policy) {
+        throw new Error(
+          `Invalid skill trigger contract: ${options.pluginName}/${options.platform} skill "${skillName}" is missing skillTriggers.${skillName}.`,
+        );
+      }
       return {
         skillName,
-        allowInstallOverride: policy?.allowInstallOverride === true,
-        allowInstallOverrideDeclared: policy !== undefined && Object.hasOwn(policy, 'allowInstallOverride'),
+        defaultTrigger: policy.defaultTrigger,
+        allowDynamicTrigger: policy.allowDynamicTrigger,
+        allowInstallOverride: policy.allowDynamicTrigger,
+        source: declaredPolicy ? 'declared' as const : 'implicitSlashCommand' as const,
         codexFilePath: getCodexSkillMetadataPath(options.pluginRoot, skillName),
         claudeFilePath: getClaudeSkillMetadataPath(options.pluginRoot, skillName),
       };
@@ -723,6 +788,57 @@ export async function resolveSkillTriggerApplicabilityForPlugin(
       platform,
     }),
   ]);
+}
+
+export async function resolveSkillTriggerConfigEntries(
+  plugin: PluginMeta,
+): Promise<SkillTriggerConfigEntry[]> {
+  const inventory = new Map<string, SkillTriggerConfigEntry>();
+  for (const platform of ['codex', 'claude'] as const) {
+    try {
+      const resolution = await resolveSkillTriggerPoliciesFromPluginRoot({
+        pluginRoot: plugin.rootDir,
+        pluginName: plugin.manifest.name,
+        manifestPath: plugin.manifestPath,
+        manifest: plugin.manifest,
+        platform,
+      });
+      for (const policy of resolution.policies) {
+        const current = inventory.get(policy.skillName);
+        if (current) {
+          if (!current.platforms.includes(platform)) {
+            current.platforms.push(platform);
+          }
+          continue;
+        }
+        inventory.set(policy.skillName, {
+          skillName: policy.skillName,
+          defaultTrigger: policy.defaultTrigger,
+          allowDynamicTrigger: policy.allowDynamicTrigger,
+          source: policy.source,
+          platforms: [platform],
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  for (const [skillName, policy] of Object.entries(plugin.manifest.skillTriggers ?? {})) {
+    const current = inventory.get(skillName);
+    if (current) {
+      continue;
+    }
+    inventory.set(skillName, {
+      skillName,
+      defaultTrigger: policy.defaultTrigger,
+      allowDynamicTrigger: policy.allowDynamicTrigger,
+      source: 'declared',
+      platforms: ['codex'],
+    });
+  }
+
+  return [...inventory.values()].sort((left, right) => left.skillName.localeCompare(right.skillName));
 }
 
 interface ParsedCodexSkill {
@@ -848,27 +964,22 @@ async function parseClaudeSkillMetadata(filePath: string): Promise<ParsedClaudeS
 function applyPreferenceToCodexSkill(
   skill: ParsedCodexSkill,
   preference: SkillTriggerPreference,
-  allowInstallOverride: boolean,
+  policy: Pick<SkillTriggerPolicyEntry, 'defaultTrigger' | 'allowDynamicTrigger'>,
 ): ParsedCodexSkill {
-  if (preference === 'default' || !allowInstallOverride) {
-    return skill;
-  }
-
   return {
-    allowImplicitInvocation: preference === 'auto',
+    ...skill,
+    allowImplicitInvocation: resolveEffectiveSkillTriggerPreference(policy, preference) === 'auto',
   };
 }
 
 function applyPreferenceToClaudeSkill(
   skill: ParsedClaudeSkill,
   preference: SkillTriggerPreference,
-  allowInstallOverride: boolean,
+  policy: Pick<SkillTriggerPolicyEntry, 'defaultTrigger' | 'allowDynamicTrigger'>,
 ): ParsedClaudeSkill {
-  if (preference === 'default' || !allowInstallOverride) {
-    return skill;
-  }
+  const effectivePreference = resolveEffectiveSkillTriggerPreference(policy, preference);
 
-  return preference === 'manual'
+  return effectivePreference === 'manual'
     ? {
         disableModelInvocation: true,
         userInvocable: true,
@@ -1036,11 +1147,12 @@ async function readEmbeddedSignatureEntries(
         const applied = applyPreferenceToCodexSkill(
           skill,
           preference,
-          policy.allowInstallOverride,
+          policy,
         );
         entries.push({
           skillName: policy.skillName,
-          allowInstallOverride: policy.allowInstallOverride,
+          defaultTrigger: policy.defaultTrigger,
+          allowDynamicTrigger: policy.allowDynamicTrigger,
           allowImplicitInvocation: normalizeCodexAllowImplicitInvocation(
             applied.allowImplicitInvocation,
           ),
@@ -1083,11 +1195,12 @@ async function readEmbeddedSignatureEntries(
       const applied = applyPreferenceToClaudeSkill(
         skill,
         preference,
-        policy.allowInstallOverride,
+        policy,
       );
       entries.push({
         skillName: policy.skillName,
-        allowInstallOverride: policy.allowInstallOverride,
+        defaultTrigger: policy.defaultTrigger,
+        allowDynamicTrigger: policy.allowDynamicTrigger,
         disableModelInvocation: normalizeClaudeDisableModelInvocation(
           applied.disableModelInvocation,
         ),
@@ -1149,7 +1262,8 @@ async function readRuntimeSignatureEntries(
         const skill = await parseCodexSkillMetadata(runtimePath);
         entries.push({
           skillName: policy.skillName,
-          allowInstallOverride: policy.allowInstallOverride,
+          defaultTrigger: policy.defaultTrigger,
+          allowDynamicTrigger: policy.allowDynamicTrigger,
           allowImplicitInvocation: normalizeCodexAllowImplicitInvocation(
             skill.allowImplicitInvocation,
           ),
@@ -1195,7 +1309,8 @@ async function readRuntimeSignatureEntries(
       const skill = await parseClaudeSkillMetadata(runtimePath);
       entries.push({
         skillName: policy.skillName,
-        allowInstallOverride: policy.allowInstallOverride,
+        defaultTrigger: policy.defaultTrigger,
+        allowDynamicTrigger: policy.allowDynamicTrigger,
         disableModelInvocation: normalizeClaudeDisableModelInvocation(
           skill.disableModelInvocation,
         ),
@@ -1644,17 +1759,9 @@ export async function materializeSkillTriggerPreference(options: {
   }
 
   const patchSkill = async (skillRoot: string, policy: SkillTriggerPolicyEntry): Promise<void> => {
-    if (preference === 'default') {
-      return;
-    }
-
-    if (!policy.allowInstallOverride) {
+    const effectivePreference = resolveEffectiveSkillTriggerPreference(policy, preference);
+    if (effectivePreference === policy.defaultTrigger) {
       skippedSkills.push(policy.skillName);
-      if (!policy.allowInstallOverrideDeclared) {
-        warnings.push(
-          `${options.pluginName} 的 ${options.platform} skill ${policy.skillName} 未声明 allowInstallOverride，保留默认触发策略。`,
-        );
-      }
       return;
     }
 
@@ -1662,15 +1769,17 @@ export async function materializeSkillTriggerPreference(options: {
       if (options.platform === 'codex') {
         await patchCodexOpenAiYaml(
           path.join(skillRoot, 'agents', 'openai.yaml'),
-          preference,
+          effectivePreference,
         );
       } else {
         await patchClaudeSkillFrontmatter(
           path.join(skillRoot, 'SKILL.md'),
-          preference,
+          effectivePreference,
         );
       }
-      patchedSkills.push(policy.skillName);
+      if (effectivePreference !== policy.defaultTrigger) {
+        patchedSkills.push(policy.skillName);
+      }
     } catch (error) {
       throw buildSkillTriggerError({
         pluginName: options.pluginName,

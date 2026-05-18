@@ -11,6 +11,7 @@ import {
 import { writeJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
+  assertStrictSemVer,
   createMarketplaceManifest,
   discoverPlugins,
   readMarketplaceSourceMeta,
@@ -34,6 +35,29 @@ function resolveDefaultPaths(): { repoRoot: string; outputRoot: string } {
   };
 }
 
+async function assertPackageVersions(repoRoot: string): Promise<void> {
+  const rootPackageJsonPath = path.join(repoRoot, 'package.json');
+  const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
+  const [rootExists, cliExists] = await Promise.all([
+    fs.pathExists(rootPackageJsonPath),
+    fs.pathExists(cliPackageJsonPath),
+  ]);
+  if (!rootExists || !cliExists) {
+    return;
+  }
+  const [rootPackageJson, cliPackageJson] = await Promise.all([
+    fs.readJson(rootPackageJsonPath) as Promise<{ version?: unknown }>,
+    fs.readJson(cliPackageJsonPath) as Promise<{ version?: unknown }>,
+  ]);
+  const rootVersion = assertStrictSemVer(rootPackageJson.version, 'package.json version');
+  const cliVersion = assertStrictSemVer(cliPackageJson.version, 'packages/cli/package.json version');
+  if (rootVersion !== cliVersion) {
+    throw new Error(
+      `Invalid release versions: package.json version ${rootVersion} must match packages/cli/package.json version ${cliVersion}.`,
+    );
+  }
+}
+
 export async function bundlePlugins(
   options: BundlePluginsOptions = {},
 ): Promise<{ outputRoot: string; pluginNames: string[] }> {
@@ -42,13 +66,14 @@ export async function bundlePlugins(
   const outputRoot = options.outputRoot ?? defaults.outputRoot;
   const buildMode = options.buildMode ?? 'build-free';
 
-  await fs.remove(outputRoot);
-  await fs.ensureDir(path.join(outputRoot, 'plugins'));
-
+  await assertPackageVersions(repoRoot);
   const [sourceMeta, plugins] = await Promise.all([
     readMarketplaceSourceMeta(repoRoot),
     discoverPlugins(repoRoot),
   ]);
+
+  await fs.remove(outputRoot);
+  await fs.ensureDir(path.join(outputRoot, 'plugins'));
 
   const bundledPlugins = [];
   const bundledPluginsByPlatform: Record<PlatformName, PluginMeta[]> = {

@@ -19,10 +19,29 @@ import {
   loadPluginTargetsForRemovalCommand,
   type ResolvedPluginTarget,
 } from './common.js';
-import type { GeneratedArtifact, PlatformName, PluginLocation, Scope } from '../types.js';
+import {
+  buildCommandCandidates,
+  type CommandCandidate,
+} from './discovery.js';
+import type {
+  ConfigStoreRemovalResult,
+  GeneratedArtifact,
+  NextStepInstruction,
+  PlatformName,
+  PlatformSelection,
+  ReceiptOverallState,
+  ReceiptTargetResult,
+  Scope,
+} from '../types.js';
 import { getNativeTransactionMarkerPath } from '../install-state/paths.js';
 import type { InstallEvidence } from '../install-state/evidence.js';
 import type { ProjectInstallStateProjection } from '../install-state/status-projection.js';
+import {
+  createCliCommandNextStep,
+  createNextStepsBoundary,
+  createUiActionNextStep,
+} from '../output/model.js';
+import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
 import { resolvePluginConfigStorePath, resetPluginConfigStore } from '../utils/plugin-config.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/paths.js';
 
@@ -88,9 +107,16 @@ export type CleanupTargetType =
 export interface CleanupTargetPayload {
   ok: true;
   command: 'cleanup';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   generatedAt: string;
   dependencyIndex: false;
   cleanupPlanSchemaVersion: 1;
+  targetResults: ReceiptTargetResult[];
+  configStoreRemovals?: ConfigStoreRemovalResult[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   dryRun: boolean;
   force: boolean;
   removeConfig: boolean;
@@ -114,10 +140,15 @@ export interface CleanupTargetPayload {
 export interface CleanupDependencyIndexPayload {
   ok: true;
   command: 'cleanup';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   generatedAt: string;
   dependencyIndex: true;
+  targetResults: ReceiptTargetResult[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   retiredEntries: CleanupRetiredEntry[];
-  nextSteps: string[];
 }
 
 export type CleanupJsonPayload = CleanupTargetPayload | CleanupDependencyIndexPayload;
@@ -151,6 +182,14 @@ function renderLocationArgs(location: CleanupLocationSummary): string {
   return `${location.plugin} --platform ${location.platform} --scope ${location.scope}`;
 }
 
+function renderCleanupSelectionArgs(options: {
+  plugin: string;
+  platform: PlatformSelection;
+  scope: Scope;
+}): string {
+  return `${options.plugin} --platform ${options.platform} --scope ${options.scope}`;
+}
+
 function renderCleanupCommand(location: CleanupLocationSummary, options: {
   force?: boolean;
   plan?: boolean;
@@ -162,8 +201,127 @@ function renderCleanupCommand(location: CleanupLocationSummary, options: {
     + `${options.removeConfig ? ' --remove-config' : ''}`;
 }
 
+function renderCleanupCommandForSelection(options: {
+  plugin: string;
+  platform: PlatformSelection;
+  scope: Scope;
+  force?: boolean;
+  plan?: boolean;
+  removeConfig?: boolean;
+}): string {
+  return `aw cleanup ${renderCleanupSelectionArgs(options)}`
+    + `${options.plan ? ' --plan' : ''}`
+    + `${options.force ? ' --force' : ''}`
+    + `${options.removeConfig ? ' --remove-config' : ''}`;
+}
+
 function renderAdoptExistingCommand(location: CleanupLocationSummary): string {
   return `aw repair ${renderLocationArgs(location)} --adopt-existing`;
+}
+
+function buildCleanupStatusCommand(location: CleanupLocationSummary): string {
+  return `aw status ${renderLocationArgs(location)}`;
+}
+
+function buildCleanupStatusCommandForSelection(options: {
+  plugin: string;
+  platform: PlatformSelection;
+  scope: Scope;
+}): string {
+  return `aw status ${renderCleanupSelectionArgs(options)}`;
+}
+
+function buildCleanupNextSteps(payload: CleanupTargetPayload): NextStepInstruction[] {
+  if (payload.dryRun) {
+    return [createCliCommandNextStep(
+      payload.blockingReasons.length > 0 ? '查看 cleanup 预检结果' : '继续执行 cleanup',
+      payload.blockingReasons.length > 0
+        ? '可以根据这次预检结果判断是先解除阻断，还是按建议继续处理。'
+        : '可以继续进入 cleanup 执行流程，并按这次预检确认删除项、备份项和配置处理结果。',
+      payload.recommendedCommand,
+    )];
+  }
+
+  return [createUiActionNextStep(
+    '查看 cleanup 后状态',
+    '可以重新确认 cleanup 后还剩哪些安装证据、残留和后续可执行动作。',
+    'openStatus',
+    buildCleanupStatusCommand(payload.target),
+  )];
+}
+
+function buildCleanupDependencyIndexNextSteps(): ReturnType<typeof createNextStepsBoundary> {
+  return createNextStepsBoundary([createCliCommandNextStep(
+    '查看最新依赖状态',
+    '可以重新检查 dependency index 清理后，当前环境里还剩哪些依赖引用需要继续处理。',
+    'aw status --verbose',
+  )]);
+}
+
+function buildCleanupTargetResults(
+  payload: CleanupTargetPayload,
+): ReceiptTargetResult[] {
+  return [{
+    target: {
+      pluginName: payload.target.plugin,
+      platform: payload.target.platform,
+      scope: payload.target.scope,
+      ...(payload.target.projectKey ? { projectKey: payload.target.projectKey } : {}),
+    },
+    action: 'cleanup',
+    state: payload.dryRun
+      ? 'notRun'
+      : (payload.remainingItems?.length ?? 0) > 0 || payload.blockingReasons.length > 0
+        ? 'failed'
+        : 'completed',
+    rollbackState: 'notNeeded',
+    ...((payload.remainingItems?.length ?? 0) > 0
+      ? { message: `仍有 ${payload.remainingItems!.length} 项未清理。` }
+      : payload.blockingReasons[0]
+        ? { message: payload.blockingReasons[0].message, errorCode: payload.blockingReasons[0].code }
+        : {}),
+  }];
+}
+
+function buildCleanupConfigStoreRemovals(
+  payload: CleanupTargetPayload,
+): ConfigStoreRemovalResult[] | undefined {
+  if (payload.wouldRemoveConfig.length === 0) {
+    return undefined;
+  }
+
+  return payload.wouldRemoveConfig.map((entry) => ({
+    store: {
+      pluginName: entry.plugin,
+      storeKind: entry.scope === 'project' ? 'projectShared' : 'user',
+      ...(entry.projectKey ? { projectRoot: entry.projectKey } : {}),
+    },
+    state: entry.status === 'removed'
+      ? 'removed'
+      : entry.status === 'failed'
+        ? 'failed'
+        : entry.reason === '当前 target scope 没有可删除的 AW 自管配置。'
+          ? 'notFound'
+          : 'skipped',
+    ...(entry.status === 'failed'
+      ? {
+          reasonCode: 'removeFailed' as const,
+          message: entry.reason,
+        }
+      : entry.status === 'skipped' && entry.reason && entry.reason !== '当前 target scope 没有可删除的 AW 自管配置。'
+        ? {
+            reasonCode: 'subjectFailed' as const,
+            message: entry.reason,
+          }
+        : {}),
+    subjectTargets: [{
+      pluginName: payload.target.plugin,
+      platform: payload.target.platform,
+      scope: payload.target.scope,
+      ...(payload.target.projectKey ? { projectKey: payload.target.projectKey } : {}),
+    }],
+    path: entry.path,
+  }));
 }
 
 function toLocationSummary(
@@ -186,6 +344,47 @@ function uniquePlanItems(items: CleanupPlanItem[]): CleanupPlanItem[] {
     }
   }
   return [...deduped.values()];
+}
+
+function uniqueCleanupConfigActions(actions: CleanupConfigAction[]): CleanupConfigAction[] {
+  const deduped = new Map<string, CleanupConfigAction>();
+  for (const action of actions) {
+    const key = [
+      action.plugin,
+      action.scope,
+      action.projectKey ?? '',
+      action.path,
+      action.status,
+      action.reason ?? '',
+    ].join('\0');
+    if (!deduped.has(key)) {
+      deduped.set(key, action);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function uniqueCleanupLocations(locations: CleanupLocationSummary[]): CleanupLocationSummary[] {
+  const deduped = new Map<string, CleanupLocationSummary>();
+  for (const location of locations) {
+    deduped.set(renderLocation(location), location);
+  }
+  return [...deduped.values()];
+}
+
+function uniqueCleanupBlockingReasons(reasons: CleanupBlockingReason[]): CleanupBlockingReason[] {
+  const deduped = new Map<string, CleanupBlockingReason>();
+  for (const reason of reasons) {
+    const key = `${reason.code}\0${reason.message}\0${reason.suggestedCommand ?? ''}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, reason);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function hasCleanupCandidateEvidence(candidate: Pick<CommandCandidate, 'evidence'>): boolean {
+  return candidate.evidence.sources.length > 0 || candidate.evidence.readErrors.length > 0;
 }
 
 async function isPlannedRemovalStillPresent(
@@ -450,7 +649,7 @@ function buildRecommendedCommand(options: {
       removeConfig: options.removeConfig,
     });
   }
-  return `aw diagnose ${renderLocationArgs(options.location)}`;
+  return `aw status ${renderLocationArgs(options.location)} --verbose`;
 }
 
 async function resolveProjectKey(platform: PlatformName, cwd: string): Promise<string> {
@@ -574,12 +773,30 @@ async function buildCleanupEvaluation(options: {
       )
     : [];
 
+  const recommendedCommand = buildRecommendedCommand({
+    location: options.location,
+    dryRun: options.commandOptions.plan === true,
+    force: options.commandOptions.force === true,
+    removeConfig: options.commandOptions.removeConfig === true,
+    blockingReasons,
+    targetType,
+  });
+
   const payload: CleanupTargetPayload = {
     ok: true,
     command: 'cleanup',
+    receiptSchemaVersion: 2,
+    overallState: blockingReasons.length > 0 ? 'failed' : 'succeeded',
     generatedAt: new Date().toISOString(),
     dependencyIndex: false,
     cleanupPlanSchemaVersion: 1,
+    ...createNextStepsBoundary([createCliCommandNextStep(
+      blockingReasons.length > 0 ? '查看 cleanup 预检结果' : '继续执行 cleanup',
+      blockingReasons.length > 0
+        ? '可以根据这次预检结果判断是先解除阻断，还是按建议继续处理。'
+        : '可以继续进入 cleanup 执行流程，并按这次预检确认删除项、备份项和配置处理结果。',
+      recommendedCommand,
+    )]),
     dryRun: options.commandOptions.plan === true,
     force: options.commandOptions.force === true,
     removeConfig: options.commandOptions.removeConfig === true,
@@ -595,18 +812,15 @@ async function buildCleanupEvaluation(options: {
     plannedRemovals,
     wouldBackups,
     wouldRemoveConfig,
+    targetResults: [],
     skippedForeignItems: [],
     affectedDependents,
     blockingReasons,
-    recommendedCommand: buildRecommendedCommand({
-      location: options.location,
-      dryRun: options.commandOptions.plan === true,
-      force: options.commandOptions.force === true,
-      removeConfig: options.commandOptions.removeConfig === true,
-      blockingReasons,
-      targetType,
-    }),
+    recommendedCommand,
   };
+
+  payload.targetResults = buildCleanupTargetResults(payload);
+  payload.configStoreRemovals = buildCleanupConfigStoreRemovals(payload);
 
   return {
     payload,
@@ -650,6 +864,321 @@ async function resolveCleanupTarget(options: {
   }
 }
 
+async function executeCleanupLocation(options: {
+  pluginName: string;
+  location: CleanupLocationSummary;
+  commandOptions: CleanupCommandOptions;
+  runtime: CleanupCommandRuntime;
+  env: NodeJS.ProcessEnv;
+  evaluation: CleanupEvaluation;
+}): Promise<{
+  warnings: string[];
+  repoManagedArtifacts: GeneratedArtifact[];
+  payload: CleanupTargetPayload;
+}> {
+  const warnings: string[] = [];
+  let repoManagedArtifacts: GeneratedArtifact[] = [];
+  let actualBackups: CleanupPlanItem[] = [];
+  let actualSkippedItems = options.evaluation.payload.skippedForeignItems;
+  let executionTarget = options.evaluation.target;
+  if (!executionTarget) {
+    executionTarget = await createHistoricalPluginTarget(
+      options.commandOptions.cwd,
+      options.commandOptions.scope,
+      options.location.plugin,
+      undefined,
+      options.env,
+      undefined,
+      {
+        codexNativeManifestPlaceholder: options.evaluation.payload.target.targetType === 'manifest-only'
+          || options.evaluation.payload.target.targetType === 'cache-only'
+          || options.evaluation.payload.target.targetType === 'config-only'
+          || options.evaluation.payload.target.targetType === 'native-residue',
+      },
+    );
+  }
+
+  const forcedRecoveryCleanup =
+    options.evaluation.payload.target.targetType === 'installed'
+    && options.commandOptions.force
+    && !options.evaluation.target
+    && Boolean(options.evaluation.targetResolutionError);
+  const shouldAttemptStandardUninstall =
+    options.evaluation.payload.target.targetType === 'installed'
+    && !forcedRecoveryCleanup;
+  let standardUninstallError: string | null = forcedRecoveryCleanup
+    ? options.evaluation.targetResolutionError ?? '未能解析标准 uninstall 等价 target。'
+    : null;
+  if (shouldAttemptStandardUninstall) {
+    try {
+      const uninstallResult = await tryUninstallUsingInstallState({
+        target: executionTarget,
+        platform: options.location.platform,
+        commandOptions: options.commandOptions,
+        runtime: {
+          ...options.runtime,
+          adapters: options.runtime.adapters,
+        },
+      });
+      if (uninstallResult.handled) {
+        warnings.push(...(uninstallResult.result?.warnings ?? []));
+        repoManagedArtifacts = uninstallResult.result?.repoManagedArtifacts ?? [];
+      } else {
+        standardUninstallError = '未能进入标准 uninstall 等价路径。';
+      }
+    } catch (error) {
+      standardUninstallError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (!shouldAttemptStandardUninstall || standardUninstallError) {
+    if (standardUninstallError && !options.commandOptions.force) {
+      throw new Error(
+        `${renderLocation(options.location)} 的标准 uninstall 等价 cleanup 失败：${standardUninstallError} 如需降级为恢复清理，请先运行 ${renderCleanupCommand(options.location, {
+          plan: true,
+          force: true,
+          removeConfig: options.commandOptions.removeConfig,
+        })}。`,
+      );
+    }
+    if (standardUninstallError) {
+      warnings.push(
+        `[${renderLocation(options.location)}] 标准 uninstall 等价 cleanup 失败，已因 --force 降级为恢复清理：${standardUninstallError}`,
+      );
+    }
+    const cleanupResult = await cleanupInstallStateTarget({
+      pluginName: options.pluginName,
+      location: options.location,
+      commandOptions: options.commandOptions,
+      runtime: {
+        ...options.runtime,
+        adapters: options.runtime.adapters,
+      },
+      target: executionTarget,
+      allowInstalled: shouldAttemptStandardUninstall || forcedRecoveryCleanup,
+    });
+    warnings.push(...cleanupResult.warnings);
+    repoManagedArtifacts = cleanupResult.repoManagedArtifacts;
+    actualBackups = cleanupResult.backups.map((backupPath) => ({
+      kind: 'backup',
+      label: 'shared file backup',
+      path: backupPath,
+    }));
+    actualSkippedItems = uniquePlanItems([
+      ...options.evaluation.payload.skippedForeignItems,
+      ...cleanupResult.skippedItems,
+    ]);
+  }
+
+  const { actualRemovals, remainingItems } = await partitionExecutedRemovalItems({
+    items: options.evaluation.payload.plannedRemovals,
+    location: options.location,
+    cwd: options.commandOptions.cwd,
+    env: options.env,
+  });
+  const cleanupFailed = remainingItems.length > 0;
+  let wouldRemoveConfig = options.evaluation.payload.wouldRemoveConfig;
+  if (options.commandOptions.removeConfig) {
+    if (cleanupFailed) {
+      const configPath = options.evaluation.payload.wouldRemoveConfig[0]?.path ?? resolvePluginConfigStorePath({
+        pluginName: options.location.plugin,
+        scope: options.location.scope,
+        cwd: options.commandOptions.cwd,
+        env: options.env,
+      });
+      wouldRemoveConfig = [{
+        plugin: options.location.plugin,
+        scope: options.location.scope,
+        ...(options.location.projectKey ? { projectKey: options.location.projectKey } : {}),
+        path: configPath,
+        status: 'skipped',
+        reason: '主体清理未完全完成，因此跳过 remove-config。',
+      }];
+      warnings.push('主体清理未完全完成，因此保留当前 target scope 的 AW 自管配置。');
+    } else {
+      try {
+        const reset = await resetPluginConfigStore({
+          pluginName: options.location.plugin,
+          scope: options.location.scope,
+          cwd: options.commandOptions.cwd,
+          env: options.env,
+        });
+        wouldRemoveConfig = [{
+          plugin: options.location.plugin,
+          scope: options.location.scope,
+          ...(options.location.projectKey ? { projectKey: options.location.projectKey } : {}),
+          path: reset.path,
+          status: reset.deleted ? 'removed' : 'skipped',
+          ...(reset.deleted
+            ? {}
+            : { reason: '当前 target scope 没有可删除的 AW 自管配置。' }),
+        }];
+        if (reset.deleted) {
+          warnings.push('已删除当前 target scope 的 AW 自管配置。');
+        }
+      } catch (error) {
+        const configPath = options.evaluation.payload.wouldRemoveConfig[0]?.path ?? resolvePluginConfigStorePath({
+          pluginName: options.location.plugin,
+          scope: options.location.scope,
+          cwd: options.commandOptions.cwd,
+          env: options.env,
+        });
+        const reason = error instanceof Error ? error.message : String(error);
+        wouldRemoveConfig = [{
+          plugin: options.location.plugin,
+          scope: options.location.scope,
+          ...(options.location.projectKey ? { projectKey: options.location.projectKey } : {}),
+          path: configPath,
+          status: 'failed',
+          reason,
+        }];
+        warnings.push(`主体清理已完成，但删除当前 target scope 的 AW 自管配置失败：${reason}`);
+      }
+    }
+  }
+
+  const payload: CleanupTargetPayload = {
+    ...options.evaluation.payload,
+    dryRun: false,
+    overallState: cleanupFailed ? 'failed' : 'succeeded',
+    ...createNextStepsBoundary(buildCleanupNextSteps({
+      ...options.evaluation.payload,
+      dryRun: false,
+      overallState: cleanupFailed ? 'failed' : 'succeeded',
+      wouldRemoveConfig,
+      actualRemovals,
+      actualBackups,
+      skippedItems: actualSkippedItems,
+      remainingItems,
+      targetResults: [],
+    })),
+    wouldRemoveConfig,
+    actualRemovals,
+    actualBackups,
+    skippedItems: actualSkippedItems,
+    remainingItems,
+    targetResults: [],
+  };
+  payload.targetResults = buildCleanupTargetResults(payload);
+  payload.configStoreRemovals = buildCleanupConfigStoreRemovals(payload);
+
+  return {
+    warnings,
+    repoManagedArtifacts,
+    payload,
+  };
+}
+
+function mergeCleanupPayloads(options: {
+  payloads: CleanupTargetPayload[];
+  pluginName: string;
+  scope: Scope;
+  platform: PlatformSelection;
+  force: boolean;
+  plan: boolean;
+  removeConfig: boolean;
+}): CleanupTargetPayload {
+  const first = options.payloads[0]!;
+  const dryRun = options.plan;
+  const forceReason = [...new Set(
+    options.payloads
+      .map((payload) => payload.forceReason)
+      .filter((reason): reason is string => Boolean(reason)),
+  )].join(' ');
+  const blockingReasons = uniqueCleanupBlockingReasons(
+    options.payloads.flatMap((payload) => payload.blockingReasons),
+  );
+  const overallState = options.payloads.some((payload) => isCleanupExecutionFailure(payload))
+    ? 'failed'
+    : blockingReasons.length > 0
+      ? 'failed'
+      : 'succeeded';
+  const recommendedCommand = dryRun
+    ? blockingReasons.find((reason) => reason.suggestedCommand)?.suggestedCommand
+      ?? renderCleanupCommandForSelection({
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: options.scope,
+        force: options.force,
+        removeConfig: options.removeConfig,
+      })
+    : buildCleanupStatusCommandForSelection({
+      plugin: options.pluginName,
+      platform: options.platform,
+      scope: options.scope,
+    });
+  const nextSteps = dryRun
+    ? createNextStepsBoundary([createCliCommandNextStep(
+      blockingReasons.length > 0 ? '查看 cleanup 预检结果' : '继续执行 cleanup',
+      blockingReasons.length > 0
+        ? '可以根据这次预检结果判断是先解除阻断，还是按建议继续处理。'
+        : '可以继续进入 cleanup 执行流程，并按这次预检确认删除项、备份项和配置处理结果。',
+      recommendedCommand,
+    )])
+    : createNextStepsBoundary([createUiActionNextStep(
+      '查看 cleanup 后状态',
+      '可以重新确认 cleanup 后还剩哪些安装证据、残留和后续可执行动作。',
+      'openStatus',
+      recommendedCommand,
+    )]);
+
+  return {
+    ...first,
+    overallState,
+    force: options.force,
+    dryRun,
+    removeConfig: options.removeConfig,
+    forceReason: forceReason.length > 0 ? forceReason : null,
+    plannedRemovals: uniquePlanItems(options.payloads.flatMap((payload) => payload.plannedRemovals)),
+    wouldBackups: uniquePlanItems(options.payloads.flatMap((payload) => payload.wouldBackups)),
+    wouldRemoveConfig: uniqueCleanupConfigActions(
+      options.payloads.flatMap((payload) => payload.wouldRemoveConfig),
+    ),
+    skippedForeignItems: uniquePlanItems(
+      options.payloads.flatMap((payload) => payload.skippedForeignItems),
+    ),
+    affectedDependents: uniqueCleanupLocations(
+      options.payloads.flatMap((payload) => payload.affectedDependents),
+    ),
+    blockingReasons,
+    recommendedCommand,
+    ...nextSteps,
+    targetResults: options.payloads.flatMap((payload) => payload.targetResults),
+    configStoreRemovals: options.payloads.flatMap((payload) => payload.configStoreRemovals ?? []),
+    actualRemovals: dryRun
+      ? undefined
+      : uniquePlanItems(options.payloads.flatMap((payload) => payload.actualRemovals ?? [])),
+    actualBackups: dryRun
+      ? undefined
+      : uniquePlanItems(options.payloads.flatMap((payload) => payload.actualBackups ?? [])),
+    skippedItems: dryRun
+      ? undefined
+      : uniquePlanItems(options.payloads.flatMap((payload) => payload.skippedItems ?? [])),
+    remainingItems: dryRun
+      ? undefined
+      : uniquePlanItems(options.payloads.flatMap((payload) => payload.remainingItems ?? [])),
+  };
+}
+
+function renderCleanupBothBlockingError(
+  evaluations: Array<{
+    location: CleanupLocationSummary;
+    payload: CleanupTargetPayload;
+  }>,
+): Error {
+  const lines = evaluations.flatMap(({ location, payload }) =>
+    payload.blockingReasons.map((reason) => `- ${renderLocation(location)}：${reason.message}`),
+  );
+  const suggested = evaluations
+    .flatMap(({ payload }) => payload.blockingReasons)
+    .find((reason) => reason.suggestedCommand)?.suggestedCommand;
+  return new Error(
+    `cleanup --platform both 预检失败：\n${lines.join('\n')}${
+      suggested ? `\n建议先运行 ${suggested}。` : ''
+    }`,
+  );
+}
+
 export async function cleanupCommand(
   pluginNames: string[],
   rawOptions: RawCleanupCommandOptions,
@@ -664,7 +1193,6 @@ export async function cleanupCommand(
 }> {
   const options = normalizeCleanupCommandOptions(rawOptions, {
     defaultScope: 'user',
-    defaultPlatform: 'auto',
   });
   const context = createCommandExecutionContext(runtime);
 
@@ -676,8 +1204,11 @@ export async function cleanupCommand(
     const payload: CleanupDependencyIndexPayload = {
       ok: true,
       command: 'cleanup',
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       generatedAt: new Date().toISOString(),
       dependencyIndex: true,
+      targetResults: [],
       retiredEntries: result.retiredEntries.map((entry) => ({
         location: {
           plugin: entry.location.plugin,
@@ -687,7 +1218,7 @@ export async function cleanupCommand(
         },
         recordPath: entry.recordPath,
       })),
-      nextSteps: ['运行 aw diagnose 查看最新依赖状态。'],
+      ...buildCleanupDependencyIndexNextSteps(),
     };
     return {
       platforms: [],
@@ -702,8 +1233,115 @@ export async function cleanupCommand(
   if (pluginNames.length !== 1) {
     throw new Error('cleanup 命令当前只支持单个插件目标。');
   }
-  if (options.platform === 'auto' || options.platform === 'both') {
-    throw new Error('cleanup 命令需要显式指定单一平台。');
+  if (options.platform === 'both') {
+    const candidates = await buildCommandCandidates({
+      command: 'status',
+      cwd: options.cwd,
+      scopeFilter: options.scope,
+      platformFilter: 'both',
+      pluginNames,
+      env: context.env,
+    });
+    const evaluations: Array<{
+      location: CleanupLocationSummary;
+      payload: CleanupTargetPayload;
+      target: ResolvedPluginTarget;
+    }> = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const location: CleanupLocationSummary = {
+        plugin: candidate.pluginName,
+        platform: candidate.platform,
+        scope: candidate.scope,
+        ...(candidate.projectKey ? { projectKey: candidate.projectKey } : {}),
+      };
+      const locationKey = renderLocation(location);
+      if (seen.has(locationKey)) {
+        continue;
+      }
+      const evaluation = await buildCleanupEvaluation({
+        location,
+        commandOptions: options,
+        env: context.env,
+        target: candidate.target,
+      });
+      if (!hasCleanupCandidateEvidence(candidate) && evaluation.payload.plannedRemovals.length === 0) {
+        continue;
+      }
+      seen.add(locationKey);
+      evaluations.push({
+        location,
+        payload: evaluation.payload,
+        target: candidate.target,
+      });
+    }
+
+    if (evaluations.length === 0) {
+      throw new Error('cleanup --platform both 没有找到可由 AW 安全处理的受管 target；它不会包含纯未安装格子。');
+    }
+
+    if (options.plan) {
+      const payload = mergeCleanupPayloads({
+        payloads: evaluations.map((entry) => entry.payload),
+        pluginName: pluginNames[0]!,
+        scope: options.scope,
+        platform: 'both',
+        force: options.force,
+        plan: true,
+        removeConfig: options.removeConfig,
+      });
+      return {
+        platforms: [...new Set(evaluations.map((entry) => entry.location.platform))],
+        plugins: [pluginNames[0]!],
+        warnings: [],
+        repoManagedArtifacts: [],
+        payload,
+      };
+    }
+
+    const blocking = evaluations.filter((entry) => entry.payload.blockingReasons.length > 0);
+    if (blocking.length > 0) {
+      throw renderCleanupBothBlockingError(blocking);
+    }
+
+    const executed = [];
+    let repoManagedArtifacts: GeneratedArtifact[] = [];
+    let warnings: string[] = [];
+    for (const entry of evaluations) {
+      const result = await executeCleanupLocation({
+        pluginName: pluginNames[0]!,
+        location: entry.location,
+        commandOptions: {
+          ...options,
+          platform: entry.location.platform,
+        },
+        runtime,
+        env: context.env,
+        evaluation: {
+          payload: entry.payload,
+          target: entry.target,
+        },
+      });
+      executed.push(result);
+      repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, result.repoManagedArtifacts);
+      warnings = [...warnings, ...result.warnings];
+    }
+
+    return {
+      platforms: [...new Set(evaluations.map((entry) => entry.location.platform))],
+      plugins: [pluginNames[0]!],
+      warnings: [...new Set(warnings)],
+      repoManagedArtifacts,
+      payload: mergeCleanupPayloads({
+        payloads: executed.map((entry) => entry.payload),
+        pluginName: pluginNames[0]!,
+        scope: options.scope,
+        platform: 'both',
+        force: options.force,
+        plan: false,
+        removeConfig: options.removeConfig,
+      }),
+    };
   }
 
   const location: CleanupLocationSummary = {
@@ -740,181 +1378,20 @@ export async function cleanupCommand(
   if (evaluation.payload.blockingReasons.length > 0) {
     throw renderBlockingError(evaluation.payload);
   }
-
-  const warnings: string[] = [];
-  let repoManagedArtifacts: GeneratedArtifact[] = [];
-  let actualBackups: CleanupPlanItem[] = [];
-  let actualSkippedItems = evaluation.payload.skippedForeignItems;
-  let executionTarget = evaluation.target;
-  if (!executionTarget) {
-    executionTarget = await createHistoricalPluginTarget(
-      options.cwd,
-      options.scope,
-      location.plugin,
-      undefined,
-      context.env,
-      undefined,
-      {
-        codexNativeManifestPlaceholder: evaluation.payload.target.targetType === 'manifest-only'
-          || evaluation.payload.target.targetType === 'cache-only'
-          || evaluation.payload.target.targetType === 'config-only'
-          || evaluation.payload.target.targetType === 'native-residue',
-      },
-    );
-  }
-
-  const forcedRecoveryCleanup =
-    evaluation.payload.target.targetType === 'installed'
-    && options.force
-    && !evaluation.target
-    && Boolean(evaluation.targetResolutionError);
-  const shouldAttemptStandardUninstall =
-    evaluation.payload.target.targetType === 'installed'
-    && !forcedRecoveryCleanup;
-  let standardUninstallError: string | null = forcedRecoveryCleanup
-    ? evaluation.targetResolutionError ?? '未能解析标准 uninstall 等价 target。'
-    : null;
-  if (shouldAttemptStandardUninstall) {
-    try {
-      const uninstallResult = await tryUninstallUsingInstallState({
-        target: executionTarget,
-        platform: location.platform,
-        commandOptions: options,
-        runtime: {
-          ...runtime,
-          adapters: runtime.adapters,
-        },
-      });
-      if (uninstallResult.handled) {
-        warnings.push(...(uninstallResult.result?.warnings ?? []));
-        repoManagedArtifacts = uninstallResult.result?.repoManagedArtifacts ?? [];
-      } else {
-        standardUninstallError = '未能进入标准 uninstall 等价路径。';
-      }
-    } catch (error) {
-      standardUninstallError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  if (!shouldAttemptStandardUninstall || standardUninstallError) {
-    if (standardUninstallError && !options.force) {
-      throw new Error(
-        `${renderLocation(location)} 的标准 uninstall 等价 cleanup 失败：${standardUninstallError} 如需降级为恢复清理，请先运行 ${renderCleanupCommand(location, {
-          plan: true,
-          force: true,
-          removeConfig: options.removeConfig,
-        })}。`,
-      );
-    }
-    if (standardUninstallError) {
-      warnings.push(
-        `[${renderLocation(location)}] 标准 uninstall 等价 cleanup 失败，已因 --force 降级为恢复清理：${standardUninstallError}`,
-      );
-    }
-    const cleanupResult = await cleanupInstallStateTarget({
-      pluginName: pluginNames[0]!,
-      location,
-      commandOptions: options,
-      runtime: {
-        ...runtime,
-        adapters: runtime.adapters,
-      },
-      target: executionTarget,
-      allowInstalled: shouldAttemptStandardUninstall || forcedRecoveryCleanup,
-    });
-    warnings.push(...cleanupResult.warnings);
-    repoManagedArtifacts = cleanupResult.repoManagedArtifacts;
-    actualBackups = cleanupResult.backups.map((backupPath) => ({
-      kind: 'backup',
-      label: 'shared file backup',
-      path: backupPath,
-    }));
-    actualSkippedItems = uniquePlanItems([
-      ...evaluation.payload.skippedForeignItems,
-      ...cleanupResult.skippedItems,
-    ]);
-  }
-
-  const { actualRemovals, remainingItems } = await partitionExecutedRemovalItems({
-    items: evaluation.payload.plannedRemovals,
+  const execution = await executeCleanupLocation({
+    pluginName: pluginNames[0]!,
     location,
-    cwd: options.cwd,
+    commandOptions: options,
+    runtime,
     env: context.env,
+    evaluation,
   });
-  const cleanupFailed = remainingItems.length > 0;
-  let wouldRemoveConfig = evaluation.payload.wouldRemoveConfig;
-  if (options.removeConfig) {
-    if (cleanupFailed) {
-      const configPath = evaluation.payload.wouldRemoveConfig[0]?.path ?? resolvePluginConfigStorePath({
-        pluginName: location.plugin,
-        scope: location.scope,
-        cwd: options.cwd,
-        env: context.env,
-      });
-      wouldRemoveConfig = [{
-        plugin: location.plugin,
-        scope: location.scope,
-        ...(location.projectKey ? { projectKey: location.projectKey } : {}),
-        path: configPath,
-        status: 'skipped',
-        reason: '主体清理未完全完成，因此跳过 remove-config。',
-      }];
-      warnings.push('主体清理未完全完成，因此保留当前 target scope 的 AW 自管配置。');
-    } else {
-      try {
-        const reset = await resetPluginConfigStore({
-          pluginName: location.plugin,
-          scope: location.scope,
-          cwd: options.cwd,
-          env: context.env,
-        });
-        wouldRemoveConfig = [{
-          plugin: location.plugin,
-          scope: location.scope,
-          ...(location.projectKey ? { projectKey: location.projectKey } : {}),
-          path: reset.path,
-          status: reset.deleted ? 'removed' : 'skipped',
-          ...(reset.deleted
-            ? {}
-            : { reason: '当前 target scope 没有可删除的 AW 自管配置。' }),
-        }];
-        if (reset.deleted) {
-          warnings.push('已删除当前 target scope 的 AW 自管配置。');
-        }
-      } catch (error) {
-        const configPath = evaluation.payload.wouldRemoveConfig[0]?.path ?? resolvePluginConfigStorePath({
-          pluginName: location.plugin,
-          scope: location.scope,
-          cwd: options.cwd,
-          env: context.env,
-        });
-        const reason = error instanceof Error ? error.message : String(error);
-        wouldRemoveConfig = [{
-          plugin: location.plugin,
-          scope: location.scope,
-          ...(location.projectKey ? { projectKey: location.projectKey } : {}),
-          path: configPath,
-          status: 'failed',
-          reason,
-        }];
-        warnings.push(`主体清理已完成，但删除当前 target scope 的 AW 自管配置失败：${reason}`);
-      }
-    }
-  }
 
   return {
     platforms: [location.platform],
     plugins: [location.plugin],
-    warnings,
-    repoManagedArtifacts,
-    payload: {
-      ...evaluation.payload,
-      dryRun: false,
-      wouldRemoveConfig,
-      actualRemovals,
-      actualBackups,
-      skippedItems: actualSkippedItems,
-      remainingItems,
-    },
+    warnings: execution.warnings,
+    repoManagedArtifacts: execution.repoManagedArtifacts,
+    payload: execution.payload,
   };
 }

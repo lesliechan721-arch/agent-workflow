@@ -6,11 +6,9 @@ import type {
   PlatformName,
   PlatformSelection,
   Scope,
-  SkillTriggerPreference,
   UpgradeCommandOptions,
 } from '../types.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
-import { readInstalledLedger } from '../utils/local-marketplace.js';
 import {
   resolveClaudeProjectKey,
   resolveCodexProjectKey,
@@ -30,11 +28,8 @@ import {
   getCodexProjectInstallability,
   shouldOmitCodexProjectInstallCandidate,
 } from './codex-project-installability.js';
-import { parseSkillTriggerPreference } from './options.js';
 import {
   listExecutablePlatformsForNativeAndCodexProject,
-  resolveEvidenceFirstAutoPlatform,
-  type PlatformEvidenceStateByPlatform,
 } from './platform-resolution.js';
 import type { CommandExecutionContext } from './runtime.js';
 
@@ -57,13 +52,35 @@ export interface InteractiveUpgradePlan {
 }
 
 type InteractiveCommand = 'install' | 'uninstall' | 'upgrade';
+type InteractivePlatformChoice = PlatformSelection;
+
+interface InteractiveInstallScopeEvaluation {
+  scope: Scope;
+  targets: ResolvedPluginTarget[];
+  availablePlatforms: PlatformName[];
+  singlePlatformChoices: PlatformName[];
+  allPlatformChoice: boolean;
+}
 
 const PLATFORM_DISPLAY: Record<PlatformName, string> = {
   codex: 'Codex',
   claude: 'Claude Code',
 };
 
-function platformSelectionToPlatforms(selection: Exclude<PlatformSelection, 'auto'>): PlatformName[] {
+function assertInteractivePlatformSelection(
+  selection: unknown,
+): asserts selection is PlatformSelection {
+  if (selection === 'codex' || selection === 'claude' || selection === 'both') {
+    return;
+  }
+
+  throw new Error(
+    `Unsupported platform "${String(selection)}". Expected one of: codex, claude, both.`,
+  );
+}
+
+function platformSelectionToPlatforms(selection: PlatformSelection): PlatformName[] {
+  assertInteractivePlatformSelection(selection);
   return selection === 'both' ? ['codex', 'claude'] : [selection];
 }
 
@@ -216,6 +233,94 @@ async function resolveInstallPromptPlatforms(options: {
   return INTERACTIVE_PLATFORMS.filter((platform) => availablePlatforms.has(platform));
 }
 
+async function evaluateInteractiveInstallScope(options: {
+  cwd: string;
+  scope: Scope;
+  pluginNames: string[];
+  env: NodeJS.ProcessEnv;
+}): Promise<InteractiveInstallScopeEvaluation> {
+  const targets = await loadPluginTargetsForCommand(options.cwd, options.scope, options.pluginNames, {
+    allowHistoricalFallback: false,
+    env: options.env,
+  });
+  const availablePlatforms = await resolveInstallPromptPlatforms({
+    cwd: options.cwd,
+    scope: options.scope,
+    targets,
+    env: options.env,
+  });
+  const installablePlatformsByTarget = targets.map((target) =>
+    availablePlatforms.filter((platform) => {
+      if (!pluginSupportsPlatform(target.plugin, platform)) {
+        return false;
+      }
+      if (platform === 'codex' && options.scope === 'project') {
+        return getCodexProjectInstallability(target.plugin).installable;
+      }
+      return true;
+    }),
+  );
+
+  return {
+    scope: options.scope,
+    targets,
+    availablePlatforms,
+    singlePlatformChoices: availablePlatforms.filter((platform) =>
+      installablePlatformsByTarget.every((supportedPlatforms) => supportedPlatforms.includes(platform)),
+    ),
+    allPlatformChoice: installablePlatformsByTarget.every((supportedPlatforms) => supportedPlatforms.length > 0),
+  };
+}
+
+async function loadInteractiveInstallScopeEvaluations(options: {
+  cwd: string;
+  pluginNames: string[];
+  env: NodeJS.ProcessEnv;
+}): Promise<InteractiveInstallScopeEvaluation[]> {
+  return Promise.all((['user', 'project'] as const).map((scope) =>
+    evaluateInteractiveInstallScope({
+      cwd: options.cwd,
+      scope,
+      pluginNames: options.pluginNames,
+      env: options.env,
+    }),
+  ));
+}
+
+function buildInteractiveInstallPlatformChoices(
+  evaluations: InteractiveInstallScopeEvaluation[],
+): InteractivePlatformChoice[] {
+  const singleChoices = new Set<PlatformName>();
+  for (const evaluation of evaluations) {
+    for (const platform of evaluation.singlePlatformChoices) {
+      singleChoices.add(platform);
+    }
+  }
+
+  const choices: InteractivePlatformChoice[] = INTERACTIVE_PLATFORMS.filter((platform) => singleChoices.has(platform));
+  if (evaluations.some((evaluation) => evaluation.allPlatformChoice)) {
+    choices.push('both');
+  }
+  return choices;
+}
+
+function interactiveInstallPlatformAvailableInScope(
+  evaluation: InteractiveInstallScopeEvaluation,
+  selection: InteractivePlatformChoice,
+): boolean {
+  return selection === 'both'
+    ? evaluation.allPlatformChoice
+    : evaluation.singlePlatformChoices.includes(selection);
+}
+
+function interactiveInstallPlatformFailureReason(
+  selection: InteractivePlatformChoice,
+  scope: Scope,
+): string {
+  const platformLabel = selection === 'both' ? '全部支持平台' : PLATFORM_DISPLAY[selection];
+  return `${platformLabel} 在 ${scope} 不可用，请重新选择平台。`;
+}
+
 function assertInteractiveAvailable(forcePrompt: boolean, context: CommandExecutionContext): void {
   if (forcePrompt && !context.interactive) {
     throw new Error('当前运行环境不可交互；请在 TTY 中运行，或移除 --interactive 并显式传入参数。');
@@ -237,13 +342,15 @@ async function promptPlatform(
   context: CommandExecutionContext,
   available: string[],
   defaultValue: string,
-): Promise<Exclude<PlatformSelection, 'auto'>> {
+  message?: string,
+): Promise<PlatformSelection> {
   if (available.length === 0) {
     throw new Error('当前没有可选择的平台。');
   }
   const selected = await context.prompt.selectPlatform?.({
     available,
     defaultValue,
+    message,
   });
   if (selected !== 'codex' && selected !== 'claude' && selected !== 'both') {
     throw new Error(`无效平台选择：${String(selected)}`);
@@ -340,72 +447,6 @@ function groupCandidates<TOptions extends CommandOptions | UpgradeCommandOptions
   return [...groups.values()];
 }
 
-function getScopeRecord(
-  ledger: Awaited<ReturnType<typeof readInstalledLedger>>,
-  candidate: CommandCandidate,
-) {
-  const platformRecord = ledger.plugins[candidate.pluginName]?.platforms[candidate.platform];
-  if (!platformRecord) {
-    return undefined;
-  }
-  return candidate.scope === 'user'
-    ? platformRecord.userScope
-    : candidate.projectKey
-      ? platformRecord.projectScopes?.[candidate.projectKey]
-      : undefined;
-}
-
-function candidateHasSkillTriggerRuntime(candidate: CommandCandidate): boolean {
-  return Boolean(
-    candidate.target.embeddedPlugin?.manifest.skills ||
-      candidate.target.currentPlugin?.manifest.skills ||
-      candidate.target.plugin.manifest.skills,
-  );
-}
-
-async function maybePromptSkillTrigger<TOptions extends InstallCommandOptions | UpgradeCommandOptions>(
-  command: 'install' | 'upgrade',
-  groups: Array<InteractiveDispatchGroup<TOptions>>,
-  context: CommandExecutionContext,
-): Promise<void> {
-  if (!context.interactive || groups.every((group) => group.options.requestedSkillTrigger)) {
-    return;
-  }
-
-  const ledger = await readInstalledLedger(context.env);
-  if (ledger.ledgerState.status !== 'degraded') {
-    return;
-  }
-
-  const needsPrompt = groups.some((group) =>
-    group.candidates.some((candidate) => {
-      if (!candidateHasSkillTriggerRuntime(candidate)) {
-        return false;
-      }
-      if (command === 'upgrade') {
-        return true;
-      }
-      return getScopeRecord(ledger, candidate)?.managed === true;
-    }),
-  );
-
-  if (!needsPrompt) {
-    return;
-  }
-
-  const selected = await context.prompt.selectSkillTrigger?.({
-    defaultValue: 'default',
-    allowSkip: false,
-  });
-  if (selected === undefined || selected === 'skip') {
-    throw new Error('degraded installed.json 下必须显式选择 skill-trigger 偏好。');
-  }
-  const preference = parseSkillTriggerPreference(selected);
-  for (const group of groups) {
-    group.options.requestedSkillTrigger ??= preference as SkillTriggerPreference;
-  }
-}
-
 function createInstallCandidate(options: {
   target: ResolvedPluginTarget;
   platform: PlatformName;
@@ -469,6 +510,7 @@ async function buildInstallCandidates(options: {
   targetPlatforms: PlatformName[];
   pluginNames?: string[];
   env: NodeJS.ProcessEnv;
+  allowPartialPlatformCoverage?: boolean;
 }): Promise<CommandCandidate[]> {
   const targets = await loadPluginTargetsForCommand(
     options.cwd,
@@ -504,12 +546,18 @@ async function buildInstallCandidates(options: {
       return { platform, installable: true };
     });
     const blocked = perPlatformInstallable.find((entry) => !entry.installable);
-    const wholeSelectionInstallable = blocked === undefined;
+    const allowedPlatforms = (options.allowPartialPlatformCoverage
+      ? perPlatformInstallable.filter((entry) => entry.installable)
+      : perPlatformInstallable
+    ).map((entry) => entry.platform);
+    const wholeSelectionInstallable = options.allowPartialPlatformCoverage
+      ? allowedPlatforms.length > 0
+      : blocked === undefined;
     const wholeSelectionReason = options.targetPlatforms.length > 1 && blocked
       ? `选择 ${formatPlatformList(options.targetPlatforms)} 时，${blocked.reason}`
       : undefined;
 
-    for (const platform of options.targetPlatforms) {
+    for (const platform of allowedPlatforms) {
       if (shouldOmitCodexProjectInstallCandidate({
         plugin: target.plugin,
         platform,
@@ -536,9 +584,26 @@ async function buildInstallCandidates(options: {
 
 function assertExplicitInstallCompatibility(
   targets: ResolvedPluginTarget[],
-  requestedPlatforms: PlatformName[],
+  requestedPlatform: PlatformSelection,
   scope: Scope,
 ): void {
+  if (requestedPlatform === 'both') {
+    const unavailable = targets
+      .filter((target) => {
+        const supportedPlatforms = compatiblePlatformsForTarget(target)
+          .filter((platform) =>
+            !(platform === 'codex' && scope === 'project' && !getCodexProjectInstallability(target.plugin).installable),
+          );
+        return supportedPlatforms.length === 0;
+      })
+      .map((target) => target.pluginName);
+    if (unavailable.length > 0) {
+      throw new Error(`当前 scope 下没有可安装的平台：${unavailable.join('、')}。`);
+    }
+    return;
+  }
+
+  const requestedPlatforms = platformSelectionToPlatforms(requestedPlatform);
   const unsupported = targets.flatMap((target) =>
     requestedPlatforms
       .filter((platform) => !pluginSupportsPlatform(target.plugin, platform))
@@ -563,6 +628,7 @@ async function resolveInstallPlatforms(options: {
   platforms: PlatformName[];
   prompted: boolean;
 }> {
+  assertInteractivePlatformSelection(options.requestedPlatform);
   const availablePlatforms = await resolveInstallPromptPlatforms({
     cwd: options.cwd,
     scope: options.scope,
@@ -573,71 +639,34 @@ async function resolveInstallPlatforms(options: {
     throw new Error('当前环境没有检测到可用平台。');
   }
 
-  if (options.requestedPlatform !== 'auto') {
-    if (options.forcePrompt && options.context.interactive) {
-      const compatible = options.targets.length === 0
-        ? availablePlatforms
-        : options.targets.reduce<PlatformName[]>(
-            (current, target) => intersectPlatforms(current, compatiblePlatformsForTarget(target)),
-            availablePlatforms,
-          );
-      if (compatible.length === 0) {
-        throw new Error('显式插件之间没有共同兼容的平台，请分开安装或重新选择插件。');
-      }
+  if (options.forcePrompt && options.context.interactive) {
+    const compatible = options.targets.length === 0
+      ? availablePlatforms
+      : options.targets.reduce<PlatformName[]>(
+          (current, target) => intersectPlatforms(current, compatiblePlatformsForTarget(target)),
+          availablePlatforms,
+        );
 
-      const choices = platformChoices(compatible);
-      const requestedPlatforms = platformSelectionToPlatforms(options.requestedPlatform);
-      const defaultSelection =
-        options.requestedPlatform === 'both' && choices.includes('both')
-          ? 'both'
-          : requestedPlatforms.find((platform) => choices.includes(platform)) ?? compatible[0];
-      const selected = await promptPlatform(options.context, choices, defaultSelection);
-      return {
-        platforms: platformSelectionToPlatforms(selected === 'both' ? 'both' : selected),
-        prompted: true,
-      };
+    if (compatible.length === 0) {
+      throw new Error('显式插件之间没有共同兼容的平台，请分开安装或重新选择插件。');
     }
 
+    const choices = platformChoices(compatible);
+    const requestedPlatforms = platformSelectionToPlatforms(options.requestedPlatform);
+    const defaultSelection =
+      options.requestedPlatform === 'both' && choices.includes('both')
+        ? 'both'
+        : requestedPlatforms.find((platform) => choices.includes(platform)) ?? compatible[0];
+    const selected = await promptPlatform(options.context, choices, defaultSelection);
     return {
-      platforms: platformSelectionToPlatforms(options.requestedPlatform),
-      prompted: false,
+      platforms: platformSelectionToPlatforms(selected),
+      prompted: true,
     };
   }
 
-  const compatible = options.targets.length === 0
-    ? availablePlatforms
-    : options.targets.reduce<PlatformName[]>(
-        (current, target) => intersectPlatforms(current, compatiblePlatformsForTarget(target)),
-        availablePlatforms,
-      );
-
-  if (compatible.length === 0) {
-    throw new Error('显式插件之间没有共同兼容的平台，请分开安装或重新选择插件。');
-  }
-
-  if (!options.forcePrompt && compatible.length === 1) {
-    return {
-      platforms: compatible,
-      prompted: false,
-    };
-  }
-
-  if (!options.context.interactive) {
-    return {
-      platforms: compatible,
-      prompted: false,
-    };
-  }
-
-  const choices = platformChoices(compatible);
-  const selected = await promptPlatform(
-    options.context,
-    choices,
-    choices.includes('both') ? 'both' : compatible[0],
-  );
   return {
-    platforms: platformSelectionToPlatforms(selected === 'both' ? 'both' : selected),
-    prompted: true,
+    platforms: platformSelectionToPlatforms(options.requestedPlatform),
+    prompted: false,
   };
 }
 
@@ -660,74 +689,109 @@ export async function createInteractiveInstallPlan(
   if (
     !missingPlugins &&
     !forcePrompt &&
-    options.platform !== 'auto' &&
     !context.interactive &&
     !needsCodexProjectValidation
   ) {
     return null;
   }
 
-  const scope = (missingPlugins || forcePrompt) && context.interactive
-    ? await promptScope(context, options.scope)
-    : options.scope;
-
-  if (!missingPlugins && !forcePrompt && options.platform !== 'auto') {
-    const targetPlatforms = platformSelectionToPlatforms(options.platform);
-    const targets = await loadPluginTargetsForCommand(options.cwd, scope, pluginNames, {
-      allowHistoricalFallback: false,
-      env: context.env,
-    });
-    assertExplicitInstallCompatibility(targets, targetPlatforms, scope);
-    if (!context.interactive || options.requestedSkillTrigger) {
-      return null;
-    }
-
-    const candidates = await buildInstallCandidates({
-      cwd: options.cwd,
-      scope,
-      targetPlatforms,
-      pluginNames,
-      env: context.env,
-    });
-    const selectedCandidates = candidates.filter((candidate) =>
-      pluginNames.includes(candidate.pluginName),
-    );
-    const groups = groupCandidates(selectedCandidates, (candidate): InstallCommandOptions => ({
-      cwd: candidate.executionCwd,
-      platform: candidate.platform,
-      scope: candidate.scope,
-      requestedSkillTrigger: options.requestedSkillTrigger,
-    }));
-    await maybePromptSkillTrigger('install', groups, context);
-    return groups.some((group) => group.options.requestedSkillTrigger !== options.requestedSkillTrigger)
-      ? { groups }
-      : null;
-  }
-
-  const targets = missingPlugins
+  let scope = options.scope;
+  let selectedPlatform = options.platform;
+  let targets = missingPlugins
     ? []
     : await loadPluginTargetsForCommand(options.cwd, scope, pluginNames, {
         allowHistoricalFallback: false,
         env: context.env,
       });
+  let targetSelectionPrompted = false;
 
-  const platformResolution = await resolveInstallPlatforms({
-    cwd: options.cwd,
-    scope,
-    requestedPlatform: options.platform,
-    targets,
-    env: context.env,
-    context,
-    forcePrompt: forcePrompt || missingPlugins,
-  });
-  assertExplicitInstallCompatibility(targets, platformResolution.platforms, scope);
+  if (!missingPlugins && !forcePrompt) {
+    assertExplicitInstallCompatibility(targets, options.platform, scope);
+    return null;
+  }
+
+  if (!missingPlugins && forcePrompt && context.interactive) {
+    const evaluations = (await loadInteractiveInstallScopeEvaluations({
+      cwd: options.cwd,
+      pluginNames,
+      env: context.env,
+    })).filter((evaluation) => evaluation.allPlatformChoice);
+    if (evaluations.length === 0) {
+      throw new Error('这些插件没有共同可用的位置，请调整插件选择后重试。');
+    }
+
+    const platformChoices = buildInteractiveInstallPlatformChoices(evaluations);
+    if (platformChoices.length === 0) {
+      throw new Error('这些插件没有共同可用的平台，请调整插件选择后重试。');
+    }
+
+    const defaultPlatform =
+      selectedPlatform === 'both' && platformChoices.includes('both')
+        ? 'both'
+        : platformChoices.find((platform) => platform === selectedPlatform) ?? platformChoices[0]!;
+    let platformPromptMessage: string | undefined;
+    let platformDefaultValue = defaultPlatform;
+
+    while (true) {
+      selectedPlatform = await promptPlatform(
+        context,
+        platformChoices,
+        platformDefaultValue,
+        platformPromptMessage,
+      );
+      targetSelectionPrompted = true;
+      scope = await promptScope(context, scope);
+      targetSelectionPrompted = true;
+
+      const scopeEvaluation = evaluations.find((evaluation) => evaluation.scope === scope);
+      if (!scopeEvaluation) {
+        throw new Error(`当前选择的 scope ${scope} 不在可用范围内。`);
+      }
+      if (!interactiveInstallPlatformAvailableInScope(scopeEvaluation, selectedPlatform)) {
+        platformPromptMessage = interactiveInstallPlatformFailureReason(selectedPlatform, scope);
+        platformDefaultValue = selectedPlatform;
+        continue;
+      }
+
+      targets = scopeEvaluation.targets;
+      break;
+    }
+  } else {
+    scope = (missingPlugins || forcePrompt) && context.interactive
+      ? await promptScope(context, options.scope)
+      : options.scope;
+
+    targets = missingPlugins
+      ? []
+      : await loadPluginTargetsForCommand(options.cwd, scope, pluginNames, {
+          allowHistoricalFallback: false,
+          env: context.env,
+        });
+
+    const platformResolution = await resolveInstallPlatforms({
+      cwd: options.cwd,
+      scope,
+      requestedPlatform: options.platform,
+      targets,
+      env: context.env,
+      context,
+      forcePrompt: forcePrompt || missingPlugins,
+    });
+    selectedPlatform = platformResolution.platforms.length === 2
+      ? 'both'
+      : platformResolution.platforms[0]!;
+    targetSelectionPrompted = platformResolution.prompted || targetSelectionPrompted;
+  }
+
+  assertExplicitInstallCompatibility(targets, selectedPlatform, scope);
 
   const candidates = await buildInstallCandidates({
     cwd: options.cwd,
     scope,
-    targetPlatforms: platformResolution.platforms,
+    targetPlatforms: platformSelectionToPlatforms(selectedPlatform),
     pluginNames: missingPlugins || forcePrompt ? (missingPlugins ? undefined : pluginNames) : pluginNames,
     env: context.env,
+    allowPartialPlatformCoverage: selectedPlatform === 'both',
   });
 
   const shouldPromptPlugins = missingPlugins || forcePrompt;
@@ -749,13 +813,10 @@ export async function createInteractiveInstallPlan(
     requestedSkillTrigger: options.requestedSkillTrigger,
   }));
 
-  await maybePromptSkillTrigger('install', groups, context);
-
   const usedPrompt =
     missingPlugins ||
     forcePrompt ||
-    platformResolution.prompted ||
-    groups.some((group) => group.options.requestedSkillTrigger !== options.requestedSkillTrigger);
+    targetSelectionPrompted;
 
   return usedPrompt ? { groups } : null;
 }
@@ -824,6 +885,7 @@ async function resolveInteractiveExistingPlatform(options: {
   platformFilter?: PlatformName | 'both';
   prompted: boolean;
 }> {
+  assertInteractivePlatformSelection(options.requestedPlatform);
   const nativeAvailablePlatforms = await detectAvailablePlatforms(options.cwd, options.context.env);
   const promptablePlatforms = resolveExistingPromptablePlatforms({
     candidates: options.candidates,
@@ -831,100 +893,31 @@ async function resolveInteractiveExistingPlatform(options: {
     nativeAvailablePlatforms,
   });
 
-  const currentScopeEvidenceCandidates = options.candidates.filter((candidate) =>
-    candidateHasActionableEvidence(candidate) || candidate.evidence.readErrors.length > 0,
-  );
-  const evidencePlatforms = [...new Set(
-    currentScopeEvidenceCandidates
-      .map((candidate) => candidate.platform)
-      .filter((platform) => promptablePlatforms.includes(platform)),
-  )] as PlatformName[];
-  const evidenceStateByPlatform: PlatformEvidenceStateByPlatform = {
-    codex: 'no',
-    claude: 'no',
-  };
-  for (const platform of INTERACTIVE_PLATFORMS) {
-    if (!promptablePlatforms.includes(platform)) {
-      continue;
-    }
-
-    const platformEvidenceCandidates = currentScopeEvidenceCandidates.filter((candidate) =>
-      candidate.platform === platform,
-    );
-    if (platformEvidenceCandidates.some((candidate) => candidate.evidence.readErrors.length > 0)) {
-      evidenceStateByPlatform[platform] = 'unknown';
-    } else if (platformEvidenceCandidates.some(candidateHasActionableEvidence)) {
-      evidenceStateByPlatform[platform] = 'yes';
-    }
-  }
-
-  if (options.requestedPlatform !== 'auto') {
-    if (options.forcePrompt && options.context.interactive) {
-      const availableChoices = promptablePlatforms.length > 0
-        ? promptablePlatforms
-        : nativeAvailablePlatforms.length > 0
-          ? nativeAvailablePlatforms
-          : INTERACTIVE_PLATFORMS;
-      const choices = platformChoices(availableChoices);
-      const selected = await promptPlatform(
-        options.context,
-        choices,
-        options.requestedPlatform === 'both' && choices.includes('both')
-          ? 'both'
-          : choices.includes(options.requestedPlatform)
-            ? options.requestedPlatform
-            : choices[0],
-      );
-      return {
-        platformFilter: selected,
-        prompted: true,
-      };
-    }
-
-    return {
-      platformFilter: options.requestedPlatform as PlatformName | 'both',
-      prompted: options.prompted,
-    };
-  }
-
-  const impliedPlatform = options.scope === 'project' && evidencePlatforms.length > 0
-    ? resolveEvidenceFirstAutoPlatform({
-        evidenceStateByPlatform,
-        candidatePlatforms: promptablePlatforms,
-        unknownMessage: '当前 scope 至少一个平台的受管安装证据读取结果为 unknown，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-        ambiguousMessage: '当前 scope 同时存在 Claude Code 和 Codex 的受管安装证据，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-      })
-    : evidencePlatforms.length === 1
-      ? evidencePlatforms[0]
-      : undefined;
-  if (!options.context.interactive) {
-    return {
-      platformFilter: impliedPlatform,
-      prompted: options.prompted,
-    };
-  }
-
-  const availableChoices = impliedPlatform
-    ? [impliedPlatform]
-    : promptablePlatforms.length > 0
+  if (options.forcePrompt && options.context.interactive) {
+    const availableChoices = promptablePlatforms.length > 0
       ? promptablePlatforms
-      : nativeAvailablePlatforms;
-  if (!options.forcePrompt && !options.missingPlugins && availableChoices.length <= 1) {
+      : nativeAvailablePlatforms.length > 0
+        ? nativeAvailablePlatforms
+        : INTERACTIVE_PLATFORMS;
+    const choices = platformChoices(availableChoices);
+    const selected = await promptPlatform(
+      options.context,
+      choices,
+      options.requestedPlatform === 'both' && choices.includes('both')
+        ? 'both'
+        : choices.includes(options.requestedPlatform)
+          ? options.requestedPlatform
+          : choices[0],
+    );
     return {
-      platformFilter: impliedPlatform,
-      prompted: options.prompted,
+      platformFilter: selected,
+      prompted: true,
     };
   }
 
-  const choices = platformChoices(availableChoices.length > 0 ? availableChoices : ['codex', 'claude']);
-  const selected = await promptPlatform(
-    options.context,
-    choices,
-    choices.includes('both') ? 'both' : choices[0],
-  );
   return {
-    platformFilter: selected,
-    prompted: true,
+    platformFilter: options.requestedPlatform,
+    prompted: options.prompted,
   };
 }
 
@@ -958,7 +951,7 @@ export async function createInteractiveUninstallPlan(
   if (missingPlugins && !context.interactive) {
     return null;
   }
-  if (!missingPlugins && !forcePrompt && options.platform !== 'auto') {
+  if (!missingPlugins && !forcePrompt) {
     return null;
   }
 
@@ -1025,7 +1018,7 @@ export async function createInteractiveUpgradePlan(
   if (missingPlugins && !context.interactive) {
     return null;
   }
-  if (!missingPlugins && !forcePrompt && options.platform !== 'auto' && !context.interactive) {
+  if (!missingPlugins && !forcePrompt && !context.interactive) {
     return null;
   }
 
@@ -1076,7 +1069,7 @@ export async function createInteractiveUpgradePlan(
           pluginNames: [],
           options: {
             cwd: options.cwd,
-            platform: platformResolution.platformFilter ?? 'auto',
+            platform: platformResolution.platformFilter ?? options.platform,
             scope: scopeResolution.scope,
             all: true,
             requestedSkillTrigger: options.requestedSkillTrigger,
@@ -1106,13 +1099,10 @@ export async function createInteractiveUpgradePlan(
     requestedSkillTrigger: options.requestedSkillTrigger,
   }));
 
-  await maybePromptSkillTrigger('upgrade', groups, context);
-
   const usedPrompt =
     missingPlugins ||
     forcePrompt ||
-    platformResolution.prompted ||
-    groups.some((group) => group.options.requestedSkillTrigger !== options.requestedSkillTrigger);
+    platformResolution.prompted;
 
   return usedPrompt ? { groups } : null;
 }

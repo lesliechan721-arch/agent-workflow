@@ -162,6 +162,12 @@ async function writeDynamicArtifactPlugin(
     version: '0.1.0',
     description: 'Test dynamic artifact authoring contracts.',
     skills: './skills',
+    skillTriggers: {
+      'dynamic-authoring-test': {
+        defaultTrigger: 'manual',
+        allowDynamicTrigger: false,
+      },
+    },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -404,6 +410,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
       skills: './skills',
+      skillTriggers: {
+        'repo-check': {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
+        },
+      },
       apps: './.app.json',
       marketplace: {
         category: 'workflow',
@@ -425,7 +437,6 @@ describe('authoring tools', () => {
         agents: [],
       },
     });
-    expect(scaffoldManifest).not.toHaveProperty('skillTriggers');
     expect(scaffoldManifest.marketplace.policy).not.toHaveProperty('products');
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
@@ -1050,8 +1061,10 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
     expect(manifestSpecDoc).toContain('packages/cli/plugins-dist/');
     expect(manifestSpecDoc).toContain('`skillTriggers`');
-    expect(manifestSpecDoc).toContain('`allowInstallOverride: true`');
+    expect(manifestSpecDoc).toContain('`defaultTrigger`');
+    expect(manifestSpecDoc).toContain('`allowDynamicTrigger`');
     expect(manifestSpecDoc).toContain('禁止手改');
+    expect(manifestSpecDoc).not.toContain('allowInstallOverride');
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
     expect(() =>
@@ -1062,15 +1075,20 @@ describe('authoring tools', () => {
     ).not.toThrow();
 
     expect(triggersDoc).toContain('两个平台的触发开关完全独立');
-    expect(triggersDoc).toContain('`aw install <plugin> --skill-trigger manual`');
-    expect(triggersDoc).toContain('`allowInstallOverride` 只是覆盖许可');
+    expect(triggersDoc).toContain('aw config set <plugin> aw.skillTriggers.<skill>.trigger manual');
+    expect(triggersDoc).toContain('allowDynamicTrigger: true');
     expect(triggersDoc).toContain('面向 Codex 时必需');
     expect(triggersDoc).toContain('`when_to_use`');
+    expect(triggersDoc).toContain(
+      '公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry',
+    );
     expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
     expect(triggersDoc).toContain('`command`：`stdio` 场景下启动本地 MCP server 的命令');
     expect(triggersDoc).toContain('`allowed-tools` 可写单个字符串');
     expect(triggersDoc).toContain('`brand_color`：可选；填写时必须是 `#RRGGBB`');
     expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
+    expect(triggersDoc).not.toContain('--skill-trigger');
+    expect(triggersDoc).not.toContain('allowInstallOverride');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).toContain('`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集');
@@ -1095,7 +1113,10 @@ describe('authoring tools', () => {
     const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
     expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
     expect(authoringDoc).toContain('references/skills-and-triggers.md');
-    expect(authoringDoc).toContain('`skillTriggers` 不定义默认触发策略');
+    expect(authoringDoc).toContain(
+      '`skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`',
+    );
+    expect(authoringDoc).not.toContain('--skill-trigger');
     expect(authoringDoc).not.toContain('references/project-plugin-contract.md');
     expect(authoringDoc).not.toContain('references/skill-trigger-rules.md');
 
@@ -1105,7 +1126,10 @@ describe('authoring tools', () => {
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
-    expect(exampleDoc).toContain('`skillTriggers.review-workflow.allowInstallOverride`');
+    expect(exampleDoc).toContain(
+      '`skillTriggers.review-workflow.{defaultTrigger, allowDynamicTrigger}`',
+    );
+    expect(exampleDoc).not.toContain('allowInstallOverride');
     expect(exampleDoc).toContain('`slash-commands/`');
     expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
@@ -1125,7 +1149,8 @@ describe('authoring tools', () => {
       skills: './skills',
       skillTriggers: {
         'trigger-demo': {
-          allowInstallOverride: true,
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: true,
         },
       },
       marketplace: {
@@ -1178,6 +1203,65 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
+    const dynamicSkillPlugin = await writeSourcePlugin(
+      tempRoot,
+      'dynamic-trigger-demo',
+      createBaseManifest('dynamic-trigger-demo', {
+        skillTriggers: {
+          'dynamic-trigger-demo': {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: true,
+          },
+        },
+        scripts: {
+          artifacts: {
+            render: {
+              runner: 'node',
+              path: './scripts/render-artifacts.mjs',
+            },
+          },
+        },
+        artifacts: {
+          targets: [
+            {
+              id: 'dynamic-trigger-demo',
+              platform: 'codex',
+              scopes: ['user', 'project'],
+              target: 'codex.skill',
+              states: ['present'],
+              refreshKeys: [],
+              skillKey: 'dynamic-trigger-demo',
+            },
+          ],
+        },
+      }),
+      {
+        'scripts/render-artifacts.mjs': [
+          'process.stdout.write(JSON.stringify({',
+          '  version: 1,',
+          '  artifacts: [',
+          '    {',
+          '      id: "dynamic-trigger-demo",',
+          '      platform: "codex",',
+          '      target: "codex.skill",',
+          '      kind: "skill",',
+          '      state: "present",',
+          '      refreshKeys: [],',
+          '      skillKey: "dynamic-trigger-demo",',
+          '      content: {',
+          '        skillFile: "---\\nname: dynamic-trigger-demo\\ndescription: Dynamic trigger demo.\\n---\\n\\n# Dynamic Trigger Demo\\n",',
+          '        openaiYaml: "policy:\\n  allow_implicit_invocation: false\\n"',
+          '      }',
+          '    }',
+          '  ]',
+          '}));',
+        ].join('\n'),
+      },
+    );
+    await expect(runValidatePlugin(dynamicSkillPlugin.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
     const validManifest = await fs.readJson(manifestPath);
     await fs.writeJson(
       manifestPath,
@@ -1185,6 +1269,57 @@ describe('authoring tools', () => {
         ...validManifest,
         skillTriggers: {
           missing: {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: true,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'Invalid skillTriggers.missing: expected a declared static skill or codex.skill artifact.',
+      ),
+    });
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        skillTriggers: {
+          'trigger-demo': {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: 'yes',
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'skillTriggers.trigger-demo.allowDynamicTrigger must be a boolean',
+      ),
+    });
+
+    await fs.writeJson(
+      manifestPath,
+      {
+        ...validManifest,
+        skillTriggers: {
+          'trigger-demo': {
+            defaultTrigger: 'manual',
             allowInstallOverride: true,
           },
         },
@@ -1199,31 +1334,7 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'skillTriggers.missing must match an existing source skill directory',
-      ),
-    });
-
-    await fs.writeJson(
-      manifestPath,
-      {
-        ...validManifest,
-        skillTriggers: {
-          'trigger-demo': {
-            allowInstallOverride: 'yes',
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'skillTriggers.trigger-demo.allowInstallOverride must be a boolean',
+        'Invalid skillTriggers.trigger-demo: unknown field "allowInstallOverride".',
       ),
     });
   });
@@ -1848,6 +1959,35 @@ describe('authoring tools', () => {
       }),
     ).resolves.toBeDefined();
 
+    const explicitTriggerPluginDir = path.join(tempRoot, 'slash-commands-explicit-trigger');
+    await fs.copy(validPluginDir, explicitTriggerPluginDir);
+    const validManifestPath = path.join(explicitTriggerPluginDir, '.agents-plugin', 'plugin.json');
+    const validManifest = await fs.readJson(validManifestPath);
+    await fs.writeJson(
+      validManifestPath,
+      {
+        ...validManifest,
+        skillTriggers: {
+          review: {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: false,
+          },
+        },
+      },
+      { spaces: 2 },
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, explicitTriggerPluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'slashCommands "review" uses an implicit fixed/manual trigger entry and must not be declared explicitly.',
+      ),
+    });
+
     const invalidPromptPluginDir = path.join(tempRoot, 'slash-commands-invalid-prompt');
     await fs.copy(validPluginDir, invalidPromptPluginDir);
     const reviewCommandPath = path.join(invalidPromptPluginDir, 'slash-commands', 'review.md');
@@ -2224,6 +2364,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for Codex policy product checks.',
       skills: './skills',
+      skillTriggers: {
+        'policy-products-test': {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -2308,6 +2454,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for runtime-compatible YAML metadata.',
       skills: './skills',
+      skillTriggers: {
+        'runtime-yaml-test': {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -2391,6 +2543,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for templated skill metadata.',
       skills: './skills',
+      skillTriggers: {
+        'templated-metadata-test': {
+          defaultTrigger: 'manual',
+          allowDynamicTrigger: false,
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -2491,6 +2649,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for Claude-only skill metadata checks.',
       skills: './skills',
+      skillTriggers: {
+        'claude-only': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -2547,6 +2711,12 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for skill frontmatter checks.',
       skills: './skills',
+      skillTriggers: {
+        'frontmatter-test': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,

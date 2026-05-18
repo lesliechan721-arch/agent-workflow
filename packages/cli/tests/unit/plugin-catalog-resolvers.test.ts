@@ -55,6 +55,7 @@ describe('plugin catalog resolvers', () => {
     await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
       rootDir: embeddedRoot,
       source: 'embedded',
+      reasonCode: 'localCatalogLayoutInvalid',
       reason: expect.any(String),
     });
   });

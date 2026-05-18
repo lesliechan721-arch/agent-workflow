@@ -66,6 +66,7 @@ describe('plugin catalog', () => {
     await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
       rootDir: embeddedRoot,
       source: 'embedded',
+      reasonCode: 'localCatalogFingerprintMismatch',
     });
   });
 
@@ -80,6 +81,7 @@ describe('plugin catalog', () => {
     await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
       rootDir: embeddedRoot,
       source: 'embedded',
+      reasonCode: 'localCatalogConfigInvalid',
     });
   });
 
@@ -97,6 +99,7 @@ describe('plugin catalog', () => {
     await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
       rootDir: embeddedRoot,
       source: 'embedded',
+      reasonCode: 'localCatalogConfigInvalid',
     });
   });
 
@@ -115,6 +118,43 @@ describe('plugin catalog', () => {
     await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
       rootDir: embeddedRoot,
       source: 'embedded',
+      reasonCode: 'localCatalogLayoutInvalid',
+    });
+  });
+
+  it('falls back to the embedded root when local sourceVersion is ahead of the current CLI', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    config.sourceVersion = '999.0.0';
+    await fs.writeJson(configPath, config, { spaces: 2 });
+
+    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
+      rootDir: embeddedRoot,
+      source: 'embedded',
+      reasonCode: 'localCatalogSourceVersionAhead',
+    });
+  });
+
+  it('falls back to the embedded root when local sourceVersion is not strict SemVer', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    config.sourceVersion = 'latest';
+    await fs.writeJson(configPath, config, { spaces: 2 });
+
+    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
+      rootDir: embeddedRoot,
+      source: 'embedded',
+      reasonCode: 'localCatalogSourceVersionInvalid',
     });
   });
 });

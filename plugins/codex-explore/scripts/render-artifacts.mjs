@@ -12,12 +12,12 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
 const skillTemplatePaths = [
-  path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
-  path.resolve(pluginRoot, 'codex', 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
+  path.resolve(pluginRoot, 'templates', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
+  path.resolve(pluginRoot, 'codex', 'templates', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
 ];
 const openaiTemplatePaths = [
-  path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
-  path.resolve(pluginRoot, 'codex', 'skills', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
+  path.resolve(pluginRoot, 'templates', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
+  path.resolve(pluginRoot, 'codex', 'templates', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
 ];
 
 function isRecord(value) {

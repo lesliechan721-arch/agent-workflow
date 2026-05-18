@@ -234,7 +234,7 @@
 - 配置写入、主控制台配置向导和 refresh-only 动作共用同一条 dynamic artifact apply 路径。成功时 AW 更新必要 artifact identity、project artifact shared identity 和 dynamic diagnostic cache；失败摘要进入 diagnostic cache，不写入 install record。`config set/unset/reset --json` 会返回稳定的 `artifactRefresh`；refresh-only 不修改 config store，只重跑当前 location target 可定位的 dynamic artifact refresh。config refresh / refresh-only 会从 install record 的 historical bundle 执行 renderer，不从 current local marketplace 的可变 runtime 目录读取模板。
 - 对包含 `project` scope 的 repo-visible dynamic artifact，`refreshKeys` 不能引用 `file` / `directory` 类型配置。project artifact render config 只来自 manifest default 和 project shared config 中可共享的非路径 key；user store、project local store 和路径型 key 只影响本机 effective config、lifecycle 或 helper。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
-- `codex.skill` 的 `projectManagedKind` 必须是 `skill`，且必须静态声明合法 `skillKey`。renderer plan 里的 `skillKey` 必须完全一致，`present` content 只能包含 `skillFile` 和 `openaiYaml`，分别写成运行时 `SKILL.md` 和 `agents/openai.yaml`。renderer 不能提供任意路径，也不能直接写 `.agents/skills/**` 或用户级 Codex runtime。AW apply 阶段会按当前 `skillTriggerPreference` patch `openaiYaml`；`default` / `auto` 对应 `policy.allow_implicit_invocation: true`，`manual` 对应 `false`。
+- `codex.skill` 的 `projectManagedKind` 必须是 `skill`，且必须静态声明合法 `skillKey`。renderer plan 里的 `skillKey` 必须完全一致，`present` content 只能包含 `skillFile` 和 `openaiYaml`，分别写成运行时 `SKILL.md` 和 `agents/openai.yaml`。renderer 不能提供任意路径，也不能直接写 `.agents/skills/**` 或用户级 Codex runtime。AW apply 阶段会按当前 effective SkillTrigger 内建配置 patch `openaiYaml`；`auto` 对应 `policy.allow_implicit_invocation: true`，`manual` 对应 `false`。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
@@ -323,7 +323,8 @@ codex:
   "skills": "./skills",
   "skillTriggers": {
     "review": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   }
 }
@@ -331,11 +332,13 @@ codex:
 
 规则：
 
-- 只有声明了 `skills` 的插件才能声明 `skillTriggers`。
-- `skillTriggers` 的 key 必须对应 source `skills` 目录下真实存在的 skill 子目录。
-- 每个 entry 只允许 `allowInstallOverride`，且必须是 boolean。
-- `allowInstallOverride: true` 表示用户可用 `aw install --skill-trigger manual|auto|default` 或显式 `aw upgrade --skill-trigger ...` 覆盖该 skill 的本地 runtime 触发策略。install record 只保存当前位置自己的 preference；shared runtime owner 状态只保存当前 owner replay 所需的 preference，不保存全局顺序或自动胜者列表。
-- `allowInstallOverride: false` 或省略 `skillTriggers` 表示安装时不可覆盖，始终使用 skill 默认策略。
+- 静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 的 `skillKey` 必须有对应 `skillTriggers.<skill>` entry。
+- `skillTriggers` 的 key 必须对应作者显式声明的受管 skill；未知 key、重复 key，或公共 `slashCommands` 生成 skill 的重复声明都会失败。
+- 每个 entry 只允许 `defaultTrigger` 和 `allowDynamicTrigger`。
+- `defaultTrigger` 必须是 `manual` 或 `auto`，表示未写入 AW 内建配置时的默认触发策略。
+- `allowDynamicTrigger` 必须是 boolean；`true` 表示用户可以通过 `aw config` 或主控制台配置页修改 `aw.skillTriggers.<skill>.trigger`，`false` 表示 fixed 只读。
+- 公共 `slashCommands` 生成的 Codex manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false`。
+- 旧的安装期覆盖字段不再是有效 manifest 合同；出现这类字段时 build/validate 必须失败。
 
 ## marketplace block
 
@@ -360,7 +363,7 @@ codex:
   - `"NONE"`：无需认证
   - `"ON_INSTALL"`：安装时认证
   - `"ON_USE"`：使用时认证
-- `products`：省略或空数组时表示同时支持 Claude 和 Codex；声明后只支持指定产品。这个字段不只是安装门禁，还参与 `pnpm build` 的 platform manifest/runtime 裁剪、平台 marketplace entries 过滤和 `pnpm plugin:test` 平台选择。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台，`--platform auto` 会先过滤不匹配的平台再推断目标。脚手架默认省略该字段，让插件保持双平台；只有明确要限制平台时才添加。
+- `products`：省略或空数组时表示同时支持 Claude 和 Codex；声明后只支持指定产品。这个字段不只是安装门禁，还参与 `pnpm build` 的 platform manifest/runtime 裁剪、平台 marketplace entries 过滤和 `pnpm plugin:test` 平台选择。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台；写入口必须显式传 `--platform codex|claude|both`。脚手架默认省略该字段，让插件保持双平台；只有明确要限制平台时才添加。
 
 Codex scope 对作者的影响：
 
@@ -475,7 +478,8 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
   "skills": "./skills",
   "skillTriggers": {
     "review-workflow": {
-      "allowInstallOverride": true
+      "defaultTrigger": "manual",
+      "allowDynamicTrigger": true
     }
   },
   "mcpServers": "./.mcp.json",

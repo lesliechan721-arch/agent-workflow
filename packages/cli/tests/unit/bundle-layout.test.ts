@@ -83,6 +83,32 @@ async function createClaudeOnlyEmbeddedRoot(): Promise<{ repoRoot: string; embed
   return { repoRoot, embeddedRoot };
 }
 
+async function writeRepoPackageVersions(
+  repoRoot: string,
+  versions: {
+    rootVersion: string;
+    cliVersion: string;
+  },
+): Promise<void> {
+  await fs.writeJson(
+    path.join(repoRoot, 'package.json'),
+    {
+      name: 'agent-workflows',
+      private: true,
+      version: versions.rootVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
+    path.join(repoRoot, 'packages', 'cli', 'package.json'),
+    {
+      name: '@yiliang/aw',
+      version: versions.cliVersion,
+    },
+    { spaces: 2 },
+  );
+}
+
 function createFakeStagingRunner(): PluginStagingRunner {
   return {
     async installPackageRoot(packageRoot) {
@@ -207,6 +233,54 @@ describe('bundle layout validation', () => {
 
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
       'missing supported Codex manifest',
+    );
+  });
+
+  it('rejects non-strict SemVer plugin versions in bundled manifests before release output', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const manifestPath = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      '.claude-plugin',
+      'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath);
+    manifest.version = 'v1.2.3';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'Invalid claude manifest.version: expected a strict SemVer 2.0.0 string.',
+    );
+  });
+
+  it('rejects invalid CLI package versions before writing bundled release output', async () => {
+    const repoRoot = await makeTempRepo();
+    await writeRepoPackageVersions(repoRoot, {
+      rootVersion: '1.0.0',
+      cliVersion: 'v1.0.0',
+    });
+
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+    })).rejects.toThrow(
+      'Invalid packages/cli/package.json version: expected a strict SemVer 2.0.0 string.',
+    );
+  });
+
+  it('rejects mismatched root and CLI package versions before writing bundled release output', async () => {
+    const repoRoot = await makeTempRepo();
+    await writeRepoPackageVersions(repoRoot, {
+      rootVersion: '1.0.0',
+      cliVersion: '1.0.1',
+    });
+
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+    })).rejects.toThrow(
+      'Invalid release versions: package.json version 1.0.0 must match packages/cli/package.json version 1.0.1.',
     );
   });
 
@@ -402,7 +476,8 @@ describe('bundle layout validation', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.skillTriggers = {
       commit: {
-        allowInstallOverride: true,
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });

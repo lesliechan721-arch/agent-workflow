@@ -134,7 +134,7 @@ plugins/<name>/
 - `aw install`、显式 `aw upgrade` 和 `aw upgrade --all` 会自动解析并安装/升级缺失依赖；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后清理引用归零的自动依赖。文档和示例里不要要求用户手动按顺序安装普通依赖，除非该依赖需要用户先单独配置或选择特殊安装选项。
 - `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
 - 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等内部词。
-- `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段、`consoleItemsSchemaVersion: 2`、V2 `consoleItems.features` 和每个位置的 `dependencies` 投影。未声明 config、lifecycle 或动态 artifact target 不会被投影成默认问题。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
+- `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段、`statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`consoleItems.features` 和每个位置的 `dependencies` 投影。未声明 config、lifecycle 或动态 artifact target 不会被投影成默认问题。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
 
 ## 脚手架脚本
 
@@ -161,7 +161,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--with-config-api`：添加 AW 自管 `config.schema`、标准 `scripts.helpers.config` helper 和 Node 脚本测试样板
 - `--with-lifecycle`：添加 Node lifecycle 样板和 Node 脚本测试样板
 - 默认省略 `marketplace.policy.products`，让插件保持双平台；声明后该字段会同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择
-- 默认不生成 `skillTriggers`，因此新 skill 不允许安装时覆盖触发策略；确实需要时再在 manifest 里显式添加 `allowInstallOverride`
+- 带静态 `skills/<skill>` 或动态 `codex.skill` 的插件必须在 `skillTriggers.<skill>` 声明 `defaultTrigger` 和 `allowDynamicTrigger`；公共 `slashCommands` 生成的 Codex manual-only skill 不需要作者补 entry
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
 
 ## 最小检查
@@ -180,7 +180,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。配置驱动 skill 推荐声明 `target: "codex.skill"`、`projectManagedKind: "skill"` 和静态 `skillKey`；renderer plan / fixture 里的 `skillKey` 必须与之完全一致。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
 - Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。
 - `artifacts.targets` 是安装前能力真值；`scripts.artifacts.render` 只在 install / upgrade / config refresh / refresh-only 写路径执行，`aw status` 不执行 renderer。
-- `codex.skill` 的 runtime 内容来自静态模板、artifact render config 和当前 `skillTriggerPreference` patch。`--skill-trigger default|auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`；config refresh、repair 和 refresh-only 不应重置用户显式选择。
+- `codex.skill` 的 runtime 内容来自静态模板、artifact render config 和当前 effective SkillTrigger built-in config patch。`auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`；config refresh、repair 和重新应用配置不应重置用户配置。
 - dynamic artifact 的 accepted state、digest 和最近 refresh 摘要保存在 dynamic diagnostic cache，不进入 install record。刷新失败、drift 或 missing 会通过友好状态投影给出下一步；disabled by config 不是故障。refresh-only 动作只重新应用已有配置，不改 config store。
 - project shared config 写 `.agent-workflows/plugin-config/<plugin>/config.json`，是 repo-visible project artifacts 唯一共享配置输入；project local config 写 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略，只影响本机 effective config、lifecycle 和 helper。
 - project scope 的 private state / local config 默认应被 ignore；`.agent-workflows/plugin-config/` 和 `.agent-workflows/project-artifacts/` 是可提交的共享输入/identity，模板和示例不要默认忽略它们。
@@ -203,7 +203,7 @@ pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:test --all
 ```
 
-`pnpm plugin:test` 会先编译 CLI，再运行已编译 runner。它会先准备 staging source，并用 build 后 staging manifest 的 `products` 解析最终支持平台；`auto` 使用完整支持平台集合，显式 `claude` / `codex` / `both` 不能越过最终支持平台，`both` 只适用于双平台插件。runner 会为目标插件准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。没有匹配测试时是 skipped/no-op，退出码为 0；单插件模式不会被其它插件的坏 manifest 或测试失败阻断。双平台插件使用 `--platform both` 时，会分 Codex/Claude 两轮复制独立可写 bundle。测试中的 `AW_PLUGIN_CONTEXT.sourceRoot` 指向原始源码根，适合读取源码 fixture；实际运行时入口和 helper 应从临时 bundle import。更完整的 context、helper 和 config store 规则见 `references/aw-scripts-config-lifecycle.md`。
+`pnpm plugin:test` 会先编译 CLI，再运行已编译 runner。它会先准备 staging source，并用 build 后 staging manifest 的 `products` 解析最终支持平台；省略 `--platform` 时按 `both` 处理，`--platform auto` 无效并会失败。显式 `claude` / `codex` 遇到任一选中插件不支持该平台时，runner 会在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分 Codex/Claude 两轮复制独立可写 bundle。runner 会为目标插件准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。没有匹配测试时是 skipped/no-op，退出码为 0；单插件模式不会被其它插件的坏 manifest 或测试失败阻断。测试中的 `AW_PLUGIN_CONTEXT.sourceRoot` 指向原始源码根，适合读取源码 fixture；实际运行时入口和 helper 应从临时 bundle import。更完整的 context、helper 和 config store 规则见 `references/aw-scripts-config-lifecycle.md`。
 
 更细的能力矩阵、平台差异、命令结果填充和长 checklist 都在下方参考文档里，按场景加载即可。
 

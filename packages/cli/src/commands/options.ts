@@ -13,6 +13,8 @@ export interface NormalizeCommandOptionsDefaults {
   cwd?: string;
   defaultScope?: Scope;
   defaultPlatform?: PlatformSelection;
+  requirePlatform?: boolean;
+  missingPlatformMessage?: string;
 }
 
 export type RawCommandOptions = {
@@ -114,6 +116,19 @@ export const CONFIG_WRITE_DEFAULT_SCOPE: Scope = 'user';
 export type ConfigReadResolution = Scope | 'effective';
 export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
 
+export function assertNoDeprecatedSkillTriggerOption(
+  raw: Pick<RawInstallCommandOptions, 'requestedSkillTrigger' | 'skillTrigger'>,
+  commandName: 'install' | 'upgrade' | 'repair' | 'reinstall',
+): void {
+  if (raw.requestedSkillTrigger === undefined && raw.skillTrigger === undefined) {
+    return;
+  }
+
+  throw new Error(
+    `\`${commandName}\` 不再接受 \`--skill-trigger\` / \`-t\`；请改用配置管理维护 skill trigger 偏好后再重试。`,
+  );
+}
+
 function renderUnsupportedValue(value: unknown): string {
   return typeof value === 'string' ? value : String(value);
 }
@@ -127,16 +142,13 @@ export function parseScopeValue(scope: unknown): Scope {
 }
 
 export function parsePlatformValue(platform: unknown): PlatformSelection {
-  if (
-    platform === 'codex' ||
-    platform === 'claude' ||
-    platform === 'both' ||
-    platform === 'auto'
-  ) {
+  if (platform === 'codex' || platform === 'claude' || platform === 'both') {
     return platform;
   }
 
-  throw new Error(`Unsupported platform "${renderUnsupportedValue(platform)}".`);
+  throw new Error(
+    `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: codex, claude, both.`,
+  );
 }
 
 export function parseSkillTriggerPreference(
@@ -209,10 +221,16 @@ export function normalizeCommandOptions(
   defaults: NormalizeCommandOptionsDefaults = {},
 ): CommandOptions {
   const scriptTimeoutMs = resolveScriptTimeoutMs(raw);
+  const platformInput = raw.platform ?? defaults.defaultPlatform;
+  if (platformInput === undefined && defaults.requirePlatform) {
+    throw new Error(
+      defaults.missingPlatformMessage ?? '命令需要显式指定 `--platform codex|claude|both`。',
+    );
+  }
   return {
     cwd: resolveCwd(raw.cwd, defaults.cwd),
     scope: parseScopeValue(raw.scope ?? defaults.defaultScope ?? 'user'),
-    platform: parsePlatformValue(raw.platform ?? defaults.defaultPlatform ?? 'auto'),
+    platform: parsePlatformValue(platformInput ?? 'both'),
     ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
   };
 }
@@ -231,7 +249,8 @@ export function normalizeInstallCommandOptions(
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: true,
+      missingPlatformMessage: 'install 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
     requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
@@ -249,7 +268,8 @@ export function normalizeUpgradeCommandOptions(
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: true,
+      missingPlatformMessage: 'upgrade 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
     all: raw.all,
@@ -258,13 +278,12 @@ export function normalizeUpgradeCommandOptions(
   };
 }
 
-function parseStatusPlatformFilter(platform: unknown): PlatformName | 'both' | undefined {
-  if (platform === undefined || platform === 'auto') {
-    return undefined;
+function parseStatusPlatformFilter(platform: unknown): PlatformName | 'both' {
+  if (platform === undefined) {
+    return 'both';
   }
 
-  const parsed = parsePlatformValue(platform);
-  return parsed === 'auto' ? undefined : parsed;
+  return parsePlatformValue(platform);
 }
 
 export function normalizeStatusCommandOptions(
@@ -299,10 +318,18 @@ export function normalizeRepairCommandOptions(
   if (raw.dependencyIndex && raw.adoptExisting) {
     throw new Error('--dependency-index 不能与 --adopt-existing 一起使用。');
   }
+  if (raw.dependencyIndex && raw.scope !== undefined) {
+    throw new Error('--dependency-index 不接受 `--scope`。');
+  }
+  if (raw.dependencyIndex && raw.platform !== undefined) {
+    throw new Error('--dependency-index 不接受 `--platform`。');
+  }
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: raw.dependencyIndex !== true,
+      missingPlatformMessage: 'repair 命令需要显式指定 `--platform codex|claude|both`。',
+      ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
       ...defaults,
     }),
     adoptExisting: raw.adoptExisting === true,
@@ -320,7 +347,8 @@ export function normalizeUninstallCommandOptions(
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: true,
+      missingPlatformMessage: 'uninstall 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
     removeConfig: raw.removeConfig === true,
@@ -331,10 +359,18 @@ export function normalizeCleanupCommandOptions(
   raw: RawCleanupCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): CleanupCommandOptions {
+  if (raw.dependencyIndex && raw.scope !== undefined) {
+    throw new Error('cleanup --dependency-index 不接受 `--scope`。');
+  }
+  if (raw.dependencyIndex && raw.platform !== undefined) {
+    throw new Error('cleanup --dependency-index 不接受 `--platform`。');
+  }
   const normalized = {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: raw.dependencyIndex !== true,
+      missingPlatformMessage: 'cleanup 命令需要显式指定 `--platform codex|claude|both`。',
+      ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
       ...defaults,
     }),
     force: raw.force === true,
@@ -363,10 +399,6 @@ export function normalizeCleanupCommandOptions(
     throw new Error('cleanup --yes 只用于 --dependency-index --prune-stale。');
   }
 
-  if (!normalized.dependencyIndex && (normalized.platform === 'auto' || normalized.platform === 'both')) {
-    throw new Error('cleanup 命令需要显式指定单一平台。');
-  }
-
   return normalized;
 }
 
@@ -374,18 +406,13 @@ export function normalizeReinstallCommandOptions(
   raw: RawReinstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): ReinstallCommandOptions {
-  const normalized = {
+  return {
     ...normalizeInstallCommandOptions(raw, {
       defaultScope: 'user',
-      defaultPlatform: 'auto',
+      requirePlatform: true,
+      missingPlatformMessage: 'reinstall 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
     json: raw.json === true,
   } satisfies ReinstallCommandOptions;
-
-  if (normalized.platform === 'auto' || normalized.platform === 'both') {
-    throw new Error('reinstall 命令需要显式指定单一平台。');
-  }
-
-  return normalized;
 }

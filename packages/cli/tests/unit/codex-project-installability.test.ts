@@ -119,6 +119,29 @@ async function makeWorkspace(pluginDirs: string[]): Promise<{
   };
 }
 
+async function updateWorkspacePluginManifest(
+  workspace: { repoRoot: string },
+  pluginDir: string,
+  mutate: (manifest: Record<string, unknown>) => void,
+): Promise<void> {
+  const manifestPath = path.join(
+    workspace.repoRoot,
+    'plugins',
+    pluginDir,
+    '.agents-plugin',
+    'plugin.json',
+  );
+  const manifest = await fs.readJson(manifestPath);
+  mutate(manifest as Record<string, unknown>);
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
+async function refreshWorkspaceEmbeddedRoot(workspace: { repoRoot: string }): Promise<void> {
+  const embeddedRoot = await createSyntheticEmbeddedRoot(workspace.repoRoot);
+  tempDirs.push(embeddedRoot);
+  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+}
+
 async function listFilesRecursively(root: string): Promise<string[]> {
   if (!(await fs.pathExists(root))) {
     return [];
@@ -760,7 +783,7 @@ describe('Codex project installability', () => {
     ).rejects.toThrow('需要本机 Codex native runner');
   });
 
-  it('rejects ambiguous project auto install before writes when Claude and Codex project are both executable without evidence', async () => {
+  it('rejects removed auto platform installs before any write work begins', async () => {
     const workspace = await makeWorkspace(['slashCommands-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
@@ -776,7 +799,7 @@ describe('Codex project installability', () => {
           ['slash-commands-only'],
           {
             cwd: workspace.repoRoot,
-            platform: 'auto',
+            platform: 'auto' as PlatformName,
             scope: 'project',
           },
           {
@@ -788,39 +811,7 @@ describe('Codex project installability', () => {
           },
         ),
       ),
-    ).rejects.toThrow('无法从当前 scope 的初始化状态唯一推断目标平台');
-  });
-
-  it('uses current scope managed evidence to infer Codex project for auto install without a Codex native executable', async () => {
-    const workspace = await makeWorkspace(['slashCommands-only']);
-    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
-    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    workspace.env.PATH = '';
-    const codex = new RecordingAdapter('codex', workspace.repoRoot, {
-      'slash-commands-only': 'yes',
-    });
-    const claude = new RecordingAdapter('claude', workspace.repoRoot);
-
-    await expect(
-      installCommand(
-        ['slash-commands-only'],
-        {
-          cwd: workspace.repoRoot,
-          platform: 'auto',
-          scope: 'project',
-        },
-        {
-          env: workspace.env,
-          adapters: { codex, claude },
-        },
-      ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['slash-commands-only'],
-    });
-
-    expect(codex.extensionInstallCalls).toEqual(['slash-commands-only:project']);
-    expect(claude.extensionInstallCalls).toEqual([]);
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
   });
 
   it('applies Codex project installability to explicit upgrade targets', async () => {
@@ -951,7 +942,7 @@ describe('Codex project installability', () => {
       [],
       normalizeInstallCommandOptions({
         cwd: workspace.repoRoot,
-        platform: 'auto',
+        platform: 'both',
         scope: 'project',
       }),
       context,
@@ -970,5 +961,183 @@ describe('Codex project installability', () => {
       selectable: false,
       disabledReason: expect.stringContaining('project-managed kind'),
     });
+  });
+
+  it('prompts install platform before scope, keeps cross-scope platform options, and returns to platform when scope invalidates it', async () => {
+    const workspace = await makeWorkspace(['slashCommands-only']);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    workspace.env.PATH = '';
+
+    const promptOrder: string[] = [];
+    const platformCalls: Array<{ available: string[]; message?: string }> = [];
+    const scopeCalls: Scope[] = [];
+    const context = createCommandExecutionContext({
+      env: workspace.env,
+      interactive: true,
+      prompt: {
+        selectPlatform: async ({ available, message }) => {
+          promptOrder.push('platform');
+          platformCalls.push({ available: [...available], message });
+          return platformCalls.length === 1 ? 'codex' : 'claude';
+        },
+        selectScope: async () => {
+          promptOrder.push('scope');
+          scopeCalls.push('user');
+          return 'user';
+        },
+        selectPlugins: async ({ candidates }) => {
+          promptOrder.push('plugins');
+          const selected = candidates.find((candidate) =>
+            candidate.pluginName === 'slash-commands-only' &&
+            candidate.platform === 'claude' &&
+            candidate.scope === 'user' &&
+            candidate.selectable
+          );
+          expect(selected).toBeTruthy();
+          return [selected!.id];
+        },
+      },
+    });
+
+    const plan = await createInteractiveInstallPlan(
+      ['slash-commands-only'],
+      normalizeInstallCommandOptions({
+        cwd: workspace.repoRoot,
+        platform: 'both',
+        scope: 'user',
+      }),
+      context,
+      true,
+    );
+
+    expect(promptOrder).toEqual(['platform', 'scope', 'platform', 'scope', 'plugins']);
+    expect(scopeCalls).toEqual(['user', 'user']);
+    expect(platformCalls.map((call) => call.available)).toEqual([
+      ['codex', 'claude', 'both'],
+      ['codex', 'claude', 'both'],
+    ]);
+    expect(platformCalls[1]?.message).toContain('Codex 在 user 不可用');
+    expect(plan?.groups).toHaveLength(1);
+    expect(plan?.groups[0]).toMatchObject({
+      pluginNames: ['slash-commands-only'],
+      options: {
+        platform: 'claude',
+        scope: 'user',
+      },
+    });
+  });
+
+  it('shows only all-platform for mixed-platform plugin groups when no single platform satisfies the whole selection', async () => {
+    const workspace = await makeWorkspace(['skills-only', 'slashCommands-only']);
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    await updateWorkspacePluginManifest(workspace, 'slashCommands-only', (manifest) => {
+      const marketplace = manifest.marketplace as Record<string, unknown>;
+      const policy = marketplace.policy as Record<string, unknown>;
+      policy.products = ['CLAUDE'];
+    });
+    await refreshWorkspaceEmbeddedRoot(workspace);
+
+    const seenPlatforms: string[][] = [];
+    const seenCandidates: Array<{
+      pluginName: string;
+      platform?: string;
+      scope?: string;
+      selectable: boolean;
+    }> = [];
+    const context = createCommandExecutionContext({
+      env: workspace.env,
+      interactive: true,
+      prompt: {
+        selectPlatform: async ({ available }) => {
+          seenPlatforms.push([...available]);
+          return 'both';
+        },
+        selectScope: async () => 'user',
+        selectPlugins: async ({ candidates }) => {
+          seenCandidates.push(...candidates);
+          return candidates
+            .filter((candidate) =>
+              candidate.selectable &&
+              (
+                (candidate.pluginName === 'skills-only' && candidate.platform === 'codex') ||
+                (candidate.pluginName === 'slash-commands-only' && candidate.platform === 'claude')
+              ),
+            )
+            .map((candidate) => candidate.id);
+        },
+      },
+    });
+
+    const plan = await createInteractiveInstallPlan(
+      ['skills-only', 'slash-commands-only'],
+      normalizeInstallCommandOptions({
+        cwd: workspace.repoRoot,
+        platform: 'both',
+        scope: 'user',
+      }),
+      context,
+      true,
+    );
+
+    expect(seenPlatforms).toEqual([['both']]);
+    expect(seenCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginName: 'skills-only', platform: 'codex', scope: 'user', selectable: true }),
+      expect.objectContaining({ pluginName: 'slash-commands-only', platform: 'claude', scope: 'user', selectable: true }),
+    ]));
+    expect(seenCandidates.find((candidate) => candidate.pluginName === 'skills-only' && candidate.platform === 'claude'))
+      .toBeUndefined();
+    expect(seenCandidates.find((candidate) => candidate.pluginName === 'slash-commands-only' && candidate.platform === 'codex'))
+      .toBeUndefined();
+    expect(plan?.groups.map((group) => `${group.options.platform}:${group.options.scope}:${group.pluginNames.join(',')}`).sort())
+      .toEqual([
+        'claude:user:slash-commands-only',
+        'codex:user:skills-only',
+      ]);
+  });
+
+  it('fails before the platform prompt when the selected plugins do not share any feasible install scope', async () => {
+    const workspace = await makeWorkspace(['skills-only', 'slashCommands-only']);
+    workspace.env.PATH = '';
+    await updateWorkspacePluginManifest(workspace, 'slashCommands-only', (manifest) => {
+      const marketplace = manifest.marketplace as Record<string, unknown>;
+      const policy = marketplace.policy as Record<string, unknown>;
+      policy.products = ['CLAUDE'];
+    });
+    await refreshWorkspaceEmbeddedRoot(workspace);
+
+    let promptCalled = false;
+    const context = createCommandExecutionContext({
+      env: workspace.env,
+      interactive: true,
+      prompt: {
+        selectPlatform: async () => {
+          promptCalled = true;
+          return 'both';
+        },
+        selectScope: async () => {
+          promptCalled = true;
+          return 'user';
+        },
+        selectPlugins: async () => {
+          promptCalled = true;
+          return [];
+        },
+      },
+    });
+
+    await expect(
+      createInteractiveInstallPlan(
+        ['skills-only', 'slash-commands-only'],
+        normalizeInstallCommandOptions({
+          cwd: workspace.repoRoot,
+          platform: 'both',
+          scope: 'user',
+        }),
+        context,
+        true,
+      ),
+    ).rejects.toThrow('这些插件没有共同可用的位置');
+    expect(promptCalled).toBe(false);
   });
 });

@@ -2,10 +2,10 @@
   "name": "codex-explore",
   "version": "0.1.8",
   "description": "为 Codex 提供只读探索 workflow，适合跨代码、文档、日志和网页整理证据。",
-  "skills": "./skills",
   "skillTriggers": {
     "codex-explore": {
-      "allowInstallOverride": true
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
     }
   },
   "marketplace": {
@@ -57,6 +57,14 @@
         "values": ["low", "medium", "high", "xhigh"],
         "default": "low",
         "description": "Codex Explore 子代理默认使用的推理强度；不会自动回退到 Codex 内置 explorer。"
+      }
+    }
+  },
+  "buildConfig": {
+    "fileRules": {
+      "codex": {
+        "include": ["templates/**"],
+        "exclude": []
       }
     }
   },

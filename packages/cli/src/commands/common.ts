@@ -44,6 +44,7 @@ import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import {
   ensureLocalMarketplace,
   readInstalledLedger,
+  type LocalMarketplaceGateOptions,
 } from '../utils/local-marketplace.js';
 import { generatedArtifactKindRequiresArtifactKey } from '../utils/generated-artifacts.js';
 import {
@@ -82,8 +83,6 @@ import {
 import {
   canExecuteCodexProjectWithoutNative,
   listExecutablePlatformsForTargets,
-  resolveEvidenceFirstAutoPlatform,
-  type PlatformEvidenceStateByPlatform,
 } from './platform-resolution.js';
 
 export function createAdapters(
@@ -140,12 +139,41 @@ export interface PreparedMarketplaceState {
   catalog: CatalogResolution;
 }
 
+export interface RequestedPlatformTargetPair {
+  pluginName: string;
+  platform: PlatformName;
+}
+
 export type CatalogPreparationMode = 'readOnly' | 'runtimeWritable';
 
 interface PreparedCatalogState {
   catalog: CatalogResolution;
   marketplace: PreparedMarketplaceState;
   warnings: string[];
+}
+
+function createLocalMarketplaceGate(
+  context: CommandExecutionContext | undefined,
+): LocalMarketplaceGateOptions | undefined {
+  if (!context) {
+    return undefined;
+  }
+
+  return {
+    interactive: context.interactive,
+    confirmOverwrite: async ({ message, defaultValue }) => {
+      const result = await context.prompt.confirm?.({ message, defaultValue });
+      return result?.action === 'select' && result.value === true;
+    },
+    onNotice: async (message) => {
+      await context.reporter.notice({
+        level: 'warning',
+        message,
+        identity: `local-marketplace:${message}`,
+        target: 'stderr',
+      });
+    },
+  };
 }
 
 function resolveCatalogPreparationMode(options: {
@@ -697,6 +725,15 @@ function hasRecoverableLedgerSkillTriggerPreference(
   return scopeRecord?.managed === true && typeof scopeRecord.installOptions?.skillTriggerPreference === 'string';
 }
 
+function renderSkillTriggerConfigGuidance(
+  pluginName: string,
+  platform: PlatformName,
+  scope: Scope,
+  reason: string,
+): string {
+  return `${pluginName} 在 ${platform} (${scope}) ${reason}；请改用配置管理维护 skill trigger 偏好后再重试。`;
+}
+
 async function hasTrackingManagedEvidenceForTarget(
   cwd: string,
   scope: Scope,
@@ -715,9 +752,13 @@ async function prepareCatalogState(
   mode: CatalogPreparationMode,
   env: NodeJS.ProcessEnv,
   ledger?: InstalledLedger,
+  context?: CommandExecutionContext,
 ): Promise<PreparedCatalogState> {
   if (mode === 'runtimeWritable') {
-    const ensuredMarketplace = await ensureLocalMarketplace(env);
+    const ensuredMarketplace = await ensureLocalMarketplace(
+      env,
+      createLocalMarketplaceGate(context),
+    );
     return {
       catalog: {
         rootDir: ensuredMarketplace.rootDir,
@@ -735,10 +776,11 @@ async function prepareCatalogState(
   const catalog =
     ledger?.ledgerState.status === 'degraded' && currentCatalog.source === 'local'
       ? {
-          rootDir: embeddedRoot,
-          source: 'embedded' as const,
-          reason: 'installed.json 处于 degraded 状态，read-only catalog 回退到 embedded bundle。',
-        }
+        rootDir: embeddedRoot,
+        source: 'embedded' as const,
+        reason: 'installed.json 处于 degraded 状态，read-only catalog 回退到 embedded bundle。',
+        reasonCode: 'localLedgerDegraded' as const,
+      }
       : currentCatalog;
 
   return {
@@ -757,12 +799,13 @@ export async function preparePluginTargetsForCommand(
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
+    context?: CommandExecutionContext;
   } = {},
 ): Promise<PreparedPluginCommandContext> {
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
   const loadedTargets = await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,
     allowHistoricalFallback: options.allowHistoricalFallback,
@@ -782,12 +825,13 @@ export async function prepareCommandEnvironment(
     catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     env?: NodeJS.ProcessEnv;
+    context?: CommandExecutionContext;
   } = {},
 ): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings' | 'marketplace'>> {
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
 
   return {
     ledger,
@@ -942,8 +986,18 @@ async function resolveInstallOptionsForResolvedTarget(options: {
     }
     if (isManagedTarget || trackingManagedEvidence) {
       const message = options.ledger.ledgerState.status === 'available'
-        ? `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 的 skill trigger 偏好无法从当前 scope ledger 安全恢复；tracking 只能证明 repo artifact 归属，请显式传入 \`--skill-trigger default|manual|auto\`。`
-        : `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`;
+        ? renderSkillTriggerConfigGuidance(
+            options.target.pluginName,
+            options.platform,
+            options.scope,
+            '的 skill trigger 偏好无法从当前 scope ledger 安全恢复，tracking 只能证明 repo artifact 归属',
+          )
+        : renderSkillTriggerConfigGuidance(
+            options.target.pluginName,
+            options.platform,
+            options.scope,
+            '已受管，installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好',
+          );
       throw new CommandWarningError(message);
     }
     return {
@@ -964,7 +1018,12 @@ async function resolveInstallOptionsForResolvedTarget(options: {
     }
     if (isManagedTarget) {
       throw new CommandWarningError(
-        `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 已受管；installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好，请显式传入 \`--skill-trigger default|manual|auto\`。`,
+        renderSkillTriggerConfigGuidance(
+          options.target.pluginName,
+          options.platform,
+          options.scope,
+          '已受管，installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好',
+        ),
       );
     }
     return {
@@ -984,7 +1043,12 @@ async function resolveInstallOptionsForResolvedTarget(options: {
   }
 
   throw new CommandWarningError(
-    `${options.target.pluginName} 在 ${options.platform} (${options.scope}) 的 skill trigger 偏好无法从 degraded installed.json 安全恢复，请显式传入 \`--skill-trigger default|manual|auto\`。`,
+    renderSkillTriggerConfigGuidance(
+      options.target.pluginName,
+      options.platform,
+      options.scope,
+      '的 skill trigger 偏好无法从 degraded installed.json 安全恢复',
+    ),
   );
 }
 
@@ -1141,6 +1205,7 @@ export async function loadPluginTargetsForCommand(
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
+    context?: CommandExecutionContext;
   } = {},
 ): Promise<ResolvedPluginTarget[]> {
   const env = options.env ?? process.env;
@@ -1148,7 +1213,7 @@ export async function loadPluginTargetsForCommand(
   const ledger = catalogMode === 'readOnly'
     ? await readInstalledLedger(env)
     : undefined;
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger);
+  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
 
   return (await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,
@@ -1374,73 +1439,13 @@ function createBothPlatformsUnavailableError(
   return new Error('`--platform both` 只在 Codex target 和 Claude Code 都可执行时可用。');
 }
 
-async function getAutoPlatformState(
-  adapters: Record<PlatformName, PlatformAdapter>,
-  plugins: PluginMeta[],
-  scope: Scope,
-): Promise<PlatformEvidenceStateByPlatform> {
-  const states: PlatformEvidenceStateByPlatform = {
-    codex: 'no',
-    claude: 'no',
-  };
-
-  for (const platform of ['codex', 'claude'] as const) {
-    let hasYes = false;
-    let hasUnknown = false;
-    for (const plugin of plugins) {
-      const status = await adapters[platform].status(plugin, scope);
-      const pluginStatus = status.plugins[0];
-      if (pluginStatus && hasScopeManagedEvidence(pluginStatus)) {
-        hasYes = true;
-        continue;
-      }
-
-      const pluginScopeState = pluginStatus?.scopeInitialized ?? status.scopeInitialized ?? 'unknown';
-      if (pluginScopeState === 'unknown') {
-        hasUnknown = true;
-      } else if (pluginScopeState === 'yes') {
-        hasYes = true;
-      }
-    }
-
-    states[platform] = hasUnknown ? 'unknown' : hasYes ? 'yes' : 'no';
-  }
-
-  return states;
-}
-
-async function collectManagedTargetsOnExcludedPlatforms(
-  adapters: Record<PlatformName, PlatformAdapter>,
-  plugins: PluginMeta[],
-  scope: Scope,
-  platforms: PlatformName[],
-): Promise<string[]> {
-  const reasons: string[] = [];
-
-  for (const platform of platforms) {
-    for (const plugin of plugins) {
-      const status = await adapters[platform].status(plugin, scope);
-      const pluginStatus = status.plugins[0];
-      if (!pluginStatus || !hasScopeManagedEvidence(pluginStatus)) {
-        continue;
-      }
-
-      reasons.push(
-        `${platform}/${plugin.manifest.name} (scopeInitialized=${pluginStatus.scopeInitialized ?? '-'}, marketplace.policy.products=[${formatPolicyProducts(plugin)}])`,
-      );
-    }
-  }
-
-  return reasons;
-}
-
 export async function resolveTargetPlatforms(
   action: CommandAction,
   requestedPlatform: PlatformSelection,
   cwd: string,
   scope: Scope,
   plugins: PluginMeta[],
-  adapters: Record<PlatformName, PlatformAdapter>,
+  _adapters: Record<PlatformName, PlatformAdapter>,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PlatformName[]> {
   const detection = await detectEnvironment(cwd, env);
@@ -1451,11 +1456,6 @@ export async function resolveTargetPlatforms(
     plugins,
   });
   const shouldEnforceProducts = action === 'install' || action === 'upgrade';
-  const compatibleExecutablePlatforms = shouldEnforceProducts
-    ? executablePlatforms.filter((platform) =>
-        plugins.every((plugin) => pluginSupportsPlatform(plugin, platform)),
-      )
-    : executablePlatforms;
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
     if (!executablePlatforms.includes(requestedPlatform)) {
@@ -1480,59 +1480,66 @@ export async function resolveTargetPlatforms(
     return ['codex', 'claude'];
   }
 
+  const exhaustive: never = requestedPlatform;
+  throw new Error(`Unsupported platform "${exhaustive}". Expected one of: codex, claude, both.`);
+}
+
+export async function resolveCurrentCatalogWriteTargetPairs(
+  action: 'install' | 'upgrade',
+  requestedPlatform: PlatformSelection,
+  cwd: string,
+  scope: Scope,
+  targets: Pick<ResolvedPluginTarget, 'pluginName' | 'plugin' | 'currentPlugin'>[],
+  _adapters: Record<PlatformName, PlatformAdapter>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RequestedPlatformTargetPair[]> {
+  const plugins = targets.map((target) => target.currentPlugin ?? target.plugin);
+  const detection = await detectEnvironment(cwd, env);
+  const executablePlatforms = listExecutablePlatformsForTargets({
+    nativeAvailablePlatforms: listDetectedPlatforms(detection),
+    action,
+    scope,
+    plugins,
+  });
+
+  if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
+    if (!executablePlatforms.includes(requestedPlatform)) {
+      if (requestedPlatform === 'codex') {
+        throw createCodexNativeRunnerRequiredError(action, scope, plugins);
+      }
+      throw new Error(`${requestedPlatform} 当前环境不可用。`);
+    }
+    assertPluginsSupportPlatforms(plugins, [requestedPlatform]);
+    return targets.map((target) => ({
+      pluginName: target.pluginName,
+      platform: requestedPlatform,
+    }));
+  }
+
   if (executablePlatforms.length === 0) {
     throw new Error(
       '当前环境没有检测到可执行平台；Codex project repo-managed target 不需要本机 Codex，Codex user/native-only target 仍需要对应 native runner。',
     );
   }
 
-  if (compatibleExecutablePlatforms.length === 0) {
-    assertPluginsSupportPlatforms(plugins, executablePlatforms);
-    throw new Error('当前环境没有和插件 marketplace.policy.products 匹配的可用平台。');
-  }
-
-  if (compatibleExecutablePlatforms.length === 1) {
-    if (action === 'upgrade' && compatibleExecutablePlatforms.length !== executablePlatforms.length) {
-      const excludedPlatforms = executablePlatforms.filter(
-        (platform) => !compatibleExecutablePlatforms.includes(platform),
-      );
-      const blockingReasons = await collectManagedTargetsOnExcludedPlatforms(
-        adapters,
-        plugins,
-        scope,
-        excludedPlatforms,
-      );
-
-      if (blockingReasons.length > 0) {
-        throw new Error(
-          '`--platform auto` 经过 marketplace.policy.products 过滤后只剩一个可执行平台，但以下插件仍在被排除的平台上保留受管安装：\n' +
-          blockingReasons.map((reason) => `- ${reason}`).join('\n') +
-          '\n请显式传入 `--platform codex|claude|both`，或先卸载不再受支持的平台安装。',
-        );
-      }
+  const pairs: RequestedPlatformTargetPair[] = [];
+  for (const target of targets) {
+    const plugin = target.currentPlugin ?? target.plugin;
+    const compatiblePlatforms = executablePlatforms.filter((platform) =>
+      pluginSupportsPlatform(plugin, platform),
+    );
+    if (compatiblePlatforms.length === 0) {
+      assertPluginsSupportPlatforms([plugin], executablePlatforms);
     }
-
-    return compatibleExecutablePlatforms;
+    for (const platform of compatiblePlatforms) {
+      pairs.push({
+        pluginName: target.pluginName,
+        platform,
+      });
+    }
   }
 
-  if (action === 'status') {
-    return compatibleExecutablePlatforms;
-  }
-
-  const autoState = await getAutoPlatformState(adapters, plugins, scope);
-  const inferred = resolveEvidenceFirstAutoPlatform({
-    evidenceStateByPlatform: autoState,
-    candidatePlatforms: compatibleExecutablePlatforms,
-    unknownMessage: '当前 scope 存在多个可执行平台候选，但至少一侧 `scopeInitialized = unknown`，`--platform auto` 无法安全推断，请显式传入 `--platform codex|claude|both`。',
-    ambiguousMessage: '当前 scope 存在多个可执行平台候选，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
-  });
-  if (inferred) {
-    return [inferred];
-  }
-
-  throw new Error(
-    '当前 scope 存在多个可执行平台候选，且无法从当前 scope 的初始化状态唯一推断目标平台，请显式传入 `--platform codex|claude|both`。',
-  );
+  return pairs;
 }
 
 export function formatDetectedPlatforms(detection: EnvironmentDetection): string[] {

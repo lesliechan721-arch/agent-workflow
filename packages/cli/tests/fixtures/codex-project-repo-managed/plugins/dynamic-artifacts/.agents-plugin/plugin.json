@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "description": "Fixture plugin with Codex dynamic artifact metadata.",
   "skills": "./skills",
+  "skillTriggers": {
+    "repo-check": {
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
+    }
+  },
   "scripts": {
     "artifacts": {
       "render": {

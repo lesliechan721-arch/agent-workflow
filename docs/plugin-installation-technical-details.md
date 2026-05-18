@@ -51,7 +51,7 @@
 | `~/.aw` / AW_HOME | 本机 AW runtime 目录和 local marketplace 镜像 | 给 native runtime 提供可注册的 marketplace，也保存跨 scope 的 AW 状态 |
 | install record | 某个 plugin + platform + scope + location 在本机的安装真值 | 后续判断“这里是否安装过”“卸载时应该清什么”主要看它 |
 | project artifact identity | project scope 下可提交的共享身份线索 | fresh clone 后，本机没有 install record，也能识别仓库里已有 AW 产物并提示认领 |
-| diagnostic cache | 诊断缓存，特别是动态 artifact 最近一次生成和刷新结果 | `status` / `diagnose` 可以只读展示健康状态，不必每次重新执行 renderer |
+| diagnostic cache | 诊断缓存，特别是动态 artifact 最近一次生成和刷新结果 | `aw status` / `aw status --verbose` 可以只读展示健康状态，不必每次重新执行 renderer |
 | dependency index | 从 install records 重建的反向依赖索引 | 卸载时防止删掉仍被其它插件依赖的自动依赖 |
 | lifecycle runtime | 安装时保存的最小历史运行面 | 卸载、repair 或 reinstall 需要撤销旧副作用时使用 |
 | native transaction marker | 平台 native 写入已经发生，但 AW record 还没提交成功时留下的短生命周期标记 | 安装中断后，`repair` 或 `cleanup` 可以据此收口 |
@@ -468,16 +468,15 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 
 换句话说，ignore 规则也是安装安全边界的一部分。AW 不能把“应该提交的共享身份线索”写进一个被 Git 忽略的位置，否则 fresh clone 后其它机器就失去认领依据。
 
-## Repair、Cleanup 与 Reinstall
+## Status、Repair、Cleanup 与 Reinstall
 
-`aw diagnose` 只读收集证据；默认不执行 renderer、不运行 lifecycle、不修复文件。`aw diagnose --deep` 可以执行 renderer，用于确认动态 artifact 是否仍可生成。
+`aw status --verbose` 是统一只读排查入口；默认不执行 renderer、不运行 lifecycle、不修复文件。原先需要深度诊断才能看到的信息迁移到 `status --verbose`，不再提供额外的 `--deep` 用户选项。
 
 这组命令的差异可以按“是否写状态”和“是否认为当前安装还可信”来理解：
 
 | 命令 | 用途 | 安全边界 |
 |---|---|---|
-| `aw diagnose` | 只读收集状态证据 | 默认不执行 renderer、不运行 lifecycle、不修复文件 |
-| `aw diagnose --deep` | 确认动态 artifact 是否还能生成 | 可以执行 renderer，但仍不写修复结果 |
+| `aw status --verbose` | 只读收集状态证据和详细排查信息 | 不执行 renderer、不运行 lifecycle、不修复文件 |
 | `aw repair` | 在 current catalog 与 record source 能证明同一 bundle 时，重新应用 AW-owned artifacts | source 漂移时不能隐式升级 |
 | `aw repair --dependency-index` | 从可验证 records 重建 dependency index | 只修索引，不修插件安装 |
 | `aw repair --adopt-existing` | 认领 fresh clone 中已有的 project shared artifacts | 按当前机器 `PluginLocation` 创建本机 record |
@@ -486,17 +485,17 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 
 `aw repair` 只在 current catalog 与 record source 能证明同一 bundle 时重新应用 AW-owned artifacts；source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
 
-`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。它是用户显式确认的收口入口：只要 AW 能定位到要删的残留，并且没有已知 dependents，就会继续执行；dependency index 缺失、损坏或覆盖范围不可信时，会保留诊断和 warning，但不会再把用户逼回重装或手动改文件。dependency index stale reference 仍必须通过诊断给出的 token 显式退休：
+`aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。它是用户显式确认的收口入口：只要 AW 能定位到要删的残留，并且没有已知 dependents，就会继续执行；dependency index 缺失、损坏或覆盖范围不可信时，会保留诊断和 warning，但不会再把用户逼回重装或手动改文件。dependency index stale reference 仍必须通过 `aw status --verbose`、receipt 或结构化 `nextSteps` 给出的 token 显式退休：
 
 ```bash
 aw cleanup --dependency-index --prune-stale <token> --yes
 ```
 
-`aw reinstall` 等价于先诊断，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。遇到 project “可认领”状态时默认停止，提示先认领。
+`aw reinstall` 等价于先读取状态，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。遇到 project “可认领”状态时默认停止，提示先认领。
 
 常见判断方式：
 
-- 只是想知道出了什么问题，先用 `aw diagnose`。
+- 只是想知道出了什么问题，先用 `aw status --verbose`。
 - record 还在，catalog source 也能对上，只是文件缺失或 drift，用 `aw repair`。
 - 仓库里有共享产物和 identity，但本机没有 record，用 `aw repair --adopt-existing`。
 - 只剩 marker、残留或损坏状态，并且 AW 能证明 ownership，用 `aw cleanup`。

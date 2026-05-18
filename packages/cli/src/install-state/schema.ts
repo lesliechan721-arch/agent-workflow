@@ -1225,9 +1225,11 @@ export function validateSharedSkillTriggerRuntimeOwner(
   if (owner.value.plugin !== value.pluginName || owner.value.platform !== value.platform) {
     return fail('invalidSharedOwner', 'Invalid shared runtime owner file: owner location must match pluginName and platform.');
   }
-  const preference = validateSkillTriggerPreference(value.preference, 'shared runtime owner file.preference');
-  if (!preference.ok) {
-    return preference;
+  if (value.preference !== undefined) {
+    const preference = validateSkillTriggerPreference(value.preference, 'shared runtime owner file.preference');
+    if (!preference.ok) {
+      return preference;
+    }
   }
   if (options.expectedPath) {
     const expectedFileName = getSharedRuntimeOwnerFileName(value.pluginName);

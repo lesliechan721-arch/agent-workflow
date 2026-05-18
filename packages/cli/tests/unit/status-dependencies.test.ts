@@ -348,7 +348,7 @@ describe('status P7', () => {
 
     expect(rendererRunner.run).not.toHaveBeenCalled();
     expect(result.output).toContain('当前安装仍可识别，但只读模式下无法确认动态内容是否还和上次接受的一致。');
-    expect(result.output).toContain('aw diagnose');
+    expect(result.output).toContain('aw status');
     expect(result.output).not.toContain('动态内容和上次接受的结果不一致');
     expect(result.output).not.toContain('共享配置已经变化');
     expect(result.output).not.toContain('最近一次动态刷新失败');
@@ -489,7 +489,7 @@ describe('status P7', () => {
 
     expect(human.output).toContain('状态：需要处理');
     expect(human.output).toContain('aw repair');
-    expect(human.output).toContain('aw cleanup');
+    expect(human.output).toContain('修复安装');
     expect(await fs.readFile(fixture.files.installRecordPath, 'utf8')).toBe(beforeRecord);
     expect(await fs.readFile(fixture.files.nativeMarkerPath, 'utf8')).toBe(beforeMarker);
 
@@ -535,8 +535,12 @@ describe('status P7', () => {
     });
     expect(payload.locations[0].nextSteps).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('aw repair'),
-        expect.stringContaining('aw cleanup'),
+        expect.objectContaining({
+          command: expect.stringContaining('aw repair'),
+        }),
+        expect.objectContaining({
+          command: expect.stringContaining('aw cleanup'),
+        }),
       ]),
     );
   });
@@ -613,7 +617,7 @@ describe('status P7', () => {
         }],
       } as never,
     );
-    expect(verboseResult.output).toContain('详细信息');
+    expect(verboseResult.output).toContain('状态详情');
     expect(verboseResult.output).toContain('aw cleanup --dependency-index --prune-stale');
   });
 
@@ -667,6 +671,7 @@ describe('status P7', () => {
         })),
       } as never,
     )).output) as {
+      consoleItemsSchemaVersion: number;
       locations: Array<{
         plugin: string;
         dependents: Array<{ plugin: string }>;
@@ -685,6 +690,7 @@ describe('status P7', () => {
     const locations = new Map(payload.locations.map((location) => [location.plugin, location]));
     const consoleItems = new Map(payload.consoleItems.map((item) => [item.pluginName, item]));
 
+    expect(payload.consoleItemsSchemaVersion).toBe(3);
     expect(locations.get('unused-dependency')).toMatchObject({
       dependents: [],
       autoInstalled: true,
@@ -708,8 +714,10 @@ describe('status P7', () => {
     );
     expect(consoleItems.get('unused-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
     expect(consoleItems.get('unused-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('unused-dependency')?.features.find((feature) => feature.kind === 'cleanup')).toBeUndefined();
     expect(consoleItems.get('retained-dependency')?.installedLocations[0]?.reasonCodes).toEqual([]);
     expect(consoleItems.get('retained-dependency')?.features.find((feature) => feature.kind === 'uninstall')?.label).toBe('卸载');
+    expect(consoleItems.get('retained-dependency')?.features.find((feature) => feature.kind === 'cleanup')).toBeUndefined();
     expect(consoleItems.get('retained-dependency')?.detailHints).toEqual(
       expect.arrayContaining(['这个位置最初由依赖自动安装，但当前仍被显式保留或还有可信引用。']),
     );
@@ -853,8 +861,8 @@ describe('status P7', () => {
         }],
       } as never,
     );
-    expect(verboseResult.output).toContain('"coverageTrusted": false');
-    expect(verboseResult.output).toContain('"recoverySuggestion": "revisitRelatedProjects"');
-    expect(verboseResult.output).toContain('"unusedDependencyHint": false');
+    expect(verboseResult.output).toContain('依赖索引当前不可信');
+    expect(verboseResult.output).toContain('请回到可能相关的仓库重新运行 status --verbose 或 repair');
+    expect(verboseResult.output).not.toContain('"unusedDependencyHint": false');
   });
 });

@@ -12,6 +12,7 @@ import type {
 } from '../types.js';
 import {
   validatePluginDependencyReferences,
+  assertStrictSemVer,
   validatePluginManifest,
 } from './manifest.js';
 import { readJsonFile } from './json.js';
@@ -205,6 +206,7 @@ async function validateClaudeManifest(
       throw new Error(`Invalid claude manifest: unknown field "${key}".`);
     }
   }
+  assertStrictSemVer(manifest.version, 'claude manifest.version');
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
@@ -281,6 +283,7 @@ async function validateCodexManifest(
       throw new Error(`Invalid codex manifest: unknown field "${key}".`);
     }
   }
+  assertStrictSemVer(manifest.version, 'codex manifest.version');
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');

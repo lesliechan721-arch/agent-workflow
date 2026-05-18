@@ -156,6 +156,26 @@ describe('command runtime', () => {
     expect(output.join('')).not.toContain('hunter2');
   });
 
+  it('renders the all-platform install choice in Chinese', async () => {
+    const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
+    const input = Readable.from(['3\n']);
+    const output: string[] = [];
+    const prompt = createReadlinePrompt({
+      input,
+      outputSink: {
+        isTTY: true,
+        write: (text) => output.push(text),
+      },
+    });
+
+    await expect(prompt.selectPlatform!({
+      available: ['codex', 'claude', 'both'],
+      defaultValue: 'both',
+    })).resolves.toBe('both');
+
+    expect(output.join('')).toContain('全部支持平台');
+  });
+
   it('allows the readline config prompt to edit an existing optional key', async () => {
     const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
     const input = new PassThrough() as PassThrough & { isTTY?: boolean };
@@ -261,6 +281,11 @@ describe('command runtime', () => {
       action: 'select',
       cancelled: false,
       value: 'q',
+    });
+    await expect(createPrompt('b\n').password!({ message: 'Secret' })).resolves.toMatchObject({
+      action: 'select',
+      cancelled: false,
+      value: 'b',
     });
     await expect(createPrompt('\u001B\n').input!({ message: 'Value' })).resolves.toMatchObject({
       action: 'cancel',

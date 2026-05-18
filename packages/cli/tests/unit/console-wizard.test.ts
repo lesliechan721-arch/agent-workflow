@@ -19,6 +19,7 @@ import {
   resolveCodexPaths,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import * as skillTriggerModule from '../../src/utils/skill-trigger-preferences.js';
 import {
   upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
@@ -272,7 +273,7 @@ describe('console write decision model', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
-  it('shows skill trigger choices only when the target is overridable and keeps the labels fixed', async () => {
+  it('keeps skill trigger metadata hidden in the wizard even for overridable targets', async () => {
     const plugin = syntheticPlugin();
     const decision = await createInstallWizardDecision({
       intent: 'install',
@@ -297,7 +298,7 @@ describe('console write decision model', () => {
       resolveRequiredConfigPrompts: async () => [],
     });
 
-    expect(decision.skillTrigger.show).toBe(true);
+    expect(decision.skillTrigger.show).toBe(false);
     expect(decision.skillTrigger.selected).toBe('manual');
     expect(decision.skillTrigger.options).toEqual([
       { value: 'default', label: '默认' },
@@ -346,6 +347,58 @@ describe('console write decision model', () => {
     expect(prompts[0].pluginName).toBe('git-commit');
     expect(prompts[0].form.allowedScopes).toEqual(['project']);
     expect(prompts[0].form.requiredKeys).toEqual(['token']);
+  });
+
+  it('splits same-store required config prompts when form identity differs across platforms', async () => {
+    const plugin = syntheticPlugin({
+      config: {
+        schema: {
+          token: {
+            type: 'string',
+            required: true,
+          },
+        },
+      },
+    });
+    vi.spyOn(skillTriggerModule, 'resolveSkillTriggerConfigEntries').mockResolvedValue([
+      {
+        skillName: 'commit',
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+        source: 'declared',
+        platforms: ['codex', 'claude'],
+      },
+      {
+        skillName: 'review',
+        defaultTrigger: 'manual',
+        allowDynamicTrigger: true,
+        source: 'declared',
+        platforms: ['codex'],
+      },
+    ] as never);
+
+    const prompts = await resolveConsoleRequiredConfigPrompts({
+      scopedTargets: [
+        {
+          target: target(plugin),
+          platform: 'codex',
+          scope: 'user',
+          requested: true,
+        },
+        {
+          target: target(plugin),
+          platform: 'claude',
+          scope: 'user',
+          requested: true,
+        },
+      ],
+      cwd: '/workspace',
+      defaultScope: 'user',
+      env: {} as NodeJS.ProcessEnv,
+    });
+
+    expect(prompts).toHaveLength(2);
+    expect(new Set(prompts.map((prompt) => prompt.formIdentity)).size).toBe(2);
   });
 
   it('prompts mixed-target required config once before running the command with re-resolved config', async () => {

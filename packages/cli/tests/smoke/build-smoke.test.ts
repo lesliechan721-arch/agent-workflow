@@ -52,7 +52,8 @@ describe('build smoke', () => {
     ).resolves.toMatchObject({
       skillTriggers: {
         commit: {
-          allowInstallOverride: true,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
         },
       },
     });
@@ -84,7 +85,6 @@ describe('build smoke', () => {
       fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       name: 'codex-explore',
-      skills: './codex/skills',
     });
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
@@ -117,8 +117,8 @@ describe('build smoke', () => {
     });
     await Promise.all([
       path.join(outputRoot, 'plugins', 'codex-explore', 'scripts', 'render-artifacts.mjs'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'SKILL.md'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'templates', 'codex-explore', 'SKILL.md'),
+      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'templates', 'codex-explore', 'agents', 'openai.yaml'),
     ].map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
     }));
@@ -178,7 +178,7 @@ describe('build smoke', () => {
         },
       ),
     ).rejects.toMatchObject({
-      stderr: expect.stringContaining('Unsupported skill trigger preference "sometimes"'),
+      stderr: expect.stringContaining('不再接受 `--skill-trigger` / `-t`'),
     });
 
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dist-entry-'));

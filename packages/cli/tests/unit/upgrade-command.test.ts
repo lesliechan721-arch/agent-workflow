@@ -49,6 +49,7 @@ async function makeWorkspace(): Promise<{
       AW_CODEX_HOME: path.join(root, 'codex-home'),
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_FORCE_CODEX_AVAILABLE: '1',
+      AW_FORCE_CLAUDE_AVAILABLE: '1',
     },
   };
 }
@@ -523,7 +524,11 @@ describe('upgrade command dependency graph', () => {
       }],
     });
     expect(receipt).toMatchObject({
+      receiptSchemaVersion: 2,
+      overallState: 'succeeded',
       command: 'upgrade',
+      nextStepsSchemaVersion: 1,
+      nextSteps: [expect.objectContaining({ description: expect.any(String) })],
       targets: expect.arrayContaining([
         expect.objectContaining({
           plugin: parent.manifest.name,
@@ -546,6 +551,35 @@ describe('upgrade command dependency graph', () => {
             platform: 'codex',
             scope: 'user',
           }],
+        }),
+      ]),
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: parent.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }),
+          action: 'upgrade',
+          state: 'completed',
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: existingChild.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }),
+          action: 'upgradeDependency',
+          state: 'completed',
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginName: missingChild.manifest.name,
+            platform: 'codex',
+            scope: 'user',
+          }),
+          action: 'installDependency',
+          state: 'completed',
         }),
       ]),
       actions: expect.arrayContaining([
@@ -865,6 +899,86 @@ describe('upgrade command dependency graph', () => {
       cwd: builder.paths.repoRoot,
       env,
     }))).resolves.toBe(false);
+  });
+
+  it('expands explicit --platform both by each plugin current manifest support', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const codexOnly = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'upgrade-codex-only',
+      products: ['codex'],
+    }));
+    const claudeOnly = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'upgrade-claude-only',
+      products: ['claude'],
+    }));
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [codexOnly.manifest.name]: {
+          lastResolvedVersion: codexOnly.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: codexOnly.manifest.version,
+              }),
+            },
+          },
+        },
+        [claudeOnly.manifest.name]: {
+          lastResolvedVersion: claudeOnly.manifest.version,
+          platforms: {
+            claude: {
+              userScope: createManagedCodexUserRecord({
+                version: claudeOnly.manifest.version,
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const codexTarget = createResolvedTarget(codexOnly);
+    const claudeTarget = createResolvedTarget(claudeOnly);
+    mockCatalogTargets({
+      explicitTargets: [codexTarget, claudeTarget],
+      allTargets: [codexTarget, claudeTarget],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [codexOnly.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+    const claude = new UpgradeTestAdapter('claude', repoRoot, env, {
+      [claudeOnly.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    const result = await upgradeCommand(
+      [codexOnly.manifest.name, claudeOnly.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'both',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude,
+        },
+      },
+    );
+
+    expect(result.platforms).toEqual(['codex', 'claude']);
+    expect(codex.installOrder).toEqual([codexOnly.manifest.name]);
+    expect(claude.installOrder).toEqual([claudeOnly.manifest.name]);
   });
 
   it('rejects upgrade --all takeover before any write', async () => {

@@ -346,7 +346,10 @@ async function addCodexSkill(
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
   manifest.skillTriggers ??= {};
-  manifest.skillTriggers[skillName] = { allowInstallOverride: true };
+  manifest.skillTriggers[skillName] = {
+    defaultTrigger: 'auto',
+    allowDynamicTrigger: true,
+  };
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
@@ -616,18 +619,21 @@ function findStatusCell<T extends { matrix: { cells: Array<{ pluginName: string;
   return cell!;
 }
 
-function parseVerboseStatusPayload(output: string): {
+function parseVerboseStatusPayload(result: {
+  output: string;
+  reports: StatusReport[];
+  friendlySummaries: Array<{ pluginName: string; status: string; location: string }>;
+  consoleItems: Array<{ pluginName: string }>;
+}): {
   reports: StatusReport[];
   friendlySummaries: Array<{ pluginName: string; status: string; location: string }>;
   consoleItems: Array<{ pluginName: string }>;
 } {
-  const marker = '\n\n详细信息\n';
-  const index = output.indexOf(marker);
-  expect(index).toBeGreaterThanOrEqual(0);
-  return JSON.parse(output.slice(index + marker.length)) as {
-    reports: StatusReport[];
-    friendlySummaries: Array<{ pluginName: string; status: string; location: string }>;
-    consoleItems: Array<{ pluginName: string }>;
+  expect(result.output).toContain('状态详情');
+  return {
+    reports: result.reports,
+    friendlySummaries: result.friendlySummaries,
+    consoleItems: result.consoleItems,
   };
 }
 
@@ -659,7 +665,7 @@ afterEach(async () => {
 });
 
 describe('skill trigger command integration', () => {
-  it('blocks degraded repeated install without --skill-trigger before native writes', async () => {
+  it('blocks degraded repeated install when skill trigger preferences can only be recovered from config management', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -806,7 +812,7 @@ describe('skill trigger command integration', () => {
     expect(upgradeAdapter.installCalls).toEqual(['git-commit']);
   });
 
-  it('blocks degraded explicit upgrade without --skill-trigger before reinstalling', async () => {
+  it('blocks degraded explicit upgrade when skill trigger preferences can only be recovered from config management', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -947,7 +953,7 @@ describe('skill trigger command integration', () => {
     expect(lifecycleEvents).not.toContain('uninstall');
   });
 
-  it('rejects upgrade --all --skill-trigger and degraded upgrade --all', async () => {
+  it('rejects deprecated upgrade overrides and degraded upgrade --all', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
@@ -975,7 +981,7 @@ describe('skill trigger command integration', () => {
           env: process.env,
         },
       ),
-    ).rejects.toThrow('`upgrade --all` 首版不支持 `--skill-trigger`');
+    ).rejects.toThrow('`upgrade` 不再接受 `--skill-trigger` / `-t`');
 
     await writeInstalledLedger(createDegradedLedger(), process.env);
     await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
@@ -1003,10 +1009,7 @@ describe('skill trigger command integration', () => {
     }
     expect(upgradeAllError).toBeInstanceOf(Error);
     expect((upgradeAllError as Error).message).toContain(
-      '`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行',
-    );
-    expect((upgradeAllError as { warnings?: string[] }).warnings?.join('\n')).toContain(
-      '跳过 skill trigger 偏好 replay',
+      'config.json 无法读取或 schema 不受支持',
     );
   });
 
@@ -1100,7 +1103,8 @@ describe('skill trigger command integration', () => {
     await updateEmbeddedManifest(nonOverridable.embeddedRoot, 'git-commit', (manifest) => {
       manifest.skillTriggers = {
         commit: {
-          allowInstallOverride: false,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
         },
       };
     });
@@ -1130,7 +1134,8 @@ describe('skill trigger command integration', () => {
     await updateEmbeddedManifest(tampered.awHome, 'git-commit', (manifest) => {
       manifest.skillTriggers = {
         commit: {
-          allowInstallOverride: false,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
         },
       };
     });
@@ -1660,7 +1665,7 @@ describe('skill trigger command integration', () => {
     expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('available');
   });
 
-  it('refuses tracking-only Codex project repeated installs without --skill-trigger, and explicit overrides do not touch ~/.aw', async () => {
+  it('refuses tracking-only Codex project repeated installs when skill trigger preferences can only be recovered from config management, and explicit overrides do not touch ~/.aw', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -2211,7 +2216,7 @@ describe('skill trigger command integration', () => {
       platform: 'codex',
       scope: 'user',
     })).toBe('manual');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2267,7 +2272,7 @@ describe('skill trigger command integration', () => {
       platform: 'codex',
       scope: 'user',
     })).toBe('default');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2331,7 +2336,7 @@ describe('skill trigger command integration', () => {
         platform: 'codex',
         scope: 'user',
       })).toBe('default');
-      const payload = parseVerboseStatusPayload(result.output);
+      const payload = parseVerboseStatusPayload(result);
       expect(payload.friendlySummaries[0]).toMatchObject({
         pluginName: 'git-commit',
       });
@@ -2379,7 +2384,7 @@ describe('skill trigger command integration', () => {
       platform: 'claude',
       scope: 'user',
     })).toBe('default');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2423,7 +2428,7 @@ describe('skill trigger command integration', () => {
       platform: 'codex',
       scope: 'user',
     })).toBe('manual');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2468,7 +2473,7 @@ describe('skill trigger command integration', () => {
       platform: 'codex',
       scope: 'user',
     })).toBe('default');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2514,7 +2519,7 @@ describe('skill trigger command integration', () => {
       platform: 'codex',
       scope: 'user',
     })).toBe('auto');
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
@@ -2560,16 +2565,17 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(findReportedPlugin(payload, {
       pluginName: 'git-commit',
       platform: 'codex',
       scope: 'user',
     })).toMatchObject({
       currentCatalog: expect.objectContaining({
-        source: 'local',
+        source: 'embedded',
         available: true,
-        rootDir: path.join(workspace.embeddedRoot, 'plugins', 'git-commit'),
+        rootDir: workspace.embeddedRoot,
+        reasonCode: 'localCatalogSourceVersionBehind',
       }),
     });
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
@@ -2605,16 +2611,17 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(findReportedPlugin(payload, {
       pluginName: 'git-commit',
       platform: 'codex',
       scope: 'user',
     })).toMatchObject({
       currentCatalog: expect.objectContaining({
-        source: 'local',
+        source: 'embedded',
         available: true,
-        rootDir: path.join(workspace.embeddedRoot, 'plugins', 'git-commit'),
+        rootDir: workspace.embeddedRoot,
+        reasonCode: 'localCatalogLayoutInvalid',
       }),
     });
     await expect(fs.pathExists(path.join(workspace.awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
@@ -2658,7 +2665,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(findReportedPlugin(payload, {
       pluginName: 'git-commit',
       platform: 'codex',
@@ -2699,7 +2706,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(parseVerboseStatusPayload(missingResult.output).friendlySummaries[0]).toMatchObject({
+    expect(parseVerboseStatusPayload(missingResult).friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
 
@@ -2717,7 +2724,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(parseVerboseStatusPayload(malformedResult.output).friendlySummaries[0]).toMatchObject({
+    expect(parseVerboseStatusPayload(malformedResult).friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
   });
@@ -2773,7 +2780,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    expect(parseVerboseStatusPayload(result.output).friendlySummaries[0]).toMatchObject({
+    expect(parseVerboseStatusPayload(result).friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });
   });
@@ -2815,7 +2822,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(findReportedPlugin(payload, {
       pluginName: 'legacy-plugin',
       platform: 'codex',
@@ -2851,7 +2858,8 @@ describe('skill trigger command integration', () => {
     await updateEmbeddedManifest(workspace.awHome, 'git-commit', (manifest) => {
       manifest.skillTriggers = {
         commit: {
-          allowInstallOverride: false,
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: false,
         },
       };
     });
@@ -2867,7 +2875,7 @@ describe('skill trigger command integration', () => {
       { env: process.env },
     );
 
-    const payload = parseVerboseStatusPayload(result.output);
+    const payload = parseVerboseStatusPayload(result);
     expect(payload.friendlySummaries[0]).toMatchObject({
       pluginName: 'git-commit',
     });

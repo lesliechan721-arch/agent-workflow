@@ -1,7 +1,12 @@
 import type {
   CatalogResolution,
+  ConfigStoreRemovalResult,
   GeneratedArtifact,
   NativePluginsByPlatform,
+  NextStepInstruction,
+  ReceiptOverallState,
+  ReceiptTargetIdentity,
+  ReceiptTargetResult,
   Scope,
   SkippedUpgradeTarget,
 } from '../types.js';
@@ -12,6 +17,14 @@ import type {
   CleanupTargetPayload,
 } from '../commands/cleanup.js';
 import { isCleanupExecutionFailure } from '../commands/cleanup.js';
+import {
+  createCliCommandNextStep,
+  createLegacyNextStepText,
+  createNextStepsBoundary,
+  createUiActionNextStep,
+  dedupeNextSteps,
+  formatNextStepForHuman,
+} from './model.js';
 
 export interface CliMarketplaceReceipt {
   rootDir: string;
@@ -27,6 +40,9 @@ export interface CliCommandResult {
   skipped?: SkippedUpgradeTarget[];
   receiptTargets?: ReceiptTarget[];
   receiptActions?: CliCommandReceiptAction[];
+  nextSteps?: NextStepInstruction[];
+  targetResults?: ReceiptTargetResult[];
+  overallState?: ReceiptOverallState;
   nativePlugins?: NativePluginsByPlatform;
   repoManagedArtifacts?: GeneratedArtifact[];
   marketplace?: CliMarketplaceReceipt;
@@ -53,7 +69,7 @@ export interface CliInitReceipt {
 export type CliReceiptCommand = 'install' | 'uninstall' | 'upgrade';
 
 export interface CliCommandReceiptAction {
-  type: 'installDependency' | 'upgradeDependency';
+  type: 'installDependency' | 'upgradeDependency' | 'uninstallAutoDependency';
   plugin: string;
   platform: string;
   scope: Scope;
@@ -130,6 +146,7 @@ export interface CliCommandReceiptDetails {
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
   removedConfigStores?: ReceiptFileEntry[];
   configRemovalActions?: ReceiptConfigRemovalAction[];
+  configStoreRemovals?: ConfigStoreRemovalResult[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -162,6 +179,7 @@ interface ReceiptNativeSummary {
     mode: 'readOnly' | 'runtimeWritable';
     changed: boolean;
     reason?: string;
+    reasonCode?: CatalogResolution['reasonCode'];
   };
 }
 
@@ -169,7 +187,9 @@ interface ReceiptJsonBase {
   ok: true;
   command: 'init' | CliReceiptCommand;
   warnings: string[];
-  nextSteps: string[];
+  nextStepsSchemaVersion: 1;
+  nextSteps: NextStepInstruction[];
+  legacyNextSteps?: string[];
   privateStateFiles?: ReceiptFileEntry[];
   ignoredStateFiles?: ReceiptFileEntry[];
   sharedConfigFiles?: ReceiptFileEntry[];
@@ -177,6 +197,7 @@ interface ReceiptJsonBase {
   projectArtifactIdentityFiles?: ReceiptProjectArtifactIdentityEntry[];
   removedConfigStores?: ReceiptFileEntry[];
   configRemovalActions?: ReceiptConfigRemovalAction[];
+  configStoreRemovals?: ConfigStoreRemovalResult[];
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
@@ -192,28 +213,37 @@ export interface InitReceiptJson extends ReceiptJsonBase {
 
 export interface InstallReceiptJson extends ReceiptJsonBase {
   command: 'install';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   plugins: string[];
   targets: ReceiptTarget[];
   actions: ReceiptAction[];
+  targetResults: ReceiptTargetResult[];
   artifacts: ReceiptArtifact[];
   native: ReceiptNativeSummary;
 }
 
 export interface UninstallReceiptJson extends ReceiptJsonBase {
   command: 'uninstall';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   plugins: string[];
   targets: ReceiptTarget[];
   actions: ReceiptAction[];
+  targetResults: ReceiptTargetResult[];
   artifacts: ReceiptArtifact[];
   native: ReceiptNativeSummary;
 }
 
 export interface UpgradeReceiptJson extends ReceiptJsonBase {
   command: 'upgrade';
+  receiptSchemaVersion: 2;
+  overallState: ReceiptOverallState;
   upgraded: ReceiptTarget[];
   skipped: SkippedUpgradeTarget[];
   targets: ReceiptTarget[];
   actions: ReceiptAction[];
+  targetResults: ReceiptTargetResult[];
   artifacts: ReceiptArtifact[];
   native: ReceiptNativeSummary;
 }
@@ -285,6 +315,9 @@ function sanitizeHumanText(text: string): string {
 function dedupeTargets(targets: ReceiptTarget[]): ReceiptTarget[] {
   const entries = new Map<string, ReceiptTarget>();
   for (const target of targets) {
+    if (target.platform === 'both' || target.platform === 'auto') {
+      continue;
+    }
     const key = `${target.plugin}\0${target.platform}\0${target.scope}\0${target.projectKey ?? ''}`;
     const existing = entries.get(key);
     if (!existing) {
@@ -326,7 +359,161 @@ function collectSucceededTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
   return dedupeTargets(targets);
 }
 
-type ReceiptJsonDetails = Omit<ReceiptJsonBase, 'ok' | 'command' | 'warnings' | 'nextSteps'>;
+function collectActionTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
+  return dedupeTargets((receipt.result.receiptActions ?? []).map((action) => ({
+    plugin: action.plugin,
+    platform: action.platform,
+    scope: action.scope,
+    ...(action.dependencyOf ? { dependencyOf: action.dependencyOf } : {}),
+    ...(action.requested !== undefined ? { requested: action.requested } : {}),
+  })));
+}
+
+function toReceiptTargetIdentity(target: ReceiptTarget): ReceiptTargetIdentity {
+  return {
+    pluginName: target.plugin,
+    platform: target.platform as ReceiptTargetIdentity['platform'],
+    scope: target.scope,
+    ...(target.projectKey ? { projectKey: target.projectKey } : {}),
+  };
+}
+
+function inferOverallState(targetResults: ReceiptTargetResult[]): ReceiptOverallState {
+  if (targetResults.some((entry) => entry.state === 'failed' || entry.state === 'rolledBack')) {
+    return 'failed';
+  }
+  if (targetResults.some((entry) => entry.state === 'completed')) {
+    return 'succeeded';
+  }
+  return targetResults.length > 0 ? 'failed' : 'succeeded';
+}
+
+function buildTargetResults(
+  command: CliReceiptCommand,
+  receipt: CliCommandReceipt,
+): ReceiptTargetResult[] {
+  if (receipt.result.targetResults && receipt.result.targetResults.length > 0) {
+    return receipt.result.targetResults;
+  }
+
+  const explicitTargets = collectSucceededTargets(receipt);
+  const actionTargets = collectActionTargets(receipt);
+  const requestedTargets = dedupeTargets([...explicitTargets, ...actionTargets]);
+  const skippedTargets = command === 'upgrade'
+    ? receipt.result.skipped ?? []
+    : [];
+  const completedByKey = new Map<string, ReceiptTargetResult>();
+
+  for (const target of requestedTargets) {
+    const action = (receipt.result.receiptActions ?? []).find((entry) =>
+      entry.plugin === target.plugin &&
+      entry.platform === target.platform &&
+      entry.scope === target.scope,
+    )?.type ?? command;
+    const identity = toReceiptTargetIdentity(target);
+    const key = `${identity.pluginName}\0${identity.platform}\0${identity.scope}\0${identity.projectKey ?? ''}\0${action}`;
+    if (!completedByKey.has(key)) {
+      completedByKey.set(key, {
+        target: identity,
+        action,
+        state: 'completed',
+        rollbackState: 'notNeeded',
+      });
+    }
+  }
+
+  for (const skipped of skippedTargets) {
+    const identity = toReceiptTargetIdentity({
+      plugin: skipped.plugin,
+      platform: skipped.platform,
+      scope: skipped.scope,
+      ...(skipped.requested !== undefined ? { requested: skipped.requested } : {}),
+      ...(skipped.dependencyOf ? { dependencyOf: skipped.dependencyOf } : {}),
+    });
+    const key = `${identity.pluginName}\0${identity.platform}\0${identity.scope}\0${identity.projectKey ?? ''}\0${command}`;
+    completedByKey.set(key, {
+      target: identity,
+      action: command,
+      state: 'notRun',
+      errorCode: skipped.code,
+      message: skipped.reason,
+    });
+  }
+
+  return [...completedByKey.values()];
+}
+
+function configStoreIdentity(scope: Scope, pluginName: string, projectKey?: string) {
+  return {
+    pluginName,
+    storeKind: scope === 'project' ? 'projectShared' as const : 'user' as const,
+    ...(scope === 'project' && projectKey ? { projectRoot: projectKey } : {}),
+  };
+}
+
+function configStoreSubjectTargets(
+  targetResults: ReceiptTargetResult[],
+  action: ReceiptConfigRemovalAction,
+): ReceiptTargetIdentity[] {
+  const matches = targetResults
+    .map((entry) => entry.target)
+    .filter((target) =>
+      target.pluginName === action.plugin &&
+      target.scope === action.scope &&
+      (action.projectKey === undefined || target.projectKey === action.projectKey),
+    );
+  return matches.length > 0
+    ? matches
+    : [{
+        pluginName: action.plugin,
+        scope: action.scope,
+        platform: 'codex',
+        ...(action.projectKey ? { projectKey: action.projectKey } : {}),
+      }];
+}
+
+function buildConfigStoreRemovals(
+  result: CliCommandResult,
+  targetResults: ReceiptTargetResult[],
+): ConfigStoreRemovalResult[] | undefined {
+  if (result.receiptDetails?.configStoreRemovals?.length) {
+    return result.receiptDetails.configStoreRemovals;
+  }
+
+  const actions = result.receiptDetails?.configRemovalActions ?? [];
+  if (actions.length === 0) {
+    return undefined;
+  }
+
+  return actions.map((action) => ({
+    store: configStoreIdentity(action.scope, action.plugin, action.projectKey),
+    state: action.status === 'removed'
+      ? 'removed'
+      : action.status === 'failed'
+        ? 'failed'
+        : action.reason === '当前 target scope 没有可删除的 AW 自管配置。'
+          ? 'notFound'
+          : 'skipped',
+    ...(action.status === 'failed'
+      ? {
+          reasonCode: 'removeFailed' as const,
+          message: action.reason,
+        }
+      : action.status === 'skipped' && action.reason && action.reason !== '当前 target scope 没有可删除的 AW 自管配置。'
+        ? {
+            reasonCode: 'subjectFailed' as const,
+            message: action.reason,
+          }
+        : {}),
+    subjectTargets: configStoreSubjectTargets(targetResults, action),
+    ...(action.path ? { path: action.path } : {}),
+  }));
+}
+
+type ReceiptJsonDetails = Omit<
+  ReceiptJsonBase,
+  'ok' | 'command' | 'warnings' | 'nextStepsSchemaVersion' | 'nextSteps' | 'legacyNextSteps' | 'configStoreRemovals'
+>;
 
 function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
   if (!result.receiptDetails) {
@@ -454,6 +641,9 @@ function collectNativeSummary(result: CliCommandResult): ReceiptNativeSummary {
             ...(result.marketplace.catalog.reason
               ? { reason: result.marketplace.catalog.reason }
               : {}),
+            ...(result.marketplace.catalog.reasonCode
+              ? { reasonCode: result.marketplace.catalog.reasonCode }
+              : {}),
           },
         }
       : {}),
@@ -472,18 +662,35 @@ function buildStatusCommand(result: CliCommandResult): string {
   return `aw status${firstPlugin ? ` ${firstPlugin}` : ''}${platformFlag}`;
 }
 
-function buildCommandNextSteps(result: CliCommandResult): string[] {
-  return [`运行 ${buildStatusCommand(result)} 查看当前状态。`];
+function buildCommandNextSteps(result: CliCommandResult): NextStepInstruction[] {
+  if (result.nextSteps && result.nextSteps.length > 0) {
+    return dedupeNextSteps(result.nextSteps);
+  }
+
+  return [createUiActionNextStep(
+    '查看当前状态',
+    '可以重新确认这次操作后各个目标的安装状态和后续可执行动作。',
+    'openStatus',
+    buildStatusCommand(result),
+  )];
 }
 
 export function buildInitReceiptJson(result: CliInitReceipt): InitReceiptJson {
+  const nextSteps = createNextStepsBoundary([
+    createUiActionNextStep(
+      '查看当前环境与插件状态',
+      '可以确认本地插件目录是否已准备好，以及当前环境识别到了哪些插件。',
+      'openStatus',
+      'aw status',
+    ),
+  ]);
   return {
     ok: true,
     command: 'init',
     rootDir: result.rootDir,
     changed: result.changed,
     warnings: [...new Set(result.warnings)],
-    nextSteps: ['运行 aw status 查看当前环境与插件状态。'],
+    ...nextSteps,
   };
 }
 
@@ -492,9 +699,11 @@ export function buildCommandReceiptJson(
   receipt: CliCommandReceipt,
 ): CommandReceiptJson {
   const warnings = [...new Set(receipt.result.warnings)];
-  const nextSteps = buildCommandNextSteps(receipt.result);
+  const nextSteps = createNextStepsBoundary(buildCommandNextSteps(receipt.result));
   const succeededTargets = collectSucceededTargets(receipt);
   const actions = collectReceiptActions(command, receipt);
+  const targetResults = buildTargetResults(command, receipt);
+  const overallState = receipt.result.overallState ?? inferOverallState(targetResults);
   const plugins = collectAffectedPlugins({
     command,
     receipt,
@@ -503,19 +712,24 @@ export function buildCommandReceiptJson(
   });
   const artifacts = collectArtifacts(receipt.result.repoManagedArtifacts);
   const native = collectNativeSummary(receipt.result);
+  const configStoreRemovals = buildConfigStoreRemovals(receipt.result, targetResults);
   const receiptDetails = buildReceiptDetails(receipt.result);
 
   if (command === 'install') {
     return {
       ok: true,
       command: 'install',
+      receiptSchemaVersion: 2,
+      overallState,
       plugins,
       targets: succeededTargets,
       actions,
+      targetResults,
       artifacts,
       native,
       warnings,
-      nextSteps,
+      ...nextSteps,
+      ...(configStoreRemovals?.length ? { configStoreRemovals } : {}),
       ...receiptDetails,
     };
   }
@@ -524,13 +738,17 @@ export function buildCommandReceiptJson(
     return {
       ok: true,
       command: 'uninstall',
+      receiptSchemaVersion: 2,
+      overallState,
       plugins,
       targets: succeededTargets,
       actions,
+      targetResults,
       artifacts,
       native,
       warnings,
-      nextSteps,
+      ...nextSteps,
+      ...(configStoreRemovals?.length ? { configStoreRemovals } : {}),
       ...receiptDetails,
     };
   }
@@ -553,14 +771,18 @@ export function buildCommandReceiptJson(
   return {
     ok: true,
     command: 'upgrade',
+    receiptSchemaVersion: 2,
+    overallState,
     upgraded,
     skipped,
     targets,
     actions,
+    targetResults,
     artifacts,
     native,
     warnings,
-    nextSteps,
+    ...nextSteps,
+    ...(configStoreRemovals?.length ? { configStoreRemovals } : {}),
     ...receiptDetails,
   };
 }
@@ -605,24 +827,26 @@ function formatTargetSummary(targets: ReceiptTarget[]): string {
 }
 
 function renderConfigRemovalSummary(
-  actions: ReceiptConfigRemovalAction[] | undefined,
+  removals: ConfigStoreRemovalResult[] | undefined,
 ): string | null {
-  if (!actions || actions.length === 0) {
+  if (!removals || removals.length === 0) {
     return null;
   }
-  const failed = actions.filter((action) => action.status === 'failed');
+  const failed = removals.filter((action) => action.state === 'failed');
   if (failed.length > 0) {
     return failed.length === 1
       ? '配置处理：主体已完成，但 AW 自管配置删除失败。'
       : `配置处理：主体已完成，但 ${failed.length} 个 AW 自管配置删除失败。`;
   }
-  const skipped = actions.filter((action) => action.status === 'skipped');
+  const skipped = removals.filter((action) => action.state === 'skipped');
   if (skipped.length > 0) {
-    return skipped.every((action) => action.reason === '当前 target scope 没有可删除的 AW 自管配置。')
-      ? '配置处理：没有可删除的 AW 自管配置。'
-      : '配置处理：已保留 AW 自管配置。';
+    return '配置处理：已保留 AW 自管配置。';
   }
-  const removed = actions.filter((action) => action.status === 'removed');
+  const notFound = removals.filter((action) => action.state === 'notFound');
+  if (notFound.length > 0 && notFound.length === removals.length) {
+    return '配置处理：没有可删除的 AW 自管配置。';
+  }
+  const removed = removals.filter((action) => action.state === 'removed');
   if (removed.length > 0) {
     return '已删除 AW 自管配置。';
   }
@@ -630,9 +854,10 @@ function renderConfigRemovalSummary(
 }
 
 export function renderInitReceipt(result: CliInitReceipt): string[] {
+  const payload = buildInitReceiptJson(result);
   return [
     `${result.changed ? '已准备好' : '已复用'}本地插件目录：${result.rootDir}。`,
-    '下一步：运行 aw status 查看当前环境与插件状态。',
+    `下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`,
   ];
 }
 
@@ -689,7 +914,7 @@ export function renderCommandReceipt(
     if (markerNeedsAttention && payload.nativeTransactionMarker) {
       lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
     } else {
-      lines.push(`下一步：${payload.nextSteps[0]}`);
+      lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
     }
     if (payload.skipped.length > 0) {
       lines.push(`未处理 ${payload.skipped.length} 个目标：`);
@@ -747,7 +972,7 @@ export function renderCommandReceipt(
   if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
     lines.push('已更新共享身份文件。');
   }
-  const configRemovalSummary = renderConfigRemovalSummary(payload.configRemovalActions);
+  const configRemovalSummary = renderConfigRemovalSummary(payload.configStoreRemovals);
   if (configRemovalSummary) {
     lines.push(configRemovalSummary);
   } else if ((payload.removedConfigStores?.length ?? 0) > 0) {
@@ -768,7 +993,7 @@ export function renderCommandReceipt(
   if (markerNeedsAttention && payload.nativeTransactionMarker) {
     lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
   } else {
-    lines.push(`下一步：${payload.nextSteps[0]}`);
+    lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
   }
   return lines;
 }
@@ -825,8 +1050,95 @@ export function buildCleanupReceiptJson(result: {
   payload: CleanupJsonPayload;
   warnings: string[];
 }): CleanupJsonPayload & { warnings: string[] } {
+  if (result.payload.dependencyIndex) {
+    const nextSteps = result.payload.nextStepsSchemaVersion === 1
+      ? {
+          nextStepsSchemaVersion: result.payload.nextStepsSchemaVersion,
+          nextSteps: result.payload.nextSteps,
+          ...(result.payload.legacyNextSteps ? { legacyNextSteps: result.payload.legacyNextSteps } : {}),
+        }
+      : createNextStepsBoundary([
+        createCliCommandNextStep(
+          '查看最新依赖状态',
+          '可以重新检查 dependency index 清理后，当前环境里还剩哪些依赖引用需要继续处理。',
+          'aw status --verbose',
+        ),
+      ]);
+    return {
+      ...result.payload,
+      receiptSchemaVersion: 2,
+      overallState: result.payload.overallState ?? 'succeeded',
+      targetResults: result.payload.targetResults ?? [],
+      ...nextSteps,
+      warnings: [...new Set(result.warnings)],
+    };
+  }
+
+  const overallState = result.payload.overallState ?? (isCleanupExecutionFailure(result.payload) ? 'failed' : 'succeeded');
+  const nextSteps = result.payload.nextStepsSchemaVersion === 1
+    ? {
+        nextStepsSchemaVersion: result.payload.nextStepsSchemaVersion,
+        nextSteps: result.payload.nextSteps,
+        ...(result.payload.legacyNextSteps ? { legacyNextSteps: result.payload.legacyNextSteps } : {}),
+      }
+    : createNextStepsBoundary([createCliCommandNextStep(
+      result.payload.dryRun ? '继续执行 cleanup' : '查看 cleanup 后状态',
+      result.payload.dryRun
+        ? '可以继续进入 cleanup 执行流程，并按这次预检确认删除项、备份项和配置处理结果。'
+        : '可以重新确认 cleanup 后还剩哪些安装证据、残留和后续可执行动作。',
+      result.payload.dryRun ? result.payload.recommendedCommand : buildStatusCommand({
+        platforms: [result.payload.target.platform],
+        plugins: [result.payload.target.plugin],
+        warnings: [],
+      }),
+    )]);
+  const targetResults = result.payload.targetResults ?? [{
+    target: {
+      pluginName: result.payload.target.plugin,
+      platform: result.payload.target.platform,
+      scope: result.payload.target.scope,
+      ...(result.payload.target.projectKey ? { projectKey: result.payload.target.projectKey } : {}),
+    },
+    action: 'cleanup',
+    state: result.payload.dryRun ? 'notRun' : overallState === 'failed' ? 'failed' : 'completed',
+    rollbackState: 'notNeeded',
+  }];
+  const configStoreRemovals = result.payload.configStoreRemovals ?? (result.payload.wouldRemoveConfig.length > 0
+    ? result.payload.wouldRemoveConfig.map((entry) => ({
+        store: {
+          pluginName: entry.plugin,
+          storeKind: entry.scope === 'project' ? 'projectShared' as const : 'user' as const,
+          ...(entry.projectKey ? { projectRoot: entry.projectKey } : {}),
+        },
+        state: entry.status === 'removed'
+          ? 'removed'
+          : entry.status === 'failed'
+            ? 'failed'
+            : entry.reason === '当前 target scope 没有可删除的 AW 自管配置。'
+              ? 'notFound'
+              : 'skipped',
+        ...(entry.status === 'failed'
+          ? {
+              reasonCode: 'removeFailed' as const,
+              message: entry.reason,
+            }
+          : entry.status !== 'removed' && entry.reason && entry.reason !== '当前 target scope 没有可删除的 AW 自管配置。'
+            ? {
+                reasonCode: 'subjectFailed' as const,
+                message: entry.reason,
+              }
+            : {}),
+        subjectTargets: targetResults.map((item) => item.target),
+        path: entry.path,
+      }))
+    : undefined);
   return {
     ...result.payload,
+    receiptSchemaVersion: 2,
+    overallState,
+    targetResults,
+    ...nextSteps,
+    ...(configStoreRemovals?.length ? { configStoreRemovals } : {}),
     warnings: [...new Set(result.warnings)],
   };
 }
@@ -846,7 +1158,7 @@ export function renderCleanupReceipt(result: {
       }
     }
     if (payload.nextSteps.length > 0) {
-      lines.push(`下一步：${payload.nextSteps.join('；')}`);
+      lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
     }
     return lines;
   }
@@ -869,10 +1181,16 @@ export function renderCleanupReceipt(result: {
   lines.push(...renderCleanupLocations('受影响依赖：', payload.affectedDependents));
   lines.push(...renderCleanupBlockingReasons(payload));
   lines.push(...renderCleanupConfigActions(payload.dryRun ? '配置处理：' : '配置处理结果：', payload.wouldRemoveConfig));
+  const configRemovalSummary = renderConfigRemovalSummary(payload.configStoreRemovals);
+  if (configRemovalSummary) {
+    lines.push(configRemovalSummary);
+  }
   if (!payload.dryRun) {
     lines.push(...renderCleanupPlanItems('未清项：', payload.remainingItems ?? []));
   }
-  lines.push(`建议命令：${payload.recommendedCommand}`);
+  if (payload.nextSteps.length > 0) {
+    lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
+  }
   if (payload.warnings.length > 0) {
     lines.push(`Warnings：${payload.warnings.join('；')}`);
   }

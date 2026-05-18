@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { applyCodexInstallLedger } from '../../src/adapters/codex.js';
+import { cleanupCommand } from '../../src/commands/cleanup.js';
 import { installCommand } from '../../src/commands/install.js';
 import {
   CONFIG_READ_DEFAULT_RESOLUTION,
@@ -15,6 +16,7 @@ import {
   resolveConfigReadResolution,
   resolveConfigWriteScope,
 } from '../../src/commands/options.js';
+import { reinstallCommand } from '../../src/commands/reinstall.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -177,20 +179,28 @@ afterEach(async () => {
 });
 
 describe('command option normalization', () => {
-  it('normalizes partial direct command options to user/auto without undefined property crashes', async () => {
+  it('requires explicit platforms for write commands while still defaulting scope to user', async () => {
     const workspace = await makeWorkspace();
     const codex = new RecordingAdapter('codex');
     const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'git-commit'));
 
+    await expect(
+      installCommand(
+        ['git-commit'],
+        { cwd: workspace.repoRoot } as any,
+        { env: workspace.env, adapters: createAdapters(codex) },
+      ),
+    ).rejects.toThrow('install 命令需要显式指定 `--platform codex|claude|both`。');
+
     await installCommand(
       ['git-commit'],
-      { cwd: workspace.repoRoot } as any,
+      { cwd: workspace.repoRoot, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
     await seedHealthyCodexUserNativeState(workspace, plugin.manifest.name, plugin.manifest.version);
     await uninstallCommand(
       ['git-commit'],
-      { cwd: workspace.repoRoot } as any,
+      { cwd: workspace.repoRoot, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
     await writeInstalledLedger(
@@ -199,7 +209,7 @@ describe('command option normalization', () => {
     );
     await upgradeCommand(
       ['git-commit'],
-      { cwd: workspace.repoRoot } as any,
+      { cwd: workspace.repoRoot, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
 
@@ -207,7 +217,7 @@ describe('command option normalization', () => {
     expect(codex.scopes).not.toContain('project');
   });
 
-  it('normalizes upgrade --all partial options and keeps status scope/platform filters optional', async () => {
+  it('requires explicit upgrade --all platforms and defaults status to both', async () => {
     const workspace = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'git-commit'));
     await writeInstalledLedger(
@@ -216,9 +226,17 @@ describe('command option normalization', () => {
     );
 
     const codex = new RecordingAdapter('codex');
+    await expect(
+      upgradeCommand(
+        [],
+        { cwd: workspace.repoRoot, all: true } as any,
+        { env: workspace.env, adapters: createAdapters(codex) },
+      ),
+    ).rejects.toThrow('upgrade 命令需要显式指定 `--platform codex|claude|both`。');
+
     await upgradeCommand(
       [],
-      { cwd: workspace.repoRoot, all: true } as any,
+      { cwd: workspace.repoRoot, all: true, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
 
@@ -231,6 +249,8 @@ describe('command option normalization', () => {
     expect(status.reports.map((report) => `${report.platform}:${report.scope}`)).toEqual([
       'codex:user',
       'codex:project',
+      'claude:user',
+      'claude:project',
     ]);
   });
 
@@ -239,7 +259,7 @@ describe('command option normalization', () => {
     await expect(
       installCommand(
         ['git-commit'],
-        { cwd: workspace.repoRoot, scope: 'repo' } as any,
+        { cwd: workspace.repoRoot, scope: 'repo', platform: 'codex' } as any,
         { env: workspace.env, adapters: createAdapters(new RecordingAdapter('codex')) },
       ),
     ).rejects.toThrow('Unsupported scope "repo".');
@@ -252,17 +272,48 @@ describe('command option normalization', () => {
     ).rejects.toThrow('Unsupported platform "workspace".');
   });
 
+  it('rejects legacy platform auto for public write commands', async () => {
+    const workspace = await makeWorkspace();
+    const adapters = createAdapters(new RecordingAdapter('codex'));
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        { cwd: workspace.repoRoot, platform: 'auto' } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
+
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        { cwd: workspace.repoRoot, platform: 'auto' } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
+
+    await expect(
+      reinstallCommand(
+        ['git-commit'],
+        { cwd: workspace.repoRoot, platform: 'auto' } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
+  });
+
   it('normalizes script timeout options for lifecycle command reuse', () => {
     expect(parseScriptTimeoutMs('1000')).toBe(1000);
     expect(parseScriptTimeoutMs(300000)).toBe(300000);
     expect(normalizeInstallCommandOptions({
       cwd: '/tmp/project',
+      platform: 'codex',
       scriptTimeout: '45000',
     })).toMatchObject({
       scriptTimeoutMs: 45000,
     });
     expect(normalizeInstallCommandOptions({
       cwd: '/tmp/project',
+      platform: 'codex',
       scriptTimeout: '45000',
       scriptTimeoutMs: 60000,
     })).toMatchObject({

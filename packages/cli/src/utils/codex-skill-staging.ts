@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 
-import type { CodexSkillArtifact, SkillTriggerPreference } from '../types.js';
+import type { CodexSkillArtifact, SkillTriggerPolicy, SkillTriggerPreference } from '../types.js';
 import { createGeneratedArtifactContentDigest } from './generated-artifacts.js';
 
 const SKILL_FILE_PATH = 'SKILL.md';
@@ -19,10 +19,22 @@ export interface CodexSkillStagingTree {
   files: Record<string, string>;
 }
 
-export function resolveDynamicCodexSkillAllowImplicitInvocation(
+function resolveEffectiveTriggerPreference(
+  policy: SkillTriggerPolicy | undefined,
   preference: SkillTriggerPreference,
-): boolean {
-  return preference !== 'manual';
+): Exclude<SkillTriggerPreference, 'default'> {
+  const defaultTrigger = policy?.defaultTrigger ?? 'auto';
+  if (preference === 'default' || policy?.allowDynamicTrigger === false) {
+    return defaultTrigger;
+  }
+  return preference;
+}
+
+export function resolveDynamicCodexSkillAllowImplicitInvocation(options: {
+  policy?: SkillTriggerPolicy;
+  preference: SkillTriggerPreference;
+}): boolean {
+  return resolveEffectiveTriggerPreference(options.policy, options.preference) === 'auto';
 }
 
 export function renderCodexOpenAiYamlWithAllowImplicitInvocation(options: {
@@ -62,6 +74,7 @@ export function createCodexSkillStagingTree(options: {
     openaiYaml: string;
   };
   preference: SkillTriggerPreference;
+  policy?: SkillTriggerPolicy;
 }): CodexSkillStagingTree {
   return {
     skillKey: options.skillKey,
@@ -69,7 +82,10 @@ export function createCodexSkillStagingTree(options: {
       [SKILL_FILE_PATH]: options.content.skillFile,
       [OPENAI_YAML_PATH]: renderCodexOpenAiYamlWithAllowImplicitInvocation({
         rawContent: options.content.openaiYaml,
-        allowImplicitInvocation: resolveDynamicCodexSkillAllowImplicitInvocation(options.preference),
+        allowImplicitInvocation: resolveDynamicCodexSkillAllowImplicitInvocation({
+          policy: options.policy,
+          preference: options.preference,
+        }),
       }),
     },
   };
@@ -78,6 +94,7 @@ export function createCodexSkillStagingTree(options: {
 export function createCodexSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact, 'skillKey' | 'state' | 'content'>;
   preference: SkillTriggerPreference;
+  policy?: SkillTriggerPolicy;
 }): CodexSkillStagingTree {
   const skillKey = options.artifact.skillKey?.trim();
   if (!skillKey) {
@@ -107,6 +124,7 @@ export function createCodexSkillExpectedTree(options: {
       openaiYaml,
     },
     preference: options.preference,
+    policy: options.policy,
   });
 }
 

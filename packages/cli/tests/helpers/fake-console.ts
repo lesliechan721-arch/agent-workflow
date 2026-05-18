@@ -65,7 +65,10 @@ export function createFakePrompt(replies: FakePromptReply[]): CliPrompt & {
     if (!reply) {
       throw new Error(`Missing fake prompt reply for ${method}.`);
     }
-    if (reply.method !== method) {
+    if (
+      reply.method !== method &&
+      !(method === 'select' && reply.method === 'confirm')
+    ) {
       throw new Error(`Expected fake prompt reply for ${method}, got ${reply.method}.`);
     }
     return reply;
@@ -78,7 +81,18 @@ export function createFakePrompt(replies: FakePromptReply[]): CliPrompt & {
       choices: CliPromptChoice[];
       defaultValue?: string;
       pageSize?: number;
-    }) => toPromptResult<string>(next('select', options)),
+    }) => {
+      const reply = next('select', options);
+      if (reply.method === 'confirm') {
+        return reply.value === true
+          ? toPromptResult<string>({ method: 'select', value: 'confirm-continue' })
+          : {
+              action: 'back',
+              cancelled: false,
+            };
+      }
+      return toPromptResult<string>(reply);
+    },
     confirm: async (options: {
       message: string;
       defaultValue?: boolean;

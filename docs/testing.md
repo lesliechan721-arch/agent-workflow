@@ -42,15 +42,15 @@ status 和控制台依赖投影测试要保持只读：不得创建 `~/.aw`、�
 
 主控制台测试默认必须使用 fake prompt / fake console driver，且断言不会访问真实 stdin。窄例外只允许放在专门验证 readline prompt harness、TTY sink 或隐藏敏感输入的测试里；这类测试必须显式隔离 stdin/stdout/stderr，并证明 `--json` stdout 仍是单一可解析 JSON。`runCli([])` 在 TTY 环境进入控制台；非 TTY、`CI=true` 或 prompt 不可用时不能挂起，必须返回清晰错误、可复制命令示例和 `--json` 提示。子命令即使注入 fake prompt 也不能 prompt。
 
-主控制台安装、升级、配置、卸载、取消和诊断流程都要通过 fake prompt 覆盖。prompt adapter 要覆盖 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果；非法 candidate id、过期 token、候选外插件名、skip/空值或非法 skill trigger 都要在 runtime 层拒绝。配置向导 fake prompt 要返回 `selectedScope`、`updates`、`removeKeys`、`updatedKeys`、`removedKeys` 和 `cancelled`；显式位置不能被 prompt 改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
+主控制台安装、升级、配置、卸载、取消和状态流程都要通过 fake prompt 覆盖。prompt adapter 要覆盖 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果；非法 candidate id、过期 token、候选外插件名、skip/空值或非法 SkillTrigger 配置值都要在 runtime 层拒绝。配置向导 fake prompt 要返回 `selectedScope`、`updates`、`removeKeys`、`updatedKeys`、`removedKeys` 和 `cancelled`；显式位置不能被 prompt 改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
 
 主控制台安装向导需要覆盖平台兼容性和可安装性：`marketplace.policy.products` 过滤、`both` 下单平台插件禁用、显式多插件名共同兼容平台交集、无共同兼容平台时 dispatch 前失败，以及 fake prompt 返回不兼容平台时的拒绝。`Codex + project scope` 还要覆盖 repo-visible 候选过滤、空态、显式插件名早失败和正向可选插件；skills-only、mcp-only、slashCommands-only 应可选，apps-only 不进入候选，apps-mixed disabled 且指向 user scope 或拆分插件。
 
 主控制台 Codex project scope 测试不能只依赖 native executable availability。PATH 缺少 `codex` 且未设置 `AW_FORCE_CODEX_AVAILABLE` 时，`aw` 仍要能展示并选择 Codex project repo-visible 候选；已有 Codex project install record 或 project artifact identity 时，卸载和升级动作的目标选择也必须包含 Codex。Claude 可用、Codex executable 不可用的混合环境要单独覆盖，断言 Codex project 选项不会被隐藏。
 
-install record 缺少可恢复安装选项时，重复 `install` 和显式插件 `upgrade` 要覆盖主控制台补问 `skill-trigger`、脚本化确定性错误、`CI=true` 不 prompt，以及非法 prompt 返回值。`--skill-trigger` CLI entry 回归要覆盖显式 `install`、显式插件 `upgrade` 的 `manual|auto|default` 正向透传，也要覆盖 `upgrade --all --skill-trigger` 和 `upgrade -a -t` 在入口层确定性拒绝。
+SkillTrigger 回归要覆盖 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。`aw install`、`aw upgrade`、`aw repair`、`aw reinstall` 的 help 不展示 `-t` 或 `--skill-trigger`，传入这些旧参数时确定性失败并引导到 `aw config` 或主控制台配置页。
 
-Codex project 的 `skillTriggerApplicability` 要单独覆盖 `none`、`fixed`、`overridable`：mcp-only / extensions-only 不需要 record 偏好，公共 `slashCommands` 生成的 manual-only skill 属于 fixed，只有 overridable target 在 shared-artifact-only 且缺少可恢复 install options 时拒绝显式 install/upgrade；`upgrade --all` 对这类 target 记为 `installOptionsUnavailable`。
+SkillTrigger 内建字段要覆盖 `defaultTrigger`、`allowDynamicTrigger`、fixed 只读、ignored 历史覆盖、orphaned 旧配置、project local invalid 存量值和 config 写 receipt。`aw config list/get --json` 顶层必须包含 `configSchemaVersion: 2` 并以 `fields` 为主结构；`aw config set/unset/reset --json` 顶层必须包含 `receiptSchemaVersion: 2` 和 `affectedFields`。runtime 与 effective 配置不一致时，状态和 next steps 指向配置页、重新应用配置或 `aw repair <plugin> -p <platform> -s <scope>`，不能提示 `--skill-trigger`。
 
 Codex native marketplace 测试使用 fake native runner 断言 invocation 精确为 `codex plugin marketplace add <canonical AW_HOME>`。source 必须是 marketplace 根目录，不是 `.agents/plugins/marketplace.json`；local source 不带 `--ref`、`--sparse`，也不要求 `.tmp/marketplaces/aw` 存在。失败分支要覆盖 stderr、空输出、timeout、`ENOENT` 和 PATH 异常。marketplace add 或 verify 失败时，不能继续启动 app-server install RPC。
 
@@ -74,9 +74,9 @@ repo 子目录回归要分别覆盖 discovery、status、主控制台 `uninstall
 
 historical placeholder 回归要覆盖 discovery、默认 status、主控制台 `uninstall/upgrade` 候选。只有粗略 project 归属线索时，不能恢复 hook、instruction、permission、agent 等具体 kind；install record 或 project artifact identity 明确记录 `kind: "hook"` 或 hook identity 时，才允许恢复 hook 能力。
 
-status 测试要把默认、verbose、JSON、debug 通道分开锁住。默认 `aw status` 只展示友好摘要、位置和下一步，不泄露内部禁词；`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度，并断言旧矩阵字段以及新增 `ok`、`command`、`friendlySummaries`、`consoleItemsSchemaVersion: 2`、`consoleItems` 都可用；verbose/debug 人类诊断只能出现在 stderr 或 debug log。`consoleItemsSchemaVersion: 2` 只改变 `consoleItems` summary shape，不改变顶层 envelope；`consoleItems` 不得泄露旧 action kind、旧 reason code、`statusIcon`、`statusTone`、`platformBadges`、`primaryActionLabel`、`targetOptions` 或 `availableTargets`。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
+status 测试要把默认、verbose、JSON、debug 通道分开锁住。默认 `aw status` 只展示友好摘要、位置和下一步，不泄露内部禁词；`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度，并断言新增 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries`、`consoleItems` 都可用；verbose/debug 人类诊断只能出现在 stderr 或 debug log。`statusSchemaVersion: 2` 管理 status envelope 和 verbose JSON 详细状态，`consoleItemsSchemaVersion: 3` 管理本轮 `consoleItems` summary shape、结构化 `nextSteps` 和 SkillTrigger 公共投影；`consoleItems` 不得泄露旧 action kind、旧 reason code、`statusIcon`、`statusTone`、`platformBadges`、`primaryActionLabel`、`targetOptions` 或 `availableTargets`。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
 
-status skill-trigger 状态矩阵要覆盖 matched、equivalent defaults、mixed、drift、unknown 和 historical fallback，并分别断言默认视图不暴露 raw 字段名、verbose 可读展开、JSON 保留稳定机器字段。
+status SkillTrigger 状态矩阵要覆盖 matched、fixed、ignored、orphaned、drift、missing runtime 和 historical fallback，并分别断言默认视图不暴露旧安装偏好字段、verbose 可读展开、JSON 使用统一 `SkillTriggerPublicView` 投影。
 
 友好状态投影测试要覆盖四类 V2 首屏状态、全部 V2 原因码、跨位置汇总、状态优先级、保守升级判定、Codex enabled-only / cache-only / marker-only、native marker、无归属 native residue、project adopt-existing、shared owner conflict、dependency index untrusted、dynamic artifact refresh failed、disabled by config 和 session visibility。action 安全不变量必须锁住：公开 `PluginConsoleSummary.features` 只表达功能和目标选择策略，不包含 target、confirmText、command 或页面字段；执行层 `PluginConsoleExecutableAction` 只能在控制台完成功能和目标选择后生成，所有写动作都有完整 target，project 动作需要时带 `projectKey`；删除、覆盖和 cleanup 动作都有 `destructive: true` 和 `confirmText`；只有 `runCleanup` 可以生成 `force: true`；disabled 功能带 `disabledReason`。
 
@@ -94,7 +94,7 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 `scripts.node` 相关测试要保持分层。unit/integration 默认使用 build-free synthetic embedded root，不运行 package manager、不执行 manifest build、不扫描真实 production dependency closure。真实 `pnpm install --frozen-lockfile --ignore-scripts`、manifest build、production `node_modules` 复制、runtime dependency install script 拒绝和 bundle layout 验收进入 smoke 或 opt-in runner，例如 `pnpm test:smoke:plugin-scripts`。
 
-`pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 会先准备 staging source，再从 build 后 staging manifest 解析最终支持平台：`--platform auto` 使用完整支持平台集合；显式 `claude`、`codex`、`both` 只能在最终 `marketplace.policy.products` 允许的平台内缩小目标，不能把单平台插件强行测到不支持的平台；`both` 只适用于同时支持 Claude 和 Codex 的插件。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。双平台插件的 `--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
+`pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 会先准备 staging source，再从 build 后 staging manifest 解析最终支持平台：省略 `--platform` 时按 `both` 处理；`--platform auto` 必须失败并提示可选值是 `codex`、`claude` 或 `both`；显式 `claude` / `codex` 遇到任一选中插件最终不支持该平台时，必须在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。双平台插件的 `--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
 
 公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法双平台示例生成 Claude `commands/*.md` 与 Codex manual-only skill；单平台插件只生成支持平台的命令产物；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、支持 Codex 时 Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败，Claude-only 插件不受 Codex forbidden syntax 限制。
 
@@ -110,4 +110,5 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 - 正式发包 → 优先执行 `make release VERSION=x.y.z`；它会同步两个 `package.json` 版本号，先跑完整校验并验收 tarball，再发布 `latest`
 - 已经手动同步好稳定版本，只想走旧脚本入口时 → 执行 `pnpm publish:cli`；它不会改版本号，只会校验并发布当前版本
 - 改 plugin manifest contract、本地 marketplace 布局或作者工具 → 同步更新对应 fixture、样例插件和相关文档
+- 改公开 JSON 合同 → 同步检查 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2`、`nextStepsSchemaVersion: 1` 的文档、测试和 CLI 输出
 - 只改公开文档 → 不必跑全量测试，但要至少检查 `AGENTS.md`、`README.md`、`docs/*.md` 没有继续引用过期路径或把 `docs/dev` 当作公开权威来源

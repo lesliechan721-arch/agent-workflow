@@ -435,7 +435,7 @@ describe('diagnose P7', () => {
 
     expect(rendererRunner.run).not.toHaveBeenCalled();
     expect(result.output).toContain('动态诊断信息目前不可用');
-    expect(result.output).toContain('aw diagnose');
+    expect(result.output).toContain('aw status');
     expect(result.output).not.toContain('动态内容与已接受摘要不一致');
     expect(result.output).not.toContain('共享渲染配置摘要已经变化');
     expect(result.output).not.toContain('最近一次动态刷新失败');
@@ -500,7 +500,7 @@ describe('diagnose P7', () => {
     };
     expect(rendererRunner.run).not.toHaveBeenCalled();
     expect(payload.locations[0]?.summary).toContain('历史 dynamic tracking');
-    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status / diagnose / repair 中隐式迁移');
+    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status --verbose / repair / cleanup 中隐式迁移');
     expect(payload.locations[0]?.legacyDynamicTracking).toEqual([
       expect.objectContaining({
         id: 'lightweight-instruction',
@@ -831,7 +831,7 @@ describe('diagnose P7', () => {
     );
 
     expect(result.output).toContain('依赖索引当前不可信');
-    expect(result.output).toContain('回到可能相关的仓库重新运行 diagnose 或 repair');
+    expect(result.output).toContain('回到可能相关的仓库重新运行 status --verbose 或 repair');
     expect(result.output).not.toContain('这个目标是自动装上的依赖');
   });
 
@@ -856,7 +856,9 @@ describe('diagnose P7', () => {
       state: 'externallyManaged',
       cleanupAvailable: true,
     });
-    expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
+    expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: cleanupCommand }),
+    ]));
 
     const human = await diagnoseCommand(
       [target.location.plugin],
@@ -889,7 +891,9 @@ describe('diagnose P7', () => {
       state: 'externallyManaged',
       cleanupAvailable: true,
     });
-    expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
+    expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: cleanupCommand }),
+    ]));
 
     const human = await diagnoseCommand(
       [target.location.plugin],
@@ -922,7 +926,9 @@ describe('diagnose P7', () => {
         state: 'externallyManaged',
         cleanupAvailable: true,
       });
-      expect(payload.locations[0]?.nextSteps).toContain(cleanupCommand);
+      expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
+        expect.objectContaining({ command: cleanupCommand }),
+      ]));
 
       const human = await diagnoseCommand(
         [target.location.plugin],

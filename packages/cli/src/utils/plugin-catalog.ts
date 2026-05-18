@@ -5,59 +5,17 @@ import fs from 'fs-extra';
 import type { CatalogResolution } from '../types.js';
 import { resolvePluginsFromCatalog } from './manifest.js';
 import {
-  calculateBundleFingerprint,
-  readLocalMarketplaceConfig,
-  validateLocalMarketplaceLayout,
+  resolveReadOnlyCatalogResolution,
 } from './local-marketplace.js';
 import {
   resolveAwHome,
-  resolveCliPackageRoot,
-  resolveEmbeddedPluginsRoot,
   getMarketplaceManifestPath,
 } from './paths.js';
-
-async function readCurrentSourceVersion(): Promise<string> {
-  const packageJsonPath = path.join(resolveCliPackageRoot(), 'package.json');
-  const packageJson = await fs.readJson(packageJsonPath);
-  return String(packageJson.version);
-}
 
 export async function resolveCurrentCatalog(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
-  const awHome = resolveAwHome(env);
-  const embeddedRoot = await resolveEmbeddedPluginsRoot();
-  const [embeddedFingerprint, sourceVersion, localConfig] = await Promise.all([
-    calculateBundleFingerprint(embeddedRoot),
-    readCurrentSourceVersion(),
-    readLocalMarketplaceConfig(awHome),
-  ]);
-
-  if (
-    localConfig &&
-    localConfig.sourceVersion === sourceVersion &&
-    localConfig.bundleFingerprint === embeddedFingerprint
-  ) {
-    try {
-      await validateLocalMarketplaceLayout(awHome);
-      return {
-        rootDir: awHome,
-        source: 'local',
-      };
-    } catch (error) {
-      return {
-        rootDir: embeddedRoot,
-        source: 'embedded',
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  return {
-    rootDir: embeddedRoot,
-    source: 'embedded',
-    reason: 'local marketplace is missing, stale, or unhealthy',
-  };
+  return resolveReadOnlyCatalogResolution(env);
 }
 
 export async function resolveCatalogPlugins(

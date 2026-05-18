@@ -358,6 +358,9 @@ async function tryLoadCliManifestTools() {
 // Lightweight manifest checks (fallback when CLI not built)
 // ---------------------------------------------------------------------------
 
+const STRICT_SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
 function validateManifestLightweight(manifest) {
   const input = expectRecord(manifest, 'plugin manifest');
   if (!input) return;
@@ -391,6 +394,9 @@ function validateManifestLightweight(manifest) {
 
   if (manifest.name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.name)) {
     error(`manifest name "${manifest.name}" is not lowercase-hyphen-case`);
+  }
+  if (manifest.version && !STRICT_SEMVER_PATTERN.test(manifest.version)) {
+    error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
   }
 
   validateManifestDependenciesLightweight(manifest.name, manifest.dependencies);
@@ -1209,34 +1215,106 @@ function validateCatalogDependencyReferences(pluginDir, manifest) {
 }
 
 function validateSkillTriggers(pluginDir, manifest) {
-  if (manifest.skillTriggers === undefined) return;
-
-  const skillTriggers = expectRecord(manifest.skillTriggers, 'skillTriggers');
-  if (!skillTriggers) return;
-
-  if (manifest.skills === undefined) {
-    error('skillTriggers requires a declared "skills" directory');
-  }
-
   const skillsRoot =
     typeof manifest.skills === 'string'
       ? path.join(pluginDir, manifest.skills)
       : null;
+  const staticSkillNames = skillsRoot && fs.existsSync(skillsRoot)
+    ? fs.readdirSync(skillsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+    : [];
+  const staticSkillNameSet = new Set(staticSkillNames);
 
-  for (const [skillName, rawPolicy] of Object.entries(skillTriggers)) {
+  const artifactTargets = Array.isArray(manifest.artifacts?.targets)
+    ? manifest.artifacts.targets
+    : [];
+  const dynamicCodexSkillNames = artifactTargets
+    .filter((target) =>
+      target
+      && typeof target === 'object'
+      && target.platform === 'codex'
+      && target.target === 'codex.skill'
+      && typeof target.skillKey === 'string'
+      && target.skillKey.trim() !== '',
+    )
+    .map((target) => target.skillKey.trim())
+    .sort();
+  const dynamicCodexSkillNameSet = new Set(dynamicCodexSkillNames);
+
+  const slashCommandNames = [];
+  if (typeof manifest.slashCommands === 'string') {
+    const slashCommandsRoot = path.join(pluginDir, manifest.slashCommands);
+    const stats = fs.statSync(slashCommandsRoot, { throwIfNoEntry: false });
+    if (stats?.isDirectory()) {
+      for (const entry of fs.readdirSync(slashCommandsRoot, { withFileTypes: true })) {
+        if (entry.isFile() && path.posix.extname(entry.name) === '.md') {
+          slashCommandNames.push(path.posix.basename(entry.name, '.md'));
+        }
+      }
+      slashCommandNames.sort();
+    }
+  }
+  const slashCommandNameSet = new Set(slashCommandNames);
+
+  const explicitSkillTriggers = manifest.skillTriggers === undefined
+    ? {}
+    : expectRecord(manifest.skillTriggers, 'skillTriggers');
+  if (manifest.skillTriggers !== undefined && !explicitSkillTriggers) {
+    return;
+  }
+
+  if (
+    manifest.skillTriggers !== undefined
+    && staticSkillNames.length === 0
+    && dynamicCodexSkillNames.length === 0
+  ) {
+    error('skillTriggers requires a declared "skills" directory or codex.skill artifact');
+  }
+
+  for (const skillName of dynamicCodexSkillNames) {
+    if (staticSkillNameSet.has(skillName)) {
+      error(
+        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a codex.skill artifact.`,
+      );
+    }
+  }
+
+  for (const [skillName, rawPolicy] of Object.entries(explicitSkillTriggers)) {
     const fieldName = `skillTriggers.${skillName}`;
-    const policy = expectRecord(rawPolicy, fieldName);
-    if (!policy) continue;
-    validateAllowedKeys(policy, fieldName, ['allowInstallOverride']);
-
-    if (typeof policy.allowInstallOverride !== 'boolean') {
-      error(`${fieldName}.allowInstallOverride must be a boolean`);
+    if (slashCommandNameSet.has(skillName)) {
+      error(
+        `Invalid ${fieldName}: slashCommands "${skillName}" uses an implicit fixed/manual trigger entry and must not be declared explicitly.`,
+      );
+      continue;
+    }
+    if (!staticSkillNameSet.has(skillName) && !dynamicCodexSkillNameSet.has(skillName)) {
+      error(`Invalid ${fieldName}: expected a declared static skill or codex.skill artifact.`);
+      continue;
     }
 
-    if (!skillsRoot) continue;
-    const skillDir = path.join(skillsRoot, skillName);
-    if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
-      error(`${fieldName} must match an existing source skill directory`);
+    const policy = expectRecord(rawPolicy, fieldName);
+    if (!policy) continue;
+    validateAllowedKeys(policy, fieldName, ['defaultTrigger', 'allowDynamicTrigger']);
+
+    if (policy.defaultTrigger !== 'manual' && policy.defaultTrigger !== 'auto') {
+      error(`${fieldName}.defaultTrigger: expected "manual" or "auto"`);
+    }
+    if (typeof policy.allowDynamicTrigger !== 'boolean') {
+      error(`${fieldName}.allowDynamicTrigger must be a boolean`);
+    }
+  }
+
+  for (const skillName of staticSkillNames) {
+    if (!Object.prototype.hasOwnProperty.call(explicitSkillTriggers, skillName)) {
+      error(`Invalid plugin manifest: static skill "${skillName}" must declare skillTriggers.${skillName}.`);
+    }
+  }
+
+  for (const skillName of dynamicCodexSkillNames) {
+    if (!Object.prototype.hasOwnProperty.call(explicitSkillTriggers, skillName)) {
+      error(`Invalid plugin manifest: codex.skill "${skillName}" must declare skillTriggers.${skillName}.`);
     }
   }
 }

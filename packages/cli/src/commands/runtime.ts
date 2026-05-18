@@ -199,6 +199,7 @@ export type CommandExecutionContextInput =
 export interface CliExecutionContext extends CommandExecutionContext {
   cwd: string;
   io: CliIo;
+  stdin: NodeJS.ReadableStream;
   isTty: boolean;
   isCi: boolean;
   consoleDriver: CliConsoleDriver;
@@ -835,7 +836,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         message: message ?? '选择目标平台',
         choices: available.map((value) => ({
           value,
-          label: value === 'both' ? 'Codex + Claude Code' : value === 'codex' ? 'Codex' : 'Claude Code',
+          label: value === 'both' ? '全部支持平台' : value === 'codex' ? 'Codex' : 'Claude Code',
         })),
         defaultValue,
       })),
@@ -1450,6 +1451,7 @@ export function createCliExecutionContext(
     ...commandContext,
     cwd,
     io,
+    stdin,
     isTty,
     isCi,
     consoleDriver,

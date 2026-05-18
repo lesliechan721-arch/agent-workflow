@@ -7,17 +7,17 @@ Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库�
 ```bash
 npm install -g @yiliang/aw
 aw init
-aw install git-commit
+aw install git-commit -p both
 aw status
 ```
 
-直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、修复、清理、重新应用配置和诊断。`install`、`uninstall`、`upgrade`、`config`、`status`、`diagnose`、`repair`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
+直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、修复、清理、重新应用配置和状态排查。`install`、`uninstall`、`upgrade`、`config`、`status`、`repair`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
 
 ```bash
 aw
 ```
 
-脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --json` 保留矩阵字段并追加 `friendlySummaries`、`consoleItemsSchemaVersion: 2` 和 `consoleItems`。
+脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --verbose` 展开详细只读排查；`aw status --json` 输出 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`friendlySummaries` 和 `consoleItems`。
 
 `install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`，并维护可提交的 project artifact identity metadata。
 
@@ -28,25 +28,30 @@ aw install git-commit -p codex -s user
 aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本机 runtime。纯 Codex project 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex runtime。双平台都可用时，写入型命令如果无法从当前 scope 推断目标平台，需要显式传 `-p codex|claude|both`。
+`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本机 runtime。纯 Codex project 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex runtime。绑定真实插件 target 的写入型命令需要显式传 `-p codex|claude|both`。
 
 常用排障命令：
 
 ```bash
-aw diagnose git-commit --verbose
+aw status git-commit --verbose
 aw repair git-commit -p codex -s project
 aw repair git-commit -p codex -s project --adopt-existing
+aw repair --dependency-index
 aw cleanup git-commit -p codex -s project --plan
 aw cleanup git-commit -p codex -s project --plan --json
 aw cleanup git-commit -p codex -s project
 aw cleanup git-commit -p codex -s project --remove-config
+aw cleanup --dependency-index --prune-stale <token> --yes
 aw reinstall git-commit -p codex -s user
 aw config set git-commit commitStyle conventional -s user
 aw config unset git-commit commitStyle -s user
 aw config reset git-commit -s user --yes
+aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
 
 `aw cleanup --plan --json` 是只读预览，输出 `cleanupPlanSchemaVersion: 1`，可在真正清理前查看 planned removals、would backups、would remove config、skipped foreign items、affected dependents、blocking reasons 和建议命令。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。
+
+触发策略不再是安装、升级、修复或重装参数。作者在 manifest 里声明每个 skill 的 `defaultTrigger` 和 `allowDynamicTrigger` 后，用户通过 `aw config` 或主控制台配置页调整 `aw.skillTriggers.<skill>.trigger`；如果 runtime 与当前配置不一致，用 `aw repair <plugin> -p <platform> -s <scope>` 脚本化重放配置。
 
 ## 当前插件
 

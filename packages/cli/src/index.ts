@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
@@ -24,7 +24,6 @@ import {
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
 import { statusCommand } from './commands/status.js';
-import { diagnoseCommand } from './commands/diagnose.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
@@ -33,14 +32,13 @@ import {
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
+  assertNoDeprecatedSkillTriggerOption,
   normalizeCommandOptions,
-  normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
   normalizeRepairCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
-  parseSkillTriggerPreference,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -60,8 +58,13 @@ import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigValue,
+  findConfigFieldEntry,
+  hasConfigReadV2Content,
+  isBuiltInConfigKey,
+  parseBuiltInSkillTriggerKey,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
+  resolveConfigReadV2,
   resolveEffectivePluginConfig,
   resolveProjectScopedPluginConfigView,
   resolveProjectLocalPluginConfigView,
@@ -69,15 +72,103 @@ import {
   type PluginConfigIssue,
 } from './utils/plugin-config.js';
 import {
+  applyBuiltInConfigWrite,
   applyPluginConfigWrite,
+  describeResetAffectedFields,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
-import type { PluginManifestSource, PluginMeta, Scope } from './types.js';
+import { assertStrictSemVer } from './utils/manifest.js';
+import type { ConfigFieldEntryV2, PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export { parseSkillTriggerPreference } from './commands/options.js';
 
 export type CliRuntimeOptions = CliExecutionContextInput;
+
+function createDeprecatedSkillTriggerOption(): Option {
+  return new Option('-t, --skill-trigger <preference>').hideHelp();
+}
+
+function assertNoDeprecatedSkillTriggerArgv(argv: string[]): void {
+  const commandName = argv.find((token) => !token.startsWith('-'));
+  if (
+    commandName !== 'install' &&
+    commandName !== 'upgrade' &&
+    commandName !== 'repair' &&
+    commandName !== 'reinstall'
+  ) {
+    return;
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === '-t' || token === '--skill-trigger' || token?.startsWith('--skill-trigger=')) {
+      throw new Error(
+        `\`${commandName}\` 不再接受 \`--skill-trigger\` / \`-t\`；请改用配置管理维护 skill trigger 偏好后再重试。`,
+      );
+    }
+  }
+}
+
+function extractLegacyDiagnosePlugins(argv: string[]): string[] {
+  const plugins: string[] = [];
+  let positionalOnly = false;
+
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token) {
+      continue;
+    }
+    if (positionalOnly) {
+      plugins.push(token);
+      continue;
+    }
+    if (token === '--') {
+      positionalOnly = true;
+      continue;
+    }
+    if (
+      token === '-s' ||
+      token === '--scope' ||
+      token === '-p' ||
+      token === '--platform' ||
+      token === '--log-file'
+    ) {
+      if (index + 1 < argv.length) {
+        index += 1;
+      }
+      continue;
+    }
+    if (
+      token.startsWith('--scope=') ||
+      token.startsWith('--platform=') ||
+      token.startsWith('--log-file=')
+    ) {
+      continue;
+    }
+    if (token.startsWith('-')) {
+      continue;
+    }
+    plugins.push(token);
+  }
+
+  return plugins;
+}
+
+function createDiagnoseMigrationError(argv: string[]): Error | null {
+  if (argv[0] !== 'diagnose') {
+    return null;
+  }
+
+  const plugins = extractLegacyDiagnosePlugins(argv);
+  const suggested = plugins.length > 0
+    ? `aw status ${plugins.join(' ')} --verbose`
+    : 'aw status --verbose';
+  const details = argv.includes('--deep')
+    ? '（原 `--deep` 诊断已并入 `status --verbose`）'
+    : '';
+  return new Error(`\`aw diagnose\` 已移除，请改用 \`${suggested}\`${details}。`);
+}
 
 function createDefaultIo(): CliIo {
   return {
@@ -105,10 +196,7 @@ function resolveCliVersion(): string {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
     version?: unknown;
   };
-  if (typeof packageJson.version !== 'string' || packageJson.version.trim().length === 0) {
-    throw new Error('Unable to resolve @yiliang/aw version from package.json.');
-  }
-  return packageJson.version;
+  return assertStrictSemVer(packageJson.version, 'packages/cli/package.json version');
 }
 
 function resolveCommandReceiptExitCode(
@@ -178,6 +266,9 @@ function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean
 }
 
 function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (dependencyIndex && pluginNames.length > 0) {
+    throw new Error('repair --dependency-index 不接受插件名。');
+  }
   if (pluginNames.length > 0 || dependencyIndex) {
     return;
   }
@@ -185,6 +276,9 @@ function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boo
 }
 
 function assertCleanupRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
+  if (dependencyIndex && pluginNames.length > 0) {
+    throw new Error('cleanup --dependency-index 不接受插件名。');
+  }
   if (dependencyIndex || pluginNames.length === 1) {
     return;
   }
@@ -242,6 +336,24 @@ async function loadConfigManifest(
   pluginName: string,
   context: CliExecutionContext,
 ): Promise<PluginMeta> {
+  const plugin = await loadConfigPluginOptional(pluginName, context);
+  if (!plugin) {
+    throw new Error(
+      `Unknown plugin "${pluginName}". Cannot read schema-aware config without a current catalog entry. ` +
+        `Use \`aw config reset ${pluginName} -s user --yes\` or ` +
+        `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+    );
+  }
+  if (!plugin.manifest.config?.schema) {
+    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+  }
+  return plugin;
+}
+
+async function loadConfigPluginOptional(
+  pluginName: string,
+  context: CliExecutionContext,
+): Promise<PluginMeta | null> {
   assertSafePluginConfigSegment(pluginName);
   let plugins: Awaited<ReturnType<typeof resolveCatalogPlugins>>['plugins'];
   try {
@@ -249,19 +361,11 @@ async function loadConfigManifest(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === `Unknown plugin "${pluginName}".`) {
-      throw new Error(
-        `${message} Cannot read schema-aware config without a current catalog entry. ` +
-          `Use \`aw config reset ${pluginName} -s user --yes\` or ` +
-          `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
-      );
+      return null;
     }
     throw error;
   }
-  const plugin = plugins[0];
-  if (!plugin.manifest.config?.schema) {
-    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
-  }
-  return plugin;
+  return plugins[0] ?? null;
 }
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
@@ -592,6 +696,49 @@ async function resolveConfigForRead(options: {
   };
 }
 
+function renderConfigFieldState(field: ConfigFieldEntryV2): string {
+  if (field.valueState === 'invalid') {
+    return 'invalid-config';
+  }
+  return field.valueState;
+}
+
+function writeConfigReadV2Human(
+  write: (text: string) => void,
+  resolved: Awaited<ReturnType<typeof resolveConfigReadV2>>,
+  pluginName: string,
+): void {
+  for (const field of resolved.fields) {
+    const effectiveValue = field.effectiveValue === null
+      ? '<unset>'
+      : renderPluginConfigValueForDisplay(field.effectiveValue);
+    const source = field.sourceLayer ?? 'none';
+    writeLine(write, `${field.key}: ${renderConfigFieldState(field)} (source=${source}, effective=${effectiveValue})`);
+    if (field.storedValue !== undefined && field.storedSourceLayer) {
+      writeLine(
+        write,
+        `  stored=${field.storedSourceLayer} ${renderPluginConfigValueForDisplay(field.storedValue)}`,
+      );
+    }
+    if (field.kind === 'manifest' && field.valueState === 'invalid') {
+      const sourceScope = field.sourceLayer === 'project'
+        ? ' -s project'
+        : field.sourceLayer === 'local'
+          ? ' -s project --local'
+          : ' -s user';
+      writeLine(write, `  aw config set ${pluginName} ${field.key} <value>${sourceScope}`);
+      writeLine(write, `  aw config unset ${pluginName} ${field.key}${sourceScope}`);
+      writeLine(write, `  aw config reset ${pluginName}${sourceScope}`);
+    }
+  }
+  for (const legacy of resolved.legacyConfigStores) {
+    writeLine(
+      write,
+      `${legacy.storeKind}: storeOnly (${legacy.reason})`,
+    );
+  }
+}
+
 export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
@@ -636,7 +783,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (rawOptions: { force?: boolean; json?: boolean } & RawDiagnosticsOptions) => {
       const context = createActionContext('init', rawOptions);
       const result = await runActionWithContext(context, () =>
-        initCommand({ force: rawOptions.force, env: context.env }),
+        initCommand({
+          force: rawOptions.force,
+          env: context.env,
+          gate: {
+            interactive: context.interactive,
+            confirmOverwrite: async ({ message, defaultValue }) => {
+              const promptResult = await context.prompt.confirm?.({ message, defaultValue });
+              return promptResult?.action === 'select' && promptResult.value === true;
+            },
+            onNotice: async (message) => {
+              await context.reporter.notice({
+                level: 'warning',
+                message,
+                identity: `local-marketplace:${message}`,
+                target: 'stderr',
+              });
+            },
+          },
+        }),
       );
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
@@ -651,9 +816,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('install')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -676,11 +841,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = await runActionWithContext(
           context,
           async () => {
+            assertInstallPluginsProvided(plugins ?? []);
+            assertNoDeprecatedSkillTriggerOption(rawOptions, 'install');
             const commandOptions = normalizeInstallCommandOptions({
               cwd,
               ...rawOptions,
             });
-            assertInstallPluginsProvided(plugins ?? []);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -714,8 +880,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('uninstall')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--remove-config', 'remove the AW-managed config store after uninstall succeeds', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -736,11 +902,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(
         context,
         async () => {
+          assertUninstallPluginsProvided(plugins ?? []);
           const commandOptions = normalizeUninstallCommandOptions({
             cwd,
             ...rawOptions,
           });
-          assertUninstallPluginsProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',
             data: {
@@ -774,9 +940,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('upgrade')
     .argument('[plugins...]')
     .option('-a, --all', 'upgrade all plugins', false)
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -800,11 +966,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = await runActionWithContext(
           context,
           async () => {
+            assertUpgradeRequestProvided(plugins ?? [], rawOptions.all === true);
+            assertNoDeprecatedSkillTriggerOption(rawOptions, 'upgrade');
             const commandOptions = normalizeUpgradeCommandOptions({
               cwd,
               ...rawOptions,
             });
-            assertUpgradeRequestProvided(plugins ?? [], commandOptions.all === true);
             await emitCommandEvent(context, {
               type: 'options:normalized',
               data: {
@@ -838,9 +1005,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('repair')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
     .option('--dependency-index', 'repair the global dependency index only', false)
@@ -866,6 +1033,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const result = await runActionWithContext(
         context,
         async () => {
+          assertNoDeprecatedSkillTriggerOption(rawOptions, 'repair');
           const commandOptions = normalizeRepairCommandOptions({
             cwd,
             ...rawOptions,
@@ -888,8 +1056,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('cleanup')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
     .option('--plan', 'preview the cleanup plan without writing state', false)
     .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
@@ -949,9 +1117,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   program
     .command('reinstall')
     .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user', 'user')
-    .option('-p, --platform <platform>', 'codex | claude | both | auto', 'auto')
-    .option('-t, --skill-trigger <preference>', 'default | manual | auto', parseSkillTriggerPreference)
+    .option('-s, --scope <scope>', 'project or user')
+    .option('-p, --platform <platform>', 'codex | claude | both')
+    .addOption(createDeprecatedSkillTriggerOption())
     .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -973,6 +1141,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(
         context,
         async () => {
+          assertNoDeprecatedSkillTriggerOption(rawOptions, 'reinstall');
           const commandOptions = normalizeReinstallCommandOptions({
             cwd,
             ...rawOptions,
@@ -1030,59 +1199,39 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:list', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
-        const plugin = await loadConfigManifest(pluginName, context);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        return resolveConfigForRead({
+        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const result = await resolveConfigReadV2({
           pluginName,
-          manifest: plugin.manifest,
-          scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
-          localOnly: projectLayer === 'local',
-          context,
+          plugin,
+          scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
+          projectLayer,
+          cwd: context.cwd,
+          env: context.env,
         });
+        if (!plugin && !hasConfigReadV2Content(result)) {
+          throw new Error(
+            `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
+              `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+          );
+        }
+        return result;
       });
       if (rawOptions.json) {
-        const projectScopedSummary = isProjectScopedConfigView(resolved)
-          ? {
-              values: resolved.redactedValues,
-              sources: resolved.sources,
-              issues: resolved.issues,
-              ignoredUnknownKeys: resolved.ignoredUnknownKeys,
-            }
-          : null;
         writeJsonReceipt(io.stdout, {
           ok: true,
+          configSchemaVersion: 2,
           command: 'config:list',
           plugin: pluginName,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
-          localOnly: rawOptions.local === true,
-          summary: isLocalProjectConfigView(resolved)
-            ? {
-                values: resolved.redactedValues,
-                sources: resolved.sources,
-                issues: resolved.issues,
-                ignoredUnknownKeys: resolved.ignoredUnknownKeys,
-              }
-            : isProjectScopedConfigView(resolved)
-              ? projectScopedSummary
-            : summarizeEffectivePluginConfig(resolved as EffectiveConfigView),
-          ...(isProjectScopedConfigView(resolved)
-            ? {
-                note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
-                layers: resolved.entries,
-                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
-              }
-            : {}),
-          ...(isLocalProjectConfigView(resolved)
-            ? {
-                note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
-                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
-                localStorePath: resolved.localStore.path,
-              }
+          fields: resolved.fields,
+          ...(resolved.legacyConfigStores.length > 0
+            ? { legacyConfigStores: resolved.legacyConfigStores }
             : {}),
         });
       } else {
-        writeConfigList(io.stdout, pluginName, resolved);
+        writeConfigReadV2Human(io.stdout, resolved, pluginName);
       }
     });
 
@@ -1099,66 +1248,66 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:get', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
-        const plugin = await loadConfigManifest(pluginName, context);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const configForRead = await resolveConfigForRead({
+        if (key && rawOptions.local && isBuiltInConfigKey(key)) {
+          throw new Error('project local 层不支持按字段读取 SkillTrigger 内建值；请改用 `--scope project` 查看生效值，或整层 reset 清理误写入值。');
+        }
+        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const result = await resolveConfigReadV2({
           pluginName,
-          manifest: plugin.manifest,
-          scopeOrEffective: resolveConfigReadResolution(rawOptions.scope),
-          localOnly: projectLayer === 'local',
-          context,
+          plugin,
+          scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
+          projectLayer,
+          cwd: context.cwd,
+          env: context.env,
         });
-        if (key && !('schema' in configForRead && configForRead.schema[key])) {
+        if (!plugin && !hasConfigReadV2Content(result)) {
+          throw new Error(
+            `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
+              `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+          );
+        }
+        if (!key) {
+          return result;
+        }
+        const field = findConfigFieldEntry(result.fields, key);
+        if (field) {
+          return {
+            ...result,
+            fields: [field],
+          };
+        }
+        if (result.legacyConfigStores.length > 0 && !parseBuiltInSkillTriggerKey(key)) {
+          throw new Error(
+            `${pluginName} 只剩 storeOnly 旧配置，不能按字段读取普通 raw value。` +
+              `请运行 \`aw config reset ${pluginName} -s user --yes\` 或 ` +
+              `\`aw config reset ${pluginName} -s project --yes\` 清理对应 store。`,
+          );
+        }
+        if (parseBuiltInSkillTriggerKey(key)) {
           throw new Error(`Unknown config key "${key}".`);
         }
-        return configForRead;
+        if (plugin?.manifest.config?.schema?.[key] === undefined) {
+          throw new Error(`Unknown config key "${key}".`);
+        }
+        return result;
       });
       if (rawOptions.json) {
-        const projectScopedSummary = isProjectScopedConfigView(resolved)
-          ? {
-              values: resolved.redactedValues,
-              sources: resolved.sources,
-              issues: resolved.issues,
-              ignoredUnknownKeys: resolved.ignoredUnknownKeys,
-            }
-          : null;
         writeJsonReceipt(io.stdout, {
           ok: true,
+          configSchemaVersion: 2,
           command: 'config:get',
           plugin: pluginName,
           key,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
-          localOnly: rawOptions.local === true,
-          summary: isLocalProjectConfigView(resolved)
-            ? {
-                values: resolved.redactedValues,
-                sources: resolved.sources,
-                issues: resolved.issues,
-                ignoredUnknownKeys: resolved.ignoredUnknownKeys,
-              }
-            : isProjectScopedConfigView(resolved)
-              ? projectScopedSummary
-            : summarizeEffectivePluginConfig(resolved as EffectiveConfigView),
-          value: key ? resolved.redactedValues[key] : resolved.redactedValues,
-          source: key ? resolved.sources[key] : resolved.sources,
-          ...(isProjectScopedConfigView(resolved)
-            ? {
-                note: '当前结果展示项目作用域的 effective config，同时单独暴露 repo-visible artifact truth。',
-                layers: key ? resolved.entries[key] : resolved.entries,
-                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
-              }
-            : {}),
-          ...(isLocalProjectConfigView(resolved)
-            ? {
-                note: '当前结果只显示本机私有覆盖层，不作为 repo-visible artifact 渲染输入。',
-                repoVisibleArtifactConfig: resolved.repoVisibleArtifactConfig,
-                localStorePath: resolved.localStore.path,
-              }
+          fields: resolved.fields,
+          ...(resolved.legacyConfigStores.length > 0
+            ? { legacyConfigStores: resolved.legacyConfigStores }
             : {}),
         });
       } else {
-        writeConfigGet(io.stdout, pluginName, resolved, key);
+        writeConfigReadV2Human(io.stdout, resolved, pluginName);
       }
     });
 
@@ -1182,12 +1331,35 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     ) => {
       const context = createActionContext('config:set', rawOptions);
       const receipt = await runActionWithContext(context, async () => {
-        const plugin = await loadConfigManifest(pluginName, context);
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
+        const plugin = await loadConfigPluginOptional(pluginName, context);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
+        if (isBuiltInConfigKey(key)) {
+          const writeReceipt = await applyBuiltInConfigWrite({
+            pluginName,
+            plugin,
+            scope,
+            projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+            key,
+            action: 'set',
+            value: inputValue,
+          });
+          return {
+            ok: true,
+            receiptSchemaVersion: 2,
+            command: 'config:set',
+            ...writeReceipt,
+          };
+        }
+        const pluginWithSchema = plugin;
+        if (!pluginWithSchema?.manifest.config?.schema) {
+          throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+        }
         const writeReceipt = await applyPluginConfigWrite({
-          plugin,
+          plugin: pluginWithSchema,
           pluginName,
           scope,
           projectLayer,
@@ -1199,8 +1371,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: true,
+          receiptSchemaVersion: 2,
           command: 'config:set',
           ...writeReceipt,
+          affectedFields: [{
+            key,
+            title: pluginWithSchema.manifest.config.schema[key]?.title ?? key,
+            kind: 'manifest' as const,
+            reserved: false,
+            action: 'set' as const,
+            scope,
+            ...(scope === 'project' ? { projectLayer } : {}),
+          }],
         };
       });
       if (rawOptions.json) {
@@ -1210,7 +1392,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
-        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
+        writeArtifactRefreshNotice(io.stderr, 'artifactRefresh' in receipt ? receipt.artifactRefresh : undefined);
       }
     });
 
@@ -1227,12 +1409,32 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string, key: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:unset', rawOptions);
       const receipt = await runActionWithContext(context, async () => {
-        const plugin = await loadConfigManifest(pluginName, context);
-        if (!plugin.manifest.config!.schema[key]) {
-          throw new Error(`Unknown config key "${key}".`);
-        }
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
+        const plugin = await loadConfigPluginOptional(pluginName, context);
+        if (isBuiltInConfigKey(key)) {
+          const writeReceipt = await applyBuiltInConfigWrite({
+            pluginName,
+            plugin,
+            scope,
+            projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+            key,
+            action: 'unset',
+          });
+          return {
+            ok: true,
+            receiptSchemaVersion: 2,
+            command: 'config:unset',
+            ...writeReceipt,
+            removedKey: key,
+            existed: writeReceipt.existed ?? false,
+          };
+        }
+        if (!plugin?.manifest.config?.schema?.[key]) {
+          throw new Error(`Unknown config key "${key}".`);
+        }
         const store = await readPluginConfigStore({
           pluginName,
           scope,
@@ -1254,10 +1456,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: true,
+          receiptSchemaVersion: 2,
           command: 'config:unset',
           ...writeReceipt,
           removedKey: key,
           existed,
+          affectedFields: [{
+            key,
+            title: plugin.manifest.config.schema[key]?.title ?? key,
+            kind: 'manifest' as const,
+            reserved: false,
+            action: 'unset' as const,
+            scope,
+            ...(scope === 'project' ? { projectLayer } : {}),
+          }],
         };
       });
       if (rawOptions.json) {
@@ -1269,7 +1481,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
-        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
+        writeArtifactRefreshNotice(io.stderr, 'artifactRefresh' in receipt ? receipt.artifactRefresh : undefined);
       }
     });
 
@@ -1301,30 +1513,29 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
           );
         }
-        let plugin: PluginMeta | undefined;
-        try {
-          plugin = await loadConfigManifest(pluginName, context);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (
-            !message.startsWith(`Unknown plugin "${pluginName}".`) &&
-            message !== `Plugin "${pluginName}" does not declare an AW config schema.`
-          ) {
-            throw error;
-          }
-        }
+        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const affectedFields = await describeResetAffectedFields({
+          pluginName,
+          ...(plugin ? { plugin } : {}),
+          scope,
+          projectLayer,
+          cwd: context.cwd,
+          env: context.env,
+        });
         const resetReceipt = await resetPluginConfigWithHelper({
           pluginName,
           scope,
           projectLayer,
           cwd: context.cwd,
           env: context.env,
-          plugin,
+          ...(plugin ? { plugin } : {}),
         });
         return {
           ok: true,
+          receiptSchemaVersion: 2,
           command: 'config:reset',
           ...resetReceipt,
+          affectedFields,
         };
       });
       if (rawOptions.json) {
@@ -1368,46 +1579,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }),
           context,
         ),
-      );
-      writeLine(io.stdout, result.output);
-    });
-
-  program
-    .command('diagnose')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'filter by scope')
-    .option('-p, --platform <platform>', 'filter by platform')
-    .option('--deep', 'run dynamic artifact renderer without writing diagnostic cache', false)
-    .option('-v, --verbose', 'show diagnose details and command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .option('-j, --json', 'print diagnose result as JSON', false)
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        json?: boolean;
-        deep?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      const context = createActionContext('diagnose', rawOptions);
-      const result = await runActionWithContext(
-        context,
-        async () => {
-          const commandOptions = normalizeDiagnoseCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          return diagnoseCommand(plugins ?? [], commandOptions, context);
-        },
       );
       writeLine(io.stdout, result.output);
     });
@@ -1462,6 +1633,11 @@ export async function runCli(
         return 1;
       }
       return await runActionWithContext(context, () => runConsoleController(context));
+    }
+    assertNoDeprecatedSkillTriggerArgv(argv);
+    const diagnoseMigrationError = createDiagnoseMigrationError(argv);
+    if (diagnoseMigrationError) {
+      throw diagnoseMigrationError;
     }
     const program = buildProgram({
       ...options,

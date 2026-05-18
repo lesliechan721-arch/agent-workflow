@@ -1,6 +1,10 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.js';
+import { readPluginManifest } from '../utils/manifest.js';
+import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
 import {
   assessSharedSkillTriggerRuntimeSemantics,
   commitMaterializedSkillTriggerPreference,
@@ -19,7 +23,6 @@ import { sha256Hex } from './internal.js';
 import { getSharedSkillTriggerRuntimeOwnerPath } from './paths.js';
 import {
   createSharedRuntimeOwnerDeleteStage,
-  createSharedRuntimeOwnerWriteStage,
   type InstallStateReceiptWarning,
   type InstallStateTransactionStage,
 } from './transactions.js';
@@ -36,7 +39,6 @@ export interface SharedSkillTriggerRuntimeOwnerInspection {
   digestVerified: boolean;
   ownerRecordRead: InstallStateReadResult<InstallRecordFile> | null;
   ownerRecordMatchesLocation: boolean;
-  ownerRecordMatchesPreference: boolean;
   usable: boolean;
 }
 
@@ -91,13 +93,25 @@ export interface SharedSkillTriggerRuntimeStageBundle {
   stages: InstallStateTransactionStage[];
 }
 
-export interface SharedSkillTriggerRuntimeReplayResult {
-  source: 'owner' | 'embeddedDefault';
-  preference: SkillTriggerPreference;
-  ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
-  warnings: string[];
-  materialization: SkillTriggerMaterializationResult;
-}
+export type SharedSkillTriggerRuntimeReplayResult =
+  | {
+    status: 'replayed';
+    source: 'owner';
+    preference: SkillTriggerPreference;
+    ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
+    warnings: string[];
+    materialization: SkillTriggerMaterializationResult;
+  }
+  | {
+    status: 'failClosed';
+    failClosedCode:
+      | 'ownerStateInvalid'
+      | 'ownerUnverified'
+      | 'ownerEffectiveConfigInvalid';
+    failClosedReason: string;
+    ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
+    warnings: string[];
+  };
 
 function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
   return left.plugin === right.plugin
@@ -140,10 +154,25 @@ function formatOwnerInvalidReason(inspection: SharedSkillTriggerRuntimeOwnerInsp
   if (!inspection.ownerRecordMatchesLocation) {
     return 'owner record location 与 owner 文件不一致';
   }
-  if (!inspection.ownerRecordMatchesPreference) {
-    return 'owner record preference 与 owner 文件不一致';
-  }
   return 'owner 状态不可验证';
+}
+
+function formatReplayRepairGuidance(ownerLocation?: PluginLocation): string {
+  if (!ownerLocation) {
+    return '对应目标的 `aw repair`';
+  }
+
+  return `\`aw repair ${ownerLocation.plugin} --platform ${ownerLocation.platform} --scope ${ownerLocation.scope}\``;
+}
+
+function buildReplayFailClosedMessage(options: {
+  pluginName: string;
+  platform: PlatformName;
+  detail: string;
+  ownerLocation?: PluginLocation;
+}): string {
+  return `[${options.platform}/${options.pluginName}] ${options.detail}；shared runtime replay 已 fail closed。` +
+    `请先运行 ${formatReplayRepairGuidance(options.ownerLocation)}，如需改写，请重跑单目标写命令并加 \`--takeover-shared-runtime\`。`;
 }
 
 async function verifyOwnerRecordDigest(owner: SharedSkillTriggerRuntimeOwner): Promise<boolean> {
@@ -228,7 +257,6 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
       digestVerified: false,
       ownerRecordRead: null,
       ownerRecordMatchesLocation: false,
-      ownerRecordMatchesPreference: false,
       usable: false,
     };
   }
@@ -238,9 +266,6 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
   const ownerRecordMatchesLocation = ownerRecordRead.status === 'ok'
     ? sameLocation(locationFromRecord(ownerRecordRead.value), read.value.owner)
     : false;
-  const ownerRecordMatchesPreference = ownerRecordRead.status === 'ok'
-    ? preferenceFromRecord(ownerRecordRead.value) === read.value.preference
-    : false;
 
   return {
     ownerPath: read.path,
@@ -248,12 +273,86 @@ export async function inspectSharedSkillTriggerRuntimeOwner(options: {
     digestVerified,
     ownerRecordRead,
     ownerRecordMatchesLocation,
-    ownerRecordMatchesPreference,
     usable:
       digestVerified
       && ownerRecordRead.status === 'ok'
-      && ownerRecordMatchesLocation
-      && ownerRecordMatchesPreference,
+      && ownerRecordMatchesLocation,
+  };
+}
+
+async function createSharedRuntimeOwnerIdentityWriteStage(options: {
+  recordFile: InstallRecordFile;
+  recordPath: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<InstallStateTransactionStage> {
+  const ownerPath = getSharedSkillTriggerRuntimeOwnerPath({
+    pluginName: options.recordFile.record.pluginName,
+    platform: options.recordFile.record.platform,
+    env: options.env,
+  });
+  const stagingPath = `${ownerPath}.aw-staging`;
+  const backupPath = `${ownerPath}.aw-backup`;
+  let committed = false;
+
+  return {
+    label: 'shared runtime owner',
+    async commit() {
+      if (committed) {
+        return;
+      }
+      const value: SharedSkillTriggerRuntimeOwner = {
+        version: 1,
+        pluginName: options.recordFile.record.pluginName,
+        platform: options.recordFile.record.platform,
+        owner: locationFromRecord(options.recordFile),
+        ownerRecordPath: options.recordPath,
+        ownerRecordDigest: sha256Hex(await fs.readFile(options.recordPath)),
+        updatedAt: options.recordFile.record.updatedAt,
+      };
+      await fs.ensureDir(path.dirname(ownerPath));
+      await fs.writeJson(stagingPath, value, { spaces: 2 });
+      if (await fs.pathExists(ownerPath)) {
+        await fs.move(ownerPath, backupPath, { overwrite: true });
+      }
+      await fs.move(stagingPath, ownerPath, { overwrite: true });
+      committed = true;
+    },
+    async rollback(): Promise<InstallStateReceiptWarning | void> {
+      try {
+        if (committed) {
+          if (await fs.pathExists(backupPath)) {
+            await fs.remove(ownerPath).catch(() => undefined);
+            await fs.move(backupPath, ownerPath, { overwrite: true });
+          } else {
+            await fs.remove(ownerPath).catch(() => undefined);
+          }
+        } else {
+          await fs.remove(stagingPath).catch(() => undefined);
+        }
+        return undefined;
+      } catch (error) {
+        return {
+          code: 'sharedRuntimeOwnerRollbackFailed',
+          message: 'Shared runtime owner rollback failed.',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    async finalize(): Promise<InstallStateReceiptWarning | void> {
+      try {
+        await Promise.all([
+          fs.remove(stagingPath).catch(() => undefined),
+          fs.remove(backupPath).catch(() => undefined),
+        ]);
+        return undefined;
+      } catch (error) {
+        return {
+          code: 'sharedRuntimeOwnerFinalizeFailed',
+          message: 'Shared runtime owner finalize failed.',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
   };
 }
 
@@ -464,7 +563,7 @@ export async function createSharedSkillTriggerRuntimeUpsertStages(options: {
   }
 
   if (options.plan.shouldWriteOwner) {
-    stages.push(await createSharedRuntimeOwnerWriteStage({
+    stages.push(await createSharedRuntimeOwnerIdentityWriteStage({
       recordFile: options.recordFile,
       recordPath: options.recordPath,
       env: options.env,
@@ -537,17 +636,70 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     platform: options.platform,
     env: options.env,
   });
-  const source = ownerInspection.usable ? 'owner' : 'embeddedDefault';
-  const preference = ownerInspection.usable && ownerInspection.read.status === 'ok'
-    ? ownerInspection.read.value.preference
-    : 'default';
-  const warnings: string[] = [];
-
-  if (!ownerInspection.usable && ownerInspection.read.status !== 'missing') {
-    warnings.push(
-      `[${options.platform}/${options.pluginName}] shared runtime owner 无法验证（${formatOwnerInvalidReason(ownerInspection)}），已回退到 embedded 默认策略；请运行 diagnose / repair，需要转移控制权时请使用单目标写命令并加 --takeover-shared-runtime。`,
-    );
+  if (!ownerInspection.usable) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail: `shared runtime owner 无法验证（${formatOwnerInvalidReason(ownerInspection)}）`,
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: ownerInspection.read.status === 'ok' ? 'ownerUnverified' : 'ownerStateInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
   }
+
+  const ownerLocation = ownerInspection.read.value.owner;
+  if (ownerLocation.scope === 'project' && !ownerLocation.projectKey) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail: 'shared runtime owner 当前 effective SkillTrigger 配置不可解析（owner projectKey 缺失）',
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: 'ownerEffectiveConfigInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
+  }
+
+  let preference: SkillTriggerPreference;
+  try {
+    const plugin = await readPluginManifest(
+      path.join(options.embeddedRoot, 'plugins', options.pluginName),
+      { mode: 'bundle' },
+    );
+    preference = await resolveUniformSkillTriggerPreference({
+      plugin,
+      platform: ownerLocation.platform,
+      scope: ownerLocation.scope,
+      cwd: ownerLocation.scope === 'project'
+        ? ownerLocation.projectKey
+        : process.cwd(),
+      env: options.env,
+    });
+  } catch (error) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail:
+        `shared runtime owner 当前 effective SkillTrigger 配置不可解析（${error instanceof Error ? error.message : String(error)}）`,
+      ownerLocation,
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: 'ownerEffectiveConfigInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
+  }
+
+  const warnings: string[] = [];
 
   const materialization = await materializeSkillTriggerPreference({
     pluginName: options.pluginName,
@@ -570,7 +722,8 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
   }
 
   return {
-    source,
+    status: 'replayed',
+    source: 'owner',
     preference,
     ownerInspection,
     warnings,
