@@ -15,6 +15,8 @@ export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'packag
 export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
 export const defaultCatalogOutputRoot = path.join(cliPackageRoot, 'plugins-dist');
+export const sidecarCatalogPackageName = '@yiliang/aw-plugins-manifest';
+export const fullCatalogPackageName = '@yiliang/aw-plugins';
 
 let cachedCatalogModules = null;
 
@@ -223,6 +225,86 @@ function normalizeChannel(channel, version) {
   }
   const derived = isPrereleaseVersion(version) ? 'beta' : 'latest';
   return channel ?? derived;
+}
+
+export function isMissingRegistryPackageError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('HTTP 404')
+    || message.includes('missing dist-tag')
+    || /Registry dist-tag .+ is missing for /.test(message)
+  );
+}
+
+function isMissingRegistryPackageVersionError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Registry version .+ is missing for /.test(message);
+}
+
+async function listFilesRecursively(rootDir) {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await listFilesRecursively(entryPath);
+      files.push(...nested.map((filePath) => path.join(entry.name, filePath).split(path.sep).join('/')));
+      continue;
+    }
+    files.push(entry.name);
+  }
+  return files.sort();
+}
+
+async function comparePackageDirectories(expectedRoot, actualRoot) {
+  const [expectedFiles, actualFiles] = await Promise.all([
+    listFilesRecursively(expectedRoot),
+    listFilesRecursively(actualRoot),
+  ]);
+  if (JSON.stringify(expectedFiles) !== JSON.stringify(actualFiles)) {
+    return {
+      ok: false,
+      reason: `File list mismatch.\nexpected=${expectedFiles.join(', ')}\nactual=${actualFiles.join(', ')}`,
+    };
+  }
+
+  for (const relativePath of expectedFiles) {
+    const [expectedBuffer, actualBuffer] = await Promise.all([
+      fs.readFile(path.join(expectedRoot, relativePath)),
+      fs.readFile(path.join(actualRoot, relativePath)),
+    ]);
+    if (!expectedBuffer.equals(actualBuffer)) {
+      return {
+        ok: false,
+        reason: `File content mismatch at ${relativePath}.`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+  };
+}
+
+function packageNameForKind(kind) {
+  if (kind === 'full') {
+    return fullCatalogPackageName;
+  }
+  return sidecarCatalogPackageName;
+}
+
+async function resolveRegistryUrl() {
+  const fromEnv = process.env.AW_NPM_REGISTRY_URL || process.env.npm_config_registry;
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') {
+    return fromEnv.trim();
+  }
+
+  const cliPackageJson = await readCliPackageJson();
+  if (typeof cliPackageJson.publishConfig?.registry === 'string' && cliPackageJson.publishConfig.registry.trim() !== '') {
+    return cliPackageJson.publishConfig.registry.trim();
+  }
+
+  return 'https://registry.npmjs.org/';
 }
 
 function assertHistorySourceReady(result, channel, purpose) {
@@ -534,6 +616,80 @@ export async function packCatalogPackage(options = {}) {
   return findLatestTarball(targetDir);
 }
 
+export async function createCatalogRegistryAdapter(options = {}) {
+  const registryUrl = options.registryUrl ?? await resolveRegistryUrl();
+  const marketplace = options.marketplace ?? (await loadCatalogModules()).marketplace;
+
+  return {
+    async readChannelManifest(channel) {
+      try {
+        const archive = await marketplace.resolveCatalogPackageByDistTag(
+          sidecarCatalogPackageName,
+          channel,
+          process.env,
+        );
+        try {
+          return {
+            status: 'ready',
+            manifest: archive.rawManifest,
+          };
+        } finally {
+          await archive.dispose();
+        }
+      } catch (error) {
+        if (isMissingRegistryPackageError(error)) {
+          return {
+            status: 'missing',
+          };
+        }
+        return {
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    async verifyExistingPackage(kind, context) {
+      const packageName = packageNameForKind(kind);
+      try {
+        const identity = await marketplace.resolveCatalogPackageIdentityByVersion(
+          packageName,
+          context.version,
+          process.env,
+        );
+        const archive = await marketplace.downloadCatalogPackageArchive(identity, process.env);
+        try {
+          const comparison = await comparePackageDirectories(context.packageRoot, archive.packageRoot);
+          return comparison.ok
+            ? { exists: true, verified: true }
+            : { exists: true, verified: false, reason: comparison.reason };
+        } finally {
+          await archive.dispose();
+        }
+      } catch (error) {
+        if (isMissingRegistryPackageError(error) || isMissingRegistryPackageVersionError(error)) {
+          return { exists: false, verified: false };
+        }
+        throw error;
+      }
+    },
+    async publishPackage(_kind, context) {
+      await runCommand('pnpm', ['publish', '--tag', context.channel], {
+        cwd: context.packageRoot,
+      });
+    },
+    async ensureDistTag(kind, context) {
+      await runCommand('npm', [
+        'dist-tag',
+        'add',
+        `${packageNameForKind(kind)}@${context.version}`,
+        context.channel,
+        '--registry',
+        registryUrl,
+      ]);
+    },
+  };
+}
+
 async function resolveChannelHistoryManifests(options) {
   const requestedChannel = options.channel;
   const registry = options.registry ?? {};
@@ -628,12 +784,13 @@ async function ensureCatalogPackageDistTag(kind, publishContext) {
   });
 }
 
-export async function publishCatalogRelease(options = {}) {
+export async function preflightCatalogRelease(options = {}) {
   const { outputRoot = defaultCatalogOutputRoot, registry = {} } = options;
   await assertRepoAndCliPackageVersions();
   const stagedCatalogVersion = options.catalogVersion
     ?? (await readCatalogStage({ outputRoot, catalogModules: options.catalogModules })).manifest.catalogVersion;
   const channel = normalizeChannel(options.channel, stagedCatalogVersion);
+  assertVersionKind(stagedCatalogVersion, channel === 'beta' ? 'prerelease' : 'stable');
   const historyInputs = await resolveChannelHistoryManifests({
     channel,
     registry,
@@ -649,12 +806,22 @@ export async function publishCatalogRelease(options = {}) {
     catalogModules: options.catalogModules,
   });
 
-  const publishContext = {
+  return {
     channel,
-    manifest: staged.manifest,
-    sidecarPackageRoot: staged.sidecarPackageRoot,
-    fullPackageRoot: staged.fullPackageRoot,
     registry,
+    staged,
+  };
+}
+
+export async function publishCatalogRelease(options = {}) {
+  const preflight = await preflightCatalogRelease(options);
+
+  const publishContext = {
+    channel: preflight.channel,
+    manifest: preflight.staged.manifest,
+    sidecarPackageRoot: preflight.staged.sidecarPackageRoot,
+    fullPackageRoot: preflight.staged.fullPackageRoot,
+    registry: preflight.registry,
   };
 
   try {
@@ -673,5 +840,5 @@ export async function publishCatalogRelease(options = {}) {
     throw new Error(`Catalog sidecar package phase failed: ${detail}`);
   }
 
-  return staged;
+  return preflight.staged;
 }

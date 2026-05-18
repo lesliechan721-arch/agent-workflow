@@ -1,6 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,33 +12,6 @@ const tempDirs: string[] = [];
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-}
-
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
-  const files: string[] = [];
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFilesRecursively(entryPath);
-      files.push(...nested.map((file) => path.join(entry.name, file).split(path.sep).join('/')));
-      continue;
-    }
-    files.push(entry.name);
-  }
-  return files.sort();
-}
-
-async function calculateDirectoryDigest(rootDir: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const files = await listFilesRecursively(rootDir);
-  for (const relativePath of files) {
-    hash.update(relativePath);
-    hash.update('\0');
-    hash.update(await fs.readFile(path.join(rootDir, relativePath)));
-    hash.update('\0');
-  }
-  return `sha256:${hash.digest('hex')}`;
 }
 
 async function buildCatalogPair(options: {
@@ -67,17 +39,6 @@ async function buildCatalogPair(options: {
   await fs.copy(path.join(options.sourceCatalogRoot, '.catalog', 'full'), fullRoot);
 
   const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json'));
-  for (const entry of manifest.entries as Array<{
-    name: string;
-    source: string;
-    artifactDigest: string;
-    manifestDigest: string;
-  }>) {
-    const pluginRoot = path.join(fullRoot, entry.source);
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    entry.artifactDigest = await calculateDirectoryDigest(pluginRoot);
-    entry.manifestDigest = `sha256:${crypto.createHash('sha256').update(await fs.readFile(manifestPath)).digest('hex')}`;
-  }
   const defaultHistoryReleases = [
     {
       catalogVersion: options.catalogVersion,
@@ -239,32 +200,34 @@ describe('catalog fetch smoke', () => {
 
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-fetch-cache-smoke-'));
     tempDirs.push(tempRoot);
-    const packageJson = await fs.readJson(path.join(root, 'packages', 'cli', 'package.json')) as { version: string };
-    const pair = await buildCatalogPair({
-      sourceCatalogRoot: path.join(root, 'packages', 'cli', 'plugins-dist'),
-      targetRoot: tempRoot,
-      label: 'current',
-      catalogVersion: packageJson.version,
-      channel: 'beta',
-      minAwVersion: packageJson.version,
-    });
+    const stagedManifest = await fs.readJson(
+      path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'sidecar', 'catalog-manifest.json'),
+    ) as {
+      catalogVersion: string;
+      channel: 'latest' | 'beta';
+      compatibility: {
+        aw: {
+          minVersion: string;
+        };
+      };
+    };
     const operations: string[] = [];
     const fullRecord = {
-      rootDir: pair.fullRoot,
-      manifest: pair.manifest as Record<string, unknown>,
+      rootDir: path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'full'),
+      manifest: stagedManifest as Record<string, unknown>,
     };
     const source = createFakeCatalogPackageSource({
       distTags: {
-        beta: pair.manifest.catalogVersion as string,
+        [stagedManifest.channel]: stagedManifest.catalogVersion,
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', pair.manifest.catalogVersion as string)]: {
-          rootDir: pair.sidecarRoot,
-          manifest: pair.manifest as Record<string, unknown>,
+        [packageKey('@yiliang/aw-plugins-manifest', stagedManifest.catalogVersion)]: {
+          rootDir: path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'sidecar'),
+          manifest: stagedManifest as Record<string, unknown>,
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', pair.manifest.catalogVersion as string)]: fullRecord,
+        [packageKey('@yiliang/aw-plugins', stagedManifest.catalogVersion)]: fullRecord,
       },
       operations,
     });
@@ -273,22 +236,23 @@ describe('catalog fetch smoke', () => {
     const env = {
       ...process.env,
       AW_HOME: path.join(tempRoot, 'aw-home'),
-      AW_CLI_VERSION: packageJson.version,
+      AW_CLI_VERSION: stagedManifest.compatibility.aw.minVersion,
+      AW_CATALOG_CHANNEL: stagedManifest.channel,
     };
     const firstResolution = await distPluginCatalog.resolveCurrentCatalog(env);
     expect(firstResolution).toMatchObject({
       source: 'remote',
-      channel: 'beta',
-      catalogVersion: pair.manifest.catalogVersion,
+      channel: stagedManifest.channel,
+      catalogVersion: stagedManifest.catalogVersion,
       cacheFallback: {
         used: false,
       },
     });
     expect(operations).toEqual([
-      `identity:@yiliang/aw-plugins-manifest:beta`,
-      `download:@yiliang/aw-plugins-manifest:${pair.manifest.catalogVersion as string}`,
-      `identity:@yiliang/aw-plugins:${pair.manifest.catalogVersion as string}`,
-      `download:@yiliang/aw-plugins:${pair.manifest.catalogVersion as string}`,
+      `identity:@yiliang/aw-plugins-manifest:${stagedManifest.channel}`,
+      `download:@yiliang/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
+      `identity:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
+      `download:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
     ]);
 
     operations.length = 0;
@@ -296,8 +260,8 @@ describe('catalog fetch smoke', () => {
     const cachedResolution = await distPluginCatalog.resolveCurrentCatalog(env);
     expect(cachedResolution).toMatchObject({
       source: 'cache',
-      channel: 'beta',
-      catalogVersion: pair.manifest.catalogVersion,
+      channel: stagedManifest.channel,
+      catalogVersion: stagedManifest.catalogVersion,
       cacheFallback: {
         used: true,
         source: 'currentCatalogCache',
@@ -308,10 +272,10 @@ describe('catalog fetch smoke', () => {
       },
     });
     expect(operations).toEqual([
-      `identity:@yiliang/aw-plugins-manifest:beta`,
-      `download:@yiliang/aw-plugins-manifest:${pair.manifest.catalogVersion as string}`,
-      `identity:@yiliang/aw-plugins:${pair.manifest.catalogVersion as string}`,
-      `download:@yiliang/aw-plugins:${pair.manifest.catalogVersion as string}`,
+      `identity:@yiliang/aw-plugins-manifest:${stagedManifest.channel}`,
+      `download:@yiliang/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
+      `identity:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
+      `download:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
     ]);
   });
 

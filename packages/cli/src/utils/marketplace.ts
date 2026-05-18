@@ -308,7 +308,10 @@ async function resolvePackageIdentityByDistTag(
   }
 
   const versionMetadata = metadata.versions?.[version];
-  if (!versionMetadata?.dist?.integrity || !versionMetadata.dist.tarball) {
+  if (!versionMetadata) {
+    throw new Error(`Registry version ${version} is missing for ${packageName}.`);
+  }
+  if (!versionMetadata.dist?.integrity || !versionMetadata.dist.tarball) {
     throw new Error(`Registry metadata for ${packageName}@${version} is missing dist.integrity or dist.tarball.`);
   }
 
@@ -332,7 +335,10 @@ async function resolvePackageIdentityByVersion(
   ) as RegistryPackageMetadata;
 
   const versionMetadata = metadata.versions?.[version];
-  if (!versionMetadata?.dist?.integrity || !versionMetadata.dist.tarball) {
+  if (!versionMetadata) {
+    throw new Error(`Registry version ${version} is missing for ${packageName}.`);
+  }
+  if (!versionMetadata.dist?.integrity || !versionMetadata.dist.tarball) {
     throw new Error(`Registry metadata for ${packageName}@${version} is missing dist.integrity or dist.tarball.`);
   }
 

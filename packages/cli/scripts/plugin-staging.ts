@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -82,13 +81,15 @@ import {
   assertStrictSemVer,
   compareStrictSemVer,
   createMarketplaceManifestEntry,
-  normalizeManifestDigestInput,
   resolvePluginsFromCatalog,
   validateCatalogManifest,
 } from '../src/utils/manifest.js';
+import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryManifestDigest,
+} from '../src/utils/catalog-digests.js';
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
-import { calculateFileDigest } from '../src/utils/plugin-scripts.js';
 
 export type {
   PlatformName,
@@ -130,56 +131,6 @@ export interface CatalogStageResult {
   canonicalManifestPath: string;
   sidecarPackageRoot: string;
   fullPackageRoot: string;
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function digestString(value: string): string {
-  return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
-}
-
-function normalizeRelativeFilePath(rootDir: string, targetPath: string): string {
-  return path.relative(rootDir, targetPath).split(path.sep).join('/');
-}
-
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nestedFiles = await listFilesRecursively(entryPath);
-      files.push(
-        ...nestedFiles.map((nestedFile) => path.join(entry.name, nestedFile).split(path.sep).join('/')),
-      );
-      continue;
-    }
-    files.push(entry.name);
-  }
-
-  return files.sort();
-}
-
-async function calculateArtifactPathDigest(filePath: string): Promise<string> {
-  const stat = await fs.lstat(filePath);
-  if (stat.isSymbolicLink()) {
-    return digestString(`symlink:${await fs.readlink(filePath)}`);
-  }
-
-  return calculateFileDigest(filePath);
 }
 
 function detectCatalogChannel(version: string): CatalogChannel {
@@ -282,18 +233,6 @@ async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise
   return content;
 }
 
-async function calculatePluginArtifactDigest(pluginRoot: string): Promise<string> {
-  const files = await listFilesRecursively(pluginRoot);
-  const fileEntries = await Promise.all(
-    files.map(async (relativePath) => ({
-      path: relativePath,
-      digest: await calculateArtifactPathDigest(path.join(pluginRoot, relativePath)),
-    })),
-  );
-
-  return digestString(stableStringify(fileEntries));
-}
-
 async function createCatalogManifestEntryFromPlugin(
   plugin: PluginMeta,
   pluginRoot: string,
@@ -304,8 +243,8 @@ async function createCatalogManifestEntryFromPlugin(
     version: plugin.manifest.version,
     compatibility: plugin.manifest.compatibility!,
     dependencies: plugin.manifest.dependencies,
-    artifactDigest: await calculatePluginArtifactDigest(pluginRoot),
-    manifestDigest: digestString(normalizeManifestDigestInput(plugin.manifest)),
+    artifactDigest: await calculateCatalogEntryArtifactDigest(pluginRoot),
+    manifestDigest: calculateCatalogEntryManifestDigest(plugin.manifest),
   };
 }
 

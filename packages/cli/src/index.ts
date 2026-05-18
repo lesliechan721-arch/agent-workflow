@@ -49,6 +49,7 @@ import { formatWarnings } from './output/reporter.js';
 import {
   buildCommandReceiptJson,
   buildCleanupReceiptJson,
+  buildInitFailureReceiptJson,
   buildInitReceiptJson,
   renderCommandReceipt,
   renderCleanupReceipt,
@@ -56,7 +57,7 @@ import {
   type CliCommandResult,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
-import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
+import { isCatalogResolutionError, resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigValue,
@@ -882,28 +883,38 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       catalogVersion?: string;
     } & RawDiagnosticsOptions) => {
       const context = createActionContext('init', rawOptions, { allowChannelAlias: true });
-      const result = await runActionWithContext(context, () =>
-        initCommand({
-          force: rawOptions.force,
-          env: context.env,
-          selectorOverrideSource: rawOptions.catalogVersion !== undefined
-            ? 'option:catalog-version'
-            : rawOptions.catalogChannel !== undefined
-              ? 'option:catalog-channel'
-              : rawOptions.channel !== undefined
-                ? 'option:channel-alias'
-                : undefined,
-          ...normalizeCatalogSelectorOptions(rawOptions, { allowChannelAlias: true }),
-        }),
-      );
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
-      } else {
-        for (const line of renderInitReceipt(result)) {
-          writeLine(io.stdout, line);
+      try {
+        const result = await runActionWithContext(context, () =>
+          initCommand({
+            force: rawOptions.force,
+            env: context.env,
+            selectorOverrideSource: rawOptions.catalogVersion !== undefined
+              ? 'option:catalog-version'
+              : rawOptions.catalogChannel !== undefined
+                ? 'option:catalog-channel'
+                : rawOptions.channel !== undefined
+                  ? 'option:channel-alias'
+                  : undefined,
+            ...normalizeCatalogSelectorOptions(rawOptions, { allowChannelAlias: true }),
+          }),
+        );
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
+        } else {
+          for (const line of renderInitReceipt(result)) {
+            writeLine(io.stdout, line);
+          }
         }
+        writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
+      } catch (error) {
+        if (rawOptions.json && isCatalogResolutionError(error)) {
+          writeJsonReceipt(io.stdout, buildInitFailureReceiptJson(error.resolution));
+          writeLine(io.stderr, error.message);
+          commandExitState.exitCode = 1;
+          return;
+        }
+        throw error;
       }
-      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
     });
 
   addCatalogSelectorOptions(

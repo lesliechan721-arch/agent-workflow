@@ -1,6 +1,14 @@
-import { readCliPackageJson, runCommand } from './common.mjs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-function parseArgs(argv) {
+import {
+  createCatalogRegistryAdapter,
+  preflightCatalogRelease,
+  readCliPackageJson,
+  runCommand,
+} from './common.mjs';
+
+export function parseArgs(argv) {
   const args = [...argv];
   const mode = args.shift();
   let cliVersion;
@@ -41,8 +49,13 @@ function parseArgs(argv) {
   };
 }
 
-try {
-  const { mode, cliVersion, catalogVersion } = parseArgs(process.argv.slice(2));
+export async function runReleasePreflight() {
+  await runCommand('pnpm', ['run', 'release:verify:cli']);
+  await runCommand('pnpm', ['run', 'release:verify:catalog']);
+}
+
+export async function publishRelease(argv = process.argv.slice(2)) {
+  const { mode, cliVersion, catalogVersion } = parseArgs(argv);
   const cliPackageJson = await readCliPackageJson();
   const currentCliVersion = String(cliPackageJson.version);
   if (cliVersion && cliVersion !== currentCliVersion) {
@@ -55,6 +68,14 @@ try {
     cli: `pending (${currentCliVersion})`,
     catalog: `pending (${catalogVersion})`,
   };
+
+  await runReleasePreflight();
+  const catalogRegistry = await createCatalogRegistryAdapter();
+  await preflightCatalogRelease({
+    channel: mode,
+    catalogVersion,
+    registry: catalogRegistry,
+  });
 
   try {
     await runCommand('node', ['scripts/release/publish-cli.mjs', mode]);
@@ -72,9 +93,6 @@ try {
       catalogVersion,
     ]);
     status.catalog = `published (${catalogVersion})`;
-    console.log(
-      `Published CLI ${currentCliVersion} and catalog ${catalogVersion} to ${mode}.`,
-    );
   } catch (error) {
     status.catalog = `failed (${catalogVersion})`;
     const detail = error instanceof Error ? error.message : String(error);
@@ -82,7 +100,29 @@ try {
       `Combined release failed after CLI publish.\nCLI: ${status.cli}\nCatalog: ${status.catalog}\nRe-run catalog only: pnpm run release:publish:catalog:${mode} -- --catalog-version ${catalogVersion}\nDetails: ${detail}`,
     );
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+
+  return {
+    mode,
+    currentCliVersion,
+    catalogVersion,
+  };
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  try {
+    const { mode, currentCliVersion, catalogVersion } = await publishRelease(argv);
+    console.log(
+      `Published CLI ${currentCliVersion} and catalog ${catalogVersion} to ${mode}.`,
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
+const currentEntryPath = fileURLToPath(import.meta.url);
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+
+if (invokedPath === currentEntryPath) {
+  await main();
 }

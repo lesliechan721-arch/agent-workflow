@@ -23,11 +23,11 @@ import {
   readCurrentCatalogCacheEntry,
   writeCurrentCatalogCacheEntry,
 } from './local-marketplace.js';
+import { calculateCatalogEntryDigestsFromRoot } from './catalog-digests.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
   resolvePluginsFromCatalog,
-  SOURCE_MANIFEST_PATH,
   tryParseStrictSemVer,
   validateCatalogManifest,
 } from './manifest.js';
@@ -41,8 +41,9 @@ import {
 } from './marketplace.js';
 import {
   getEmbeddedPluginsRootOverrideForTests,
-  resolveAwHome,
   getMarketplaceManifestPath,
+  resolveAwHome,
+  resolveCurrentCatalogCacheStagingDir,
 } from './paths.js';
 
 export interface ResolveCurrentCatalogOptions {
@@ -79,45 +80,8 @@ interface ResolvedCatalogTarget {
   resolutionSource: NonNullable<CatalogResolution['fullCatalog']>['resolutionSource'];
 }
 
-async function calculateFileDigest(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  hash.update(await fs.readFile(filePath));
-  return `sha256:${hash.digest('hex')}`;
-}
-
 function calculateManifestTextDigest(manifestText: string): string {
   return `sha256:${crypto.createHash('sha256').update(manifestText).digest('hex')}`;
-}
-
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nestedFiles = await listFilesRecursively(entryPath);
-      files.push(...nestedFiles.map((filePath) => path.join(entry.name, filePath).split(path.sep).join('/')));
-      continue;
-    }
-    files.push(entry.name);
-  }
-
-  return files.sort();
-}
-
-async function calculatePluginBundleFingerprint(bundleRoot: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const files = await listFilesRecursively(bundleRoot);
-
-  for (const relativePath of files) {
-    hash.update(relativePath);
-    hash.update('\0');
-    hash.update(await fs.readFile(path.join(bundleRoot, relativePath)));
-    hash.update('\0');
-  }
-
-  return `sha256:${hash.digest('hex')}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -850,14 +814,16 @@ async function validateMaterializedCatalog(
 
   for (const entry of options.manifest.entries) {
     const pluginRoot = path.join(options.rootDir, entry.source);
-    const manifestDigest = await calculateFileDigest(path.join(pluginRoot, SOURCE_MANIFEST_PATH));
+    const {
+      manifestDigest,
+      artifactDigest,
+    } = await calculateCatalogEntryDigestsFromRoot(pluginRoot);
     if (manifestDigest !== entry.manifestDigest) {
       throw new Error(
         `plugin "${entry.name}" manifestDigest mismatch: expected ${entry.manifestDigest}, got ${manifestDigest}.`,
       );
     }
 
-    const artifactDigest = await calculatePluginBundleFingerprint(pluginRoot);
     if (artifactDigest !== entry.artifactDigest) {
       throw new Error(
         `plugin "${entry.name}" artifactDigest mismatch: expected ${entry.artifactDigest}, got ${artifactDigest}.`,
@@ -887,6 +853,23 @@ function buildFullCatalogEvidence(
           : 'fresh',
     resolutionSource,
   };
+}
+
+async function materializeRetainedCatalogRoot(
+  archive: CatalogPackageArchive,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const stagingParent = resolveCurrentCatalogCacheStagingDir(env);
+  await fs.ensureDir(stagingParent);
+  const retainedRoot = await fs.mkdtemp(path.join(stagingParent, 'validated-remote-'));
+
+  try {
+    await archive.materialize(retainedRoot);
+    return retainedRoot;
+  } catch (error) {
+    await fs.remove(retainedRoot);
+    throw error;
+  }
 }
 
 async function resolveValidatedCatalogRoot(
@@ -1130,13 +1113,14 @@ async function resolveValidatedCatalogRoot(
           selectorKey: cacheResult.selectorKey,
         },
       };
-    } catch {
-      const retainedArchive = fullArchive;
-      if (!retainedArchive) {
+    } catch (error) {
+      if (!fullArchive) {
         throw new Error('full catalog archive is unavailable after validation.');
       }
+      const retainedRoot = await materializeRetainedCatalogRoot(fullArchive, env);
+
       return {
-        rootDir: retainedArchive.packageRoot,
+        rootDir: retainedRoot,
         source: 'remote',
         selector,
         sidecarManifestPackage: target.sidecarManifestPackage,
@@ -1156,6 +1140,7 @@ async function resolveValidatedCatalogRoot(
           used: false,
           cacheKey: buildCurrentCatalogCacheKey(cacheIdentity),
         },
+        reason: `current catalog cache write failed; using validated remote catalog directly: ${normalizeErrorMessage(error)}`,
       };
     }
   } finally {

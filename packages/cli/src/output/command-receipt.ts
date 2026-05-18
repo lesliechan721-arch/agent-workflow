@@ -1,5 +1,6 @@
 import type {
   CatalogResolution,
+  CatalogResolutionFailure,
   ConfigStoreRemovalResult,
   GeneratedArtifact,
   NativePluginsByPlatform,
@@ -189,7 +190,7 @@ interface ReceiptNativeSummary {
 }
 
 interface ReceiptJsonBase {
-  ok: true;
+  ok: boolean;
   command: 'init' | CliReceiptCommand;
   warnings: string[];
   catalog?: CatalogResolution;
@@ -218,6 +219,14 @@ export interface InitReceiptJson extends ReceiptJsonBase {
   rootDir: string;
   changed: boolean;
   catalog: CatalogResolution;
+}
+
+export interface InitFailureReceiptJson extends Omit<ReceiptJsonBase, 'catalog'> {
+  ok: false;
+  command: 'init';
+  receiptSchemaVersion: 2;
+  receiptKind: 'catalogCacheWarmup';
+  catalog: CatalogResolutionFailure;
 }
 
 export interface InstallReceiptJson extends ReceiptJsonBase {
@@ -677,6 +686,20 @@ function buildStatusCommand(result: CliCommandResult): string {
   return `aw status${firstPlugin ? ` ${firstPlugin}` : ''}${platformFlag}`;
 }
 
+function buildInitNextStepsBoundary(): Pick<
+  ReceiptJsonBase,
+  'nextStepsSchemaVersion' | 'nextSteps' | 'legacyNextSteps'
+> {
+  return createNextStepsBoundary([
+    createUiActionNextStep(
+      '查看当前环境与插件状态',
+      '可以确认 current catalog 是否已预热，以及当前环境识别到了哪些插件。',
+      'openStatus',
+      'aw status',
+    ),
+  ]);
+}
+
 function buildCommandNextSteps(result: CliCommandResult): NextStepInstruction[] {
   if (result.nextSteps && result.nextSteps.length > 0) {
     return dedupeNextSteps(result.nextSteps);
@@ -691,14 +714,6 @@ function buildCommandNextSteps(result: CliCommandResult): NextStepInstruction[] 
 }
 
 export function buildInitReceiptJson(result: CliInitReceipt): InitReceiptJson {
-  const nextSteps = createNextStepsBoundary([
-    createUiActionNextStep(
-      '查看当前环境与插件状态',
-      '可以确认 current catalog 是否已预热，以及当前环境识别到了哪些插件。',
-      'openStatus',
-      'aw status',
-    ),
-  ]);
   return {
     ok: true,
     command: 'init',
@@ -708,7 +723,22 @@ export function buildInitReceiptJson(result: CliInitReceipt): InitReceiptJson {
     changed: result.changed,
     catalog: result.catalog,
     warnings: [...new Set(result.warnings)],
-    ...nextSteps,
+    ...buildInitNextStepsBoundary(),
+  };
+}
+
+export function buildInitFailureReceiptJson(
+  failure: CatalogResolutionFailure,
+  warnings: string[] = [],
+): InitFailureReceiptJson {
+  return {
+    ok: false,
+    command: 'init',
+    receiptSchemaVersion: 2,
+    receiptKind: 'catalogCacheWarmup',
+    catalog: failure,
+    warnings: [...new Set(warnings)],
+    ...buildInitNextStepsBoundary(),
   };
 }
 

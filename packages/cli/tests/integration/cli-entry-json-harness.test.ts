@@ -596,30 +596,139 @@ describe('cli entry JSON stdout harness', () => {
     });
   });
 
-  it('keeps init --json stdout empty when current catalog resolution fails', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-init-json-failure-'));
-    tempDirs.push(tempDir);
-    vi.doMock('../../src/utils/plugin-catalog.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../../src/utils/plugin-catalog.js')>();
-      return {
-        ...actual,
-        resolveCurrentCatalog: vi.fn(async () => {
-          throw new Error('catalogUnavailable: test current catalog failure');
-        }),
-      };
-    });
-
-    const result = await runCliEntry(
-      ['init', '--json'],
+  it('prints structured init --json failure receipts when current catalog resolution fails', async () => {
+    const catalogFailureCases = [
       {
-        cwd: tempDir,
-        env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
+        name: 'catalogUnavailable',
+        resolution: {
+          selector: {
+            kind: 'distTag',
+            cliVersion: '1.4.0',
+            defaultChannel: 'latest',
+            requestedChannel: 'beta',
+            overrideSource: 'option:channel-alias' as const,
+          },
+          channel: 'beta' as const,
+          catalogVersion: '1.9.0-beta.2',
+          minAwVersion: '1.4.0',
+          latestCatalogBlocked: {
+            channel: 'beta' as const,
+            catalogVersion: '2.0.0-beta.3',
+            minAwVersion: '2.0.0',
+          },
+          historySchemaVersion: 1,
+          cacheFallback: {
+            used: false,
+          },
+          reason: 'catalogUnavailable: test current catalog failure',
+          reasonCode: 'catalogUnavailable' as const,
+        },
       },
-    );
+      {
+        name: 'catalogHistoryUnavailable',
+        resolution: {
+          selector: {
+            kind: 'default',
+            cliVersion: '1.4.0',
+            defaultChannel: 'latest',
+          },
+          channel: 'latest' as const,
+          catalogVersion: '2.0.0',
+          minAwVersion: '2.0.0',
+          latestCatalogBlocked: {
+            channel: 'latest' as const,
+            catalogVersion: '2.0.0',
+            minAwVersion: '2.0.0',
+          },
+          historySchemaVersion: 3,
+          reason: 'catalogHistoryUnavailable: history schema 3 is unsupported',
+          reasonCode: 'catalogHistoryUnavailable' as const,
+        },
+      },
+      {
+        name: 'awVersionTooLow',
+        resolution: {
+          selector: {
+            kind: 'default',
+            cliVersion: '1.4.0',
+            defaultChannel: 'latest',
+          },
+          channel: 'latest' as const,
+          catalogVersion: '2.0.0',
+          minAwVersion: '2.0.0',
+          latestCatalogBlocked: {
+            channel: 'latest' as const,
+            catalogVersion: '2.0.0',
+            minAwVersion: '2.0.0',
+          },
+          historySchemaVersion: 1,
+          reason: 'awVersionTooLow: compatible history catalog not found',
+          reasonCode: 'awVersionTooLow' as const,
+        },
+      },
+      {
+        name: 'explicitCatalogIncompatible',
+        resolution: {
+          selector: {
+            kind: 'exactVersion',
+            cliVersion: '1.4.0',
+            defaultChannel: 'latest',
+            requestedCatalogVersion: '2.0.0',
+            overrideSource: 'option:catalog-version' as const,
+          },
+          catalogVersion: '2.0.0',
+          minAwVersion: '2.0.0',
+          reason: 'explicitCatalogIncompatible: catalog 2.0.0 requires aw >= 2.0.0',
+          reasonCode: 'explicitCatalogIncompatible' as const,
+        },
+      },
+    ] as const;
 
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('catalogUnavailable: test current catalog failure');
+    for (const testCase of catalogFailureCases) {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `aw-cli-entry-init-json-failure-${testCase.name}-`));
+      tempDirs.push(tempDir);
+      vi.doMock('../../src/utils/plugin-catalog.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../src/utils/plugin-catalog.js')>();
+        return {
+          ...actual,
+          resolveCurrentCatalog: vi.fn(async () => {
+            throw new actual.CatalogResolutionError(testCase.resolution);
+          }),
+        };
+      });
+
+      const result = await runCliEntry(
+        ['init', '--json'],
+        {
+          cwd: tempDir,
+          env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).not.toBe('');
+      expect(result.parseJsonStdout()).toMatchObject({
+        ok: false,
+        command: 'init',
+        receiptSchemaVersion: 2,
+        receiptKind: 'catalogCacheWarmup',
+        warnings: [],
+        catalog: {
+          selector: testCase.resolution.selector,
+          reasonCode: testCase.resolution.reasonCode,
+          ...(testCase.resolution.latestCatalogBlocked
+            ? { latestCatalogBlocked: testCase.resolution.latestCatalogBlocked }
+            : {}),
+          ...(testCase.resolution.historySchemaVersion !== undefined
+            ? { historySchemaVersion: testCase.resolution.historySchemaVersion }
+            : {}),
+        },
+      });
+      expect(result.stderr).toContain(testCase.resolution.reason);
+
+      vi.resetModules();
+      vi.doUnmock('../../src/utils/plugin-catalog.js');
+    }
   });
 
   it('keeps init --json stdout pure when current catalog warmup succeeds', async () => {

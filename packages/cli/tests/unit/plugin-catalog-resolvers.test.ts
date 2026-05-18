@@ -3,8 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { stageCatalogArtifacts } from '../../scripts/plugin-staging.js';
 import type { CatalogChannel } from '../../src/types.js';
 import { resolvePluginsFromCatalog } from '../../src/utils/manifest.js';
 import {
@@ -12,11 +13,14 @@ import {
   resolveCatalogPlugins,
 } from '../../src/utils/plugin-catalog.js';
 import {
+  calculateCatalogEntryDigestsFromRoot,
+} from '../../src/utils/catalog-digests.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
+import {
   setCatalogPackageSourceForTests,
   type CatalogPackageArchiveIdentity,
   type CatalogPackageSource,
 } from '../../src/utils/marketplace.js';
-import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -64,6 +68,7 @@ async function createValidCatalogPackage(options: {
   const plugins = await resolvePluginsFromCatalog(fullRoot, undefined);
   const entries = await Promise.all(plugins.map(async (plugin) => {
     const pluginRoot = path.join(fullRoot, 'plugins', plugin.manifest.name);
+    const digests = await calculateCatalogEntryDigestsFromRoot(pluginRoot);
     return {
       name: plugin.manifest.name,
       version: plugin.manifest.version,
@@ -76,8 +81,8 @@ async function createValidCatalogPackage(options: {
       compatibility: plugin.manifest.compatibility,
       ...(plugin.manifest.dependencies ? { dependencies: plugin.manifest.dependencies } : {}),
       source: `./plugins/${plugin.manifest.name}`,
-      artifactDigest: await calculatePluginBundleFingerprint(pluginRoot),
-      manifestDigest: await calculateFileDigest(plugin.manifestPath),
+      artifactDigest: digests.artifactDigest,
+      manifestDigest: digests.manifestDigest,
     };
   }));
   const manifest = {
@@ -250,6 +255,7 @@ function createFakeCatalogPackageSource(options: {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   setCatalogPackageSourceForTests(null);
   delete process.env.AW_CLI_VERSION;
   delete process.env.AW_CATALOG_CHANNEL;
@@ -258,6 +264,37 @@ afterEach(async () => {
 });
 
 describe('plugin catalog resolvers', () => {
+  it('keeps staging digests aligned with runtime validation for the same plugin', async () => {
+    const { repoRoot } = await makeRepoWorkspace();
+    const outputRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(outputRoot);
+
+    const staged = await stageCatalogArtifacts({
+      repoRoot,
+      outputRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+    });
+    const manifest = await fs.readJson(staged.canonicalManifestPath) as {
+      entries: Array<{
+        name: string;
+        source: string;
+        artifactDigest: string;
+        manifestDigest: string;
+      }>;
+    };
+    const gitCommitEntry = manifest.entries.find((entry) => entry.name === 'git-commit');
+
+    expect(gitCommitEntry).toBeDefined();
+    const runtimeDigests = await calculateCatalogEntryDigestsFromRoot(
+      path.join(staged.fullPackageRoot, gitCommitEntry!.source),
+    );
+    expect(runtimeDigests).toEqual({
+      artifactDigest: gitCommitEntry!.artifactDigest,
+      manifestDigest: gitCommitEntry!.manifestDigest,
+    });
+  });
+
   it('uses history to resolve the latest compatible catalog on the same channel', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const compatiblePackage = await createValidCatalogPackage({
@@ -419,6 +456,70 @@ describe('plugin catalog resolvers', () => {
         stage: 'fullTarball',
       },
     });
+  });
+
+  it('returns a readable validated remote root when cache persistence fails', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+    }));
+
+    vi.spyOn(localMarketplaceModule, 'writeCurrentCatalogCacheEntry').mockRejectedValueOnce(
+      new Error('simulated cache write failure'),
+    );
+
+    const resolution = await resolveCurrentCatalog(env);
+    expect(resolution).toMatchObject({
+      source: 'remote',
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      cacheFallback: {
+        used: false,
+      },
+    });
+    expect(resolution.reason).toContain('simulated cache write failure');
+    await expect(fs.pathExists(resolution.rootDir)).resolves.toBe(true);
+    await expect(fs.readFile(path.join(resolution.rootDir, 'catalog-manifest.json'), 'utf8')).resolves.toContain('"catalogVersion": "1.0.0"');
+
+    await expect(resolvePluginsFromCatalog(resolution.rootDir, ['git-commit'])).resolves.toMatchObject([
+      {
+        manifest: {
+          name: 'git-commit',
+        },
+      },
+    ]);
   });
 
   it('does not reuse a cache entry from another selector or channel', async () => {
