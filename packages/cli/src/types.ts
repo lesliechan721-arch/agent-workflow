@@ -571,6 +571,7 @@ export interface PlatformPluginManifest {
   name: string;
   version: PluginVersion;
   description: string;
+  compatibility: PluginCompatibility;
   skills?: string;
   mcpServers?: string;
   apps?: string;

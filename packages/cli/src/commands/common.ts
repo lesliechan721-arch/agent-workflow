@@ -576,6 +576,11 @@ export async function createHistoricalPluginTarget(
         name: pluginName,
         version: pluginRecord?.lastResolvedVersion ?? '0.0.0',
         description: 'Historical managed plugin placeholder.',
+        compatibility: {
+          aw: {
+            minVersion: '0.0.0',
+          },
+        },
         skills:
           codexHistoricalKinds.has('skill') ||
           (codexRequiresNativePlugin && !hasCodexNativeManifestPlaceholder)

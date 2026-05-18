@@ -3148,6 +3148,11 @@ export function createPlatformManifestBase(plugin: PluginMeta): PlatformPluginMa
     name: plugin.manifest.name,
     version: plugin.manifest.version,
     description: plugin.manifest.description,
+    compatibility: structuredClone(plugin.manifest.compatibility ?? {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    }),
     interface: plugin.manifest.interface,
   };
 }

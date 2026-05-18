@@ -226,6 +226,7 @@ async function validateClaudeManifest(
       'name',
       'version',
       'description',
+      'compatibility',
       'skills',
       'mcpServers',
       'interface',
@@ -241,6 +242,7 @@ async function validateClaudeManifest(
     }
   }
   assertStrictSemVer(manifest.version, 'claude manifest.version');
+  assertStrictSemVer(manifest.compatibility.aw.minVersion, 'claude manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
@@ -309,6 +311,7 @@ async function validateCodexManifest(
       'name',
       'version',
       'description',
+      'compatibility',
       'skills',
       'mcpServers',
       'apps',
@@ -318,6 +321,7 @@ async function validateCodexManifest(
     }
   }
   assertStrictSemVer(manifest.version, 'codex manifest.version');
+  assertStrictSemVer(manifest.compatibility.aw.minVersion, 'codex manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');

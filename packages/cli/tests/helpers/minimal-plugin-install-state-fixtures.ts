@@ -754,6 +754,11 @@ async function writeHistoricalLifecycleRuntime(
     {
       name: target.location.plugin,
       version: target.source.pluginVersion,
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
       artifacts: [createProjectIdentityArtifact(target)],
     },
     { spaces: 2 },

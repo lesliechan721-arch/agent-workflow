@@ -78,6 +78,11 @@ async function createPluginMeta(options: {
     name: options.pluginName,
     version: options.version ?? '1.0.0',
     description: `${options.pluginName} plugin`,
+    compatibility: {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    },
     marketplace: {
       category: 'workflow',
       strict: true,
