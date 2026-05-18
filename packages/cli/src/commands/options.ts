@@ -1,4 +1,5 @@
 import type {
+  CatalogChannel,
   CommandOptions,
   InstallCommandOptions,
   PlatformName,
@@ -21,6 +22,8 @@ export type RawCommandOptions = {
   cwd?: string;
   scope?: string;
   platform?: string;
+  catalogChannel?: string;
+  catalogVersion?: string;
   scriptTimeout?: string | number;
   scriptTimeoutMs?: string | number;
 };
@@ -39,6 +42,8 @@ export type RawStatusCommandOptions = {
   cwd?: string;
   scope?: string;
   platform?: string;
+  catalogChannel?: string;
+  catalogVersion?: string;
   verbose?: boolean;
   json?: boolean;
 };
@@ -109,6 +114,12 @@ export interface RawConfigProjectLayerOptions {
   local?: boolean;
 }
 
+export interface RawCatalogSelectorOptions {
+  catalogChannel?: string;
+  catalogVersion?: string;
+  channel?: string;
+}
+
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
 export const SCRIPT_TIMEOUT_MAX_MS = 300000;
 export const SCRIPT_TIMEOUT_DEFAULT_MS = 30000;
@@ -160,6 +171,18 @@ export function parseSkillTriggerPreference(
 
   throw new Error(
     `Unsupported skill trigger preference "${renderUnsupportedValue(preference)}". Expected one of: default, manual, auto.`,
+  );
+}
+
+export function parseCatalogChannelValue(
+  channel: unknown,
+): CatalogChannel {
+  if (channel === 'latest' || channel === 'beta') {
+    return channel;
+  }
+
+  throw new Error(
+    `Unsupported catalog channel "${renderUnsupportedValue(channel)}". Expected one of: latest, beta.`,
   );
 }
 
@@ -216,6 +239,59 @@ function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined):
   return rawCwd ?? defaultCwd ?? process.cwd();
 }
 
+export function normalizeCatalogSelectorOptions(
+  raw: RawCatalogSelectorOptions = {},
+  options: { allowChannelAlias?: boolean } = {},
+): Pick<CommandOptions, 'catalogChannel' | 'catalogVersion'> {
+  const aliasChannel = options.allowChannelAlias ? raw.channel : undefined;
+  if (
+    raw.catalogChannel !== undefined &&
+    aliasChannel !== undefined &&
+    raw.catalogChannel !== aliasChannel
+  ) {
+    throw new Error('`--channel` 与 `--catalog-channel` 不能指定不同的值。');
+  }
+
+  const catalogChannelInput = raw.catalogChannel ?? aliasChannel;
+  if (catalogChannelInput !== undefined && raw.catalogVersion !== undefined) {
+    throw new Error('`--catalog-channel` 与 `--catalog-version` 互斥，不能同时指定。');
+  }
+
+  return {
+    ...(catalogChannelInput === undefined
+      ? {}
+      : { catalogChannel: parseCatalogChannelValue(catalogChannelInput) }),
+    ...(raw.catalogVersion === undefined
+      ? {}
+      : { catalogVersion: String(raw.catalogVersion) }),
+  };
+}
+
+export function applyCatalogSelectorEnv<
+  T extends Pick<CommandOptions, 'catalogChannel' | 'catalogVersion'>,
+>(
+  env: NodeJS.ProcessEnv,
+  options: T,
+): NodeJS.ProcessEnv {
+  const nextEnv = {
+    ...env,
+  };
+
+  if (options.catalogChannel === undefined) {
+    delete nextEnv.AW_CATALOG_CHANNEL;
+  } else {
+    nextEnv.AW_CATALOG_CHANNEL = options.catalogChannel;
+  }
+
+  if (options.catalogVersion === undefined) {
+    delete nextEnv.AW_CATALOG_VERSION;
+  } else {
+    nextEnv.AW_CATALOG_VERSION = options.catalogVersion;
+  }
+
+  return nextEnv;
+}
+
 export function normalizeCommandOptions(
   raw: RawCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
@@ -231,6 +307,7 @@ export function normalizeCommandOptions(
     cwd: resolveCwd(raw.cwd, defaults.cwd),
     scope: parseScopeValue(raw.scope ?? defaults.defaultScope ?? 'user'),
     platform: parsePlatformValue(platformInput ?? 'both'),
+    ...normalizeCatalogSelectorOptions(raw),
     ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
   };
 }
@@ -296,6 +373,7 @@ export function normalizeStatusCommandOptions(
     cwd: resolveCwd(raw.cwd, defaults.cwd),
     ...(scope === undefined ? {} : { scope }),
     ...(platform === undefined ? {} : { platform }),
+    ...normalizeCatalogSelectorOptions(raw),
     verbose: raw.verbose,
     json: raw.json,
   };

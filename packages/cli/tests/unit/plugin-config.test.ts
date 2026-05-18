@@ -3,7 +3,12 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { PluginManifestSource } from '../../src/types.js';
+import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
+import { writeInstallRecordFileAt } from '../../src/install-state/facade.js';
+import {
+  createHistoricalLifecycleRuntimePaths,
+  getInstallRecordPath,
+} from '../../src/install-state/paths.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
@@ -13,6 +18,7 @@ import {
   readPluginConfigStore,
   resetPluginConfigStore,
   resolveAwProjectRoot,
+  resolveConfigReadV2,
   resolveEffectivePluginConfig,
   resolveProjectArtifactRenderConfig,
   resolveProjectScopedPluginConfigView,
@@ -21,6 +27,10 @@ import {
   toCliConfigPromptOptions,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
 
 const tempDirs: string[] = [];
 
@@ -41,6 +51,11 @@ function createManifest(pluginName = 'configurable-plugin'): PluginManifestSourc
       policy: {
         installation: 'AVAILABLE',
         authentication: 'NONE',
+      },
+    },
+    compatibility: {
+      aw: {
+        minVersion: '0.0.0',
       },
     },
     config: {
@@ -68,6 +83,90 @@ function createManifest(pluginName = 'configurable-plugin'): PluginManifestSourc
       },
     },
   };
+}
+
+async function materializePlugin(root: string, manifest: PluginManifestSource): Promise<PluginMeta> {
+  const pluginRoot = path.join(root, `${manifest.name}-${manifest.version}`);
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  await fs.ensureDir(path.dirname(manifestPath));
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  return {
+    rootDir: pluginRoot,
+    manifestPath,
+    manifest,
+  };
+}
+
+async function writeHistoricalInstallRecord(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+  platform: 'codex' | 'claude';
+  scope: 'user' | 'project';
+  projectKey?: string;
+}): Promise<void> {
+  const location = options.scope === 'project'
+    ? {
+        plugin: options.plugin.manifest.name,
+        platform: options.platform,
+        scope: 'project' as const,
+        projectKey: options.projectKey ?? '',
+      }
+    : {
+        plugin: options.plugin.manifest.name,
+        platform: options.platform,
+        scope: 'user' as const,
+      };
+  const recordPath = getInstallRecordPath(options.cwd, location, options.env);
+  const recordId = path.basename(recordPath, '.json');
+  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
+  const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+    cwd: options.cwd,
+    location,
+    recordId,
+    manifestDigest: sourceManifestDigest,
+    bundleFingerprint: sourceBundleFingerprint,
+    nonce: `${options.platform}-${options.scope}`,
+    env: options.env,
+    manifestRelativePath: '.agents-plugin/plugin.json',
+  });
+  await fs.copy(options.plugin.rootDir, lifecyclePaths.bundleRoot);
+  const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+  const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
+  await writeInstallRecordFileAt(recordPath, {
+    version: 2,
+    recordId,
+    record: {
+      pluginName: options.plugin.manifest.name,
+      platform: options.platform,
+      scope: options.scope,
+      ...(options.scope === 'project' ? { projectKey: options.projectKey ?? '' } : {}),
+      installedAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      source: {
+        pluginVersion: options.plugin.manifest.version,
+        manifestDigest,
+        bundleFingerprint,
+      },
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+      },
+      lifecycle: {
+        runtimeRoot: lifecyclePaths.runtimeRoot,
+        bundleRoot: lifecyclePaths.bundleRoot,
+        manifestPath: lifecyclePaths.manifestPath,
+        pluginVersion: options.plugin.manifest.version,
+        sourceManifestDigest: manifestDigest,
+        bundleFingerprint,
+        events: ['install'],
+        createdAt: '2026-05-18T00:00:00.000Z',
+      },
+      artifacts: [],
+      dependencyEdges: [],
+    },
+  }, { env: options.env });
 }
 
 afterEach(async () => {
@@ -595,5 +694,110 @@ describe('plugin config store', () => {
         'Run `aw config set configurable-plugin token <value> -s user`, or open `aw` to complete setup.',
     );
     await expect(fs.pathExists(path.join(env.AW_HOME!, 'plugin-config', manifest.name, 'config.json'))).resolves.toBe(false);
+  });
+
+  it('prefers installed historical schema over the current catalog manifest when reading config', async () => {
+    const root = await makeTempRoot('aw-plugin-config-historical-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+
+    const historicalManifest = createManifest('configurable-plugin');
+    historicalManifest.version = '0.1.0';
+    delete historicalManifest.config!.schema.enabled;
+    const currentManifest = createManifest('configurable-plugin');
+    currentManifest.version = '0.2.0';
+    currentManifest.config!.schema.newField = {
+      type: 'string',
+      default: 'catalog-only',
+    };
+
+    const historicalPlugin = await materializePlugin(root, historicalManifest);
+    const currentPlugin = await materializePlugin(root, currentManifest);
+    await Promise.all([
+      writeHistoricalInstallRecord({
+        cwd,
+        env,
+        plugin: historicalPlugin,
+        platform: 'codex',
+        scope: 'user',
+      }),
+      writeHistoricalInstallRecord({
+        cwd,
+        env,
+        plugin: historicalPlugin,
+        platform: 'claude',
+        scope: 'user',
+      }),
+    ]);
+    await writePluginConfigStore({
+      pluginName: historicalManifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        token: 'secret',
+      },
+    });
+
+    const resolved = await resolveConfigReadV2({
+      pluginName: historicalManifest.name,
+      plugin: currentPlugin,
+      scope: 'user',
+      projectLayer: 'shared',
+      cwd,
+      env,
+    });
+
+    expect(resolved.schema).toMatchObject({
+      source: 'installedHistorical',
+      pluginVersion: '0.1.0',
+    });
+    expect(resolved.fields.some((field) => field.key === 'newField')).toBe(false);
+    expect(resolved.fields.some((field) => field.key === 'enabled')).toBe(false);
+    expect(resolved.fields.some((field) => field.key === 'token')).toBe(true);
+  });
+
+  it('fails with configSchemaConflict when installed consumers disagree on schema identity', async () => {
+    const root = await makeTempRoot('aw-plugin-config-conflict-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+
+    const codexManifest = createManifest('configurable-plugin');
+    codexManifest.version = '0.1.0';
+    const claudeManifest = createManifest('configurable-plugin');
+    claudeManifest.version = '0.2.0';
+    claudeManifest.config!.schema.newField = {
+      type: 'string',
+      default: 'conflict',
+    };
+
+    const codexPlugin = await materializePlugin(root, codexManifest);
+    const claudePlugin = await materializePlugin(root, claudeManifest);
+    await Promise.all([
+      writeHistoricalInstallRecord({
+        cwd,
+        env,
+        plugin: codexPlugin,
+        platform: 'codex',
+        scope: 'user',
+      }),
+      writeHistoricalInstallRecord({
+        cwd,
+        env,
+        plugin: claudePlugin,
+        platform: 'claude',
+        scope: 'user',
+      }),
+    ]);
+
+    await expect(resolveConfigReadV2({
+      pluginName: 'configurable-plugin',
+      scope: 'user',
+      projectLayer: 'shared',
+      cwd,
+      env,
+    })).rejects.toThrow('configSchemaConflict');
   });
 });

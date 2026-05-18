@@ -42,6 +42,11 @@ function createManifest(name = 'script-plugin'): PluginManifestSource {
     name,
     version: '0.1.0',
     description: 'Lifecycle test plugin',
+    compatibility: {
+      aw: {
+        minVersion: '0.1.0',
+      },
+    },
     marketplace: {
       category: 'test',
       strict: true,

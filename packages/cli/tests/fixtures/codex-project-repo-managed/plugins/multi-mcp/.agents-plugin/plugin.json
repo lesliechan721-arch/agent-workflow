@@ -2,6 +2,11 @@
   "name": "multi-mcp",
   "version": "0.1.0",
   "description": "Fixture plugin with multiple structured MCP servers.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "mcpServers": "./.mcp.json",
   "marketplace": {
     "category": "workflow",

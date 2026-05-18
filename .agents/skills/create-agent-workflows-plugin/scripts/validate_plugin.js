@@ -361,6 +361,86 @@ async function tryLoadCliManifestTools() {
 const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
+function parseStrictSemVer(value) {
+  const stringValue = String(value);
+  const match = stringValue.match(STRICT_SEMVER_PATTERN);
+  if (!match) return null;
+
+  return {
+    raw: stringValue,
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+function comparePrereleaseIdentifier(left, right) {
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+
+  if (leftNumeric && rightNumeric) {
+    return Number(left) - Number(right);
+  }
+  if (leftNumeric) return -1;
+  if (rightNumeric) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function compareStrictSemVer(left, right) {
+  const leftVersion = parseStrictSemVer(left);
+  const rightVersion = parseStrictSemVer(right);
+  if (!leftVersion || !rightVersion) {
+    throw new Error('compareStrictSemVer requires strict SemVer inputs.');
+  }
+
+  for (const key of ['major', 'minor', 'patch']) {
+    if (leftVersion[key] !== rightVersion[key]) {
+      return leftVersion[key] - rightVersion[key];
+    }
+  }
+
+  const leftPrerelease = leftVersion.prerelease;
+  const rightPrerelease = rightVersion.prerelease;
+  if (leftPrerelease.length === 0 && rightPrerelease.length === 0) {
+    return 0;
+  }
+  if (leftPrerelease.length === 0) {
+    return 1;
+  }
+  if (rightPrerelease.length === 0) {
+    return -1;
+  }
+
+  const maxLength = Math.max(leftPrerelease.length, rightPrerelease.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftIdentifier = leftPrerelease[index];
+    const rightIdentifier = rightPrerelease[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    const result = comparePrereleaseIdentifier(leftIdentifier, rightIdentifier);
+    if (result !== 0) {
+      return result;
+    }
+  }
+
+  return 0;
+}
+
+function validateStrictSemVerString(value, fieldName) {
+  if (value === undefined) {
+    error(`Invalid ${fieldName}: expected a strict SemVer 2.0.0 string. Received undefined.`);
+    return null;
+  }
+  if (typeof value !== 'string' || !STRICT_SEMVER_PATTERN.test(value)) {
+    error(`Invalid ${fieldName}: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(value)}.`);
+    return null;
+  }
+  return value;
+}
+
 function validateManifestLightweight(manifest) {
   const input = expectRecord(manifest, 'plugin manifest');
   if (!input) return;
@@ -371,6 +451,7 @@ function validateManifestLightweight(manifest) {
     'name',
     'version',
     'description',
+    'compatibility',
     'skills',
     'slashCommands',
     'skillTriggers',
@@ -467,8 +548,8 @@ function validateManifestDependenciesLightweight(pluginName, dependencies) {
     const fieldName = `dependencies.plugins[${index}]`;
     const entry = expectRecord(rawEntry, fieldName);
     if (!entry) return;
-    validateAllowedKeys(entry, fieldName, ['name', 'target', 'inheritInstallOptions', 'when']);
-    let platformsForOverlap = ['codex', 'claude'];
+  validateAllowedKeys(entry, fieldName, ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
+  let platformsForOverlap = ['codex', 'claude'];
 
     const name = validateManifestString(entry.name, `${fieldName}.name`);
     if (name && !PLUGIN_NAME_PATTERN.test(name)) {
@@ -476,6 +557,10 @@ function validateManifestDependenciesLightweight(pluginName, dependencies) {
     }
     if (name && pluginName && name === pluginName) {
       error(`${fieldName}.name: plugin "${pluginName}" cannot depend on itself.`);
+    }
+
+    if (entry.minVersion !== undefined) {
+      validateStrictSemVerString(entry.minVersion, `${fieldName}.minVersion`);
     }
 
     if (entry.target !== undefined) {
@@ -1212,6 +1297,41 @@ function validateCatalogDependencyReferences(pluginDir, manifest) {
       error(`Invalid dependencies.plugins[${index}].name for plugin "${manifest.name}": current catalog is missing plugin "${entry.name}".`);
     }
   });
+}
+
+function validatePluginVersionContracts(manifest, options) {
+  if (manifest.compatibility === undefined) {
+    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
+    return;
+  }
+  const compatibility = expectRecord(manifest.compatibility, 'compatibility');
+  if (!compatibility) {
+    return;
+  }
+
+  validateAllowedKeys(compatibility, 'compatibility', ['aw']);
+  if (compatibility.aw === undefined) {
+    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
+    return;
+  }
+  const aw = expectRecord(compatibility.aw, 'compatibility.aw');
+  if (!aw) {
+    return;
+  }
+  validateAllowedKeys(aw, 'compatibility.aw', ['minVersion']);
+  const pluginMinVersion = validateStrictSemVerString(
+    aw.minVersion,
+    'compatibility.aw.minVersion',
+  );
+  if (!pluginMinVersion || !options.catalogMinVersion) {
+    return;
+  }
+
+  if (compareStrictSemVer(pluginMinVersion, options.catalogMinVersion) > 0) {
+    error(
+      `Invalid compatibility.aw.minVersion for plugin "${pluginNameForError(manifest)}": received ${JSON.stringify(pluginMinVersion)}, which is higher than target catalog minimum ${JSON.stringify(options.catalogMinVersion)}.`,
+    );
+  }
 }
 
 function validateSkillTriggers(pluginDir, manifest) {
@@ -2912,7 +3032,7 @@ function validateSlashCommands(pluginDir, manifest) {
 // Main
 // ---------------------------------------------------------------------------
 
-async function validatePluginDir(pluginDir) {
+async function validatePluginDir(pluginDir, options) {
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
   if (!fs.existsSync(manifestPath)) {
@@ -2947,6 +3067,7 @@ async function validatePluginDir(pluginDir) {
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
+  validatePluginVersionContracts(manifest, options);
   validateCatalogDependencyReferences(pluginDir, manifest);
   validateSkillTriggers(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
@@ -2959,20 +3080,64 @@ async function validatePluginDir(pluginDir) {
   validateSlashCommands(pluginDir, manifest);
 }
 
-async function main() {
-  const pluginDir = process.argv[2];
-  if (!pluginDir) {
-    console.error('Usage: node validate_plugin.js <plugin-directory>');
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const options = {
+    pluginDir: null,
+    catalogMinVersion: null,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith('--')) {
+      if (!options.pluginDir) {
+        options.pluginDir = arg;
+        continue;
+      }
+      console.error(`Unknown argument: ${arg}`);
+      process.exit(1);
+    }
+
+    if (arg === '--catalog-min-version') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        console.error('--catalog-min-version requires a value.');
+        process.exit(1);
+      }
+      index += 1;
+      if (!STRICT_SEMVER_PATTERN.test(value)) {
+        console.error(
+          `Invalid --catalog-min-version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(value)}.`,
+        );
+        process.exit(1);
+      }
+      options.catalogMinVersion = value;
+      continue;
+    }
+
+    console.error(`Unknown option: ${arg}`);
     process.exit(1);
   }
 
-  const resolved = path.resolve(pluginDir);
+  return options;
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+  if (!args.pluginDir) {
+    console.error('Usage: node validate_plugin.js <plugin-directory> [--catalog-min-version <semver>]');
+    process.exit(1);
+  }
+
+  const resolved = path.resolve(args.pluginDir);
   if (!fs.existsSync(resolved)) {
     console.error(`[ERROR] Directory not found: ${resolved}`);
     process.exit(1);
   }
 
-  await validatePluginDir(resolved);
+  await validatePluginDir(resolved, {
+    catalogMinVersion: args.catalogMinVersion,
+  });
 
   if (warnings.length > 0) {
     console.log(`\n[WARN] ${warnings.length} warning(s):`);

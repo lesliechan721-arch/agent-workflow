@@ -18,6 +18,7 @@ import {
   validateProjectArtifactSharedLocator,
   validateSharedSkillTriggerRuntimeOwner,
 } from '../../src/install-state/index.js';
+import { readInstallRecordFileAt } from '../../src/install-state/facade.js';
 import type {
   DynamicArtifactDiagnosticCache,
   InstallRecordFile,
@@ -140,6 +141,21 @@ describe('install-state schema', () => {
     }
   });
 
+  it('blocks invalid install record SemVer fields during file reads and preserves field path/value', async () => {
+    const filePath = path.join(await makeTempDir('aw-install-state-schema-invalid-version-'), `${createRecordId(makeLocation())}.json`);
+    const record = makeInstallRecordFile();
+    record.record.source.pluginVersion = 'latest';
+    await fs.writeJson(filePath, record, { spaces: 2 });
+
+    const readResult = await readInstallRecordFileAt(filePath);
+    expect(readResult.status).toBe('invalid');
+    if (readResult.status === 'invalid') {
+      expect(readResult.code).toBe('invalidStrictSemVer');
+      expect(readResult.error).toContain('record.source.pluginVersion');
+      expect(readResult.error).toContain('"latest"');
+    }
+  });
+
   it('rejects banned legacy, snapshot, digest, refresh, and health fields in install records', () => {
     const legacyCases: Array<{
       name: string;
@@ -249,6 +265,42 @@ describe('install-state schema', () => {
       target: 'codex.developerInstructionsBlock',
       state: 'present',
     }).ok).toBe(false);
+  });
+
+  it('rejects invalid project identity plugin versions with the shared SemVer error model', () => {
+    const result = validateProjectArtifactIdentityFile({
+      version: 1,
+      sharedIdentityId: createSharedIdentityId(createProjectArtifactSharedLocator({
+        plugin: 'git-commit',
+        platform: 'codex',
+        repoRoot: '/Users/example/work/repo',
+        projectRoot: '/Users/example/work/repo',
+      })),
+      locator: createProjectArtifactSharedLocator({
+        plugin: 'git-commit',
+        platform: 'codex',
+        repoRoot: '/Users/example/work/repo',
+        projectRoot: '/Users/example/work/repo',
+      }),
+      source: {
+        pluginVersion: 'workspace',
+        manifestDigest: 'sha256:manifest',
+        bundleFingerprint: 'sha256:bundle',
+      },
+      generatedAt: '2026-05-07T00:00:00.000Z',
+      artifacts: [],
+    }, {
+      projectKey: '/Users/example/work/repo',
+      cwd: '/Users/example/work/repo',
+      homeDir: '/Users/example',
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('invalidStrictSemVer');
+      expect(result.error).toContain('project artifact identity file.source.pluginVersion');
+      expect(result.error).toContain('"workspace"');
+    }
   });
 
   it('keeps recordId, sharedIdentityId, and shared owner filenames stable across slug collisions and path-like plugin names', () => {

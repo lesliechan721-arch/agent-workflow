@@ -5,7 +5,7 @@
 ## Test Layers
 
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
-- **`smoke/`** — 专门验证真实 `pnpm build` 和 `pnpm pack:cli` 产物，不进入常规 `pnpm test`
+- **`smoke/`** — 专门验证真实 `pnpm build`、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
 - **`fixtures/repo-template/`** — 含 `.codex/`、`.claude/` 等完整项目结构示例
 - **`fixtures/codex-config/`** — Codex 配置示例
@@ -17,6 +17,7 @@
 - 命令编排与平台行为：`tests/integration/cli.test.ts`、`upgrade-command.test.ts`、`skill-trigger-command.test.ts`
 - 作者工具：`tests/integration/authoring-tools.test.ts` 覆盖脚手架、校验脚本和作者文档关键约定
 - 插件依赖：`plugin-dependency-fixtures.test.ts`、`plugin-dependency-graph.test.ts`、`plugin-dependency-planner.test.ts`、`status-dependencies.test.ts` 和相关命令测试覆盖 manifest 合同、install record edge、dependency index、location-aware planner、自动安装、升级、卸载保护和 status 投影
+- 版本管理与 catalog：`manifest.test.ts`、`plugin-catalog.test.ts`、`plugin-catalog-resolvers.test.ts`、`local-marketplace.test.ts`、`command-options.test.ts`、`command-receipt.test.ts`、`status-command.test.ts`、`config-write.test.ts` 和 smoke 矩阵覆盖 CLI / catalog / plugin 三套版本身份、sidecar/full manifest 一致性、history、selector、cache fallback、latest blocked、active view、historical runtime 和 config schema source
 - Runtime 环境变量：`tests/integration/runtime-env.test.ts` 覆盖 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 等路径覆写
 - 插件配置与脚本：`plugin-config.test.ts`、`plugin-scripts.test.ts`、`plugin-lifecycle-command.test.ts` 覆盖 AW config、lifecycle context/runner、status health 和命令接入
 
@@ -26,7 +27,18 @@ CLI entry 测试优先通过 `CliRuntimeOptions` 注入 fake native runner、fak
 
 install-state fixture 要能按 location 单独构造 record v2、dynamic diagnostic cache、project artifact identity、dependency index、historical lifecycle runtime、native transaction marker 和 shared runtime owner。损坏矩阵至少覆盖：单条 record 损坏不影响同 scope 其它插件、diagnostic cache 损坏只降低动态 artifact 诊断确定性、identity metadata 损坏阻止 adopt-existing、dependency index unreadable / stale 时删除默认 fail closed、Codex user scope 只剩 enabled config 且没有 cache/record/marker 时允许 cleanup 收口、historical lifecycle runtime 缺失时普通卸载需要明确诊断、native marker-only 可以被 repair / cleanup 收口、shared owner record digest 不匹配时不自动重选 owner。project private state 和 project local config fixture 必须默认被 ignore；project shared config 和 project artifact identity fixture 不能默认 ignore。
 
-插件依赖测试优先从纯函数层锁住行为，再接命令层。manifest 和作者工具 parity fixture 要覆盖合法 `dependencies.plugins`、未知字段、自依赖、非法 `when.platforms`、同名依赖平台条件重叠、非法 `target.scope`、`target.platform` 拒绝、`inheritInstallOptions` 类型，以及 catalog-level dependency reference validator。build smoke 需要断言 runtime `.agents-plugin/plugin.json` 保留 `dependencies`，`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和平台 marketplace manifest 不包含 `dependencies`。
+插件依赖测试优先从纯函数层锁住行为，再接命令层。manifest 和作者工具 parity fixture 要覆盖合法 `dependencies.plugins[].minVersion`、未知字段、自依赖、非法 `when.platforms`、同名依赖平台条件重叠、非法 `target.scope`、`target.platform` 拒绝、`inheritInstallOptions` 类型、旧式 `version` / `range` 拒绝，以及 catalog-level dependency reference validator。build smoke 需要断言 runtime `.agents-plugin/plugin.json` 保留 `dependencies`，`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和平台 marketplace manifest 不包含 `dependencies`。
+
+版本管理回归必须覆盖这些矩阵：
+
+- SemVer：CLI version、catalog version、catalog minAwVersion、plugin version、plugin minAwVersion、dependency minVersion、installed resolvedVersion 都使用严格 SemVer；非法值在比较前失败，build metadata 不触发升级。
+- Manifest / catalog：插件缺失 `compatibility.aw.minVersion`、插件最低 CLI 版本高于 catalog 门槛、非法 `dependencies.plugins[].minVersion`、旧式 `version` / `range` 字段、同一 catalog 内重复插件名、sidecar/full manifest 不一致都要失败。
+- 发布轨道：`latest` 拒绝 prerelease catalog version 和 prerelease 插件 version；`beta` 要求 prerelease catalog version，允许 stable / prerelease 插件混合；同一 catalog version 不能跨轨道复用。
+- History / digest：sidecar history releases 包含 catalog version、catalog minAwVersion、插件 version、插件 minAwVersion、`artifactDigest` 和 `manifestDigest`；同一 `plugin@version` digest 改变、仅 build metadata 替代、artifact 改变但插件 version 未递增都要被发布门禁阻断。
+- Selector / cache fallback：默认 channel、显式 dist-tag、显式 exact version 三类 selector 互斥并隔离 cache；latest blocked 后 history 不可用固定为 `catalogHistoryUnavailable`，history 确认无兼容版本固定为 `awVersionTooLow`，不能被 cache fallback 推翻；只有已解析出允许使用的 catalog identity 后，远程失败才可命中匹配 cache。
+- `aw init`：只预热 catalog/cache，不安装、不升级、不写 install record、不 materialize active view；`--force` 不删除仍被 install record、project artifact identity、dynamic diagnostic cache 或 native recovery marker 引用的 historical runtime。
+- Active view / historical runtime：user-scope native 写命令调用平台前必须 materialize 并校验 active local marketplace/runtime view，元数据包含 selector、channel、catalog version、minAwVersion、sidecar identity、digest 和写入 CLI version；成功 install/upgrade/remote repair 在提交成功 record 前持久化可校验 historical runtime。
+- Config schema / reset：已安装位置优先使用 historical schema；未安装 schema 路径需要 current catalog；schema conflict 阻断 `set/unset`，`config reset` 对已消费 store 暴露 `removedKeys` 和 `artifactRefresh`，orphan store raw 删除不伪造 schema identity。
 
 planner 单测不要依赖真实 adapter 写文件，只用 catalog manifest、install record fixture、dependency index fixture、project artifact identity fixture 和 health fixture。必须覆盖循环链路错误、缺失 catalog 依赖、平台 products 不匹配、当前 platform 不生效 entry 被过滤、直接依赖顺序稳定、多路径指向同一 location 只规划一次写入但保留多条 dependent edge，以及 install / upgrade / uninstall / status / repair / cleanup 共享 location identity。所有断言都应使用完整 `PluginLocation` 或 `serializePluginLocation()`，不能只按插件名判断。
 
@@ -80,7 +92,7 @@ status SkillTrigger 状态矩阵要覆盖 matched、fixed、ignored、orphaned�
 
 友好状态投影测试要覆盖四类 V2 首屏状态、全部 V2 原因码、跨位置汇总、状态优先级、保守升级判定、Codex enabled-only / cache-only / marker-only、native marker、无归属 native residue、project adopt-existing、shared owner conflict、dependency index untrusted、dynamic artifact refresh failed、disabled by config 和 session visibility。action 安全不变量必须锁住：公开 `PluginConsoleSummary.features` 只表达功能和目标选择策略，不包含 target、confirmText、command 或页面字段；执行层 `PluginConsoleExecutableAction` 只能在控制台完成功能和目标选择后生成，所有写动作都有完整 target，project 动作需要时带 `projectKey`；删除、覆盖和 cleanup 动作都有 `destructive: true` 和 `confirmText`；只有 `runCleanup` 可以生成 `force: true`；disabled 功能带 `disabledReason`。
 
-stale 本地 marketplace 回归要断言 status 完全只读：`~/.aw` 缺失、`config.json` stale、marketplace 布局损坏、install record 损坏或 dependency index 不可信时，status 只读回退 embedded catalog；`--verbose` / `--json` 能看到 `source=embedded` 和本地目录不可用原因；测试要用文件存在性、mtime 或内容快照确认不会创建插件目录、修复 `~/.aw`、改写 record、diagnostic cache、project artifact identity 或平台配置。
+stale 本地 marketplace / catalog cache 回归要断言 status 完全只读：`~/.aw` 缺失、旧 `sourceVersion + bundleFingerprint` 元数据、cache 布局损坏、install record 损坏或 dependency index 不可信时，status 不能回退 embedded catalog，也不能修复 `~/.aw`。`--verbose` / `--json` 要展示 catalog unavailable、legacy catalog metadata、selector、latest blocked 或 cache fallback 证据；测试要用文件存在性、mtime 或内容快照确认不会创建插件目录、改写 record、diagnostic cache、project artifact identity 或平台配置。
 
 runtime env 贯穿测试要覆盖 direct command 与 `runCli(..., { env })` 两条入口。平台检测、install-state/current catalog 解析、home 路径、默认 adapter 创建、discovery 和 status 读取路径都必须消费注入 env，防止新 helper 悄悄回落到 `process.env`。
 
@@ -104,11 +116,12 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 - 改命令分支、catalog 判定、账本、bundle 生成或打包行为 → 至少运行相关测试
 - 改 build 或 tarball 行为 → 补跑 `pnpm test:smoke:build`，必要时再跑 `pnpm test:smoke:pack`
+- 改 catalog 打包、sidecar/full manifest、history、selector/cache 或 fetch 行为 → 补跑 catalog pack/fetch smoke，以及相关 `plugin-catalog*`、`local-marketplace`、`command-options` 单测
 - 改 `scripts.node` staging、manifest build、runtime dependency closure 或 `pnpm plugin:test` → 补跑 `pnpm test:smoke:plugin-scripts`；维护具体插件脚本时可先跑 `pnpm plugin:test <plugin>`
-- 本地开发验证安装链路 → 执行 `make local-install`；如需刷新本机 marketplace，再补 `aw init --force`
-- 测试版发包 → 执行 `make beta-release VERSION=x.y.z-beta.n`；它会同步两个 `package.json` 版本号，跑完整校验，并发布 `beta` dist-tag
-- 正式发包 → 优先执行 `make release VERSION=x.y.z`；它会同步两个 `package.json` 版本号，先跑完整校验并验收 tarball，再发布 `latest`
+- 本地开发验证安装链路 → 执行 `make local-install`；如需刷新本机 catalog/cache，再补 `aw init --force`
+- 测试版发包 → 执行 `make beta-release VERSION=x.y.z-beta.n`；它会分别验证 CLI 包和 beta catalog 包，catalog version / plugin prerelease 约束以发布脚本为准
+- 正式发包 → 优先执行 `make release VERSION=x.y.z`；它会分别验证 CLI 包和 latest catalog 包；latest catalog 不允许 prerelease catalog version 或 prerelease 插件 version
 - 已经手动同步好稳定版本，只想走旧脚本入口时 → 执行 `pnpm publish:cli`；它不会改版本号，只会校验并发布当前版本
 - 改 plugin manifest contract、本地 marketplace 布局或作者工具 → 同步更新对应 fixture、样例插件和相关文档
 - 改公开 JSON 合同 → 同步检查 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`configSchemaVersion: 2`、`receiptSchemaVersion: 2`、`nextStepsSchemaVersion: 1` 的文档、测试和 CLI 输出
-- 只改公开文档 → 不必跑全量测试，但要至少检查 `AGENTS.md`、`README.md`、`docs/*.md` 没有继续引用过期路径或把 `docs/dev` 当作公开权威来源
+- 只改公开文档 → 不必跑全量测试，但要至少跑或说明未跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/public-docs.test.ts`，并检查 `AGENTS.md`、`README.md`、`docs/*.md` 没有继续引用过期路径或把 `docs/dev` 当作公开权威来源

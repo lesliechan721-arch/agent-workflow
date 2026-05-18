@@ -2,6 +2,11 @@
   "name": "git-commit",
   "version": "0.1.1",
   "description": "在用户请求提交时，核对变更范围并生成中文约定式 Git 提交。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "skills": "./skills",
   "skillTriggers": {
     "commit": {

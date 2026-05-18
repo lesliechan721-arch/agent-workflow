@@ -1127,38 +1127,27 @@ async function loadPluginTargetsForCommandWithCatalog(
   } = {},
 ): Promise<LoadedPluginTargetsForCommand> {
   const env = options.env ?? process.env;
-  const [catalog, embeddedRoot] = await Promise.all([
-    options.catalog
-      ? Promise.resolve(options.catalog)
-      : resolveCurrentCatalog(env),
-    resolveEmbeddedPluginsRoot(),
-  ]);
+  const catalog = options.catalog
+    ? await Promise.resolve(options.catalog)
+    : await resolveCurrentCatalog(env);
   const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined);
-  const embeddedPlugins = await resolvePluginsFromCatalog(embeddedRoot, undefined);
   if (!pluginNames || pluginNames.length === 0) {
     if (catalogPlugins.length === 0) {
       throw new Error('没有发现可用插件。');
     }
 
-    const embeddedPluginMap = new Map(
-      embeddedPlugins.map((plugin) => [plugin.manifest.name, plugin]),
-    );
     return {
       catalog,
       targets: catalogPlugins.map((plugin) => ({
         pluginName: plugin.manifest.name,
         plugin,
         currentPlugin: plugin,
-        embeddedPlugin: embeddedPluginMap.get(plugin.manifest.name),
         source: 'currentCatalog' as const,
       })),
     };
   }
 
   const catalogMap = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, plugin]));
-  const embeddedPluginMap = new Map(
-    embeddedPlugins.map((plugin) => [plugin.manifest.name, plugin]),
-  );
   const ledger = options.allowHistoricalFallback
     ? await readInstalledLedger(env)
     : undefined;
@@ -1170,7 +1159,6 @@ async function loadPluginTargetsForCommandWithCatalog(
         pluginName,
         plugin: currentPlugin,
         currentPlugin,
-        embeddedPlugin: embeddedPluginMap.get(pluginName),
         source: 'currentCatalog',
       });
       continue;
@@ -1184,7 +1172,7 @@ async function loadPluginTargetsForCommandWithCatalog(
       cwd,
       scope,
       pluginName,
-      embeddedPluginMap.get(pluginName),
+      undefined,
       env,
       ledger,
     ));

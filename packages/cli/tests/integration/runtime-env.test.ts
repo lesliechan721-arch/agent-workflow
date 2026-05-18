@@ -118,6 +118,17 @@ describe('runtime env integration', () => {
       },
     });
     expect(result.reports[0]?.plugins[0]?.catalogCompatibility).toBeUndefined();
-    expect(result.reports[0]?.plugins[0]?.currentCatalog).toBeUndefined();
+    expect(result.reports[0]?.plugins[0]?.currentCatalog).toMatchObject({
+      available: true,
+      source: 'local',
+      rootDir: embeddedRoot,
+      sidecarManifestPackage: {
+        source: 'localFixture',
+      },
+      fullCatalog: {
+        source: 'local',
+        freshness: 'localFixture',
+      },
+    });
   });
 });

@@ -702,23 +702,21 @@ afterEach(async () => {
 });
 
 describe('CLI integration', () => {
-  it('supports aw init --force and repairs a damaged local marketplace', async () => {
+  it('keeps aw init --force scoped to current catalog resolution without materializing ~/.aw runtime state', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     process.env.AW_HOME = awHome;
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
-    await initCommand({ force: true });
-    const marketplacePath = path.join(awHome, '.claude-plugin', 'marketplace.json');
-    const marketplace = await fs.readJson(marketplacePath);
-    marketplace.plugins[0].source = './plugins/broken';
-    await fs.writeJson(marketplacePath, marketplace, { spaces: 2 });
-
     const result = await initCommand({ force: true });
 
     expect(result.changed).toBe(true);
-    await expect(fs.readJson(marketplacePath)).resolves.toMatchObject({
-      plugins: [{ source: './plugins/git-commit' }],
+    expect(result.catalog).toMatchObject({
+      source: 'local',
+      rootDir: embeddedRoot,
     });
+    await expect(fs.pathExists(path.join(awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(awHome, 'plugins', 'git-commit'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(awHome, 'installed.json'))).resolves.toBe(false);
   });
 
   it('keeps single-platform plugins in the local current catalog after aw init --force', async () => {
@@ -731,14 +729,14 @@ describe('CLI integration', () => {
     process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
-    await initCommand({ force: true });
-    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+    const result = await initCommand({ force: true });
+    await expect(validateLocalMarketplaceLayout(result.rootDir)).resolves.toBeUndefined();
 
     const { catalog, plugins } = await resolveCatalogPlugins(undefined, process.env);
     expect(catalog.source).toBe('local');
     expect(plugins.map((plugin) => plugin.manifest.name)).toContain('prompt-guard');
 
-    const claudeMarketplace = await fs.readJson(path.join(awHome, '.claude-plugin', 'marketplace.json'));
+    const claudeMarketplace = await fs.readJson(path.join(result.rootDir, '.claude-plugin', 'marketplace.json'));
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name)).not.toContain('prompt-guard');
   });
 
@@ -1199,9 +1197,7 @@ describe('CLI integration', () => {
       platform: 'codex',
       scope: 'user',
     })).resolves.toMatchObject({ status: 'missing' });
-    await expect(fs.readJson(path.join(awHome, 'installed.json'))).resolves.toMatchObject({
-      plugins: {},
-    });
+    await expect(fs.pathExists(path.join(awHome, 'installed.json'))).resolves.toBe(false);
   });
 
   it('reports unknown status targets as notInstalled instead of throwing', async () => {
@@ -1694,13 +1690,13 @@ describe('CLI integration', () => {
     await initCommand({ force: true });
 
     const installedLedgerPath = path.join(awHome, 'installed.json');
-    const installedLedger = await fs.readJson(installedLedgerPath);
+    const installedLedger = createAvailableLedger();
     installedLedger.ledgerState = {
       status: 'degraded',
       degradedAt: '2026-04-25T00:00:00.000Z',
       reason: 'rebuilt_from_missing_or_invalid',
     };
-    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+    await writeInstalledLedger(installedLedger, process.env);
 
     await expect(
       upgradeCommand(
@@ -1941,7 +1937,7 @@ describe('CLI integration', () => {
     await initCommand({ force: true });
 
     const installedLedgerPath = path.join(awHome, 'installed.json');
-    const installedLedger = await fs.readJson(installedLedgerPath);
+    const installedLedger = createAvailableLedger();
     installedLedger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
       platforms: {
@@ -1979,7 +1975,7 @@ describe('CLI integration', () => {
         },
       },
     };
-    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+    await writeInstalledLedger(installedLedger, process.env);
 
     await uninstallCommand(
       ['git-commit'],
@@ -2029,7 +2025,7 @@ describe('CLI integration', () => {
 
     const projectKey = await resolveCodexProjectKey(repoRoot);
     const installedLedgerPath = path.join(awHome, 'installed.json');
-    const installedLedger = await fs.readJson(installedLedgerPath);
+    const installedLedger = createAvailableLedger();
     installedLedger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
       platforms: {
@@ -2073,7 +2069,7 @@ describe('CLI integration', () => {
         },
       },
     };
-    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+    await writeInstalledLedger(installedLedger, process.env);
 
     await fs.ensureDir(codexHome);
     await fs.writeFile(
@@ -2120,7 +2116,7 @@ describe('CLI integration', () => {
 
     const projectKey = await resolveCodexProjectKey(repoRoot);
     const installedLedgerPath = path.join(awHome, 'installed.json');
-    const installedLedger = await fs.readJson(installedLedgerPath);
+    const installedLedger = createAvailableLedger();
     installedLedger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
       platforms: {
@@ -2149,7 +2145,7 @@ describe('CLI integration', () => {
         },
       },
     };
-    await fs.writeJson(installedLedgerPath, installedLedger, { spaces: 2 });
+    await writeInstalledLedger(installedLedger, process.env);
 
     await fs.ensureDir(codexHome);
     await fs.writeFile(
@@ -2333,9 +2329,8 @@ describe('CLI integration', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
-    await expect(
-      fs.readJson(path.join(awHome, 'plugins', 'prompt-guard', '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
+    const { plugins } = await resolveCatalogPlugins(['prompt-guard'], process.env);
+    expect(plugins[0]?.manifest).toMatchObject({
       extensions: {
         nativeHooks: {
           codex: [
@@ -2758,9 +2753,8 @@ describe('CLI integration', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initCommand({ force: true });
-    await expect(
-      fs.readJson(path.join(awHome, 'plugins', 'claude-compact', '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
+    const { plugins } = await resolveCatalogPlugins(['claude-compact'], process.env);
+    expect(plugins[0]?.manifest).toMatchObject({
       extensions: {
         nativeHooks: {
           claude: [

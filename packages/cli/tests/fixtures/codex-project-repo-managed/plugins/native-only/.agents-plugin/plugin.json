@@ -2,6 +2,11 @@
   "name": "native-only",
   "version": "0.1.0",
   "description": "Fixture plugin without Codex project repo-managed artifacts.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "marketplace": {
     "category": "workflow",
     "tags": ["codex-project", "native"],

@@ -280,6 +280,54 @@ describe('status P7', () => {
     expect(findForbiddenStdoutTerms(result.output)).toEqual([]);
   });
 
+  it('includes catalog and install record version evidence in status --json', async () => {
+    const { fixture, runtime } = await createAlignedInstalledStatusFixture('aw-status-json-version-evidence-');
+
+    const result = await statusCommand(
+      [fixture.target.location.plugin],
+      { cwd: fixture.paths.repoRoot, json: true },
+      runtime,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      catalog: {
+        source: string;
+        sidecarManifestPackage?: { version: string };
+      };
+      locations: Array<{
+        record: {
+          source?: {
+            pluginVersion: string;
+            manifestDigest: string;
+            bundleFingerprint: string;
+          };
+        };
+        currentCatalog: {
+          provided: boolean;
+          source: { pluginVersion: string } | null;
+        };
+        historicalLifecycle: {
+          healthy: boolean;
+        };
+      }>;
+      consoleItems: Array<Record<string, unknown>>;
+    };
+
+    expect(payload.catalog.source).toBeTruthy();
+    expect(payload.locations[0]?.record.source).toMatchObject({
+      pluginVersion: '1.0.0',
+      manifestDigest: expect.stringMatching(/^sha256:/),
+      bundleFingerprint: expect.stringMatching(/^sha256:/),
+    });
+    expect(payload.locations[0]?.currentCatalog).toMatchObject({
+      provided: true,
+      source: {
+        pluginVersion: '1.0.0',
+      },
+    });
+    expect(typeof payload.locations[0]?.historicalLifecycle.healthy).toBe('boolean');
+  });
+
   it.each([
     {
       label: 'dynamic content drift',

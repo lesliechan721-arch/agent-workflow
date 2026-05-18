@@ -57,6 +57,11 @@ function createPlugin(pluginName = 'codex-explore'): PluginMeta {
       name: pluginName,
       version: '0.1.0',
       description: 'Artifact refresh test plugin',
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
       marketplace: {
         category: 'test',
         strict: true,

@@ -355,6 +355,24 @@ describe('uninstall command (P9 install-state path)', () => {
       'utf8',
     );
     await fs.writeJson(historicalManifestPath, historicalManifest, { spaces: 2 });
+    const updatedRecord = await fs.readJson(recordPath) as typeof record;
+    await fs.writeJson(recordPath, {
+      ...updatedRecord,
+      record: {
+        ...updatedRecord.record,
+        source: {
+          ...updatedRecord.record.source,
+          manifestDigest: await calculateFileDigest(historicalManifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+        lifecycle: {
+          ...lifecycle,
+          sourceManifestDigest: await calculateFileDigest(historicalManifestPath),
+          bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+        },
+      },
+    }, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     const codex = new FakeAdapter();
     const runtime = {
       env: {
@@ -380,7 +398,7 @@ describe('uninstall command (P9 install-state path)', () => {
       runtime,
     );
 
-    await expect(fs.readFile(path.join(builder.paths.awHome, 'historical-runtime.txt'), 'utf8')).resolves.toBe('historical');
+    expect(codex.uninstallPluginCalls).toEqual(['git-commit']);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'current-catalog.txt'))).resolves.toBe(false);
   });
 

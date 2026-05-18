@@ -9,7 +9,6 @@ import {
   createHistoricalPluginTarget,
   type ResolvedPluginTarget,
 } from './common.js';
-import { readPluginManifest } from '../utils/manifest.js';
 import { runLifecycleScript, type LifecycleProcessRunner } from '../utils/plugin-scripts.js';
 import {
   readInstallRecordFileAt,
@@ -46,6 +45,7 @@ import {
   createSharedSkillTriggerRuntimeMaterializationStage,
   createSharedSkillTriggerRuntimeRemovalStages,
   inspectSharedSkillTriggerRuntimeOwner,
+  loadVerifiedHistoricalBundlePlugin,
   planSharedSkillTriggerRuntimeOwnerRemoval,
   type SharedSkillTriggerRuntimeStageBundle,
 } from '../install-state/shared-runtime-owner.js';
@@ -91,10 +91,6 @@ import {
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import {
-  calculateFileDigest,
-  calculatePluginBundleFingerprint,
-} from '../utils/plugin-scripts.js';
 import { sha256Hex } from '../install-state/internal.js';
 
 export interface InstallStateRemovalRuntime extends CommandExecutionContextInput {
@@ -440,11 +436,19 @@ async function loadPreferredPluginMeta(options: {
   target?: ResolvedPluginTarget | null;
   recordFile?: InstallRecordFile | null;
 }): Promise<PluginMeta | null> {
-  if (options.recordFile?.record.lifecycle?.bundleRoot) {
-    try {
-      return await readPluginManifest(options.recordFile.record.lifecycle.bundleRoot, { mode: 'bundle' });
-    } catch {
-      // fall through
+  const lifecycle = options.recordFile?.record.lifecycle;
+  if (lifecycle) {
+    const verified = await loadVerifiedHistoricalBundlePlugin({
+      pluginName: options.recordFile!.record.pluginName,
+      pluginVersion: lifecycle.pluginVersion,
+      runtimeRoot: lifecycle.runtimeRoot,
+      bundleRoot: lifecycle.bundleRoot,
+      manifestPath: lifecycle.manifestPath,
+      sourceManifestDigest: lifecycle.sourceManifestDigest,
+      bundleFingerprint: lifecycle.bundleFingerprint,
+    });
+    if (verified.status === 'ok') {
+      return verified.plugin;
     }
   }
   if (options.target?.currentPlugin) {
@@ -522,16 +526,12 @@ type DefaultReplaySourceValidationResult =
   | {
     status: 'ok';
     sourcePluginRoot: string;
+    plugin: PluginMeta;
   }
   | {
     status: 'invalid';
     reason: string;
   };
-
-function isPathInside(childPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, childPath);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
-}
 
 async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
   location: PluginLocation;
@@ -545,65 +545,17 @@ async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
     };
   }
 
-  const { lifecycle } = options;
-  let runtimeRoot: string;
-  let bundleRoot: string;
-  let manifestPath: string;
-  try {
-    runtimeRoot = await fs.realpath(lifecycle.runtimeRoot);
-    bundleRoot = await fs.realpath(lifecycle.bundleRoot);
-    manifestPath = await fs.realpath(lifecycle.manifestPath);
-    if (!isPathInside(bundleRoot, runtimeRoot)) {
-      return {
-        status: 'invalid',
-        reason: 'historical lifecycle bundle root 不在 runtime root 内',
-      };
-    }
-    if (!isPathInside(manifestPath, bundleRoot)) {
-      return {
-        status: 'invalid',
-        reason: 'historical lifecycle manifest path 不在 bundle root 内',
-      };
-    }
-  } catch (error) {
-    return {
-      status: 'invalid',
-      reason: `historical lifecycle bundle 路径不可用：${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-
-  try {
-    const [manifestDigest, bundleFingerprint, historicalPlugin] = await Promise.all([
-      calculateFileDigest(manifestPath),
-      calculatePluginBundleFingerprint(bundleRoot),
-      readPluginManifest(bundleRoot, { mode: 'bundle' }),
-    ]);
-    if (manifestDigest !== lifecycle.sourceManifestDigest) {
-      return {
-        status: 'invalid',
-        reason: 'historical lifecycle manifest digest 与记录不一致',
-      };
-    }
-    if (bundleFingerprint !== lifecycle.bundleFingerprint) {
-      return {
-        status: 'invalid',
-        reason: 'historical lifecycle bundle fingerprint 与记录不一致',
-      };
-    }
-    if (
-      historicalPlugin.manifest.name !== options.location.plugin ||
-      historicalPlugin.manifest.version !== lifecycle.pluginVersion
-    ) {
-      return {
-        status: 'invalid',
-        reason: 'historical lifecycle manifest identity 与记录不一致',
-      };
-    }
-  } catch (error) {
-    return {
-      status: 'invalid',
-      reason: `historical lifecycle bundle 内容不可验证：${error instanceof Error ? error.message : String(error)}`,
-    };
+  const verified = await loadVerifiedHistoricalBundlePlugin({
+    pluginName: options.location.plugin,
+    pluginVersion: options.lifecycle.pluginVersion,
+    runtimeRoot: options.lifecycle.runtimeRoot,
+    bundleRoot: options.lifecycle.bundleRoot,
+    manifestPath: options.lifecycle.manifestPath,
+    sourceManifestDigest: options.lifecycle.sourceManifestDigest,
+    bundleFingerprint: options.lifecycle.bundleFingerprint,
+  });
+  if (verified.status !== 'ok') {
+    return verified;
   }
 
   if (!options.currentPlugin) {
@@ -615,15 +567,15 @@ async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
 
   if (
     options.currentPlugin.manifest.name !== options.location.plugin ||
-    options.currentPlugin.manifest.version !== lifecycle.pluginVersion
+    options.currentPlugin.manifest.version !== options.lifecycle.pluginVersion
   ) {
     return {
       status: 'invalid',
-      reason: `historical lifecycle version ${lifecycle.pluginVersion} 与当前 bundle version ${options.currentPlugin.manifest.version} 不一致`,
+      reason: `historical lifecycle version ${options.lifecycle.pluginVersion} 与当前 bundle version ${options.currentPlugin.manifest.version} 不一致`,
     };
   }
 
-  if (!(await fs.pathExists(path.join(bundleRoot, options.location.platform, 'skills')))) {
+  if (!(await fs.pathExists(path.join(verified.bundleRoot, options.location.platform, 'skills')))) {
     return {
       status: 'invalid',
       reason: `historical lifecycle bundle 缺少 ${options.location.platform} skill source 子树`,
@@ -632,7 +584,8 @@ async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
 
   return {
     status: 'ok',
-    sourcePluginRoot: bundleRoot,
+    sourcePluginRoot: verified.bundleRoot,
+    plugin: verified.plugin,
   };
 }
 
@@ -780,8 +733,26 @@ export async function tryUninstallUsingInstallState(options: {
     throw new Error(protection.failClosedReason ?? 'dependency protection failed closed');
   }
 
+  const verifiedHistoricalPlugin = recordRead.value.record.lifecycle
+    ? await loadVerifiedHistoricalBundlePlugin({
+        pluginName: recordRead.value.record.pluginName,
+        pluginVersion: recordRead.value.record.lifecycle.pluginVersion,
+        runtimeRoot: recordRead.value.record.lifecycle.runtimeRoot,
+        bundleRoot: recordRead.value.record.lifecycle.bundleRoot,
+        manifestPath: recordRead.value.record.lifecycle.manifestPath,
+        sourceManifestDigest: recordRead.value.record.lifecycle.sourceManifestDigest,
+        bundleFingerprint: recordRead.value.record.lifecycle.bundleFingerprint,
+      })
+    : null;
+
   if (recordRead.value.record.lifecycle) {
-    const historicalPlugin = await readPluginManifest(recordRead.value.record.lifecycle.bundleRoot, { mode: 'bundle' });
+    if (!verifiedHistoricalPlugin || verifiedHistoricalPlugin.status !== 'ok') {
+      throw new Error(
+        `[reason=historicalRuntimeUnavailable] ${renderLocation(location)} 缺少可校验的 historical runtime，无法安全执行 uninstall lifecycle：${
+          verifiedHistoricalPlugin?.reason ?? 'historical lifecycle runtime 不可验证'
+        }。`,
+      );
+    }
     await runLifecycleScript({
       event: 'uninstall',
       pluginName: recordRead.value.record.pluginName,
@@ -789,7 +760,7 @@ export async function tryUninstallUsingInstallState(options: {
       scope: location.scope,
       cwd: options.commandOptions.cwd,
       context,
-      currentPlugin: historicalPlugin,
+      currentPlugin: verifiedHistoricalPlugin.plugin,
       artifacts: recordRead.value.record.artifacts.map(toGeneratedArtifact),
       scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
       runner: options.runtime.lifecycleRunner,
@@ -797,10 +768,12 @@ export async function tryUninstallUsingInstallState(options: {
   }
 
   const adapters = createAdapters(options.commandOptions.cwd, context);
-  const pluginMeta = await loadPreferredPluginMeta({
-    target: options.target,
-    recordFile: recordRead.value,
-  });
+  const pluginMeta = verifiedHistoricalPlugin?.status === 'ok'
+    ? verifiedHistoricalPlugin.plugin
+    : await loadPreferredPluginMeta({
+        target: options.target,
+        recordFile: recordRead.value,
+      });
   if (!pluginMeta) {
     throw new Error(`无法为 ${renderLocation(location)} 加载卸载元数据。`);
   }

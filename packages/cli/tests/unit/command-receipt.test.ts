@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildInitReceiptJson,
   buildCommandReceiptJson,
   buildCleanupReceiptJson,
   renderCommandReceipt,
@@ -184,18 +185,31 @@ describe('command receipt output', () => {
         platforms: ['codex'],
         plugins: ['upgrade-root'],
         warnings: [],
+        marketplace: {
+          rootDir: '/tmp/aw',
+          changed: false,
+          catalog: {
+            rootDir: '/tmp/aw',
+            source: 'local' as const,
+            catalogVersion: '1.2.3',
+          },
+        },
         receiptTargets: [
           {
             plugin: 'upgrade-root',
             platform: 'codex',
             scope: 'user' as const,
             requested: true,
+            selectedVersion: '2.0.0',
+            selectedVersionSource: 'currentCatalog' as const,
           },
           {
             plugin: 'upgrade-child',
             platform: 'codex',
             scope: 'user' as const,
             requested: false,
+            selectedVersion: '2.0.1',
+            selectedVersionSource: 'currentCatalog' as const,
             dependencyOf: [{
               plugin: 'upgrade-root',
               platform: 'codex',
@@ -210,6 +224,8 @@ describe('command receipt output', () => {
             platform: 'codex',
             scope: 'user' as const,
             requested: false,
+            selectedVersion: '2.0.1',
+            selectedVersionSource: 'currentCatalog' as const,
             dependencyOf: [{
               plugin: 'upgrade-root',
               platform: 'codex',
@@ -222,6 +238,8 @@ describe('command receipt output', () => {
             platform: 'codex',
             scope: 'user' as const,
             requested: false,
+            selectedVersion: '2.1.0',
+            selectedVersionSource: 'currentCatalog' as const,
             dependencyOf: [{
               plugin: 'upgrade-root',
               platform: 'codex',
@@ -239,6 +257,11 @@ describe('command receipt output', () => {
 
     expect(buildCommandReceiptJson('upgrade', receipt)).toMatchObject({
       receiptSchemaVersion: 2,
+      catalog: {
+        source: 'local',
+        catalogVersion: '1.2.3',
+      },
+      historicalRuntimePersisted: true,
       overallState: 'succeeded',
       command: 'upgrade',
       nextStepsSchemaVersion: 1,
@@ -249,12 +272,16 @@ describe('command receipt output', () => {
           platform: 'codex',
           scope: 'user',
           requested: true,
+          selectedVersion: '2.0.0',
+          selectedVersionSource: 'currentCatalog',
         },
         {
           plugin: 'upgrade-child',
           platform: 'codex',
           scope: 'user',
           requested: false,
+          selectedVersion: '2.0.1',
+          selectedVersionSource: 'currentCatalog',
           dependencyOf: [{
             plugin: 'upgrade-root',
             platform: 'codex',
@@ -266,6 +293,8 @@ describe('command receipt output', () => {
           platform: 'codex',
           scope: 'user',
           requested: false,
+          selectedVersion: '2.1.0',
+          selectedVersionSource: 'currentCatalog',
           dependencyOf: [{
             plugin: 'upgrade-root',
             platform: 'codex',
@@ -280,6 +309,8 @@ describe('command receipt output', () => {
           platform: 'codex',
           scope: 'user',
           requested: true,
+          selectedVersion: '2.0.0',
+          selectedVersionSource: 'currentCatalog',
           status: 'succeeded',
         },
         {
@@ -288,6 +319,8 @@ describe('command receipt output', () => {
           platform: 'codex',
           scope: 'user',
           requested: false,
+          selectedVersion: '2.0.1',
+          selectedVersionSource: 'currentCatalog',
           dependencyOf: [{
             plugin: 'upgrade-root',
             platform: 'codex',
@@ -301,6 +334,8 @@ describe('command receipt output', () => {
           platform: 'codex',
           scope: 'user',
           requested: false,
+          selectedVersion: '2.1.0',
+          selectedVersionSource: 'currentCatalog',
           dependencyOf: [{
             plugin: 'upgrade-root',
             platform: 'codex',
@@ -339,6 +374,27 @@ describe('command receipt output', () => {
         state: 'completed',
       }),
     ]));
+  });
+
+  it('keeps init receipts on the dedicated catalog cache warmup schema', () => {
+    expect(buildInitReceiptJson({
+      rootDir: '/tmp/aw',
+      changed: true,
+      warnings: [],
+      catalog: {
+        rootDir: '/tmp/aw',
+        source: 'cache',
+        catalogVersion: '1.2.3',
+      },
+    })).toMatchObject({
+      receiptSchemaVersion: 2,
+      receiptKind: 'catalogCacheWarmup',
+      command: 'init',
+      catalog: {
+        source: 'cache',
+        catalogVersion: '1.2.3',
+      },
+    });
   });
 
   it('keeps auto-cleaned dependencies in uninstall JSON while leaving the human summary concise', () => {

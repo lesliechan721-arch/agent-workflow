@@ -3,6 +3,13 @@ export type SupportedPlatformSet = ReadonlySet<PlatformName>;
 export type PlatformSelection = PlatformName | 'both';
 export type Scope = 'project' | 'user';
 export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
+export type StrictSemVerString = string;
+export type CliVersion = StrictSemVerString;
+export type CatalogVersion = StrictSemVerString;
+export type PluginVersion = StrictSemVerString;
+export type DependencyVersion = StrictSemVerString;
+export type InstalledVersion = string;
+export type CatalogChannel = 'latest' | 'beta';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
 export type SkillTriggerApplicability = 'none' | 'fixed' | 'overridable';
 export type ConfigFieldKind = 'manifest' | 'builtIn';
@@ -92,6 +99,19 @@ export interface ConfigReceiptFieldEntryV2 {
   scope: Scope;
   projectLayer?: 'shared' | 'local';
   valueState?: ConfigValueState;
+}
+
+export interface ConfigSchemaEvidenceV2 {
+  source: 'currentCatalog' | 'installedHistorical';
+  identity: string;
+  pluginVersion: PluginVersion;
+  manifestDigest: string;
+  location?: {
+    platform: PlatformName;
+    scope: Scope;
+    projectKey?: string;
+    recordPath: string;
+  };
 }
 
 export interface PluginInterfaceMeta {
@@ -421,6 +441,12 @@ export interface SkillTriggerPolicy {
   allowDynamicTrigger: boolean;
 }
 
+export interface PluginCompatibility {
+  aw: {
+    minVersion: CliVersion;
+  };
+}
+
 export interface PluginDependencyWhen {
   platforms: PlatformName[];
 }
@@ -431,6 +457,7 @@ export interface PluginDependencyTarget {
 
 export interface PluginDependencyEntry {
   name: string;
+  minVersion?: DependencyVersion;
   target?: PluginDependencyTarget;
   inheritInstallOptions?: boolean;
   when?: PluginDependencyWhen;
@@ -442,8 +469,9 @@ export interface PluginDependenciesConfig {
 
 export interface PluginManifestSource {
   name: string;
-  version: string;
+  version: PluginVersion;
   description: string;
+  compatibility?: PluginCompatibility;
   skills?: string;
   slashCommands?: string;
   skillTriggers?: Record<string, SkillTriggerPolicy>;
@@ -483,9 +511,65 @@ export interface MarketplaceManifest {
   plugins: MarketplaceManifestEntry[];
 }
 
+export interface CatalogManifestPackageIdentity {
+  name: string;
+  version: CatalogVersion;
+  channel: CatalogChannel;
+  manifestPath?: string;
+}
+
+export interface CatalogHistoryPluginRelease {
+  name: string;
+  version: PluginVersion;
+  minAwVersion: CliVersion;
+  artifactDigest: string;
+  manifestDigest: string;
+}
+
+export interface CatalogHistoryRelease {
+  catalogVersion: CatalogVersion;
+  minAwVersion: CliVersion;
+  plugins: CatalogHistoryPluginRelease[];
+}
+
+export interface CatalogManifestHistory {
+  schemaVersion: 1;
+  channel: CatalogChannel;
+  releases: CatalogHistoryRelease[];
+}
+
+export interface CatalogManifestEntry {
+  name: string;
+  version: PluginVersion;
+  description: string;
+  interface?: PluginInterfaceMeta;
+  category: string;
+  tags?: string[];
+  strict: boolean;
+  policy: MarketplacePolicy;
+  compatibility: PluginCompatibility;
+  dependencies?: PluginDependenciesConfig;
+  source: string;
+  artifactDigest: string;
+  manifestDigest: string;
+}
+
+export interface CatalogManifest {
+  schemaVersion: 1;
+  catalogVersion: CatalogVersion;
+  channel: CatalogChannel;
+  compatibility: PluginCompatibility;
+  history: CatalogManifestHistory;
+  packages: {
+    sidecar: CatalogManifestPackageIdentity;
+    full: CatalogManifestPackageIdentity;
+  };
+  entries: CatalogManifestEntry[];
+}
+
 export interface PlatformPluginManifest {
   name: string;
-  version: string;
+  version: PluginVersion;
   description: string;
   skills?: string;
   mcpServers?: string;
@@ -771,6 +855,18 @@ export interface CurrentCatalogStatus {
   available: boolean;
   reason?: string;
   reasonCode?: CatalogResolution['reasonCode'];
+  selector?: CatalogResolution['selector'];
+  sidecarManifestPackage?: CatalogResolution['sidecarManifestPackage'];
+  fullCatalog?: CatalogResolution['fullCatalog'];
+  channel?: CatalogResolution['channel'];
+  catalogVersion?: CatalogResolution['catalogVersion'];
+  minAwVersion?: CatalogResolution['minAwVersion'];
+  latestCatalog?: CatalogResolution['latestCatalog'];
+  latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
+  historySchemaVersion?: CatalogResolution['historySchemaVersion'];
+  cacheFallback?: CatalogResolution['cacheFallback'];
+  remoteFailure?: CatalogResolution['remoteFailure'];
+  pluginVersion?: PluginVersion;
 }
 
 export type PluginStatusDependencyHealthSource =
@@ -786,10 +882,33 @@ export type PluginStatusDependencyCatalogDriftKind =
   | 'snapshotMissing'
   | 'currentCatalogMissing'
   | 'dependenciesChanged';
+export type PluginStatusDependencyVersionComparison =
+  | 'notRequired'
+  | 'satisfies'
+  | 'belowMinimum'
+  | 'missing'
+  | 'invalid';
+export type PluginStatusDependencyAutoUpgradeState =
+  | 'notNeeded'
+  | 'available'
+  | 'catalogUnavailable'
+  | 'blockedByCli'
+  | 'unavailable'
+  | 'unknown';
+
+export interface PluginStatusDependencyVersionState {
+  declaredMinVersion?: DependencyVersion;
+  installedVersion?: string;
+  candidateVersion?: PluginVersion;
+  installedVersionComparison: PluginStatusDependencyVersionComparison;
+  candidateVersionComparison: PluginStatusDependencyVersionComparison;
+  autoUpgradeState: PluginStatusDependencyAutoUpgradeState;
+}
 
 export interface PluginStatusDependencyResolvedEntry {
   declaration: PluginDependencyEntry;
   source: PluginStatusDependencyResolvedSource;
+  versionState: PluginStatusDependencyVersionState;
 }
 
 export interface PluginStatusDependencySatisfiedEntry {
@@ -858,7 +977,12 @@ export interface StatusReport {
   plugins: PluginStatusReport[];
 }
 
-export interface CommandOptions {
+export interface CatalogSelectionOptions {
+  catalogChannel?: CatalogChannel;
+  catalogVersion?: CatalogVersion;
+}
+
+export interface CommandOptions extends CatalogSelectionOptions {
   scope: Scope;
   platform: PlatformSelection;
   cwd: string;
@@ -945,7 +1069,7 @@ export interface UpgradeCommandResult {
   };
 }
 
-export interface StatusCommandOptions {
+export interface StatusCommandOptions extends CatalogSelectionOptions {
   cwd: string;
   scope?: Scope;
   platform?: PlatformName | 'both';
@@ -1043,7 +1167,7 @@ export interface LocalMarketplaceConfig {
   version: 1;
   initializedAt: string;
   sourcePackage: string;
-  sourceVersion: string;
+  sourceVersion: CliVersion;
   bundleFingerprint: string;
 }
 
@@ -1088,7 +1212,7 @@ export interface LifecycleConfigSnapshotMetadata {
   bundleRoot: string;
   manifestPath: string;
   pluginName: string;
-  pluginVersion: string;
+  pluginVersion: PluginVersion;
   sourceManifestDigest: string;
   bundleFingerprint: string;
   createdAt: string;
@@ -1115,6 +1239,7 @@ export interface InstalledScopeInstallSource {
 
 export interface InstalledDependencyEdgeDeclaration {
   name: string;
+  minVersion?: DependencyVersion;
   target?: {
     scope?: Scope;
   };
@@ -1132,7 +1257,7 @@ export interface InstalledDependencyEdge {
 export interface InstalledScopeRecord<TCapabilitySnapshot> {
   managed: boolean;
   updatedAt: string;
-  resolvedVersion: string;
+  resolvedVersion: InstalledVersion;
   capabilitySnapshot: TCapabilitySnapshot;
   projectKey?: string;
   installSource?: InstalledScopeInstallSource;
@@ -1164,7 +1289,7 @@ export interface InstalledLedgerPluginPlatforms {
 }
 
 export interface InstalledLedgerPluginRecord {
-  lastResolvedVersion: string;
+  lastResolvedVersion: InstalledVersion;
   platforms: InstalledLedgerPluginPlatforms;
 }
 
@@ -1174,9 +1299,105 @@ export interface InstalledLedger {
   plugins: Record<string, InstalledLedgerPluginRecord>;
 }
 
+export interface CatalogSelector {
+  kind: 'default' | 'distTag' | 'exactVersion';
+  cliVersion: CliVersion;
+  defaultChannel: CatalogChannel;
+  requestedChannel?: CatalogChannel;
+  requestedCatalogVersion?: CatalogVersion;
+  overrideSource?:
+    | 'option:catalog-channel'
+    | 'option:channel-alias'
+    | 'option:catalog-version'
+    | 'env:AW_CATALOG_CHANNEL'
+    | 'env:AW_CATALOG_VERSION';
+}
+
+export interface CatalogLatestBlockedEvidence {
+  channel: CatalogChannel;
+  catalogVersion: CatalogVersion;
+  minAwVersion: CliVersion;
+}
+
+export interface CatalogLatestEvidence extends CatalogLatestBlockedEvidence {
+  blocked: boolean;
+}
+
+export interface CatalogSidecarManifestEvidence {
+  source: string;
+  version: CatalogVersion;
+  channel: CatalogChannel;
+  npmIntegrity?: string;
+  manifestDigest: string;
+}
+
+export interface CatalogIdentityEvidence {
+  source: 'local' | 'embedded' | 'remote' | 'cache';
+  version: CatalogVersion;
+  channel: CatalogChannel;
+  minAwVersion: CliVersion;
+  revision: string;
+  freshness: 'fresh' | 'cached' | 'localFixture' | 'embedded';
+  resolutionSource: 'requestedCatalog' | 'historyCompatibleCatalog';
+}
+
+export interface CatalogCacheFallbackEvidence {
+  used: boolean;
+  source?: 'currentCatalogCache';
+  cacheKey?: string;
+  selectorKey?: string;
+  blockingCode?: CatalogResolutionFailure['reasonCode'];
+  matchedSelector?: CatalogSelector;
+  matchedCatalog?: CatalogIdentityEvidence;
+}
+
+export interface CatalogRemoteFailureEvidence {
+  stage:
+    | 'sidecarMetadata'
+    | 'sidecarTarball'
+    | 'sidecarManifest'
+    | 'historyLookup'
+    | 'fullMetadata'
+    | 'fullTarball'
+    | 'fullManifest'
+    | 'artifactDigest';
+  packageName?: string;
+  packageVersion?: CatalogVersion;
+  integrity?: string;
+  message: string;
+}
+
+export interface CatalogResolutionFailure {
+  selector: CatalogSelector;
+  channel?: CatalogChannel;
+  catalogVersion?: CatalogVersion;
+  minAwVersion?: CliVersion;
+  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
+  historySchemaVersion?: number | null;
+  cacheFallback?: CatalogCacheFallbackEvidence;
+  remoteFailure?: CatalogRemoteFailureEvidence;
+  reason: string;
+  reasonCode:
+    | 'catalogUnavailable'
+    | 'catalogHistoryUnavailable'
+    | 'awVersionTooLow'
+    | 'explicitCatalogIncompatible';
+}
+
 export interface CatalogResolution {
   rootDir: string;
-  source: 'local' | 'embedded';
+  source: 'local' | 'embedded' | 'remote' | 'cache';
+  selector?: CatalogSelector;
+  sidecarManifestPackage?: CatalogSidecarManifestEvidence;
+  fullCatalog?: CatalogIdentityEvidence;
+  channel?: CatalogChannel;
+  catalogVersion?: CatalogVersion;
+  minAwVersion?: CliVersion;
+  latestCatalog?: CatalogLatestEvidence;
+  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
+  historySchemaVersion?: number | null;
+  cacheFallback?: CatalogCacheFallbackEvidence;
+  remoteFailure?: CatalogRemoteFailureEvidence;
   reason?: string;
   reasonCode?:
     | 'localCatalogMissing'
@@ -1187,5 +1408,6 @@ export interface CatalogResolution {
     | 'localCatalogSourceVersionBehind'
     | 'localCatalogFingerprintMismatch'
     | 'localCatalogLayoutInvalid'
-    | 'localLedgerDegraded';
+    | 'localLedgerDegraded'
+    | CatalogResolutionFailure['reasonCode'];
 }

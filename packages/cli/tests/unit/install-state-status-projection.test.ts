@@ -13,6 +13,7 @@ import {
   getSharedSkillTriggerRuntimeOwnerPath,
   getProjectArtifactSharedIdentityPath,
 } from '../../src/install-state/index.js';
+import type { InstallRecordFile } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
 import { createGeneratedArtifactContentDigest } from '../../src/utils/generated-artifacts.js';
 import {
@@ -422,10 +423,79 @@ describe('projectInstallState', () => {
       currentCatalog: driftedCatalog,
     }));
 
-    expect(projection.kind).toBe('installed');
     expect(projection.catalogDrift).toBe(true);
     expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).toEqual([]);
+    expect(projection.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
+  });
+
+  it('suppresses upgradeAvailable when the latest catalog is blocked by the current CLI', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-latest-blocked-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const driftedCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(fixture.target),
+      source: {
+        pluginVersion: '0.2.0',
+        manifestDigest: 'blocked-manifest',
+        bundleFingerprint: 'blocked-bundle',
+      },
+    };
+
+    const evidence = await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: driftedCatalog,
+    });
+    const projection = projectInstallState(evidence, {
+      catalogLatestBlockedByCli: true,
+    });
+
+    expect(projection.catalogLatestBlockedByCli).toBe(true);
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.kind).toBe('installed');
+  });
+
+  it('ignores build metadata differences when projecting upgradeAvailable', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-build-metadata-drift-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const driftedCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(fixture.target),
+      source: {
+        pluginVersion: `${fixture.target.source.pluginVersion}+build.2`,
+        manifestDigest: 'build-metadata-manifest-drift',
+        bundleFingerprint: 'build-metadata-bundle-drift',
+      },
+    };
+
+    const installRecord = await fs.readJson(fixture.files.installRecordPath) as InstallRecordFile;
+    installRecord.record.source.pluginVersion = `${fixture.target.source.pluginVersion}+build.1`;
+    await fs.writeJson(fixture.files.installRecordPath, installRecord, { spaces: 2 });
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: driftedCatalog,
+    }));
+
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
   });
 
   it('projects an abnormal state when the current catalog version is lower than the installed version', async () => {

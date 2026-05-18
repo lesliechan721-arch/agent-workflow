@@ -74,6 +74,11 @@ async function writeBundlePlugin(options: {
       name: pluginName,
       version: '0.1.0',
       description: `${pluginName} plugin`,
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
       skills: './skills',
       skillTriggers: {
         commit: {

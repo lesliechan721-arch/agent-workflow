@@ -606,6 +606,30 @@ describe('console controller stage 5', () => {
     expect(selectMessages).not.toContain('选择位置');
   });
 
+  it('renders current catalog audit lines on the detail page', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    const auditedItem = item();
+    auditedItem.statusPage.locations[0]!.diagnostics = [
+      { label: '已安装版本', value: '1.0.0', tone: 'info' },
+      { label: 'current catalog', value: '来源 remote · channel beta · catalog 1.1.0 · 插件 1.1.0 · 最低 CLI 1.0.0', tone: 'info' },
+      { label: 'selector', value: '显式 channel beta', tone: 'info' },
+    ];
+    loadConsoleItems.mockResolvedValue([auditedItem]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', action: 'back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
+    expect(detailView?.lines).toContain('已安装版本：1.0.0');
+    expect(detailView?.lines).toContain('current catalog：来源 remote · channel beta · catalog 1.1.0 · 插件 1.1.0 · 最低 CLI 1.0.0');
+    expect(detailView?.lines).toContain('selector：显式 channel beta');
+  });
+
   it('renders dependency-blocked uninstall as a disabled feature', async () => {
     statusCommand.mockResolvedValue(createBaseStatusResult());
     loadConsoleItems.mockResolvedValue([item({
@@ -1082,6 +1106,35 @@ describe('console controller stage 5', () => {
       .mockResolvedValueOnce([item({
         summary: {
           features: [feature('configure'), feature('status'), feature('diagnose')],
+          config: {
+            configSchemaVersion: 2,
+            schema: {
+              source: 'currentCatalog',
+              identity: 'git-commit@1.0.0#schema',
+              pluginVersion: '1.0.0',
+              manifestDigest: 'sha256:config',
+            },
+            views: [{
+              scope: 'effective',
+              projectLayer: 'shared',
+              fields: [],
+              legacyConfigStores: [],
+            }, {
+              scope: 'project',
+              projectLayer: 'shared',
+              fields: [{
+                key: 'token',
+                title: 'token',
+                kind: 'manifest',
+                reserved: false,
+                writable: true,
+                valueState: 'default',
+                effectiveValue: null,
+                sourceLayer: null,
+              }],
+              legacyConfigStores: [],
+            }],
+          },
         },
         locations: [location({
           scope: 'project',
@@ -1154,6 +1207,35 @@ describe('console controller stage 5', () => {
     loadConsoleItems.mockResolvedValue([item({
       summary: {
         features: [feature('configure'), feature('status'), feature('diagnose')],
+        config: {
+          configSchemaVersion: 2,
+          schema: {
+            source: 'currentCatalog',
+            identity: 'git-commit@1.0.0#schema',
+            pluginVersion: '1.0.0',
+            manifestDigest: 'sha256:config',
+          },
+          views: [{
+            scope: 'effective',
+            projectLayer: 'shared',
+            fields: [],
+            legacyConfigStores: [],
+          }, {
+            scope: 'user',
+            projectLayer: 'shared',
+            fields: [{
+              key: 'token',
+              title: 'token',
+              kind: 'manifest',
+              reserved: false,
+              writable: true,
+              valueState: 'default',
+              effectiveValue: null,
+              sourceLayer: null,
+            }],
+            legacyConfigStores: [],
+          }],
+        },
       },
       locations: [location({
         actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
@@ -1284,6 +1366,64 @@ describe('console controller stage 5', () => {
     expect(configView?.lines).toContain('当前层存在 store-only 旧配置，只能整层清理。');
     expect(configView?.lines.join('\n')).not.toContain('legacy-secret');
     expect(configView?.lines.join('\n')).not.toContain('raw key');
+  });
+
+  it('shows schema conflict audit and blocks schema-aware config writes', async () => {
+    statusCommand.mockResolvedValue(createBaseStatusResult());
+    preparePluginTargetsForCommand.mockResolvedValue({
+      targets: [{
+        pluginName: 'git-commit',
+        plugin: plugin({
+          schema: {
+            token: { type: 'string', required: true },
+          },
+        }),
+      }],
+    });
+    loadConsoleItems.mockResolvedValue([item({
+      summary: {
+        features: [feature('configure'), feature('status')],
+        config: {
+          configSchemaVersion: 2,
+          state: 'configSchemaConflict',
+          issueMessage: 'git-commit 的同一配置 store 被多个已安装 consumer 使用，但 schema identity 不一致。',
+          issueDetails: [
+            'codex/user · 1.0.0 · schema-a',
+            'claude/user · 1.1.0 · schema-b',
+          ],
+          catalog: {
+            available: true,
+            catalogVersion: '1.1.0',
+            channel: 'beta',
+          },
+          views: [],
+        },
+      },
+      locations: [location({
+        actions: [{ kind: 'openConfigWizard', label: '配置', target: { platform: 'codex', scope: 'user' } }],
+      })],
+    })]);
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver, prompt } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'configure' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    const configView = consoleDriver.views.find((view) => view.title === 'Git Commit 配置');
+    expect(configView?.lines).toContain('当前状态：git-commit 的同一配置 store 被多个已安装 consumer 使用，但 schema identity 不一致。');
+    expect(configView?.lines).toContain('- codex/user · 1.0.0 · schema-a');
+    expect(configView?.lines).toContain('- claude/user · 1.1.0 · schema-b');
+
+    const configActionPrompt = prompt.calls.find((call) =>
+      call.method === 'select' && (call.options as { message?: string }).message === '配置操作');
+    const labels = ((configActionPrompt?.options as { choices?: Array<{ label: string }> })?.choices ?? [])
+      .map((choice) => choice.label);
+    expect(labels).not.toContain('更新字段');
+    expect(labels).not.toContain('清空字段');
+    expect(labels).not.toContain('应用');
   });
 
   it('replays config from the config page without writing config stores', async () => {

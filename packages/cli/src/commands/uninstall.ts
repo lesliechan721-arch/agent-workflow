@@ -1491,6 +1491,7 @@ export async function uninstallCommand(
           platformFilter: options.platform,
           pluginNames,
           env,
+          includeCurrentCatalog: false,
         }),
       })
     : [];

@@ -2,6 +2,11 @@
   "name": "extensions-only",
   "version": "0.1.0",
   "description": "Fixture plugin with only Codex project repo-managed extensions.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "marketplace": {
     "category": "workflow",
     "tags": ["codex-project", "extensions"],

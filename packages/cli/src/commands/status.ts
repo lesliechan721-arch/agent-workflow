@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -31,8 +30,8 @@ import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recover
 import { readCodexNativePluginState } from '../utils/codex-native-state.js';
 import { detectEnvironment } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
-import { readPluginManifest } from '../utils/manifest.js';
-import { resolveCatalogPlugins, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import { compareStrictSemVerFields } from '../utils/manifest.js';
+import { isCatalogResolutionError, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
   iterateInstalledScopeRecords,
 } from '../utils/plugin-dependency-graph.js';
@@ -49,9 +48,12 @@ import {
   serializePluginLocation,
 } from '../utils/plugin-dependency-location.js';
 import {
+  PluginConfigSchemaResolutionError,
+  isPluginConfigSchemaResolutionError,
   listPluginConfigStorePluginNames,
   resolveConfigReadV2,
   resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
   type PluginConfigIssue,
 } from '../utils/plugin-config.js';
 import {
@@ -60,10 +62,10 @@ import {
   type SkillTriggerMaterializationTarget,
 } from '../utils/skill-trigger-preferences.js';
 import {
-  calculatePluginBundleFingerprint,
 } from '../utils/plugin-scripts.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { resolveLifecycleScriptForOs } from '../utils/plugin-script-contract.js';
+import { loadVerifiedHistoricalBundlePlugin } from '../install-state/shared-runtime-owner.js';
 import {
   createAdapters,
   formatStatusOutput,
@@ -93,6 +95,7 @@ import {
   type CommandExecutionContextInput,
 } from './runtime.js';
 import {
+  applyCatalogSelectorEnv,
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
 } from './options.js';
@@ -165,6 +168,7 @@ export interface StatusMatrixInstallState {
   adoptExistingAvailable: boolean;
   currentCatalogAvailable: boolean;
   catalogDrift: boolean;
+  catalogLatestBlockedByCli: boolean;
   upgradeAvailable: boolean;
   dynamicDiagnosticUnavailable: boolean;
   nativeTransactionKind:
@@ -226,6 +230,7 @@ export interface StatusJsonPayload extends StatusMatrixReport {
   command: 'status';
   statusSchemaVersion: 2;
   consoleItemsSchemaVersion: 3;
+  catalog: CatalogResolution;
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }
@@ -245,12 +250,6 @@ function isInsidePath(childPath: string, rootPath: string): boolean {
 
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
-}
-
-async function fileDigest(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  hash.update(await fs.readFile(filePath));
-  return `sha256:${hash.digest('hex')}`;
 }
 
 function getStatusScopeRecord(
@@ -343,35 +342,26 @@ async function loadSnapshotPlugin(
     throw new Error('snapshot belongs to another plugin');
   }
 
+  const verified = await loadVerifiedHistoricalBundlePlugin({
+    pluginName,
+    pluginVersion: snapshot.pluginVersion,
+    runtimeRoot: snapshot.snapshotRoot,
+    bundleRoot: snapshot.bundleRoot,
+    manifestPath: snapshot.manifestPath,
+    sourceManifestDigest: snapshot.sourceManifestDigest,
+    bundleFingerprint: snapshot.bundleFingerprint,
+  });
+  if (verified.status !== 'ok') {
+    throw new Error(verified.reason);
+  }
+
   const snapshotRoot = await fs.realpath(snapshot.snapshotRoot);
-  const bundleRoot = await fs.realpath(snapshot.bundleRoot);
   const expectedBundleRoot = await fs.realpath(path.join(snapshotRoot, 'bundle'));
-  if (bundleRoot !== expectedBundleRoot || !isInsidePath(bundleRoot, snapshotRoot)) {
+  if (verified.bundleRoot !== expectedBundleRoot || !isInsidePath(verified.bundleRoot, snapshotRoot)) {
     throw new Error('snapshot bundle root is outside snapshot root');
   }
 
-  const manifestPath = await fs.realpath(snapshot.manifestPath);
-  if (!isInsidePath(manifestPath, bundleRoot)) {
-    throw new Error('snapshot manifest path is outside bundle root');
-  }
-  const digest = await fileDigest(manifestPath);
-  if (digest !== snapshot.sourceManifestDigest) {
-    throw new Error('snapshot manifest digest mismatch');
-  }
-  const fingerprint = await calculatePluginBundleFingerprint(bundleRoot);
-  if (fingerprint !== snapshot.bundleFingerprint) {
-    throw new Error('snapshot bundle fingerprint mismatch');
-  }
-
-  const plugin = await readPluginManifest(bundleRoot, { mode: 'bundle' });
-  if (
-    plugin.manifest.name !== snapshot.pluginName ||
-    plugin.manifest.version !== snapshot.pluginVersion ||
-    path.resolve(plugin.manifestPath) !== path.resolve(manifestPath)
-  ) {
-    throw new Error('snapshot manifest identity mismatch');
-  }
-  return plugin;
+  return verified.plugin;
 }
 
 async function resolveStatusHealthManifest(options: {
@@ -884,6 +874,7 @@ function mapDependencyResolvedSource(
 
 function buildDependencyStatusProjectionByLocation(
   projections: PluginDependencyStatusProjection[],
+  catalog: CatalogResolution,
 ): Record<string, PluginStatusDependencies> {
   const rawByKey = new Map(
     projections.map((projection) => [serializePluginLocation(projection.location), projection] as const),
@@ -938,6 +929,14 @@ function buildDependencyStatusProjectionByLocation(
         resolved: projection.resolved.map((entry) => ({
           declaration: entry.declaration,
           source: mapDependencyResolvedSource(entry.source),
+          versionState: {
+            ...entry.versionState,
+            autoUpgradeState: catalog.latestCatalogBlocked && entry.versionState.autoUpgradeState === 'available'
+              ? 'blockedByCli'
+              : catalog.reasonCode === 'catalogUnavailable' && entry.versionState.autoUpgradeState === 'catalogUnavailable'
+                ? 'catalogUnavailable'
+                : entry.versionState.autoUpgradeState,
+          },
         })),
         satisfied,
         missing: [...projection.missing, ...transitivelyMissing],
@@ -950,6 +949,62 @@ function buildDependencyStatusProjectionByLocation(
       return [serializePluginLocation(projection.location), mapped];
     }),
   );
+}
+
+async function resolveDependencyStatusByLocation(options: {
+  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
+  catalog: CatalogResolution;
+  env: NodeJS.ProcessEnv;
+}): Promise<Record<string, PluginStatusDependencies>> {
+  const ledger = await readInstalledLedger(options.env);
+  const ledgerRecords = iterateInstalledScopeRecords(ledger);
+  const collectedByKey = new Map(
+    options.locations.map((state) => [
+      serializePluginLocation(normalizePluginLocation({
+        plugin: state.location.plugin,
+        platform: state.location.platform,
+        scope: state.location.scope,
+        projectKey: state.location.projectKey ?? null,
+      })),
+      state,
+    ] as const),
+  );
+  const projections = projectPluginDependencyStatus({
+    state: {
+      currentCatalogByPlugin: Object.fromEntries(
+        options.locations
+          .flatMap((state) => state.target.currentPlugin ? [[state.target.currentPlugin.manifest.name, state.target.currentPlugin.manifest] as const] : []),
+      ),
+      installedRecords: ledgerRecords.map(({ location, record }) => ({
+        location,
+        resolvedVersion: record.resolvedVersion,
+        installSource: record.installSource,
+        dependencyEdges: record.dependencyEdges,
+        installOptions: record.installOptions,
+      })),
+      healthRecords: ledgerRecords.map(({ location, record }) => {
+        const collected = collectedByKey.get(serializePluginLocation(location));
+        const state = collected
+          ? collected.projection.kind === 'installed'
+            ? 'healthy'
+            : record.managed ? 'degraded' : 'external'
+          : record.managed ? 'healthy' : 'external';
+        return {
+          location,
+          state,
+          visible: true,
+          managedByAw: record.managed,
+        } satisfies PluginDependencyPlannerHealthRecord;
+      }),
+    },
+    locations: options.locations.map((state) => normalizePluginLocation({
+      plugin: state.location.plugin,
+      platform: state.location.platform,
+      scope: state.location.scope,
+      projectKey: state.location.projectKey ?? null,
+    })),
+  });
+  return buildDependencyStatusProjectionByLocation(projections, options.catalog);
 }
 
 function describeEvidenceSource(source: string): string {
@@ -995,10 +1050,20 @@ function describeCatalog(plugin: PluginStatusReport | undefined): string | undef
     return undefined;
   }
 
+  if (plugin.currentCatalog.latestCatalogBlocked) {
+    return `最新 catalog ${plugin.currentCatalog.latestCatalogBlocked.catalogVersion} 需要 CLI >= ${plugin.currentCatalog.latestCatalogBlocked.minAwVersion}；当前状态继续使用可兼容的 catalog 视图，不把它显示成插件可升级。`;
+  }
+
   if (plugin.currentCatalog.available) {
+    const versionParts = [
+      plugin.currentCatalog.catalogVersion ? `catalog 版本 ${plugin.currentCatalog.catalogVersion}` : undefined,
+      plugin.currentCatalog.pluginVersion ? `插件版本 ${plugin.currentCatalog.pluginVersion}` : undefined,
+      plugin.currentCatalog.minAwVersion ? `最低 CLI ${plugin.currentCatalog.minAwVersion}` : undefined,
+    ].filter(Boolean);
+    const versionSummary = versionParts.length > 0 ? `，${versionParts.join('，')}` : '';
     return plugin.currentCatalog.source === 'embedded'
-      ? `当前 catalog 来自 embedded（本地 marketplace 未处于健康状态：${plugin.currentCatalog.reason ?? '原因未知'}）`
-      : '当前 catalog 可用';
+      ? `当前 catalog 来自 embedded${versionSummary}（本地 marketplace 未处于健康状态：${plugin.currentCatalog.reason ?? '原因未知'}）`
+      : `当前 catalog 可用（来源 ${plugin.currentCatalog.source}${versionSummary}）`;
   }
 
   return `当前 catalog 中找不到插件目录（来自 ${plugin.currentCatalog.source}${plugin.currentCatalog.reason ? `，${plugin.currentCatalog.reason}` : ''}）`;
@@ -1814,6 +1879,9 @@ async function resolveConsoleLocationDiagnostics(options: {
   if (cell.report?.currentCatalog?.available !== true) {
     return undefined;
   }
+  if (cell.report.currentCatalog.latestCatalogBlocked) {
+    return { upgradeState: 'current' };
+  }
 
   const scopeRecord = getStatusScopeRecord(
     ledger,
@@ -1826,23 +1894,23 @@ async function resolveConsoleLocationDiagnostics(options: {
     return { upgradeState: 'unknown' };
   }
 
-  if (scopeRecord.resolvedVersion !== currentPlugin.manifest.version) {
+  const versionComparison = compareStrictSemVerFields({
+    left: {
+      value: currentPlugin.manifest.version,
+      fieldPath: 'current plugin manifest.version',
+    },
+    right: {
+      value: scopeRecord.resolvedVersion,
+      fieldPath: 'installed ledger resolvedVersion',
+    },
+  });
+  if (versionComparison.kind === 'invalid') {
+    return { upgradeState: 'unknown' };
+  }
+  if (versionComparison.relation > 0) {
     return { upgradeState: 'available' };
   }
-
-  const snapshot = scopeRecord.lifecycleConfigSnapshot;
-  if (!snapshot?.bundleFingerprint) {
-    return { upgradeState: 'unknown' };
-  }
-
-  try {
-    const currentFingerprint = await calculatePluginBundleFingerprint(currentPlugin.rootDir);
-    return {
-      upgradeState: currentFingerprint === snapshot.bundleFingerprint ? 'current' : 'available',
-    };
-  } catch {
-    return { upgradeState: 'unknown' };
-  }
+  return { upgradeState: 'current' };
 }
 
 function statusHealthFromProjectionKind(
@@ -2003,6 +2071,7 @@ async function createInstallStateForCell(options: {
     adoptExistingAvailable: state.projection.adoptExistingAvailable,
     currentCatalogAvailable: Boolean(state.target.currentPlugin),
     catalogDrift: state.projection.catalogDrift,
+    catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
     upgradeAvailable: state.projection.upgradeAvailable,
     dynamicDiagnosticUnavailable: state.projection.dynamicDiagnosticUnavailable,
     nativeTransactionKind: state.projection.nativeTransactionKind,
@@ -2016,6 +2085,7 @@ async function createInstallStateForCell(options: {
 
 function createStatusJsonPayload(options: {
   matrix: StatusMatrixReport;
+  catalog: CatalogResolution;
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }): StatusJsonPayload {
@@ -2024,6 +2094,7 @@ function createStatusJsonPayload(options: {
     command: 'status',
     statusSchemaVersion: 2,
     consoleItemsSchemaVersion: 3,
+    catalog: options.catalog,
     ...options.matrix,
     friendlySummaries: options.friendlySummaries,
     consoleItems: options.consoleItems,
@@ -2032,6 +2103,37 @@ function createStatusJsonPayload(options: {
 
 function nativeRecoverySuggestion(pluginName: string): string {
   return `aw uninstall ${pluginName} -p codex -s user`;
+}
+
+function catalogResolutionFromError(
+  error: unknown,
+  fallbackRoot: string,
+): CatalogResolution {
+  if (isCatalogResolutionError(error)) {
+    return {
+      rootDir: fallbackRoot,
+      source: 'remote',
+      ...(error.resolution.selector ? { selector: error.resolution.selector } : {}),
+      ...(error.resolution.channel ? { channel: error.resolution.channel } : {}),
+      ...(error.resolution.catalogVersion ? { catalogVersion: error.resolution.catalogVersion } : {}),
+      ...(error.resolution.minAwVersion ? { minAwVersion: error.resolution.minAwVersion } : {}),
+      ...(error.resolution.latestCatalogBlocked ? { latestCatalogBlocked: error.resolution.latestCatalogBlocked } : {}),
+      ...(error.resolution.historySchemaVersion !== undefined
+        ? { historySchemaVersion: error.resolution.historySchemaVersion }
+        : {}),
+      ...(error.resolution.cacheFallback ? { cacheFallback: error.resolution.cacheFallback } : {}),
+      ...(error.resolution.remoteFailure ? { remoteFailure: error.resolution.remoteFailure } : {}),
+      reason: error.resolution.reason,
+      reasonCode: error.resolution.reasonCode,
+    };
+  }
+
+  return {
+    rootDir: fallbackRoot,
+    source: 'remote',
+    reason: statusErrorMessage(error),
+    reasonCode: 'catalogUnavailable',
+  };
 }
 
 async function resolveStatusCatalog(
@@ -2043,11 +2145,18 @@ async function resolveStatusCatalog(
   } catch (error) {
     const fallbackRoot = locations.find((state) => state.target.currentPlugin)?.target.currentPlugin?.rootDir
       ?? process.cwd();
-    return {
-      rootDir: path.dirname(fallbackRoot),
-      source: 'embedded',
-      reason: statusErrorMessage(error),
-    };
+    return catalogResolutionFromError(error, path.dirname(fallbackRoot));
+  }
+}
+
+async function resolveStatusCatalogForProjection(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<CatalogResolution> {
+  try {
+    return await resolveCurrentCatalog(env);
+  } catch (error) {
+    return catalogResolutionFromError(error, cwd);
   }
 }
 
@@ -2201,9 +2310,21 @@ async function createCompatibilityReports(options: {
       },
       currentCatalog: state.currentCatalog
         ? {
+            available: true,
             rootDir: options.catalog.rootDir,
             source: options.catalog.source,
-            available: true,
+            ...(options.catalog.selector ? { selector: options.catalog.selector } : {}),
+            ...(options.catalog.sidecarManifestPackage ? { sidecarManifestPackage: options.catalog.sidecarManifestPackage } : {}),
+            ...(options.catalog.fullCatalog ? { fullCatalog: options.catalog.fullCatalog } : {}),
+            ...(options.catalog.channel ? { channel: options.catalog.channel } : {}),
+            ...(options.catalog.catalogVersion ? { catalogVersion: options.catalog.catalogVersion } : {}),
+            ...(options.catalog.minAwVersion ? { minAwVersion: options.catalog.minAwVersion } : {}),
+            ...(options.catalog.latestCatalog ? { latestCatalog: options.catalog.latestCatalog } : {}),
+            ...(options.catalog.latestCatalogBlocked ? { latestCatalogBlocked: options.catalog.latestCatalogBlocked } : {}),
+            ...(options.catalog.historySchemaVersion !== undefined ? { historySchemaVersion: options.catalog.historySchemaVersion } : {}),
+            ...(options.catalog.cacheFallback ? { cacheFallback: options.catalog.cacheFallback } : {}),
+            ...(options.catalog.remoteFailure ? { remoteFailure: options.catalog.remoteFailure } : {}),
+            ...(state.currentCatalog.source ? { pluginVersion: state.currentCatalog.source.pluginVersion } : {}),
             ...(options.catalog.reason ? { reason: options.catalog.reason } : {}),
             ...(options.catalog.reasonCode ? { reasonCode: options.catalog.reasonCode } : {}),
           }
@@ -2288,14 +2409,59 @@ function createCurrentPluginByNameFromCandidates(
 async function resolveConsoleConfigProjection(options: {
   pluginName: string;
   plugin?: PluginMeta;
+  catalog: CatalogResolution;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<PluginConsoleConfigProjection | null> {
+  const catalogDetails: NonNullable<PluginConsoleConfigProjection['catalog']> = {
+    available: !options.catalog.reasonCode,
+    ...(options.catalog.source ? { source: options.catalog.source } : {}),
+    ...(options.catalog.channel ? { channel: options.catalog.channel } : {}),
+    ...(options.catalog.catalogVersion ? { catalogVersion: options.catalog.catalogVersion } : {}),
+    ...(options.catalog.minAwVersion ? { minAwVersion: options.catalog.minAwVersion } : {}),
+    ...(options.catalog.reason ? { reason: options.catalog.reason } : {}),
+    ...(options.catalog.reasonCode ? { reasonCode: options.catalog.reasonCode } : {}),
+  };
+  const storePaths = [
+    resolvePluginConfigStorePath({
+      pluginName: options.pluginName,
+      scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    resolvePluginConfigStorePath({
+      pluginName: options.pluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    resolvePluginConfigStorePath({
+      pluginName: options.pluginName,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+  ];
+  const hasConfigStore = (await Promise.all(storePaths.map((storePath) => fs.pathExists(storePath))))
+    .some(Boolean);
+  const pluginError = !options.plugin && options.catalog.reasonCode
+    ? new PluginConfigSchemaResolutionError(
+        'catalogUnavailable',
+        options.catalog.reason ?? `current catalog 当前不可用（${options.catalog.reasonCode}）。`,
+        {
+          reasonCode: options.catalog.reasonCode,
+          reason: options.catalog.reason,
+        },
+      )
+    : null;
+
   try {
-    const views = (await Promise.all([
+    const results = await Promise.all([
       resolveConfigReadV2({
         pluginName: options.pluginName,
         plugin: options.plugin,
+        pluginError,
         scope: 'effective',
         projectLayer: 'shared',
         cwd: options.cwd,
@@ -2304,6 +2470,7 @@ async function resolveConsoleConfigProjection(options: {
       resolveConfigReadV2({
         pluginName: options.pluginName,
         plugin: options.plugin,
+        pluginError,
         scope: 'user',
         projectLayer: 'shared',
         cwd: options.cwd,
@@ -2312,6 +2479,7 @@ async function resolveConsoleConfigProjection(options: {
       resolveConfigReadV2({
         pluginName: options.pluginName,
         plugin: options.plugin,
+        pluginError,
         scope: 'project',
         projectLayer: 'shared',
         cwd: options.cwd,
@@ -2320,12 +2488,14 @@ async function resolveConsoleConfigProjection(options: {
       resolveConfigReadV2({
         pluginName: options.pluginName,
         plugin: options.plugin,
+        pluginError,
         scope: 'project',
         projectLayer: 'local',
         cwd: options.cwd,
         env: options.env,
       }),
-    ])).map((result) => ({
+    ]);
+    const views = results.map((result) => ({
       scope: result.scope,
       projectLayer: result.projectLayer,
       fields: result.fields,
@@ -2338,16 +2508,67 @@ async function resolveConsoleConfigProjection(options: {
 
     return {
       configSchemaVersion: 2,
+      state: 'available',
+      ...(results.find((result) => result.schema)?.schema
+        ? { schema: results.find((result) => result.schema)!.schema }
+        : {}),
+      catalog: catalogDetails,
       views,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (!isPluginConfigSchemaResolutionError(error)) {
+      return null;
+    }
+
+    const details = typeof error.details === 'object' && error.details !== null
+      ? error.details as {
+          consumers?: Array<{
+            location: {
+              platform: PlatformName;
+              scope: Scope;
+              projectKey?: string;
+            };
+            recordPath: string;
+            schemaIdentity: string;
+            pluginVersion: string;
+            manifestDigest: string;
+          }>;
+        }
+      : {};
+    const conflictConsumers = details.consumers?.map((consumer) => ({
+      platform: consumer.location.platform,
+      scope: consumer.location.scope,
+      ...(consumer.location.projectKey ? { projectKey: consumer.location.projectKey } : {}),
+      recordPath: consumer.recordPath,
+      schemaIdentity: consumer.schemaIdentity,
+      pluginVersion: consumer.pluginVersion,
+      manifestDigest: consumer.manifestDigest,
+    }));
+    if (!hasConfigStore && (conflictConsumers?.length ?? 0) === 0) {
+      return null;
+    }
+
+    return {
+      configSchemaVersion: 2,
+      state: error.code,
+      issueMessage: error.message.replace(/^[^:]+:\s*/, ''),
+      ...(conflictConsumers && conflictConsumers.length > 0
+        ? {
+            issueDetails: conflictConsumers.map((consumer) =>
+              `${consumer.platform}/${consumer.scope}${consumer.projectKey ? `/${consumer.projectKey}` : ''} · ${consumer.pluginVersion} · ${consumer.schemaIdentity}`),
+            conflictConsumers,
+          }
+        : {}),
+      catalog: catalogDetails,
+      views: [],
+    };
   }
 }
 
 async function resolveConsoleConfigProjectionByPluginName(options: {
   pluginNames: string[];
   currentPluginByName: Record<string, PluginMeta>;
+  catalog: CatalogResolution;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<Record<string, PluginConsoleConfigProjection>> {
@@ -2355,6 +2576,7 @@ async function resolveConsoleConfigProjectionByPluginName(options: {
     const projection = await resolveConsoleConfigProjection({
       pluginName,
       plugin: options.currentPluginByName[pluginName],
+      catalog: options.catalog,
       cwd: options.cwd,
       env: options.env,
     });
@@ -2372,14 +2594,28 @@ function classifyDependencyEntry(options: {
   location: PluginLocation;
   healthStatus: 'ok' | 'missingRecord' | 'invalidRecord' | 'missingArtifact' | 'nativeMarkerPresent' | 'nativeEvidenceMissing' | null;
   reason: string | null;
+  versionState?: PluginStatusDependencies['resolved'][number]['versionState'];
 }): ConsoleDependencyEntry {
+  const versionDetails = options.versionState
+    ? [
+        options.versionState.declaredMinVersion ? `声明 >= ${options.versionState.declaredMinVersion}` : undefined,
+        options.versionState.installedVersion ? `已装 ${options.versionState.installedVersion}` : undefined,
+        options.versionState.candidateVersion ? `catalog 候选 ${options.versionState.candidateVersion}` : undefined,
+        options.versionState.autoUpgradeState === 'available'
+          ? '可自动升级'
+          : options.versionState.autoUpgradeState === 'blockedByCli'
+            ? '受 CLI 版本限制'
+            : undefined,
+      ].filter(Boolean).join('，')
+    : '';
+  const summarySuffix = versionDetails ? `（${versionDetails}）` : '';
   if (options.healthStatus === 'ok' || options.healthStatus === null) {
     return {
       pluginName: options.pluginName,
       locationLabel: pluginConsoleLocationLabel(options.location),
       symbol: '✓',
       tone: 'success',
-      summary: '正常',
+      summary: `正常${summarySuffix}`,
     };
   }
 
@@ -2392,17 +2628,84 @@ function classifyDependencyEntry(options: {
       locationLabel: pluginConsoleLocationLabel(options.location),
       symbol: '×',
       tone: 'danger',
-      summary: '缺失',
+      summary: `缺失${summarySuffix}`,
     };
   }
 
-  return {
-    pluginName: options.pluginName,
-    locationLabel: pluginConsoleLocationLabel(options.location),
-    symbol: '!',
-    tone: 'danger',
-    summary: options.reason ?? '状态异常',
+    return {
+      pluginName: options.pluginName,
+      locationLabel: pluginConsoleLocationLabel(options.location),
+      symbol: '!',
+      tone: 'danger',
+      summary: `${options.reason ?? '状态异常'}${summarySuffix}`,
+    };
+}
+
+type ConsoleCatalogSelectorLike = {
+  kind: 'default' | 'distTag' | 'exactVersion';
+  defaultChannel: string;
+  requestedChannel?: string;
+  requestedCatalogVersion?: string;
+};
+
+type ConsoleCatalogLike = {
+  available?: boolean;
+  source?: string | null;
+  channel?: string | null;
+  catalogVersion?: string | null;
+  pluginVersion?: string | null;
+  minAwVersion?: string | null;
+  reason?: string | null;
+  reasonCode?: string | null;
+  selector?: ConsoleCatalogSelectorLike;
+  latestCatalogBlocked?: {
+    catalogVersion: string;
+    minAwVersion: string;
   };
+  cacheFallback?: {
+    used?: boolean;
+    matchedCatalog?: {
+      channel: string;
+      version: string;
+      source: string;
+    };
+  };
+  remoteFailure?: {
+    stage: string;
+    message: string;
+  };
+};
+
+function describeCatalogSelectorForConsole(
+  selector: ConsoleCatalogSelectorLike,
+): string {
+  switch (selector.kind) {
+    case 'default':
+      return `默认 channel（${selector.defaultChannel}）`;
+    case 'distTag':
+      return `显式 channel ${selector.requestedChannel ?? selector.defaultChannel}`;
+    case 'exactVersion':
+      return `显式 catalog 版本 ${selector.requestedCatalogVersion}`;
+  }
+}
+
+function describeCatalogSummaryForConsole(
+  currentCatalog: ConsoleCatalogLike,
+): string {
+  if (currentCatalog.available !== true) {
+    const reason = [currentCatalog.reasonCode, currentCatalog.reason]
+      .filter((value): value is string => Boolean(value && value.trim().length > 0))
+      .join('；');
+    return reason === '' ? '不可用' : `不可用（${reason}）`;
+  }
+
+  return [
+    currentCatalog.source ? `来源 ${currentCatalog.source}` : undefined,
+    currentCatalog.channel ? `channel ${currentCatalog.channel}` : undefined,
+    currentCatalog.catalogVersion ? `catalog ${currentCatalog.catalogVersion}` : undefined,
+    currentCatalog.pluginVersion ? `插件 ${currentCatalog.pluginVersion}` : undefined,
+    currentCatalog.minAwVersion ? `最低 CLI ${currentCatalog.minAwVersion}` : undefined,
+  ].filter(Boolean).join(' · ');
 }
 
 function toCommandPluginLocation(location: InstallStatePluginLocation): PluginLocation {
@@ -2417,6 +2720,7 @@ function toCommandPluginLocation(location: InstallStatePluginLocation): PluginLo
 function buildConsoleLocationReadModelByKey(options: {
   locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
   catalog: CatalogResolution;
+  dependencyStatusByLocation: Record<string, PluginStatusDependencies>;
 }): Record<string, ConsoleLocationReadModel> {
   const entries: Array<[string, ConsoleLocationReadModel]> = [];
 
@@ -2432,6 +2736,9 @@ function buildConsoleLocationReadModelByKey(options: {
     const record = state.evidence.installRecord.read.status === 'ok'
       ? state.evidence.installRecord.read.value.record
       : null;
+    const dependencyStatus = options.dependencyStatusByLocation[
+      serializePluginLocation(toCommandPluginLocation(state.location))
+    ];
     const dependencyHealthByKey = new Map(
       state.evidence.dependencyIndex.projection.dependencyHealth.map((entry) => [
         serializePluginLocation(toCommandPluginLocation(entry.dependency)),
@@ -2442,22 +2749,83 @@ function buildConsoleLocationReadModelByKey(options: {
     if (record) {
       for (const edge of record.dependencyEdges) {
         const health = dependencyHealthByKey.get(serializePluginLocation(toCommandPluginLocation(edge.dependency)));
+        const resolvedEntry = dependencyStatus?.resolved.find((entry) =>
+          entry.declaration.name === edge.declaration.name &&
+          (entry.declaration.target?.scope ?? null) === (edge.declaration.target?.scope ?? null),
+        );
         dependencyEntries.push(classifyDependencyEntry({
           pluginName: edge.dependency.plugin,
           location: toCommandPluginLocation(edge.dependency),
           healthStatus: health?.status ?? null,
           reason: health?.reason ?? null,
+          versionState: resolvedEntry?.versionState,
         }));
       }
     }
 
-    if (
-      options.catalog.source === 'embedded' &&
-      state.target.currentPlugin
-    ) {
+    if (record?.source.pluginVersion) {
+      diagnostics.push({
+        label: '已安装版本',
+        value: record.source.pluginVersion,
+        tone: 'info',
+      });
+    }
+
+    if (state.target.currentPlugin || options.catalog.reasonCode) {
+      diagnostics.push({
+        label: 'current catalog',
+        value: describeCatalogSummaryForConsole({
+          available: !options.catalog.reasonCode && Boolean(state.target.currentPlugin),
+          source: options.catalog.source,
+          channel: options.catalog.channel,
+          catalogVersion: options.catalog.catalogVersion,
+          pluginVersion: state.target.currentPlugin?.manifest.version ?? null,
+          minAwVersion: options.catalog.minAwVersion,
+          reason: options.catalog.reason,
+          reasonCode: options.catalog.reasonCode,
+        }),
+        tone: !options.catalog.reasonCode && state.target.currentPlugin ? 'info' : 'danger',
+      });
+      if (options.catalog.selector) {
+        diagnostics.push({
+          label: 'selector',
+          value: describeCatalogSelectorForConsole(options.catalog.selector),
+          tone: 'info',
+        });
+      }
+      if (options.catalog.latestCatalogBlocked) {
+        diagnostics.push({
+          label: 'CLI 版本限制',
+          value: `最新 catalog ${options.catalog.latestCatalogBlocked.catalogVersion} 需要 CLI >= ${options.catalog.latestCatalogBlocked.minAwVersion}；当前继续使用兼容 catalog，不把它当成插件可升级。`,
+          tone: 'info',
+        });
+      }
+      if (options.catalog.cacheFallback?.used && options.catalog.cacheFallback.matchedCatalog) {
+        diagnostics.push({
+          label: 'catalog 缓存',
+          value: `命中 cache fallback：${options.catalog.cacheFallback.matchedCatalog.channel} / ${options.catalog.cacheFallback.matchedCatalog.version}（${options.catalog.cacheFallback.matchedCatalog.source}）`,
+          tone: 'info',
+        });
+      }
+      if (options.catalog.remoteFailure) {
+        diagnostics.push({
+          label: '远程校验',
+          value: `${options.catalog.remoteFailure.stage}：${options.catalog.remoteFailure.message}`,
+          tone: 'danger',
+        });
+      }
+    }
+
+    if (options.catalog.reasonCode) {
+      const details = [
+        options.catalog.reasonCode,
+        options.catalog.reason,
+      ].filter((value): value is string => Boolean(value && value.trim().length > 0));
       diagnostics.push({
         label: 'catalog',
-        value: `当前使用 embedded catalog；本地插件列表未被使用：${options.catalog.reason ?? '原因未知'}`,
+        value: state.target.currentPlugin
+          ? `current catalog 当前不可用或不可接受；状态详情改用本地已知插件证据：${details.join('；') || '原因未知'}`
+          : `current catalog 当前不可用或不可接受：${details.join('；') || '原因未知'}`,
         tone: 'info',
       });
     } else if (!state.target.currentPlugin && state.target.historicalPlugin) {
@@ -2465,6 +2833,49 @@ function buildConsoleLocationReadModelByKey(options: {
         label: 'catalog',
         value: '当前详情来自历史证据；current catalog 已不再提供这个插件目录。',
         tone: 'info',
+      });
+    }
+
+    const autoUpgradeDependencies = dependencyStatus?.resolved
+      .filter((entry) => entry.versionState.autoUpgradeState === 'available')
+      .map((entry) =>
+        `${entry.declaration.name}${entry.versionState.candidateVersion ? ` -> ${entry.versionState.candidateVersion}` : ''}`);
+    if ((autoUpgradeDependencies?.length ?? 0) > 0) {
+      diagnostics.push({
+        label: '依赖自动升级',
+        value: autoUpgradeDependencies!.join('，'),
+        tone: 'info',
+      });
+    }
+
+    const blockedDependencies = dependencyStatus?.resolved
+      .filter((entry) =>
+        entry.versionState.autoUpgradeState === 'blockedByCli' ||
+        entry.versionState.autoUpgradeState === 'catalogUnavailable' ||
+        entry.versionState.candidateVersionComparison === 'belowMinimum' ||
+        entry.versionState.installedVersionComparison === 'invalid',
+      )
+      .map((entry) => {
+        if (entry.versionState.autoUpgradeState === 'blockedByCli') {
+          return `${entry.declaration.name} 当前有兼容升级候选，但受 CLI 版本限制。`;
+        }
+        if (entry.versionState.autoUpgradeState === 'catalogUnavailable') {
+          return `${entry.declaration.name} 需要 current catalog 候选版本，但当前 catalog 不可用。`;
+        }
+        if (entry.versionState.candidateVersionComparison === 'belowMinimum') {
+          return `${entry.declaration.name} 的 catalog 候选版本不足以满足最低版本要求。`;
+        }
+        if (entry.versionState.installedVersionComparison === 'invalid') {
+          return `${entry.declaration.name} 的已安装版本无法按语义版本解释。`;
+        }
+        return undefined;
+      })
+      .filter((entry): entry is string => Boolean(entry));
+    if ((blockedDependencies?.length ?? 0) > 0) {
+      diagnostics.push({
+        label: '依赖阻断',
+        value: blockedDependencies!.join('；'),
+        tone: 'danger',
       });
     }
 
@@ -2537,6 +2948,7 @@ function fallbackNotInstalledState(): StatusMatrixInstallState {
     adoptExistingAvailable: false,
     currentCatalogAvailable: true,
     catalogDrift: false,
+    catalogLatestBlockedByCli: false,
     upgradeAvailable: false,
     dynamicDiagnosticUnavailable: true,
     nativeTransactionKind: 'none',
@@ -2709,6 +3121,7 @@ export async function statusCommand(
   rawOptions: RawStatusCommandOptions,
   runtime: StatusCommandRuntime = {},
 ): Promise<{
+  catalog: CatalogResolution;
   reports: StatusReport[];
   output: string;
   matrix: StatusMatrixReport;
@@ -2720,18 +3133,35 @@ export async function statusCommand(
   currentPluginByName: Record<string, PluginMeta>;
   configProjectionByPluginName: Record<string, PluginConsoleConfigProjection>;
 }> {
+  const normalizedOptions = normalizeStatusCommandOptions(rawOptions);
+  const earlyCatalog = await resolveStatusCatalogForProjection(
+    normalizedOptions.cwd,
+    applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions),
+  );
+  const runtimeWithSelector = {
+    ...runtime,
+    env: applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions),
+    p7Catalog: earlyCatalog,
+  } as StatusCommandRuntime & { p7Catalog: CatalogResolution };
   const collected = await collectP7Locations(pluginNames, {
-    ...rawOptions,
-    deep: rawOptions.verbose === true,
-  }, runtime);
+    ...normalizedOptions,
+    deep: normalizedOptions.verbose === true,
+  }, runtimeWithSelector);
   const options = collected.options;
-  const context = createCommandExecutionContext(runtime);
+  const context = createCommandExecutionContext(runtimeWithSelector);
   const env = context.env;
   const requestedPlugins = pluginNames.length > 0 ? pluginNames : undefined;
   const installStates = await Promise.all(collected.locations.map((state) =>
     createInstallStateForCell({ state, env }),
   ));
-  const catalog = await resolveStatusCatalog(env, collected.locations);
+  const catalog = earlyCatalog.reasonCode === 'catalogUnavailable'
+    ? await resolveStatusCatalog(env, collected.locations)
+    : earlyCatalog;
+  const dependencyStatusByLocation = await resolveDependencyStatusByLocation({
+    locations: collected.locations,
+    catalog,
+    env,
+  });
   const compatibilityReports = await createCompatibilityReports({
     locations: collected.locations,
     env,
@@ -2807,10 +3237,12 @@ export async function statusCommand(
   const locationReadModelByKey = buildConsoleLocationReadModelByKey({
     locations: collected.locations,
     catalog,
+    dependencyStatusByLocation,
   });
   const configProjectionByPluginName = await resolveConsoleConfigProjectionByPluginName({
     pluginNames: [...new Set(matrix.cells.map((cell) => cell.pluginName))],
     currentPluginByName,
+    catalog,
     cwd: options.cwd,
     env,
   });
@@ -2825,6 +3257,7 @@ export async function statusCommand(
   const jsonPayload: P7StatusJsonPayload & StatusJsonPayload = {
     ...createStatusJsonPayload({
       matrix,
+      catalog,
       friendlySummaries,
       consoleItems,
     }),
@@ -2862,6 +3295,15 @@ export async function statusCommand(
         path: state.evidence.installRecord.read.path,
         sourceDrift: state.evidence.installRecord.sourceDrift,
         sameBundleAsCatalog: state.evidence.installRecord.sameBundleAsCatalog,
+        ...(state.evidence.installRecord.read.status === 'ok'
+          ? {
+              source: state.evidence.installRecord.read.value.record.source,
+            }
+          : {}),
+      },
+      currentCatalog: {
+        provided: state.evidence.currentCatalog.provided,
+        source: state.evidence.currentCatalog.source,
       },
       dynamicDiagnostic: {
         available: state.evidence.dynamicDiagnostic.available,
@@ -2887,6 +3329,8 @@ export async function statusCommand(
           ...(artifact.artifact.roleKey ? { roleKey: artifact.artifact.roleKey } : {}),
           path: artifact.artifact.path,
         })),
+      legacyTracking: state.evidence.legacyTracking,
+      historicalLifecycle: state.evidence.historicalLifecycle,
       dependencyIndex: {
         status: state.evidence.dependencyIndex.inspection.status,
         trusted: state.projection.dependencyIndexTrusted,
@@ -2902,6 +3346,26 @@ export async function statusCommand(
         dependencyIndexRecoveryMessage,
         actions: state.dependencyIndexActions,
         staleProjectReferences,
+      },
+      dependencies: dependencyStatusByLocation[serializePluginLocation(normalizePluginLocation({
+        plugin: state.location.plugin,
+        platform: state.location.platform,
+        scope: state.location.scope,
+        projectKey: state.location.projectKey ?? null,
+      }))] ?? {
+        healthSource: 'none',
+        declared: [],
+        resolved: [],
+        satisfied: [],
+        missing: [],
+        dependents: [],
+        autoInstalled: false,
+        autoRemovable: false,
+        catalogDrift: {
+          kind: 'none',
+          snapshotDependencies: [],
+          currentDependencies: [],
+        },
       },
       dependents: state.projection.dependents,
       autoInstalled: state.projection.autoInstalled,
@@ -2947,6 +3411,7 @@ export async function statusCommand(
           : {}),
       },
       catalogDrift: state.projection.catalogDrift,
+      catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
       upgradeAvailable: state.projection.upgradeAvailable,
       repairAvailable: state.projection.repairAvailable,
       cleanupAvailable: state.projection.cleanupAvailable,
@@ -2977,6 +3442,7 @@ export async function statusCommand(
         ].join('\n')
       : renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins });
   return {
+    catalog,
     reports: compatibilityReports,
     output,
     matrix,
@@ -3001,25 +3467,34 @@ export async function loadConsoleItems(
   rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
   runtime: StatusCommandRuntime = {},
 ): Promise<ConsoleControllerItem[]> {
-  const base = await statusCommand([], rawOptions, runtime);
+  const options = normalizeStatusCommandOptions(rawOptions);
+  const runtimeWithSelector = {
+    ...runtime,
+    env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
+  } satisfies StatusCommandRuntime;
+  const base = await statusCommand([], {
+    ...rawOptions,
+    ...options,
+  }, runtimeWithSelector);
   if (!rawOptions.includeCatalogOnly) {
     return base.consoleControllerItems;
   }
 
-  const options = normalizeStatusCommandOptions(rawOptions);
-  const context = createCommandExecutionContext(runtime);
+  const context = createCommandExecutionContext(runtimeWithSelector);
   const configStorePluginNames = await listPluginConfigStorePluginNames({
     cwd: options.cwd,
     env: context.env,
   });
-  const candidates = await buildCommandCandidates({
-    command: 'status',
-    cwd: options.cwd,
-    scopeFilter: options.scope,
-    platformFilter: options.platform,
-    env: context.env,
-    includeCatalogOnly: true,
-  });
+  const candidates = base.catalog.reasonCode
+    ? []
+    : await buildCommandCandidates({
+        command: 'status',
+        cwd: options.cwd,
+        scopeFilter: options.scope,
+        platformFilter: options.platform,
+        env: context.env,
+        includeCatalogOnly: true,
+      });
   const discoveredNames = new Set(base.consoleItems.map((item) => item.pluginName));
   const baseCellKeys = new Set(base.matrix.cells.map((cell) => createPluginConsoleLocationKey(cell)));
   const extraMatrix = createStatusMatrixFromCandidates({
@@ -3050,6 +3525,7 @@ export async function loadConsoleItems(
   const resolvedConfigProjectionByPluginName = await resolveConsoleConfigProjectionByPluginName({
     pluginNames,
     currentPluginByName,
+    catalog: base.catalog,
     cwd: options.cwd,
     env: context.env,
   });

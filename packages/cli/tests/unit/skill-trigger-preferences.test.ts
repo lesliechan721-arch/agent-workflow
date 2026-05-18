@@ -101,6 +101,11 @@ async function writeBundlePlugin(options: {
       name: pluginName,
       version: options.version ?? '0.1.0',
       description: `${pluginName} plugin`,
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
       skills: './skills',
       skillTriggers: options.skillTriggers,
       artifacts: options.artifacts,
@@ -223,6 +228,11 @@ describe('skill trigger preferences', () => {
         name: 'git-commit',
         version: '0.1.0',
         description: 'tampered local manifest',
+        compatibility: {
+          aw: {
+            minVersion: '0.1.0',
+          },
+        },
         skills: './skills',
         skillTriggers: {
           commit: {
@@ -1440,6 +1450,11 @@ user-invocable: true
         name: 'git-commit',
         version: '0.1.0',
         description: 'tampered local manifest',
+        compatibility: {
+          aw: {
+            minVersion: '0.1.0',
+          },
+        },
         skills: './skills',
         skillTriggers: {},
         marketplace: {

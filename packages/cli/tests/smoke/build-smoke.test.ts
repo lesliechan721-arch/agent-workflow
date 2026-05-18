@@ -61,6 +61,11 @@ describe('build smoke', () => {
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
     ]);
+    const [canonicalCatalogManifestText, sidecarCatalogManifestText, fullCatalogManifestText] = await Promise.all([
+      fs.readFile(path.join(outputRoot, '.catalog', 'catalog-manifest.json'), 'utf8'),
+      fs.readFile(path.join(outputRoot, '.catalog', 'sidecar', 'catalog-manifest.json'), 'utf8'),
+      fs.readFile(path.join(outputRoot, '.catalog', 'full', 'catalog-manifest.json'), 'utf8'),
+    ]);
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'git-commit',
     ]);
@@ -134,6 +139,51 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', 'claude')),
     ).resolves.toBe(false);
+    expect(canonicalCatalogManifestText).toBe(sidecarCatalogManifestText);
+    expect(canonicalCatalogManifestText).toBe(fullCatalogManifestText);
+    await expect(
+      fs.readJson(path.join(outputRoot, '.catalog', 'catalog-manifest.json')),
+    ).resolves.toMatchObject({
+      schemaVersion: 1,
+      packages: {
+        sidecar: {
+          name: '@yiliang/aw-plugins-manifest',
+        },
+        full: {
+          name: '@yiliang/aw-plugins',
+          manifestPath: './catalog-manifest.json',
+        },
+      },
+      entries: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'git-commit',
+          source: './plugins/git-commit',
+          artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }),
+      ]),
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, '.catalog', 'sidecar', 'package.json')),
+    ).resolves.toMatchObject({
+      name: '@yiliang/aw-plugins-manifest',
+      files: ['catalog-manifest.json'],
+      awCatalog: {
+        kind: 'sidecar',
+      },
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, '.catalog', 'full', 'package.json')),
+    ).resolves.toMatchObject({
+      name: '@yiliang/aw-plugins',
+      files: expect.arrayContaining(['catalog-manifest.json', '.agents/', '.claude-plugin/', 'plugins/']),
+      awCatalog: {
+        kind: 'full',
+      },
+    });
+    await expect(
+      fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+    ).resolves.toBe(true);
   });
 
   it('starts the real dist entry and reads the bundled plugins-dist', async () => {
@@ -193,12 +243,9 @@ describe('build smoke', () => {
         },
         maxBuffer: 10 * 1024 * 1024,
       }),
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining('已准备好本地插件目录'),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('无法解析 current catalog sidecar metadata'),
     });
-    await expect(
-      fs.pathExists(path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
-    ).resolves.toBe(true);
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {

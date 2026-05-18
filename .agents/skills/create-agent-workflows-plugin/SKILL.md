@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Create Agent Workflows Plugin
 
-在当前仓库创建或维护 agent-workflows 插件。插件默认同时支持 Codex 和 Claude Code，也可以通过 `marketplace.policy.products` 收窄到单个平台。这里描述的是源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle 和本地 marketplace 镜像由 CLI 自动生成。
+在当前仓库创建或维护 agent-workflows 插件。插件默认同时支持 Codex 和 Claude Code，也可以通过 `marketplace.policy.products` 收窄到单个平台。这里描述的是源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。插件作者只需维护 `plugins/<name>/` 下的源码文件；运行时 bundle、catalog manifest 和本地 runtime 视图由 CLI / 发布流程自动生成。
 
 ## 快速开始
 
@@ -115,8 +115,8 @@ plugins/<name>/
    - Claude 专属 → 创建对应目录 + 配置 `buildConfig`
    - AW Config / Lifecycle → 先读 `references/aw-scripts-config-lifecycle.md`，再在 manifest 声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`
    - Dynamic Artifacts → 在 manifest 声明 `artifacts.targets` 和 `scripts.artifacts.render`；配置驱动的 Codex skill 用 `codex.skill` + 静态 `skillKey`；renderer 只输出 `ArtifactPlan`，不要直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、diagnostic cache 或 install record；config refresh 会从 install record 的 historical bundle 执行 renderer，Codex user dynamic skill 的 native cache 重建也会 staging historical bundle 后叠加本次刷新结果，不要依赖当前 local marketplace 中可变的 runtime 文件作为模板真值
-   - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件，不写版本范围、外部来源或 platform override
-6. **构建**：运行 `pnpm build` 生成 runtime bundle 到 `packages/cli/plugins-dist/`。
+   - Plugin Dependencies → 在 manifest 顶层声明 `dependencies.plugins`；依赖只指向当前 AW catalog 内其它插件；需要版本约束时只写 `minVersion`，不写 range、外部来源或 platform override
+6. **构建**：运行 `pnpm build` 生成本地 staging/runtime bundle。CLI tarball 不再把插件快照作为 embedded fallback 发布；正式分发由 catalog sidecar/full 包承载。
 7. **验证**：运行 `scripts/validate_plugin.js` 校验插件结构。构建后会复用 CLI 的权威源码 contract 校验；未构建时只做轻量预检，预检通过不代表完整 contract 通过。`SKILL.md` frontmatter、TODO 占位和 `agents/openai.yaml` schema 仍属于作者工具体验检查。
 8. **测试**：插件内 Node 脚本用 `pnpm plugin:test <plugin>`；改到 manifest、bundle 或安装逻辑时，再运行相关 `pnpm test:*`。
 
@@ -132,6 +132,7 @@ plugins/<name>/
 - `aw` 主命令是唯一交互入口；TTY 下进入插件控制台，配置向导也只在这里出现。脚本和文档示例不要再使用子命令交互 flag。
 - 脚本化配置入口是 `aw config set`、`aw config unset` 和 `aw config reset`。读配置用 `aw config list/get`。所有这些命令都可以配合 `--json` 做机器消费。`aw uninstall --remove-config` 和 `aw cleanup --remove-config` 只在主体成功后顺手删除当前 target 的 AW config store；单独清配置仍用 `aw config reset`。
 - `aw install`、显式 `aw upgrade` 和 `aw upgrade --all` 会自动解析并安装/升级缺失依赖；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后清理引用归零的自动依赖。文档和示例里不要要求用户手动按顺序安装普通依赖，除非该依赖需要用户先单独配置或选择特殊安装选项。
+- `aw init` 现在只预热远程 catalog 和 artifact cache。它不安装插件、不升级插件、不写 install record，也不 materialize active local marketplace/runtime view。需要 user-scope native runtime 的写命令会在调用平台 native 能力前按本次 current catalog materialize 并校验 active view。
 - `init/install/uninstall/upgrade/config set/unset/reset --json` 的 stdout 是单一 JSON receipt，最小公共字段为 `ok`、`command`、`warnings`、`nextSteps`；写命令会按能力补充 `plugins`、`targets`、`actions`、`artifacts`、`native`、`artifactRefresh` 等字段。
 - 默认输出只展示用户能理解的完成状态和下一步；内部诊断放到 `--verbose`、`--debug` 和 JSON 中。插件文档不要要求用户从默认输出里解析 marketplace、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等内部词。
 - `aw status` 默认输出使用友好状态投影；`aw status --json` 暴露稳定机器字段、`statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`consoleItems.features` 和每个位置的 `dependencies` 投影。未声明 config、lifecycle 或动态 artifact target 不会被投影成默认问题。`aw status --verbose` 可展示诊断字段，但 status 仍是只读命令，不运行 renderer、lifecycle、修复动作、配置刷新或依赖自动清理。
@@ -151,6 +152,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
   [--with-config-api] \
   [--with-lifecycle] \
   [--version 0.1.0] \
+  [--min-version 0.0.0] \
+  [--catalog-min-version 0.0.0] \
   [--repo-root .]
 ```
 
@@ -160,6 +163,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - `--with-mcp` / `--with-apps`：创建 `.mcp.json` / `.app.json` 存根；细节见 `references/mcp-and-apps.md`
 - `--with-config-api`：添加 AW 自管 `config.schema`、标准 `scripts.helpers.config` helper 和 Node 脚本测试样板
 - `--with-lifecycle`：添加 Node lifecycle 样板和 Node 脚本测试样板
+- `--min-version`：写入插件 manifest 的 `compatibility.aw.minVersion`；不传时默认跟随 `--catalog-min-version`，两者都不传时默认 `0.0.0`
+- `--catalog-min-version`：提供目标 catalog 的 `compatibility.aw.minVersion` 作为作者工具校验上下文；插件 `compatibility.aw.minVersion` 不能高于这个门槛
 - 默认省略 `marketplace.policy.products`，让插件保持双平台；声明后该字段会同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择
 - 带静态 `skills/<skill>` 或动态 `codex.skill` 的插件必须在 `skillTriggers.<skill>` 声明 `defaultTrigger` 和 `allowDynamicTrigger`；公共 `slashCommands` 生成的 Codex manual-only skill 不需要作者补 entry
 - 不改 `plugins/marketplace-source.json`，不生成平台 manifest
@@ -167,15 +172,18 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 ## 最小检查
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
-- `dependencies.plugins` 只允许 `name`、`target`、`inheritInstallOptions`、`when`。`when.platforms` 只能写 `codex` / `claude`，`target.scope` 只能写 `user` / `project`；不要写 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、`platform` 或 `target.platform`。
+- `version` 和 `compatibility.aw.minVersion` 都必须是严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份；插件升级不要求 CLI 发版，但修改 runtime、依赖最低版本、最低 CLI 版本或平台能力时必须发布新的插件 `version`。
+- 发布到 `latest` catalog 的插件 `version` 必须是 stable SemVer；prerelease 插件只能进入 `beta` catalog。`beta` catalog version 必须是 prerelease，且可以混合 stable / prerelease 插件 version；同一个 catalog version 不能跨轨道复用。
+- `dependencies.plugins` 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。`minVersion` 是严格 SemVer 最低依赖版本；`when.platforms` 只能写 `codex` / `claude`，`target.scope` 只能写 `user` / `project`；不要写旧式 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、`platform` 或 `target.platform`。
 - 依赖字段只保留在 source/runtime `.agents-plugin/plugin.json`；平台原生 manifest 和 marketplace manifest 不包含 `dependencies`。
+- `@yiliang/aw-plugins-manifest` sidecar 包只包含 `catalog-manifest.json` 和必要 package metadata，用于兼容性、history 和 digest 判断；`@yiliang/aw-plugins` full catalog 包包含同一份 manifest 和当前 catalog 单版本快照的全部插件 artifact；history 只记录已发布版本和 digest，不是可直接安装的多版本索引。
 - user scope 父插件不能依赖 project scope 插件；project scope 父插件省略 `target.scope` 时优先当前 project，必要时可复用健康 user scope。显式 `target.scope` 时按声明固定选址。
 - `skills`、`mcpServers`、`apps` 只能写单个 `./` 开头的路径，且声明的路径必须存在。
 - 所有插件在 bundle 中都会保留 `.agents-plugin/plugin.json`；`.claude-plugin/`、`.codex-plugin/`、`claude/`、`codex/` 只在支持平台存在。
 - `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置。
 - 手动触发命令只使用公共 `slashCommands`。
 - `slashCommands` 只为支持平台生成 Claude commands / Codex manual-only skills；Codex 结果固定 manual-only，不能配置 `codex.policy`；Codex 图标资源只能来自 `slash-commands/assets/` 并写成 `./assets/...`。
-- `plugins/marketplace-source.json` 通常不随单个插件改动；`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
+- `plugins/marketplace-source.json` 通常不随单个插件改动；catalog staging 产物、`packages/cli/plugins-dist/` 和 `~/.aw/` 都是生成或运行时目录，不手改。
 - 面向 Codex 的 skill 必须带 `agents/openai.yaml`，并显式写出 `policy.allow_implicit_invocation`。`SKILL.md` 才是模型指令体；`openai.yaml.interface.default_prompt` 只是 UI/客户端起手句，若填写必须包含 `$skill-name`，不要把详细触发规则放进去。
 - Codex 动态 artifact 要求插件支持 Codex；可以是 Codex-only，也可以是双平台插件中的 Codex target。配置驱动 skill 推荐声明 `target: "codex.skill"`、`projectManagedKind: "skill"` 和静态 `skillKey`；renderer plan / fixture 里的 `skillKey` 必须与之完全一致。`codex.agentRole` target 必须静态声明合法 `roleKey`，renderer plan / fixture 里的 `roleKey` 必须与之完全一致。
 - Unsupported platform 的 `buildConfig.fileRules`、`manifestOverrides`、`extensions.nativeHooks` 和非空 `agentOverrides` 会 fail fast；`agentOverrides.<unsupportedPlatform> = null` 合法，表示显式排除。

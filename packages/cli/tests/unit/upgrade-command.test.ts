@@ -1004,4 +1004,82 @@ describe('upgrade command dependency graph', () => {
       ),
     ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
   });
+
+  it('does not auto-upgrade legacy installed versions during upgrade --all', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, {
+      name: 'legacy-version-plugin',
+      version: '0.2.0',
+      description: 'legacy version guard',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: ['CODEX'],
+        },
+      },
+    });
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [plugin.manifest.name]: {
+          lastResolvedVersion: 'workspace',
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: 'workspace',
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const target = createResolvedTarget(plugin);
+    mockCatalogTargets({
+      explicitTargets: [target],
+      allTargets: [target],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
+      [plugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    const result = await upgradeCommand(
+      [],
+      {
+        all: true,
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new UpgradeTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(codex.installOrder).toEqual([]);
+    expect(result.plugins).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({
+        plugin: plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+        code: 'repairRequired',
+        reason: expect.stringContaining('installed ledger resolvedVersion'),
+      }),
+    ]);
+  });
 });

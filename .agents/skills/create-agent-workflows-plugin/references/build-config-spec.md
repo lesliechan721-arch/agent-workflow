@@ -4,6 +4,8 @@
 
 `buildConfig` 只描述构建阶段行为，不是给平台私有字段开的通用出口。`marketplace.policy.products` 会先解析出插件最终支持平台；`fileRules.<platform>` 和 `manifestOverrides.<platform>` 只能用于支持的平台。比如 `products=["CODEX"]` 的插件不能声明 `buildConfig.fileRules.claude` 或 `buildConfig.manifestOverrides.claude`，即使对应内容看起来只是额外文件或空覆盖也会 fail fast。
 
+`buildConfig` 会影响发布 artifact 的内容身份：模板输出、额外文件选择、平台 manifest override 或支持平台变化都会进入 `artifactDigest` / `manifestDigest`。只要这些配置让构建后 runtime、平台能力、最低 CLI 要求或依赖最低版本发生变化，插件就必须发布新的 `version`，不能复用旧的 `plugin@version` 覆盖 catalog artifact。`latest` catalog 只接受 stable 插件 version；包含 prerelease 插件时只能发布到 `beta` catalog。
+
 ## templates
 
 按平台渲染文本文件中的模板变量，实现条件编译。适用于插件中任何需要区分平台内容的文本文件，典型场景：

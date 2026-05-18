@@ -8,7 +8,7 @@
 ## 快速上手
 
 ```bash
-# 1. 可选：提前初始化本地 marketplace，便于确认 native plugin runtime 正常
+# 1. 可选：提前预热远程 catalog 和 artifact cache
 aw init
 
 # 2. 安装插件
@@ -18,7 +18,7 @@ aw install git-commit -p both
 aw status
 ```
 
-`aw install` 和 `aw upgrade` 只有在目标需要 native plugin runtime 时才会同步 `~/.aw`。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装、升级 CLI 后排查 bundle 问题，或想提前确认本机 marketplace 状态时使用。纯 `Codex + project scope` 安装走当前仓库的 repo-visible artifacts，只读使用 catalog，不会为了当前项目写入去初始化、修复或注册用户级 Codex marketplace。
+`aw install` 和 `aw upgrade` 会先解析 current catalog。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装前预热远程 catalog/cache，或验证当前网络、selector 和本地 fallback 状态。纯 `Codex + project scope` 安装走当前仓库的 repo-visible artifacts，只读使用 current catalog，不会为了当前项目写入去初始化、修复或注册用户级 Codex marketplace。
 
 带动态 `codex.skill` 的插件也由 AW 统一安装和刷新：renderer 只返回 `ArtifactPlan`，AW 再把 skill 写到 user 或 project runtime，并按 AW 内建 SkillTrigger 配置 patch `agents/openai.yaml`。配置变化命中 `refreshKeys` 后，同一条 apply 路径会重新生成 skill、更新 dynamic diagnostic cache，并按当前 effective 触发策略重新应用 runtime。
 
@@ -28,14 +28,22 @@ aw status
 
 ### `aw init`
 
-初始化或刷新本地 marketplace，将 npm 包内置的插件包同步到 `~/.aw/`。这主要服务 Codex user scope、Claude native plugin runtime 和 shared runtime owner replay；Codex project 安装本身不要求先跑 `aw init`。
+预热远程 catalog 和 artifact cache。`aw init` 会先获取轻量 sidecar 包 `@yiliang/aw-plugins-manifest`，确认 catalog 与当前 CLI 兼容后，再获取同版本 full catalog 包 `@yiliang/aw-plugins` 并校验 manifest、integrity 和 artifact digest。它不安装插件、不升级插件、不写 install record，也不写活 active local marketplace/runtime view；需要 user-scope native runtime 的写命令会在真正调用平台 native 能力前 materialize active view。
 
 ```bash
-aw init [-f|--force]
+aw init [-f|--force] [--catalog-channel <dist-tag>|--catalog-version <semver>]
 ```
 
-- `-f, --force`：忽略缓存，强制重新同步（升级 CLI 版本后如遇异常可使用）
-- 若本地镜像缺失、过期或不健康，安装/升级命令也会自动回到 embedded bundle 并尝试同步；重复执行 `aw init` 无副作用
+- `-f, --force`：强制重新拉取和重建匹配 selector 的 catalog/cache，但不会删除仍被安装位置或恢复证据引用的 historical runtime
+- `--catalog-channel <dist-tag>`：本次预热使用显式 dist-tag；`aw init --channel <dist-tag>` 是兼容别名
+- `--catalog-version <semver>`：本次预热使用显式 exact catalog version；与 `--catalog-channel` 互斥
+- selector 只影响本次命令，不修改持久默认 channel，也不会污染其它 channel 或 exact version 的离线 fallback
+
+稳定版 CLI 默认解析 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认解析 `@yiliang/aw-plugins-manifest@beta`。`latest` catalog 只接受 stable catalog version 和 stable 插件 version；`beta` catalog version 必须是 prerelease，且可包含 stable 或 prerelease 插件 version。
+
+如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`；远程不可用或校验失败且没有与本次 selector 匹配的有效 cache 时返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+
+同一组 catalog selector 也用于 `aw install`、`aw upgrade`、`aw reinstall`、`aw status`、发现类入口，以及未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。直接命令的 JSON / verbose 输出会展示请求 selector、实际 catalog identity、latest blocked 状态和 cache fallback 证据。
 
 ---
 
@@ -64,6 +72,8 @@ aw install [插件名...] [-s project|user] -p codex|claude|both [--script-timeo
 | `-s, --scope` | `user` | `user`：安装到用户全局目录（`~/.claude/` 或 `~/.codex/`）；`project`：安装到当前目录（`.claude/` 或 `.codex/`） |
 | `-p, --platform` | 必填 | 显式选择 `claude`、`codex` 或 `both`；`both` 按每个插件当前支持平台集合展开 |
 | `--script-timeout` | 插件 manifest 或 `30000` | 覆盖 lifecycle 脚本超时，单位毫秒，合法范围 `1000..300000` |
+| `--catalog-channel` | 当前 CLI 默认轨道 | 本次命令显式使用某个 catalog dist-tag；不改变持久默认 channel |
+| `--catalog-version` | 无 | 本次命令显式使用某个 exact catalog version；与 `--catalog-channel` 互斥 |
 | `-j, --json` | 关闭 | stdout 输出单一 JSON receipt，包含 `receiptSchemaVersion: 2`、`ok`、`command`、`plugins`、`targets`、`actions`、`artifacts`、`native`、`warnings` 和结构化 `nextSteps` |
 
 一次安装多个插件：
@@ -72,7 +82,7 @@ aw install [插件名...] [-s project|user] -p codex|claude|both [--script-timeo
 aw install git-commit another-plugin -p claude
 ```
 
-如果目标插件声明了 `dependencies.plugins`，`aw install` 会在写入任何状态前先解析完整依赖图。缺失依赖会自动安装；已经健康满足的依赖不会重复安装，但父插件的依赖引用会刷新。默认输出会说明哪些插件是自动依赖，`--json` receipt 中自动依赖 target 会带 `requested: false` 和 `dependencyOf`。
+如果目标插件声明了 `dependencies.plugins`，`aw install` 会在写入任何状态前先解析完整依赖图。缺失依赖会自动安装；已经安装但低于 `dependencies.plugins[].minVersion` 的依赖会自动升级；已经健康满足的依赖不会重复安装，但父插件的依赖引用会刷新。默认输出会说明哪些插件是自动依赖，`--json` receipt 中自动依赖 target 会带 `requested: false` 和 `dependencyOf`。
 
 ---
 
@@ -99,6 +109,7 @@ aw upgrade [插件名...] [-a|--all] [-s project|user] -p codex|claude|both [--s
 - 指定插件名，或用 `-a, --all` 升级当前 scope 下所有已管理的插件
 - 触发策略不再是升级参数；需要调整时使用 `aw config` 或主控制台配置页
 - 显式升级会先安装缺失依赖、再升级已安装依赖，最后升级用户指定的父插件；父插件失败时不会提交失败父插件的依赖引用
+- current catalog 来自最新兼容远程 catalog、历史兼容 catalog，或已经解析出允许使用的 catalog identity 后命中的匹配 cache；latest catalog 被当前 CLI 阻止时，不会显示成插件可升级
 - 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
 - `upgrade --all` 只把用户显式保留的安装作为根，从 current catalog 展开依赖图；孤立 auto dependency 不会被当作用户目标，旧 edge 中已经不再需要的自动依赖不会阻塞父插件升级
 - `upgrade --all` 只处理 `catalogCompatibility=current` 且 scope 已初始化的插件；缺失、能力变更、外部 marketplace 管理、project artifact identity 损坏、项目配置不可读、shared runtime owner 冲突或 install options 无法恢复时会把对应 target 放入 `skipped[]`
@@ -117,6 +128,7 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [--verbose] [-
 
 - dependency index 不可信时，下一步会指向 `aw repair --dependency-index`；遇到 stale project reference 时会给出 token，并要求用户显式运行 `aw cleanup --dependency-index --prune-stale <token> --yes`。
 - project shared/local config、路径型配置和 ignore 规则问题会在这里汇总，方便在写命令前修正。
+- verbose / JSON 会展示 catalog selector、实际 catalog identity、catalog 最低 CLI 版本、latest 是否被当前 CLI 阻止、history schema、cache fallback 命中的 selector / catalog identity，以及 manifest mismatch、integrity failure 等原始远程错误。
 
 ---
 
@@ -160,6 +172,8 @@ aw reinstall [插件名...] [-s project|user] -p codex|claude|both [--takeover-s
 
 `reinstall` 等价于先读取详细状态，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。遇到 project “可认领”状态时默认停止，提示先运行 `aw repair --adopt-existing`，避免把团队共享产物当成残留覆盖。触发策略仍由当前 `aw config` effective 值决定，不通过重装参数改写。
 
+`reinstall` 必须拿到 current catalog，不能在 catalog unavailable 时改用 historical runtime 重新铺一遍。旧状态撤销阶段继承 `uninstall` 的安全边界；如果需要运行旧 lifecycle、撤销动态 artifact 或收口 native 副作用，而 historical runtime 缺失或摘要不可信，本次重装会在写入新版本前失败。
+
 ---
 
 ### `aw config`
@@ -179,7 +193,8 @@ aw config reset <插件名> [-s project|user] [-y] [-j]
 - project shared config 在仓库或 workspace 内锚定 repo root，路径是 `.agent-workflows/plugin-config/<plugin>/config.json`，可以提交；project local config 位于 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略。不在仓库内时退回 normalized command `cwd`。
 - `file` / `directory` 是本机路径型配置，只能写 user store 或 project local store，写入时会把相对路径按 AW project root 解析，并以 canonical absolute realpath 落盘；后续每次读取都会重新校验路径是否仍存在且类型正确。路径型配置不能进入 project shared config，也不能参与 project repo-visible artifact 的 render config、digest、stale 判断或 refresh。
 - `--value-json` 只影响 `set` 的输入值解析；`--json` 只影响输出格式。
-- `reset` 是单纯的 config store 级删除，不卸载插件、不清理 runtime artifact，也不处理 native residue。即使 current catalog 已经找不到插件，只要 store 存在，`aw config reset <插件名> -s <scope> --yes` 仍可清理残留配置。存在 store 且未传 `--yes` 时，脚本化命令会确定性失败，不会静默删除；需要交互确认时请运行 `aw` 主控制台。
+- 已安装位置的 schema 优先来自 install record 绑定的 historical runtime / manifest；current catalog 不可用时，只要 historical schema 健康且没有 schema conflict，已安装插件的配置读写仍可继续。未安装插件的配置预置或未消费 store 需要 current catalog schema，拿不到时会失败。
+- `reset` 是单纯的 config store 级删除，不卸载插件、不清理 runtime artifact，也不处理 native residue。已被安装位置消费的 store 会走 installed-aware write，receipt 暴露 `removedKeys` 和 `artifactRefresh`，删除命中 `refreshKeys` 时按 historical runtime 刷新动态 artifact；schema conflict 时只能作为整 store 清理动作继续，不能任选一个 schema 解释输入。孤立残留 store 才允许确认后 raw 删除，不伪造 schema identity，也不刷新 artifact。存在 store 且未传 `--yes` 时，脚本化命令会确定性失败，不会静默删除；需要交互确认时请运行 `aw` 主控制台。
 - `set` / `unset` / `reset` 共用配置写入 helper。JSON receipt 顶层使用 `receiptSchemaVersion: 2`，稳定返回 `updatedKeys`、`removedKeys`、`affectedFields` 和 `artifactRefresh`；sensitive 值不会在默认输出、debug log 或 receipt 中明文出现。
 
 插件名会先经过 config store 路径段安全校验：只允许非空单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
@@ -374,7 +389,7 @@ Codex 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己通过 artifa
 
 安装成功后，AW 会为当前 location 写入独立 install record v2。record 只保存归属、必要安装选项、安装来源和 canonical outgoing dependency edges；它是本机安装真值，但不是健康状态数据库，也不是 SkillTrigger 真值来源。project scope 还会在 `.agent-workflows/project-artifacts/<platform>/` 写入可提交的 shared identity metadata，用于 fresh clone 后识别“可认领”的共享产物。动态 artifact 的 accepted state、`configDigest`、`contentDigest`、`lastRefresh` 和 `refreshReach` 写入 dynamic diagnostic cache，供 `status` / `status --verbose` 只读展示。
 
-带 lifecycle 或动态 artifact renderer 的插件会保存最小 historical runtime bundle。普通 `uninstall` 以及需要先撤销历史副作用的 `repair` / `reinstall` 会用它运行安装时的 lifecycle；配置触发的 dynamic artifact refresh 和 refresh-only 会用它执行安装时的 renderer，避免 current local marketplace 被运行时产物污染后反过来污染模板真值。它不作为 current catalog、依赖声明或配置 schema 的来源。
+带 lifecycle、AW config 或动态 artifact renderer 的插件会保存最小 historical runtime / snapshot。普通 `uninstall`、只重放已安装版本的 `repair`、必要 `reinstall` 撤销阶段会用它运行安装时的 lifecycle；配置触发的 dynamic artifact refresh 和 refresh-only 会用它执行安装时的 renderer；已安装位置的 config schema 也优先来自这份 historical manifest。它不作为 current catalog 或新依赖声明的来源。
 
 project scope 的本机私有状态和本机配置会默认加入 ignore：`.claude/.agent-workflows/`、`.codex/.agent-workflows/`、`.agent-workflows/plugin-config.local/`。团队共享输入不能默认忽略：`.agent-workflows/plugin-config/` 和 `.agent-workflows/project-artifacts/` 应随仓库提交。
 

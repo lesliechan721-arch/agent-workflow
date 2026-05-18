@@ -28,12 +28,12 @@ try {
   const version = String(cliPackageJson.version);
   assertVersionKind(version, publishMode.versionKind);
 
-  await runCommand('pnpm', ['run', 'release:verify']);
+  await runCommand('pnpm', ['run', 'release:verify:cli']);
   const tarballPath = await packCli();
   await runCommand('pnpm', ['run', publishMode.rawScript]);
 
   console.log(
-    `Published @yiliang/aw@${version} with tag ${mode}. Tarball: ${relativeToRepo(tarballPath)}`,
+    `Published CLI @yiliang/aw@${version} with tag ${mode}. Tarball: ${relativeToRepo(tarballPath)}`,
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

@@ -4,7 +4,7 @@ import type { PluginLocation } from './types.js';
 import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
 import { parseCodexConfig } from '../utils/codex-config.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
-import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
+import { compareStrictSemVerFields } from '../utils/manifest.js';
 
 export type ProjectInstallStateKind =
   | 'installed'
@@ -40,6 +40,7 @@ export interface ProjectInstallStateProjection {
   installRecordPresent: boolean;
   projectInstallState: ProjectInstallStateKind;
   catalogDrift: boolean;
+  catalogLatestBlockedByCli: boolean;
   upgradeAvailable: boolean;
   dynamicDiagnosticUnavailable: boolean;
   dependencyIndexTrusted: boolean;
@@ -407,24 +408,27 @@ function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallI
     return [];
   }
 
-  const parsedInstalledVersion = tryParseStrictSemVer(installedVersion);
-  const parsedCurrentVersion = tryParseStrictSemVer(currentCatalogSource.pluginVersion);
-  if (!parsedInstalledVersion || !parsedCurrentVersion) {
+  const comparison = compareStrictSemVerFields({
+    left: {
+      value: currentCatalogSource.pluginVersion,
+      fieldPath: 'current catalog source.pluginVersion',
+    },
+    right: {
+      value: installedVersion,
+      fieldPath: 'install record source.pluginVersion',
+    },
+  });
+  if (comparison.kind === 'invalid') {
     return [{
       code: 'catalogVersionNonCompliant',
-      detail: !parsedInstalledVersion && !parsedCurrentVersion
-        ? `installed version "${installedVersion}" and current catalog version "${currentCatalogSource.pluginVersion}" are not strict SemVer 2.0.0 strings.`
-        : !parsedInstalledVersion
-          ? `installed version "${installedVersion}" is not a strict SemVer 2.0.0 string.`
-          : `current catalog version "${currentCatalogSource.pluginVersion}" is not a strict SemVer 2.0.0 string.`,
+      detail: comparison.issues.map((issue) => issue.message).join(' '),
     }];
   }
 
-  const relation = compareStrictSemVer(parsedCurrentVersion, parsedInstalledVersion);
-  if (relation < 0) {
+  if (comparison.relation < 0) {
     return [{
       code: 'catalogVersionMismatch',
-      detail: `current catalog version ${parsedCurrentVersion.raw} is lower than installed version ${parsedInstalledVersion.raw}.`,
+      detail: `current catalog version ${comparison.left.raw} is lower than installed version ${comparison.right.raw}.`,
     }];
   }
 
@@ -433,6 +437,9 @@ function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallI
 
 export function projectInstallState(
   evidence: InstallEvidence,
+  options: {
+    catalogLatestBlockedByCli?: boolean;
+  } = {},
 ): ProjectInstallStateProjection {
   const installRecordPresent = evidence.installRecord.present;
   const issues: ProjectInstallIssue[] = [];
@@ -477,12 +484,17 @@ export function projectInstallState(
   const currentVersionComparison =
     currentCatalogSource && installedVersion
       ? (() => {
-          const parsedInstalledVersion = tryParseStrictSemVer(installedVersion);
-          const parsedCurrentVersion = tryParseStrictSemVer(currentCatalogSource.pluginVersion);
-          if (!parsedInstalledVersion || !parsedCurrentVersion) {
-            return null;
-          }
-          return compareStrictSemVer(parsedCurrentVersion, parsedInstalledVersion);
+          const comparison = compareStrictSemVerFields({
+            left: {
+              value: currentCatalogSource.pluginVersion,
+              fieldPath: 'current catalog source.pluginVersion',
+            },
+            right: {
+              value: installedVersion,
+              fieldPath: 'install record source.pluginVersion',
+            },
+          });
+          return comparison.kind === 'ordered' ? comparison.relation : null;
         })()
       : null;
 
@@ -492,7 +504,11 @@ export function projectInstallState(
     installRecordPresent,
     projectInstallState: kind,
     catalogDrift: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
-    upgradeAvailable: currentVersionComparison !== null && currentVersionComparison > 0,
+    catalogLatestBlockedByCli: options.catalogLatestBlockedByCli === true,
+    upgradeAvailable:
+      options.catalogLatestBlockedByCli !== true &&
+      currentVersionComparison !== null &&
+      currentVersionComparison > 0,
     dynamicDiagnosticUnavailable: evidence.dynamicDiagnostic.dynamicDiagnosticUnavailable,
     dependencyIndexTrusted: evidence.dependencyIndex.projection.coverage.trusted,
     dependencyIndexCoverageTrusted: evidence.dependencyIndex.projection.coverage.coverageTrusted,

@@ -32,7 +32,18 @@ async function createTempPlugin(
 
   const pluginRoot = path.join(tempRoot, manifest.name as string);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
-  await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+  await fs.writeJson(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+    {
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
+      ...manifest,
+    },
+    { spaces: 2 },
+  );
 
   await Promise.all(
     Object.entries(files).map(async ([relativePath, content]) => {

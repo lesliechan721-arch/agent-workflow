@@ -1241,6 +1241,7 @@ export async function cleanupCommand(
       platformFilter: 'both',
       pluginNames,
       env: context.env,
+      includeCurrentCatalog: false,
     });
     const evaluations: Array<{
       location: CleanupLocationSummary;

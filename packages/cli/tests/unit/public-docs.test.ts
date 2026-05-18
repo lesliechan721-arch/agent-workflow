@@ -150,4 +150,22 @@ describe('public docs', () => {
     expect(combined).not.toContain('--skill-trigger');
     expect(combined).not.toContain('skillTriggerPreference');
   });
+
+  it('documents authoring version contracts and scaffold catalog gate inputs', async () => {
+    const skillDoc = await readRepoFile('.agents/skills/create-agent-workflows-plugin/SKILL.md');
+    const manifestSpec = await readRepoFile(
+      '.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md',
+    );
+
+    expect(skillDoc).toContain('--min-version');
+    expect(skillDoc).toContain('--catalog-min-version');
+    expect(skillDoc).toContain('CLI version、catalog version 和 plugin version 是三套身份');
+    expect(skillDoc).toContain('`@yiliang/aw-plugins-manifest` sidecar 包');
+    expect(skillDoc).toContain('`@yiliang/aw-plugins` full catalog 包');
+
+    expect(manifestSpec).toContain('`compatibility.aw.minVersion`');
+    expect(manifestSpec).toContain('插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`');
+    expect(manifestSpec).toContain('不支持旧式 `version`、`range`');
+    expect(manifestSpec).toContain('catalog history 记录历史 catalog version、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`');
+  });
 });

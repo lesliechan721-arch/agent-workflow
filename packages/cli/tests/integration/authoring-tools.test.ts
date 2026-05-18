@@ -15,6 +15,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+const DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION = '0.0.0';
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -40,6 +41,21 @@ function extractJsonFenceAfter(document: string, heading: string): unknown {
   return JSON.parse(document.slice(jsonStart, fenceEnd));
 }
 
+function withDefaultCompatibility<T extends Record<string, unknown>>(manifest: T): T {
+  if (Object.prototype.hasOwnProperty.call(manifest, 'compatibility')) {
+    return manifest;
+  }
+
+  return {
+    ...manifest,
+    compatibility: {
+      aw: {
+        minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
+      },
+    },
+  };
+}
+
 async function writeManifestOnlyPlugin(
   root: string,
   name: string,
@@ -47,7 +63,7 @@ async function writeManifestOnlyPlugin(
 ): Promise<string> {
   const pluginDir = path.join(root, name);
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-  await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+  await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
@@ -60,7 +76,7 @@ async function writeManifestOnlyPlugin(
       },
     },
     extensions,
-  }, { spaces: 2 });
+  }), { spaces: 2 });
   return pluginDir;
 }
 
@@ -75,8 +91,8 @@ function validatePluginScriptPath(): string {
   );
 }
 
-async function runValidatePlugin(pluginDir: string) {
-  return execFileAsync('node', [validatePluginScriptPath(), pluginDir], {
+async function runValidatePlugin(pluginDir: string, extraArgs: string[] = []) {
+  return execFileAsync('node', [validatePluginScriptPath(), pluginDir, ...extraArgs], {
     cwd: repoRoot(),
     env: process.env,
     maxBuffer: 10 * 1024 * 1024,
@@ -93,7 +109,7 @@ async function writeSourcePlugin(
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.writeJson(manifestPath, withDefaultCompatibility(manifest), { spaces: 2 });
 
   for (const [relativePath, content] of Object.entries(files)) {
     const absolutePath = path.join(pluginDir, relativePath);
@@ -116,6 +132,11 @@ function createBaseManifest(
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
+    compatibility: {
+      aw: {
+        minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
+      },
+    },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -131,11 +152,12 @@ function createBaseManifest(
 async function writeAuthoringPluginManifest(
   pluginDir: string,
   manifest: Record<string, unknown>,
+  options: { preserveCompatibility?: boolean } = {},
 ): Promise<void> {
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
   await fs.writeJson(
     path.join(pluginDir, '.agents-plugin', 'plugin.json'),
-    manifest,
+    options.preserveCompatibility ? manifest : withDefaultCompatibility(manifest),
     { spaces: 2 },
   );
 }
@@ -157,7 +179,7 @@ async function writeDynamicArtifactPlugin(
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
   await fs.ensureDir(path.join(pluginDir, 'scripts'));
   await fs.ensureDir(path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'agents'));
-  await fs.writeJson(manifestPath, {
+  await fs.writeJson(manifestPath, withDefaultCompatibility({
     name: 'dynamic-authoring-test',
     version: '0.1.0',
     description: 'Test dynamic artifact authoring contracts.',
@@ -222,7 +244,7 @@ async function writeDynamicArtifactPlugin(
         },
       ],
     },
-  }, { spaces: 2 });
+  }), { spaces: 2 });
 
   await fs.writeFile(
     path.join(pluginDir, 'scripts', 'render-artifacts.mjs'),
@@ -409,6 +431,11 @@ describe('authoring tools', () => {
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
+      compatibility: {
+        aw: {
+          minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
+        },
+      },
       skills: './skills',
       skillTriggers: {
         'repo-check': {
@@ -477,6 +504,146 @@ describe('authoring tools', () => {
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(false);
     await expect(fs.readFile(marketplaceSourcePath, 'utf8')).resolves.toBe(beforeMarketplaceSource);
+  });
+
+  it('scaffolds compatibility.aw.minVersion and blocks values above the target catalog minimum', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-'));
+    tempDirs.push(tempRoot);
+
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'init_plugin.js',
+    );
+
+    await execFileAsync(
+      'node',
+      [
+        scriptPath,
+        'catalog-aware',
+        '--description',
+        '带 catalog 最低版本上下文的插件。',
+        '--catalog-min-version',
+        '0.8.0',
+        '--repo-root',
+        tempRepo,
+      ],
+      {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+
+    await expect(
+      fs.readJson(path.join(tempRepo, 'plugins', 'catalog-aware', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      compatibility: {
+        aw: {
+          minVersion: '0.8.0',
+        },
+      },
+    });
+
+    await expect(
+      execFileAsync(
+        'node',
+        [
+          scriptPath,
+          'too-new-for-catalog',
+          '--description',
+          '插件最低版本高于 catalog 门槛。',
+          '--min-version',
+          '0.9.0',
+          '--catalog-min-version',
+          '0.8.0',
+          '--repo-root',
+          tempRepo,
+        ],
+        {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('target catalog minimum'),
+    });
+  });
+
+  it('validate_plugin.js rejects invalid authoring version contracts and catalog gates', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-version-contracts-'));
+    tempDirs.push(tempRoot);
+    const pluginsRoot = path.join(tempRoot, 'plugins');
+
+    const missingCompatibilityDir = path.join(pluginsRoot, 'missing-compatibility');
+    await writeAuthoringPluginManifest(
+      missingCompatibilityDir,
+      {
+        name: 'missing-compatibility',
+        version: '0.1.0',
+        description: 'Missing compatibility contract.',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+      },
+      { preserveCompatibility: true },
+    );
+    await expect(runValidatePlugin(missingCompatibilityDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+      ),
+    });
+
+    const invalidMinVersionDir = path.join(pluginsRoot, 'invalid-min-version');
+    await writeAuthoringPluginManifest(invalidMinVersionDir, {
+      ...createBaseManifest('invalid-min-version'),
+      compatibility: {
+        aw: {
+          minVersion: 'latest',
+        },
+      },
+    });
+    await expect(runValidatePlugin(invalidMinVersionDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received "latest".',
+      ),
+    });
+
+    const invalidPluginVersionDir = path.join(pluginsRoot, 'invalid-plugin-version');
+    await writeAuthoringPluginManifest(invalidPluginVersionDir, {
+      ...createBaseManifest('invalid-plugin-version'),
+      version: 'v0.1.0',
+    });
+    await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('strict SemVer 2.0.0'),
+    });
+
+    const aboveCatalogMinDir = path.join(pluginsRoot, 'above-catalog-min');
+    await writeAuthoringPluginManifest(aboveCatalogMinDir, {
+      ...createBaseManifest('above-catalog-min'),
+      compatibility: {
+        aw: {
+          minVersion: '0.9.0',
+        },
+      },
+    });
+    await expect(
+      runValidatePlugin(aboveCatalogMinDir, ['--catalog-min-version', '0.8.0']),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('target catalog minimum "0.8.0"'),
+    });
   });
 
   it('scaffolds skill metadata from the skill name and description when they differ from plugin metadata', async () => {
@@ -678,7 +845,7 @@ describe('authoring tools', () => {
       ),
       path.join(bundleRoot, 'scripts', 'aw-config.mjs'),
     );
-    await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'config-demo',
       version: '0.1.0',
       description: 'Config helper fallback fixture.',
@@ -697,7 +864,7 @@ describe('authoring tools', () => {
           configFile: { type: 'file', default: './config.txt' },
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
 
     const projectRoot = path.join(tempRoot, 'project');
     const projectSubdir = path.join(projectRoot, 'nested');
@@ -1142,7 +1309,7 @@ describe('authoring tools', () => {
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'trigger-demo', 'agents'));
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
-    await fs.writeJson(manifestPath, {
+    await fs.writeJson(manifestPath, withDefaultCompatibility({
       name: 'trigger-demo',
       version: '0.1.0',
       description: 'Test plugin for install-time trigger override policy.',
@@ -1158,7 +1325,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'trigger-demo', 'SKILL.md'),
       [
@@ -2034,7 +2201,7 @@ describe('authoring tools', () => {
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'slash-commands'));
-    await fs.writeJson(manifestPath, {
+    await fs.writeJson(manifestPath, withDefaultCompatibility({
       name: 'slash-commands-products',
       version: '0.1.0',
       description: 'Test plugin for slash command platform gating.',
@@ -2048,7 +2215,7 @@ describe('authoring tools', () => {
           products: ['CLAUDE'],
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'slash-commands', 'review.md'),
       [
@@ -2120,7 +2287,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'metadata-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'metadata-test'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'metadata-test',
       version: '0.1.0',
       description: 'Test plugin for skill metadata checks.',
@@ -2130,7 +2297,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
       [
@@ -2302,7 +2469,7 @@ describe('authoring tools', () => {
 
     const pluginDir = path.join(tempRoot, 'manifest-products-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'manifest-products-test',
       version: '0.1.0',
       description: 'Test plugin for manifest product checks.',
@@ -2315,7 +2482,7 @@ describe('authoring tools', () => {
           products: ['CODEX', 'BROWSER'],
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
 
     const scriptPath = path.join(
       repoRoot(),
@@ -2359,7 +2526,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'policy-products-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'policy-products-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'policy-products-test',
       version: '0.1.0',
       description: 'Test plugin for Codex policy product checks.',
@@ -2375,7 +2542,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'policy-products-test', 'SKILL.md'),
       [
@@ -2449,7 +2616,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'runtime-yaml-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'runtime-yaml-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'runtime-yaml-test',
       version: '0.1.0',
       description: 'Test plugin for runtime-compatible YAML metadata.',
@@ -2465,7 +2632,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'runtime-yaml-test', 'SKILL.md'),
@@ -2538,7 +2705,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'templated-metadata-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'templated-metadata-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'templated-metadata-test',
       version: '0.1.0',
       description: 'Test plugin for templated skill metadata.',
@@ -2585,7 +2752,7 @@ describe('authoring tools', () => {
           },
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'templated-metadata-test', 'SKILL.md'),
@@ -2644,7 +2811,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'claude-only');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'claude-only'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'claude-only',
       version: '0.1.0',
       description: 'Test plugin for Claude-only skill metadata checks.',
@@ -2664,7 +2831,7 @@ describe('authoring tools', () => {
           products: ['CLAUDE'],
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'claude-only', 'SKILL.md'),
       [
@@ -2706,7 +2873,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'frontmatter-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'frontmatter-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'frontmatter-test',
       version: '0.1.0',
       description: 'Test plugin for skill frontmatter checks.',
@@ -2722,7 +2889,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'frontmatter-test', 'agents', 'openai.yaml'),
       [
@@ -2814,7 +2981,7 @@ describe('authoring tools', () => {
 
     const pluginDir = path.join(tempRoot, 'boundary-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'boundary-test',
       version: '0.1.0',
       description: 'Test plugin for boundary check.',
@@ -2825,7 +2992,7 @@ describe('authoring tools', () => {
         policy: { installation: 'AVAILABLE', authentication: 'NONE' },
       },
       interface: { displayName: 'Boundary Test', shortDescription: 'Test' },
-    });
+    }), { spaces: 2 });
 
     const scriptPath = path.join(
       repoRoot(),
@@ -2898,7 +3065,7 @@ describe('authoring tools', () => {
 
     const pluginDir = path.join(tempRoot, 'plugins', 'fallback-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
       name: 'fallback-test',
       version: '0.1.0',
       description: 'Test plugin for fallback validation.',
@@ -2914,7 +3081,7 @@ describe('authoring tools', () => {
           include: ['.mcp.json', '.app.json'],
         },
       },
-    }, { spaces: 2 });
+    }), { spaces: 2 });
     await fs.writeJson(path.join(pluginDir, '.mcp.json'), { template: true }, { spaces: 2 });
     await fs.writeJson(path.join(pluginDir, '.app.json'), { template: true }, { spaces: 2 });
 

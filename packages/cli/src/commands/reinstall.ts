@@ -11,6 +11,7 @@ import {
   type InstallStateRemovalRuntime,
 } from './install-state-removal.js';
 import {
+  applyCatalogSelectorEnv,
   normalizeReinstallCommandOptions,
   type RawCleanupCommandOptions,
   type RawReinstallCommandOptions,
@@ -90,7 +91,7 @@ export async function reinstallCommand(
   }
 
   const platform = options.platform;
-  const env = runtime.env ?? process.env;
+  const env = applyCatalogSelectorEnv(runtime.env ?? process.env, options);
   const uninstallImpl = runtime.uninstallCommandImpl ?? uninstallCommand;
   const cleanupImpl = runtime.cleanupCommandImpl ?? cleanupCommand;
   const installImpl = runtime.installCommandImpl ?? installCommand;

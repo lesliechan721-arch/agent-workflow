@@ -54,6 +54,21 @@ export const pluginDependencyValidatorParityCases: PluginDependencyValidatorPari
     siblingPluginNames: ['shared-helper'],
   },
   {
+    name: 'accepts valid minVersion dependencies',
+    manifest: {
+      ...baseManifest(),
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            minVersion: '0.1.0',
+          },
+        ],
+      },
+    },
+    siblingPluginNames: ['shared-helper'],
+  },
+  {
     name: 'rejects unknown dependencies block fields',
     manifest: {
       ...baseManifest(),
@@ -78,6 +93,54 @@ export const pluginDependencyValidatorParityCases: PluginDependencyValidatorPari
     },
     siblingPluginNames: ['shared-helper'],
     expectedError: 'unknown field "version"',
+  },
+  {
+    name: 'rejects legacy dependency ranges',
+    manifest: {
+      ...baseManifest(),
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            range: '^1.0.0',
+          },
+        ],
+      },
+    },
+    siblingPluginNames: ['shared-helper'],
+    expectedError: 'unknown field "range"',
+  },
+  {
+    name: 'rejects invalid dependency minVersion',
+    manifest: {
+      ...baseManifest(),
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            minVersion: '^1.0.0',
+          },
+        ],
+      },
+    },
+    siblingPluginNames: ['shared-helper'],
+    expectedError: 'strict SemVer 2.0.0 string',
+  },
+  {
+    name: 'rejects optional dependency fields',
+    manifest: {
+      ...baseManifest(),
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            optional: true,
+          },
+        ],
+      },
+    },
+    siblingPluginNames: ['shared-helper'],
+    expectedError: 'unknown field "optional"',
   },
   {
     name: 'rejects self dependency',

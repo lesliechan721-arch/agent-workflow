@@ -30,9 +30,11 @@ import {
 } from './options.js';
 import { detectEnvironment } from '../utils/detect.js';
 import type {
+  CatalogResolution,
   GeneratedArtifact,
   NextStepInstruction,
   PluginMeta,
+  PluginStatusDependencies,
   PlatformName,
   Scope,
   SkillTriggerPreference,
@@ -98,6 +100,7 @@ interface InstallStateTarget {
 }
 
 interface P7RuntimeOverrides {
+  p7Catalog?: CatalogResolution;
   p7Targets?: InstallStateTarget[];
   p7Collect?: (options: {
     cwd: string;
@@ -181,6 +184,15 @@ export interface StatusJsonLocation {
     path: string;
     sourceDrift: boolean;
     sameBundleAsCatalog: boolean | null;
+    source?: {
+      pluginVersion: string;
+      manifestDigest: string;
+      bundleFingerprint: string;
+    };
+  };
+  currentCatalog: {
+    provided: boolean;
+    source: CurrentCatalogEvidenceInput['source'] | null;
   };
   dynamicDiagnostic: {
     available: boolean;
@@ -196,6 +208,8 @@ export interface StatusJsonLocation {
     roleKey?: string;
     path: string;
   }>;
+  legacyTracking: InstallEvidence['legacyTracking'];
+  historicalLifecycle: InstallEvidence['historicalLifecycle'];
   dependencyIndex: {
     status: InstallEvidence['dependencyIndex']['inspection']['status'];
     trusted: boolean;
@@ -212,6 +226,7 @@ export interface StatusJsonLocation {
     actions: DependencyIndexReferenceAction[];
     staleProjectReferences: DependencyIndexReferenceAction[];
   };
+  dependencies: PluginStatusDependencies;
   dependents: PluginLocation[];
   autoInstalled: boolean;
   unusedDependencyHint: boolean;
@@ -256,6 +271,7 @@ export interface StatusJsonLocation {
     cleanupCommand?: string;
   };
   catalogDrift: boolean;
+  catalogLatestBlockedByCli: boolean;
   upgradeAvailable: boolean;
   repairAvailable: boolean;
   cleanupAvailable: boolean;
@@ -688,6 +704,7 @@ async function discoverTargets(
     platformFilter: options.platform,
     pluginNames: pluginNames.length > 0 ? pluginNames : undefined,
     env,
+    includeCurrentCatalog: runtime.p7Catalog?.reasonCode === undefined,
   });
   const seen = new Set<string>();
   const targets: InstallStateTarget[] = [];
@@ -1121,7 +1138,9 @@ async function collectWithDefaultEvidence(options: {
     });
   }
 
-  const projection = projectInstallState(evidence);
+  const projection = projectInstallState(evidence, {
+    catalogLatestBlockedByCli: options.runtime.p7Catalog?.latestCatalogBlocked !== undefined,
+  });
   const dependencyIndexActions = await collectDependencyIndexActions(evidence);
   const forceCleanup = createForceCleanupHint(evidence, projection);
   const deepDiagnose = options.deep
@@ -1263,6 +1282,9 @@ function createSummaryText(options: {
   ) {
     return '检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。';
   }
+  if (projection.catalogLatestBlockedByCli) {
+    return '当前 catalog 更新受 CLI 版本限制；先升级 aw，再决定是否升级插件。';
+  }
   if (projection.kind === 'installed' && projection.catalogDrift) {
     return '当前安装仍可识别，但目录里的插件版本已经变化，建议升级或重装。';
   }
@@ -1346,6 +1368,9 @@ function createFindings(options: {
   }
   if (projection.catalogDrift) {
     findings.push('当前目录里的插件来源已经变化；这更像升级提示，不当作文件损坏。');
+  }
+  if (projection.catalogLatestBlockedByCli) {
+    findings.push('最新 catalog 需要更高版本的 aw；当前状态不会把它显示成插件可升级。');
   }
   if (projection.dynamicDiagnosticUnavailable) {
     findings.push('动态诊断信息目前不可用；只读模式不会补写本地诊断数据。');
@@ -1844,6 +1869,15 @@ function toStatusJsonLocation(
       path: state.evidence.installRecord.read.path,
       sourceDrift: state.evidence.installRecord.sourceDrift,
       sameBundleAsCatalog: state.evidence.installRecord.sameBundleAsCatalog,
+      ...(state.evidence.installRecord.read.status === 'ok'
+        ? {
+            source: state.evidence.installRecord.read.value.record.source,
+          }
+        : {}),
+    },
+    currentCatalog: {
+      provided: state.evidence.currentCatalog.provided,
+      source: state.evidence.currentCatalog.source,
     },
     dynamicDiagnostic: {
       available: state.evidence.dynamicDiagnostic.available,
@@ -1855,6 +1889,8 @@ function toStatusJsonLocation(
       entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
     },
     legacyDynamicTracking: collectLegacyDynamicTracking(state.evidence),
+    legacyTracking: state.evidence.legacyTracking,
+    historicalLifecycle: state.evidence.historicalLifecycle,
     dependencyIndex: {
       status: state.evidence.dependencyIndex.inspection.status,
       trusted: state.projection.dependencyIndexTrusted,
@@ -1870,6 +1906,21 @@ function toStatusJsonLocation(
       dependencyIndexRecoveryMessage,
       actions: state.dependencyIndexActions,
       staleProjectReferences,
+    },
+    dependencies: {
+      healthSource: 'none',
+      declared: [],
+      resolved: [],
+      satisfied: [],
+      missing: [],
+      dependents: [],
+      autoInstalled: false,
+      autoRemovable: false,
+      catalogDrift: {
+        kind: 'none',
+        snapshotDependencies: [],
+        currentDependencies: [],
+      },
     },
     dependents: state.projection.dependents,
     autoInstalled: state.projection.autoInstalled,
@@ -1907,6 +1958,7 @@ function toStatusJsonLocation(
       state.projection,
     ),
     catalogDrift: state.projection.catalogDrift,
+    catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
     upgradeAvailable: state.projection.upgradeAvailable,
     repairAvailable: state.projection.repairAvailable,
     cleanupAvailable: state.projection.cleanupAvailable,

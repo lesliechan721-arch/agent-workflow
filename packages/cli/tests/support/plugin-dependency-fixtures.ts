@@ -21,6 +21,7 @@ export const PLUGIN_DEPENDENCY_P0_TEST_ENTRYPOINTS = {
 
 export interface DependencyFixtureDependency {
   name: string;
+  minVersion?: string;
   target?: {
     scope?: Scope;
   };
@@ -118,6 +119,7 @@ function dependencyNames(manifest?: DependencyFixtureManifest): string[] {
 function dependencySignature(manifest?: DependencyFixtureManifest): string {
   const entries = (manifest?.dependencies?.plugins ?? []).map((entry) => ({
     name: entry.name,
+    minVersion: entry.minVersion ?? null,
     targetScope: entry.target?.scope ?? null,
     inheritInstallOptions: entry.inheritInstallOptions ?? null,
     platforms: [...(entry.when?.platforms ?? [])],

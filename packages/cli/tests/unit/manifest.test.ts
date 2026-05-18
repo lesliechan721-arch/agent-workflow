@@ -8,9 +8,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   compareStrictSemVer,
   createBundleSourceManifest,
+  DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
+  normalizeManifestDigestInput,
   createPlatformManifestBase,
+  parseStrictSemVer,
   readMarketplaceSourceMeta,
   readPluginManifest,
+  STRICT_SEMVER_VALIDATION_CODE,
+  validateCatalogManifest,
   validatePluginDependencyReferences,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
@@ -102,6 +107,110 @@ function createMarketplaceWithProducts(products: string[]) {
   };
 }
 
+function sha256(char: string): string {
+  return `sha256:${char.repeat(64)}`;
+}
+
+function createCatalogManifestFixture() {
+  return {
+    schemaVersion: 1,
+    catalogVersion: '1.2.3',
+    channel: 'latest',
+    compatibility: {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    },
+    history: {
+      schemaVersion: 1,
+      channel: 'latest',
+      releases: [
+        {
+          catalogVersion: '1.2.3',
+          minAwVersion: '0.0.0',
+          plugins: [
+            {
+              name: 'code-review',
+              version: '1.4.0',
+              minAwVersion: '0.0.0',
+              artifactDigest: sha256('a'),
+              manifestDigest: sha256('b'),
+            },
+            {
+              name: 'shared-helper',
+              version: '1.2.0',
+              minAwVersion: '0.0.0',
+              artifactDigest: sha256('c'),
+              manifestDigest: sha256('d'),
+            },
+          ],
+        },
+      ],
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: '1.2.3',
+        channel: 'latest',
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: '1.2.3',
+        channel: 'latest',
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries: [
+      {
+        name: 'code-review',
+        version: '1.4.0',
+        description: 'review plugin',
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+        },
+        compatibility: {
+          aw: {
+            minVersion: '0.0.0',
+          },
+        },
+        dependencies: {
+          plugins: [
+            {
+              name: 'shared-helper',
+              minVersion: '1.2.0',
+            },
+          ],
+        },
+        source: './plugins/code-review',
+        artifactDigest: sha256('a'),
+        manifestDigest: sha256('b'),
+      },
+      {
+        name: 'shared-helper',
+        version: '1.2.0',
+        description: 'helper plugin',
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+        compatibility: {
+          aw: {
+            minVersion: '0.0.0',
+          },
+        },
+        source: './plugins/shared-helper',
+        artifactDigest: sha256('c'),
+        manifestDigest: sha256('d'),
+      },
+    ],
+  };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -139,6 +248,33 @@ describe('manifest utils', () => {
     });
   });
 
+  it('defaults source plugin minVersion but requires it for remote bundle manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const rawManifest = await readFixturePluginManifest(repoRoot);
+    const plugin = await readPluginManifest(pluginRoot);
+
+    expect(plugin.manifest.compatibility).toEqual({
+      aw: {
+        minVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
+      },
+    });
+    expect(createBundleSourceManifest(plugin).compatibility).toEqual({
+      aw: {
+        minVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
+      },
+    });
+
+    const manifestWithoutCompatibility = structuredClone(rawManifest);
+    delete (manifestWithoutCompatibility as { compatibility?: unknown }).compatibility;
+
+    expect(() => validatePluginManifest('/tmp/plugin', manifestWithoutCompatibility, {
+      compatibilityMode: 'required',
+    })).toThrow(
+      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+    );
+  });
+
   it('rejects deprecated top-level claude block', async () => {
     const repoRoot = await makeTempRepo();
     const manifestPath = path.join(
@@ -170,15 +306,105 @@ describe('manifest utils', () => {
       await writeFixturePluginManifest(repoRoot, manifest);
 
       await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-        'Invalid plugin manifest.version: expected a strict SemVer 2.0.0 string.',
+        `Invalid plugin manifest.version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(version)}.`,
       );
     }
+  });
+
+  it('parses valid strict SemVer strings and preserves the original raw value', () => {
+    const versions = [
+      '1.2.3',
+      '1.2.3-beta.1',
+      '1.2.3+build.1',
+      '1.2.3-beta.1+build.5',
+    ];
+
+    for (const version of versions) {
+      expect(parseStrictSemVer(version, 'test.version')).toMatchObject({
+        raw: version,
+      });
+    }
+  });
+
+  it('throws a stable SemVer validation error with field path and value', () => {
+    try {
+      parseStrictSemVer('latest', 'plugin manifest.version');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({
+        code: STRICT_SEMVER_VALIDATION_CODE,
+        fieldPath: 'plugin manifest.version',
+        value: 'latest',
+      });
+      expect((error as Error).message).toContain('plugin manifest.version');
+      expect((error as Error).message).toContain('"latest"');
+      return;
+    }
+
+    throw new Error('expected parseStrictSemVer to throw');
   });
 
   it('compares strict SemVer precedence and ignores build metadata', () => {
     expect(compareStrictSemVer('1.2.3+build.1', '1.2.3+build.2')).toBe(0);
     expect(compareStrictSemVer('1.2.3-beta.1', '1.2.3')).toBeLessThan(0);
     expect(compareStrictSemVer('1.2.4', '1.2.3')).toBeGreaterThan(0);
+  });
+
+  it('normalizes manifest digest input with stable key ordering', () => {
+    const left = validatePluginManifest('/tmp/plugin', {
+      name: 'digest-demo',
+      version: '1.2.3',
+      description: 'demo',
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            minVersion: '1.0.0',
+          },
+        ],
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+      },
+    });
+    const right = validatePluginManifest('/tmp/plugin', {
+      marketplace: {
+        policy: {
+          authentication: 'NONE',
+          installation: 'AVAILABLE',
+        },
+        strict: true,
+        category: 'workflow',
+      },
+      description: 'demo',
+      version: '1.2.3',
+      name: 'digest-demo',
+      dependencies: {
+        plugins: [
+          {
+            minVersion: '1.0.0',
+            name: 'shared-helper',
+          },
+        ],
+      },
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
+    });
+
+    expect(normalizeManifestDigestInput(left)).toBe(normalizeManifestDigestInput(right));
   });
 
   it('rejects hook fields and permission patterns outside the public source contract', async () => {
@@ -1242,6 +1468,11 @@ describe('manifest utils', () => {
     const manifest = await fs.readJson(
       path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
     );
+    manifest.compatibility = {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    };
     delete manifest.skills;
     delete manifest.skillTriggers;
     await fs.writeJson(
@@ -1271,6 +1502,11 @@ describe('manifest utils', () => {
     const manifest = await fs.readJson(
       path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
     );
+    manifest.compatibility = {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    };
     manifest.skillTriggers = {
       commit: {
         defaultTrigger: 'auto',
@@ -1780,6 +2016,87 @@ describe('manifest utils', () => {
         },
       });
     }
+  });
+
+  it('validates catalog manifests with history, package identity, digests, and dependency minVersion', () => {
+    expect(validateCatalogManifest(createCatalogManifestFixture())).toMatchObject({
+      catalogVersion: '1.2.3',
+      channel: 'latest',
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+      packages: {
+        sidecar: {
+          name: '@yiliang/aw-plugins-manifest',
+        },
+        full: {
+          name: '@yiliang/aw-plugins',
+          manifestPath: './catalog-manifest.json',
+        },
+      },
+    });
+  });
+
+  it('rejects dependency minVersion that the current catalog cannot satisfy', () => {
+    const parent = validatePluginManifest('/tmp/plugins/dependency-parent', {
+      name: 'dependency-parent',
+      version: '1.0.0',
+      description: 'parent',
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+      dependencies: {
+        plugins: [
+          {
+            name: 'shared-helper',
+            minVersion: '2.0.0',
+          },
+        ],
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+      },
+    });
+    const dependency = validatePluginManifest('/tmp/plugins/shared-helper', {
+      name: 'shared-helper',
+      version: '1.5.0',
+      description: 'helper',
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+      },
+    });
+
+    expect(() => validatePluginDependencyReferences([
+      {
+        rootDir: '/tmp/plugins/dependency-parent',
+        manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
+        manifest: parent,
+      },
+      {
+        rootDir: '/tmp/plugins/shared-helper',
+        manifestPath: '/tmp/plugins/shared-helper/.agents-plugin/plugin.json',
+        manifest: dependency,
+      },
+    ])).toThrow('does not satisfy minimum 2.0.0');
   });
 
   it('keeps CLI manifest validation in sync with dependency parity fixtures', () => {

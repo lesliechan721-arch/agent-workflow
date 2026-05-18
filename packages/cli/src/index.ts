@@ -28,11 +28,13 @@ import { uninstallCommand } from './commands/uninstall.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import {
   normalizeUninstallCommandOptions,
+  normalizeCatalogSelectorOptions,
   normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
   assertNoDeprecatedSkillTriggerOption,
+  applyCatalogSelectorEnv,
   normalizeCommandOptions,
   normalizeInstallCommandOptions,
   normalizeRepairCommandOptions,
@@ -218,6 +220,8 @@ interface RawDiagnosticsOptions {
 
 interface RawConfigOptions extends RawDiagnosticsOptions {
   scope?: string;
+  catalogChannel?: string;
+  catalogVersion?: string;
   json?: boolean;
   valueJson?: boolean;
   yes?: boolean;
@@ -292,6 +296,76 @@ function assertReinstallRequestProvided(pluginNames: string[]): void {
   throw new Error('reinstall 命令当前只支持单个插件目标。');
 }
 
+function addCatalogSelectorOptions<T extends Command>(
+  command: T,
+  options: { includeChannelAlias?: boolean } = {},
+): T {
+  command
+    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
+    .option('--catalog-version <semver>', 'use a specific current catalog version for this command');
+  if (options.includeChannelAlias) {
+    command.option('--channel <dist-tag>', 'alias of --catalog-channel');
+  }
+  return command;
+}
+
+function parseBareConsoleOptions(
+  argv: string[],
+): (RawDiagnosticsOptions & { catalogChannel?: string; catalogVersion?: string }) | null {
+  if (argv.length === 0) {
+    return {};
+  }
+
+  const parsed: RawDiagnosticsOptions & { catalogChannel?: string; catalogVersion?: string } = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token) {
+      continue;
+    }
+    if (token === '--help' || token === '-h' || token === '--version' || token === '-V') {
+      return null;
+    }
+    if (token === '-v' || token === '--verbose') {
+      parsed.verbose = true;
+      continue;
+    }
+    if (token === '-D' || token === '--debug') {
+      parsed.debug = true;
+      continue;
+    }
+    if (token === '--log-file') {
+      parsed.logFile = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--log-file=')) {
+      parsed.logFile = token.slice('--log-file='.length);
+      continue;
+    }
+    if (token === '--catalog-channel') {
+      parsed.catalogChannel = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--catalog-channel=')) {
+      parsed.catalogChannel = token.slice('--catalog-channel='.length);
+      continue;
+    }
+    if (token === '--catalog-version') {
+      parsed.catalogVersion = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--catalog-version=')) {
+      parsed.catalogVersion = token.slice('--catalog-version='.length);
+      continue;
+    }
+    return null;
+  }
+
+  return parsed;
+}
+
 async function runActionWithContext<T>(
   context: CliExecutionContext,
   action: () => Promise<T>,
@@ -336,7 +410,10 @@ async function loadConfigManifest(
   pluginName: string,
   context: CliExecutionContext,
 ): Promise<PluginMeta> {
-  const plugin = await loadConfigPluginOptional(pluginName, context);
+  const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
+  if (error) {
+    throw error;
+  }
   if (!plugin) {
     throw new Error(
       `Unknown plugin "${pluginName}". Cannot read schema-aware config without a current catalog entry. ` +
@@ -350,10 +427,10 @@ async function loadConfigManifest(
   return plugin;
 }
 
-async function loadConfigPluginOptional(
+async function loadConfigPluginLookup(
   pluginName: string,
   context: CliExecutionContext,
-): Promise<PluginMeta | null> {
+): Promise<{ plugin: PluginMeta | null; error: Error | null }> {
   assertSafePluginConfigSegment(pluginName);
   let plugins: Awaited<ReturnType<typeof resolveCatalogPlugins>>['plugins'];
   try {
@@ -361,11 +438,17 @@ async function loadConfigPluginOptional(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === `Unknown plugin "${pluginName}".`) {
-      return null;
+      return { plugin: null, error: null };
     }
-    throw error;
+    return {
+      plugin: null,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
   }
-  return plugins[0] ?? null;
+  return {
+    plugin: plugins[0] ?? null,
+    error: null,
+  };
 }
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
@@ -750,12 +833,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   const createActionContext = (
     commandName: string,
-    rawOptions: RawDiagnosticsOptions,
+    rawOptions: RawDiagnosticsOptions & {
+      catalogChannel?: string;
+      catalogVersion?: string;
+      channel?: string;
+    },
+    selectorOptions: { allowChannelAlias?: boolean } = {},
   ): CliExecutionContext =>
     createCliExecutionContext({
       ...options,
       cwd,
-      env,
+      env: applyCatalogSelectorEnv(
+        env,
+        normalizeCatalogSelectorOptions(rawOptions, selectorOptions),
+      ),
       io,
       interactive: options.interactive,
       diagnostics: toCliDiagnosticsOptions(commandName, rawOptions, options.diagnostics),
@@ -773,34 +864,36 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       outputError: (text, write) => write(text),
     });
 
-  program
-    .command('init')
-    .option('-f, --force', 'refresh the local marketplace bundle', false)
+  addCatalogSelectorOptions(
+    program
+      .command('init'),
+    { includeChannelAlias: true },
+  )
+    .option('-f, --force', 're-fetch and rebuild the current catalog cache entry', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (rawOptions: { force?: boolean; json?: boolean } & RawDiagnosticsOptions) => {
-      const context = createActionContext('init', rawOptions);
+    .action(async (rawOptions: {
+      force?: boolean;
+      json?: boolean;
+      channel?: string;
+      catalogChannel?: string;
+      catalogVersion?: string;
+    } & RawDiagnosticsOptions) => {
+      const context = createActionContext('init', rawOptions, { allowChannelAlias: true });
       const result = await runActionWithContext(context, () =>
         initCommand({
           force: rawOptions.force,
           env: context.env,
-          gate: {
-            interactive: context.interactive,
-            confirmOverwrite: async ({ message, defaultValue }) => {
-              const promptResult = await context.prompt.confirm?.({ message, defaultValue });
-              return promptResult?.action === 'select' && promptResult.value === true;
-            },
-            onNotice: async (message) => {
-              await context.reporter.notice({
-                level: 'warning',
-                message,
-                identity: `local-marketplace:${message}`,
-                target: 'stderr',
-              });
-            },
-          },
+          selectorOverrideSource: rawOptions.catalogVersion !== undefined
+            ? 'option:catalog-version'
+            : rawOptions.catalogChannel !== undefined
+              ? 'option:catalog-channel'
+              : rawOptions.channel !== undefined
+                ? 'option:channel-alias'
+                : undefined,
+          ...normalizeCatalogSelectorOptions(rawOptions, { allowChannelAlias: true }),
         }),
       );
       if (rawOptions.json) {
@@ -813,8 +906,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
     });
 
-  program
-    .command('install')
+  addCatalogSelectorOptions(
+    program
+      .command('install'),
+  )
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
@@ -831,6 +926,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         rawOptions: {
           scope?: string;
           platform?: string;
+          catalogChannel?: string;
+          catalogVersion?: string;
           skillTrigger?: string;
           takeoverSharedRuntime?: boolean;
           scriptTimeout?: string;
@@ -936,8 +1033,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = resolveCommandReceiptExitCode('uninstall', receipt.result);
     });
 
-  program
-    .command('upgrade')
+  addCatalogSelectorOptions(
+    program
+      .command('upgrade'),
+  )
     .argument('[plugins...]')
     .option('-a, --all', 'upgrade all plugins', false)
     .option('-s, --scope <scope>', 'project or user')
@@ -956,6 +1055,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           all?: boolean;
           scope?: string;
           platform?: string;
+          catalogChannel?: string;
+          catalogVersion?: string;
           skillTrigger?: string;
           takeoverSharedRuntime?: boolean;
           scriptTimeout?: string;
@@ -1114,8 +1215,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = isCleanupExecutionFailure(result.payload) ? 1 : 0;
     });
 
-  program
-    .command('reinstall')
+  addCatalogSelectorOptions(
+    program
+      .command('reinstall'),
+  )
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
@@ -1131,6 +1234,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
+        catalogChannel?: string;
+        catalogVersion?: string;
         skillTrigger?: string;
         takeoverSharedRuntime?: boolean;
         scriptTimeout?: string;
@@ -1190,6 +1295,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   config
     .command('list')
     .argument('<plugin>')
+    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
+    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'read only project or user config')
     .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
@@ -1200,10 +1307,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('config:list', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const result = await resolveConfigReadV2({
           pluginName,
           plugin,
+          ...(error ? { pluginError: error } : {}),
           scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
           projectLayer,
           cwd: context.cwd,
@@ -1225,6 +1333,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           plugin: pluginName,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
+          ...(resolved.schema ? { schema: resolved.schema } : {}),
           fields: resolved.fields,
           ...(resolved.legacyConfigStores.length > 0
             ? { legacyConfigStores: resolved.legacyConfigStores }
@@ -1239,6 +1348,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('get')
     .argument('<plugin>')
     .argument('[key]')
+    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
+    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'read only project or user config')
     .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
@@ -1252,10 +1363,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (key && rawOptions.local && isBuiltInConfigKey(key)) {
           throw new Error('project local 层不支持按字段读取 SkillTrigger 内建值；请改用 `--scope project` 查看生效值，或整层 reset 清理误写入值。');
         }
-        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const result = await resolveConfigReadV2({
           pluginName,
           plugin,
+          ...(error ? { pluginError: error } : {}),
           scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
           projectLayer,
           cwd: context.cwd,
@@ -1301,6 +1413,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           key,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
+          ...(resolved.schema ? { schema: resolved.schema } : {}),
           fields: resolved.fields,
           ...(resolved.legacyConfigStores.length > 0
             ? { legacyConfigStores: resolved.legacyConfigStores }
@@ -1316,6 +1429,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('<plugin>')
     .argument('<key>')
     .argument('<value>')
+    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
+    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('--value-json', 'parse value as a JSON literal', false)
@@ -1333,12 +1448,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
         if (isBuiltInConfigKey(key)) {
           const writeReceipt = await applyBuiltInConfigWrite({
             pluginName,
             plugin,
+            ...(error ? { pluginError: error } : {}),
             scope,
             projectLayer,
             cwd: context.cwd,
@@ -1354,12 +1470,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...writeReceipt,
           };
         }
-        const pluginWithSchema = plugin;
-        if (!pluginWithSchema?.manifest.config?.schema) {
-          throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
-        }
         const writeReceipt = await applyPluginConfigWrite({
-          plugin: pluginWithSchema,
+          plugin,
+          ...(error ? { pluginError: error } : {}),
           pluginName,
           scope,
           projectLayer,
@@ -1372,11 +1485,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         return {
           ok: true,
           receiptSchemaVersion: 2,
-          command: 'config:set',
-          ...writeReceipt,
-          affectedFields: [{
-            key,
-            title: pluginWithSchema.manifest.config.schema[key]?.title ?? key,
+            command: 'config:set',
+            ...writeReceipt,
+            affectedFields: [{
+              key,
+            title: plugin?.manifest.config?.schema?.[key]?.title ?? key,
             kind: 'manifest' as const,
             reserved: false,
             action: 'set' as const,
@@ -1400,6 +1513,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('unset')
     .argument('<plugin>')
     .argument('<key>')
+    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
+    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -1411,11 +1526,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         if (isBuiltInConfigKey(key)) {
           const writeReceipt = await applyBuiltInConfigWrite({
             pluginName,
             plugin,
+            ...(error ? { pluginError: error } : {}),
             scope,
             projectLayer,
             cwd: context.cwd,
@@ -1432,7 +1548,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             existed: writeReceipt.existed ?? false,
           };
         }
-        if (!plugin?.manifest.config?.schema?.[key]) {
+        if (plugin && !plugin.manifest.config?.schema?.[key]) {
           throw new Error(`Unknown config key "${key}".`);
         }
         const store = await readPluginConfigStore({
@@ -1445,6 +1561,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const existed = Object.hasOwn(store.values, key);
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
+          ...(error ? { pluginError: error } : {}),
           pluginName,
           scope,
           projectLayer,
@@ -1463,7 +1580,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           existed,
           affectedFields: [{
             key,
-            title: plugin.manifest.config.schema[key]?.title ?? key,
+            title: plugin?.manifest.config?.schema?.[key]?.title ?? key,
             kind: 'manifest' as const,
             reserved: false,
             action: 'unset' as const,
@@ -1513,10 +1630,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
           );
         }
-        const plugin = await loadConfigPluginOptional(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const affectedFields = await describeResetAffectedFields({
           pluginName,
           ...(plugin ? { plugin } : {}),
+          ...(error ? { pluginError: error } : {}),
           scope,
           projectLayer,
           cwd: context.cwd,
@@ -1528,6 +1646,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           projectLayer,
           cwd: context.cwd,
           env: context.env,
+          ...(error ? { pluginError: error } : {}),
           ...(plugin ? { plugin } : {}),
         });
         return {
@@ -1551,8 +1670,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  program
-    .command('status')
+  addCatalogSelectorOptions(
+    program
+      .command('status'),
+  )
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'filter by scope')
     .option('-p, --platform <platform>', 'filter by platform')
@@ -1565,6 +1686,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
+        catalogChannel?: string;
+        catalogVersion?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -1615,10 +1738,15 @@ export async function runCli(
   };
 
   try {
-    if (argv.length === 0) {
+    const bareConsoleOptions = parseBareConsoleOptions(argv);
+    if (bareConsoleOptions) {
       const context = createCliExecutionContext({
         ...options,
         io,
+        env: applyCatalogSelectorEnv(
+          options.env ?? process.env,
+          normalizeCatalogSelectorOptions(bareConsoleOptions),
+        ),
         diagnostics: {
           ...options.diagnostics,
           commandName: 'console',

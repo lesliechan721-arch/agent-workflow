@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  CatalogManifest,
   MarketplaceManifest,
   PlatformName,
   PluginMeta,
@@ -13,14 +14,47 @@ import type {
 import {
   validatePluginDependencyReferences,
   assertStrictSemVer,
+  validateCatalogManifest,
   validatePluginManifest,
 } from './manifest.js';
 import { readJsonFile } from './json.js';
+import { readMarketplaceManifestAtPath } from './marketplace.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 import { validateRenderedClaudeHooksContent } from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+export const CATALOG_STAGING_DIRNAME = '.catalog';
+export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
+export const CATALOG_SIDECAR_DIRNAME = 'sidecar';
+export const CATALOG_FULL_DIRNAME = 'full';
+export const CATALOG_SIDECAR_PACKAGE_NAME = '@yiliang/aw-plugins-manifest';
+export const CATALOG_FULL_PACKAGE_NAME = '@yiliang/aw-plugins';
+export const CATALOG_PACKAGE_METADATA_FIELD = 'awCatalog';
+
+export function getCatalogStagingRoot(rootDir: string): string {
+  return path.join(rootDir, CATALOG_STAGING_DIRNAME);
+}
+
+export function getCanonicalCatalogManifestPath(rootDir: string): string {
+  return path.join(getCatalogStagingRoot(rootDir), CATALOG_MANIFEST_FILENAME);
+}
+
+export function getCatalogSidecarPackageRoot(rootDir: string): string {
+  return path.join(getCatalogStagingRoot(rootDir), CATALOG_SIDECAR_DIRNAME);
+}
+
+export function getCatalogFullPackageRoot(rootDir: string): string {
+  return path.join(getCatalogStagingRoot(rootDir), CATALOG_FULL_DIRNAME);
+}
+
+export function getCatalogSidecarManifestPath(rootDir: string): string {
+  return path.join(getCatalogSidecarPackageRoot(rootDir), CATALOG_MANIFEST_FILENAME);
+}
+
+export function getCatalogFullManifestPath(rootDir: string): string {
+  return path.join(getCatalogFullPackageRoot(rootDir), CATALOG_MANIFEST_FILENAME);
+}
 
 function isPathInsideOrEqual(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
@@ -545,21 +579,10 @@ async function readMarketplaceManifestFromBundle(
       ? '.claude-plugin/marketplace.json'
       : '.agents/plugins/marketplace.json',
   );
-  const manifest = await readJsonFile<unknown>(manifestPath);
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-    throw new Error(`Invalid ${formatPlatformLabel(platform)} marketplace manifest: expected an object.`);
-  }
-
-  const marketplace = manifest as MarketplaceManifest;
-  if (marketplace.name !== 'aw') {
-    throw new Error(`Invalid ${formatPlatformLabel(platform)} marketplace manifest.name: expected "aw".`);
-  }
-  if (!Array.isArray(marketplace.plugins)) {
-    throw new Error(
-      `Invalid ${formatPlatformLabel(platform)} marketplace manifest.plugins: expected an array.`,
-    );
-  }
-  return marketplace;
+  return readMarketplaceManifestAtPath(
+    manifestPath,
+    `${formatPlatformLabel(platform)} marketplace manifest`,
+  );
 }
 
 async function listBundledPluginNames(rootDir: string): Promise<string[]> {
@@ -607,6 +630,154 @@ function validateMarketplaceEntriesForPlatform(
       );
     }
   }
+}
+
+function assertCatalogPackageJsonShape(
+  packageJson: Record<string, unknown>,
+  fieldName: string,
+): {
+  awCatalog: {
+    channel: string;
+    compatibility: {
+      aw: {
+        minVersion: string;
+      };
+    };
+  };
+} {
+  const packageName = packageJson.name;
+  const version = packageJson.version;
+  if (typeof packageName !== 'string' || packageName.trim() === '') {
+    throw new Error(`Invalid ${fieldName}.name: expected a non-empty string.`);
+  }
+  assertStrictSemVer(version, `${fieldName}.version`);
+
+  const awCatalog = packageJson[CATALOG_PACKAGE_METADATA_FIELD];
+  if (!awCatalog || typeof awCatalog !== 'object' || Array.isArray(awCatalog)) {
+    throw new Error(`Invalid ${fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}: expected an object.`);
+  }
+  const channel = (awCatalog as Record<string, unknown>).channel;
+  if (channel !== 'latest' && channel !== 'beta') {
+    throw new Error(`Invalid ${fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.channel: expected "latest" or "beta".`);
+  }
+
+  const compatibility = (awCatalog as Record<string, unknown>).compatibility;
+  if (!compatibility || typeof compatibility !== 'object' || Array.isArray(compatibility)) {
+    throw new Error(`Invalid ${fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.compatibility: expected an object.`);
+  }
+  const aw = (compatibility as Record<string, unknown>).aw;
+  if (!aw || typeof aw !== 'object' || Array.isArray(aw)) {
+    throw new Error(`Invalid ${fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.compatibility.aw: expected an object.`);
+  }
+  const minVersion = assertStrictSemVer(
+    (aw as Record<string, unknown>).minVersion,
+    `${fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.compatibility.aw.minVersion`,
+  );
+
+  return {
+    awCatalog: {
+      channel,
+      compatibility: {
+        aw: {
+          minVersion,
+        },
+      },
+    },
+  };
+}
+
+async function validateCatalogStagingLayout(rootDir: string): Promise<void> {
+  const canonicalManifestPath = getCanonicalCatalogManifestPath(rootDir);
+  const sidecarPackageRoot = getCatalogSidecarPackageRoot(rootDir);
+  const fullPackageRoot = getCatalogFullPackageRoot(rootDir);
+  const sidecarManifestPath = getCatalogSidecarManifestPath(rootDir);
+  const fullManifestPath = getCatalogFullManifestPath(rootDir);
+
+  const requiredPaths = [
+    canonicalManifestPath,
+    path.join(sidecarPackageRoot, 'package.json'),
+    sidecarManifestPath,
+    path.join(fullPackageRoot, 'package.json'),
+    fullManifestPath,
+  ];
+  for (const requiredPath of requiredPaths) {
+    if (!(await fs.pathExists(requiredPath))) {
+      throw new Error(`Invalid catalog staging layout: missing ${path.relative(rootDir, requiredPath)}.`);
+    }
+  }
+
+  const [canonicalBytes, sidecarBytes, fullBytes] = await Promise.all([
+    fs.readFile(canonicalManifestPath, 'utf8'),
+    fs.readFile(sidecarManifestPath, 'utf8'),
+    fs.readFile(fullManifestPath, 'utf8'),
+  ]);
+  if (canonicalBytes !== sidecarBytes || canonicalBytes !== fullBytes) {
+    throw new Error('Invalid catalog staging layout: catalog-manifest.json must be byte-for-byte identical across canonical, sidecar, and full package copies.');
+  }
+
+  const manifest = validateCatalogManifest(
+    await readJsonFile<unknown>(canonicalManifestPath),
+  );
+  const [sidecarPackageJson, fullPackageJson] = await Promise.all([
+    readJsonObject(path.join(sidecarPackageRoot, 'package.json'), 'catalog sidecar package.json'),
+    readJsonObject(path.join(fullPackageRoot, 'package.json'), 'catalog full package.json'),
+  ]);
+  const sidecarPackageMeta = assertCatalogPackageJsonShape(
+    sidecarPackageJson,
+    'catalog sidecar package',
+  );
+  const fullPackageMeta = assertCatalogPackageJsonShape(
+    fullPackageJson,
+    'catalog full package',
+  );
+
+  const packageAssertions = [
+    {
+      fieldName: 'catalog sidecar package',
+      packageJson: sidecarPackageJson,
+      packageMeta: sidecarPackageMeta,
+      expectedName: CATALOG_SIDECAR_PACKAGE_NAME,
+      expectedIdentity: manifest.packages.sidecar,
+    },
+    {
+      fieldName: 'catalog full package',
+      packageJson: fullPackageJson,
+      packageMeta: fullPackageMeta,
+      expectedName: CATALOG_FULL_PACKAGE_NAME,
+      expectedIdentity: manifest.packages.full,
+    },
+  ] as const;
+  for (const assertion of packageAssertions) {
+    if (assertion.packageJson.name !== assertion.expectedName) {
+      throw new Error(`Invalid ${assertion.fieldName}.name: expected "${assertion.expectedName}".`);
+    }
+    if (assertion.expectedIdentity.name !== assertion.expectedName) {
+      throw new Error(`Invalid catalog manifest package identity for ${assertion.expectedName}.`);
+    }
+    if (assertion.packageJson.version !== assertion.expectedIdentity.version) {
+      throw new Error(`Invalid ${assertion.fieldName}.version: must match catalog manifest package identity.`);
+    }
+    if (assertion.packageMeta.awCatalog.channel !== manifest.channel) {
+      throw new Error(`Invalid ${assertion.fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.channel: must match catalog manifest channel.`);
+    }
+    if (
+      assertion.packageMeta.awCatalog.compatibility.aw.minVersion
+      !== manifest.compatibility.aw.minVersion
+    ) {
+      throw new Error(`Invalid ${assertion.fieldName}.${CATALOG_PACKAGE_METADATA_FIELD}.compatibility.aw.minVersion: must match catalog manifest compatibility.`);
+    }
+  }
+
+  const sidecarFiles = await listFilesRecursively(sidecarPackageRoot);
+  if (
+    sidecarFiles.length !== 2 ||
+    sidecarFiles[0] !== CATALOG_MANIFEST_FILENAME ||
+    sidecarFiles[1] !== 'package.json'
+  ) {
+    throw new Error('Invalid catalog sidecar package: expected only package.json and catalog-manifest.json.');
+  }
+
+  await validateBundleLayout(fullPackageRoot);
 }
 
 export async function validateBundleLayout(rootDir: string): Promise<void> {
@@ -684,4 +855,8 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
     supportedPluginNamesByPlatform.codex,
   );
   validatePluginDependencyReferences(pluginMetas);
+
+  if (await fs.pathExists(getCatalogStagingRoot(rootDir))) {
+    await validateCatalogStagingLayout(rootDir);
+  }
 }

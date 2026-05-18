@@ -1,4 +1,8 @@
 import type {
+  CatalogCacheFallbackEvidence,
+  CatalogLatestBlockedEvidence,
+  CatalogRemoteFailureEvidence,
+  CatalogSelector,
   CodexProjectManagedKind,
   CommandAction,
   NextStepInstruction,
@@ -75,6 +79,19 @@ export interface NativeSkippedEventData {
   repoManagedArtifactKinds: CodexProjectManagedKind[];
 }
 
+export interface CatalogResolutionEventData {
+  source?: 'local' | 'embedded' | 'remote' | 'cache';
+  selector?: CatalogSelector;
+  channel?: string;
+  catalogVersion?: string;
+  minAwVersion?: string;
+  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
+  historySchemaVersion?: number | null;
+  cacheFallback?: CatalogCacheFallbackEvidence;
+  remoteFailure?: CatalogRemoteFailureEvidence;
+  reasonCode?: string;
+}
+
 export type CommandEventType =
   | 'native:marketplace'
   | 'native:rpc'
@@ -89,7 +106,8 @@ export type CommandEventData =
   | NativeRpcEventData
   | NativeRecoveryEventData
   | NativePostCheckEventData
-  | NativeSkippedEventData;
+  | NativeSkippedEventData
+  | CatalogResolutionEventData;
 
 export interface CommandOutputSource {
   platform?: PlatformName;

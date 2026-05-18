@@ -1,4 +1,7 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
+
+import fs from 'fs-extra';
 
 import {
   refreshArtifactsAfterConfigWrite,
@@ -16,6 +19,7 @@ import {
   patchPluginConfigStore,
   resolveConfigReadV2,
   readPluginConfigStore,
+  resolvePluginConfigSchemaAccess,
   resolveUniformSkillTriggerPreference,
   resetPluginConfigStore,
   resolveEffectivePluginConfig,
@@ -70,6 +74,7 @@ import type {
   ProjectArtifactIdentityFile,
 } from '../install-state/types.js';
 import type {
+  ConfigSchemaEvidenceV2,
   ConfigReceiptFieldEntryV2,
   GeneratedArtifact,
   PluginMeta,
@@ -90,6 +95,7 @@ export interface PluginConfigWriteReceipt {
   plugin: string;
   scope: Scope;
   projectLayer: 'shared' | 'local';
+  schema?: ConfigSchemaEvidenceV2;
   updatedKeys: string[];
   removedKeys: string[];
   effective: ReturnType<typeof summarizeEffectivePluginConfig>;
@@ -103,8 +109,10 @@ export interface ResetPluginConfigWriteReceipt {
   plugin: string;
   scope: Scope;
   projectLayer: 'shared' | 'local';
+  schema?: ConfigSchemaEvidenceV2;
   existed: boolean;
   deleted: boolean;
+  removedKeys: string[];
   artifactRefresh: ArtifactRefreshReceipt;
   targetResults: ReceiptTargetResult[];
   configRefreshSkippedReason?: 'projectLocalOverride' | 'noRefreshTarget';
@@ -115,6 +123,7 @@ export interface BuiltInConfigWriteReceipt {
   plugin: string;
   scope: Scope;
   projectLayer: 'shared' | 'local';
+  schema?: ConfigSchemaEvidenceV2;
   existed?: boolean;
   deleted?: boolean;
   affectedFields: ConfigReceiptFieldEntryV2[];
@@ -125,6 +134,10 @@ export interface BuiltInConfigWriteReceipt {
 interface ConfigRuntimeReplayReceipt {
   artifactRefresh: ArtifactRefreshReceipt;
   targetResults: ReceiptTargetResult[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function uniqueInOrder(values: string[]): string[] {
@@ -138,6 +151,20 @@ function createSkippedRefreshReceipt(triggerKeys: string[] = []): ArtifactRefres
     triggerKeys,
     artifacts: [],
   };
+}
+
+function collectRemovedConfigKeys(values: Record<string, unknown>): string[] {
+  const removedKeys = Object.keys(values).filter((key) => key !== '$aw');
+  const awNamespace = values.$aw;
+  if (
+    isRecord(awNamespace) &&
+    isRecord(awNamespace.skillTriggers)
+  ) {
+    for (const skillName of Object.keys(awNamespace.skillTriggers)) {
+      removedKeys.push(toBuiltInSkillTriggerLogicalKey(skillName));
+    }
+  }
+  return uniqueInOrder(removedKeys);
 }
 
 function uniqueSorted(values: Iterable<string>): string[] {
@@ -736,10 +763,19 @@ function collectRepoVisibleProjectArtifacts(
 async function buildCurrentCatalogSource(
   plugin: PluginMeta,
 ): Promise<CurrentCatalogEvidenceInput['source']> {
+  const manifestDigest = await fs.pathExists(plugin.manifestPath)
+    ? await calculateFileDigest(plugin.manifestPath)
+    : `sha256:${crypto.createHash('sha256').update(JSON.stringify(plugin.manifest)).digest('hex')}`;
+  const bundleFingerprint = await fs.pathExists(plugin.rootDir)
+    ? await calculatePluginBundleFingerprint(plugin.rootDir)
+    : `sha256:${crypto.createHash('sha256').update(JSON.stringify({
+        rootDir: plugin.rootDir,
+        manifest: plugin.manifest,
+      })).digest('hex')}`;
   return {
     pluginVersion: plugin.manifest.version,
-    manifestDigest: await calculateFileDigest(plugin.manifestPath),
-    bundleFingerprint: await calculatePluginBundleFingerprint(plugin.rootDir),
+    manifestDigest,
+    bundleFingerprint,
   };
 }
 
@@ -956,7 +992,8 @@ async function syncCodexInstallStateAfterConfigRefresh(options: {
 }
 
 export async function applyPluginConfigWrite(options: {
-  plugin: PluginMeta;
+  plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   pluginName?: string;
   scope: Scope;
   projectLayer?: 'shared' | 'local';
@@ -965,11 +1002,25 @@ export async function applyPluginConfigWrite(options: {
   applyTargets?: ReceiptTargetIdentity[];
   request: PluginConfigWriteRequest;
 }): Promise<PluginConfigWriteReceipt> {
-  const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.plugin.manifest.name);
+  const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
+  if (!requestedPluginName) {
+    throw new Error('Plugin name is required for config write.');
+  }
+  const pluginName = assertSafePluginConfigSegment(requestedPluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
-  const schema = options.plugin.manifest.config?.schema;
+  const schemaAccess = await resolvePluginConfigSchemaAccess({
+    pluginName,
+    currentPlugin: options.plugin,
+    currentPluginError: options.pluginError,
+    scope: options.scope,
+    projectLayer,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  const schemaPlugin = schemaAccess.plugin;
+  const schema = schemaPlugin?.manifest.config?.schema;
   if (!schema) {
-    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+    throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
   }
 
   const requestedUpdates = options.request.updates ?? {};
@@ -1063,7 +1114,7 @@ export async function applyPluginConfigWrite(options: {
       projectKey: await resolveCodexProjectKey(options.cwd),
     };
     const currentCatalog = await buildBaseCurrentCatalog({
-      plugin: options.plugin,
+      plugin: schemaPlugin,
       scope: 'project',
       cwd: options.cwd,
       env,
@@ -1074,7 +1125,7 @@ export async function applyPluginConfigWrite(options: {
       env,
       currentCatalog,
     });
-    const projectRefreshKeys = collectProjectRefreshKeys(options.plugin.manifest);
+    const projectRefreshKeys = collectProjectRefreshKeys(schemaPlugin.manifest);
     const refreshTouchesProjectArtifacts = hasIntersectingKeys(triggerKeys, projectRefreshKeys);
 
     if (!evidence.installRecord.present) {
@@ -1123,13 +1174,13 @@ export async function applyPluginConfigWrite(options: {
 
   const effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
     pluginName,
-    manifest: options.plugin.manifest,
+    manifest: schemaPlugin.manifest,
     cwd: options.cwd,
     env: options.env,
   }));
   if (shouldAttemptRefresh) {
     artifactRefresh = await refreshArtifactsAfterConfigWrite({
-      plugin: options.plugin,
+      plugin: schemaPlugin,
       commandScope: options.scope,
       cwd: options.cwd,
       env: options.env,
@@ -1137,7 +1188,7 @@ export async function applyPluginConfigWrite(options: {
     });
     if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
       await syncCodexInstallStateAfterConfigRefresh({
-        plugin: options.plugin,
+        plugin: schemaPlugin,
         commandScope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
@@ -1151,7 +1202,7 @@ export async function applyPluginConfigWrite(options: {
   const applyTargets = (options.applyTargets && options.applyTargets.length > 0)
     ? dedupeReceiptTargets(options.applyTargets)
     : await resolveDefaultConfigApplyTargets({
-        plugin: options.plugin,
+        plugin: schemaPlugin,
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
@@ -1166,11 +1217,11 @@ export async function applyPluginConfigWrite(options: {
       applyTargets,
     }),
   });
-
   return {
     plugin: pluginName,
     scope: options.scope,
     projectLayer,
+    ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     updatedKeys,
     removedKeys,
     effective,
@@ -1187,20 +1238,33 @@ export async function resetPluginConfigWithHelper(options: {
   projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  plugin?: PluginMeta;
+  plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   applyTargets?: ReceiptTargetIdentity[];
 }): Promise<ResetPluginConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
+  const store = await readPluginConfigStore({
+    pluginName,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+    ...(options.scope === 'project' ? { projectLayer } : {}),
+  });
+  const removedKeys = collectRemovedConfigKeys(store.values);
+  const schemaAccess = await resolvePluginConfigSchemaAccess({
+    pluginName,
+    currentPlugin: options.plugin ?? null,
+    currentPluginError: options.pluginError,
+    scope: options.scope,
+    projectLayer,
+    cwd: options.cwd,
+    env: options.env,
+    allowSchemaConflict: true,
+  });
   const warnings: ProjectBoundaryWarning[] = [];
   if (options.scope === 'project' && projectLayer === 'shared') {
-    const current = await readPluginConfigStore({
-      pluginName,
-      scope: 'project',
-      cwd: options.cwd,
-      env: options.env,
-    });
-    if (current.exists) {
+    if (store.exists) {
       await assertProjectSharedConfigPathVisible({
         cwd: options.cwd,
         pluginName,
@@ -1237,7 +1301,7 @@ export async function resetPluginConfigWithHelper(options: {
 
   if (options.scope === 'project' && projectLayer === 'local') {
     configRefreshSkippedReason = 'projectLocalOverride';
-  } else if (reset.deleted && options.plugin) {
+  } else if (reset.deleted && schemaAccess.plugin && schemaAccess.installedConsumers.length > 0) {
     const env = options.env ?? process.env;
     const shouldCheckProjectRecord = options.scope === 'project';
     let hasRefreshTarget = !shouldCheckProjectRecord;
@@ -1257,15 +1321,15 @@ export async function resetPluginConfigWithHelper(options: {
     }
     if (hasRefreshTarget) {
       artifactRefresh = await refreshArtifactsAfterConfigWrite({
-        plugin: options.plugin,
+        plugin: schemaAccess.plugin,
         commandScope: options.scope,
         cwd: options.cwd,
         env: options.env,
-        resetAllTrackedKeys: true,
+        changedKeys: removedKeys,
       });
       if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
         await syncCodexInstallStateAfterConfigRefresh({
-          plugin: options.plugin,
+          plugin: schemaAccess.plugin,
           commandScope: options.scope,
           cwd: options.cwd,
           env,
@@ -1277,13 +1341,15 @@ export async function resetPluginConfigWithHelper(options: {
     } else {
       configRefreshSkippedReason = 'noRefreshTarget';
     }
+  } else if (reset.deleted && removedKeys.length > 0) {
+    configRefreshSkippedReason = 'noRefreshTarget';
   }
 
-  if (options.plugin) {
+  if (schemaAccess.plugin && schemaAccess.installedConsumers.length > 0) {
     const applyTargets = (options.applyTargets && options.applyTargets.length > 0)
       ? dedupeReceiptTargets(options.applyTargets)
       : await resolveDefaultConfigApplyTargets({
-          plugin: options.plugin,
+          plugin: schemaAccess.plugin,
           scope: options.scope,
           cwd: options.cwd,
           env: options.env ?? process.env,
@@ -1291,7 +1357,7 @@ export async function resetPluginConfigWithHelper(options: {
     const builtInRawResults = !reset.deleted || (options.scope === 'project' && projectLayer === 'local')
       ? []
       : await replayBuiltInConfigRuntime({
-          plugin: options.plugin,
+          plugin: schemaAccess.plugin,
           scope: options.scope,
           cwd: options.cwd,
           env: options.env,
@@ -1315,8 +1381,10 @@ export async function resetPluginConfigWithHelper(options: {
     plugin: pluginName,
     scope: options.scope,
     projectLayer,
+    ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     existed: reset.existed,
     deleted: reset.deleted,
+    removedKeys,
     artifactRefresh,
     targetResults,
     ...(configRefreshSkippedReason ? { configRefreshSkippedReason } : {}),
@@ -1327,6 +1395,7 @@ export async function resetPluginConfigWithHelper(options: {
 export async function applyBuiltInConfigWrite(options: {
   pluginName: string;
   plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   scope: Scope;
   projectLayer?: 'shared' | 'local';
   cwd: string;
@@ -1338,6 +1407,15 @@ export async function applyBuiltInConfigWrite(options: {
 }): Promise<BuiltInConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
+  const schemaAccess = await resolvePluginConfigSchemaAccess({
+    pluginName,
+    currentPlugin: options.plugin ?? null,
+    currentPluginError: options.pluginError,
+    scope: options.scope,
+    projectLayer,
+    cwd: options.cwd,
+    env: options.env,
+  });
   const parsedKey = parseBuiltInSkillTriggerKey(options.key);
   if (!parsedKey) {
     throw new Error(`Unknown config key "${options.key}".`);
@@ -1351,7 +1429,7 @@ export async function applyBuiltInConfigWrite(options: {
 
   const resolved = await resolveConfigReadV2({
     pluginName,
-    plugin: options.plugin,
+    plugin: schemaAccess.plugin,
     scope: options.scope,
     projectLayer,
     cwd: options.cwd,
@@ -1359,8 +1437,8 @@ export async function applyBuiltInConfigWrite(options: {
   });
   const field = findConfigFieldEntry(resolved.fields, options.key);
   if (options.action === 'set') {
-    if (!options.plugin) {
-      throw new Error(`Unknown plugin "${pluginName}".`);
+    if (!schemaAccess.plugin) {
+      throw new Error(`configSchemaUnavailable: Unknown plugin "${pluginName}".`);
     }
     if (!field) {
       throw new Error(`Unknown config key "${options.key}".`);
@@ -1370,7 +1448,7 @@ export async function applyBuiltInConfigWrite(options: {
     }
   }
   if (options.action === 'unset') {
-    if (!field && !options.plugin) {
+    if (!field && !schemaAccess.plugin) {
       const store = await readPluginConfigStore({
         pluginName,
         scope: options.scope,
@@ -1379,7 +1457,7 @@ export async function applyBuiltInConfigWrite(options: {
         ...(options.scope === 'project' ? { projectLayer } : {}),
       });
       if (!isBuiltInConfigKey(options.key) || !Object.keys(store.values).includes('$aw')) {
-        throw new Error(`Unknown plugin "${pluginName}".`);
+        throw new Error(`configSchemaUnavailable: Unknown plugin "${pluginName}".`);
       }
     }
     if (field && field.storedSourceLayer && field.storedSourceLayer !== toConfigStoreLayer(options.scope, projectLayer)) {
@@ -1402,7 +1480,7 @@ export async function applyBuiltInConfigWrite(options: {
 
   const nextRead = await resolveConfigReadV2({
     pluginName,
-    plugin: options.plugin,
+    plugin: schemaAccess.plugin,
     scope: options.scope,
     projectLayer,
     cwd: options.cwd,
@@ -1422,9 +1500,9 @@ export async function applyBuiltInConfigWrite(options: {
     }),
   ];
   const env = options.env ?? process.env;
-  const targetResults = options.plugin
+  const targetResults = schemaAccess.plugin
     ? (await replayConfigRuntimeWrites({
-        plugin: options.plugin,
+        plugin: schemaAccess.plugin,
         scope: options.scope,
         cwd: options.cwd,
         env,
@@ -1438,6 +1516,7 @@ export async function applyBuiltInConfigWrite(options: {
     plugin: pluginName,
     scope: options.scope,
     projectLayer,
+    ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     affectedFields,
     targetResults,
     ...(options.action === 'unset' ? { existed, deleted: existed } : {}),
@@ -1448,30 +1527,53 @@ export async function applyBuiltInConfigWrite(options: {
 export async function describeResetAffectedFields(options: {
   pluginName: string;
   plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   scope: Scope;
   projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ConfigReceiptFieldEntryV2[]> {
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
-  const resolved = await resolveConfigReadV2({
-    pluginName: options.pluginName,
-    plugin: options.plugin,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  return resolved.fields.map((field) =>
-    buildReceiptFieldEntry({
-      key: field.key,
-      title: field.title,
-      kind: field.kind,
-      reserved: field.reserved,
-      action: 'reset',
+  try {
+    const resolved = await resolveConfigReadV2({
+      pluginName: options.pluginName,
+      plugin: options.plugin,
+      ...(options.pluginError ? { pluginError: options.pluginError } : {}),
       scope: options.scope,
       projectLayer,
-      valueState: field.valueState,
-    }),
-  );
+      cwd: options.cwd,
+      env: options.env,
+    });
+    return resolved.fields.map((field) =>
+      buildReceiptFieldEntry({
+        key: field.key,
+        title: field.title,
+        kind: field.kind,
+        reserved: field.reserved,
+        action: 'reset',
+        scope: options.scope,
+        projectLayer,
+        valueState: field.valueState,
+      }),
+    );
+  } catch (error) {
+    const store = await readPluginConfigStore({
+      pluginName: options.pluginName,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+      ...(options.scope === 'project' ? { projectLayer } : {}),
+    });
+    return collectRemovedConfigKeys(store.values).map((key) =>
+      buildReceiptFieldEntry({
+        key,
+        title: key,
+        kind: isBuiltInConfigKey(key) ? 'builtIn' : 'manifest',
+        reserved: isBuiltInConfigKey(key),
+        action: 'reset',
+        scope: options.scope,
+        projectLayer,
+      }),
+    );
+  }
 }

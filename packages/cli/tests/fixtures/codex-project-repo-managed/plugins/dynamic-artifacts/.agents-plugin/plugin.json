@@ -2,6 +2,11 @@
   "name": "dynamic-artifacts",
   "version": "0.1.0",
   "description": "Fixture plugin with Codex dynamic artifact metadata.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "skills": "./skills",
   "skillTriggers": {
     "repo-check": {

@@ -7,6 +7,7 @@ import {
   normalizeInstallCommandOptions,
   normalizeRepairCommandOptions,
   normalizeReinstallCommandOptions,
+  normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
   resolveConfigProjectLayer,
 } from '../../src/commands/options.js';
@@ -171,6 +172,33 @@ describe('command options normalization', () => {
       all: true,
       takeoverSharedRuntime: true,
     })).toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
+  });
+
+  it('normalizes catalog selector options and keeps them independent from platform defaults', () => {
+    expect(normalizeInstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      catalogChannel: 'beta',
+    })).toMatchObject({
+      catalogChannel: 'beta',
+    });
+
+    expect(normalizeStatusCommandOptions({
+      cwd: '/tmp/workspace',
+      catalogVersion: '1.2.3',
+    })).toMatchObject({
+      platform: 'both',
+      catalogVersion: '1.2.3',
+    });
+  });
+
+  it('rejects mutually exclusive catalog selector flags before command dispatch', () => {
+    expect(() => normalizeInstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      catalogChannel: 'beta',
+      catalogVersion: '1.2.3',
+    })).toThrow('`--catalog-channel` 与 `--catalog-version` 互斥，不能同时指定。');
   });
 
   it('allows config --scope project --local and rejects non-project local scope', () => {

@@ -6,7 +6,7 @@
 - **`adapters/`** — `claude.ts` / `codex.ts` 处理平台原生状态与命令调用；`helpers.ts` 放共享 adapter 逻辑；`types.ts` 放 adapter 层私有类型
 - **`generators/`** — `instructions.ts` / `permissions.ts` / `hooks.ts` / `agents.ts` 分别生成对应产物；`local-plugin.ts` 处理 bundle 和 repo-visible 文件生成；`shared.ts` 放跨生成器共享逻辑
 - **`output/`** — `command-receipt.ts` 构造写命令 JSON receipt 和默认人类 renderer；`reporter.ts` 负责 stdout/stderr 的 notices、warnings 和 verbose 诊断渲染；`debug-log.ts` 负责调试日志落盘、轮转和失败提示；`redact.ts` 统一脱敏 token、password、authorization、cookie 等敏感字段
-- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理本机 runtime 数据；`plugin-catalog.ts` 做 catalog 解析和 embedded/local 选择；`plugin-dependency-location.ts`、`plugin-dependency-graph.ts` 和 `plugin-dependency-planner.ts` 统一处理插件依赖的 location 身份、拓扑规划、卸载保护和 status 只读投影；`plugin-config.ts` 管理 AW 自管配置 store、schema 校验、内建 SkillTrigger 字段和 install/upgrade preflight；`plugin-config-write.ts` 提供共享 config write helper 和 built-in apply pipeline；`plugin-scripts.ts` 管理 lifecycle target、context 和 runner；`artifact-renderer.ts` 执行动态 artifact renderer 并解析 artifact render config；`artifact-plan.ts` 校验 `ArtifactPlan` 并计算 digest；`artifact-refresh.ts` 处理 config-triggered refresh 和 refresh-only 重试动作；`codex-skill-staging.ts` 生成动态 `codex.skill` expected tree 并应用 trigger patch；`plugin-script-contract.ts` 扫描 Node import contract；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验 embedded bundle 一致性；`codex-config.ts` 做 Codex 配置 round-trip；`codex-app-server-client.ts` 封装 Codex app-server 插件 RPC；`codex-native-state.ts` 只读检查 Codex enabled config 和 materialized cache；`skill-trigger-preferences.ts` 处理 manifest 默认策略、AW 内建配置 effective 值和 runtime apply 输入；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
+- **`utils/`** — `manifest.ts` 解析 plugin manifest；`slash-commands.ts` 解析公共 `slashCommands` 并生成 Claude commands / Codex manual-only skills；`marketplace.ts` / `local-marketplace.ts` 处理本机 runtime、catalog cache 和 active view；`plugin-catalog.ts` 做 sidecar/full catalog 解析、selector 归一化、history 兼容查询和 cache fallback；`plugin-dependency-location.ts`、`plugin-dependency-graph.ts` 和 `plugin-dependency-planner.ts` 统一处理插件依赖的 location 身份、最低版本、拓扑规划、卸载保护和 status 只读投影；`plugin-config.ts` 管理 AW 自管配置 store、schema source/identity 校验、内建 SkillTrigger 字段和 install/upgrade preflight；`plugin-config-write.ts` 提供共享 config write helper、`config reset` 分支和 built-in apply pipeline；`plugin-scripts.ts` 管理 lifecycle target、context 和 runner；`artifact-renderer.ts` 执行动态 artifact renderer并解析 artifact render config；`artifact-plan.ts` 校验 `ArtifactPlan` 并计算 digest；`artifact-refresh.ts` 处理 config-triggered refresh 和 refresh-only 重试动作；`codex-skill-staging.ts` 生成动态 `codex.skill` expected tree 并应用 trigger patch；`plugin-script-contract.ts` 扫描 Node import contract；`generated-artifacts.ts` 管理生成产物与回滚；`bundle-layout.ts` 校验构建后 bundle 与 catalog artifact 布局；`codex-config.ts` 做 Codex 配置 round-trip；`codex-app-server-client.ts` 封装 Codex app-server 插件 RPC；`codex-native-state.ts` 只读检查 Codex enabled config 和 materialized cache；`skill-trigger-preferences.ts` 处理 manifest 默认策略、AW 内建配置 effective 值和 runtime apply 输入；`paths.ts` / `detect.ts` / `file-rules.ts` 等放底层辅助
 - **`install-state/`** — 新安装状态 facade，集中读写 per-plugin install record v2、dynamic diagnostic cache、project artifact identity、dependency index、historical lifecycle runtime、native transaction marker 和 shared runtime owner；命令、adapter、status 和控制台都通过它收集证据、提交事务和生成状态投影
 - **`constants.ts`** — 全局常量：`GENERATED_FILE_PREFIX = 'aw-'`、`TRACKING_MANIFEST_FILE = '.agent-workflows-manifest.json'`、`DEFAULT_CLAUDE_HOOKS_PATH`、`CLAUDE_MARKETPLACE_PATH`、`CODEX_MARKETPLACE_PATH`
 - **`types.ts`** — 项目全局类型定义
@@ -19,10 +19,10 @@ Source layer（仓库内）
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
 
-          ↓ pnpm build（scripts/bundle-plugins.ts 打包）
+          ↓ pnpm build / catalog staging
 
-Embedded Runtime Bundle（npm 包内）
-  packages/cli/plugins-dist/
+Catalog staging（生成产物）
+  staging 或 build output
   ├── .claude-plugin/marketplace.json
   ├── .agents/plugins/marketplace.json
   └── plugins/<name>/
@@ -32,37 +32,44 @@ Embedded Runtime Bundle（npm 包内）
       ├── claude/**                   （支持 Claude 时存在）
       └── codex/**                    （支持 Codex 时存在）
 
-          ↓ make pack / make local-install（生成并验证 `.release/tarballs/*.tgz`）
-          ↓ make beta-release VERSION=x.y.z-beta.n / make release VERSION=x.y.z
+          ↓ catalog pack / publish
 
 npm Registry
   @yiliang/aw
+  @yiliang/aw-plugins-manifest     # sidecar: catalog-manifest.json + history
+  @yiliang/aw-plugins              # full: manifest + current snapshot artifacts
 
-          ↓ aw init / 安装流程同步
+          ↓ aw init / install / upgrade 解析 selector、sidecar、full catalog
 
-本地 Marketplace 镜像
+本地 AW runtime
   ~/.aw/
   ├── config.json
+  ├── catalog-cache/<selector-or-version>/**
+  ├── active-runtime/<platform>/**
   ├── dependency-index.json
   ├── native-markers/codex/user/<plugin>.<hash>.json
   ├── plugin-config/<plugin>/config.json
   ├── lifecycle-runtime/<...>/<plugin>/<digest>/**
   ├── shared-runtime-owners/<platform>/<plugin>.<hash>.json
-  └── plugins/<name>/**
+  └── plugins/<name>/**            # active view 中给 native runtime 消费的 materialized 插件文件
 ```
 
 三层各有职责，互不替代：
 
 - 仓库源码层是插件作者维护的唯一输入，不手写平台 runtime manifest。
-- `packages/cli/plugins-dist/` 是 `pnpm build` 产物，会随 npm 包发布，不手改。每个插件都必须保留 `.agents-plugin/plugin.json`；`.claude-plugin/`、`.codex-plugin/`、`claude/`、`codex/` 只在 `marketplace.policy.products` 解析出的支持平台上出现。
-- 根级 `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json` 共享根级元数据，但插件 entries 按支持平台过滤，不要求两边插件列表完全一致。AW current catalog 仍通过 `plugins/<name>/.agents-plugin/plugin.json` 看到全部插件。
-- `~/.aw/` 是本机 marketplace 镜像和 AW 运行时状态目录。需要 native plugin runtime 时，`aw init`、`aw install`、`aw upgrade` 会按需同步；纯 Codex project 路径只读使用 catalog，不会为了项目产物初始化或修复共享 runtime。
+- catalog staging 是 `pnpm build` 和 catalog 发布脚本的输入产物，不手改。每个插件都必须保留 `.agents-plugin/plugin.json`；`.claude-plugin/`、`.codex-plugin/`、`claude/`、`codex/` 只在 `marketplace.policy.products` 解析出的支持平台上出现。
+- `@yiliang/aw` CLI version、catalog package version 和插件 manifest version 是三套身份。插件或 catalog 更新不要求 CLI 发版；CLI 发布只负责命令和运行时能力。
+- `@yiliang/aw-plugins-manifest` sidecar 包只包含 `catalog-manifest.json` 和必要 package metadata，负责兼容性、selector、history、sidecar/full identity 和 digest 真值；`@yiliang/aw-plugins` full 包包含同一份 manifest 和当前 catalog 单版本快照的全部插件 artifact。
+- catalog history 记录历史 catalog version、catalog 最低 CLI 版本、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。它服务历史兼容 catalog 查询和发布门禁，不是最新 catalog 内可直接安装的多版本索引。
+- 根级 `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json` 共享根级元数据，但插件 entries 按支持平台过滤，不要求两边插件列表完全一致。AW current catalog 以 catalog manifest 中的 entries 和每个插件 artifact 内的 `.agents-plugin/plugin.json` 为准。
+- `~/.aw/` 是本机 catalog cache、active runtime view 和 AW 状态目录。`aw init` 只预热远程 catalog/cache；需要 native plugin runtime 的写命令会在调用平台前 materialize 并校验 active local marketplace/runtime view。纯 Codex project 路径只读使用 current catalog，不会为了项目产物初始化或修复用户级 native runtime。
+- current catalog selector 只允许默认 channel、显式 dist-tag 和显式 exact catalog version。cache fallback 必须匹配本次 selector、channel / exact version、schema、integrity 和最低 CLI 版本；latest 被当前 CLI 阻止时，只能按 sidecar history 查询同轨道历史兼容 catalog，不能用 npm metadata 或 cache 推翻 `catalogHistoryUnavailable` / `awVersionTooLow`。
 - `native-markers/` 只保存短生命周期 native transaction marker。它表示外部 native 写入已经发生、但 AW record 尚未成功提交；后续 `status --verbose`、`repair` 或 `cleanup` 可以据此收口，marker 本身不代表安装成功。
 - `dependency-index.json` 是跨 scope incoming edge 的索引，只辅助依赖保护、未使用依赖提醒和汇总视图；它不是安装真值。索引不可用或覆盖范围不可信时，删除类命令必须 fail closed。
-- `lifecycle-runtime/` 保存最小 historical runtime bundle。普通卸载和必要 repair/reinstall 用它运行历史 lifecycle；动态 artifact 的配置刷新和 refresh-only 用它运行历史 renderer。它不解释 current catalog、config schema 或依赖声明。
+- `lifecycle-runtime/` 或等价 snapshot 保存最小 historical runtime。普通卸载、只重放已安装版本的 repair、必要 reinstall 撤销阶段、config schema 读取和动态 artifact refresh 都使用它。它不解释 current catalog 或新的依赖声明。
 - `shared-runtime-owners/` 记录同一 plugin/platform 的共享 runtime owner 身份和完整性证据。它决定谁可以写共享 runtime，但不保存 SkillTrigger 真值；`aw init` / marketplace refresh replay 必须从 owner location 当前 effective built-in config 重新计算触发策略。
 - `plugin-config/` 是 user config store。project scope 另有 shared/local 两层配置，见 Runtime State。
-- 动态 `codex.skill` 的静态模板仍随源码和 embedded bundle 分发；安装时由 renderer 输出当前配置下的 skill 内容，再由 AW apply 写入 user runtime 或 project repo-visible `.agents/skills/<skillKey>`。配置刷新和 refresh-only 重新执行 renderer 时使用 install record 指向的 historical bundle，避免 Codex user runtime 写回 `~/.aw/plugins/<plugin>/codex/skills` 后污染下一次模板读取。renderer 不写 runtime 目录，也不写 diagnostic cache、install record 或 project artifact identity。
+- 动态 `codex.skill` 的静态模板随源码和 catalog artifact 分发；安装时由 renderer 输出当前配置下的 skill 内容，再由 AW apply 写入 user runtime 或 project repo-visible `.agents/skills/<skillKey>`。配置刷新和 refresh-only 重新执行 renderer 时使用 install record 指向的 historical runtime，避免 Codex user runtime 写回 active view 后污染下一次模板读取。renderer 不写 runtime 目录，也不写 diagnostic cache、install record 或 project artifact identity。
 
 排查问题时先确认问题发生在哪一层：源码 contract、bundle 生成、本机 runtime 镜像，还是平台配置。
 
@@ -71,8 +78,8 @@ npm Registry
 - `Makefile` — 本地开发安装、测试版发布和正式版发布的统一入口
 - `package.json` — repo root 统一脚本入口，包含 `build`、`test`、`release:*`、`publish:cli`
 - `scripts/release/*.mjs` — 版本同步、tarball 打包、本地 `npm install -g` 和发布编排脚本
-- `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 `plugins-dist`
-- `packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/tarballs/` — 产物目录，不手改
+- `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 catalog staging / runtime bundle
+- `packages/cli/plugins-dist/`、catalog staging、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/tarballs/` — 产物目录，不手改；CLI tarball 不把 `plugins-dist/` 作为正式插件兜底发布
 - `plugins/git-commit/` — 真实样例插件，演示标准插件结构
 - `.agents/skills/create-agent-workflows-plugin/` — 插件作者工具（含 `SKILL.md`、`agents/openai.yaml`、脚手架/校验脚本和 `references/` 下的作者参考文档）
 - `docs/plugin-installation.md` — CLI 使用、scope/platform 行为和排障入口
@@ -81,13 +88,16 @@ npm Registry
 ## Runtime State
 
 - 执行型命令默认使用 `scope=user`，但绑定真实插件 target 的写入口必须显式传 `--platform codex|claude|both`；`status` 的 `scope/platform` 是过滤条件，未传 `--platform` 时按 `both` 查看所有真实状态证据。
+- current catalog 解析统一接收 selector：默认 channel、`--catalog-channel <dist-tag>` 或 `--catalog-version <semver>`。`aw init`、安装、升级、重装、状态查看、发现入口，以及需要 current catalog schema 的未安装配置路径都使用同一解析结果。`aw init --channel <dist-tag>` 只是 `--catalog-channel` 的兼容别名。显式 selector 只影响当前命令或本次预热，不污染默认 channel cache。
+- latest catalog 的最低 CLI 版本高于当前 CLI 时，解析器会记录 `latestCatalogBlocked`，并只根据 sidecar history 查询同轨道历史兼容 catalog；history 缺失或不可校验固定映射为 `catalogHistoryUnavailable`，history 确认没有兼容 catalog 固定映射为 `awVersionTooLow`。远程不可用或 sidecar/full 校验失败时，只有已经解析出允许使用的 catalog identity 且本地 cache 与本次 selector 匹配，才允许 `cacheFallback`。
 - `aw config` 写命令默认写 `user` store；读命令默认读取 effective config，合并顺序为 manifest default < user store < project shared store < project local store。user store 位于 `<AW_HOME>/plugin-config/<plugin>/config.json`，project shared store 位于 `<repo>/.agent-workflows/plugin-config/<plugin>/config.json`，project local store 位于 `<repo>/.agent-workflows/plugin-config.local/<plugin>/config.json`。脚本化配置写入入口是 `aw config set/unset/reset/get/list`；已移除的交互式 configure 入口不再作为可执行命令出现。
+- 已安装位置的 config schema source 优先来自 install record 绑定的 historical runtime / manifest；未安装插件配置预置或未消费 store 才走 current catalog schema。多个 installed consumer 的 schema identity 冲突时，`list/get/set/unset` 返回 `configSchemaConflict`。`config reset` 区分已消费 store 和 orphan store：已消费 store 走 installed-aware write，receipt 暴露 `removedKeys` 和 `artifactRefresh`；orphan store 才 raw 删除，不伪造 schema identity，也不刷新 artifact。
 - 动态 artifact 使用 artifact render config，而不是读命令的 effective config。user scope render config 只合并 manifest default 和 user store；project scope 的 repo-visible artifact render config 只合并 manifest default 和 project shared store 中可共享的键。user store、project local store 和 `file` / `directory` 路径型配置不得影响 project repo-visible artifact 内容、digest、stale 判断或 refresh。
 - config 写入统一走共享 helper，输入表达 `updates` 和 `removeKeys`，receipt 返回 `updatedKeys`、`removedKeys`、`affectedFields` 和 `artifactRefresh`。命中 refresh key 时先保存 config store，再按 dynamic artifact evidence 执行刷新；SkillTrigger 内建字段保存后走 built-in apply pipeline，把 effective 触发策略写回已安装 runtime。refresh-only / 重新应用配置动作复用 artifact apply、diagnostic cache 写回和 built-in apply pipeline，但不修改 config store；脚本化收口配置驱动 runtime drift 的入口是 `aw repair <plugin> --platform <platform> --scope <scope>`。
 - Claude Code：通过 `claude plugin marketplace add` / `claude plugin install` 接入本地 marketplace；项目或用户 scope 的 rules/permissions 由 CLI 生成，并由 install record、project artifact identity 和现场文件共同提供诊断证据。
 - Codex user scope：需要原生 plugin 能力时先调用 `codex plugin marketplace add <canonical ~/.aw>` 注册 local marketplace，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 自己写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache。AW 不再提供只写 config 的 fallback；RPC 成功后必须用 post-check 同时确认 enabled config 与 active cache。
 - Codex project scope：不调用 `codex plugin marketplace add`，不调用 app-server RPC，不写用户级 `[marketplaces]` / `[plugins]`，全部收敛为当前仓库 repo-visible artifacts：`.agents/skills/<skill>`（包含静态 skill、公共 slashCommands manual-only skill 和动态 `codex.skill`）、`.codex/config.toml [mcp_servers.*]` / managed instructions、`.codex/hooks.json`、`.codex/rules/*.rules`、`.codex/agents/*.toml`，以及 `.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json`。动态 `codex.skill` 不要求 `.codex/config.toml` preflight；`codex.developerInstructionsBlock` 和 `codex.agentRole` 仍是 config-backed target。即使 PATH 缺少 `codex` 可执行文件，project target 也不能产生用户级 native side effect；命令事件中对应 skip reason 是 `project_repo_managed_skipped_native`。纯 native-only 插件和 `apps` 首版在 project scope fail fast。
-- 每个平台/scope/plugin/location 都有独立 install record v2，位置分别落在 `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/` 或 `<repo>/.codex/.agent-workflows/records/`。record 是 AW 的安装真值，只保存 ownership、必要安装选项、安装来源和 canonical outgoing dependency edges；SkillTrigger 真值来自 manifest `defaultTrigger`、AW 内建配置 effective 值和当前 runtime evidence。健康状态从 current catalog、平台现场、project artifact identity、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared owner 和 native marker 推导。
+- 每个平台/scope/plugin/location 都有独立 install record v2，位置分别落在 `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/` 或 `<repo>/.codex/.agent-workflows/records/`。record 是 AW 的安装真值，只保存 ownership、必要安装选项、安装来源和 canonical outgoing dependency edges；SkillTrigger 真值来自 manifest `defaultTrigger`、AW 内建配置 effective 值和当前 runtime evidence。健康状态从 current catalog、平台现场、project artifact identity、dynamic diagnostic cache、historical runtime、dependency index、shared owner 和 native marker 推导。
 - project private state / local config 默认忽略：`.claude/.agent-workflows/`、`.codex/.agent-workflows/`、`.agent-workflows/plugin-config.local/`。project shared config 和 project artifact identity 是可提交输入，`.agent-workflows/plugin-config/`、`.agent-workflows/project-artifacts/` 不能被默认忽略。
 
 ## Plugin Scripts and Config
@@ -112,7 +122,7 @@ config-triggered refresh 发生在 config store 写入成功之后，只刷新 d
 
 stale prune 以当前 manifest 的 `artifacts.targets`、install record artifact identity 和 project artifact shared identity 为准。当前版本不再声明某个 AW-owned dynamic `codex.skill`、instruction 或 role artifact 时，upgrade/cleanup/remove 只能清理有 ownership evidence 的残留；同名但非 AW-owned 的 repo skill、runtime skill 或 role 文件必须保留。
 
-每个成功安装的 platform + scope + plugin 都会保存最小 historical runtime bundle。普通 `uninstall` 和需要先撤销历史副作用的 `repair` / `reinstall` 可以使用它运行安装时 bundle 的卸载 lifecycle；config-triggered refresh 和 refresh-only 会使用它执行安装时的 dynamic artifact renderer。它不作为 current catalog、config schema 或 dependency manifest 的来源。缺失或损坏会影响卸载安全性、repairability 和动态刷新，status 会降级为需要处理。
+每个成功安装的 platform + scope + plugin 都会保存最小 historical runtime / snapshot。普通 `uninstall`、只重放已安装版本的 `repair`、必要 `reinstall` 撤销阶段、config schema 读取、config-triggered refresh 和 refresh-only 都会使用它。它不作为 current catalog 或新 dependency manifest 的来源。缺失或损坏会影响卸载安全性、repairability、配置 schema 读取和动态刷新，status 会降级为需要处理。
 
 install record 对依赖只持久化两类事实：`installSource` 表示 explicit / dependency 来源和是否被用户显式保留；`dependencyEdges` 表示当前安装对依赖的 canonical outgoing edges。edge 端点包含完整 `PluginLocation`，声明摘要包含 `name`、`target.scope`、`inheritInstallOptions` 和 `when.platforms`。读路径从 per-plugin records 重建 dependency index，再构建 incoming dependents view，供卸载保护、未使用依赖提醒、status 和主控制台复用；`dependents`、ref-count 和 `autoRemovable` 不落盘，只从 edge 图和安装来源实时推导。dependency index 缺失、不可信、stale project reference 未显式退休，或 record edge 不完整时，依赖相关删除命令 fail closed。
 
@@ -144,7 +154,7 @@ Codex native 写命令会发结构化 command event，debug log 和 `--verbose` 
 
 ## Discovery and Status
 
-`commands/discovery.ts` 是 status 和主控制台候选来源，也为脚本化 uninstall/upgrade/repair/cleanup 恢复目标身份。它通过 install-state facade 合并 current catalog、平台现场、project artifact identity、per-plugin install record、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared runtime owner 和 native transaction marker；current catalog 找不到时只生成保守的 historical placeholder。默认 `status` 候选不会把纯 catalog-only 插件放入 `consoleItems`，主控制台通过 `loadConsoleItems({ includeCatalogOnly: true })` 额外读取 current catalog，用来在首页展示尚未安装但可管理的插件。
+`commands/discovery.ts` 是 status 和主控制台候选来源，也为脚本化 uninstall/upgrade/repair/cleanup 恢复目标身份。它通过 install-state facade 合并 current catalog、平台现场、project artifact identity、per-plugin install record、dynamic diagnostic cache、historical runtime、dependency index、shared runtime owner 和 native transaction marker；current catalog 找不到时只生成保守的 historical placeholder。默认 `status` 候选不会把纯 catalog-only 插件放入 `consoleItems`，主控制台通过 `loadConsoleItems({ includeCatalogOnly: true })` 额外读取 current catalog，用来在首页展示尚未安装但可管理的插件。
 
 historical placeholder 必须按 platform + scope 分格。Codex 只有粗略归属线索时，不能恢复成 hook、instruction、permission 或 agent 等具体能力；只有 install record、project artifact identity 或现场 marker 中存在明确 artifact kind / hook identity 等证据时，才能恢复对应能力。
 
@@ -167,7 +177,7 @@ status 的依赖信息完全走只读 planner 投影和 dependency index，不�
 
 投影层的 action 合同是安全边界：公开 summary 不包含任何立即写状态的动作，也不承载多 location 隐式批量写。`runInstall`、`runUpgrade`、`runUninstall`、`runRepair`、`runCleanup`、`runReinstall`、`runAdoptExisting`、`runTakeoverSharedRuntime`、`resolveDuplicateInstall`、`runReapplyConfigRefresh` 等执行动作只能在控制台完成功能和目标选择之后生成，并且必须带完整 target，project 动作需要时带 `projectKey`。删除、覆盖和 cleanup 动作必须用 `destructive`、确认页和目标合同表达风险；`force: true` 只能由 `runCleanup` 生成。disabled 功能必须带 `disabledReason`，控制台不能靠 `label` 判断行为。
 
-Codex project scope 的默认视图以 repo-visible artifacts、project artifact identity 和本机 install record 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`，stale 或损坏的本地 marketplace 只能只读回退 embedded catalog，并在 verbose/json 里说明原因。
+Codex project scope 的默认视图以 repo-visible artifacts、project artifact identity 和本机 install record 为主，用户级 native marketplace 注册缺失只在相关诊断中出现，不能替代正常 installed signal。status、discovery 和相关 adapter status 路径不能调用 `ensureLocalMarketplace()` 或修复 `~/.aw`；current catalog unavailable 时只能展示已有本地证据和 catalog unavailable 状态，不能回退 embedded catalog 或伪造升级判断。
 
 Codex user native status 中，`native.pluginInstalled` 表示 Codex materialized cache 中存在单一 active version，不再表示 config enabled；`native.pluginEnabled` 表示 `~/.codex/config.toml [plugins."<plugin>@aw"].enabled === true`；native transaction marker 只表示需要收口的短生命周期写入。enabled-only、cache-only、shared-ref-only、marker-only 都会进入 `needsAttention` 或诊断候选，不会被静默折叠成 `notInstalled`。
 

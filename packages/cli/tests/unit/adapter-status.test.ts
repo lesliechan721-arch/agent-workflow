@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -37,8 +38,18 @@ import {
 } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type { PluginMeta } from '../../src/types.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
+
+function fixturePath(...segments: string[]): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'fixtures',
+    ...segments,
+  );
+}
 
 function makePluginMeta(overrides: Partial<PluginMeta['manifest']>): PluginMeta {
   return {
@@ -48,6 +59,11 @@ function makePluginMeta(overrides: Partial<PluginMeta['manifest']>): PluginMeta 
       name: 'git-commit',
       version: '0.1.0',
       description: 'test plugin',
+      compatibility: {
+        aw: {
+          minVersion: '0.1.0',
+        },
+      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -67,30 +83,9 @@ afterEach(async () => {
 });
 
 describe('adapter status helpers', () => {
-  async function makeEmptyEmbeddedRoot(root: string): Promise<string> {
-    const embeddedRoot = path.join(root, 'embedded');
-    await fs.ensureDir(path.join(embeddedRoot, '.claude-plugin'));
-    await fs.ensureDir(path.join(embeddedRoot, '.agents', 'plugins'));
-    await fs.ensureDir(path.join(embeddedRoot, 'plugins'));
-    const marketplace = {
-      name: 'aw',
-      owner: {
-        name: 'Test',
-        url: 'https://example.test',
-      },
-      interface: {
-        displayName: 'Test',
-      },
-      plugins: [],
-    };
-
-    await fs.writeJson(path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'), marketplace, { spaces: 2 });
-    await fs.writeJson(
-      path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
-      marketplace,
-      { spaces: 2 },
-    );
-    return embeddedRoot;
+  async function makeEmptyEmbeddedRoot(repoRoot: string): Promise<string> {
+    void repoRoot;
+    return createSyntheticEmbeddedRoot(fixturePath('repo-template'));
   }
 
   it('keeps historical fallback extension placeholders scoped to their original platform', async () => {
@@ -106,7 +101,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -175,7 +170,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     await writeInstalledLedger(
       {
@@ -226,7 +221,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
     await upsertTrackingRecord(codexPaths.trackingDir, 'repo-history', [
@@ -271,7 +266,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const codexProjectKey = await resolveCodexProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -331,7 +326,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
     const rolePath = path.join(codexPaths.configDir, 'agents', 'aw-history-role.toml');
@@ -417,7 +412,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -1094,7 +1089,7 @@ describe('adapter status helpers', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       AW_CODEX_HOME: path.join(root, 'codex-home'),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(root));
+    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
 
     const projectKey = await fs.realpath(repoRoot);
     const ledger = createAvailableLedger();

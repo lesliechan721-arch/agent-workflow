@@ -177,6 +177,7 @@ function installState(overrides: Partial<StatusMatrixInstallState> = {}): Status
     adoptExistingAvailable: false,
     currentCatalogAvailable: true,
     catalogDrift: false,
+    catalogLatestBlockedByCli: false,
     upgradeAvailable: false,
     dynamicDiagnosticUnavailable: false,
     nativeTransactionKind: 'none',
@@ -792,6 +793,25 @@ describe('console-model', () => {
     expect(catalogOnly.summary.reasonCodes).toEqual([]);
     expect(catalogOnly.summary.issueSummary).toBeUndefined();
     expect(catalogOnly.pageItem.primaryActionLabel).toBe('安装');
+  });
+
+  it('disables install when current catalog is unavailable for a not-installed cell', () => {
+    const unavailable = singleController(cell({
+      report: report({
+        currentCatalog: {
+          rootDir: '/catalog/demo-plugin',
+          source: 'cache',
+          available: false,
+          reason: 'registry offline',
+          reasonCode: 'catalogUnavailable',
+        },
+      }),
+    }));
+
+    expect(unavailable.summary.status).toBe('notInstalled');
+    expect(unavailable.summary.features.find((feature) => feature.kind === 'install')?.disabledReason)
+      .toContain('current catalog 当前不可用');
+    expect(unavailable.pageItem.primaryActionLabel).toBeUndefined();
   });
 
   it('keeps controller-only actions and commands out of public summaries', () => {

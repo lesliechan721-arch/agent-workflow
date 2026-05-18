@@ -30,6 +30,7 @@ import {
 } from '../../src/install-state/facade.js';
 import {
   createProjectArtifactSharedLocator,
+  createHistoricalLifecycleRuntimePaths,
   getDiagnosticCachePath,
   getInstallRecordPath,
   getProjectArtifactSharedIdentityPath,
@@ -39,6 +40,10 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
 import * as skillTriggerModule from '../../src/utils/skill-trigger-preferences.js';
@@ -75,6 +80,11 @@ function createPlugin(
         policy: {
           installation: 'AVAILABLE',
           authentication: 'NONE',
+        },
+      },
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
         },
       },
       config: {
@@ -140,7 +150,7 @@ describe('plugin config write helper', () => {
     const cwd = path.join(root, 'repo');
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     await fs.ensureDir(cwd);
-    const plugin = createPlugin();
+    const plugin = createPlugin('fresh-config-plugin');
 
     await expect(applyPluginConfigWrite({
       plugin,
@@ -405,6 +415,21 @@ describe('plugin config write helper', () => {
     const recordId = path.basename(recordPath, '.json');
     const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
     await fs.outputFile(repoArtifactPath, '# before\n');
+    const sourceManifestDigest = await calculateFileDigest(plugin.manifestPath);
+    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(plugin.rootDir);
+    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+      cwd,
+      location,
+      recordId,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+      nonce: 'test-refresh',
+      env,
+      manifestRelativePath: '.agents-plugin/plugin.json',
+    });
+    await fs.copy(plugin.rootDir, lifecyclePaths.bundleRoot);
+    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
 
     await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
       version: 1,
@@ -449,12 +474,22 @@ describe('plugin config write helper', () => {
         updatedAt: '2026-05-07T01:00:00.000Z',
         source: {
           pluginVersion: plugin.manifest.version,
-          manifestDigest: 'sha256:manifest',
-          bundleFingerprint: 'sha256:bundle',
+          manifestDigest,
+          bundleFingerprint,
         },
         installSource: {
           kind: 'explicit' as const,
           explicitlyRequested: true,
+        },
+        lifecycle: {
+          runtimeRoot: lifecyclePaths.runtimeRoot,
+          bundleRoot: lifecyclePaths.bundleRoot,
+          manifestPath: lifecyclePaths.manifestPath,
+          pluginVersion: plugin.manifest.version,
+          sourceManifestDigest: manifestDigest,
+          bundleFingerprint,
+          events: ['install'],
+          createdAt: '2026-05-07T01:00:00.000Z',
         },
         artifacts: [{
           kind: 'instruction' as const,
@@ -466,7 +501,7 @@ describe('plugin config write helper', () => {
         dependencyEdges: [],
       },
     };
-    await writeInstallRecordFileAt(recordPath, recordFile);
+    await writeInstallRecordFileAt(recordPath, recordFile, { env });
     await writeDynamicArtifactDiagnosticCacheAt(
       getDiagnosticCachePath(cwd, location, env),
       {
@@ -630,6 +665,21 @@ describe('plugin config write helper', () => {
     const recordId = path.basename(recordPath, '.json');
     const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
     await fs.outputFile(repoArtifactPath, '# before\n');
+    const sourceManifestDigest = await calculateFileDigest(plugin.manifestPath);
+    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(plugin.rootDir);
+    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+      cwd,
+      location,
+      recordId,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+      nonce: 'test-refresh-failed',
+      env,
+      manifestRelativePath: '.agents-plugin/plugin.json',
+    });
+    await fs.copy(plugin.rootDir, lifecyclePaths.bundleRoot);
+    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
 
     await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
       version: 1,
@@ -675,12 +725,22 @@ describe('plugin config write helper', () => {
         updatedAt: '2026-05-07T01:00:00.000Z',
         source: {
           pluginVersion: plugin.manifest.version,
-          manifestDigest: 'sha256:manifest',
-          bundleFingerprint: 'sha256:bundle',
+          manifestDigest,
+          bundleFingerprint,
         },
         installSource: {
           kind: 'explicit' as const,
           explicitlyRequested: true,
+        },
+        lifecycle: {
+          runtimeRoot: lifecyclePaths.runtimeRoot,
+          bundleRoot: lifecyclePaths.bundleRoot,
+          manifestPath: lifecyclePaths.manifestPath,
+          pluginVersion: plugin.manifest.version,
+          sourceManifestDigest: manifestDigest,
+          bundleFingerprint,
+          events: ['install'],
+          createdAt: '2026-05-07T01:00:00.000Z',
         },
         artifacts: [{
           kind: 'instruction' as const,
@@ -692,7 +752,7 @@ describe('plugin config write helper', () => {
         dependencyEdges: [],
       },
     };
-    await writeInstallRecordFileAt(recordPath, recordFile);
+    await writeInstallRecordFileAt(recordPath, recordFile, { env });
     await writeDynamicArtifactDiagnosticCacheAt(
       getDiagnosticCachePath(cwd, location, env),
       {
@@ -787,7 +847,7 @@ describe('plugin config write helper', () => {
     const cwd = path.join(root, 'repo');
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     await fs.ensureDir(cwd);
-    const plugin = createPlugin();
+    const plugin = createPlugin('missing-key-plugin');
 
     const receipt = await applyPluginConfigWrite({
       plugin,
@@ -943,6 +1003,107 @@ describe('plugin config write helper', () => {
         configFile: await fs.realpath(path.join(repoRoot, 'config.json')),
       },
     });
+  });
+
+  it('returns removedKeys and installedHistorical schema metadata when resetting an installed store', async () => {
+    const root = await makeTempRoot('aw-config-write-reset-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+
+    const historicalPlugin = await materializePlugin(root, createPlugin('resettable-plugin'));
+    const currentPlugin = {
+      ...historicalPlugin,
+      manifest: {
+        ...structuredClone(historicalPlugin.manifest),
+        version: '0.2.0',
+      },
+    } satisfies PluginMeta;
+    const location = {
+      plugin: historicalPlugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    const recordPath = getInstallRecordPath(cwd, location, env);
+    const recordId = path.basename(recordPath, '.json');
+    const sourceManifestDigest = await calculateFileDigest(historicalPlugin.manifestPath);
+    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(historicalPlugin.rootDir);
+    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+      cwd,
+      location,
+      recordId,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+      nonce: 'test-reset',
+      env,
+      manifestRelativePath: '.agents-plugin/plugin.json',
+    });
+    await fs.copy(historicalPlugin.rootDir, lifecyclePaths.bundleRoot);
+    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
+    await writeInstallRecordFileAt(recordPath, {
+      version: 2,
+      recordId,
+      record: {
+        pluginName: historicalPlugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+        installedAt: '2026-05-18T00:00:00.000Z',
+        updatedAt: '2026-05-18T00:00:00.000Z',
+        source: {
+          pluginVersion: historicalPlugin.manifest.version,
+          manifestDigest,
+          bundleFingerprint,
+        },
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        lifecycle: {
+          runtimeRoot: lifecyclePaths.runtimeRoot,
+          bundleRoot: lifecyclePaths.bundleRoot,
+          manifestPath: lifecyclePaths.manifestPath,
+          pluginVersion: historicalPlugin.manifest.version,
+          sourceManifestDigest: manifestDigest,
+          bundleFingerprint,
+          events: ['install'],
+          createdAt: '2026-05-18T00:00:00.000Z',
+        },
+        artifacts: [],
+        dependencyEdges: [],
+      },
+    }, { env });
+    await writePluginConfigStore({
+      pluginName: historicalPlugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'fast',
+      },
+    });
+
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: historicalPlugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      plugin: currentPlugin,
+    });
+
+    expect(receipt.schema).toMatchObject({
+      source: 'installedHistorical',
+      pluginVersion: historicalPlugin.manifest.version,
+    });
+    expect(receipt.removedKeys).toEqual(['mode']);
+    expect(receipt.artifactRefresh).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['mode'],
+    });
+    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
+      changedKeys: ['mode'],
+    }));
   });
 
   it('supports raw-store reset when the current catalog entry is missing and refuses unsafe plugin names', async () => {

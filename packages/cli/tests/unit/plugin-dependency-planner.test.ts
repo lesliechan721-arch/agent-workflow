@@ -144,6 +144,90 @@ describe('plugin dependency planner', () => {
     })).toThrow(/cycle-a -> cycle-b -> cycle-a/);
   });
 
+  it('fails when the current catalog candidate does not satisfy dependency minVersion', () => {
+    const parent = createDependencyPluginManifest({
+      name: 'min-parent',
+      dependencies: [
+        {
+          name: 'min-child',
+          minVersion: '2.0.0',
+        },
+      ],
+    });
+    const child = createDependencyPluginManifest({
+      name: 'min-child',
+      version: '1.5.0',
+    });
+
+    expect(() => planPluginDependencyWrites({
+      mode: 'install',
+      state: toPlannerState(createDependencyPlannerFixture({
+        currentCatalog: [parent, child],
+      })),
+      targets: [{
+        location: createDependencyPluginLocation({
+          plugin: parent.name,
+          platform: 'codex',
+          scope: 'user',
+        }),
+      }],
+    })).toThrow(/至少需要 2.0.0，但 current catalog 只有 1.5.0/);
+  });
+
+  it('treats a too-old installed dependency as unsatisfied when minVersion is declared', () => {
+    const parent = createDependencyPluginManifest({
+      name: 'min-parent',
+      dependencies: [
+        {
+          name: 'min-child',
+          minVersion: '2.0.0',
+        },
+      ],
+    });
+    const child = createDependencyPluginManifest({
+      name: 'min-child',
+      version: '2.1.0',
+    });
+    const childLocation = createDependencyPluginLocation({
+      plugin: child.name,
+      platform: 'codex',
+      scope: 'user',
+    });
+
+    const plan = planPluginDependencyWrites({
+      mode: 'install',
+      state: toPlannerState(createDependencyPlannerFixture({
+        currentCatalog: [parent, child],
+        ledger: [{
+          location: childLocation,
+          resolvedVersion: '1.5.0',
+        }],
+        health: [{
+          location: childLocation,
+          state: 'healthy',
+        }],
+      })),
+      targets: [{
+        location: createDependencyPluginLocation({
+          plugin: parent.name,
+          platform: 'codex',
+          scope: 'user',
+        }),
+      }],
+    });
+
+    expect(plan.writeOrder).toEqual([
+      childLocation,
+      createDependencyPluginLocation({
+        plugin: parent.name,
+        platform: 'codex',
+        scope: 'user',
+      }),
+    ]);
+    expect(plan.edges[0]?.satisfied).toBe(false);
+    expect(plan.edges[0]?.declaration.minVersion).toBe('2.0.0');
+  });
+
   it('applies location-aware scope rules for fallback and hard target constraints', () => {
     const fixtures = createPluginDependencyScenarioFixtures();
     const sameScopeParent = withProjectSurface(fixtures.sameScopeDependencyParent.manifests[0]);
@@ -1086,22 +1170,12 @@ describe('plugin dependency planner', () => {
     }).find((entry) => key(entry.location) === key(parentLocation));
 
     expect(fallbackStatus).toMatchObject({
-      healthSource: 'currentCatalogFallback',
-      resolved: [{
-        declaration: {
-          name: child.name,
-        },
-        source: 'currentCatalogFallback',
-      }],
-      satisfied: [{
-        declaration: {
-          name: child.name,
-        },
-        location: childLocation,
-      }],
+      healthSource: 'installedSnapshot',
+      resolved: [],
+      satisfied: [],
       missing: [],
       catalogDrift: {
-        kind: 'snapshotMissing',
+        kind: 'dependenciesChanged',
         snapshotDependencies: [],
         currentDependencies: [child.name],
       },

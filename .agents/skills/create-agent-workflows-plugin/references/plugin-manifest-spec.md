@@ -7,8 +7,9 @@
 | 字段 | 类型 | 必填 | 约束 |
 |------|------|------|------|
 | `name` | string | 是 | 小写短横线格式，必须与目录名一致 |
-| `version` | string | 是 | semver，例如 `0.1.0` |
+| `version` | string | 是 | 严格 SemVer，例如 `0.1.0`；插件内容身份变化时必须递增 |
 | `description` | string | 是 | 非空字符串 |
+| `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
 | `skillTriggers` | object | 否 | 按 skill 声明是否允许安装时覆盖触发策略 |
@@ -25,6 +26,42 @@
 
 不允许出现上表以外的顶层字段。
 
+## version / compatibility block
+
+AW 版本管理里有三套身份，不能混用：
+
+- CLI version：`@yiliang/aw` 自身的版本，代表命令和运行时能力。
+- Catalog version：`@yiliang/aw-plugins-manifest` 与 `@yiliang/aw-plugins` 的共同 package version，代表一次官方 catalog 快照。
+- Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
+
+插件更新通过 catalog 包独立发布，不要求同步发布 CLI。只要用户当前 CLI 满足 catalog 和插件的 `compatibility.aw.minVersion`，用户就可以看到并安装新的插件版本。
+
+最小示例：
+
+```json
+{
+  "name": "code-review",
+  "version": "0.2.0",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.8.0"
+    }
+  }
+}
+```
+
+规则：
+
+- `version` 和 `compatibility.aw.minVersion` 都必须是严格 SemVer，不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
+- 发布到 `latest` catalog 的插件 `version` 必须是 stable SemVer；prerelease 插件只能通过 `beta` catalog 分发。
+- `beta` catalog 的 catalog version 必须是 prerelease；同一快照内可以混合 stable 和 prerelease 插件 version。
+- 同一个 catalog version 只能属于一个发布轨道，不能把已发布到 `beta` 的 catalog version 后续改挂到 `latest`。
+- 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛是整包门槛，必须覆盖包内所有插件的真实运行时要求。
+- 同一 `plugin@version` 发布后不可变。只要 manifest、runtime 文件、脚本、静态资源、依赖声明、最低 CLI 版本或平台能力会改变 artifact 身份，就必须发布新的插件 `version`。
+- 只改 build metadata 不是合法替代版本。官方 catalog 会拒绝用 SemVer 优先级相同但 build metadata 不同的版本替换同一插件。
+
+`@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包使用相同 catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及当前 catalog 单版本快照的全部插件 artifact。catalog history 记录历史 catalog version、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`，用于兼容历史 catalog 查询和发布门禁；它不是可安装的历史多版本索引。
+
 ## dependencies block
 
 `dependencies` 用来声明 AW 插件之间的直接依赖。它只保留在 source manifest 和运行时 bundle 的 `.agents-plugin/plugin.json` 中，不会写入 `.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 或 marketplace manifest。
@@ -36,10 +73,12 @@
   "dependencies": {
     "plugins": [
       {
-        "name": "git-commit"
+        "name": "git-commit",
+        "minVersion": "0.3.0"
       },
       {
         "name": "codex-explore",
+        "minVersion": "0.2.0",
         "target": {
           "scope": "user"
         },
@@ -57,9 +96,10 @@
 
 - `dependencies` 存在时只允许 `plugins` 字段。
 - `dependencies.plugins` 必须是数组。空数组等价于无依赖，但构建和作者工具会提示删除空 block。
-- 每个 entry 只允许 `name`、`target`、`inheritInstallOptions`、`when`。
+- 每个 entry 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。
 - `name` 必须使用和 manifest `name` 一样的小写短横线格式，且不能依赖自己。
-- 第一版不支持 `version`、`range`、`platform`、`marketplace`、`source`、`optional`、`dev`、`peer` 等字段；`target.platform` 也不允许。
+- `minVersion` 可选，表示依赖插件的最低可接受版本，必须是严格 SemVer。它不是 range，不支持上界、`^`、`~` 或比较器组合。
+- 不支持旧式 `version`、`range`、`platform`、`marketplace`、`source`、`optional`、`dev`、`peer` 等字段；`target.platform` 也不允许。作者工具和发布门禁会拒绝这些字段，而不是忽略。
 - `target` 存在时只允许 `scope`，值只能是 `user` 或 `project`。
 - `when` 存在时只允许 `platforms`，值必须是非空数组，元素只能是 `codex` 或 `claude`，且不能重复。
 - 省略 `when` 等价于依赖同时对 `codex` 和 `claude` 生效。
@@ -74,8 +114,8 @@
 - 父插件安装到 `project` scope 且 entry 省略 `target.scope` 时，AW 优先选择当前 project scope；当前 project 缺失或不健康时，可复用健康的 user scope 安装。
 - 显式 `target.scope: "user"` 只检查 / 安装 user scope；显式 `target.scope: "project"` 只检查 / 安装当前 project scope，不 fallback 到 user scope，也不会扫描其它历史 project。
 - `inheritInstallOptions: true` 只用于自动安装依赖时继承父插件本次插件级安装选项，例如允许覆盖的 skill trigger 偏好；省略或 `false` 不继承。多个父插件给同一自动依赖传入冲突选项时，本次命令 fail fast。
-- `aw install` 会自动安装缺失依赖；显式 `aw upgrade <plugin>` 会先安装缺失依赖、再升级已安装依赖、最后升级父插件；`aw upgrade --all` 只以用户显式保留的安装为根；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后自动清理引用归零且未显式保留的 auto dependency。
-- `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、未使用依赖提示和 `catalogDrift`。这些都是从 install record 的 `installSource` / `dependencyEdges`、全局 dependency index 和 current catalog 推导出来的诊断结果，不是 manifest 字段，也不会写进 install record。
+- `aw install` 会自动安装缺失依赖；显式 `aw upgrade <plugin>` 会先安装缺失依赖、升级低于 `minVersion` 的已安装依赖，再升级父插件；`aw upgrade --all` 只以用户显式保留的安装为根；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后自动清理引用归零且未显式保留的 auto dependency。
+- `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift`、声明的 `minVersion`、已安装版本、current catalog 候选版本和版本比较结果。这些都是从 install record 的 `installSource` / `dependencyEdges`、全局 dependency index 和 current catalog 推导出来的诊断结果，不是 manifest 字段，也不会写进 install record。
 
 ## scripts / config block
 
@@ -394,31 +434,37 @@ CLI 入口和输出对作者的影响：
 
 `plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 marketplace manifest。创建单个插件时通常不要改它。
 
-`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。AW current catalog 仍扫描每个插件的 `.agents-plugin/plugin.json`，不会把某个平台 marketplace 当作全部插件清单。
+`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。AW current catalog 以 catalog manifest 和每个插件的 `.agents-plugin/plugin.json` 为准，不会把某个平台 marketplace 当作全部插件清单。
 
-## 三层分发模型
+## 分发模型
 
 ```text
 源码层（作者维护）
   plugins/<name>/.agents-plugin/plugin.json + 关联文件
            │
-           │  pnpm build（bundle-plugins.ts 打包）
+           │  pnpm build / catalog staging
            ▼
-Embedded Runtime Bundle（npm 包内唯一运行时真值）
-  packages/cli/plugins-dist/plugins/<name>/
+Catalog staging（生成产物，不手改）
+  staging/plugins/<name>/
   ├── .agents-plugin/plugin.json     源 manifest 副本
   ├── .claude-plugin/plugin.json     支持 Claude 时存在
   ├── .codex-plugin/plugin.json      支持 Codex 时存在
   ├── claude/                        支持 Claude 时存在
   └── codex/                         支持 Codex 时存在
            │
-           │  aw init / 安装流程
+           │  catalog 发布
            ▼
-本地 Marketplace 镜像
-  ~/.aw/                             AW home：config、dependency index、lifecycle runtime、per-plugin records 等
+远程 catalog（独立于 CLI 发布）
+  @yiliang/aw-plugins-manifest       sidecar：catalog-manifest.json、history、digest 真值
+  @yiliang/aw-plugins                full：同一份 manifest + 当前快照的全部插件 artifact
+           │
+           │  aw init / install / upgrade 解析 current catalog
+           ▼
+本地 AW runtime
+  ~/.aw/                             catalog cache、active view、config、dependency index、historical runtime、records 等
 ```
 
-三层各有职责，排查问题时先确认问题在哪一层。
+这些层各有职责，排查问题时先确认问题在哪一层。`@yiliang/aw` CLI tarball 不再把 embedded catalog、`plugins-dist/` 或完整插件 artifact 作为正式分发真值；插件更新通过 catalog 包独立发布。
 
 project scope 还会写两类项目共享文件：`.agent-workflows/plugin-config/` 是可提交的 project shared config，`.agent-workflows/project-artifacts/` 是可提交的 project artifact shared identity metadata。`.agent-workflows/plugin-config.local/` 以及平台 private state 是本机私有状态，默认应被 ignore。
 
@@ -428,7 +474,7 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
 - 仓库根目录 `.agents/plugins/marketplace.json`
 - `plugins/<name>/.claude-plugin/plugin.json`
 - `plugins/<name>/.codex-plugin/plugin.json`
-- `packages/cli/plugins-dist/**`
+- catalog staging / `packages/cli/plugins-dist/**`
 - `~/.aw/**`
 
 ## 最小 manifest 示例
@@ -439,6 +485,11 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
 {
   "name": "coding-standards",
   "version": "0.1.0",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.8.0"
+    }
+  },
   "description": "统一项目的编码规范和权限策略。",
   "marketplace": {
     "category": "workflow",
@@ -474,6 +525,11 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
 {
   "name": "code-review",
   "version": "0.2.0",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.8.0"
+    }
+  },
   "description": "自动化代码审查插件。",
   "skills": "./skills",
   "skillTriggers": {

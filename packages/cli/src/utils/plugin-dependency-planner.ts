@@ -9,6 +9,10 @@ import type {
   Scope,
 } from '../types.js';
 import {
+  compareStrictSemVer,
+  getStrictSemVerValidationIssue,
+} from './manifest.js';
+import {
   comparePluginLocations,
   normalizePluginLocation,
   serializePluginLocation,
@@ -63,6 +67,18 @@ export type PluginDependencyCatalogDriftKind =
   | 'snapshotMissing'
   | 'currentCatalogMissing'
   | 'dependenciesChanged';
+export type PluginDependencyVersionComparison =
+  | 'notRequired'
+  | 'satisfies'
+  | 'belowMinimum'
+  | 'missing'
+  | 'invalid';
+export type PluginDependencyAutoUpgradeState =
+  | 'notNeeded'
+  | 'available'
+  | 'catalogUnavailable'
+  | 'unavailable'
+  | 'unknown';
 
 export interface PluginDependencyPlannerInstalledRecord {
   location: PluginLocation;
@@ -177,6 +193,14 @@ export interface PluginDependencyUninstallPlan {
 export interface PluginDependencyStatusResolvedEntry {
   declaration: PluginDependencyEntry;
   source: PluginDependencyManifestSource;
+  versionState: {
+    declaredMinVersion?: string;
+    installedVersion?: string;
+    candidateVersion?: string;
+    installedVersionComparison: PluginDependencyVersionComparison;
+    candidateVersionComparison: PluginDependencyVersionComparison;
+    autoUpgradeState: PluginDependencyAutoUpgradeState;
+  };
 }
 
 export interface PluginDependencyStatusSatisfiedEntry {
@@ -271,6 +295,7 @@ function normalizeDependencyEntry(entry: PluginDependencyEntry): PluginDependenc
 
   return {
     name: entry.name,
+    minVersion: entry.minVersion?.trim() ? entry.minVersion : undefined,
     target: entry.target?.scope
       ? { scope: entry.target.scope }
       : undefined,
@@ -288,6 +313,7 @@ function normalizeDependencyDeclaration(
 
   return {
     name: declaration.name,
+    minVersion: declaration.minVersion?.trim() ? declaration.minVersion : undefined,
     target: declaration.target?.scope
       ? { scope: declaration.target.scope }
       : undefined,
@@ -300,6 +326,7 @@ function serializeDependencyEntry(entry: PluginDependencyEntry): string {
   const normalized = normalizeDependencyEntry(entry);
   return JSON.stringify({
     name: normalized.name,
+    minVersion: normalized.minVersion ?? null,
     targetScope: normalized.target?.scope ?? null,
     inheritInstallOptions: normalized.inheritInstallOptions === true,
     platforms: normalized.when?.platforms ?? [],
@@ -314,6 +341,19 @@ function dependencySignature(manifest: PluginManifestSource | undefined): string
   return JSON.stringify(
     (manifest?.dependencies?.plugins ?? []).map((entry) => ({
       name: entry.name,
+      minVersion: entry.minVersion ?? null,
+      targetScope: entry.target?.scope ?? null,
+      inheritInstallOptions: entry.inheritInstallOptions === true,
+      platforms: [...(entry.when?.platforms ?? [])].sort(),
+    })),
+  );
+}
+
+function dependencySignatureFromEntries(entries: PluginDependencyEntry[]): string {
+  return JSON.stringify(
+    entries.map((entry) => ({
+      name: entry.name,
+      minVersion: entry.minVersion ?? null,
       targetScope: entry.target?.scope ?? null,
       inheritInstallOptions: entry.inheritInstallOptions === true,
       platforms: [...(entry.when?.platforms ?? [])].sort(),
@@ -326,6 +366,57 @@ function normalizeInstalledDependencyEdge(edge: InstalledDependencyEdge): Instal
     dependency: normalizePluginLocation(edge.dependency),
     declaration: normalizeDependencyDeclaration(edge.declaration),
   };
+}
+
+function edgeAppliesToPlatform(
+  edge: InstalledDependencyEdge,
+  platform: PlatformName,
+): boolean {
+  const platforms = edge.declaration.when?.platforms;
+  return !platforms || platforms.includes(platform);
+}
+
+function compareDependencyVersionAgainstMinimum(
+  version: string | undefined,
+  minVersion: string | undefined,
+): PluginDependencyVersionComparison {
+  if (!minVersion) {
+    return 'notRequired';
+  }
+  if (!version) {
+    return 'missing';
+  }
+
+  const comparison = compareStrictSemVer(version, minVersion);
+  if (Number.isNaN(comparison)) {
+    return 'invalid';
+  }
+  return comparison >= 0 ? 'satisfies' : 'belowMinimum';
+}
+
+function resolveDependencyAutoUpgradeState(options: {
+  installedVersionComparison: PluginDependencyVersionComparison;
+  candidateVersionComparison: PluginDependencyVersionComparison;
+}): PluginDependencyAutoUpgradeState {
+  if (
+    options.installedVersionComparison === 'notRequired' ||
+    options.installedVersionComparison === 'satisfies'
+  ) {
+    return 'notNeeded';
+  }
+  if (options.installedVersionComparison === 'invalid') {
+    return 'unknown';
+  }
+  if (options.candidateVersionComparison === 'satisfies') {
+    return 'available';
+  }
+  if (options.candidateVersionComparison === 'missing') {
+    return 'catalogUnavailable';
+  }
+  if (options.candidateVersionComparison === 'belowMinimum') {
+    return 'unavailable';
+  }
+  return 'unknown';
 }
 
 function hasCompleteDependencyMetadata(record: {
@@ -344,6 +435,22 @@ function buildPlannerIndexes(state: PluginDependencyPlannerState): PlannerIndexe
 
   for (const [pluginName, manifest] of Object.entries(state.currentCatalogByPlugin)) {
     validateManifestDependencyStructure(pluginName, manifest);
+  }
+  for (const [pluginName, manifest] of Object.entries(state.currentCatalogByPlugin)) {
+    for (const entry of manifest.dependencies?.plugins ?? []) {
+      if (!entry.minVersion) {
+        continue;
+      }
+      const dependencyManifest = state.currentCatalogByPlugin[entry.name];
+      if (!dependencyManifest) {
+        continue;
+      }
+      if (compareStrictSemVer(dependencyManifest.version, entry.minVersion) < 0) {
+        throw new Error(
+          `插件 ${pluginName} 依赖 ${entry.name} 至少需要 ${entry.minVersion}，但 current catalog 只有 ${dependencyManifest.version}。`,
+        );
+      }
+    }
   }
 
   for (const record of state.installedRecords ?? []) {
@@ -418,6 +525,12 @@ function validateManifestDependencyStructure(
     }
     if (entry.name === pluginName) {
       throw new Error(`插件 ${pluginName} 不能依赖自身。`);
+    }
+    if (
+      entry.minVersion !== undefined &&
+      getStrictSemVerValidationIssue(entry.minVersion, `dependencies.plugins[${index}].minVersion`)
+    ) {
+      throw new Error(`插件 ${pluginName} 的依赖 ${entry.name} 使用了非法 minVersion。`);
     }
     if (entry.target && entry.target.scope !== 'user' && entry.target.scope !== 'project') {
       throw new Error(`插件 ${pluginName} 的依赖 ${entry.name} 使用了非法 target.scope。`);
@@ -591,10 +704,22 @@ function listVisibleCandidateLocations(
 function isHealthySatisfiedLocation(
   indexes: PlannerIndexes,
   location: PluginLocation,
+  minVersion?: string,
 ): boolean {
   const key = serializePluginLocation(location);
   const installedRecord = indexes.installedByLocation.get(key);
   const healthRecord = indexes.healthByLocation.get(key);
+  if (minVersion) {
+    if (!installedRecord?.resolvedVersion) {
+      return false;
+    }
+    if (getStrictSemVerValidationIssue(installedRecord.resolvedVersion, 'installed dependency version')) {
+      return false;
+    }
+    if (compareStrictSemVer(installedRecord.resolvedVersion, minVersion) < 0) {
+      return false;
+    }
+  }
   return Boolean(
     installedRecord &&
       healthRecord &&
@@ -617,7 +742,7 @@ function edgeLocationStillSatisfies(
   const allowedLocations = listVisibleCandidateLocations(dependent, entry);
   return allowedLocations.some((location) => (
     serializePluginLocation(location) === serializePluginLocation(edge.dependency) &&
-    isHealthySatisfiedLocation(indexes, edge.dependency)
+    isHealthySatisfiedLocation(indexes, edge.dependency, entry.minVersion)
   ));
 }
 
@@ -641,7 +766,7 @@ function resolveDependencyForPlanning(options: {
 
   const candidateLocations = listVisibleCandidateLocations(options.dependent, options.entry);
   const healthyCandidate = candidateLocations.find((location) =>
-    isHealthySatisfiedLocation(options.indexes, location),
+    isHealthySatisfiedLocation(options.indexes, location, options.entry.minVersion),
   );
   if (healthyCandidate) {
     return {
@@ -682,7 +807,7 @@ function resolveDependencyForStatus(options: {
   if (options.allowFreshSearch) {
     const candidateLocations = listVisibleCandidateLocations(options.dependent, options.entry);
     const healthyCandidate = candidateLocations.find((location) =>
-      isHealthySatisfiedLocation(options.indexes, location),
+      isHealthySatisfiedLocation(options.indexes, location, options.entry.minVersion),
     );
     if (healthyCandidate) {
       return {
@@ -873,6 +998,14 @@ function createWritePlan(options: {
     for (const entry of getEffectiveDependencyEntries(manifest, location.platform)) {
       const dependencyManifest = getManifestForCatalogPlugin(options.indexes, manifest.name, entry.name);
       assertManifestSupportsPlatform(manifest, dependencyManifest, location.platform);
+      if (
+        entry.minVersion &&
+        compareStrictSemVer(dependencyManifest.version, entry.minVersion) < 0
+      ) {
+        throw new Error(
+          `插件 ${manifest.name} 依赖 ${entry.name} 至少需要 ${entry.minVersion}，但 current catalog 只有 ${dependencyManifest.version}。`,
+        );
+      }
       const resolution = resolveDependencyForPlanning({
         indexes: options.indexes,
         dependent: location,
@@ -1357,27 +1490,36 @@ export function planPluginDependencyUninstall(options: {
 function buildCatalogDrift(options: {
   currentManifest: PluginManifestSource | undefined;
   snapshotManifest: PluginManifestSource | undefined;
+  snapshotEntries?: PluginDependencyEntry[];
 }): PluginDependencyStatusCatalogDrift {
-  if (!options.snapshotManifest) {
+  const snapshotDeclared = options.snapshotManifest !== undefined || options.snapshotEntries !== undefined;
+  const snapshotDependencies = options.snapshotManifest
+    ? listDependencyNames(options.snapshotManifest)
+    : (options.snapshotEntries ?? []).map((entry) => entry.name);
+  const snapshotSignature = options.snapshotManifest
+    ? dependencySignature(options.snapshotManifest)
+    : dependencySignatureFromEntries(options.snapshotEntries ?? []);
+
+  if (!snapshotDeclared) {
     return {
       kind: 'snapshotMissing',
-      snapshotDependencies: [],
+      snapshotDependencies,
       currentDependencies: listDependencyNames(options.currentManifest),
     };
   }
   if (!options.currentManifest) {
     return {
       kind: 'currentCatalogMissing',
-      snapshotDependencies: listDependencyNames(options.snapshotManifest),
+      snapshotDependencies,
       currentDependencies: [],
     };
   }
 
   return {
-    kind: dependencySignature(options.snapshotManifest) === dependencySignature(options.currentManifest)
+    kind: snapshotSignature === dependencySignature(options.currentManifest)
       ? 'none'
       : 'dependenciesChanged',
-    snapshotDependencies: listDependencyNames(options.snapshotManifest),
+    snapshotDependencies,
     currentDependencies: listDependencyNames(options.currentManifest),
   };
 }
@@ -1396,9 +1538,22 @@ export function projectPluginDependencyStatus(options: {
     const installedRecord = indexes.installedByLocation.get(locationKey);
     const currentManifest = indexes.currentCatalogByPlugin[location.plugin];
     const snapshotManifest = installedRecord?.snapshotManifest;
+    const recordedEdges = (installedRecord?.dependencyEdges ?? [])
+      .filter((edge) => edgeAppliesToPlatform(edge, location.platform));
+    const hasRecordedEdges = installedRecord?.dependencyEdges !== undefined;
+    const edgeDeclarations = recordedEdges.map((edge) => {
+      const declaration = normalizeDependencyDeclaration(edge.declaration);
+      return {
+        name: declaration.name,
+        minVersion: declaration.minVersion,
+        ...(declaration.target?.scope ? { target: { scope: declaration.target.scope } } : {}),
+        ...(declaration.inheritInstallOptions === true ? { inheritInstallOptions: true } : {}),
+        ...(declaration.when?.platforms ? { when: { platforms: declaration.when.platforms } } : {}),
+      } satisfies PluginDependencyEntry;
+    });
     const healthManifest = snapshotManifest ?? currentManifest;
     const healthSource: PluginDependencyManifestSource =
-      snapshotManifest
+      hasRecordedEdges || snapshotManifest
         ? 'installedSnapshot'
         : currentManifest
           ? 'currentCatalogFallback'
@@ -1408,21 +1563,57 @@ export function projectPluginDependencyStatus(options: {
       validateManifestDependencyStructure(location.plugin, snapshotManifest);
     }
 
-    const resolved = healthManifest
-      ? getEffectiveDependencyEntries(healthManifest, location.platform).map((entry) => ({
-          declaration: entry,
-          source: snapshotManifest ? 'installedSnapshot' as const : 'currentCatalogFallback' as const,
-        }))
-      : [];
+    const declared = hasRecordedEdges
+      ? edgeDeclarations
+      : healthManifest
+        ? getEffectiveDependencyEntries(healthManifest, location.platform)
+        : [];
+    const resolved = declared.map((entry) => {
+      const existingEdge = indexes.existingEdgesByDependentAndName
+        .get(locationKey)
+        ?.get(entry.name);
+      const installedVersion = existingEdge
+        ? indexes.installedByLocation.get(serializePluginLocation(normalizePluginLocation(existingEdge.dependency)))?.resolvedVersion
+        : undefined;
+      const candidateVersion = indexes.currentCatalogByPlugin[entry.name]?.version;
+      const installedVersionComparison = compareDependencyVersionAgainstMinimum(
+        installedVersion,
+        entry.minVersion,
+      );
+      const candidateVersionComparison = compareDependencyVersionAgainstMinimum(
+        candidateVersion,
+        entry.minVersion,
+      );
+      return {
+        declaration: entry,
+        source: healthSource === 'currentCatalogFallback'
+          ? 'currentCatalogFallback' as const
+          : 'installedSnapshot' as const,
+        versionState: {
+          ...(entry.minVersion ? { declaredMinVersion: entry.minVersion } : {}),
+          ...(installedVersion ? { installedVersion } : {}),
+          ...(candidateVersion ? { candidateVersion } : {}),
+          installedVersionComparison,
+          candidateVersionComparison,
+          autoUpgradeState: resolveDependencyAutoUpgradeState({
+            installedVersionComparison,
+            candidateVersionComparison,
+          }),
+        },
+      };
+    });
     const satisfied: PluginDependencyStatusSatisfiedEntry[] = [];
     const missing: PluginDependencyStatusMissingEntry[] = [];
 
     for (const entry of resolved) {
+      const existingEdge = indexes.existingEdgesByDependentAndName
+        .get(locationKey)
+        ?.get(entry.declaration.name);
       const resolution = resolveDependencyForStatus({
         indexes,
         dependent: location,
         entry: entry.declaration,
-        allowFreshSearch: !snapshotManifest,
+        allowFreshSearch: !hasRecordedEdges && !snapshotManifest,
       });
       if (resolution.satisfied) {
         satisfied.push({
@@ -1430,12 +1621,21 @@ export function projectPluginDependencyStatus(options: {
           location: resolution.location,
         });
       } else {
+        const currentDependencyManifest = indexes.currentCatalogByPlugin[entry.declaration.name];
+        const candidateVersion = currentDependencyManifest?.version;
+        const installedVersion = existingEdge
+          ? indexes.installedByLocation.get(serializePluginLocation(normalizePluginLocation(existingEdge.dependency)))?.resolvedVersion
+          : undefined;
         missing.push({
           declaration: entry.declaration,
           expectedLocation: resolution.expectedLocation,
-          reason: snapshotManifest
-            ? `缺少可复用的 canonical dependency edge，或目标位置当前不健康。`
-            : `当前可见位置中没有满足依赖的健康安装。`,
+          reason: hasRecordedEdges
+            ? installedVersion && entry.declaration.minVersion
+              ? `install record 记录的位置当前不健康，且已安装版本 ${installedVersion} 低于声明的最低版本 ${entry.declaration.minVersion}。`
+              : `install record 记录的位置当前不健康，或缺少可复用的 dependency edge。`
+            : entry.declaration.minVersion && candidateVersion
+              ? `当前可见位置中没有满足依赖的健康安装；catalog 候选版本 ${candidateVersion}，声明的最低版本是 ${entry.declaration.minVersion}。`
+              : `当前可见位置中没有满足依赖的健康安装。`,
         });
       }
     }
@@ -1449,7 +1649,7 @@ export function projectPluginDependencyStatus(options: {
     return {
       location,
       healthSource,
-      declared: (currentManifest?.dependencies?.plugins ?? []).map((entry) => normalizeDependencyEntry(entry)),
+      declared,
       resolved,
       satisfied,
       missing,
@@ -1464,6 +1664,7 @@ export function projectPluginDependencyStatus(options: {
       catalogDrift: buildCatalogDrift({
         currentManifest,
         snapshotManifest,
+        snapshotEntries: hasRecordedEdges ? edgeDeclarations : undefined,
       }),
     };
   });

@@ -12,18 +12,21 @@ import {
   writeCodexNativeRecoveryBreadcrumb,
 } from '../../src/utils/codex-native-recovery.js';
 import {
+  buildCurrentCatalogCacheKey,
   calculateBundleFingerprint,
   createAvailableLedger,
   ensureLocalMarketplace,
   hasInstalledLedgerDependencyMetadata,
   initializeLocalMarketplace,
+  readCurrentCatalogCacheEntry,
   readInstalledLedger,
   validateLocalMarketplaceLayout,
+  writeCurrentCatalogCacheEntry,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readJsonFile } from '../../src/utils/json.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
-import type { InstalledLedger } from '../../src/types.js';
+import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -116,6 +119,96 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('writes and reads isolated current catalog cache entries', async () => {
+    const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-'));
+    tempDirs.push(cacheRoot);
+    const env = {
+      ...process.env,
+      AW_HOME: cacheRoot,
+    };
+    const sourceRoot = path.join(cacheRoot, 'source-catalog');
+    await fs.ensureDir(sourceRoot);
+    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), { version: 1 }, { spaces: 2 });
+
+    const selector: CatalogSelector = {
+      kind: 'distTag',
+      cliVersion: '1.0.0',
+      defaultChannel: 'latest',
+      requestedChannel: 'latest',
+    };
+    const identity = {
+      selector,
+      channel: 'latest' as const,
+      catalogVersion: '1.0.0',
+      minAwVersion: '1.0.0',
+      schemaVersion: 1,
+      historySchemaVersion: 1,
+      sidecarIntegrity: 'sha512-sidecar',
+      fullIntegrity: 'sha512-full',
+    };
+
+    const written = await writeCurrentCatalogCacheEntry({
+      ...identity,
+      sourceRoot,
+      env,
+    });
+    expect(written.cacheKey).toBe(buildCurrentCatalogCacheKey(identity));
+    expect(resolveCurrentCatalogCacheEntryDir(written.cacheKey, env)).toBe(path.dirname(written.rootDir));
+
+    await expect(readCurrentCatalogCacheEntry(identity, env)).resolves.toMatchObject({
+      cacheKey: written.cacheKey,
+      rootDir: written.rootDir,
+      metadata: {
+        channel: 'latest',
+        catalogVersion: '1.0.0',
+      },
+    });
+  });
+
+  it('keeps current catalog cache partitioned by selector and channel', async () => {
+    const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-'));
+    tempDirs.push(cacheRoot);
+    const env = {
+      ...process.env,
+      AW_HOME: cacheRoot,
+    };
+    const sourceRoot = path.join(cacheRoot, 'beta-source-catalog');
+    await fs.ensureDir(sourceRoot);
+    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), { version: 1 }, { spaces: 2 });
+
+    await writeCurrentCatalogCacheEntry({
+      selector: {
+        kind: 'default',
+        cliVersion: '1.0.0-beta.1',
+        defaultChannel: 'beta',
+      },
+      channel: 'beta',
+      catalogVersion: '1.0.0-beta.1',
+      minAwVersion: '1.0.0-beta.1',
+      schemaVersion: 1,
+      historySchemaVersion: 1,
+      sidecarIntegrity: 'sha512-sidecar-beta',
+      fullIntegrity: 'sha512-full-beta',
+      sourceRoot,
+      env,
+    });
+
+    await expect(readCurrentCatalogCacheEntry({
+      selector: {
+        kind: 'default',
+        cliVersion: '1.0.0',
+        defaultChannel: 'latest',
+      },
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      minAwVersion: '1.0.0',
+      schemaVersion: 1,
+      historySchemaVersion: 1,
+      sidecarIntegrity: 'sha512-sidecar-beta',
+      fullIntegrity: 'sha512-full-beta',
+    }, env)).resolves.toBeNull();
+  });
+
   it('refreshes ~/.aw from platform-filtered embedded bundles without breaking layout validation', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];

@@ -14,6 +14,7 @@ import {
   discoverPluginsInDirectory,
   resolvePlugins,
   resolvePluginsFromCatalog,
+  validateCatalogManifest,
   validateMarketplaceSourceMeta,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
@@ -43,6 +44,76 @@ function createPluginMeta(manifest: PluginMeta['manifest']): PluginMeta {
     rootDir: '/tmp/plugin',
     manifestPath: '/tmp/plugin/.agents-plugin/plugin.json',
     manifest,
+  };
+}
+
+function sha256(char: string): string {
+  return `sha256:${char.repeat(64)}`;
+}
+
+function createCatalogManifestFixture() {
+  return {
+    schemaVersion: 1,
+    catalogVersion: '1.2.3',
+    channel: 'latest',
+    compatibility: {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    },
+    history: {
+      schemaVersion: 1,
+      channel: 'latest',
+      releases: [
+        {
+          catalogVersion: '1.2.3',
+          minAwVersion: '0.0.0',
+          plugins: [
+            {
+              name: 'demo',
+              version: '1.2.0',
+              minAwVersion: '0.0.0',
+              artifactDigest: sha256('a'),
+              manifestDigest: sha256('b'),
+            },
+          ],
+        },
+      ],
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: '1.2.3',
+        channel: 'latest',
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: '1.2.3',
+        channel: 'latest',
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries: [
+      {
+        name: 'demo',
+        version: '1.2.0',
+        description: 'demo plugin',
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+        compatibility: {
+          aw: {
+            minVersion: '0.0.0',
+          },
+        },
+        source: './plugins/demo',
+        artifactDigest: sha256('a'),
+        manifestDigest: sha256('b'),
+      },
+    ],
   };
 }
 
@@ -454,7 +525,10 @@ describe('manifest coverage', () => {
       },
     ]);
 
-    await expect(resolvePluginsFromCatalog(repoRoot, ['missing-plugin'])).rejects.toThrow(
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+
+    await expect(resolvePluginsFromCatalog(embeddedRoot, ['missing-plugin'])).rejects.toThrow(
       'Unknown plugin "missing-plugin".',
     );
   });
@@ -721,5 +795,95 @@ describe('manifest coverage', () => {
         },
       },
     });
+  });
+
+  it('rejects invalid catalog manifest channel, prerelease, digest, package identity, and history contracts', () => {
+    const missingHistory = createCatalogManifestFixture();
+    delete (missingHistory as Record<string, unknown>).history;
+    expect(() => validateCatalogManifest(missingHistory)).toThrow('expected an object');
+
+    const badHistorySchema = createCatalogManifestFixture();
+    badHistorySchema.history.schemaVersion = 2;
+    expect(() => validateCatalogManifest(badHistorySchema)).toThrow('history.schemaVersion');
+
+    const badDigest = createCatalogManifestFixture();
+    badDigest.entries[0]!.manifestDigest = 'sha256:not-hex';
+    badDigest.history.releases[0]!.plugins[0]!.manifestDigest = 'sha256:not-hex';
+    expect(() => validateCatalogManifest(badDigest)).toThrow('manifestDigest');
+
+    const mismatchedPackageIdentity = createCatalogManifestFixture();
+    mismatchedPackageIdentity.packages.full.version = '1.2.4';
+    expect(() => validateCatalogManifest(mismatchedPackageIdentity)).toThrow('packages.full.version');
+
+    const betaStableCatalog = createCatalogManifestFixture();
+    betaStableCatalog.channel = 'beta';
+    betaStableCatalog.history.channel = 'beta';
+    betaStableCatalog.packages.sidecar.channel = 'beta';
+    betaStableCatalog.packages.full.channel = 'beta';
+    betaStableCatalog.history.releases[0]!.catalogVersion = '1.2.3';
+    expect(() => validateCatalogManifest(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
+  });
+
+  it('rejects plugin minVersion and duplicate snapshot names that violate catalog bounds', () => {
+    const pluginMinAboveCatalog = createCatalogManifestFixture();
+    pluginMinAboveCatalog.entries[0]!.compatibility.aw.minVersion = '0.0.1';
+    pluginMinAboveCatalog.history.releases[0]!.plugins[0]!.minAwVersion = '0.0.1';
+    pluginMinAboveCatalog.compatibility.aw.minVersion = '0.0.0';
+    pluginMinAboveCatalog.history.releases[0]!.minAwVersion = '0.0.0';
+    expect(() => validateCatalogManifest(pluginMinAboveCatalog)).toThrow('higher than catalog minimum');
+
+    const duplicateEntry = createCatalogManifestFixture();
+    duplicateEntry.entries.push(structuredClone(duplicateEntry.entries[0]!));
+    expect(() => validateCatalogManifest(duplicateEntry)).toThrow('duplicate plugin "demo"');
+  });
+
+  it('rejects snapshot dependencies that point to missing or too-old candidates', () => {
+    const missingDependency = createCatalogManifestFixture();
+    missingDependency.entries[0]!.dependencies = {
+      plugins: [
+        {
+          name: 'missing-helper',
+          minVersion: '1.0.0',
+        },
+      ],
+    };
+    expect(() => validateCatalogManifest(missingDependency)).toThrow('current snapshot is missing plugin "missing-helper"');
+
+    const tooOldDependency = createCatalogManifestFixture();
+    tooOldDependency.entries[0]!.dependencies = {
+      plugins: [
+        {
+          name: 'helper',
+          minVersion: '9.0.0',
+        },
+      ],
+    };
+    tooOldDependency.entries.push({
+      name: 'helper',
+      version: '1.0.0',
+      description: 'helper plugin',
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+      },
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+      source: './plugins/helper',
+      artifactDigest: sha256('c'),
+      manifestDigest: sha256('d'),
+    });
+    tooOldDependency.history.releases[0]!.plugins.push({
+      name: 'helper',
+      version: '1.0.0',
+      minAwVersion: '0.0.0',
+      artifactDigest: sha256('c'),
+      manifestDigest: sha256('d'),
+    });
+    expect(() => validateCatalogManifest(tooOldDependency)).toThrow('does not satisfy minimum 9.0.0');
   });
 });

@@ -5,14 +5,18 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
+import type { CatalogChannel } from '../../src/types.js';
+import { resolvePluginsFromCatalog } from '../../src/utils/manifest.js';
 import {
-  resolveActiveLocalBundle,
-  resolveActiveLocalBundleFromInstallLocation,
-  resolveCatalogPlugins,
   resolveCurrentCatalog,
+  resolveCatalogPlugins,
 } from '../../src/utils/plugin-catalog.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import {
+  setCatalogPackageSourceForTests,
+  type CatalogPackageArchiveIdentity,
+  type CatalogPackageSource,
+} from '../../src/utils/marketplace.js';
+import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -26,127 +30,481 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
-async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-extra-'));
+async function makeRepoWorkspace(): Promise<{
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-resolver-'));
   tempDirs.push(root);
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  const awHome = path.join(root, 'aw-home');
-  return { repoRoot, awHome, embeddedRoot };
+
+  return {
+    repoRoot,
+    env: {
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLI_VERSION: '1.0.0',
+    },
+  };
+}
+
+async function createValidCatalogPackage(options: {
+  repoRoot: string;
+  catalogVersion: string;
+  channel: CatalogChannel;
+  minAwVersion: string;
+}): Promise<{
+  fullRoot: string;
+  sidecarRoot: string;
+  manifest: Record<string, unknown>;
+}> {
+  const fullRoot = await createSyntheticEmbeddedRoot(options.repoRoot);
+  tempDirs.push(fullRoot);
+  const plugins = await resolvePluginsFromCatalog(fullRoot, undefined);
+  const entries = await Promise.all(plugins.map(async (plugin) => {
+    const pluginRoot = path.join(fullRoot, 'plugins', plugin.manifest.name);
+    return {
+      name: plugin.manifest.name,
+      version: plugin.manifest.version,
+      description: plugin.manifest.description,
+      ...(plugin.manifest.interface ? { interface: plugin.manifest.interface } : {}),
+      category: plugin.manifest.marketplace.category,
+      ...(plugin.manifest.marketplace.tags ? { tags: plugin.manifest.marketplace.tags } : {}),
+      strict: plugin.manifest.marketplace.strict,
+      policy: plugin.manifest.marketplace.policy,
+      compatibility: plugin.manifest.compatibility,
+      ...(plugin.manifest.dependencies ? { dependencies: plugin.manifest.dependencies } : {}),
+      source: `./plugins/${plugin.manifest.name}`,
+      artifactDigest: await calculatePluginBundleFingerprint(pluginRoot),
+      manifestDigest: await calculateFileDigest(plugin.manifestPath),
+    };
+  }));
+  const manifest = {
+    schemaVersion: 1,
+    catalogVersion: options.catalogVersion,
+    channel: options.channel,
+    compatibility: {
+      aw: {
+        minVersion: options.minAwVersion,
+      },
+    },
+    history: {
+      schemaVersion: 1,
+      channel: options.channel,
+      releases: [{
+        catalogVersion: options.catalogVersion,
+        minAwVersion: options.minAwVersion,
+        plugins: entries.map((entry) => ({
+          name: entry.name,
+          version: entry.version,
+          minAwVersion: (entry.compatibility as { aw: { minVersion: string } }).aw.minVersion,
+          artifactDigest: entry.artifactDigest,
+          manifestDigest: entry.manifestDigest,
+        })),
+      }],
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: options.catalogVersion,
+        channel: options.channel,
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: options.catalogVersion,
+        channel: options.channel,
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries,
+  };
+
+  await fs.writeJson(path.join(fullRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
+  const sidecarRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-sidecar-'));
+  tempDirs.push(sidecarRoot);
+  await fs.writeJson(path.join(sidecarRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
+
+  return {
+    fullRoot,
+    sidecarRoot,
+    manifest,
+  };
+}
+
+function createIncompatibleLatestSidecar(options: {
+  catalogVersion: string;
+  minAwVersion: string;
+  fallbackVersion: string;
+  fallbackMinAwVersion: string;
+  channel: CatalogChannel;
+}): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    catalogVersion: options.catalogVersion,
+    channel: options.channel,
+    compatibility: {
+      aw: {
+        minVersion: options.minAwVersion,
+      },
+    },
+    history: {
+      schemaVersion: 1,
+      channel: options.channel,
+      releases: [
+        {
+          catalogVersion: options.fallbackVersion,
+          minAwVersion: options.fallbackMinAwVersion,
+          plugins: [],
+        },
+        {
+          catalogVersion: options.catalogVersion,
+          minAwVersion: options.minAwVersion,
+          plugins: [],
+        },
+      ],
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: options.catalogVersion,
+        channel: options.channel,
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: options.catalogVersion,
+        channel: options.channel,
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries: [],
+  };
+}
+
+interface FakePackageRecord {
+  identity: CatalogPackageArchiveIdentity;
+  rootDir?: string;
+  manifest: Record<string, unknown>;
+  failDownload?: string;
+}
+
+function packageKey(packageName: string, version: string): string {
+  return `${packageName}@${version}`;
+}
+
+function createFakeCatalogPackageSource(options: {
+  distTags?: Partial<Record<CatalogChannel, string>>;
+  manifestPackages?: Record<string, FakePackageRecord>;
+  fullPackages?: Record<string, FakePackageRecord>;
+}): CatalogPackageSource {
+  const manifestPackages = options.manifestPackages ?? {};
+  const fullPackages = options.fullPackages ?? {};
+
+  return {
+    resolveIdentityByDistTag: async (packageName, distTag) => {
+      const version = options.distTags?.[distTag];
+      if (!version) {
+        throw new Error(`missing dist-tag ${distTag}`);
+      }
+      const record = manifestPackages[packageKey(packageName, version)];
+      if (!record) {
+        throw new Error(`missing ${packageName}@${version}`);
+      }
+      return record.identity;
+    },
+    resolveIdentityByVersion: async (packageName, version) => {
+      const record = (packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(packageName, version)];
+      if (!record) {
+        throw new Error(`missing ${packageName}@${version}`);
+      }
+      return record.identity;
+    },
+    downloadArchive: async (identity) => {
+      const record = (identity.packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(identity.packageName, identity.version)];
+      if (!record) {
+        throw new Error(`missing ${identity.packageName}@${identity.version}`);
+      }
+      if (record.failDownload) {
+        throw new Error(record.failDownload);
+      }
+
+      const rootDir = record.rootDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-archive-'));
+      if (!record.rootDir) {
+        tempDirs.push(rootDir);
+        await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), record.manifest, { spaces: 2 });
+      }
+      const manifestText = await fs.readFile(path.join(rootDir, 'catalog-manifest.json'), 'utf8');
+
+      return {
+        identity: record.identity,
+        manifestText,
+        rawManifest: record.manifest,
+        packageRoot: rootDir,
+        materialize: async (targetRoot: string) => {
+          await fs.copy(rootDir, targetRoot);
+        },
+        dispose: async () => {},
+      };
+    },
+  };
 }
 
 afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  delete process.env.AW_HOME;
+  setCatalogPackageSourceForTests(null);
+  delete process.env.AW_CLI_VERSION;
+  delete process.env.AW_CATALOG_CHANNEL;
+  delete process.env.AW_CATALOG_VERSION;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('plugin catalog resolvers', () => {
-  it('falls back to the embedded catalog when local metadata matches but layout is broken', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await fs.remove(path.join(awHome, '.claude-plugin', 'marketplace.json'));
-
-    await expect(resolveCurrentCatalog(process.env)).resolves.toMatchObject({
-      rootDir: embeddedRoot,
-      source: 'embedded',
-      reasonCode: 'localCatalogLayoutInvalid',
-      reason: expect.any(String),
+  it('uses history to resolve the latest compatible catalog on the same channel', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const compatiblePackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
     });
-  });
+    const blockedLatestManifest = createIncompatibleLatestSidecar({
+      catalogVersion: '2.0.0',
+      minAwVersion: '9.0.0',
+      fallbackVersion: '1.0.0',
+      fallbackMinAwVersion: '1.0.0',
+      channel: 'latest',
+    });
+    const blockedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-blocked-'));
+    tempDirs.push(blockedRoot);
+    await fs.writeJson(path.join(blockedRoot, 'catalog-manifest.json'), blockedLatestManifest, { spaces: 2 });
 
-  it('resolves catalog plugins and active local bundles from ~/.aw', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-
-    await expect(resolveCatalogPlugins(['git-commit'], process.env)).resolves.toMatchObject({
-      catalog: {
-        rootDir: awHome,
-        source: 'local',
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '2.0.0',
       },
-      plugins: [
-        {
-          manifest: {
-            name: 'git-commit',
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '2.0.0',
+            integrity: 'sha512-sidecar-latest',
+            requestedDistTag: 'latest',
           },
+          rootDir: blockedRoot,
+          manifest: blockedLatestManifest,
         },
-      ],
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+          },
+          rootDir: compatiblePackage.sidecarRoot,
+          manifest: compatiblePackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: compatiblePackage.fullRoot,
+          manifest: compatiblePackage.manifest,
+        },
+      },
+    }));
+
+    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+      source: 'remote',
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      minAwVersion: '1.0.0',
+      latestCatalogBlocked: {
+        catalogVersion: '2.0.0',
+        minAwVersion: '9.0.0',
+      },
     });
 
-    await expect(resolveActiveLocalBundle('git-commit', process.env)).resolves.toBe(
-      path.join(awHome, 'plugins', 'git-commit'),
-    );
-    await expect(resolveActiveLocalBundle('missing-plugin', process.env)).resolves.toBeNull();
+    await expect(resolveCatalogPlugins(['git-commit'], env)).resolves.toMatchObject({
+      catalog: {
+        catalogVersion: '1.0.0',
+      },
+      plugins: [{
+        manifest: {
+          name: 'git-commit',
+        },
+      }],
+    });
   });
 
-  it('reports install-location manifest edge cases', async () => {
-    const installRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-location-'));
-    tempDirs.push(installRoot);
-
-    await expect(
-      resolveActiveLocalBundleFromInstallLocation('git-commit', 'claude', installRoot),
-    ).resolves.toMatchObject({
-      bundleRoot: null,
-      details: expect.stringContaining('marketplace manifest 缺失'),
+  it('falls back to a matching cache entry only after the catalog identity is resolved', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
     });
 
-    const manifestDir = path.join(installRoot, '.claude-plugin');
-    const manifestPath = path.join(manifestDir, 'marketplace.json');
-    await fs.ensureDir(manifestDir);
-
-    await fs.writeJson(
-      manifestPath,
-      {
-        name: 'aw',
-        plugins: [
-          {
-            name: 'git-commit',
-          },
-        ],
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
       },
-      { spaces: 2 },
-    );
-    await expect(
-      resolveActiveLocalBundleFromInstallLocation('git-commit', 'claude', installRoot),
-    ).resolves.toMatchObject({
-      bundleRoot: null,
-      details: 'marketplace manifest 缺少 git-commit 的 source。',
-    });
-
-    await fs.writeJson(
-      manifestPath,
-      {
-        name: 'aw',
-        plugins: [
-          {
-            name: 'git-commit',
-            source: './plugins/git-commit',
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
           },
-        ],
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
       },
-      { spaces: 2 },
-    );
-    await expect(
-      resolveActiveLocalBundleFromInstallLocation('git-commit', 'claude', installRoot),
-    ).resolves.toMatchObject({
-      bundleRoot: null,
-      details: `bundle 路径不存在: ${path.join(installRoot, 'plugins', 'git-commit')}`,
-    });
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+    }));
 
-    await fs.writeFile(manifestPath, '{ invalid json', 'utf8');
-    await expect(
-      resolveActiveLocalBundleFromInstallLocation('git-commit', 'claude', installRoot),
-    ).resolves.toMatchObject({
-      bundleRoot: null,
-      details: expect.any(String),
+    const seeded = await resolveCurrentCatalog(env);
+    expect(seeded.source).toBe('remote');
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          manifest: catalogPackage.manifest,
+          failDownload: 'simulated full tarball failure',
+        },
+      },
+    }));
+
+    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+      source: 'cache',
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      cacheFallback: {
+        used: true,
+      },
+      remoteFailure: {
+        stage: 'fullTarball',
+      },
+    });
+  });
+
+  it('does not reuse a cache entry from another selector or channel', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const betaEnv = {
+      ...env,
+      AW_CLI_VERSION: '1.0.0-beta.1',
+    };
+    const betaPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0-beta.1',
+      channel: 'beta',
+      minAwVersion: '1.0.0-beta.1',
+    });
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        beta: '1.0.0-beta.1',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0-beta.1')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0-beta.1',
+            integrity: 'sha512-sidecar-beta',
+            requestedDistTag: 'beta',
+          },
+          rootDir: betaPackage.sidecarRoot,
+          manifest: betaPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0-beta.1')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0-beta.1',
+            integrity: 'sha512-full-beta',
+          },
+          rootDir: betaPackage.fullRoot,
+          manifest: betaPackage.manifest,
+        },
+      },
+    }));
+    await resolveCurrentCatalog(betaEnv);
+
+    const stablePackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-stable',
+            requestedDistTag: 'latest',
+          },
+          rootDir: stablePackage.sidecarRoot,
+          manifest: stablePackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-stable',
+          },
+          manifest: stablePackage.manifest,
+          failDownload: 'stable full tarball offline',
+        },
+      },
+    }));
+
+    await expect(resolveCurrentCatalog(env)).rejects.toMatchObject({
+      resolution: {
+        reasonCode: 'catalogUnavailable',
+        cacheFallback: {
+          used: false,
+        },
+      },
     });
   });
 });

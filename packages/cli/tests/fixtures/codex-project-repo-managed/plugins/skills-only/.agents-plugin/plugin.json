@@ -2,6 +2,11 @@
   "name": "skills-only",
   "version": "0.1.0",
   "description": "Fixture plugin with only Codex project repo skill artifacts.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "skills": "./skills",
   "skillTriggers": {
     "repo-check": {

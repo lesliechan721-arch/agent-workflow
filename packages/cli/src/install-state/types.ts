@@ -2,6 +2,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   PlatformName,
+  PluginVersion,
   Scope,
   SkillTriggerPreference,
   TrackedHookGroupIdentity,
@@ -43,7 +44,7 @@ export interface HistoricalLifecycleRuntimeRef {
   runtimeRoot: string;
   bundleRoot: string;
   manifestPath: string;
-  pluginVersion: string;
+  pluginVersion: PluginVersion;
   sourceManifestDigest: string;
   bundleFingerprint: string;
   events: Array<'install' | 'upgrade' | 'uninstall'>;
@@ -59,6 +60,7 @@ export interface InstallRecordDependencyEdge {
   dependency: PluginLocation;
   declaration: {
     name: string;
+    minVersion?: string;
     target?: {
       scope?: Scope;
     };
@@ -93,7 +95,7 @@ export interface InstallRecord {
   installedAt: string;
   updatedAt: string;
   source: {
-    pluginVersion: string;
+    pluginVersion: PluginVersion;
     manifestDigest: string;
     bundleFingerprint: string;
   };
@@ -175,7 +177,7 @@ export interface ProjectArtifactIdentityFile {
   sharedIdentityId: string;
   locator: ProjectArtifactSharedLocator;
   source: {
-    pluginVersion: string;
+    pluginVersion: PluginVersion;
     manifestDigest: string;
     bundleFingerprint: string;
   };

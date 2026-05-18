@@ -9,8 +9,10 @@ import type {
   CommandExecutionContext,
 } from '../commands/runtime.js';
 import type {
+  ConfigSchemaEvidenceV2,
   ConfigFieldEntryV2,
   LegacyConfigStoreEntryV2,
+  PlatformName,
   PluginConfigSchema,
   PluginConfigSchemaField,
   PluginManifestSource,
@@ -18,8 +20,15 @@ import type {
   Scope,
   SkillTriggerPreference,
 } from '../types.js';
+import { readInstallRecordForLocation } from '../install-state/facade.js';
+import type { InstallRecordFile, PluginLocation } from '../install-state/types.js';
+import { readPluginManifest } from './manifest.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from './plugin-scripts.js';
 import { resolveSkillTriggerConfigEntries } from './skill-trigger-preferences.js';
-import { resolveAwHome, resolveRepoRootSync } from './paths.js';
+import { resolveAwHome, resolveCodexProjectKey, resolveRepoRootSync } from './paths.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
@@ -169,8 +178,48 @@ export interface ResolvedConfigReadV2 {
   pluginName: string;
   scope: Scope | 'effective';
   projectLayer: 'shared' | 'local';
+  schema?: ConfigSchemaEvidenceV2;
   fields: ConfigFieldEntryV2[];
   legacyConfigStores: LegacyConfigStoreEntryV2[];
+}
+
+export type ConfigSchemaResolutionCode =
+  | 'catalogUnavailable'
+  | 'configSchemaUnavailable'
+  | 'configSchemaConflict';
+
+export class PluginConfigSchemaResolutionError extends Error {
+  readonly code: ConfigSchemaResolutionCode;
+  readonly details?: unknown;
+
+  constructor(code: ConfigSchemaResolutionCode, message: string, details?: unknown) {
+    super(`${code}: ${message}`);
+    this.name = 'PluginConfigSchemaResolutionError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export function isPluginConfigSchemaResolutionError(
+  error: unknown,
+): error is PluginConfigSchemaResolutionError {
+  return error instanceof PluginConfigSchemaResolutionError;
+}
+
+export interface InstalledConfigSchemaConsumer {
+  location: PluginLocation;
+  recordPath: string;
+  manifestDigest: string;
+  schemaIdentity: string;
+  plugin: PluginMeta;
+}
+
+export interface ResolvedPluginConfigSchemaAccess {
+  pluginName: string;
+  plugin: PluginMeta | null;
+  schema?: ConfigSchemaEvidenceV2;
+  installedConsumers: InstalledConfigSchemaConsumer[];
+  schemaConflict: boolean;
 }
 
 const CONFIG_DIR = 'plugin-config';
@@ -184,6 +233,205 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatValue(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+async function calculateConfigManifestDigest(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  hash.update(await fs.readFile(filePath));
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function calculateConfigSchemaManifestDigestForPlugin(
+  plugin: PluginMeta,
+): Promise<string> {
+  if (await fs.pathExists(plugin.manifestPath)) {
+    return calculateConfigManifestDigest(plugin.manifestPath);
+  }
+  const hash = crypto.createHash('sha256');
+  hash.update(JSON.stringify(plugin.manifest));
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function createConfigSchemaEvidenceFromCurrentCatalog(
+  plugin: PluginMeta,
+  manifestDigest: string,
+): ConfigSchemaEvidenceV2 {
+  return {
+    source: 'currentCatalog',
+    identity: createPluginConfigSchemaIdentity(plugin.manifest),
+    pluginVersion: plugin.manifest.version,
+    manifestDigest,
+  };
+}
+
+function createConfigSchemaEvidenceFromInstalledHistorical(
+  consumer: InstalledConfigSchemaConsumer,
+): ConfigSchemaEvidenceV2 {
+  return {
+    source: 'installedHistorical',
+    identity: consumer.schemaIdentity,
+    pluginVersion: consumer.plugin.manifest.version,
+    manifestDigest: consumer.manifestDigest,
+    location: {
+      platform: consumer.location.platform,
+      scope: consumer.location.scope,
+      ...(consumer.location.projectKey ? { projectKey: consumer.location.projectKey } : {}),
+      recordPath: consumer.recordPath,
+    },
+  };
+}
+
+function formatConfigLocation(location: PluginLocation): string {
+  return location.scope === 'project'
+    ? `${location.platform}/project/${location.projectKey ?? '<unknown>'}`
+    : `${location.platform}/user`;
+}
+
+async function loadHistoricalConfigConsumerFromRecord(options: {
+  pluginName: string;
+  location: PluginLocation;
+  recordPath: string;
+  recordFile: InstallRecordFile;
+}): Promise<InstalledConfigSchemaConsumer> {
+  const lifecycle = options.recordFile.record.lifecycle;
+  if (!lifecycle) {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少 historical lifecycle runtime。`,
+      {
+        location: options.location,
+        recordPath: options.recordPath,
+      },
+    );
+  }
+  if (!(await fs.pathExists(lifecycle.bundleRoot))) {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少 historical bundle：${lifecycle.bundleRoot}。`,
+      {
+        location: options.location,
+        recordPath: options.recordPath,
+      },
+    );
+  }
+
+  const [manifestDigest, bundleFingerprint, plugin] = await Promise.all([
+    calculateFileDigest(lifecycle.manifestPath),
+    calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+    readPluginManifest(lifecycle.bundleRoot, { mode: 'bundle' }),
+  ]);
+  if (manifestDigest !== lifecycle.sourceManifestDigest) {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的 historical manifest digest 不匹配：expected ${lifecycle.sourceManifestDigest}, got ${manifestDigest}。`,
+      {
+        location: options.location,
+        recordPath: options.recordPath,
+      },
+    );
+  }
+  if (bundleFingerprint !== lifecycle.bundleFingerprint) {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的 historical bundle fingerprint 不匹配：expected ${lifecycle.bundleFingerprint}, got ${bundleFingerprint}。`,
+      {
+        location: options.location,
+        recordPath: options.recordPath,
+      },
+    );
+  }
+  if (
+    plugin.manifest.name !== options.pluginName ||
+    plugin.manifest.version !== lifecycle.pluginVersion
+  ) {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的 historical manifest 身份不匹配：expected ${options.pluginName}@${lifecycle.pluginVersion}, got ${plugin.manifest.name}@${plugin.manifest.version}。`,
+      {
+        location: options.location,
+        recordPath: options.recordPath,
+      },
+    );
+  }
+
+  return {
+    location: options.location,
+    recordPath: options.recordPath,
+    manifestDigest,
+    schemaIdentity: createPluginConfigSchemaIdentity(plugin.manifest),
+    plugin,
+  };
+}
+
+async function resolveHistoricalConfigConsumer(options: {
+  pluginName: string;
+  location: PluginLocation;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<InstalledConfigSchemaConsumer | null> {
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: options.location,
+    env: options.env,
+  });
+  if (recordRead.status === 'missing') {
+    return null;
+  }
+  if (recordRead.status !== 'ok') {
+    throw new PluginConfigSchemaResolutionError(
+      'configSchemaUnavailable',
+      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少可用 install record（${recordRead.code}: ${recordRead.error}）。`,
+      {
+        location: options.location,
+        recordPath: recordRead.path,
+        readStatus: recordRead.status,
+        readCode: recordRead.code,
+      },
+    );
+  }
+
+  return loadHistoricalConfigConsumerFromRecord({
+    pluginName: options.pluginName,
+    location: options.location,
+    recordPath: recordRead.path,
+    recordFile: recordRead.value,
+  });
+}
+
+async function collectInstalledConfigSchemaConsumers(options: {
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<InstalledConfigSchemaConsumer[]> {
+  const projectKey = options.scope === 'project'
+    ? await resolveCodexProjectKey(options.cwd)
+    : undefined;
+  const consumers: InstalledConfigSchemaConsumer[] = [];
+  for (const platform of ['codex', 'claude'] as const satisfies readonly PlatformName[]) {
+    const location: PluginLocation = options.scope === 'project'
+      ? {
+          plugin: options.pluginName,
+          platform,
+          scope: 'project',
+          projectKey,
+        }
+      : {
+          plugin: options.pluginName,
+          platform,
+          scope: 'user',
+        };
+    const consumer = await resolveHistoricalConfigConsumer({
+      pluginName: options.pluginName,
+      location,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    if (consumer) {
+      consumers.push(consumer);
+    }
+  }
+  return consumers;
 }
 
 export function isBuiltInConfigKey(key: string): boolean {
@@ -211,6 +459,29 @@ function getNonReservedStoreEntries(values: Record<string, unknown>): Record<str
   return Object.fromEntries(
     Object.entries(values).filter(([key]) => key !== RESERVED_AW_NAMESPACE),
   );
+}
+
+function storeContainsOnlyBuiltInData(values: Record<string, unknown>): boolean {
+  if (Object.keys(getNonReservedStoreEntries(values)).length > 0) {
+    return false;
+  }
+  const awNamespace = values[RESERVED_AW_NAMESPACE];
+  if (awNamespace === undefined) {
+    return true;
+  }
+  if (!isRecord(awNamespace)) {
+    return false;
+  }
+  const keys = Object.keys(awNamespace);
+  if (keys.some((key) => key !== 'skillTriggers')) {
+    return false;
+  }
+  if (awNamespace.skillTriggers === undefined) {
+    return true;
+  }
+  return typeof awNamespace.skillTriggers === 'object'
+    && awNamespace.skillTriggers !== null
+    && !Array.isArray(awNamespace.skillTriggers);
 }
 
 interface StoredSkillTriggerValue {
@@ -1436,9 +1707,87 @@ function createBuiltInFieldTitle(skillName: string): string {
   return `${skillName} 触发方式`;
 }
 
+export async function resolvePluginConfigSchemaAccess(options: {
+  pluginName: string;
+  currentPlugin?: PluginMeta | null;
+  currentPluginError?: Error | null;
+  scope: Scope | 'effective';
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  allowSchemaConflict?: boolean;
+}): Promise<ResolvedPluginConfigSchemaAccess> {
+  const pluginName = assertSafePluginConfigSegment(options.pluginName);
+  const scopeCandidates = options.scope === 'effective'
+    ? ['user', 'project'] as const
+    : [options.scope] as const;
+  const installedConsumers = (await Promise.all(
+    scopeCandidates.map((scope) =>
+      collectInstalledConfigSchemaConsumers({
+        pluginName,
+        scope,
+        cwd: options.cwd,
+        env: options.env,
+      })),
+  )).flat();
+
+  if (installedConsumers.length > 0) {
+    const identities = [...new Set(installedConsumers.map((consumer) => consumer.schemaIdentity))];
+    const schemaConflict = identities.length > 1;
+    if (schemaConflict && !options.allowSchemaConflict) {
+      throw new PluginConfigSchemaResolutionError(
+        'configSchemaConflict',
+        `${pluginName} 的同一配置 store 被多个已安装 consumer 使用，但 schema identity 不一致。`,
+        {
+          consumers: installedConsumers.map((consumer) => ({
+            location: consumer.location,
+            recordPath: consumer.recordPath,
+            schemaIdentity: consumer.schemaIdentity,
+            pluginVersion: consumer.plugin.manifest.version,
+            manifestDigest: consumer.manifestDigest,
+          })),
+        },
+      );
+    }
+    const primaryConsumer = installedConsumers[0]!;
+    return {
+      pluginName,
+      plugin: primaryConsumer.plugin,
+      schema: createConfigSchemaEvidenceFromInstalledHistorical(primaryConsumer),
+      installedConsumers,
+      schemaConflict,
+    };
+  }
+
+  if (options.currentPluginError) {
+    throw options.currentPluginError;
+  }
+
+  if (!options.currentPlugin) {
+    return {
+      pluginName,
+      plugin: null,
+      installedConsumers: [],
+      schemaConflict: false,
+    };
+  }
+
+  return {
+    pluginName,
+    plugin: options.currentPlugin,
+    schema: createConfigSchemaEvidenceFromCurrentCatalog(
+      options.currentPlugin,
+      await calculateConfigSchemaManifestDigestForPlugin(options.currentPlugin),
+    ),
+    installedConsumers: [],
+    schemaConflict: false,
+  };
+}
+
 export async function resolveConfigReadV2(options: {
   pluginName: string;
   plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   scope: Scope | 'effective';
   projectLayer: 'shared' | 'local';
   cwd: string;
@@ -1472,19 +1821,28 @@ export async function resolveConfigReadV2(options: {
     project: projectStore,
     projectLocal: projectLocalStore,
   };
+  const schemaAccess = await resolvePluginConfigSchemaAccess({
+    pluginName,
+    currentPlugin: options.plugin,
+    currentPluginError: options.pluginError,
+    scope: options.scope,
+    projectLayer: options.projectLayer,
+    cwd: options.cwd,
+    env: options.env,
+  });
   const legacyConfigStores = buildLegacyConfigStoreEntries({
     pluginName,
-    pluginAvailable: Boolean(options.plugin),
-    schema: options.plugin?.manifest.config?.schema,
+    pluginAvailable: Boolean(schemaAccess.plugin),
+    schema: schemaAccess.plugin?.manifest.config?.schema,
     scope: options.scope,
     projectLayer: options.projectLayer,
     projectRoot,
     stores,
   });
 
-  const manifestFields = options.plugin
+  const manifestFields = schemaAccess.plugin
     ? await buildManifestFieldEntries({
-        plugin: options.plugin,
+        plugin: schemaAccess.plugin,
         scope: options.scope,
         projectLayer: options.projectLayer,
         cwd: options.cwd,
@@ -1492,8 +1850,8 @@ export async function resolveConfigReadV2(options: {
       })
     : [];
 
-  const knownSkillEntries = options.plugin
-    ? await resolveSkillTriggerConfigEntries(options.plugin)
+  const knownSkillEntries = schemaAccess.plugin
+    ? await resolveSkillTriggerConfigEntries(schemaAccess.plugin)
     : [];
   const knownSkillMap = new Map(knownSkillEntries.map((entry) => [entry.skillName, entry]));
   const userStored = new Map(readStoredSkillTriggers(userStore.values).map((entry) => [entry.skillName, entry.trigger]));
@@ -1650,7 +2008,7 @@ export async function resolveConfigReadV2(options: {
         storedSourceLayer: storeKind,
         ...(storeKind === 'local'
           ? { invalidReason: 'unsupportedProjectLocalLayer' as const }
-          : { orphanedReason: options.plugin ? 'skillRemoved' as const : 'pluginRemoved' as const }),
+          : { orphanedReason: schemaAccess.plugin ? 'skillRemoved' as const : 'pluginRemoved' as const }),
       });
     }
   }
@@ -1663,6 +2021,7 @@ export async function resolveConfigReadV2(options: {
     pluginName,
     scope: options.scope,
     projectLayer: options.projectLayer,
+    ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     fields: [...manifestFields, ...dedupedBuiltInFields],
     legacyConfigStores,
   };

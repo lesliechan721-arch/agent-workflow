@@ -1,19 +1,19 @@
 # `aw` 版本管理需求 Spec
 
-日期：2026-05-15
-状态：需求确认稿
-基线需求：`docs/dev/specs/aw-tui-ux-polish-followup.md`
+日期：2026-05-18
+状态：需求确认稿（前置基线校准）
+基线需求：`docs/dev/specs/aw-tui-ux-polish-followup.md`、`docs/dev/plans/aw-tui-ux-polish-followup-plan.md` 已实施结果
 文档规范：`docs/dev/spec-plan-writing-guide.md`
 
 ## 文档定位
 
 这份 Spec 只定义 `aw` CLI、插件、`@yiliang/aw-plugins` 远程 catalog 包和插件依赖版本管理的需求边界、现状探查结论、公开合同和验收标准，不写实现计划、阶段拆分、测试文件清单或迁移步骤。
 
-本文件以 `docs/dev/specs/aw-tui-ux-polish-followup.md` 中已经确认的“版本号规范化”和“版本比较结果驱动可升级状态”为基线，并继续扩展出插件独立发布、独立更新、CLI 兼容性声明和依赖最小版本约束。若本文件和前置 Spec 对本地 catalog `sourceVersion` 的语义描述不同，以本文件的拆分语义为准：CLI 版本、catalog 发布版本和插件版本必须分开管理，不能继续用 CLI package version 代表所有 catalog 新鲜度。
+本文件以前置 TUI 返工 Spec 及其后续执行计划的已实施结果为基线：严格 SemVer、SemVer 驱动的 `可升级` 判断、`status --verbose` 诊断入口、`statusSchemaVersion: 2` / `consoleItemsSchemaVersion: 3` / `configSchemaVersion: 2` / `receiptSchemaVersion: 2` / `nextStepsSchemaVersion: 1`、显式平台选择和 SkillTrigger 内建配置都视为已存在合同。本文件继续扩展插件独立发布、独立更新、CLI 兼容性声明和依赖最小版本约束。若本文件和前置基线对本地 catalog `sourceVersion`、embedded catalog 回退或 project-only no-gate 例外的语义描述不同，以本文件的远程 catalog 拆分语义为准：CLI 版本、catalog 发布版本和插件版本必须分开管理，不能继续用 CLI package version 或 embedded bundle 代表 catalog 新鲜度。
 
 ## 背景
 
-当前项目里至少存在两套用户可见版本：`@yiliang/aw` CLI package version，以及每个插件 manifest 中的 `version`。两者表面上都是版本号，但现有系统几乎没有统一规范：manifest 只校验字符串，运行时比较多处仍是字符串相等或不等，本地 catalog 的新鲜度也把 CLI 版本和 bundle fingerprint 混在一起判断。
+当前项目里至少存在两套用户可见版本：`@yiliang/aw` CLI package version，以及每个插件 manifest 中的 `version`。前置基线已经把这些版本收敛到严格 SemVer 解析，并把用户可见 `可升级` 收敛为 SemVer 比较结果；但本地 catalog 的新鲜度仍把 CLI 版本、embedded bundle 和 bundle fingerprint 绑在一起，无法表达“CLI 未变，但远程插件 catalog 已更新”。
 
 更大的问题是插件发版依赖 CLI 发版。源码插件在 `pnpm build` 时被打进 `packages/cli/plugins-dist/`，再跟随 CLI npm 包发布。只要一个插件需要更新，即使 CLI 本身没有变化，也必须重新发布 CLI，用户也必须升级 CLI 才能拿到插件更新。这让插件迭代、修复和回滚都绑在 CLI 发布节奏上，版本责任不清晰。
 
@@ -23,27 +23,27 @@
 
 这一节只记录会影响需求边界的事实，不描述执行步骤。
 
-### CLI 版本和本地 catalog 当前绑定在一起
+### CLI 版本和本地 catalog 仍绑定在一起
 
 - CLI 发布版本来自 `packages/cli/package.json`，根目录 `package.json` 也保存同一版本，并通过 `scripts/release/sync-version.mjs` 和 `Makefile` 的 release 入口同步。
 - `packages/cli/src/utils/local-marketplace.ts` 会读取 CLI package version，并把它写入 `~/.aw/config.json` 的 `sourceVersion`。
-- `packages/cli/src/utils/local-marketplace.ts` 当前用 `config.sourceVersion !== sourceVersion` 和 `bundleFingerprint !== bundleFingerprint` 判断本地 marketplace 是否新鲜。
+- `packages/cli/src/utils/local-marketplace.ts` 当前已用严格 SemVer 判断 `sourceVersion`，并继续用 `config.sourceVersion !== sourceVersion` 和 `bundleFingerprint !== bundleFingerprint` 判断本地 marketplace 是否新鲜。
 - `packages/cli/src/utils/plugin-catalog.ts` 当前把本地 catalog 是否匹配当前 CLI version 和 bundle fingerprint 作为 local / embedded catalog 选择条件。
-- 这些路径说明本地 catalog 新鲜度仍以 CLI package version 为中心，无法表达“CLI 未变，但远程插件 catalog 已更新”。
+- 前置基线已经把本地 catalog gate 收窄到确实需要 shared runtime、native marketplace、本地 marketplace 或其它 `~/.aw` 产物的入口；纯只读和纯 Codex project repo-managed / no-runtime 写入可以不初始化或刷新 `~/.aw`。
+- 这些路径说明本地 catalog 新鲜度仍以 CLI package version 和 embedded bundle 为中心，无法表达“CLI 未变，但远程插件 catalog 已更新”。远程 catalog 模型启用后，project-only no-gate 例外只能表示“不 materialize active local marketplace / runtime view”，不能表示可以跳过 current catalog 解析。
 
-### 插件版本存在字段，但没有严格版本规范
+### 插件版本已严格化，但还没有独立 catalog 身份
 
 - 插件 manifest 的 `version` 定义在 `packages/cli/src/types.ts` 的 `PluginManifestSource.version`。
-- `packages/cli/src/utils/manifest.ts` 的 manifest 校验目前只要求 `version` 是字符串，不拒绝 `v1.2.3`、`1.2`、`latest` 或 `^1.2.3` 这类不符合严格 SemVer 2.0.0 的写法。
-- `docs/dev/specs/aw-tui-ux-polish-followup.md` 已经把严格 SemVer 2.0.0 作为基线要求，并明确“规范化”不能自动清洗非法输入。
-- 运行时参与比较的已安装版本来自 install record 的 `resolvedVersion` 或等价的已安装 source version。该字段当前也是字符串。
+- `packages/cli/src/utils/manifest.ts` 已经使用严格 SemVer 2.0.0 校验 `plugin manifest.version`，不清洗 `v1.2.3`、`1.2`、`latest` 或 `^1.2.3` 这类非法写法。
+- 运行时参与比较的已安装版本来自 install record 的 `resolvedVersion` 或等价的已安装 source version；状态投影已经使用同一套严格 SemVer 比较逻辑。
+- 现有 manifest 还没有 catalog 级最低 CLI 版本、插件最低 CLI 版本或远程 artifact digest 身份，仍无法表达“这个插件版本属于哪个独立 catalog 发布快照”。
 
-### 可升级判断已经有正确方向，但还没有统一版本比较
+### 可升级判断已收敛，但 catalog 来源还没拆分
 
-- `docs/dev/specs/aw-tui-ux-polish-followup.md` 已确认用户可见 `可升级` 只能由语义版本比较驱动。
-- 当前 `packages/cli/src/commands/status.ts` 有只看 `resolvedVersion` 和 current catalog `manifest.version` 不一致的辅助逻辑，但仍是字符串不等。
-- 当前 `packages/cli/src/commands/status.ts` 还会在版本相同但 bundle fingerprint 不同的情况下返回可升级证据，这和“同版本内容变化不能显示可升级”的基线要求冲突。
-- 当前 `packages/cli/src/commands/console-model.ts` 会把 install-state projection 中的 `upgradeAvailable` 直接投影成首页状态，历史漂移信号仍可能影响用户看到的升级状态。
+- 前置基线已确认并实现：用户可见 `可升级` 只能由 current catalog 插件版本语义上高于已安装版本触发。
+- source drift、fingerprint drift、project identity drift 和同版本内容变化不再触发 `可升级`；current catalog 版本低于已安装版本，或任一侧版本不合规时，状态投影为异常。
+- 当前使用的 catalog 仍来自 embedded / local marketplace 选择结果，尚未能表达 sidecar manifest、远程 catalog package、catalog 历史记录、cache selector 或 latest catalog 被当前 CLI 版本阻止。
 
 ### 插件发布被 CLI bundle 绑定
 
@@ -93,7 +93,7 @@
 7. CLI package 不再把 embedded catalog 或构建后插件快照作为发布内容；无网络且无与请求匹配的有效本地 catalog 缓存时，安装、升级和需要 current catalog 的发现类能力必须明确失败或展示 catalog 不可用。
 8. 有效本地 catalog 缓存必须按本次 catalog 选择器匹配，不能把 `latest`、`beta` 或显式 exact catalog version 的缓存互相替代。
 9. 需要 user-scope native runtime 的安装、升级、重装或 native repair，必须把本次选中的 current catalog materialize 成可校验的 active local marketplace/runtime view；native 平台只能消费这份 active view，不能直接把任意 catalog cache entry 当成当前 runtime。
-10. `aw init`、`aw install`、`aw upgrade`、`aw upgrade --all`、`aw uninstall`、`aw status`、`aw config`、`aw diagnose`、`aw cleanup`、`repair`、`reinstall`、主控制台、发现类页面和 TUI 使用同一套 current catalog 解析结果，只是不同入口对 catalog unavailable 的可继续范围不同。
+10. `aw init`、`aw install`、`aw upgrade`、`aw upgrade --all`、`aw uninstall`、`aw status` / `aw status --verbose`、`aw config`、`aw cleanup`、`repair`、`reinstall`、主控制台、发现类页面和 TUI 使用同一套 current catalog 解析结果，只是不同入口对 catalog unavailable 的可继续范围不同。`aw diagnose` 不恢复为公开入口，旧命令只保留迁移错误。
 11. 用户可见 `可升级` 只表示 current catalog 中的插件版本高于已安装版本。
 12. 默认 channel 存在更新但最新 catalog 要求更高 CLI 时，不能显示成插件可升级，必须展示为 catalog 更新被当前 CLI 版本阻止，并提示升级 `aw`。
 13. Catalog manifest 和插件 manifest 支持声明最低 CLI 版本，发布侧和运行时都要校验；插件最低 CLI 版本不能高于 catalog 级最低 CLI 版本。
@@ -116,7 +116,7 @@
 - 定义插件依赖最低版本的 manifest 合同、解析规则、写命令行为和状态展示。
 - 定义 current catalog 选择、sidecar catalog manifest 获取、完整 npm catalog 包获取、本地缓存和远程刷新在需求层面的行为边界。
 - 定义 current catalog materialize 到 active local marketplace/runtime view 的合同，确保 user-scope native runtime 消费的就是本次选中的 catalog snapshot。
-- 定义 `config`、`diagnose`、`cleanup`、`uninstall`、`repair`、`reinstall`、状态查看、主控制台和发现类入口消费 current catalog 时的降级边界。
+- 定义 `config`、`status --verbose`、`cleanup`、`uninstall`、`repair`、`reinstall`、状态查看、主控制台和发现类入口消费 current catalog 时的降级边界。
 - 定义升级状态、异常状态、CLI 输出、JSON 和 TUI 展示需要表达的版本信息。
 - 定义移除 embedded catalog 后 `aw init`、`uninstall`、`repair`、`reinstall`、主控制台和发现类入口的用户可见行为边界。
 - 定义 legacy install record、旧本地 catalog config 和旧缓存的运行时兼容合同。
@@ -318,6 +318,7 @@ CLI 必须能从 npm registry 获取 `@yiliang/aw-plugins-manifest` 和 `@yilian
 - prerelease / beta CLI 默认先获取 `@yiliang/aw-plugins-manifest@beta`。
 - 用户或测试流程可以通过命令级参数显式指定 catalog dist-tag 或 catalog version；dist-tag 和 catalog version 互斥，且只影响当前命令或本次 `aw init` 预热，不写入持久默认 channel。显式指定时必须体现在 JSON 和 verbose 诊断里。
 - 所有脚本化 current-catalog 消费入口必须暴露同一组 selector 参数：`--catalog-channel <dist-tag>` 用于显式 dist-tag，`--catalog-version <semver>` 用于显式 exact catalog version；两者互斥。`aw init --channel <dist-tag>` 可以作为 `--catalog-channel` 的兼容别名，但内部语义仍必须落到同一 catalog 选择器。需要覆盖的入口至少包括 `aw init`、`aw install`、`aw upgrade`、`aw upgrade --all`、`aw reinstall`、`aw status`，以及在未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。
+- Catalog selector 不改变前置基线的平台选择合同：公开 `--platform` 仍只有 `codex | claude | both`，不能恢复 `auto`；绑定真实插件 target 的写命令省略 `--platform` 仍应在写入前失败；`aw status` 未传 `--platform` 时仍按 `both` 查询已有证据。
 - 主控制台、TUI 状态页、发现页、可安装插件列表和可安装插件详情如果会解析 current catalog，也必须接收或继承同一 catalog 选择器。对 `aw status`、TUI 状态页这类可在无 current catalog 时继续展示本地状态的入口，selector 只影响可升级判断、候选版本、依赖候选和发现内容等 current-catalog 证据；不能因为传入 selector 而隐式修改安装状态。
 - 兼容历史 catalog 查询只适用于默认 channel 或显式 dist-tag。用户显式指定精确 catalog version 时，CLI 只校验该版本；该版本不兼容当前 CLI 时，显式 catalog 解析失败，不做历史回退，任何依赖 current catalog 的动作都必须失败。
 - CLI 可以用 npm package metadata 解析 dist-tag、tarball URL 和 npm integrity 这类分发信息；sidecar catalog manifest 负责提供目标版本的 catalog 级最低 CLI 版本、catalog version、发布轨道、历史版本记录、完整 catalog package identity 和 artifact digest。完整 npm tarball integrity 只来自 registry/package metadata，用于校验下载到的 package bytes，不能写入 `catalog-manifest.json`，也不能替代 sidecar manifest 参与兼容判断、历史查询或插件版本判断。
@@ -384,7 +385,7 @@ Catalog manifest 中每个插件 entry 的稳定身份应是 `plugin name + plug
 
 ### Current Catalog 消费矩阵
 
-所有入口都必须调用同一套 current catalog 解析流程，并把解析结果作为结构化证据传给命令层。不同入口只能决定“没有 current catalog 时还能做多少事”，不能自行发明 embedded fallback 或跳过 catalog 历史记录规则。
+所有需要或尝试消费 current catalog 的入口都必须调用同一套 current catalog 解析流程，并把解析结果作为结构化证据传给命令层。不同入口只能决定“没有 current catalog 时还能做多少事”，不能自行发明 embedded fallback 或跳过 catalog 历史记录规则。前置基线中的 project-only embedded catalog 例外在远程 catalog 模型下只保留为 no-gate / no-active-view 语义：纯 Codex project repo-managed / no-runtime 写入不需要初始化、刷新或 materialize `~/.aw`，但只要动作需要 current catalog 选择插件版本、解析依赖或读取未安装插件 schema，就仍必须拿到远程 catalog、历史兼容 catalog 或允许的 cache fallback。
 
 统一解析结果在 JSON、verbose 诊断和 TUI 数据模型中必须能映射到稳定机器状态。字段名可以随实现方案落在各自 schema 内，但语义至少要覆盖，且不能把远程不可用、历史记录不可用和当前 CLI 版本过低互相替代：
 
@@ -408,7 +409,7 @@ Catalog manifest 中每个插件 entry 的稳定身份应是 `plugin name + plug
 | 发现页、可安装插件列表、可安装插件详情 | 是 | 无 | 禁用或按统一状态映射失败；不能从历史记录或 install record 拼出可安装列表 |
 | `aw config list/get/set/unset` | 视 schema 来源而定；已有安装位置优先使用 install record / historical bundle 中的 `config.schema`，未安装或显式按 current catalog 预置未消费的 config store 时才需要 current catalog | 已安装位置的 install record、historical runtime bundle 和 config store；预置未安装插件配置时只能使用 current catalog schema | 已安装位置的 historical schema 可用时，即使 current catalog unavailable 也可以读写；schema 缺失或损坏时失败为 `configSchemaUnavailable`；同一 config store 的多个已安装消费者 schema identity 不一致时失败为 `configSchemaConflict`；只有需要 current catalog schema 且拿不到 catalog 时才失败为 `catalogUnavailable` |
 | `aw config reset` | 视目标 store 是否已被安装位置消费；已消费 store 不需要 current catalog，但必须走 installed historical refresh 合同；孤立残留 store 不需要 current catalog | 已消费路径使用 install record、historical runtime bundle、config store 和 dynamic artifact evidence；孤立残留路径只使用 config store 路径安全校验和本地 store 证据 | 已消费 store 的 reset 等价于删除该 store 中所有已写入 key，必须通过共享配置写入 helper，并在命中 `refreshKeys` 时按每个 installed consumer 的 historical runtime 刷新已安装 dynamic artifact；schema conflict 时 reset 可以作为整 store 清理动作，但不能任选一个 schema 解释输入；只有没有 installed consumer 的残留 store，才允许在用户确认后 raw 删除且不解析 schema、不安装插件、不刷新 artifact |
-| `aw diagnose` | 否，current catalog 只是诊断证据层之一 | install record、平台现场、project artifact identity、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared owner、native marker、config store | 输出 catalog 证据缺失或 latest 被阻止；只读诊断不能因此改写状态，也不能展示 current catalog 才能确认的升级判断 |
+| `aw status --verbose` / TUI 状态详情 | 否，current catalog 只是诊断证据层之一 | install record、平台现场、project artifact identity、dynamic diagnostic cache、historical lifecycle runtime、dependency index、shared owner、native marker、config store | 输出 catalog 证据缺失或 latest 被阻止；只读诊断不能因此改写状态，也不能展示 current catalog 才能确认的升级判断。`aw diagnose` 旧入口只返回迁移错误，不参与 current catalog 消费矩阵 |
 | `aw cleanup` | 否，已有证据足以归类时可以继续 | install record、dependency index、平台现场、native marker、config store、historical lifecycle runtime、可定位本地残留；current catalog 只作为可选辅助证据 | 能生成计划时继续；如果目标只能靠 current catalog 才能识别，按统一状态映射阻断，或返回现有 cleanup blocking reason。不能回退 embedded bundle |
 | `repair` | 视动作而定 | 修复已安装版本且 historical runtime/install record 证据可校验时可以继续 | 只重放已安装版本证据时允许；凡是需要远程 artifact、依赖解析、选择 current catalog 版本或替换版本的 repair，都必须拿到 current catalog |
 | `reinstall` | 是 | 旧安装位置的 install record、平台现场、project artifact identity、historical lifecycle runtime、shared runtime owner、native transaction marker、config store 只用于安全撤销旧副作用，不能替代 current catalog | 作为“按 current catalog 重新安装”的入口，拿不到 current catalog 时写入前失败；已有安装位置需要撤销 lifecycle、dynamic artifact 或 native 副作用时，撤销阶段继承 `uninstall` 的 fail-closed 边界。historical runtime 缺失、摘要不可信或 legacy 证据不足时，本次 `reinstall` 在新安装前失败为 `historicalRuntimeUnavailable` 或对应卸载阻断状态；不使用 embedded bundle 或只靠历史记录中的插件版本重装 |
@@ -423,7 +424,7 @@ Catalog manifest 中每个插件 entry 的稳定身份应是 `plugin name + plug
 
 如果同一份 config store 可能被多个已安装位置消费，CLI 必须收集这些位置的 schema identity。全部 identity 一致时可以使用该 schema；不一致时，`list/get/set/unset` 必须失败为 `configSchemaConflict`，并在默认输出、JSON 和 TUI 中列出冲突的 plugin version、scope / projectKey、schema identity 和可用修复动作，例如升级到同一版本、卸载多余位置或使用 `config reset` 清理 store。CLI 不能在冲突时静默选择 current catalog schema，也不能任选一个 installed schema 继续写入。
 
-JSON receipt 和 TUI 数据模型必须暴露 schema 来源，至少包括 `schemaSource`（`installedHistorical` 或 `currentCatalog`）、schema identity、plugin version、manifest digest，以及 current catalog version / channel 或 install record location 这类可审计证据。status、diagnose 和 config 向导展示配置问题时，也必须区分 `catalogUnavailable`、`configSchemaUnavailable` 和 `configSchemaConflict`。
+JSON receipt 和 TUI 数据模型必须暴露 schema 来源，至少包括 `schemaSource`（`installedHistorical` 或 `currentCatalog`）、schema identity、plugin version、manifest digest，以及 current catalog version / channel 或 install record location 这类可审计证据。status、`status --verbose` 和 TUI 配置页展示配置问题时，也必须区分 `catalogUnavailable`、`configSchemaUnavailable` 和 `configSchemaConflict`。
 
 ### Catalog Integrity
 
@@ -699,7 +700,7 @@ Catalog cache 重建、`aw init --force`、channel 切换、cache cleanup 或旧
 
 Catalog 刷新只改变“可见的 current catalog”。插件升级才改变已安装插件。
 
-用户执行状态查看、TUI 首页或显式 catalog refresh 后，可能看到新的 `可升级`、`catalog 更新被 CLI 版本阻止` 或 `依赖可自动升级` 信息，但这些动作不能直接修改平台 runtime 或 install record。
+用户执行状态查看、TUI 首页、`aw init` 预热或其它显式 catalog/cache 刷新动作后，可能看到新的 `可升级`、`catalog 更新被 CLI 版本阻止` 或 `依赖可自动升级` 信息，但这些动作不能直接修改平台 runtime 或 install record。
 
 ### `aw init` 与旁路命令
 
@@ -711,10 +712,10 @@ Catalog 刷新只改变“可见的 current catalog”。插件升级才改变�
 - 远程不可用时，已有与本次选择器匹配的有效缓存的默认 `aw init` 可以报告 cache fallback；没有匹配缓存时，`aw init` 必须失败并说明 catalog unavailable。
 - latest catalog 不兼容且通过有效 sidecar 历史记录确认查不到历史兼容 catalog 时，`aw init` 必须失败为 `awVersionTooLow`，不能用本地 cache fallback 改写。latest sidecar manifest、历史记录缺失、schema 不受支持、非法或不可获取时，`aw init` 必须失败为 `catalogHistoryUnavailable`，不能退回 npm metadata、完整 catalog tarball 或本地 cache。
 
-`uninstall`、`repair`、`reinstall`、主控制台和发现类入口也必须明确 current catalog unavailable 时的边界：
+`uninstall`、`repair`、`reinstall`、主控制台、状态详情和发现类入口也必须明确 current catalog unavailable 时的边界：
 
 - 安装、升级、插件列表发现、可安装插件详情、依赖解析和任何“选择 current catalog 版本”的动作都必须拿到 current catalog；拿不到时应按统一状态映射禁用对应动作或失败。
-- 只读状态、主控制台首页和诊断页可以在 current catalog unavailable 时展示已安装记录、平台 runtime 证据和 legacy metadata，但必须把 catalog 状态标为 unavailable，不能展示新的可安装版本或伪造升级判断。
+- 只读状态、`status --verbose`、主控制台首页和 TUI 状态详情可以在 current catalog unavailable 时展示已安装记录、平台 runtime 证据和 legacy metadata，但必须把 catalog 状态标为 unavailable，不能展示新的可安装版本或伪造升级判断。
 - `uninstall` 不依赖 current catalog。它必须以 install record、dependency index、平台现场、project artifact identity、native marker、shared runtime owner 和可校验 historical lifecycle runtime 为边界执行卸载保护、卸载 lifecycle 和受管 artifact 清理；current catalog 只能作为诊断辅助，不能替代 historical runtime 或安装时证据。
 - `uninstall` 需要 historical runtime 但该 runtime 缺失、摘要不可信或 legacy 证据不足时必须 fail closed，返回 `historicalRuntimeUnavailable` 或 `uninstallBlocked`，并提示先通过 `repair` 重建可卸载状态。需要在证据足够时只清理 AW 可证明拥有的残留，应进入 `cleanup` 的受限清理路径，而不是让 `uninstall` 跳过 lifecycle 继续。
 - `repair` 如果只修复已经安装版本的本地 artifact，并且 install record 中有可校验的 historical snapshot/runtime 证据，可以不依赖 current catalog；如果需要从远程重新取得 artifact、解析依赖、选择版本或替换为 current catalog 版本，则必须依赖 current catalog。
@@ -833,9 +834,9 @@ JSON 输出必须区分这些版本概念：
 - legacy metadata status。
 - config schema source、schema identity、schema plugin version 和 schema manifest digest。
 
-新增或改变既有 JSON 机器结构时，必须提供 schema version 或等价兼容边界。受版本管理影响的 `status --json` 子结构和写命令 JSON receipt 都必须带可机器判断的 schema version；只追加字段时也要说明它属于哪个 schema version。JSON 中不能只保留人类文案，否则 TUI 和外部脚本无法稳定判断状态。
+新增或改变既有 JSON 机器结构时，必须落到前置基线已经固定的 schema 边界，或在确有破坏性变化时显式 bump 对应 schema version。受版本管理影响的 `status --json` / `status --verbose --json` 子结构默认属于 `statusSchemaVersion: 2` 和 `consoleItemsSchemaVersion: 3` 的扩展；写命令 JSON receipt 默认属于 `receiptSchemaVersion: 2` 的扩展；配置读输出默认属于 `configSchemaVersion: 2` 的扩展；下一步指示继续使用 `nextStepsSchemaVersion: 1`。JSON 中不能只保留人类文案，否则 TUI 和外部脚本无法稳定判断状态。
 
-`aw init --json` 是 catalog/cache 预热入口，也必须有稳定机器合同。它的 receipt 必须带 schema version，并至少表达本次请求的 catalog channel 或显式 catalog version、选择器类型、实际使用的 sidecar manifest package source/version/channel/integrity、实际使用的完整 catalog source/version/channel/minAwVersion、latest catalog version/minAwVersion、latest 是否被当前 CLI 阻止、是否使用历史兼容 catalog 或 cache fallback、cache fallback 命中的 selector / catalog identity、历史记录 schema version、显式覆盖来源、sidecar manifest unavailable / manifest mismatch / catalog unavailable / `aw` 版本过低 / 历史记录不可用 / integrity 失败等阻断 code。
+`aw init --json` 是 catalog/cache 预热入口，也必须有稳定机器合同。它的 receipt 必须带 schema version，且不能复用 `statusSchemaVersion` 或 `configSchemaVersion` 冒充写入结果；如果复用 `receiptSchemaVersion: 2`，新增字段必须明确属于 init/catalog cache 预热 receipt。该 receipt 至少表达本次请求的 catalog channel 或显式 catalog version、选择器类型、实际使用的 sidecar manifest package source/version/channel/integrity、实际使用的完整 catalog source/version/channel/minAwVersion、latest catalog version/minAwVersion、latest 是否被当前 CLI 阻止、是否使用历史兼容 catalog 或 cache fallback、cache fallback 命中的 selector / catalog identity、历史记录 schema version、显式覆盖来源、sidecar manifest unavailable / manifest mismatch / catalog unavailable / `aw` 版本过低 / 历史记录不可用 / integrity 失败等阻断 code。
 
 写命令的 JSON receipt 也必须带版本决策信息，至少包括本次使用的 sidecar manifest package source/version/channel/integrity、本次使用的完整 catalog source/version/channel/minAwVersion、catalog 选择器和 cache fallback 命中情况、latest catalog 是否被 CLI 版本阻止、每个写入目标选择的插件版本、自动安装或升级的依赖、historical runtime / snapshot 的持久化结果、config 写命令使用的 schema source / identity，以及因为 sidecar manifest unavailable、manifest mismatch、catalog unavailable、`aw` 版本过低、legacy invalid version、`historicalRuntimeUnavailable`、`uninstallBlocked`、config schema unavailable / conflict 或 integrity 错误导致的阻断原因。
 
@@ -850,9 +851,9 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 - 若 latest catalog 被当前 CLI 版本阻止，详情页显示为受 CLI 版本限制的提示，不把主操作标成升级。
 - 依赖版本过低时，详情页或状态页说明父插件安装或升级将同时升级哪些依赖。
 - 依赖最低版本无法满足时，状态页展示阻断原因。
-- Catalog refresh 的结果只作为 catalog 状态反馈，不显示成插件已经升级。
+- Catalog/cache 刷新或 `aw init` 预热结果只作为 catalog 状态反馈，不显示成插件已经升级。
 - Current catalog unavailable 时，首页和详情页可以展示已安装状态，但安装、升级、发现和选择最新版本的操作必须显示为不可用或隐藏，并说明 catalog 不可用。
-- 配置向导必须展示本次使用的 schema source；已安装位置的 historical schema 可用时，current catalog unavailable 不能阻断配置读写；schema conflict 时必须阻断写入并展示冲突位置。
+- TUI 配置页必须展示本次使用的 schema source；已安装位置的 historical schema 可用时，current catalog unavailable 不能阻断配置读写；schema conflict 时必须阻断写入并展示冲突位置。
 - Legacy metadata 影响判断时，详情页必须展示具体影响，例如依赖最低版本未知、已安装版本非法或旧本地 catalog cache 不可用。
 
 ## 插件作者体验需求
@@ -899,12 +900,12 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 22. 写命令 JSON receipt 能稳定表达本次使用的 sidecar manifest source/version/channel/integrity、本次使用的 catalog source/version/channel/minAwVersion、catalog 选择器、cache fallback 命中、选择的插件版本、自动依赖升级、historical runtime / snapshot 持久化结果、config schema source / identity、latest catalog 阻止状态和阻断原因，并带 schema version 或等价兼容边界。
 23. 同一 `plugin@version` 指向不同 artifact digest 时，CLI 视为 catalog integrity 错误，不能显示为升级。
 24. 已安装版本和 current catalog 插件版本只存在 build metadata 差异时，不能显示为 `可升级`。
-25. `aw status`、TUI 首页和 catalog refresh 不会隐式升级已安装插件。
+25. `aw status`、TUI 首页、catalog/cache 刷新和 `aw init` 预热不会隐式升级已安装插件。
 26. 稳定版 CLI 默认获取 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认获取 `@yiliang/aw-plugins-manifest@beta`，兼容性通过后再获取同版本 `@yiliang/aw-plugins`；`latest` 只接受 stable catalog version 和 stable 插件 version，`beta` 只接受 prerelease catalog version 且可包含 stable 或 prerelease 插件 version，同一个 catalog version 不能跨轨道复用；`aw init`、安装、升级、重装、状态查看、发现类入口，以及需要 current catalog schema 的未安装配置入口，都能通过 `--catalog-channel <dist-tag>` 或 `--catalog-version <semver>` 显式覆盖 catalog 选择器；显式覆盖只影响当前命令或本次 `aw init` 预热，并且 JSON、verbose 输出和 TUI 状态能看见请求 selector 与实际 catalog identity。
 27. 远程 catalog 不可用且没有与本次选择器匹配的有效缓存时，需要 current catalog 的安装、升级和发现类命令不能回退到 embedded catalog，必须给出 catalog unavailable。
 28. 远程 catalog 可达但完整包 npm integrity、sidecar/full manifest byte-for-byte 一致性或 artifact digest 校验失败时，如果已有与本次选择器匹配的有效本地缓存且不属于必须失败的历史记录错误，可以使用 cache fallback；输出、JSON 和 TUI 必须同时暴露 `cacheFallback` 以及 `manifestMismatch` / `integrityFailure` 等原始远程校验错误，不能写入失败的远程 catalog 或 artifact。没有匹配缓存时必须失败，且不能回退到 embedded catalog。
 29. `aw init` 拉取、校验并预热最新兼容 catalog/cache，不安装或升级插件，也不写 install record、active local marketplace 或平台 runtime；latest catalog 不兼容且历史记录有效、查不到历史兼容 catalog 时返回 `awVersionTooLow`；历史记录缺失、schema 不受支持、非法或不可获取时返回 `catalogHistoryUnavailable`；远程不可用或远程校验失败且没有匹配 cache 时返回 `catalogUnavailable`。
-30. `config`、`diagnose`、`cleanup`、`uninstall`、`repair`、`reinstall`、主控制台和发现类入口在 current catalog unavailable 时有明确边界：可展示或处理已有本地证据的只读/清理动作可以继续；已有安装位置的 schema-aware config 在 historical schema 健康且无 schema conflict 时可以继续；`config reset` 对已消费 store 必须删除 store 后按 installed historical runtime 刷新命中的 dynamic artifact，schema conflict 时只能作为整 store 清理动作继续，孤立残留 store 才允许 raw 删除且不刷新 artifact；`uninstall` 不依赖 current catalog，但 historical runtime 缺失、摘要不可信或 legacy 证据不足时必须 fail closed 并暴露 `historicalRuntimeUnavailable` / `uninstallBlocked`；依赖 current catalog 的未安装插件配置预置、安装、升级、发现、依赖解析、`reinstall` 和选择 current catalog 版本动作必须禁用或失败；`reinstall` 不能改用 historical runtime 证据重建已安装版本，且已有安装位置需要撤销旧 lifecycle、dynamic artifact 或 native 副作用时，historical runtime 不可信必须在新安装前 fail closed。
+30. `config`、`status --verbose`、`cleanup`、`uninstall`、`repair`、`reinstall`、主控制台和发现类入口在 current catalog unavailable 时有明确边界：可展示或处理已有本地证据的只读/清理动作可以继续；已有安装位置的 schema-aware config 在 historical schema 健康且无 schema conflict 时可以继续；`config reset` 对已消费 store 必须删除 store 后按 installed historical runtime 刷新命中的 dynamic artifact，schema conflict 时只能作为整 store 清理动作继续，孤立残留 store 才允许 raw 删除且不刷新 artifact；`uninstall` 不依赖 current catalog，但 historical runtime 缺失、摘要不可信或 legacy 证据不足时必须 fail closed 并暴露 `historicalRuntimeUnavailable` / `uninstallBlocked`；依赖 current catalog 的未安装插件配置预置、安装、升级、发现、依赖解析、`reinstall` 和选择 current catalog 版本动作必须禁用或失败；`reinstall` 不能改用 historical runtime 证据重建已安装版本，且已有安装位置需要撤销旧 lifecycle、dynamic artifact 或 native 副作用时，historical runtime 不可信必须在新安装前 fail closed。`aw diagnose` 旧入口只验收迁移错误，不验收诊断 payload。
 31. Legacy install record 缺少依赖 `minVersion`、旧本地 catalog cache、非 SemVer `resolvedVersion` 等场景都有稳定用户可见状态，且不会退回字符串比较或 embedded fallback。
 32. CLI 发布脚本和 catalog 发布脚本可以独立运行；catalog 发布采用 `@yiliang/aw-plugins` 完整包先就绪、`@yiliang/aw-plugins-manifest` 或正式 dist-tag 最后切换的流程；full package 已成功但 sidecar / dist-tag 失败时，同一 catalog version 的恢复重跑只能在已存在 package 与本次产物完全一致时补齐缺失侧，不能覆盖已发布 package；组合发布入口默认先发布 `@yiliang/aw`，再发布同一 catalog version 的 catalog 包。
 33. CLI tarball smoke 能证明不含 embedded catalog 或完整插件 artifact；sidecar tarball smoke 能证明 `@yiliang/aw-plugins-manifest` 只含 `catalog-manifest.json` 和必要 package metadata，并带 catalog 历史版本记录及 history releases 中每个插件的 `artifactDigest` / `manifestDigest`，且 manifest 不包含自身 digest 或任一 npm tarball 的最终 integrity；catalog tarball smoke 能证明 `@yiliang/aw-plugins` 包含与 sidecar byte-for-byte 一致的完整 catalog manifest、全部构建后插件 artifact、artifact digest 和 manifest digest 元数据。
@@ -912,7 +913,7 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 35. Catalog 发布门禁会校验 catalog version 在目标发布轨道内严格递增、`latest` catalog 不含 prerelease 插件 version、sidecar/full catalog package identity 一致、两份 catalog manifest byte-for-byte 一致、同一 `plugin@version` 的 artifact digest 和 manifest digest 与官方 `latest` / `beta` 历史记录并集完全一致、插件 artifact 相对目标轨道历史变化时插件 version 严格递增、同插件不使用仅 build metadata 不同的替代版本、最低 CLI 版本合法且覆盖当前快照真实需求；任何不满足都会报错并停止发布。最低 CLI 版本低于历史 release 的门槛不是失败条件。
 36. 插件作者文档、作者技能、manifest 参考文档、安装文档、安装技术细节文档、测试指南和架构文档都同步描述新的版本、兼容性、依赖最低版本、`latest` / `beta` 对插件 prerelease version 的发布约束、sidecar manifest 包、catalog 单版本快照、catalog 历史版本记录、`artifactDigest` / `manifestDigest` 不可变摘要、历史兼容 catalog 回退、catalog cache 与 active local marketplace/runtime view 分层、`aw config` schema source 优先级、`aw config reset` 的 installed-consumer / orphan-store 分支、`aw init` 预热合同，以及 CLI tarball 不再携带 embedded catalog / `plugins-dist/` 作为正式分发真值。
 37. `aw init --json` 带 schema version，并稳定表达请求的 catalog channel 或显式 catalog version、catalog 选择器、实际使用的 sidecar manifest source/version/channel/integrity、实际使用的 catalog source/version/channel/minAwVersion、latest 阻止状态、历史兼容 catalog 或 cache fallback 来源、cache fallback 命中的 selector / catalog identity、历史记录 schema version，以及 `catalogUnavailable`、`awVersionTooLow`、`latestCatalogBlocked`、`catalogHistoryUnavailable`、`explicitCatalogIncompatible`、sidecar manifest unavailable、manifest mismatch、integrity 失败等阻断 code。
-38. Current catalog 消费矩阵进入验收：`config`、`diagnose`、`cleanup`、`uninstall`、`repair`、`reinstall`、状态查看、主控制台、发现页和 TUI 对 sidecar manifest unavailable、manifest mismatch、integrity failure、catalog unavailable、latest 阻止、历史记录不可用、远程不可用、cache fallback、显式 selector 覆盖、`historicalRuntimeUnavailable`、`uninstallBlocked`、config schema unavailable、config schema conflict 和 `config reset` artifact refresh 的行为一致，且 JSON/TUI 暴露稳定机器状态；历史记录不可用固定映射为 `catalogHistoryUnavailable`，已确认没有兼容 catalog 固定映射为 `awVersionTooLow` 且不能被 cache fallback 覆盖，远程不可用或校验失败且没有匹配 cache 固定映射为 `catalogUnavailable`。
+38. Current catalog 消费矩阵进入验收：`config`、`status --verbose`、`cleanup`、`uninstall`、`repair`、`reinstall`、状态查看、主控制台、发现页和 TUI 对 sidecar manifest unavailable、manifest mismatch、integrity failure、catalog unavailable、latest 阻止、历史记录不可用、远程不可用、cache fallback、显式 selector 覆盖、`historicalRuntimeUnavailable`、`uninstallBlocked`、config schema unavailable、config schema conflict 和 `config reset` artifact refresh 的行为一致，且 JSON/TUI 暴露稳定机器状态；历史记录不可用固定映射为 `catalogHistoryUnavailable`，已确认没有兼容 catalog 固定映射为 `awVersionTooLow` 且不能被 cache fallback 覆盖，远程不可用或校验失败且没有匹配 cache 固定映射为 `catalogUnavailable`。
 39. 脚手架和 `validate_plugin` 类作者工具在创建或校验阶段拒绝缺失 `compatibility.aw.minVersion`、非法插件版本、非法插件最低 CLI 版本、非法 `dependencies.plugins[].minVersion`、旧式依赖版本字段，以及插件最低 CLI 版本高于目标 catalog 级最低 CLI 版本。
 40. Cache fallback 按 catalog 选择器验收：稳定版默认 `latest` 离线时不能使用 beta 缓存，prerelease / beta CLI 默认 `beta` 离线时不能使用 latest 缓存，显式 dist-tag 只命中同一 dist-tag / channel 缓存，显式 exact catalog version 只命中同一 catalog version 缓存；任一命中都必须校验 schema、integrity、channel、catalog version 和 `minAwVersion <= current CLI`。
 41. `aw init --channel beta`、显式 dist-tag 或显式 exact catalog version 的预热不会污染默认 channel 的离线 fallback；安装、升级、重装、状态和发现入口使用同一 selector 时也不会污染默认 channel；JSON、verbose 诊断和 TUI 能说明本次请求 selector、命中的 cached catalog identity、fallback reason，以及缓存不是最新远程状态。

@@ -16,6 +16,8 @@ import {
   createAvailableLedger,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
+import { resolvePluginsFromCatalog } from '../../src/utils/manifest.js';
 import {
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -25,6 +27,7 @@ import {
 } from '../../src/utils/paths.js';
 import { upsertCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
+import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
 import { getTrackingManifestPath, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -44,6 +47,7 @@ async function makeWorkspace(): Promise<{
   awHome: string;
   codexHome: string;
   claudeHome: string;
+  embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-discovery-'));
@@ -62,14 +66,30 @@ async function makeWorkspace(): Promise<{
     AW_CODEX_HOME: path.join(root, 'codex-home'),
     AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     AW_FORCE_CODEX_AVAILABLE: '1',
+    AW_CLI_VERSION: '1.0.0-beta.14',
     PATH: '',
   } as NodeJS.ProcessEnv;
+
+  const remoteCatalog = await createRemoteCatalogFromEmbeddedRoot({
+    embeddedRoot,
+    catalogVersion: '1.0.0-beta.14',
+    channel: 'beta',
+    minAwVersion: '1.0.0-beta.14',
+  });
+  setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+    manifest: remoteCatalog.manifest,
+    sidecarRoot: remoteCatalog.sidecarRoot,
+    fullRoot: embeddedRoot,
+    channel: 'beta',
+    version: '1.0.0-beta.14',
+  }));
 
   return {
     repoRoot,
     awHome: env.AW_HOME!,
     codexHome: env.AW_CODEX_HOME!,
     claudeHome: env.AW_CLAUDE_HOME!,
+    embeddedRoot,
     env,
   };
 }
@@ -81,6 +101,7 @@ async function makeWorkspaceWithMutator(
   awHome: string;
   codexHome: string;
   claudeHome: string;
+  embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-discovery-'));
@@ -101,15 +122,150 @@ async function makeWorkspaceWithMutator(
     AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     AW_FORCE_CODEX_AVAILABLE: '1',
     AW_FORCE_CLAUDE_AVAILABLE: '1',
+    AW_CLI_VERSION: '1.0.0-beta.14',
     PATH: '',
   } as NodeJS.ProcessEnv;
+
+  const remoteCatalog = await createRemoteCatalogFromEmbeddedRoot({
+    embeddedRoot,
+    catalogVersion: '1.0.0-beta.14',
+    channel: 'beta',
+    minAwVersion: '1.0.0-beta.14',
+  });
+  setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+    manifest: remoteCatalog.manifest,
+    sidecarRoot: remoteCatalog.sidecarRoot,
+    fullRoot: embeddedRoot,
+    channel: 'beta',
+    version: '1.0.0-beta.14',
+  }));
 
   return {
     repoRoot,
     awHome: env.AW_HOME!,
     codexHome: env.AW_CODEX_HOME!,
     claudeHome: env.AW_CLAUDE_HOME!,
+    embeddedRoot,
     env,
+  };
+}
+
+async function createRemoteCatalogFromEmbeddedRoot(options: {
+  embeddedRoot: string;
+  catalogVersion: string;
+  channel: 'latest' | 'beta';
+  minAwVersion: string;
+}) {
+  const plugins = await resolvePluginsFromCatalog(options.embeddedRoot, undefined);
+  const entries = await Promise.all(plugins.map(async (plugin) => {
+    const pluginRoot = path.join(options.embeddedRoot, 'plugins', plugin.manifest.name);
+    return {
+      name: plugin.manifest.name,
+      version: plugin.manifest.version,
+      description: plugin.manifest.description,
+      ...(plugin.manifest.interface ? { interface: plugin.manifest.interface } : {}),
+      category: plugin.manifest.marketplace.category,
+      ...(plugin.manifest.marketplace.tags ? { tags: plugin.manifest.marketplace.tags } : {}),
+      strict: plugin.manifest.marketplace.strict,
+      policy: plugin.manifest.marketplace.policy,
+      compatibility: plugin.manifest.compatibility,
+      ...(plugin.manifest.dependencies ? { dependencies: plugin.manifest.dependencies } : {}),
+      source: `./plugins/${plugin.manifest.name}`,
+      artifactDigest: await calculatePluginBundleFingerprint(pluginRoot),
+      manifestDigest: await calculateFileDigest(plugin.manifestPath),
+    };
+  }));
+  const manifest = {
+    schemaVersion: 1,
+    catalogVersion: options.catalogVersion,
+    channel: options.channel,
+    compatibility: {
+      aw: {
+        minVersion: options.minAwVersion,
+      },
+    },
+    history: {
+      schemaVersion: 1,
+      channel: options.channel,
+      releases: [{
+        catalogVersion: options.catalogVersion,
+        minAwVersion: options.minAwVersion,
+        plugins: entries.map((entry) => ({
+          name: entry.name,
+          version: entry.version,
+          minAwVersion: (entry.compatibility as { aw: { minVersion: string } }).aw.minVersion,
+          artifactDigest: entry.artifactDigest,
+          manifestDigest: entry.manifestDigest,
+        })),
+      }],
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: options.catalogVersion,
+        channel: options.channel,
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: options.catalogVersion,
+        channel: options.channel,
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries,
+  };
+  const sidecarRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-discovery-sidecar-'));
+  tempDirs.push(sidecarRoot);
+  await fs.writeJson(path.join(sidecarRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
+  await fs.writeJson(path.join(options.embeddedRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
+
+  return {
+    manifest,
+    sidecarRoot,
+  };
+}
+
+function createStaticCatalogPackageSource(options: {
+  manifest: Record<string, unknown>;
+  sidecarRoot: string;
+  fullRoot: string;
+  channel: 'latest' | 'beta';
+  version: string;
+}) {
+  return {
+    resolveIdentityByDistTag: async (packageName: string) => ({
+      packageName,
+      version: options.version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${options.version}`
+        : `sha512-full-${options.version}`,
+      requestedDistTag: options.channel,
+    }),
+    resolveIdentityByVersion: async (packageName: string, version: string) => ({
+      packageName,
+      version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${version}`
+        : `sha512-full-${version}`,
+    }),
+    downloadArchive: async (identity: { packageName: string }) => ({
+      identity,
+      manifestText: await fs.readFile(
+        path.join(
+          identity.packageName === '@yiliang/aw-plugins-manifest'
+            ? options.sidecarRoot
+            : options.fullRoot,
+          'catalog-manifest.json',
+        ),
+        'utf8',
+      ),
+      rawManifest: options.manifest,
+      packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
+        ? options.sidecarRoot
+        : options.fullRoot,
+      materialize: async () => {},
+      dispose: async () => {},
+    }),
   };
 }
 
@@ -185,6 +341,7 @@ function resolveCodexInstalledManifestPath(
 
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
+  setCatalogPackageSourceForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 describe('managed plugin discovery', () => {
@@ -338,10 +495,48 @@ describe('managed plugin discovery', () => {
   });
 
   it('keeps single-platform plugins visible in current catalog after aw init --force', async () => {
-    const { repoRoot, env } = await makeWorkspaceWithMutator(
+    const { repoRoot, env, embeddedRoot } = await makeWorkspaceWithMutator(
       async (workspaceRepoRoot) => addCodexOnlyNativeHookPlugin(workspaceRepoRoot),
     );
-    await initCommand({ force: true, env });
+    const remoteCatalog = await createRemoteCatalogFromEmbeddedRoot({
+      embeddedRoot,
+      catalogVersion: '1.0.0-beta.1',
+      channel: 'beta',
+      minAwVersion: '1.0.0-beta.1',
+    });
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: async () => ({
+        packageName: '@yiliang/aw-plugins-manifest',
+        version: '1.0.0-beta.1',
+        integrity: 'sha512-sidecar-beta',
+        requestedDistTag: 'beta',
+      }),
+      resolveIdentityByVersion: async (packageName, version) => ({
+        packageName,
+        version,
+        integrity: packageName === '@yiliang/aw-plugins-manifest'
+          ? 'sha512-sidecar-beta'
+          : 'sha512-full-beta',
+      }),
+      downloadArchive: async (identity) => ({
+        identity,
+        manifestText: await fs.readFile(
+          path.join(
+            identity.packageName === '@yiliang/aw-plugins-manifest'
+              ? remoteCatalog.sidecarRoot
+              : embeddedRoot,
+            'catalog-manifest.json',
+          ),
+          'utf8',
+        ),
+        rawManifest: remoteCatalog.manifest,
+        packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
+          ? remoteCatalog.sidecarRoot
+          : embeddedRoot,
+        materialize: async () => {},
+        dispose: async () => {},
+      }),
+    });
 
     const discovered = await discoverManagedPluginNames({
       cwd: repoRoot,
@@ -354,7 +549,7 @@ describe('managed plugin discovery', () => {
       pluginName: 'prompt-guard',
       currentCatalog: {
         catalog: {
-          source: 'local',
+          source: 'remote',
         },
         currentPlugin: {
           manifest: {
@@ -363,6 +558,30 @@ describe('managed plugin discovery', () => {
         },
       },
     });
+  });
+
+  it('does not materialize ~/.aw for project-only discovery when current catalog resolution fails', async () => {
+    const { repoRoot, awHome, env } = await makeWorkspace();
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: async () => {
+        throw new Error('registry offline');
+      },
+      resolveIdentityByVersion: async () => {
+        throw new Error('unexpected');
+      },
+      downloadArchive: async () => {
+        throw new Error('unexpected');
+      },
+    });
+
+    await expect(discoverManagedPluginNames({
+      cwd: repoRoot,
+      scopeFilter: 'project',
+      platformFilter: 'codex',
+      pluginNames: ['git-commit'],
+      env,
+    })).rejects.toThrow('registry offline');
+    await expect(fs.pathExists(awHome)).resolves.toBe(false);
   });
 
   it('anchors Codex project tracking evidence to the repo root when discovery runs from a subdirectory', async () => {

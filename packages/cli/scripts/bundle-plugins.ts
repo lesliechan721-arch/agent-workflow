@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 
 import {
+  stageCatalogArtifacts,
   bundleLocalPlugin,
   type PluginBundleBuildMode,
   type PluginStagingRunner,
-} from '../src/generators/local-plugin.js';
+} from './plugin-staging.js';
 import { writeJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
@@ -106,6 +107,10 @@ export async function bundlePlugins(
     path.join(outputRoot, '.agents', 'plugins', 'marketplace.json'),
     createMarketplaceManifest(sourceMeta, bundledPluginsByPlatform.codex),
   );
+  await stageCatalogArtifacts({
+    repoRoot,
+    outputRoot,
+  });
 
   return {
     outputRoot,

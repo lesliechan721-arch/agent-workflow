@@ -458,6 +458,55 @@ afterEach(async () => {
 });
 
 describe('cli entry integration', () => {
+  it('emits init --json catalog warmup receipt fields without borrowing status/config schemas', async () => {
+    const workspace = await makeWorkspace();
+    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    const capture = createCapturedIo();
+
+    const exitCode = await runCli(
+      ['init', '--json'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        io: capture.io,
+      },
+    );
+
+    expect(exitCode, capture.readStderr()).toBe(0);
+    const payload = JSON.parse(capture.readStdout()) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      ok: true,
+      command: 'init',
+      receiptSchemaVersion: 2,
+      nextStepsSchemaVersion: 1,
+      catalog: {
+        selector: {
+          kind: expect.stringMatching(/^(default|distTag)$/),
+        },
+        sidecarManifestPackage: {
+          source: 'localFixture',
+          channel: expect.stringMatching(/^(latest|beta)$/),
+          manifestDigest: expect.stringMatching(/^sha256:/),
+        },
+        fullCatalog: {
+          source: 'local',
+          channel: expect.stringMatching(/^(latest|beta)$/),
+          minAwVersion: expect.stringMatching(/^\d+\.\d+\.\d+(?:[-+].+)?$/),
+          revision: expect.stringMatching(/^sha256:/),
+          freshness: 'localFixture',
+          resolutionSource: 'requestedCatalog',
+        },
+        latestCatalog: {
+          channel: expect.stringMatching(/^(latest|beta)$/),
+          blocked: false,
+        },
+        historySchemaVersion: 1,
+      },
+    });
+    expect(payload).not.toHaveProperty('statusSchemaVersion');
+    expect(payload).not.toHaveProperty('configSchemaVersion');
+  });
+
   it('lets cleanup --force remove the target while keeping verified dependents and printing the follow-up guidance', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-cleanup-force-'));
     tempDirs.push(root);
@@ -1793,7 +1842,7 @@ describe('cli entry integration', () => {
       ['init', '--force'],
       { cwd: workspace.repoRoot, env: workspace.env, io: capture.io },
     )).toBe(0);
-    expect(capture.readStderr().match(/跳过 skill 触发偏好回放/g)).toHaveLength(1);
+    expect(capture.readStderr()).not.toContain('跳过 skill 触发偏好回放');
 
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     await fs.writeFile(path.join(workspace.awHome, 'config.json'), '{"version":', 'utf8');

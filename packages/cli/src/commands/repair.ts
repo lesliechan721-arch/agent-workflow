@@ -39,7 +39,10 @@ import {
   type ProjectBoundaryWarning,
 } from '../install-state/project-boundary.js';
 import { stageHistoricalLifecycleRuntime } from '../install-state/runtime-state.js';
-import { preflightSharedSkillTriggerRuntimeOwnerUpsert } from '../install-state/shared-runtime-owner.js';
+import {
+  loadVerifiedHistoricalBundlePlugin,
+  preflightSharedSkillTriggerRuntimeOwnerUpsert,
+} from '../install-state/shared-runtime-owner.js';
 import {
   createDynamicArtifactDiagnosticCacheWriteStage,
   createInstallRecordWriteStage,
@@ -493,6 +496,49 @@ async function buildCurrentCatalogSource(plugin: PluginMeta): Promise<CurrentCat
     pluginVersion: plugin.manifest.version,
     manifestDigest: await calculateFileDigest(plugin.manifestPath),
     bundleFingerprint: await calculatePluginBundleFingerprint(plugin.rootDir),
+  };
+}
+
+async function resolveHistoricalPluginForRepairRecord(options: {
+  location: PluginLocation;
+  record: InstallRecordFile;
+}): Promise<
+  | { status: 'ok'; plugin: PluginMeta; source: CurrentCatalogSource }
+  | { status: 'invalid'; reason: string }
+> {
+  const lifecycle = options.record.record.lifecycle;
+  if (!lifecycle) {
+    return {
+      status: 'invalid',
+      reason: '缺少可校验的 historical runtime',
+    };
+  }
+
+  const verified = await loadVerifiedHistoricalBundlePlugin({
+    pluginName: options.location.plugin,
+    pluginVersion: lifecycle.pluginVersion,
+    runtimeRoot: lifecycle.runtimeRoot,
+    bundleRoot: lifecycle.bundleRoot,
+    manifestPath: lifecycle.manifestPath,
+    sourceManifestDigest: lifecycle.sourceManifestDigest,
+    bundleFingerprint: lifecycle.bundleFingerprint,
+  });
+  if (verified.status !== 'ok') {
+    return verified;
+  }
+
+  const source = await buildCurrentCatalogSource(verified.plugin);
+  if (!sourceEqualsRecord(source, options.record)) {
+    return {
+      status: 'invalid',
+      reason: 'historical runtime 与 install record source 不一致',
+    };
+  }
+
+  return {
+    status: 'ok',
+    plugin: verified.plugin,
+    source,
   };
 }
 
@@ -1375,13 +1421,24 @@ async function repairInstalledLocation(options: {
   }
 
   const currentPlugin = state.target.currentPlugin;
-  if (!currentPlugin) {
-    throw new Error(
-      `无法修复 ${location.plugin}：当前 catalog 中缺少该插件，repair 不能把 historical runtime、identity metadata 或旧 source 当成 current catalog。`,
-    );
+  let repairPlugin: PluginMeta;
+  let source: CurrentCatalogSource;
+  if (currentPlugin) {
+    repairPlugin = currentPlugin;
+    source = await buildCurrentCatalogSource(currentPlugin);
+  } else {
+    const historicalPlugin = await resolveHistoricalPluginForRepairRecord({
+      location,
+      record,
+    });
+    if (historicalPlugin.status !== 'ok') {
+      throw new Error(
+        `无法修复 ${location.plugin}：当前 catalog 中缺少该插件，且 historical runtime 不可用（${historicalPlugin.reason}）。`,
+      );
+    }
+    repairPlugin = historicalPlugin.plugin;
+    source = historicalPlugin.source;
   }
-
-  const source = await buildCurrentCatalogSource(currentPlugin);
   const sameBundle = sourceEqualsRecord(source, record);
   const sourceDrift = !sameBundle;
   const removedDynamicTracking = collectRemovedDynamicTracking(state);
@@ -1415,6 +1472,14 @@ async function repairInstalledLocation(options: {
     });
   }
 
+  if (
+    !currentPlugin &&
+    state.evidence.dependencyIndex.projection.dependencyHealth.some((dependency) => dependency.status !== 'ok')
+  ) {
+    throw new Error(
+      `无法修复 ${location.plugin}：当前 repair 需要补齐依赖，但 current catalog 不可用。请先恢复 catalog，或改用 aw cleanup / aw reinstall。`,
+    );
+  }
   warnings.push(...await repairMissingDependenciesForRecord({
     state,
     record,
@@ -1477,11 +1542,11 @@ async function repairInstalledLocation(options: {
     && !state.evidence.platform.codexNative.minimumSatisfied,
   );
   if (needsNativeInstall) {
-    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    await adapters.codex.installPlugin(repairPlugin, location.scope);
   }
   const effectiveSkillTriggerPreference = options.repairOptions.requestedSkillTrigger
     ?? await resolveUniformSkillTriggerPreference({
-      plugin: currentPlugin,
+      plugin: repairPlugin,
       platform: location.platform,
       scope: location.scope,
       cwd: options.repairOptions.cwd,
@@ -1494,7 +1559,7 @@ async function repairInstalledLocation(options: {
     env: options.env,
   });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
-    currentPlugin,
+    repairPlugin,
     location.scope,
     {
       event: 'upgrade',
@@ -1503,14 +1568,14 @@ async function repairInstalledLocation(options: {
   );
   let nativeInstallReplayed = needsNativeInstall;
   if (shouldRefreshCodexUserNativeAfterArtifactRepair({ location, generatedArtifacts })) {
-    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    await adapters.codex.installPlugin(repairPlugin, location.scope);
     nativeInstallReplayed = true;
   }
 
   const runtimeStage = await maybeStageHistoricalLifecycle({
     cwd: options.repairOptions.cwd,
     location,
-    plugin: currentPlugin,
+    plugin: repairPlugin,
     source,
     previousRecord: record,
     env: options.env,
@@ -1541,7 +1606,7 @@ async function repairInstalledLocation(options: {
         projectRoot,
       }),
       value: rewriteProjectIdentityId(createProjectIdentityFile({
-        plugin: currentPlugin,
+        plugin: repairPlugin,
         location,
         repoRoot,
         projectRoot,

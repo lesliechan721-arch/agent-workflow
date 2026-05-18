@@ -5,10 +5,17 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { writeInstallRecordFileAt } from '../../src/install-state/facade.js';
+import {
+  createHistoricalLifecycleRuntimePaths,
+  getInstallRecordPath,
+} from '../../src/install-state/paths.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
 
 const tempDirs: string[] = [];
 
@@ -45,6 +52,11 @@ async function makeWorkspace(): Promise<{
   };
 }
 
+async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
+  const paths = await import('../../src/utils/paths.js');
+  paths.setEmbeddedPluginsRootOverrideForTests(rootDir);
+}
+
 interface MockStatusOptions {
   json?: boolean;
   verbose?: boolean;
@@ -67,9 +79,10 @@ interface MockStatusContext {
 
 afterEach(async () => {
   vi.resetModules();
+  vi.doUnmock('../../src/utils/plugin-catalog.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
+  await setEmbeddedRootOverride(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -282,7 +295,7 @@ describe('cli entry JSON stdout harness', () => {
 
   it('projects built-in SkillTrigger config through status --json consoleItems', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    await setEmbeddedRootOverride(workspace.embeddedRoot);
     vi.doUnmock('../../src/commands/status.js');
     await fs.outputJson(
       path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
@@ -316,6 +329,66 @@ describe('cli entry JSON stdout harness', () => {
       },
       { spaces: 2 },
     );
+    const recordPath = getInstallRecordPath(workspace.repoRoot, {
+      plugin: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    }, workspace.env);
+    const recordId = path.basename(recordPath, '.json');
+    const sourceBundleRoot = path.join(workspace.embeddedRoot, 'plugins', 'git-commit');
+    const sourceManifestPath = path.join(sourceBundleRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(sourceManifestPath) as { version: string };
+    const sourceManifestDigest = await calculateFileDigest(sourceManifestPath);
+    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(sourceBundleRoot);
+    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+      cwd: workspace.repoRoot,
+      location: {
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+      },
+      recordId,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+      nonce: 'json-harness',
+      env: workspace.env,
+      manifestRelativePath: '.agents-plugin/plugin.json',
+    });
+    await fs.copy(sourceBundleRoot, lifecyclePaths.bundleRoot);
+    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
+    await writeInstallRecordFileAt(recordPath, {
+      version: 2,
+      recordId,
+      record: {
+        pluginName: 'git-commit',
+        platform: 'codex',
+        scope: 'user',
+        installedAt: '2026-05-18T00:00:00.000Z',
+        updatedAt: '2026-05-18T00:00:00.000Z',
+        source: {
+          pluginVersion: manifest.version,
+          manifestDigest,
+          bundleFingerprint,
+        },
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        lifecycle: {
+          runtimeRoot: lifecyclePaths.runtimeRoot,
+          bundleRoot: lifecyclePaths.bundleRoot,
+          manifestPath: lifecyclePaths.manifestPath,
+          pluginVersion: manifest.version,
+          sourceManifestDigest: manifestDigest,
+          bundleFingerprint,
+          events: ['install'],
+          createdAt: '2026-05-18T00:00:00.000Z',
+        },
+        artifacts: [],
+        dependencyEdges: [],
+      },
+    }, { env: workspace.env });
 
     const result = await runCliEntry(
       ['status', 'git-commit', '--json'],
@@ -523,50 +596,41 @@ describe('cli entry JSON stdout harness', () => {
     });
   });
 
-  it('keeps init --json stdout empty when local catalog gate fails in non-interactive mode', async () => {
-    const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    await initializeLocalMarketplace({ force: true, env: workspace.env });
-    const configPath = path.join(workspace.awHome, 'config.json');
-    const config = await fs.readJson(configPath);
-    config.sourceVersion = '999.0.0';
-    await fs.writeJson(configPath, config, { spaces: 2 });
+  it('keeps init --json stdout empty when current catalog resolution fails', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-init-json-failure-'));
+    tempDirs.push(tempDir);
+    vi.doMock('../../src/utils/plugin-catalog.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/utils/plugin-catalog.js')>();
+      return {
+        ...actual,
+        resolveCurrentCatalog: vi.fn(async () => {
+          throw new Error('catalogUnavailable: test current catalog failure');
+        }),
+      };
+    });
 
     const result = await runCliEntry(
       ['init', '--json'],
       {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
+        cwd: tempDir,
+        env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
       },
     );
 
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('本地插件目录');
-    expect(result.stderr).toContain('sourceVersion');
+    expect(result.stderr).toContain('catalogUnavailable: test current catalog failure');
   });
 
-  it('keeps init --json stdout pure when the user confirms overwriting a newer local catalog', async () => {
+  it('keeps init --json stdout pure when current catalog warmup succeeds', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    await initializeLocalMarketplace({ force: true, env: workspace.env });
-    const configPath = path.join(workspace.awHome, 'config.json');
-    const config = await fs.readJson(configPath);
-    config.sourceVersion = '999.0.0';
-    await fs.writeJson(configPath, config, { spaces: 2 });
+    await setEmbeddedRootOverride(workspace.embeddedRoot);
 
     const result = await runCliEntry(
       ['init', '--json'],
       {
         cwd: workspace.repoRoot,
         env: workspace.env,
-        prompt: {
-          confirm: async () => ({
-            action: 'select',
-            cancelled: false,
-            value: true,
-          }),
-        },
       },
     );
 
@@ -575,9 +639,18 @@ describe('cli entry JSON stdout harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: true,
       command: 'init',
-    });
-    await expect(fs.readJson(configPath)).resolves.toMatchObject({
-      sourceVersion: expect.stringMatching(/^\d+\.\d+\.\d+(?:[-+].+)?$/),
+      receiptSchemaVersion: 2,
+      receiptKind: 'catalogCacheWarmup',
+      catalog: expect.objectContaining({
+        source: 'local',
+        sidecarManifestPackage: expect.objectContaining({
+          source: 'localFixture',
+        }),
+        fullCatalog: expect.objectContaining({
+          source: 'local',
+          freshness: 'localFixture',
+        }),
+      }),
     });
   });
 });

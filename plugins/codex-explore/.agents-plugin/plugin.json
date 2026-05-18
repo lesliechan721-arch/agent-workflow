@@ -2,6 +2,11 @@
   "name": "codex-explore",
   "version": "0.1.8",
   "description": "为 Codex 提供只读探索 workflow，适合跨代码、文档、日志和网页整理证据。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "skillTriggers": {
     "codex-explore": {
       "defaultTrigger": "auto",

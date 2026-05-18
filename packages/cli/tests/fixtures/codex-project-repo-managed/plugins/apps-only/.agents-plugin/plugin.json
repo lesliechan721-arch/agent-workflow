@@ -2,6 +2,11 @@
   "name": "apps-only",
   "version": "0.1.0",
   "description": "Fixture plugin with only Codex apps; project scope must reject it.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "apps": "./.app.json",
   "marketplace": {
     "category": "workflow",

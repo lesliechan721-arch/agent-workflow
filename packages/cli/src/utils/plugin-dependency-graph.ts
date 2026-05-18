@@ -46,6 +46,7 @@ function normalizeDeclaration(
 ): InstalledDependencyEdgeDeclaration {
   return {
     name: declaration.name,
+    minVersion: declaration.minVersion?.trim() ? declaration.minVersion : undefined,
     target: declaration.target?.scope
       ? { scope: declaration.target.scope }
       : undefined,
@@ -62,6 +63,7 @@ function compareDeclarations(
 ): number {
   return (
     compareStrings(left.name, right.name) ||
+    compareStrings(left.minVersion ?? '', right.minVersion ?? '') ||
     compareStrings(left.target?.scope ?? '', right.target?.scope ?? '') ||
     compareStrings(
       left.inheritInstallOptions === true ? 'true' : '',

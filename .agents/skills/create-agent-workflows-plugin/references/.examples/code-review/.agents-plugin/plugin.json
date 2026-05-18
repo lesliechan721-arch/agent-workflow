@@ -2,6 +2,11 @@
   "name": "code-review",
   "version": "0.2.0",
   "description": "自动化代码审查插件：集成外部审查服务，提供结构化审查流程和报告。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "skills": "./review-skills",
   "slashCommands": "./slash-commands",
   "skillTriggers": {

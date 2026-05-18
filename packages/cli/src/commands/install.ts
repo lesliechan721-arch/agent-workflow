@@ -174,6 +174,7 @@ import {
   type CommandExecutionContextInput,
 } from './runtime.js';
 import {
+  applyCatalogSelectorEnv,
   normalizeInstallCommandOptions,
   type RawInstallCommandOptions,
 } from './options.js';
@@ -223,6 +224,8 @@ interface InstallCommandReceiptTarget {
   platform: PlatformName;
   scope: Scope;
   requested: boolean;
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
   dependencyOf?: Array<{
     plugin: string;
     platform: PlatformName;
@@ -236,6 +239,8 @@ interface InstallCommandReceiptAction {
   scope: Scope;
   type: 'installDependency';
   status: 'succeeded';
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
 }
 
 interface InstallLocationNodeResult {
@@ -2729,7 +2734,41 @@ export async function cleanupOrphanedAutoDependenciesAfterFailedInstall(options:
   plan: PluginDependencyWritePlan;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  targetByPlugin?: ReadonlyMap<string, ResolvedPluginTarget>;
+  adapters?: Record<PlatformName, PlatformAdapter>;
+  scriptTimeoutMs?: number;
 }): Promise<void> {
+  const rollbackLiveDependencyLocation = async (location: PluginLocation): Promise<void> => {
+    const target = options.targetByPlugin?.get(location.plugin);
+    const adapter = options.adapters?.[location.platform];
+    if (!target || !adapter) {
+      return;
+    }
+
+    try {
+      await uninstallTargetsOnPlatforms(
+        [target],
+        [location.platform],
+        {
+          cwd: options.cwd,
+          platform: location.platform,
+          scope: location.scope,
+          scriptTimeoutMs: options.scriptTimeoutMs,
+          removeConfig: false,
+        },
+        {
+          env: options.env,
+          adapters: options.adapters,
+        },
+      );
+      return;
+    } catch {
+      const plugin = target.currentPlugin ?? target.plugin;
+      await adapter.uninstallExtensions(plugin, location.scope).catch(() => undefined);
+      await adapter.uninstallPlugin(plugin, location.scope).catch(() => undefined);
+    }
+  };
+
   for (const location of [...options.plan.writeOrder].reverse()) {
     const node = options.plan.nodesByLocation[serializePluginLocation(location)];
     if (node?.action !== 'installDependency') {
@@ -2750,6 +2789,7 @@ export async function cleanupOrphanedAutoDependenciesAfterFailedInstall(options:
         env: options.env,
       }))
     ) {
+      await rollbackLiveDependencyLocation(location);
       await ensureRollbackRemovedDependencyLocation({
         location,
         cwd: options.cwd,
@@ -2769,6 +2809,7 @@ export async function cleanupOrphanedAutoDependenciesAfterFailedInstall(options:
       continue;
     }
 
+    await rollbackLiveDependencyLocation(location);
     await ensureRollbackRemovedDependencyLocation({
       location,
       cwd: options.cwd,
@@ -3306,14 +3347,22 @@ function buildGraphWriteExecutorNodes(options: {
 
 function createInstallReceiptTargets(
   plan: PluginDependencyWritePlan,
+  targetByPlugin: ReadonlyMap<string, ResolvedPluginTarget>,
 ): InstallCommandReceiptTarget[] {
   return plan.topologicalOrder.map((location) => {
     const node = plan.nodesByLocation[serializePluginLocation(location)];
+    const target = targetByPlugin.get(location.plugin);
     return {
       plugin: location.plugin,
       platform: location.platform,
       scope: location.scope,
       requested: node?.requested === true,
+      ...(target
+        ? {
+            selectedVersion: target.plugin.manifest.version,
+            selectedVersionSource: target.source === 'historical' ? 'historical' as const : 'currentCatalog' as const,
+          }
+        : {}),
       ...(node?.dependencyOf.length
         ? {
             dependencyOf: node.dependencyOf.map((dependencyOf) => ({
@@ -3329,6 +3378,7 @@ function createInstallReceiptTargets(
 
 function createInstallReceiptActions(
   plan: PluginDependencyWritePlan,
+  targetByPlugin: ReadonlyMap<string, ResolvedPluginTarget>,
 ): InstallCommandReceiptAction[] {
   return plan.writeOrder
     .filter((location) =>
@@ -3336,12 +3386,19 @@ function createInstallReceiptActions(
     )
     .map((location) => {
       const node = plan.nodesByLocation[serializePluginLocation(location)];
+      const target = targetByPlugin.get(location.plugin);
       return {
         plugin: location.plugin,
         platform: location.platform,
         scope: location.scope,
         type: 'installDependency',
         status: 'succeeded',
+        ...(target
+          ? {
+              selectedVersion: target.plugin.manifest.version,
+              selectedVersionSource: target.source === 'historical' ? 'historical' as const : 'currentCatalog' as const,
+            }
+          : {}),
       };
     });
 }
@@ -3370,7 +3427,7 @@ export async function installCommand(
   }
 
   const context = createCommandExecutionContext(runtime);
-  const env = context.env;
+  const env = applyCatalogSelectorEnv(context.env, options);
   let prepared: Awaited<ReturnType<typeof preparePluginTargetsForCommand>>;
   try {
     prepared = await preparePluginTargetsForCommand(
@@ -3414,8 +3471,11 @@ export async function installCommand(
   });
   let commandWarnings = prepared.warnings;
   let installPlan: PluginDependencyWritePlan | undefined;
+  let installPlanTargetByPlugin: Map<string, ResolvedPluginTarget> | undefined;
+  let installAdapters: Record<PlatformName, PlatformAdapter> | undefined;
   try {
     const adapters = createAdapters(options.cwd, context);
+    installAdapters = adapters;
     const requestedPlatformPairs = await resolveCurrentCatalogWriteTargetPairs(
       'install',
       options.platform,
@@ -3447,6 +3507,7 @@ export async function installCommand(
     const targetByPlugin = new Map<string, ResolvedPluginTarget>(
       allCatalogTargets.map((target) => [target.pluginName, target]),
     );
+    installPlanTargetByPlugin = targetByPlugin;
     const projectKeysByPlatform = await resolveProjectKeysByPlatform(
       options.cwd,
       options.scope,
@@ -3650,8 +3711,8 @@ export async function installCommand(
       nativePlugins: aggregatedNodeResult.nativePlugins,
       repoManagedArtifacts: aggregatedNodeResult.repoManagedArtifacts,
       marketplace: preparedForExecution.marketplace,
-      receiptTargets: createInstallReceiptTargets(graphPlan),
-      receiptActions: createInstallReceiptActions(graphPlan),
+      receiptTargets: createInstallReceiptTargets(graphPlan, targetByPlugin),
+      receiptActions: createInstallReceiptActions(graphPlan, targetByPlugin),
       warnings: [
         ...commandWarnings,
         ...collectCommandWarnings(platforms, options.scope),
@@ -3664,6 +3725,9 @@ export async function installCommand(
         plan: installPlan,
         cwd: options.cwd,
         env,
+        targetByPlugin: installPlanTargetByPlugin,
+        adapters: installAdapters,
+        scriptTimeoutMs: options.scriptTimeoutMs,
       }).catch(() => undefined);
     }
     throw wrapCommandErrorWithWarnings(

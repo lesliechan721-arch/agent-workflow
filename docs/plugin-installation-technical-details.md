@@ -46,14 +46,17 @@
 | repo-visible artifact | 写在项目目录、应该被团队看见或提交的 artifact | Codex project scope 主要靠这类文件让插件随仓库生效 |
 | AW-managed artifact | AW 确认归属并能安全更新或删除的 artifact | 避免覆盖用户手写配置或其它工具生成的同名文件 |
 | native plugin runtime | Codex 或 Claude Code 自己提供的插件安装机制 | user scope 或 Claude scope 下，平台需要自己 materialize 插件 cache、加载 hooks 或注册 marketplace |
-| embedded bundle | `pnpm build` 后打进 `@yiliang/aw` 包里的插件 runtime bundle，路径是 `packages/cli/plugins-dist/` | 用户安装 npm 包后，CLI 需要从这里拿到可安装的插件包 |
+| sidecar catalog manifest | `@yiliang/aw-plugins-manifest` 中的 `catalog-manifest.json` | CLI 先用它判断 channel、catalog version、最低 CLI 版本、history 和 digest |
+| full catalog package | `@yiliang/aw-plugins` 的完整 artifact 包 | 兼容性通过后，CLI 从这里取得当前 catalog 快照的插件 artifact |
 | current catalog | 当前 CLI 能看到的插件清单和 manifest 视图 | `install`、`status`、`repair` 都先用它判断插件当前定义 |
-| `~/.aw` / AW_HOME | 本机 AW runtime 目录和 local marketplace 镜像 | 给 native runtime 提供可注册的 marketplace，也保存跨 scope 的 AW 状态 |
+| catalog cache | 按 selector / channel / catalog version 隔离的本地 catalog 和 artifact 缓存 | 远程不可用或校验失败且已解析出允许使用的 catalog identity 后，作为合法 fallback |
+| active local marketplace/runtime view | `~/.aw` 中给 native 平台消费的当前 runtime 视图 | user-scope native 写命令调用平台前必须 materialize 并校验它和本次 current catalog 一致 |
+| `~/.aw` / AW_HOME | 本机 AW runtime、catalog cache、active view 和跨 scope 状态目录 | 给 native runtime 提供可注册的 marketplace，也保存依赖索引、historical runtime 等 AW 状态 |
 | install record | 某个 plugin + platform + scope + location 在本机的安装真值 | 后续判断“这里是否安装过”“卸载时应该清什么”主要看它 |
 | project artifact identity | project scope 下可提交的共享身份线索 | fresh clone 后，本机没有 install record，也能识别仓库里已有 AW 产物并提示认领 |
 | diagnostic cache | 诊断缓存，特别是动态 artifact 最近一次生成和刷新结果 | `aw status` / `aw status --verbose` 可以只读展示健康状态，不必每次重新执行 renderer |
 | dependency index | 从 install records 重建的反向依赖索引 | 卸载时防止删掉仍被其它插件依赖的自动依赖 |
-| lifecycle runtime | 安装时保存的最小历史运行面 | 卸载、repair 或 reinstall 需要撤销旧副作用时使用 |
+| historical runtime | 安装时保存的最小历史运行面 / snapshot | 卸载、只重放已安装版本的 repair、config schema 读取和动态 artifact refresh 使用 |
 | native transaction marker | 平台 native 写入已经发生，但 AW record 还没提交成功时留下的短生命周期标记 | 安装中断后，`repair` 或 `cleanup` 可以据此收口 |
 | shared runtime owner | 标记谁控制同一 plugin/platform 的共享 skill trigger runtime | 避免多个 location 同时改同一份共享 runtime，必要时要求 `--takeover-shared-runtime` |
 | renderer | 插件脚本，用当前配置生成动态 artifact plan | 负责“算出该写什么”，但不能自己写 AW 受管文件 |
@@ -82,19 +85,20 @@ aw install git-commit -p codex -s project
 aw install git-commit -p codex -s user
 ```
 
-只要插件声明了 Codex native runtime 能力，CLI 就会先把 AW embedded bundle 同步到 `~/.aw`，再通过 Codex 的 native marketplace 和 `codex app-server` RPC 完成用户级安装。也就是说，project scope 主要写当前仓库，user scope 主要写用户目录和平台 native 状态。
+只要插件声明了 Codex native runtime 能力，CLI 就会先按本次 current catalog materialize 并校验 active local marketplace/runtime view，再通过 Codex 的 native marketplace 和 `codex app-server` RPC 完成用户级安装。也就是说，project scope 主要写当前仓库，user scope 主要写用户目录和平台 native 状态。
 
 ## 安装模型总览
 
-插件安装不是直接把 `plugins/<name>/` 复制到平台目录。源码会先被打成 embedded bundle，需要时再同步到本机 runtime，最后按目标平台和 scope 写入不同位置。
+插件安装不是直接把 `plugins/<name>/` 复制到平台目录。源码会先进入 catalog staging，再由 `@yiliang/aw-plugins-manifest` sidecar 和 `@yiliang/aw-plugins` full catalog 包发布；CLI 解析出 current catalog 后，才按目标平台和 scope 写入不同位置。
 
 这张图展示的是“插件包”和“安装状态”的流向。上半部分解决插件内容从哪里来，下半部分解决安装后怎么证明、诊断和恢复。
 
 ```mermaid
 flowchart TD
   source["源码层<br/>plugins/name/.agents-plugin/plugin.json<br/>skills / .mcp.json / slash-commands / scripts"]
-  bundle["embedded bundle<br/>packages/cli/plugins-dist"]
-  runtime["本机 runtime<br/>~/.aw/ marketplace mirror"]
+  sidecar["sidecar manifest<br/>@yiliang/aw-plugins-manifest"]
+  full["full catalog<br/>@yiliang/aw-plugins"]
+  runtime["本机 runtime<br/>~/.aw catalog cache / active view"]
   facade["install-state facade"]
   claude["Claude Code scopes"]
   codexUser["Codex user scope"]
@@ -103,7 +107,7 @@ flowchart TD
   shared["project artifacts<br/>团队共享身份线索"]
   evidence["diagnostic cache<br/>dependency index / markers / lifecycle runtime"]
 
-  source --> bundle --> runtime --> facade
+  source --> sidecar --> full --> runtime --> facade
   facade --> claude
   facade --> codexUser
   facade --> codexProject
@@ -115,22 +119,25 @@ flowchart TD
 | 层级 | 由谁产生 | 主要内容 | 安装时的作用 |
 |---|---|---|---|
 | 源码层 | 插件作者 | AW manifest、skills、MCP、slash commands、脚本 | 作为 build 输入，不直接写入平台目录 |
-| embedded bundle | `pnpm build` | AW 源码 manifest、Claude manifest、Codex manifest | CLI 发布包内的插件来源 |
-| 本机 runtime | `aw init` / `aw install` / `aw upgrade` | `~/.aw/` 下的 marketplace 镜像和跨 scope runtime 状态 | 供 native marketplace 和 shared runtime 使用 |
+| catalog staging | `pnpm build` / catalog 发布脚本 | AW 源码 manifest、Claude manifest、Codex manifest、artifact digest 输入 | catalog 包生成输入，不作为 CLI tarball 兜底 |
+| sidecar / full catalog | catalog 发布脚本 | sidecar manifest、history、完整 artifact 快照和 digest 元数据 | current catalog 解析和远程插件 artifact 来源 |
+| 本机 runtime | `aw init` / `aw install` / `aw upgrade` | `~/.aw/` 下的 catalog cache、active runtime view 和跨 scope runtime 状态 | 供 native marketplace、cache fallback 和 shared runtime 使用 |
 | 平台 scope | `aw install` / `aw repair` / `aw reinstall` | Claude 或 Codex 的原生状态、repo-visible artifacts、install-state 记录 | 形成当前机器和当前项目真正可用的安装结果 |
 
 这里有两个容易混淆的真值：
 
-- **插件内容真值**来自源码 manifest 和 build 后的 embedded bundle。它回答“这个插件现在应该有哪些能力”。
+- **插件内容真值**来自源码 manifest、catalog manifest 和 full catalog 中的构建后 artifact。它回答“这个插件现在应该有哪些能力”。
 - **本机安装真值**来自 install record。它回答“这台机器上的这个 location 是否由 AW 安装过，以及 AW 当时承诺管理哪些东西”。
 
 平台目录里的文件很重要，但它们只是现场证据。比如 `.codex/config.toml` 里存在某个 MCP server，不一定说明它是 AW 写的；只有 install record、project artifact identity 或受管 marker 能证明 ownership。
 
-`~/.aw/` 是 embedded bundle 的本机镜像，同时保存跨 scope 运行时状态：
+`~/.aw/` 保存 catalog cache、active local marketplace/runtime view 和跨 scope 运行时状态：
 
 ```text
 ~/.aw/
 ├── config.json
+├── catalog-cache/<selector-or-version>/**
+├── active-runtime/<platform>/**
 ├── dependency-index.json
 ├── native-markers/codex/user/<plugin>.<hash>.json
 ├── plugin-config/<plugin>/config.json
@@ -138,10 +145,22 @@ flowchart TD
 ├── shared-runtime-owners/<platform>/<plugin>.<hash>.json
 ├── .claude-plugin/marketplace.json
 ├── .agents/plugins/marketplace.json
-└── plugins/<name>/**
+└── plugins/<name>/**              # active view 中给 native runtime 消费的 materialized 插件文件
 ```
 
 scope 本地 install record 才是安装真值。record 按 plugin + platform + scope + location 分片保存，单条 record 损坏只影响对应位置。它只记录 AW ownership、必要安装选项、安装来源、canonical outgoing dependency edges 和 shared runtime 相关偏好；健康状态由当前文件、平台现场、current catalog 和其它只读证据推导。
+
+## Current Catalog 与本地 runtime 视图
+
+current catalog 是每条命令本次使用的插件索引视图。它由 catalog selector 决定，selector 只有三类：默认 channel、显式 `--catalog-channel <dist-tag>` 和显式 `--catalog-version <semver>`；显式 channel 与 exact version 互斥，并且只影响当前命令或本次 `aw init` 预热，不修改持久默认 channel。
+
+解析顺序固定为先读 sidecar manifest，再取 full catalog。稳定版 CLI 默认读取 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认读取 `@yiliang/aw-plugins-manifest@beta`。sidecar manifest 说明目标 catalog 兼容当前 CLI 后，CLI 才能下载或使用同版本 `@yiliang/aw-plugins`，并校验 sidecar/full manifest 一致性、npm integrity 和 artifact digest。
+
+latest catalog 被当前 CLI 版本阻止时，CLI 不会写入这个不兼容 catalog，也不会用 full catalog 或 npm metadata 猜测历史版本。它只能使用 sidecar history 在同一轨道内查找仍支持当前 CLI 的最新历史 catalog；history 缺失、schema 不支持、非法或不可获取时固定失败为 `catalogHistoryUnavailable`，有效 history 确认没有兼容 catalog 时固定失败为 `awVersionTooLow`。
+
+cache fallback 只在“已经解析出允许使用的 catalog identity”之后生效。远程下载、完整包校验或 artifact digest 失败时，如果本地有与本次 selector、channel / exact catalog version、schema、integrity 和 `minAwVersion <= current CLI` 都匹配的缓存，CLI 可以使用该 cache，并在 verbose / JSON 中同时暴露 `cacheFallback` 和原始远程错误。稳定版默认 `latest` 不能借用 beta cache，显式 exact version 也不能退到任意旧缓存。远程不可用且没有匹配 cache 时，需要 current catalog 的命令失败为 `catalogUnavailable`。
+
+`aw init` 只是预热这套 catalog/cache。它不安装插件、不升级插件、不提交 install record，也不 materialize active local marketplace/runtime view。只有安装、升级、重装或 native repair 这类需要 user-scope native runtime 的写命令，才会在平台 native 调用前把本次 current catalog materialize 成 active view，并校验 active view 元数据和本次 selector / catalog identity 一致。
 
 ## 路径按用途看
 
@@ -149,7 +168,7 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 
 | 路径类别 | 例子 | 谁会写 | 能不能提交 | 主要用途 |
 |---|---|---|---|---|
-| 插件来源和 build 产物 | `plugins/<name>/`、`packages/cli/plugins-dist/` | 插件作者、`pnpm build` | 源码可提交，build 产物随包发布 | 提供插件内容真值 |
+| 插件来源和 build 产物 | `plugins/<name>/`、catalog staging、`@yiliang/aw-plugins*` tarball | 插件作者、`pnpm build`、catalog 发布脚本 | 源码可提交，catalog 包随独立插件发布 | 提供插件内容真值 |
 | 用户级本机 runtime | `~/.aw/`、`~/.claude/`、`~/.codex/` | `aw`、Claude Code、Codex | 不提交 | 让当前用户的 CLI 或平台 runtime 能加载插件 |
 | 项目级共享产物 | `<repo>/.agents/`、`<repo>/.codex/`、`<repo>/.agent-workflows/project-artifacts/`、`<repo>/.agent-workflows/plugin-config/` | `aw` | 通常要提交 | 让项目里的插件能力和共享 identity 随仓库传播 |
 | 项目级本机私有状态 | `<repo>/.codex/.agent-workflows/records/`、`<repo>/.claude/.agent-workflows/records/`、`<repo>/.agent-workflows/plugin-config.local/` | `aw` | 默认不提交 | 记录当前机器的安装事实和本机覆盖配置 |
@@ -174,7 +193,7 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 | per-plugin install record v2 | 记录本机安装事实、AW ownership、安装来源和 dependency edges | `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/`、`<repo>/.codex/.agent-workflows/records/` | 是 |
 | project artifact shared identity | 随仓库提交的最小共享身份线索，证明 repo-visible artifacts 的来源 | `<repo>/.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json` | 否 |
 | dynamic diagnostic cache | 记录动态 artifact 最近一次 accepted state / digest、`lastRefresh` 和 `refreshReach` | AW private state | 否 |
-| historical lifecycle runtime | 为 `uninstall`、`repair`、`reinstall` 保存撤销历史副作用所需的最小运行面 | `~/.aw/lifecycle-runtime/...` | 否 |
+| historical runtime / snapshot | 为 `uninstall`、只重放已安装版本的 `repair`、必要的 `reinstall` 撤销阶段、config schema 读取和动态 artifact refresh 保存已接受 artifact 的最小运行面 | `~/.aw/lifecycle-runtime/...` 或等价 snapshot 目录 | 否 |
 | global dependency index | 从 records 重建跨 scope incoming edge 索引，辅助卸载保护和未使用依赖提醒 | `~/.aw/dependency-index.json` | 否 |
 | native transaction marker | native 写入成功但 record 尚未提交时的短暂证据 | `~/.aw/native-markers/...` | 否 |
 | shared runtime owner | 标记同一 plugin/platform 的共享 skill trigger runtime 由哪个 location 控制 | `~/.aw/shared-runtime-owners/...` | 否 |
@@ -235,13 +254,13 @@ flowchart TD
 1. 解析 current catalog，按插件名拿到 `PluginMeta`。这里的 catalog 是当前 CLI 可见的插件清单，`PluginMeta` 是命令执行所需的插件摘要。
 2. 推断或校验目标平台，并检查 `marketplace.policy.products` 是否允许安装。比如 Codex-only 插件不能装到 Claude。
 3. 展开完整依赖图，做 catalog、scope、平台兼容、required config、external ownership、project artifact identity、role namespace 和 ignore preflight。这个阶段只读检查，目标是在写文件前失败。
-4. 如果目标需要 native runtime，调用 `ensureLocalMarketplace()` 同步 `~/.aw/`；纯 Codex project 安装只读 catalog，不初始化或修复用户级 marketplace。
+4. 如果目标需要 native runtime，调用 `ensureLocalMarketplace()` 按本次 current catalog materialize 并校验 active local marketplace/runtime view；纯 Codex project 安装只读 current catalog，不初始化或修复用户级 marketplace。
 5. 检查 shared runtime owner；非 owner 且会改变共享 runtime 时，脚本命令默认失败，提示加 `--takeover-shared-runtime`。
 6. staging native marker、identity backup、diagnostic cache backup、historical runtime staging 和 shared owner backup。staging 的目的不是让安装“部分成功”，而是给失败回滚和后续诊断准备证据。
 7. 执行平台 native install，写 AW-managed artifacts。native install 交给平台完成；AW-managed artifacts 则由 AW target apply 统一写盘。
 8. 写 project artifact shared identity。只有 project scope 且存在 repo-visible artifacts 时，它才有意义。
 9. 写 dynamic diagnostic cache。动态 artifact 的 accepted state、digest 和 refresh 信息会落在这里。
-10. 写 historical lifecycle runtime，并运行 lifecycle。lifecycle 失败会阻断 record 提交，因为插件可能还没完成自己的安装副作用。
+10. 持久化 historical runtime / snapshot，并运行 lifecycle。lifecycle 失败会阻断 record 提交，因为插件可能还没完成自己的安装副作用。
 11. 原子提交 install record。提交成功后，这个 location 才算 AW 正式安装完成。
 12. 删除 native marker，必要时提交 shared owner takeover。
 13. 刷新 global dependency index，让后续卸载保护和依赖状态能看到最新 incoming edges。
@@ -373,7 +392,7 @@ flowchart TD
 
 需要 native runtime 时，安装步骤如下：
 
-1. 调用 `ensureLocalMarketplace()`，并解析 canonical `AW_HOME`。
+1. 调用 `ensureLocalMarketplace()`，解析 canonical `AW_HOME`，并确认 active view 的 selector、channel、catalog version、minAwVersion、sidecar manifest identity、digest 和写入 CLI version 都与本次 current catalog 一致。
 2. 读取 `~/.codex/config.toml`，检查 `[plugins."<plugin>@..."]` 是否显示同名插件由外部 marketplace 管理。
 3. 确保 `[marketplaces.aw]` 指向 canonical `AW_HOME`，必要时执行 `codex plugin marketplace add <canonical AW_HOME>`。
 4. 启动私有 `codex app-server`，通过 stdio JSONL 调用 `plugin/install`。
@@ -468,6 +487,10 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 
 换句话说，ignore 规则也是安装安全边界的一部分。AW 不能把“应该提交的共享身份线索”写进一个被 Git 忽略的位置，否则 fresh clone 后其它机器就失去认领依据。
 
+配置 schema 来源也有明确优先级。已安装位置优先使用 install record 绑定的 historical runtime / manifest 解释 schema；current catalog 不可用时，只要 historical schema 健康且没有 schema conflict，已安装插件的 `config list/get/set/unset` 可以继续。未安装插件的配置预置、未消费 store 或需要 current catalog schema 的路径必须拿到 current catalog，拿不到时失败为 `catalogUnavailable` 或 `configSchemaUnavailable`。如果同一 config store 有多个 installed consumer 且 schema identity 不一致，`list/get/set/unset` 会因 `configSchemaConflict` 阻断。
+
+`config reset` 分支不同于普通 schema 写入：已消费 store 走 installed-aware write，receipt 暴露 `removedKeys` 和 `artifactRefresh`，删除命中 `refreshKeys` 时用 historical runtime 执行动态 artifact refresh；schema conflict 时只能作为整 store 清理动作继续，不能任选一个 schema 解释输入。孤立残留 store 才允许用户确认后 raw 删除；raw 删除不伪造 schema identity，也不刷新 artifact。
+
 ## Status、Repair、Cleanup 与 Reinstall
 
 `aw status --verbose` 是统一只读排查入口；默认不执行 renderer、不运行 lifecycle、不修复文件。原先需要深度诊断才能看到的信息迁移到 `status --verbose`，不再提供额外的 `--deep` 用户选项。
@@ -477,13 +500,13 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 | 命令 | 用途 | 安全边界 |
 |---|---|---|
 | `aw status --verbose` | 只读收集状态证据和详细排查信息 | 不执行 renderer、不运行 lifecycle、不修复文件 |
-| `aw repair` | 在 current catalog 与 record source 能证明同一 bundle 时，重新应用 AW-owned artifacts | source 漂移时不能隐式升级 |
+| `aw repair` | historical runtime 健康时可重放已安装版本；需要替换版本或远程 artifact 时必须拿到 current catalog | source 漂移时不能隐式升级 |
 | `aw repair --dependency-index` | 从可验证 records 重建 dependency index | 只修索引，不修插件安装 |
 | `aw repair --adopt-existing` | 认领 fresh clone 中已有的 project shared artifacts | 按当前机器 `PluginLocation` 创建本机 record |
 | `aw cleanup` | 清理 AW 明确拥有的残留、marker-only 或损坏状态 | 不替代正常 `aw uninstall` |
 | `aw reinstall` | 先诊断，再安全移除 AW-owned 状态，最后按 current catalog 重装 | 遇到 project “可认领”状态时默认停止 |
 
-`aw repair` 只在 current catalog 与 record source 能证明同一 bundle 时重新应用 AW-owned artifacts；source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
+`aw repair` 只重放已安装版本时可以使用 install record 绑定的 healthy historical runtime；需要从远程重新取得 artifact、解析依赖、选择版本或替换为 current catalog 版本时，必须拿到 current catalog。source 漂移时不能隐式升级。`aw repair --dependency-index` 从可验证 records 重建 dependency index。`aw repair --adopt-existing` 用于认领 project shared artifacts。
 
 `aw cleanup` 只清理 AW 明确拥有的残留、marker-only 或损坏状态，不替代正常 `aw uninstall`。它是用户显式确认的收口入口：只要 AW 能定位到要删的残留，并且没有已知 dependents，就会继续执行；dependency index 缺失、损坏或覆盖范围不可信时，会保留诊断和 warning，但不会再把用户逼回重装或手动改文件。dependency index stale reference 仍必须通过 `aw status --verbose`、receipt 或结构化 `nextSteps` 给出的 token 显式退休：
 
@@ -491,7 +514,7 @@ project scope 下，读配置和渲染 repo-visible artifact 不是同一件事�
 aw cleanup --dependency-index --prune-stale <token> --yes
 ```
 
-`aw reinstall` 等价于先读取状态，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。遇到 project “可认领”状态时默认停止，提示先认领。
+`aw reinstall` 等价于先读取状态，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。它不能在 current catalog unavailable 时改用 historical runtime 重建已安装版本；需要重放历史版本的场景属于 `repair`。遇到 project “可认领”状态时默认停止，提示先认领。
 
 常见判断方式：
 

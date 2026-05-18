@@ -473,6 +473,64 @@ describe('cli entry', () => {
     );
   });
 
+  it('forwards catalog selector options to init, install, and status commands', async () => {
+    const initCommand = vi.fn(async () => ({
+      changed: true,
+      rootDir: '/tmp/catalog-cache',
+      warnings: [],
+      catalog: {
+        rootDir: '/tmp/catalog-cache',
+        source: 'remote',
+      },
+    }));
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+    }));
+    const statusCommand = vi.fn(async () => ({
+      reports: [],
+      output: JSON.stringify({ ok: true }),
+    }));
+    vi.doMock('../../src/commands/init.js', () => ({ initCommand }));
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
+    vi.doMock('../../src/commands/status.js', () => ({ statusCommand }));
+
+    const { runCli } = await import('../../src/index.js');
+
+    expect(await runCli(
+      ['init', '--channel', 'beta'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(initCommand).toHaveBeenCalledWith(expect.objectContaining({
+      catalogChannel: 'beta',
+    }));
+
+    expect(await runCli(
+      ['install', 'git-commit', '--platform', 'codex', '--catalog-version', '1.2.3'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(installCommand).toHaveBeenCalledWith(
+      ['git-commit'],
+      expect.objectContaining({
+        catalogVersion: '1.2.3',
+      }),
+      expect.anything(),
+    );
+
+    expect(await runCli(
+      ['status', '--catalog-channel', 'beta', '--json'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: createCapturedIo().io },
+    )).toBe(0);
+    expect(statusCommand).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({
+        catalogChannel: 'beta',
+      }),
+      expect.anything(),
+    );
+  });
+
   it('rejects upgrade --skill-trigger before dispatching upgradeCommand', async () => {
     const upgradeCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -1001,6 +1059,37 @@ describe('cli entry', () => {
       interactive: true,
       cwd: '/tmp/workspace',
     });
+  });
+
+  it('passes catalog selector flags through to bare console invocations', async () => {
+    const runConsoleController = vi.fn(async () => 0);
+    vi.doMock('../../src/commands/console.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/commands/console.js')>('../../src/commands/console.js');
+      return {
+        ...actual,
+        runConsoleController,
+      };
+    });
+
+    const { io } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(['--catalog-channel', 'beta'], {
+      cwd: '/tmp/workspace',
+      env: {} as NodeJS.ProcessEnv,
+      io,
+      prompt: {
+        select: vi.fn(async () => ({ action: 'cancel', cancelled: true })),
+      },
+      consoleDriver: {
+        render: vi.fn(),
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(runConsoleController).toHaveBeenCalledTimes(1);
+    expect(runConsoleController.mock.calls[0][0].env.AW_CATALOG_CHANNEL).toBe('beta');
+    expect(runConsoleController.mock.calls[0][0].env.AW_CATALOG_VERSION).toBeUndefined();
   });
 
   it('fails install without entering a fake prompt', async () => {
@@ -1548,6 +1637,79 @@ describe('cli entry', () => {
       changed: true,
       rootDir: '/tmp/aw-home',
       warnings: ['init warning'],
+      catalog: {
+        rootDir: '/tmp/aw-home',
+        source: 'cache',
+        selector: {
+          kind: 'distTag',
+          cliVersion: '1.4.0',
+          defaultChannel: 'latest',
+          requestedChannel: 'beta',
+          overrideSource: 'option:channel-alias',
+        },
+        sidecarManifestPackage: {
+          source: '@yiliang/aw-plugins-manifest',
+          version: '2.0.0-beta.3',
+          channel: 'beta',
+          npmIntegrity: 'sha512-sidecar',
+          manifestDigest: 'sha256:sidecar-manifest',
+        },
+        fullCatalog: {
+          source: 'cache',
+          version: '1.9.0-beta.2',
+          channel: 'beta',
+          minAwVersion: '1.4.0',
+          revision: 'sha256:full-manifest',
+          freshness: 'cached',
+          resolutionSource: 'historyCompatibleCatalog',
+        },
+        channel: 'beta',
+        catalogVersion: '1.9.0-beta.2',
+        minAwVersion: '1.4.0',
+        latestCatalog: {
+          channel: 'beta',
+          catalogVersion: '2.0.0-beta.3',
+          minAwVersion: '2.0.0',
+          blocked: true,
+        },
+        latestCatalogBlocked: {
+          channel: 'beta',
+          catalogVersion: '2.0.0-beta.3',
+          minAwVersion: '2.0.0',
+        },
+        historySchemaVersion: 1,
+        cacheFallback: {
+          used: true,
+          source: 'currentCatalogCache',
+          cacheKey: 'cache-key-1',
+          selectorKey: 'selector-key-1',
+          blockingCode: 'catalogUnavailable',
+          matchedSelector: {
+            kind: 'distTag',
+            cliVersion: '1.4.0',
+            defaultChannel: 'latest',
+            requestedChannel: 'beta',
+            overrideSource: 'option:channel-alias',
+          },
+          matchedCatalog: {
+            source: 'cache',
+            version: '1.9.0-beta.2',
+            channel: 'beta',
+            minAwVersion: '1.4.0',
+            revision: 'sha256:full-manifest',
+            freshness: 'cached',
+            resolutionSource: 'historyCompatibleCatalog',
+          },
+        },
+        remoteFailure: {
+          stage: 'fullTarball',
+          packageName: '@yiliang/aw-plugins',
+          packageVersion: '1.9.0-beta.2',
+          integrity: 'sha512-full',
+          message: 'simulated offline',
+        },
+        reason: 'simulated offline',
+      },
     }));
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -1610,9 +1772,53 @@ describe('cli entry', () => {
     expect(JSON.parse(initCapture.readStdout())).toMatchObject({
       ok: true,
       command: 'init',
+      receiptSchemaVersion: 2,
       changed: true,
       rootDir: '/tmp/aw-home',
       warnings: ['init warning'],
+      catalog: {
+        selector: {
+          kind: 'distTag',
+          requestedChannel: 'beta',
+          overrideSource: 'option:channel-alias',
+        },
+        sidecarManifestPackage: {
+          source: '@yiliang/aw-plugins-manifest',
+          version: '2.0.0-beta.3',
+          channel: 'beta',
+          npmIntegrity: 'sha512-sidecar',
+          manifestDigest: 'sha256:sidecar-manifest',
+        },
+        fullCatalog: {
+          source: 'cache',
+          version: '1.9.0-beta.2',
+          channel: 'beta',
+          minAwVersion: '1.4.0',
+          revision: 'sha256:full-manifest',
+          freshness: 'cached',
+          resolutionSource: 'historyCompatibleCatalog',
+        },
+        latestCatalog: {
+          catalogVersion: '2.0.0-beta.3',
+          minAwVersion: '2.0.0',
+          blocked: true,
+        },
+        historySchemaVersion: 1,
+        cacheFallback: {
+          used: true,
+          source: 'currentCatalogCache',
+          selectorKey: 'selector-key-1',
+          blockingCode: 'catalogUnavailable',
+          matchedSelector: {
+            requestedChannel: 'beta',
+          },
+          matchedCatalog: {
+            source: 'cache',
+            version: '1.9.0-beta.2',
+            channel: 'beta',
+          },
+        },
+      },
       nextStepsSchemaVersion: 1,
       nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
     });

@@ -400,13 +400,27 @@ function buildHomeLines(state: ConsoleHomeState): string[] {
   ]);
 }
 
+function inheritedCatalogSelectorOptions(
+  context: CliExecutionContext,
+): {
+  catalogChannel?: string;
+  catalogVersion?: string;
+} {
+  return {
+    ...(context.env.AW_CATALOG_CHANNEL ? { catalogChannel: context.env.AW_CATALOG_CHANNEL } : {}),
+    ...(context.env.AW_CATALOG_VERSION ? { catalogVersion: context.env.AW_CATALOG_VERSION } : {}),
+  };
+}
+
 async function loadConsoleHomeState(context: CliExecutionContext): Promise<ConsoleHomeState> {
   const base = await statusCommand([], {
     cwd: context.cwd,
+    ...inheritedCatalogSelectorOptions(context),
   }, context);
   const items = await loadConsoleControllerItems({
     cwd: context.cwd,
     includeCatalogOnly: true,
+    ...inheritedCatalogSelectorOptions(context),
   }, context);
   const catalogUnavailable = base.matrix.cells.length > 0 &&
     base.matrix.cells.every((cell) => cell.report?.currentCatalog?.available !== true);
@@ -1113,11 +1127,34 @@ async function reloadConsoleItem(
   return await loadResultPageItem(context, pluginName) ?? fallback;
 }
 
+function detailAuditLines(item: ConsoleControllerItem): string[] {
+  const preferredLabels = new Set([
+    '已安装版本',
+    'current catalog',
+    'selector',
+    'CLI 版本限制',
+    'catalog 缓存',
+    '远程校验',
+    '依赖自动升级',
+    '依赖阻断',
+  ]);
+  const evidenceLocation = item.statusPage.locations.find((location) => location.hasEvidence)
+    ?? item.statusPage.locations[0];
+  if (!evidenceLocation) {
+    return [];
+  }
+
+  return evidenceLocation.diagnostics
+    .filter((entry) => preferredLabels.has(entry.label))
+    .map((entry) => `${entry.label}：${entry.value}`);
+}
+
 function renderDetailLines(
   item: ConsoleControllerItem,
   recentResult?: ConsoleRecentResult,
 ): string[] {
   const detail = item.detailPage;
+  const auditLines = detailAuditLines(item);
   return joinNonEmpty([
     `${detail.statusSymbol} ${detail.summary.statusLabel}`,
     `${detail.summary.title}${detail.summary.version ? ` ${detail.summary.version}` : ''}`,
@@ -1128,6 +1165,7 @@ function renderDetailLines(
       : []),
     detail.summary.issueSummary,
     detail.dependencySummary ? `依赖 ${detail.dependencySummary}` : undefined,
+    ...(auditLines.length > 0 ? ['', ...auditLines] : []),
     ...(recentResult ? ['', ...renderRecentResultLines(item, recentResult)] : []),
   ]);
 }
@@ -2035,6 +2073,25 @@ function configTargetStoreLabel(scope: Scope, projectLayer: 'shared' | 'local'):
   return projectLayer === 'local' ? '当前项目本地配置' : '当前项目配置';
 }
 
+function configSchemaSourceLabel(source: NonNullable<PluginConsoleConfigProjection['schema']>['source']): string {
+  return source === 'installedHistorical' ? 'installedHistorical' : 'currentCatalog';
+}
+
+function configWriteBlockedReason(
+  projection: PluginConsoleConfigProjection | undefined,
+): string | undefined {
+  switch (projection?.state) {
+    case 'catalogUnavailable':
+      return projection.issueMessage ?? '当前需要 current catalog schema，但 current catalog 不可用。';
+    case 'configSchemaUnavailable':
+      return projection.issueMessage ?? '当前没有可用 schema，无法解释或写入字段。';
+    case 'configSchemaConflict':
+      return projection.issueMessage ?? '同一配置 store 被多个已安装位置消费，但 schema identity 不一致。';
+    default:
+      return undefined;
+  }
+}
+
 function configFieldValueStateLabel(field: ConfigFieldEntryV2): string {
   switch (field.valueState) {
     case 'configured':
@@ -2227,6 +2284,7 @@ function renderConfigViewLines(options: {
   view: PluginConsoleConfigProjection['views'][number] | null;
 }): string[] {
   const { item, target, viewTarget, view } = options;
+  const projection = target.projection ?? item.summary.config;
   const locations = configTargetLocations(target);
   const installedLocations = locations.filter((location) => location.status !== 'notInstalled');
 
@@ -2237,6 +2295,47 @@ function renderConfigViewLines(options: {
     installedLocations.length > 0
       ? `可应用位置：${installedLocations.map((location) => location.locationLabel).join('、')}`
       : undefined,
+    ...(projection?.schema
+      ? [
+          `schema source：${configSchemaSourceLabel(projection.schema.source)}`,
+          `schema identity：${projection.schema.identity}`,
+          `schema plugin version：${projection.schema.pluginVersion}`,
+          `schema manifest digest：${projection.schema.manifestDigest}`,
+          ...(projection.schema.source === 'installedHistorical' && projection.schema.location
+            ? [`install record：${projection.schema.location.recordPath}`]
+            : projection.catalog
+              ? [projection.catalog.available
+                  ? joinNonEmpty([
+                      'current catalog',
+                      projection.catalog.catalogVersion ? `version ${projection.catalog.catalogVersion}` : undefined,
+                      projection.catalog.channel ? `channel ${projection.catalog.channel}` : undefined,
+                      projection.catalog.minAwVersion ? `minAwVersion ${projection.catalog.minAwVersion}` : undefined,
+                    ]).join(' · ')
+                  : `current catalog：不可用${projection.catalog.reason || projection.catalog.reasonCode ? `（${projection.catalog.reason ?? projection.catalog.reasonCode}）` : ''}`]
+              : []),
+        ]
+      : projection?.catalog
+        ? [projection.catalog.available
+            ? joinNonEmpty([
+                'current catalog',
+                projection.catalog.catalogVersion ? `version ${projection.catalog.catalogVersion}` : undefined,
+                projection.catalog.channel ? `channel ${projection.catalog.channel}` : undefined,
+                projection.catalog.minAwVersion ? `minAwVersion ${projection.catalog.minAwVersion}` : undefined,
+              ]).join(' · ')
+            : `current catalog：不可用${projection.catalog.reason || projection.catalog.reasonCode ? `（${projection.catalog.reason ?? projection.catalog.reasonCode}）` : ''}`]
+        : []),
+    ...(projection?.issueMessage
+      ? [
+          '',
+          `当前状态：${projection.issueMessage}`,
+          ...(projection.issueDetails ?? []).map((detail) => `- ${detail}`),
+          ...(projection.state === 'configSchemaConflict'
+            ? ['- 先把相关安装位置对齐到同一 schema，或直接执行整层 reset 清理 store。']
+            : projection.state === 'catalogUnavailable'
+              ? ['- 恢复 current catalog 后，才能继续使用 schema-aware 写入或预置。']
+              : []),
+        ]
+      : []),
     '',
     ...(view === null
       ? ['当前层没有可展示的字段。']
@@ -2854,6 +2953,7 @@ async function runConfigResetAction(options: {
   const resultSections: string[] = [];
   const recentTargetResults: ReceiptTargetResult[] = [];
   const summaryLines: string[] = [];
+  const orphanStoreOnly = groups.every((group) => group.locations.length === 0);
 
   for (const group of groups) {
     const confirm = await confirmConfigWrite(
@@ -2886,13 +2986,26 @@ async function runConfigResetAction(options: {
       });
       resultSections.push(...groupResultLines(group, [
         receipt.deleted
-          ? '已删除这一层配置。'
+          ? orphanStoreOnly ? '已按孤立残留 store 删除这一层配置。' : '已删除这一层配置。'
           : '这一层配置原本不存在。',
-        artifactRefreshLine(receipt.artifactRefresh.status),
+        `removedKeys：${receipt.removedKeys.length > 0 ? receipt.removedKeys.join('，') : '无'}`,
+        ...(!orphanStoreOnly
+          ? [
+              artifactRefreshLine(receipt.artifactRefresh.status),
+              ...(receipt.artifactRefresh.artifacts.length > 0
+                ? receipt.artifactRefresh.artifacts.map((artifact) =>
+                    `dynamic artifact：${artifact.id} · ${artifact.scope} · ${artifact.status === 'succeeded' ? '已刷新' : '刷新失败'}`)
+                : []),
+            ]
+          : []),
       ]), '');
       recentTargetResults.push(...receipt.targetResults);
       if (receipt.targetResults.length === 0) {
-        summaryLines.push(`- ${group.label} · ${artifactRefreshLine(receipt.artifactRefresh.status)}`);
+        summaryLines.push(
+          orphanStoreOnly
+            ? `- ${group.label} · 已按孤立残留 store 删除`
+            : `- ${group.label} · ${artifactRefreshLine(receipt.artifactRefresh.status)}`,
+        );
       }
     } catch (error) {
       const message = formatErrorMessage(error);
@@ -3016,6 +3129,7 @@ async function runConfigWizardAction(
   while (true) {
     const projection = await ensureConfigProjection(context, item, target);
     const view = findConfigView(projection, currentView);
+    const writeBlockedReason = configWriteBlockedReason(projection);
     const updatableFields = (view?.fields ?? []).filter((field) => canUpdateConfigField(currentView, field));
     const clearableFields = (view?.fields ?? []).filter((field) => canClearConfigField(currentView, field));
     const applicableLocations = buildConfigApplyLocations(target, currentView);
@@ -3037,19 +3151,19 @@ async function runConfigWizardAction(
         ...(viewOptions.length > 1
           ? [{ value: 'switch-view', label: '切换作用层' }]
           : []),
-        ...(updatableFields.length > 0
+        ...(writeBlockedReason === undefined && updatableFields.length > 0
           ? [{ value: 'update-field', label: '更新字段' }]
           : []),
-        ...(clearableFields.length > 0
+        ...(writeBlockedReason === undefined && clearableFields.length > 0
           ? [{ value: 'clear-field', label: '清空字段' }]
           : []),
-        ...(currentView.scope !== 'effective' && view !== null
+        ...(currentView.scope !== 'effective' && (view !== null || projection !== undefined)
           ? [{
               value: 'reset-layer',
               label: hasStoreOnlyView(view) ? '删除配置' : '重置当前层',
             }]
           : []),
-        ...(pluginAvailable
+        ...(pluginAvailable && writeBlockedReason === undefined
           ? [{
               value: 'apply-config',
               label: '应用',

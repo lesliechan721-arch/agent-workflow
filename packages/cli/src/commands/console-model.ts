@@ -4,6 +4,7 @@ import type {
   PluginConsoleStatus,
 } from '../install-state/types.js';
 import type {
+  ConfigSchemaEvidenceV2,
   ConfigFieldEntryV2,
   GeneratedArtifactSessionVisibility,
   LegacyConfigStoreEntryV2,
@@ -79,6 +80,28 @@ export interface PluginConsoleConfigView {
 
 export interface PluginConsoleConfigProjection {
   configSchemaVersion: 2;
+  state?: 'available' | 'catalogUnavailable' | 'configSchemaUnavailable' | 'configSchemaConflict';
+  schema?: ConfigSchemaEvidenceV2;
+  issueMessage?: string;
+  issueDetails?: string[];
+  catalog?: {
+    available: boolean;
+    source?: string;
+    channel?: string;
+    catalogVersion?: string;
+    minAwVersion?: string;
+    reason?: string;
+    reasonCode?: string;
+  };
+  conflictConsumers?: Array<{
+    platform: PlatformName;
+    scope: Scope;
+    projectKey?: string;
+    recordPath: string;
+    schemaIdentity: string;
+    pluginVersion: string;
+    manifestDigest: string;
+  }>;
   views: PluginConsoleConfigView[];
 }
 
@@ -522,6 +545,16 @@ function catalogUsable(report: PluginStatusReport | undefined): boolean {
   return !catalogUnavailable(report);
 }
 
+function installActionDisabledReason(cell: StatusMatrixCell): string | undefined {
+  if (cell.disabledReason) {
+    return cell.disabledReason;
+  }
+  if (!catalogUsable(cell.report) || cell.report?.currentCatalog?.available !== true) {
+    return 'current catalog 当前不可用；恢复后才能安装、升级或查看可安装版本。';
+  }
+  return undefined;
+}
+
 function isCodexUserNativeCell(cell: StatusMatrixCell): boolean {
   return cell.platform === 'codex' &&
     cell.scope === 'user' &&
@@ -904,6 +937,7 @@ function buildInstallStateActions(
   cell: StatusMatrixCell,
   status: PluginConsoleStatus,
   reasons: PluginConsoleReasonCode[],
+  configProjection: PluginConsoleConfigProjection | undefined,
 ): PluginConsoleAction[] {
   const installState = cell.installState;
   if (!installState) {
@@ -915,6 +949,7 @@ function buildInstallStateActions(
   const diagnose = action('openStatus', '查看状态', target, {
     command: ['aw', 'status', ...commandArgs, '--verbose'],
   });
+  const configSupported = supportsConfigAction(configProjection);
   const dependencyProtected = installState.dependents.length > 0;
   const autoRemovable = installState.autoInstalled && installState.unusedDependencyHint;
   const uninstall = action('runUninstall', autoRemovable ? '清理自动依赖' : '卸载', target, {
@@ -934,9 +969,9 @@ function buildInstallStateActions(
 
   if (status === 'notInstalled') {
     actions.push(action('openInstallWizard', '安装', target, {
-      ...(cell.disabledReason ? { disabledReason: cell.disabledReason } : {}),
+      ...(installActionDisabledReason(cell) ? { disabledReason: installActionDisabledReason(cell) } : {}),
     }));
-    if (catalogUsable(cell.report) && cell.report?.currentCatalog?.available === true) {
+    if (configSupported) {
       actions.push(action('openConfigWizard', '配置', target));
     }
     return actions;
@@ -966,6 +1001,18 @@ function buildInstallStateActions(
 
   if (status === 'upgradeAvailable') {
     actions.push(action('runUpgrade', '升级', target));
+  }
+
+  if (
+    configSupported &&
+    (
+      installState.kind === 'installed' ||
+      installState.kind === 'needsRepair' ||
+      status === 'upgradeAvailable' ||
+      reasons.includes('missingRequiredConfig')
+    )
+  ) {
+    actions.push(action('openConfigWizard', '配置', target));
   }
 
   if (installState.issueCodes.includes('dynamicRefreshFailed')) {
@@ -1155,8 +1202,8 @@ function composeCopy(
   };
 }
 
-function supportsConfigAction(cell: StatusMatrixCell): boolean {
-  return catalogUsable(cell.report) && cell.report?.currentCatalog?.available === true;
+function supportsConfigAction(projection: PluginConsoleConfigProjection | undefined): boolean {
+  return projection !== undefined;
 }
 
 function hasDependencyGap(cell: StatusMatrixCell): boolean {
@@ -1180,9 +1227,10 @@ function buildLocationActions(
   cell: StatusMatrixCell,
   status: PluginConsoleStatus,
   reasons: PluginConsoleReasonCode[],
+  configProjection: PluginConsoleConfigProjection | undefined,
 ): PluginConsoleAction[] {
   if (cell.installState) {
-    return buildInstallStateActions(cell, status, reasons);
+    return buildInstallStateActions(cell, status, reasons, configProjection);
   }
 
   const target = locationTarget(cell);
@@ -1203,9 +1251,9 @@ function buildLocationActions(
       : {}),
   });
   const actions: PluginConsoleAction[] = [];
-  const configSupported = supportsConfigAction(cell);
+  const configSupported = supportsConfigAction(configProjection);
   const managedEvidence = hasManagedEvidence(cell.report);
-  const disabledInstallReason = cell.disabledReason;
+  const disabledInstallReason = installActionDisabledReason(cell);
 
   if (status === 'notInstalled') {
     actions.push(action('openInstallWizard', '安装', target, {
@@ -1283,7 +1331,8 @@ function buildLocationActions(
   }
 
   if (
-    configSupported &&
+    catalogUsable(cell.report) &&
+    cell.report?.currentCatalog?.available === true &&
     (status === 'installed' || status === 'upgradeAvailable')
   ) {
     actions.push(action('runUpgrade', '升级', target));
@@ -1343,11 +1392,12 @@ function dedupeActions(actions: PluginConsoleAction[]): PluginConsoleAction[] {
 function buildLocation(
   cell: StatusMatrixCell,
   locationDiagnostics: PluginConsoleLocationDiagnostics | undefined,
+  configProjection: PluginConsoleConfigProjection | undefined,
 ): PluginConsoleLocation {
   const reasonCodes = collectReasonCodes(cell, locationDiagnostics);
   const status = computeLocationStatus(cell, reasonCodes, locationDiagnostics);
   const copy = composeCopy(reasonCodes, cell);
-  const actions = buildLocationActions(cell, status, reasonCodes);
+  const actions = buildLocationActions(cell, status, reasonCodes, configProjection);
 
   for (const entry of actions) {
     if (WRITE_ACTION_KINDS.has(entry.kind) && !entry.target) {
@@ -2354,6 +2404,7 @@ export function createConsoleControllerItems(
         .map((cell) => buildLocation(
           cell,
           options.locationDiagnosticsByKey?.[createPluginConsoleLocationKey(cell)],
+          options.configProjectionByPluginName?.[pluginName],
         ))
         .sort(sortLocations);
       const locationReadModelByKey: Record<string, ConsoleLocationReadModel> = {

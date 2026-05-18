@@ -6,8 +6,7 @@
     "aw": "./dist/index.js"
   },
   "files": [
-    "dist/",
-    "plugins-dist/"
+    "dist/"
   ],
   "publishConfig": {
     "registry": "https://packages.aliyun.com/5fa510142f8cc15c287b3dcd/npm/npm-registry/"
@@ -20,7 +19,10 @@
     "test:coverage": "vitest run --coverage",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
-    "test:smoke:pack": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
+    "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
+    "test:smoke:pack:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-pack-smoke.test.ts",
+    "test:smoke:pack": "pnpm run test:smoke:pack:cli && pnpm run test:smoke:pack:catalog",
+    "test:smoke:fetch": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm build"

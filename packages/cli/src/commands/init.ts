@@ -1,19 +1,34 @@
 import {
-  initializeLocalMarketplace,
-  type LocalMarketplaceGateOptions,
-} from '../utils/local-marketplace.js';
+  resolveCurrentCatalog,
+} from '../utils/plugin-catalog.js';
+import type { CatalogResolution, CatalogSelectionOptions, CatalogSelector } from '../types.js';
 
 export async function initCommand(
-  options: { force?: boolean; env?: NodeJS.ProcessEnv; gate?: LocalMarketplaceGateOptions } = {},
-): Promise<{ rootDir: string; changed: boolean; warnings: string[] }> {
-  const result = await initializeLocalMarketplace({
-    force: options.force === true,
-    env: options.env,
-    gate: options.gate,
+  options: {
+    force?: boolean;
+    env?: NodeJS.ProcessEnv;
+    selectorOverrideSource?: CatalogSelector['overrideSource'];
+  } & CatalogSelectionOptions = {},
+): Promise<{ rootDir: string; changed: boolean; warnings: string[]; catalog: CatalogResolution }> {
+  const result = await resolveCurrentCatalog(options.env, {
+    ...(options.catalogChannel === undefined ? {} : { channel: options.catalogChannel }),
+    ...(options.catalogVersion === undefined ? {} : { catalogVersion: options.catalogVersion }),
   });
+  if (options.selectorOverrideSource && result.selector) {
+    result.selector.overrideSource = options.selectorOverrideSource;
+  }
+
+  if (options.force === true && result.source === 'cache') {
+    const detail = result.reason?.trim()
+      ? `远程 current catalog 不可用：${result.reason}`
+      : '远程 current catalog 不可用。';
+    throw new Error(`\`aw init --force\` 需要重新拉取并重建 current catalog cache；${detail}`);
+  }
 
   return {
-    ...result,
-    warnings: result.warnings ?? [],
+    rootDir: result.rootDir,
+    changed: options.force === true || result.source !== 'cache',
+    warnings: [],
+    catalog: result,
   };
 }

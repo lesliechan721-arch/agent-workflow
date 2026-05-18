@@ -8,6 +8,7 @@ import type {
   SkillTriggerPreference,
   TrackedHookGroupIdentity,
 } from '../types.js';
+import { getStrictSemVerValidationIssue } from '../utils/manifest.js';
 import { resolveAwHome } from '../utils/paths.js';
 import {
   createHistoricalLifecycleScopeKey,
@@ -93,6 +94,18 @@ const INSTALL_STATE_ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, RepoManagedA
   'codex.agentRole': 'agent',
   'codex.skill': 'skill',
 };
+
+function validateStrictSemVerString(
+  value: unknown,
+  context: string,
+): ValidationResult<string> {
+  const issue = getStrictSemVerValidationIssue(value, context);
+  if (issue) {
+    return fail(issue.code, issue.message);
+  }
+
+  return ok(value as string);
+}
 
 function validatePlatform(value: unknown, context: string): ValidationResult<PlatformName> {
   if (!VALID_PLATFORMS.has(value as PlatformName)) {
@@ -227,7 +240,7 @@ function validateInstallDependencyEdge(
   }
   const declarationKeys = ensureOnlyKeys(
     value.declaration,
-    ['name', 'target', 'inheritInstallOptions', 'when'],
+    ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when'],
     `${context}.declaration`,
   );
   if (!declarationKeys.ok) {
@@ -235,6 +248,15 @@ function validateInstallDependencyEdge(
   }
   if (!isNonEmptyString(value.declaration.name)) {
     return fail('invalidDependencyEdge', `Invalid ${context}.declaration.name: expected a non-empty string.`);
+  }
+  if (value.declaration.minVersion !== undefined) {
+    const minVersion = validateStrictSemVerString(
+      value.declaration.minVersion,
+      `${context}.declaration.minVersion`,
+    );
+    if (!minVersion.ok) {
+      return minVersion;
+    }
   }
   if (value.declaration.target !== undefined) {
     if (!isRecord(value.declaration.target)) {
@@ -582,7 +604,6 @@ function validateHistoricalLifecycleRuntimeRef(
     !isNonEmptyString(value.runtimeRoot) ||
     !isNonEmptyString(value.bundleRoot) ||
     !isNonEmptyString(value.manifestPath) ||
-    !isNonEmptyString(value.pluginVersion) ||
     !isNonEmptyString(value.sourceManifestDigest) ||
     !isNonEmptyString(value.bundleFingerprint) ||
     !isNonEmptyString(value.createdAt)
@@ -598,6 +619,10 @@ function validateHistoricalLifecycleRuntimeRef(
   }
   if (!Array.isArray(value.events) || value.events.some((entry) => !['install', 'upgrade', 'uninstall'].includes(String(entry)))) {
     return fail('invalidLifecycleRuntime', `Invalid ${context}.events: expected install/upgrade/uninstall event names.`);
+  }
+  const pluginVersion = validateStrictSemVerString(value.pluginVersion, `${context}.pluginVersion`);
+  if (!pluginVersion.ok) {
+    return pluginVersion;
   }
   if (!isPathInside(value.runtimeRoot, value.bundleRoot)) {
     return fail('invalidLifecycleRuntime', `Invalid ${context}.bundleRoot: must stay within runtimeRoot.`);
@@ -686,11 +711,17 @@ function validateInstallRecord(
     return sourceKeys;
   }
   if (
-    !isNonEmptyString(value.source.pluginVersion) ||
     !isNonEmptyString(value.source.manifestDigest) ||
     !isNonEmptyString(value.source.bundleFingerprint)
   ) {
     return fail('invalidInstallRecord', `Invalid ${context}.source: version, manifestDigest, and bundleFingerprint are required.`);
+  }
+  const sourcePluginVersion = validateStrictSemVerString(
+    value.source.pluginVersion,
+    `${context}.source.pluginVersion`,
+  );
+  if (!sourcePluginVersion.ok) {
+    return sourcePluginVersion;
   }
   const installSource = validateInstallSource(value.installSource, `${context}.installSource`);
   if (!installSource.ok) {
@@ -1029,11 +1060,17 @@ export function validateProjectArtifactIdentityFile(
     return sourceKeys;
   }
   if (
-    !isNonEmptyString(value.source.pluginVersion) ||
     !isNonEmptyString(value.source.manifestDigest) ||
     !isNonEmptyString(value.source.bundleFingerprint)
   ) {
     return fail('invalidProjectIdentity', 'Invalid project artifact identity file.source: missing source identity fields.');
+  }
+  const sourcePluginVersion = validateStrictSemVerString(
+    value.source.pluginVersion,
+    'project artifact identity file.source.pluginVersion',
+  );
+  if (!sourcePluginVersion.ok) {
+    return sourcePluginVersion;
   }
   if (!Array.isArray(value.artifacts)) {
     return fail('invalidProjectIdentity', 'Invalid project artifact identity file.artifacts: expected an array.');

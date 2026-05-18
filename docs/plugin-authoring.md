@@ -13,25 +13,47 @@
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值；没有声明动态 target 的静态插件不会因此产生 artifact 缺失或刷新失败诊断
 - `marketplace.policy.products` 是插件最终支持平台的来源；它不仅控制安装和升级门禁，也会参与 build 裁剪、platform manifest/runtime 生成、平台 marketplace 过滤和 `pnpm plugin:test` 平台选择
 - `dependencies.plugins` 声明 AW 插件之间的直接依赖；安装、升级、卸载和 status 都会用同一套 location-aware planner 解释它
+- `version`、`compatibility.aw.minVersion` 和 `dependencies.plugins[].minVersion` 都使用严格 SemVer；旧式依赖 `version` / `range` 字段会被拒绝
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
 创建或维护插件时，优先从 `.agents/skills/create-agent-workflows-plugin/SKILL.md` 的场景入口开始读。
 
+## Version And Catalog Contract
+
+AW 有三套独立版本身份：
+
+- CLI version：`@yiliang/aw` 的版本，代表命令、JSON 合同和运行时能力。
+- Catalog version：`@yiliang/aw-plugins-manifest` 与 `@yiliang/aw-plugins` 的共同 package version，代表一次官方 catalog 快照。
+- Plugin version：单个插件 `.agents-plugin/plugin.json` 的 `version`，代表该插件 artifact 的不可变身份。
+
+插件升级不要求 CLI 发版。只要当前 CLI 满足 catalog 和插件声明的 `compatibility.aw.minVersion`，用户就能通过 catalog 刷新看到并安装新的插件版本。
+
+作者需要遵守这些发布边界：
+
+- 面向 `latest` catalog 的 catalog version 和插件 version 都必须是 stable SemVer。
+- `beta` catalog 的 catalog version 必须是 prerelease；同一 beta 快照可以包含 stable 或 prerelease 插件 version。
+- prerelease 插件不能原样进入 `latest`。从 beta 进入 latest 时，若插件曾用 prerelease version，必须发布新的 stable 插件 version。
+- 修改 runtime 内容、manifest 能力声明、依赖最低版本、最低 CLI 版本或支持平台能力时，必须发布新的插件 `version`。
+- 同一 `plugin@version` 的 artifactDigest / manifestDigest 发布后不可变；不能靠覆盖同版本 artifact 修复内容，也不能只改 build metadata 作为替代版本。
+- 插件 `compatibility.aw.minVersion` 不能高于目标 catalog 级 `compatibility.aw.minVersion`；catalog 级门槛是整包门槛，会决定旧 CLI 是否必须回退到历史兼容 catalog。
+
+远程分发由两个 catalog 包组成：`@yiliang/aw-plugins-manifest` 是轻量 sidecar，只提供 `catalog-manifest.json`、兼容性、history 和 digest 真值；`@yiliang/aw-plugins` 是 full catalog 包，包含同一份 manifest 和当前快照中每个插件的一个构建后 artifact。catalog history 只用于发布门禁和历史兼容 catalog 查询，不是在最新 catalog 里安装历史插件的多版本索引。
+
 ## Bundle Contract
 
-`pnpm build` 会把每个源码插件打包到 `packages/cli/plugins-dist/plugins/<name>/`。所有插件都会保留 AW 源码 manifest 副本 `.agents-plugin/plugin.json`；平台 manifest 和 runtime 目录只在插件最终支持的平台上生成：
+`pnpm build` 会把每个源码插件打成 staging/runtime bundle，供本地验证和 catalog 打包使用。所有插件都会保留 AW 源码 manifest 副本 `.agents-plugin/plugin.json`；平台 manifest 和 runtime 目录只在插件最终支持的平台上生成：
 
 - 支持 Claude 时生成 `.claude-plugin/plugin.json` 和 `claude/**`，其中可包含 skills、MCP、generated commands、output styles、hooks、agents 等平台能力。
 - 支持 Codex 时生成 `.codex-plugin/plugin.json` 和 `codex/**`，其中可包含 skills、MCP、apps 等平台能力。
 
-根级 marketplace 仍有两份：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两者共享 owner/interface 等根级元数据，但 entries 会按插件最终支持平台过滤；AW current catalog 仍扫描 `plugins/<name>/.agents-plugin/plugin.json`，因此不能把某个平台 marketplace 当作全部插件清单。本机 `~/.aw` 只是 embedded bundle 的同步镜像，不是新的源码真值。
+根级 marketplace 仍有两份：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两者共享 owner/interface 等根级元数据，但 entries 会按插件最终支持平台过滤；AW current catalog 以远程 catalog manifest 和其中的 `.agents-plugin/plugin.json` 为准，因此不能把某个平台 marketplace 当作全部插件清单。本机 `~/.aw` 是 catalog cache、active runtime view 和安装状态目录，不是新的源码真值。
 
 AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离 staging 目录中处理显式 `scripts.node.build`、复制 lifecycle/helper 的静态运行时闭包和 production 依赖，并把 build 后的 staging manifest 当作发布真值；源码树不会被 manifest build 回写。运行时安装、升级、卸载不会联网安装依赖，也不会借用仓库根或宿主的 `node_modules`。
 
 `scripts.artifacts.render` 和 `artifacts.targets` 也保留在 AW runtime bundle 的源码 manifest 中，但不会写入 Claude/Codex 原生 manifest。平台 manifest 只接收平台能识别的静态能力；动态 artifact 由 AW 在写路径里渲染、校验和落盘。
 
-`dependencies.plugins` 同样只属于 AW runtime manifest。build 后的 `.agents-plugin/plugin.json` 会保留依赖声明并再次校验；`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和两份 marketplace manifest 都不会包含 `dependencies`。
+`dependencies.plugins` 同样只属于 AW runtime manifest。build 后的 `.agents-plugin/plugin.json` 会保留依赖声明并再次校验；`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和两份 marketplace manifest 都不会包含 `dependencies`。CLI tarball 不再把完整插件快照作为 embedded fallback 发布；正式插件 artifact 来自 `@yiliang/aw-plugins` catalog 包。
 
 ## Plugin Dependencies
 
@@ -43,6 +65,7 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
     "plugins": [
       {
         "name": "review-shared-tools",
+        "minVersion": "0.4.0",
         "target": { "scope": "user" },
         "when": { "platforms": ["codex"] },
         "inheritInstallOptions": true
@@ -55,16 +78,17 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
 字段规则：
 
 - `dependencies` 只允许 `plugins`；`dependencies.plugins` 必须是数组，空数组等价于无依赖但会收到作者工具 warning。
-- 每个 entry 只允许 `name`、`target`、`inheritInstallOptions`、`when`。
+- 每个 entry 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。
 - `name` 使用和插件名相同的小写短横线格式，不能指向自己，且必须能在当前 AW catalog 中解析。
+- `minVersion` 可选，表示依赖插件的最低可接受版本，必须是严格 SemVer；它不是 range，不支持上界、`^`、`~` 或比较器组合。
 - `when.platforms` 只允许非空的 `codex` / `claude` 数组；省略 `when` 表示两个平台都生效。同一 manifest 内，同名依赖的平台条件不能重叠。
 - `target.scope` 只允许 `user` 或 `project`。不支持 `target.platform`，依赖永远跟随父插件本次安装或升级时已经确定的平台。
 - `inheritInstallOptions` 只能是 boolean。省略或 `false` 时，依赖不会继承父插件的插件级安装选项；设为 `true` 时只对需要自动安装的依赖生效，多个父插件给同一依赖传入冲突选项会 fail fast。SkillTrigger 已迁移为 AW 内建配置，不通过依赖安装选项传递。
-- 首版不支持 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、跨 marketplace 依赖、外部 URL/npm/git/local path 依赖或 dependency entry 覆盖 platform。
+- 不支持旧式 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、跨 marketplace 依赖、外部 URL/npm/git/local path 依赖或 dependency entry 覆盖 platform。这些字段会被作者工具和发布门禁拒绝。
 
 scope 选择是 location-aware 的。父插件安装到 `user` scope 时，只能依赖同平台的 `user` scope 健康安装；如果当前平台生效的依赖写了 `target.scope: "project"`，命令会在写入前失败。父插件安装到 `project` scope 且依赖省略 `target.scope` 时，AW 会优先选择当前 project，当前 project 缺失或不健康时可复用 user scope；显式 `target.scope: "user"` 只看 user，显式 `target.scope: "project"` 只看当前 project，不做 fallback。
 
-用户安装或升级父插件时，缺失依赖会自动安装。显式 `upgrade <plugin>` 会先处理依赖再升级父插件；`upgrade --all` 只把用户显式保留的安装作为根，不会把孤立自动依赖当作根。卸载父插件时，仍被其它插件依赖的位置会受到保护；父插件卸载成功后，未被显式保留且引用归零的自动依赖会被反向拓扑自动清理。
+用户安装或升级父插件时，缺失依赖会自动安装，已安装但低于 `minVersion` 的依赖会自动升级到 current catalog 中满足最低版本的候选。显式 `upgrade <plugin>` 会先处理依赖再升级父插件；`upgrade --all` 只把用户显式保留的安装作为根，不会把孤立自动依赖当作根。卸载父插件时，仍被其它插件依赖的位置会受到保护；父插件卸载成功后，未被显式保留且引用归零的自动依赖会被反向拓扑自动清理。
 
 ## Public Slash Commands
 
@@ -163,6 +187,8 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 未声明 `config.schema` 的插件没有 AW 配置面：`aw config` 不会为它解释 raw store，status 也不会因为 “no schema” 生成需要处理的问题。未声明 `scripts.lifecycle` 的插件没有 install/upgrade/uninstall lifecycle，普通安装、升级、卸载、status 和 cleanup 都不能把“没有 lifecycle”视为异常；cleanup 收口残留时也不会运行 lifecycle。未声明 `artifacts.targets` 表示插件没有动态 artifact，静态 skills、slashCommands、extensions、MCP 或 hooks 仍按各自静态合同管理。
 
 如果已安装的动态 artifact 声明了 `refreshKeys`，`aw config set` / `unset` / `reset` 写入后会按当前命令能定位到的 scope 自动刷新命中的 artifact。user config 写入会刷新 user target，并在当前 repo 也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。CLI 不扫描所有历史 project。刷新执行 renderer 时使用该 location 的 install record historical bundle，避免 current local marketplace 中的 runtime 文件覆盖模板源；historical bundle 缺失或校验失败时刷新失败并提示 repair。dynamic diagnostic cache 会用 `refreshReach` 记录本次覆盖了 user、当前 project，还是有其它已知 project target 可能仍 stale。刷新失败不会回滚已经写入的 config store，但会把受影响 artifact 标记为最近 refresh failed，`aw status` 和 JSON receipt 会给出稳定诊断。
+
+已安装位置的配置 schema 优先来自 install record 绑定的 historical runtime / manifest，而不是 current catalog。这样即使远程 catalog 不可用，已安装插件仍能读取和写入自己当时接受的 schema；如果同一个 config store 被多个 installed consumer 使用且 schema identity 不一致，`list/get/set/unset` 会因 `configSchemaConflict` 阻断。`config reset` 分两条路径：已消费 store 走 installed-aware write，receipt 稳定暴露 `removedKeys` 和 `artifactRefresh`，删除命中 `refreshKeys` 时会按 historical runtime 刷新动态 artifact；孤立残留 store 才允许用户确认后 raw 删除，不伪造 schema identity，也不刷新 artifact。
 
 ## Dynamic Artifacts
 

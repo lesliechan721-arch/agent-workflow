@@ -4,7 +4,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  CatalogChannel,
   CatalogResolution,
+  CatalogSelector,
+  CatalogVersion,
+  CliVersion,
   InstalledDependencyEdge,
   CodexSharedNativeRefs,
   GeneratedArtifact,
@@ -16,11 +20,15 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
+import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
 import { readInstallRecordFileAt } from '../install-state/facade.js';
 import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
 import {
   getCodexHome,
+  resolveCurrentCatalogCacheEntriesDir,
+  resolveCurrentCatalogCacheEntryDir,
+  resolveCurrentCatalogCacheStagingDir,
   resolveAwHome,
   resolveCliPackageRoot,
   resolveEmbeddedPluginsRoot,
@@ -29,6 +37,7 @@ import { validateBundleLayout } from './bundle-layout.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
+  getStrictSemVerValidationIssue,
   tryParseStrictSemVer,
 } from './manifest.js';
 import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
@@ -94,6 +103,199 @@ export async function readCliPackageInfo(): Promise<{ name: string; version: str
     name: packageJson.name,
     version,
   };
+}
+
+export interface CurrentCatalogCacheIdentity {
+  selector: CatalogSelector;
+  channel: CatalogChannel;
+  catalogVersion: CatalogVersion;
+  minAwVersion: CliVersion;
+  schemaVersion: number;
+  historySchemaVersion: number | null;
+  sidecarIntegrity: string;
+  fullIntegrity: string;
+}
+
+export interface CurrentCatalogCacheEntryRecord extends CurrentCatalogCacheIdentity {
+  version: 1;
+  manifestDigest: string;
+  createdAt: string;
+}
+
+export interface CurrentCatalogCacheEntry {
+  cacheKey: string;
+  selectorKey: string;
+  rootDir: string;
+  metadataPath: string;
+  metadata: CurrentCatalogCacheEntryRecord;
+}
+
+function createSha256Digest(value: Buffer | string): string {
+  return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
+}
+
+export function serializeCatalogSelectorForCache(selector: CatalogSelector): string {
+  return JSON.stringify({
+    kind: selector.kind,
+    cliVersion: selector.cliVersion,
+    defaultChannel: selector.defaultChannel,
+    requestedChannel: selector.requestedChannel ?? null,
+    requestedCatalogVersion: selector.requestedCatalogVersion ?? null,
+  });
+}
+
+function createCurrentCatalogCacheIdentityPayload(
+  identity: CurrentCatalogCacheIdentity,
+): Record<string, unknown> {
+  return {
+    selector: serializeCatalogSelectorForCache(identity.selector),
+    channel: identity.channel,
+    catalogVersion: identity.catalogVersion,
+    minAwVersion: identity.minAwVersion,
+    schemaVersion: identity.schemaVersion,
+    historySchemaVersion: identity.historySchemaVersion,
+    sidecarIntegrity: identity.sidecarIntegrity,
+    fullIntegrity: identity.fullIntegrity,
+  };
+}
+
+export function buildCurrentCatalogCacheKey(
+  identity: CurrentCatalogCacheIdentity,
+): string {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(createCurrentCatalogCacheIdentityPayload(identity)))
+    .digest('hex');
+}
+
+function getCurrentCatalogCacheMetadataPath(entryDir: string): string {
+  return path.join(entryDir, 'entry.json');
+}
+
+function getCurrentCatalogCacheRootDir(entryDir: string): string {
+  return path.join(entryDir, 'catalog');
+}
+
+function isCurrentCatalogCacheEntryRecord(value: unknown): value is CurrentCatalogCacheEntryRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    value.version === 1 &&
+    isRecord(value.selector) &&
+    typeof value.channel === 'string' &&
+    typeof value.catalogVersion === 'string' &&
+    typeof value.minAwVersion === 'string' &&
+    typeof value.schemaVersion === 'number' &&
+    (value.historySchemaVersion === null || typeof value.historySchemaVersion === 'number') &&
+    typeof value.sidecarIntegrity === 'string' &&
+    typeof value.fullIntegrity === 'string' &&
+    typeof value.manifestDigest === 'string' &&
+    typeof value.createdAt === 'string'
+  );
+}
+
+export async function readCurrentCatalogCacheEntry(
+  identity: CurrentCatalogCacheIdentity,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CurrentCatalogCacheEntry | null> {
+  const selectorKey = serializeCatalogSelectorForCache(identity.selector);
+  const cacheKey = buildCurrentCatalogCacheKey(identity);
+  const entryDir = resolveCurrentCatalogCacheEntryDir(cacheKey, env);
+  const metadataPath = getCurrentCatalogCacheMetadataPath(entryDir);
+  const rootDir = getCurrentCatalogCacheRootDir(entryDir);
+
+  const metadata = await readJsonFileIfExistsSafe<unknown>(metadataPath);
+  if (!isCurrentCatalogCacheEntryRecord(metadata)) {
+    return null;
+  }
+
+  if (
+    serializeCatalogSelectorForCache(metadata.selector) !== selectorKey ||
+    metadata.channel !== identity.channel ||
+    metadata.catalogVersion !== identity.catalogVersion ||
+    metadata.minAwVersion !== identity.minAwVersion ||
+    metadata.schemaVersion !== identity.schemaVersion ||
+    metadata.historySchemaVersion !== identity.historySchemaVersion ||
+    metadata.sidecarIntegrity !== identity.sidecarIntegrity ||
+    metadata.fullIntegrity !== identity.fullIntegrity
+  ) {
+    return null;
+  }
+
+  const manifestPath = path.join(rootDir, CURRENT_CATALOG_MANIFEST_FILE);
+  if (!(await fs.pathExists(manifestPath))) {
+    return null;
+  }
+
+  const manifestDigest = createSha256Digest(await fs.readFile(manifestPath));
+  if (manifestDigest !== metadata.manifestDigest) {
+    return null;
+  }
+
+  return {
+    cacheKey,
+    selectorKey,
+    rootDir,
+    metadataPath,
+    metadata,
+  };
+}
+
+export async function writeCurrentCatalogCacheEntry(
+  options: CurrentCatalogCacheIdentity & {
+    sourceRoot: string;
+    env?: NodeJS.ProcessEnv;
+  },
+): Promise<CurrentCatalogCacheEntry> {
+  const env = options.env ?? process.env;
+  const selectorKey = serializeCatalogSelectorForCache(options.selector);
+  const cacheKey = buildCurrentCatalogCacheKey(options);
+  const entriesDir = resolveCurrentCatalogCacheEntriesDir(env);
+  const stagingParent = resolveCurrentCatalogCacheStagingDir(env);
+  await fs.ensureDir(stagingParent);
+  const stagingDir = await fs.mkdtemp(path.join(stagingParent, `${cacheKey}-`));
+  const finalEntryDir = resolveCurrentCatalogCacheEntryDir(cacheKey, env);
+  const finalRootDir = getCurrentCatalogCacheRootDir(finalEntryDir);
+  const metadataPath = getCurrentCatalogCacheMetadataPath(finalEntryDir);
+
+  try {
+    await fs.ensureDir(entriesDir);
+    const stagedRootDir = getCurrentCatalogCacheRootDir(stagingDir);
+    await fs.copy(options.sourceRoot, stagedRootDir);
+
+    const manifestPath = path.join(stagedRootDir, CURRENT_CATALOG_MANIFEST_FILE);
+    const manifestDigest = createSha256Digest(await fs.readFile(manifestPath));
+    const metadata: CurrentCatalogCacheEntryRecord = {
+      version: 1,
+      selector: options.selector,
+      channel: options.channel,
+      catalogVersion: options.catalogVersion,
+      minAwVersion: options.minAwVersion,
+      schemaVersion: options.schemaVersion,
+      historySchemaVersion: options.historySchemaVersion,
+      sidecarIntegrity: options.sidecarIntegrity,
+      fullIntegrity: options.fullIntegrity,
+      manifestDigest,
+      createdAt: new Date().toISOString(),
+    };
+    await writeJsonFile(getCurrentCatalogCacheMetadataPath(stagingDir), metadata);
+
+    await fs.remove(finalEntryDir);
+    await fs.move(stagingDir, finalEntryDir, { overwrite: true });
+
+    return {
+      cacheKey,
+      selectorKey,
+      rootDir: finalRootDir,
+      metadataPath,
+      metadata,
+    };
+  } catch (error) {
+    await fs.remove(stagingDir);
+    throw error;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,7 +377,7 @@ function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
     return false;
   }
 
-  const allowedKeys = new Set(['name', 'target', 'inheritInstallOptions', 'when']);
+  const allowedKeys = new Set(['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     return false;
   }
@@ -196,6 +398,7 @@ function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
     );
 
   return (
+    (value.minVersion === undefined || typeof value.minVersion === 'string') &&
     validTarget &&
     validWhen &&
     (value.inheritInstallOptions === undefined || typeof value.inheritInstallOptions === 'boolean')
@@ -782,9 +985,13 @@ function resolveEmbeddedCatalogFallback(
     );
   }
   if (inspection.sourceVersionStatus === 'invalid') {
+    const issue = getStrictSemVerValidationIssue(
+      inspection.configInspection.sourceVersion,
+      'local marketplace config.sourceVersion',
+    );
     return createCatalogReason(
       'localCatalogSourceVersionInvalid',
-      `local marketplace sourceVersion "${inspection.configInspection.sourceVersion ?? ''}" is not a strict SemVer 2.0.0 string.`,
+      issue?.message ?? 'Invalid local marketplace config.sourceVersion: expected a strict SemVer 2.0.0 string.',
     );
   }
   if (inspection.sourceVersionStatus === 'ahead') {

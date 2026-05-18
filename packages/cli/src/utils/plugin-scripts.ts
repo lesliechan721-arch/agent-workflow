@@ -246,12 +246,19 @@ async function resolveLifecycleSnapshotSource(options: {
   plugin: PluginMeta;
   pluginManifestDigest: string;
   catalog?: Awaited<ReturnType<typeof resolveCurrentCatalog>>;
+  env?: NodeJS.ProcessEnv;
 }): Promise<{
   sourceBundleRoot: string;
   manifestDigest: string;
   bundleFingerprint: string;
 }> {
-  if (options.catalog?.source !== 'local') {
+  const env = options.env ?? process.env;
+  const activeMarketplacePluginsRoot = path.join(resolveAwHome(env), 'plugins');
+
+  if (
+    options.catalog?.source !== 'local' ||
+    !isInsidePath(options.plugin.rootDir, activeMarketplacePluginsRoot)
+  ) {
     return {
       sourceBundleRoot: options.plugin.rootDir,
       manifestDigest: options.pluginManifestDigest,
@@ -309,6 +316,7 @@ export async function prepareLifecycleConfigSnapshot(
     plugin: options.plugin,
     pluginManifestDigest,
     catalog,
+    env,
   });
   const createdAt = new Date().toISOString();
   const digestSegment = manifestDigest.replace(/^sha256:/, '').slice(0, 16);

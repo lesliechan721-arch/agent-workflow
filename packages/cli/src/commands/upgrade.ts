@@ -10,6 +10,7 @@ import type {
   NativePluginsByPlatform,
   PlatformAdapter,
   PlatformName,
+  PluginMeta,
   ResolvedInstallOptions,
   Scope,
   SkippedUpgradeCode,
@@ -57,6 +58,7 @@ import {
   type CommandExecutionContextInput,
 } from './runtime.js';
 import {
+  applyCatalogSelectorEnv,
   normalizeUpgradeCommandOptions,
   type RawUpgradeCommandOptions,
 } from './options.js';
@@ -88,8 +90,15 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
 } from '../utils/paths.js';
-import { readInstalledLedger } from '../utils/local-marketplace.js';
-import { writeInstalledLedger } from '../utils/local-marketplace.js';
+import {
+  compareStrictSemVerFields,
+  resolvePluginsFromCatalog,
+} from '../utils/manifest.js';
+import {
+  readInstalledLedger,
+  resolveReadOnlyCatalogResolution,
+  writeInstalledLedger,
+} from '../utils/local-marketplace.js';
 import {
   serializePluginLocation,
   sortPluginLocations,
@@ -152,6 +161,8 @@ interface UpgradeCommandReceiptTarget {
   platform: PlatformName;
   scope: Scope;
   requested: boolean;
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
   dependencyOf?: Array<{
     plugin: string;
     platform: PlatformName;
@@ -166,6 +177,8 @@ interface UpgradeCommandReceiptAction {
   type: 'installDependency' | 'upgradeDependency';
   status: 'succeeded';
   requested?: boolean;
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
   dependencyOf?: Array<{
     plugin: string;
     platform: PlatformName;
@@ -234,16 +247,24 @@ function buildUpgradeGraphExecutorNodes(options: {
 
 function createUpgradeReceiptTargets(
   plan: PluginDependencyWritePlan,
+  targetByPlugin: ReadonlyMap<string, ResolvedPluginTarget>,
   skippedTargets: UpgradeCommandReceiptTarget[] = [],
 ): UpgradeCommandReceiptTarget[] {
   return [
     ...plan.writeOrder.map((location) => {
       const node = plan.nodesByLocation[serializePluginLocation(location)];
+      const target = targetByPlugin.get(location.plugin);
       return {
         plugin: location.plugin,
         platform: location.platform,
         scope: location.scope,
         requested: node?.requested === true,
+        ...(target
+          ? {
+              selectedVersion: target.plugin.manifest.version,
+              selectedVersionSource: target.source === 'historical' ? 'historical' as const : 'currentCatalog' as const,
+            }
+          : {}),
         ...(node?.dependencyOf.length
           ? {
               dependencyOf: node.dependencyOf.map((dependencyOf) => ({
@@ -263,17 +284,25 @@ function createUpgradeSkippedReceiptTargets(options: {
   plan: PluginDependencyWritePlan;
   skipped: PluginDependencyUpgradeAllSkip[];
   requestedRoots: PluginLocation[];
+  targetByPlugin: ReadonlyMap<string, ResolvedPluginTarget>;
 }): UpgradeCommandReceiptTarget[] {
   const requestedRootKeys = new Set(
     options.requestedRoots.map((location) => serializePluginLocation(location)),
   );
   return options.skipped.map((entry) => {
     const node = options.plan.nodesByLocation[serializePluginLocation(entry.location)];
+    const target = options.targetByPlugin.get(entry.location.plugin);
     return {
       plugin: entry.location.plugin,
       platform: entry.location.platform,
       scope: entry.location.scope,
       requested: node?.requested ?? requestedRootKeys.has(serializePluginLocation(entry.location)),
+      ...(target
+        ? {
+            selectedVersion: target.plugin.manifest.version,
+            selectedVersionSource: target.source === 'historical' ? 'historical' as const : 'currentCatalog' as const,
+          }
+        : {}),
       ...(node?.dependencyOf.length
         ? {
             dependencyOf: node.dependencyOf.map((dependencyOf) => ({
@@ -312,6 +341,7 @@ function createUpgradeSkippedTargetMetadata(options: {
 
 function createUpgradeReceiptActions(
   plan: PluginDependencyWritePlan,
+  targetByPlugin: ReadonlyMap<string, ResolvedPluginTarget>,
 ): UpgradeCommandReceiptAction[] {
   return plan.writeOrder
     .filter((location) => {
@@ -320,6 +350,7 @@ function createUpgradeReceiptActions(
     })
     .map((location) => {
       const action = plan.nodesByLocation[serializePluginLocation(location)]!.action;
+      const target = targetByPlugin.get(location.plugin);
       return {
         plugin: location.plugin,
         platform: location.platform,
@@ -327,6 +358,12 @@ function createUpgradeReceiptActions(
         type: action === 'installDependency' ? 'installDependency' : 'upgradeDependency',
         status: 'succeeded' as const,
         requested: plan.nodesByLocation[serializePluginLocation(location)]?.requested === true,
+        ...(target
+          ? {
+              selectedVersion: target.plugin.manifest.version,
+              selectedVersionSource: target.source === 'historical' ? 'historical' as const : 'currentCatalog' as const,
+            }
+          : {}),
         ...(plan.nodesByLocation[serializePluginLocation(location)]?.dependencyOf.length
           ? {
               dependencyOf: plan.nodesByLocation[serializePluginLocation(location)]!.dependencyOf.map((dependencyOf) => ({
@@ -604,6 +641,58 @@ async function preflightExplicitUpgradeTargets(
 
     if (!target.currentPlugin) {
       throw new Error(`${target.pluginName} 当前 catalog 已缺失，请先执行 uninstall。`);
+    }
+  }
+}
+
+async function preflightExplicitCodexUserRecoveryOnlyTargets(options: {
+  pluginNames: string[];
+  commandOptions: UpgradeCommandOptions;
+  adapters: Record<PlatformName, PlatformAdapter>;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  if (
+    options.commandOptions.scope !== 'user' ||
+    (options.commandOptions.platform !== 'codex' && options.commandOptions.platform !== 'both') ||
+    options.pluginNames.length === 0
+  ) {
+    return;
+  }
+
+  const catalog = await resolveReadOnlyCatalogResolution(options.env);
+  let plugins: PluginMeta[];
+  try {
+    plugins = await resolvePluginsFromCatalog(catalog.rootDir, options.pluginNames);
+  } catch {
+    return;
+  }
+
+  const pluginByName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]));
+  for (const pluginName of options.pluginNames) {
+    const plugin = pluginByName.get(pluginName);
+    if (!plugin) {
+      continue;
+    }
+    const pluginStatus = await readUpgradeTargetStatus(
+      options.adapters,
+      'codex',
+      {
+        pluginName,
+        plugin,
+        currentPlugin: plugin,
+        embeddedPlugin: plugin,
+        source: 'historical',
+      },
+      'user',
+    );
+    const blockReason = getCodexUserUpgradeBlockReason(
+      pluginName,
+      pluginStatus,
+      'user',
+      'codex',
+    );
+    if (blockReason) {
+      throw new Error(blockReason);
     }
   }
 }
@@ -1147,6 +1236,41 @@ async function evaluateUpgradeAllTarget(options: {
     };
   }
 
+  if (scopeRecord?.resolvedVersion) {
+    const versionComparison = compareStrictSemVerFields({
+      left: {
+        value: target.currentPlugin.manifest.version,
+        fieldPath: 'current plugin manifest.version',
+      },
+      right: {
+        value: scopeRecord.resolvedVersion,
+        fieldPath: 'installed ledger resolvedVersion',
+      },
+    });
+    if (versionComparison.kind === 'invalid') {
+      return {
+        skipped: createSkippedUpgradeTarget(
+          platform,
+          scope,
+          target.pluginName,
+          'repairRequired',
+          versionComparison.issues.map((issue) => issue.message).join(' '),
+        ),
+      };
+    }
+    if (versionComparison.relation < 0) {
+      return {
+        skipped: createSkippedUpgradeTarget(
+          platform,
+          scope,
+          target.pluginName,
+          'repairRequired',
+          `已安装版本 ${versionComparison.right.raw} 高于 current catalog 版本 ${versionComparison.left.raw}；请先检查 catalog 或修复当前安装状态。`,
+        ),
+      };
+    }
+  }
+
   if (platform === 'codex' && scope === 'project') {
     const installability = getCodexProjectInstallability(target.currentPlugin);
     if (!installability.installable) {
@@ -1569,14 +1693,17 @@ async function runExplicitUpgrade(
       plugins: targets.map((target) => target.pluginName),
       nativePlugins: graphResult.nativePlugins,
       repoManagedArtifacts: graphResult.repoManagedArtifacts,
-      receiptTargets: createUpgradeReceiptTargets(graphPlan),
-      receiptActions: createUpgradeReceiptActions(graphPlan),
+      receiptTargets: createUpgradeReceiptTargets(graphPlan, graphContext.targetByPlugin),
+      receiptActions: createUpgradeReceiptActions(graphPlan, graphContext.targetByPlugin),
     };
   } catch (error) {
     await cleanupOrphanedAutoDependenciesAfterFailedInstall({
       plan: graphPlan,
       cwd: options.cwd,
       env,
+      targetByPlugin: graphContext.targetByPlugin,
+      adapters,
+      scriptTimeoutMs: options.scriptTimeoutMs,
     }).catch(() => undefined);
     throw error;
   }
@@ -1999,13 +2126,15 @@ async function runUpgradeAll(
     skipped,
     receiptTargets: createUpgradeReceiptTargets(
       executionPlan,
+      graphContext.targetByPlugin,
       createUpgradeSkippedReceiptTargets({
         plan: executionPlan,
         skipped: graphPlan.skipped,
         requestedRoots: graphPlan.roots,
+        targetByPlugin: graphContext.targetByPlugin,
       }),
     ),
-    receiptActions: createUpgradeReceiptActions(executionPlan),
+    receiptActions: createUpgradeReceiptActions(executionPlan, graphContext.targetByPlugin),
   };
 }
 
@@ -2016,7 +2145,7 @@ export async function upgradeCommand(
 ): Promise<UpgradeCommandResult> {
   const options = normalizeUpgradeCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
-  const env = context.env;
+  const env = applyCatalogSelectorEnv(context.env, options);
 
   if (!options.all && pluginNames.length === 0) {
     throw new Error('upgrade 命令需要插件名，或者显式传入 `--all`。');
@@ -2098,6 +2227,13 @@ export async function upgradeCommand(
       );
     }
   }
+
+  await preflightExplicitCodexUserRecoveryOnlyTargets({
+    pluginNames,
+    commandOptions: options,
+    adapters,
+    env,
+  });
 
   const prepared = await preparePluginTargetsForCommand(
     options.cwd,

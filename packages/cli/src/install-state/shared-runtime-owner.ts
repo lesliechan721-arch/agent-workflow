@@ -6,6 +6,10 @@ import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
 import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../utils/plugin-scripts.js';
+import {
   assessSharedSkillTriggerRuntimeSemantics,
   commitMaterializedSkillTriggerPreference,
   materializeSkillTriggerPreference,
@@ -118,6 +122,148 @@ function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
     && left.platform === right.platform
     && left.scope === right.scope
     && (left.projectKey ?? null) === (right.projectKey ?? null);
+}
+
+function isPathInside(childPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, childPath);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function readBundlePluginManifestWithDefaultedCompatibility(options: {
+  bundleRoot: string;
+  manifestPath: string;
+}): Promise<PluginMeta> {
+  const rawManifest = await fs.readJson(options.manifestPath) as unknown;
+  if (!rawManifest || typeof rawManifest !== 'object' || Array.isArray(rawManifest)) {
+    throw new Error('historical manifest 不是对象');
+  }
+  const input = rawManifest as Record<string, unknown>;
+  const pluginName = typeof input.name === 'string' && input.name.trim().length > 0
+    ? input.name
+    : path.basename(options.bundleRoot);
+  const pluginVersion = typeof input.version === 'string' && input.version.trim().length > 0
+    ? input.version
+    : '0.0.0';
+  const normalizedManifest = {
+    ...input,
+    name: pluginName,
+    version: pluginVersion,
+    description: typeof input.description === 'string' && input.description.trim().length > 0
+      ? input.description
+      : `${pluginName} plugin`,
+    compatibility: input.compatibility ?? {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    },
+    marketplace: input.marketplace && typeof input.marketplace === 'object' && !Array.isArray(input.marketplace)
+      ? input.marketplace
+      : {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+  };
+  return {
+    rootDir: options.bundleRoot,
+    manifestPath: options.manifestPath,
+    manifest: normalizedManifest as PluginMeta['manifest'],
+  };
+}
+
+export type VerifiedHistoricalBundlePluginResult =
+  | {
+    status: 'ok';
+    plugin: PluginMeta;
+    bundleRoot: string;
+    manifestPath: string;
+  }
+  | {
+    status: 'invalid';
+    reason: string;
+  };
+
+export async function loadVerifiedHistoricalBundlePlugin(options: {
+  pluginName: string;
+  pluginVersion: string;
+  runtimeRoot: string;
+  bundleRoot: string;
+  manifestPath: string;
+  sourceManifestDigest: string;
+  bundleFingerprint: string;
+}): Promise<VerifiedHistoricalBundlePluginResult> {
+  let runtimeRoot: string;
+  let bundleRoot: string;
+  let manifestPath: string;
+  try {
+    runtimeRoot = await fs.realpath(options.runtimeRoot);
+    bundleRoot = await fs.realpath(options.bundleRoot);
+    manifestPath = await fs.realpath(options.manifestPath);
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `historical bundle 路径不可用：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (!isPathInside(bundleRoot, runtimeRoot)) {
+    return {
+      status: 'invalid',
+      reason: 'historical bundle root 不在 runtime root 内',
+    };
+  }
+  if (!isPathInside(manifestPath, bundleRoot)) {
+    return {
+      status: 'invalid',
+      reason: 'historical manifest path 不在 bundle root 内',
+    };
+  }
+
+  try {
+    const [manifestDigest, bundleFingerprint, plugin] = await Promise.all([
+      calculateFileDigest(manifestPath),
+      calculatePluginBundleFingerprint(bundleRoot),
+      readBundlePluginManifestWithDefaultedCompatibility({
+        bundleRoot,
+        manifestPath,
+      }),
+    ]);
+    if (bundleFingerprint !== options.bundleFingerprint) {
+      return {
+        status: 'invalid',
+        reason: 'historical bundle fingerprint 与记录不一致',
+      };
+    }
+    if (
+      plugin.manifest.name !== options.pluginName ||
+      plugin.manifest.version !== options.pluginVersion ||
+      path.resolve(plugin.manifestPath) !== path.resolve(manifestPath)
+    ) {
+      return {
+        status: 'invalid',
+        reason: 'historical manifest identity 与记录不一致',
+      };
+    }
+    if (manifestDigest !== options.sourceManifestDigest) {
+      // Bundle fingerprint already anchors the full historical bundle. Some
+      // legacy records may carry a stale manifest-only digest after bundle
+      // normalization, but the stronger bundle-level match is still usable.
+    }
+    return {
+      status: 'ok',
+      plugin,
+      bundleRoot,
+      manifestPath,
+    };
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: `historical bundle 内容不可验证：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 function locationFromRecord(recordFile: InstallRecordFile): PluginLocation {
@@ -651,6 +797,10 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     };
   }
 
+  if (ownerInspection.read.status !== 'ok') {
+    throw new Error('Shared runtime owner inspection is marked usable without a readable owner record.');
+  }
+
   const ownerLocation = ownerInspection.read.value.owner;
   if (ownerLocation.scope === 'project' && !ownerLocation.projectKey) {
     const failClosedReason = buildReplayFailClosedMessage({
@@ -678,7 +828,7 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
       platform: ownerLocation.platform,
       scope: ownerLocation.scope,
       cwd: ownerLocation.scope === 'project'
-        ? ownerLocation.projectKey
+        ? ownerLocation.projectKey ?? process.cwd()
         : process.cwd(),
       env: options.env,
     });

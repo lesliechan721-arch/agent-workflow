@@ -154,6 +154,7 @@ describe('plugin dependency graph helpers', () => {
         dependency: gitCommitProject,
         declaration: {
           name: 'git-commit',
+          minVersion: '1.2.0',
           target: {
             scope: 'project',
           },
@@ -167,6 +168,7 @@ describe('plugin dependency graph helpers', () => {
       'slash-review',
     ]);
     expect(nextRecord.dependencyEdges?.[0]?.dependency).toEqual(gitCommitProject);
+    expect(nextRecord.dependencyEdges?.[0]?.declaration.minVersion).toBe('1.2.0');
   });
 
   it('builds incoming dependents from outgoing edges and dedupes duplicate edges', () => {

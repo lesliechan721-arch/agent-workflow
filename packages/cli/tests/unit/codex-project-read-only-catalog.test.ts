@@ -130,28 +130,28 @@ describe.each([
     {
       label: '~/.aw 缺失',
       setup: async (_workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {},
-      expectedCatalogSource: 'embedded',
+      expectedCatalogSource: 'local',
     },
     {
       label: '~/.aw stale',
       setup: async (workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {
         await writeStaleLocalMarketplaceConfig(workspace.awHome);
       },
-      expectedCatalogSource: 'embedded',
+      expectedCatalogSource: 'local',
     },
     {
       label: '~/.aw sourceVersion 领先',
       setup: async (workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {
         await writeAheadLocalMarketplaceConfig(workspace.env, workspace.awHome);
       },
-      expectedCatalogSource: 'embedded',
+      expectedCatalogSource: 'local',
     },
     {
       label: '~/.aw 布局损坏',
       setup: async (workspace: { awHome: string; env: NodeJS.ProcessEnv }) => {
         await breakLocalMarketplaceLayout(workspace.env, workspace.awHome);
       },
-      expectedCatalogSource: 'embedded',
+      expectedCatalogSource: 'local',
     },
     {
       label: 'installed.json degraded',
@@ -177,7 +177,7 @@ describe.each([
           const catalog = await resolveCurrentCatalog(workspace.env);
           if (expectedCatalogSource) {
             expect(catalog).toMatchObject({
-              rootDir: expectedCatalogSource === 'embedded' ? workspace.embeddedRoot : workspace.awHome,
+              rootDir: workspace.embeddedRoot,
               source: expectedCatalogSource,
             });
           }
@@ -272,8 +272,8 @@ it('exposes embedded catalog fallback diagnostics in status JSON without repairi
         };
 
         expect(payload.reports[0]?.plugins[0]?.currentCatalog).toMatchObject({
-          source: 'embedded',
-          reasonCode: 'localCatalogSourceVersionAhead',
+          source: 'local',
+          available: true,
         });
       },
     ),

@@ -24,7 +24,6 @@ import {
 } from '../utils/codex-native-state.js';
 import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import { readInstalledLedger } from '../utils/local-marketplace.js';
-import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import {
   buildIncomingDependencyIndex,
   canAutoCleanupScopeRecord,
@@ -36,7 +35,6 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  resolveEmbeddedPluginsRoot,
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
@@ -722,14 +720,7 @@ async function attachCurrentCatalog(
   records: Map<string, DiscoveredPluginName>,
   pluginNames: string[] | undefined,
 ): Promise<void> {
-  const [{ catalog, plugins }, embeddedRoot] = await Promise.all([
-    resolveCatalogPlugins(undefined, env),
-    resolveEmbeddedPluginsRoot(),
-  ]);
-  const embeddedPlugins = await resolvePluginsFromCatalog(embeddedRoot, undefined);
-  const embeddedPluginMap = new Map(
-    embeddedPlugins.map((plugin) => [plugin.manifest.name, plugin]),
-  );
+  const { catalog, plugins } = await resolveCatalogPlugins(undefined, env);
   const requested = pluginNames ? new Set(pluginNames) : undefined;
 
   for (const plugin of plugins) {
@@ -740,7 +731,6 @@ async function attachCurrentCatalog(
     record.currentCatalog = {
       catalog,
       currentPlugin: plugin,
-      embeddedPlugin: embeddedPluginMap.get(plugin.manifest.name),
     };
   }
 }
@@ -1221,7 +1211,7 @@ export async function buildCommandCandidates(
 ): Promise<CommandCandidate[]> {
   const discoveredTargets = await resolveDiscoveredPluginTargets({
     ...options,
-    includeCurrentCatalog: true,
+    includeCurrentCatalog: options.includeCurrentCatalog ?? true,
   });
   const ledger = await readInstalledLedger(options.env ?? process.env);
   const candidates: CommandCandidate[] = [];

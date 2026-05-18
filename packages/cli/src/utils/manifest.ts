@@ -9,6 +9,12 @@ import type {
   BuildConfig,
   BuildConfigFileRuleSet,
   BuildConfigTemplates,
+  CatalogChannel,
+  CatalogManifest,
+  CatalogManifestEntry,
+  CatalogManifestHistory,
+  CatalogHistoryPluginRelease,
+  CatalogHistoryRelease,
   ClaudeManifestOverrides,
   CodexProjectManagedKind,
   DynamicArtifactKind,
@@ -21,6 +27,7 @@ import type {
   PlatformAgentOverrides,
   PlatformName,
   PlatformPluginManifest,
+  PluginCompatibility,
   PluginConfigSchema,
   PluginArtifactRenderScriptEntry,
   PluginArtifactsConfig,
@@ -77,12 +84,15 @@ export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 const PLUGIN_DEPENDENCY_PLATFORMS = new Set<PlatformName>(['codex', 'claude']);
+const CATALOG_CHANNELS = new Set<CatalogChannel>(['latest', 'beta']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
   claude: 'CLAUDE',
   codex: 'CODEX',
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+export const DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION = '0.0.0';
 const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
@@ -93,6 +103,105 @@ export interface StrictSemVer {
   patch: number;
   prerelease: string[];
   build: string[];
+}
+
+export const STRICT_SEMVER_VALIDATION_CODE = 'invalidStrictSemVer';
+
+export interface StrictSemVerValidationIssue {
+  code: typeof STRICT_SEMVER_VALIDATION_CODE;
+  fieldPath: string;
+  value: unknown;
+  message: string;
+}
+
+export class StrictSemVerValidationError extends Error {
+  readonly code = STRICT_SEMVER_VALIDATION_CODE;
+  readonly fieldPath: string;
+  readonly value: unknown;
+
+  constructor(issue: StrictSemVerValidationIssue) {
+    super(issue.message);
+    this.name = 'StrictSemVerValidationError';
+    this.fieldPath = issue.fieldPath;
+    this.value = issue.value;
+  }
+}
+
+function formatStrictSemVerValidationValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (value === undefined) {
+    return 'undefined';
+  }
+
+  const serialized = JSON.stringify(value);
+  return serialized ?? String(value);
+}
+
+export function createStrictSemVerValidationIssue(
+  value: unknown,
+  fieldPath: string,
+): StrictSemVerValidationIssue {
+  return {
+    code: STRICT_SEMVER_VALIDATION_CODE,
+    fieldPath,
+    value,
+    message: `Invalid ${fieldPath}: expected a strict SemVer 2.0.0 string. Received ${formatStrictSemVerValidationValue(value)}.`,
+  };
+}
+
+export function getStrictSemVerValidationIssue(
+  value: unknown,
+  fieldPath: string,
+): StrictSemVerValidationIssue | null {
+  return tryParseStrictSemVer(value)
+    ? null
+    : createStrictSemVerValidationIssue(value, fieldPath);
+}
+
+export function isStrictSemVerValidationError(error: unknown): error is StrictSemVerValidationError {
+  return error instanceof StrictSemVerValidationError
+    || (
+      error instanceof Error
+      && 'code' in error
+      && error.code === STRICT_SEMVER_VALIDATION_CODE
+    );
+}
+
+export function compareStrictSemVerFields(options: {
+  left: {
+    value: unknown;
+    fieldPath: string;
+  };
+  right: {
+    value: unknown;
+    fieldPath: string;
+  };
+}):
+  | { kind: 'ordered'; relation: number; left: StrictSemVer; right: StrictSemVer }
+  | { kind: 'invalid'; issues: StrictSemVerValidationIssue[] } {
+  const leftIssue = getStrictSemVerValidationIssue(options.left.value, options.left.fieldPath);
+  const rightIssue = getStrictSemVerValidationIssue(options.right.value, options.right.fieldPath);
+  if (leftIssue || rightIssue) {
+    return {
+      kind: 'invalid',
+      issues: [leftIssue, rightIssue].filter((issue): issue is StrictSemVerValidationIssue => issue !== null),
+    };
+  }
+
+  const left = tryParseStrictSemVer(options.left.value);
+  const right = tryParseStrictSemVer(options.right.value);
+  if (!left || !right) {
+    throw new Error('Strict SemVer comparison reached an unreachable invalid state.');
+  }
+
+  return {
+    kind: 'ordered',
+    relation: compareStrictSemVer(left, right),
+    left,
+    right,
+  };
 }
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
@@ -148,12 +257,12 @@ export function tryParseStrictSemVer(value: unknown): StrictSemVer | null {
 }
 
 export function parseStrictSemVer(value: unknown, fieldPath: string): StrictSemVer {
-  const parsed = tryParseStrictSemVer(value);
-  if (!parsed) {
-    throw new Error(`Invalid ${fieldPath}: expected a strict SemVer 2.0.0 string.`);
+  const issue = getStrictSemVerValidationIssue(value, fieldPath);
+  if (issue) {
+    throw new StrictSemVerValidationError(issue);
   }
 
-  return parsed;
+  return tryParseStrictSemVer(value)!;
 }
 
 function isNumericSemVerIdentifier(value: string): boolean {
@@ -258,6 +367,95 @@ function normalizeComparableStringArray(value: string[] | undefined): string[] |
   }
 
   return [...new Set(value.map((entry) => entry.trim()).filter(Boolean))];
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+      .join(',')}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function ensureDigestString(value: unknown, fieldName: string): string {
+  const digest = ensureString(value, fieldName);
+  if (!DIGEST_PATTERN.test(digest)) {
+    throw new Error(`Invalid ${fieldName}: expected a sha256 digest string.`);
+  }
+
+  return digest;
+}
+
+function isPrereleaseVersion(value: string): boolean {
+  return parseStrictSemVer(value, 'version').prerelease.length > 0;
+}
+
+function assertCatalogChannel(value: unknown, fieldName: string): CatalogChannel {
+  const channel = ensureString(value, fieldName);
+  if (!CATALOG_CHANNELS.has(channel as CatalogChannel)) {
+    throw new Error(`Invalid ${fieldName}: expected "latest" or "beta".`);
+  }
+
+  return channel as CatalogChannel;
+}
+
+function createPluginCompatibility(minVersion: string): PluginCompatibility {
+  return {
+    aw: {
+      minVersion,
+    },
+  };
+}
+
+function normalizePluginCompatibility(
+  value: unknown,
+  fieldName: string,
+  options: {
+    allowMissing: boolean;
+    defaultMinVersion?: string;
+  },
+): PluginCompatibility {
+  if (value === undefined) {
+    if (options.allowMissing) {
+      return createPluginCompatibility(
+        assertStrictSemVer(
+          options.defaultMinVersion ?? DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
+          `${fieldName}.aw.minVersion`,
+        ),
+      );
+    }
+
+    throw new Error(`Invalid ${fieldName}.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.`);
+  }
+
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['aw']);
+  const aw = assertObject(input.aw, `${fieldName}.aw`);
+  assertAllowedKeys(aw, `${fieldName}.aw`, ['minVersion']);
+
+  return createPluginCompatibility(
+    assertStrictSemVer(aw.minVersion, `${fieldName}.aw.minVersion`),
+  );
+}
+
+function assertPluginMinVersionWithinCatalogBounds(options: {
+  pluginName: string;
+  pluginMinVersion: string;
+  catalogMinVersion: string;
+  fieldName: string;
+}): void {
+  if (compareStrictSemVer(options.pluginMinVersion, options.catalogMinVersion) > 0) {
+    throw new Error(
+      `Invalid ${options.fieldName}: plugin "${options.pluginName}" requires aw ${options.pluginMinVersion}, which is higher than catalog minimum ${options.catalogMinVersion}.`,
+    );
+  }
 }
 
 function normalizeMarketplaceProducts(value: unknown, fieldName: string): string[] | undefined {
@@ -546,7 +744,7 @@ function normalizePluginDependencyEntry(
   fieldName: string,
 ): PluginDependencyEntry {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['name', 'target', 'inheritInstallOptions', 'when']);
+  assertAllowedKeys(input, fieldName, ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
 
   const dependencyName = ensurePluginName(input.name, `${fieldName}.name`);
   if (dependencyName === pluginName) {
@@ -556,6 +754,10 @@ function normalizePluginDependencyEntry(
   const entry: PluginDependencyEntry = {
     name: dependencyName,
   };
+
+  if (input.minVersion !== undefined) {
+    entry.minVersion = assertStrictSemVer(input.minVersion, `${fieldName}.minVersion`);
+  }
 
   if (input.target !== undefined) {
     const target = assertObject(input.target, `${fieldName}.target`);
@@ -2059,9 +2261,15 @@ export async function readMarketplaceSourceMeta(repoRoot: string): Promise<Marke
   return validateMarketplaceSourceMeta(rawValue);
 }
 
+export interface ValidatePluginManifestOptions {
+  compatibilityMode?: 'defaulted' | 'required';
+  defaultMinVersion?: string;
+}
+
 export function validatePluginManifest(
   pluginRoot: string,
   rawManifest: unknown,
+  options: ValidatePluginManifestOptions = {},
 ): PluginManifestSource {
   const input = assertObject(rawManifest, 'plugin manifest');
   if (Object.hasOwn(input, 'commands')) {
@@ -2073,6 +2281,7 @@ export function validatePluginManifest(
     'name',
     'version',
     'description',
+    'compatibility',
     'skills',
     'slashCommands',
     'skillTriggers',
@@ -2092,6 +2301,10 @@ export function validatePluginManifest(
     name: ensureString(input.name, 'name'),
     version: assertStrictSemVer(input.version, 'plugin manifest.version'),
     description: ensureString(input.description, 'description'),
+    compatibility: normalizePluginCompatibility(input.compatibility, 'compatibility', {
+      allowMissing: (options.compatibilityMode ?? 'defaulted') === 'defaulted',
+      defaultMinVersion: options.defaultMinVersion,
+    }),
     marketplace: normalizeMarketplaceMeta(input.marketplace, 'marketplace'),
   };
 
@@ -2359,7 +2572,10 @@ export async function validateSourcePluginManifest(
   pluginRoot: string,
   rawManifest: unknown,
 ): Promise<PluginManifestSource> {
-  const manifest = validatePluginManifest(pluginRoot, rawManifest);
+  const manifest = validatePluginManifest(pluginRoot, rawManifest, {
+    compatibilityMode: 'defaulted',
+    defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
+  });
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
   await Promise.all([
@@ -2383,7 +2599,9 @@ export async function readPluginManifest(
   const mode = options.mode ?? 'source';
   const manifest = mode === 'source'
     ? await validateSourcePluginManifest(pluginRoot, rawManifest)
-    : validatePluginManifest(pluginRoot, rawManifest);
+    : validatePluginManifest(pluginRoot, rawManifest, {
+      compatibilityMode: 'required',
+    });
   return {
     rootDir: pluginRoot,
     manifestPath,
@@ -2424,13 +2642,23 @@ export async function discoverPlugins(repoRoot: string): Promise<PluginMeta[]> {
 export function validatePluginDependencyReferences(
   plugins: readonly PluginMeta[],
 ): void {
-  const pluginNames = new Set(plugins.map((plugin) => plugin.manifest.name));
+  const pluginsByName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]));
 
   for (const plugin of plugins) {
     for (const [index, dependency] of (plugin.manifest.dependencies?.plugins ?? []).entries()) {
-      if (!pluginNames.has(dependency.name)) {
+      const dependencyPlugin = pluginsByName.get(dependency.name);
+      if (!dependencyPlugin) {
         throw new Error(
           `Invalid dependencies.plugins[${index}].name for plugin "${plugin.manifest.name}": current catalog is missing plugin "${dependency.name}".`,
+        );
+      }
+
+      if (
+        dependency.minVersion &&
+        compareStrictSemVer(dependencyPlugin.manifest.version, dependency.minVersion) < 0
+      ) {
+        throw new Error(
+          `Invalid dependencies.plugins[${index}].minVersion for plugin "${plugin.manifest.name}": current catalog plugin "${dependency.name}" version ${dependencyPlugin.manifest.version} does not satisfy minimum ${dependency.minVersion}.`,
         );
       }
     }
@@ -2497,6 +2725,372 @@ export function createMarketplaceManifest(
   };
 }
 
+export function normalizeManifestDigestInput(
+  value: PluginManifestSource | CatalogManifestEntry,
+): string {
+  return stableStringify(value);
+}
+
+function normalizeCatalogRelativePath(value: unknown, fieldName: string): string {
+  const relativePath = ensureString(value, fieldName);
+  if (path.posix.isAbsolute(relativePath)) {
+    throw new Error(`Invalid ${fieldName}: absolute paths are not allowed.`);
+  }
+  if (!relativePath.startsWith('./')) {
+    throw new Error(`Invalid ${fieldName}: path must start with "./".`);
+  }
+  const normalized = path.posix.normalize(relativePath);
+  if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+    throw new Error(`Invalid ${fieldName}: path must stay inside the catalog package.`);
+  }
+
+  return normalized.startsWith('./') ? normalized : `./${normalized}`;
+}
+
+function assertCatalogChannelVersionContract(options: {
+  channel: CatalogChannel;
+  version: string;
+  fieldName: string;
+  kind: 'catalog' | 'plugin';
+}): void {
+  const prerelease = isPrereleaseVersion(options.version);
+  if (options.channel === 'latest' && prerelease) {
+    throw new Error(`Invalid ${options.fieldName}: latest catalog rejects prerelease ${options.kind} versions.`);
+  }
+  if (options.channel === 'beta' && options.kind === 'catalog' && !prerelease) {
+    throw new Error(`Invalid ${options.fieldName}: beta catalog requires a prerelease catalog version.`);
+  }
+}
+
+function normalizeCatalogManifestPackageIdentity(
+  value: unknown,
+  fieldName: string,
+  options: {
+    requireManifestPath: boolean;
+  },
+): CatalogManifest['packages']['sidecar'] {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['name', 'version', 'channel', 'manifestPath']);
+
+  const identity = {
+    name: ensureString(input.name, `${fieldName}.name`),
+    version: assertStrictSemVer(input.version, `${fieldName}.version`),
+    channel: assertCatalogChannel(input.channel, `${fieldName}.channel`),
+    manifestPath: input.manifestPath === undefined
+      ? undefined
+      : normalizeCatalogRelativePath(input.manifestPath, `${fieldName}.manifestPath`),
+  };
+
+  if (options.requireManifestPath && !identity.manifestPath) {
+    throw new Error(`Invalid ${fieldName}.manifestPath: expected a non-empty string.`);
+  }
+
+  return identity;
+}
+
+function normalizeCatalogHistoryPluginRelease(
+  value: unknown,
+  fieldName: string,
+  catalogMinAwVersion: string,
+): CatalogHistoryPluginRelease {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, [
+    'name',
+    'version',
+    'minAwVersion',
+    'artifactDigest',
+    'manifestDigest',
+  ]);
+
+  const pluginRelease = {
+    name: ensurePluginName(input.name, `${fieldName}.name`),
+    version: assertStrictSemVer(input.version, `${fieldName}.version`),
+    minAwVersion: assertStrictSemVer(input.minAwVersion, `${fieldName}.minAwVersion`),
+    artifactDigest: ensureDigestString(input.artifactDigest, `${fieldName}.artifactDigest`),
+    manifestDigest: ensureDigestString(input.manifestDigest, `${fieldName}.manifestDigest`),
+  };
+  assertPluginMinVersionWithinCatalogBounds({
+    pluginName: pluginRelease.name,
+    pluginMinVersion: pluginRelease.minAwVersion,
+    catalogMinVersion: catalogMinAwVersion,
+    fieldName: `${fieldName}.minAwVersion`,
+  });
+
+  return pluginRelease;
+}
+
+function normalizeCatalogHistoryRelease(
+  value: unknown,
+  fieldName: string,
+  channel: CatalogChannel,
+): CatalogHistoryRelease {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['catalogVersion', 'minAwVersion', 'plugins']);
+
+  const catalogVersion = assertStrictSemVer(input.catalogVersion, `${fieldName}.catalogVersion`);
+  assertCatalogChannelVersionContract({
+    channel,
+    version: catalogVersion,
+    fieldName: `${fieldName}.catalogVersion`,
+    kind: 'catalog',
+  });
+  const minAwVersion = assertStrictSemVer(input.minAwVersion, `${fieldName}.minAwVersion`);
+  if (!Array.isArray(input.plugins)) {
+    throw new Error(`Invalid ${fieldName}.plugins: expected an array.`);
+  }
+
+  const plugins = input.plugins.map((entry, index) =>
+    normalizeCatalogHistoryPluginRelease(
+      entry,
+      `${fieldName}.plugins[${index}]`,
+      minAwVersion,
+    ),
+  );
+  const seenPluginNames = new Set<string>();
+  for (const plugin of plugins) {
+    if (seenPluginNames.has(plugin.name)) {
+      throw new Error(`Invalid ${fieldName}.plugins: duplicate plugin "${plugin.name}".`);
+    }
+    seenPluginNames.add(plugin.name);
+    assertCatalogChannelVersionContract({
+      channel,
+      version: plugin.version,
+      fieldName: `${fieldName}.plugins.${plugin.name}.version`,
+      kind: 'plugin',
+    });
+  }
+
+  return {
+    catalogVersion,
+    minAwVersion,
+    plugins,
+  };
+}
+
+function normalizeCatalogManifestHistory(
+  value: unknown,
+  fieldName: string,
+): CatalogManifestHistory {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['schemaVersion', 'channel', 'releases']);
+  if (input.schemaVersion !== 1) {
+    throw new Error(`Invalid ${fieldName}.schemaVersion: expected 1.`);
+  }
+  const channel = assertCatalogChannel(input.channel, `${fieldName}.channel`);
+  if (!Array.isArray(input.releases) || input.releases.length === 0) {
+    throw new Error(`Invalid ${fieldName}.releases: expected a non-empty array.`);
+  }
+
+  const releases = input.releases.map((entry, index) =>
+    normalizeCatalogHistoryRelease(entry, `${fieldName}.releases[${index}]`, channel),
+  );
+  for (let index = 1; index < releases.length; index += 1) {
+    if (compareStrictSemVer(releases[index - 1]!.catalogVersion, releases[index]!.catalogVersion) >= 0) {
+      throw new Error(`Invalid ${fieldName}.releases[${index}].catalogVersion: releases must be strictly increasing.`);
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    channel,
+    releases,
+  };
+}
+
+function normalizeCatalogManifestEntry(
+  value: unknown,
+  fieldName: string,
+): CatalogManifestEntry {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, [
+    'name',
+    'version',
+    'description',
+    'interface',
+    'category',
+    'tags',
+    'strict',
+    'policy',
+    'compatibility',
+    'dependencies',
+    'source',
+    'artifactDigest',
+    'manifestDigest',
+  ]);
+
+  const entry: CatalogManifestEntry = {
+    name: ensurePluginName(input.name, `${fieldName}.name`),
+    version: assertStrictSemVer(input.version, `${fieldName}.version`),
+    description: ensureString(input.description, `${fieldName}.description`),
+    category: ensureString(input.category, `${fieldName}.category`),
+    strict: ensureBoolean(input.strict, `${fieldName}.strict`),
+    policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
+    compatibility: normalizePluginCompatibility(input.compatibility, `${fieldName}.compatibility`, {
+      allowMissing: false,
+    }),
+    source: normalizeCatalogRelativePath(input.source, `${fieldName}.source`),
+    artifactDigest: ensureDigestString(input.artifactDigest, `${fieldName}.artifactDigest`),
+    manifestDigest: ensureDigestString(input.manifestDigest, `${fieldName}.manifestDigest`),
+  };
+
+  if (input.tags !== undefined) {
+    entry.tags = normalizeComparableStringArray(ensureStringArray(input.tags, `${fieldName}.tags`));
+  }
+  if (input.interface !== undefined) {
+    entry.interface = normalizePluginInterface(input.interface, `${fieldName}.interface`);
+  }
+  if (input.dependencies !== undefined) {
+    entry.dependencies = normalizePluginDependencies(
+      entry.name,
+      input.dependencies,
+      `${fieldName}.dependencies`,
+    );
+  }
+
+  return entry;
+}
+
+export function validateCatalogManifest(
+  rawManifest: unknown,
+): CatalogManifest {
+  const input = assertObject(rawManifest, 'catalog manifest');
+  assertAllowedKeys(input, 'catalog manifest', [
+    'schemaVersion',
+    'catalogVersion',
+    'channel',
+    'compatibility',
+    'history',
+    'packages',
+    'entries',
+  ]);
+
+  if (input.schemaVersion !== 1) {
+    throw new Error('Invalid catalog manifest.schemaVersion: expected 1.');
+  }
+
+  const catalogVersion = assertStrictSemVer(input.catalogVersion, 'catalog manifest.catalogVersion');
+  const channel = assertCatalogChannel(input.channel, 'catalog manifest.channel');
+  assertCatalogChannelVersionContract({
+    channel,
+    version: catalogVersion,
+    fieldName: 'catalog manifest.catalogVersion',
+    kind: 'catalog',
+  });
+  const compatibility = normalizePluginCompatibility(input.compatibility, 'catalog manifest.compatibility', {
+    allowMissing: false,
+  });
+  const history = normalizeCatalogManifestHistory(input.history, 'catalog manifest.history');
+  if (history.channel !== channel) {
+    throw new Error('Invalid catalog manifest.history.channel: must match catalog manifest.channel.');
+  }
+
+  const packages = assertObject(input.packages, 'catalog manifest.packages');
+  assertAllowedKeys(packages, 'catalog manifest.packages', ['sidecar', 'full']);
+  const sidecar = normalizeCatalogManifestPackageIdentity(packages.sidecar, 'catalog manifest.packages.sidecar', {
+    requireManifestPath: false,
+  });
+  const full = normalizeCatalogManifestPackageIdentity(packages.full, 'catalog manifest.packages.full', {
+    requireManifestPath: true,
+  });
+  for (const [label, identity] of [['sidecar', sidecar], ['full', full]] as const) {
+    if (identity.version !== catalogVersion) {
+      throw new Error(`Invalid catalog manifest.packages.${label}.version: must match catalogVersion ${catalogVersion}.`);
+    }
+    if (identity.channel !== channel) {
+      throw new Error(`Invalid catalog manifest.packages.${label}.channel: must match channel ${channel}.`);
+    }
+  }
+
+  if (!Array.isArray(input.entries)) {
+    throw new Error('Invalid catalog manifest.entries: expected an array.');
+  }
+  const entries = input.entries.map((entry, index) =>
+    normalizeCatalogManifestEntry(entry, `catalog manifest.entries[${index}]`),
+  );
+  const entriesByName = new Map<string, CatalogManifestEntry>();
+  for (const entry of entries) {
+    if (entriesByName.has(entry.name)) {
+      throw new Error(`Invalid catalog manifest.entries: duplicate plugin "${entry.name}".`);
+    }
+    entriesByName.set(entry.name, entry);
+    assertCatalogChannelVersionContract({
+      channel,
+      version: entry.version,
+      fieldName: `catalog manifest.entries.${entry.name}.version`,
+      kind: 'plugin',
+    });
+    assertPluginMinVersionWithinCatalogBounds({
+      pluginName: entry.name,
+      pluginMinVersion: entry.compatibility.aw.minVersion,
+      catalogMinVersion: compatibility.aw.minVersion,
+      fieldName: `catalog manifest.entries.${entry.name}.compatibility.aw.minVersion`,
+    });
+  }
+
+  for (const entry of entries) {
+    for (const dependency of entry.dependencies?.plugins ?? []) {
+      const dependencyEntry = entriesByName.get(dependency.name);
+      if (!dependencyEntry) {
+        throw new Error(
+          `Invalid catalog manifest.entries.${entry.name}.dependencies: current snapshot is missing plugin "${dependency.name}".`,
+        );
+      }
+      if (
+        dependency.minVersion &&
+        compareStrictSemVer(dependencyEntry.version, dependency.minVersion) < 0
+      ) {
+        throw new Error(
+          `Invalid catalog manifest.entries.${entry.name}.dependencies.plugins.${dependency.name}.minVersion: current snapshot version ${dependencyEntry.version} does not satisfy minimum ${dependency.minVersion}.`,
+        );
+      }
+    }
+  }
+
+  const latestRelease = history.releases[history.releases.length - 1]!;
+  if (latestRelease.catalogVersion !== catalogVersion) {
+    throw new Error('Invalid catalog manifest.history.releases: last release must match catalogVersion.');
+  }
+  if (latestRelease.minAwVersion !== compatibility.aw.minVersion) {
+    throw new Error('Invalid catalog manifest.history.releases: last release minAwVersion must match catalog manifest compatibility.aw.minVersion.');
+  }
+
+  const historyPluginsByName = new Map(latestRelease.plugins.map((plugin) => [plugin.name, plugin]));
+  if (historyPluginsByName.size !== entries.length) {
+    throw new Error('Invalid catalog manifest.history.releases: last release plugin set must match current entries.');
+  }
+  for (const entry of entries) {
+    const releasePlugin = historyPluginsByName.get(entry.name);
+    if (!releasePlugin) {
+      throw new Error(`Invalid catalog manifest.history.releases: last release is missing plugin "${entry.name}".`);
+    }
+    if (releasePlugin.version !== entry.version) {
+      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" version must match current entry.`);
+    }
+    if (releasePlugin.minAwVersion !== entry.compatibility.aw.minVersion) {
+      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" minAwVersion must match current entry.`);
+    }
+    if (releasePlugin.artifactDigest !== entry.artifactDigest) {
+      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" artifactDigest must match current entry.`);
+    }
+    if (releasePlugin.manifestDigest !== entry.manifestDigest) {
+      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" manifestDigest must match current entry.`);
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    catalogVersion,
+    channel,
+    compatibility,
+    history,
+    packages: {
+      sidecar,
+      full,
+    },
+    entries,
+  };
+}
+
 export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSource {
   const scripts = plugin.manifest.scripts
     ? structuredClone(plugin.manifest.scripts)
@@ -2510,6 +3104,9 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
 
   return {
     ...plugin.manifest,
+    compatibility: plugin.manifest.compatibility
+      ? structuredClone(plugin.manifest.compatibility)
+      : createPluginCompatibility(DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION),
     dependencies: plugin.manifest.dependencies
       ? structuredClone(plugin.manifest.dependencies)
       : undefined,

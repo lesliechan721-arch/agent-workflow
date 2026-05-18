@@ -490,7 +490,7 @@ describe('ClaudeAdapter', () => {
     ]);
   });
 
-  it('reports Claude drift and missing current-catalog entries using the injected local marketplace env', async () => {
+  it('reports Claude drift while resolving current catalog from the injected local marketplace env', async () => {
     const { repoRoot, env } = await makeWorkspace();
     env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
     await setupLocalMarketplace(repoRoot, env);
@@ -573,19 +573,19 @@ describe('ClaudeAdapter', () => {
 
     expect(status.initialized).toBe(true);
     expect(pluginStatus).toMatchObject({
-      catalogCompatibility: 'missing',
+      catalogCompatibility: 'current',
       artifactsInitialized: false,
       native: {
         marketplaceRegistered: true,
-        pluginAvailable: false,
+        pluginAvailable: true,
         pluginInstalled: false,
         declaredSource: driftedSource,
         materializedInstallLocation: driftedInstallLocation,
       },
       currentCatalog: {
-        rootDir: env.AW_HOME,
+        rootDir: expect.any(String),
         source: 'local',
-        available: false,
+        available: true,
       },
       platformRuntimeEvidence: {
         present: false,

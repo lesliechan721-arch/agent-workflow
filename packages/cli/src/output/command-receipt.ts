@@ -64,6 +64,7 @@ export interface CliInitReceipt {
   rootDir: string;
   changed: boolean;
   warnings: string[];
+  catalog: CatalogResolution;
 }
 
 export type CliReceiptCommand = 'install' | 'uninstall' | 'upgrade';
@@ -74,6 +75,8 @@ export interface CliCommandReceiptAction {
   platform: string;
   scope: Scope;
   requested?: boolean;
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
   dependencyOf?: ReceiptTarget[];
 }
 
@@ -83,6 +86,8 @@ interface ReceiptTarget {
   scope: Scope;
   projectKey?: string;
   requested?: boolean;
+  selectedVersion?: string;
+  selectedVersionSource?: 'currentCatalog' | 'historical';
   dependencyOf?: ReceiptTarget[];
 }
 
@@ -187,6 +192,7 @@ interface ReceiptJsonBase {
   ok: true;
   command: 'init' | CliReceiptCommand;
   warnings: string[];
+  catalog?: CatalogResolution;
   nextStepsSchemaVersion: 1;
   nextSteps: NextStepInstruction[];
   legacyNextSteps?: string[];
@@ -207,13 +213,17 @@ interface ReceiptJsonBase {
 
 export interface InitReceiptJson extends ReceiptJsonBase {
   command: 'init';
+  receiptSchemaVersion: 2;
+  receiptKind: 'catalogCacheWarmup';
   rootDir: string;
   changed: boolean;
+  catalog: CatalogResolution;
 }
 
 export interface InstallReceiptJson extends ReceiptJsonBase {
   command: 'install';
   receiptSchemaVersion: 2;
+  historicalRuntimePersisted?: boolean;
   overallState: ReceiptOverallState;
   plugins: string[];
   targets: ReceiptTarget[];
@@ -238,6 +248,7 @@ export interface UninstallReceiptJson extends ReceiptJsonBase {
 export interface UpgradeReceiptJson extends ReceiptJsonBase {
   command: 'upgrade';
   receiptSchemaVersion: 2;
+  historicalRuntimePersisted?: boolean;
   overallState: ReceiptOverallState;
   upgraded: ReceiptTarget[];
   skipped: SkippedUpgradeTarget[];
@@ -332,6 +343,8 @@ function dedupeTargets(targets: ReceiptTarget[]): ReceiptTarget[] {
       continue;
     }
     existing.requested = existing.requested === true || target.requested === true;
+    existing.selectedVersion ??= target.selectedVersion;
+    existing.selectedVersionSource ??= target.selectedVersionSource;
     if (target.dependencyOf && target.dependencyOf.length > 0) {
       existing.dependencyOf = dedupeTargets([...(existing.dependencyOf ?? []), ...target.dependencyOf]);
     }
@@ -366,6 +379,8 @@ function collectActionTargets(receipt: CliCommandReceipt): ReceiptTarget[] {
     scope: action.scope,
     ...(action.dependencyOf ? { dependencyOf: action.dependencyOf } : {}),
     ...(action.requested !== undefined ? { requested: action.requested } : {}),
+    ...(action.selectedVersion ? { selectedVersion: action.selectedVersion } : {}),
+    ...(action.selectedVersionSource ? { selectedVersionSource: action.selectedVersionSource } : {}),
   })));
 }
 
@@ -679,7 +694,7 @@ export function buildInitReceiptJson(result: CliInitReceipt): InitReceiptJson {
   const nextSteps = createNextStepsBoundary([
     createUiActionNextStep(
       '查看当前环境与插件状态',
-      '可以确认本地插件目录是否已准备好，以及当前环境识别到了哪些插件。',
+      '可以确认 current catalog 是否已预热，以及当前环境识别到了哪些插件。',
       'openStatus',
       'aw status',
     ),
@@ -687,8 +702,11 @@ export function buildInitReceiptJson(result: CliInitReceipt): InitReceiptJson {
   return {
     ok: true,
     command: 'init',
+    receiptSchemaVersion: 2,
+    receiptKind: 'catalogCacheWarmup',
     rootDir: result.rootDir,
     changed: result.changed,
+    catalog: result.catalog,
     warnings: [...new Set(result.warnings)],
     ...nextSteps,
   };
@@ -720,6 +738,8 @@ export function buildCommandReceiptJson(
       ok: true,
       command: 'install',
       receiptSchemaVersion: 2,
+      ...(receipt.result.marketplace ? { catalog: receipt.result.marketplace.catalog } : {}),
+      historicalRuntimePersisted: true,
       overallState,
       plugins,
       targets: succeededTargets,
@@ -739,6 +759,7 @@ export function buildCommandReceiptJson(
       ok: true,
       command: 'uninstall',
       receiptSchemaVersion: 2,
+      ...(receipt.result.marketplace ? { catalog: receipt.result.marketplace.catalog } : {}),
       overallState,
       plugins,
       targets: succeededTargets,
@@ -758,6 +779,8 @@ export function buildCommandReceiptJson(
     platform: action.platform,
     scope: action.scope,
     ...(action.requested !== undefined ? { requested: action.requested } : {}),
+    ...(action.selectedVersion ? { selectedVersion: action.selectedVersion } : {}),
+    ...(action.selectedVersionSource ? { selectedVersionSource: action.selectedVersionSource } : {}),
     ...(action.dependencyOf
       ? {
           dependencyOf: action.dependencyOf,
@@ -772,6 +795,8 @@ export function buildCommandReceiptJson(
     ok: true,
     command: 'upgrade',
     receiptSchemaVersion: 2,
+    ...(receipt.result.marketplace ? { catalog: receipt.result.marketplace.catalog } : {}),
+    historicalRuntimePersisted: true,
     overallState,
     upgraded,
     skipped,
@@ -856,7 +881,7 @@ function renderConfigRemovalSummary(
 export function renderInitReceipt(result: CliInitReceipt): string[] {
   const payload = buildInitReceiptJson(result);
   return [
-    `${result.changed ? '已准备好' : '已复用'}本地插件目录：${result.rootDir}。`,
+    `${result.changed ? '已预热' : '已复用'} current catalog cache：${result.rootDir}。`,
     `下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`,
   ];
 }

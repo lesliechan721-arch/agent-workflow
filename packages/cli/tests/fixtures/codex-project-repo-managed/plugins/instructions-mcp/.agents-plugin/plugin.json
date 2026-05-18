@@ -2,6 +2,11 @@
   "name": "instructions-mcp",
   "version": "0.1.0",
   "description": "Fixture plugin combining managed instructions and MCP servers.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
   "mcpServers": "./.mcp.json",
   "marketplace": {
     "category": "workflow",

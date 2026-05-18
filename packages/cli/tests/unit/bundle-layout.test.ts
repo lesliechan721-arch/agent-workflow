@@ -503,10 +503,7 @@ describe('bundle layout validation', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
 
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(embeddedRoot);
-
-    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toThrow(
       'current catalog is missing plugin "missing-helper"',
     );
   });

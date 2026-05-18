@@ -7,7 +7,7 @@
 ```text
 code-review/
 ├── .agents-plugin/
-│   └── plugin.json              # 完整 manifest：skills + slashCommands + MCP + dependencies + extensions + buildConfig + scripts/config
+│   └── plugin.json              # 完整 manifest：version + compatibility + skills + slashCommands + MCP + dependencies + extensions + buildConfig + scripts/config
 ├── review-skills/
 │   └── review-workflow/
 │       ├── SKILL.md             # 轻量审查工作流（含模板变量 {{platformName}}）
@@ -41,7 +41,7 @@ code-review/
 | Native Hooks | `extensions.nativeHooks.codex` — Codex 原生 UserPromptSubmit，无 matcher |
 | Agents | `extensions.agents` — review-summarizer 报告生成器 |
 | MCP Servers | `.mcp.json` — 远程审查服务，Bearer token 引用 `${REVIEW_SERVICE_API_KEY}` 环境变量 |
-| Plugin Dependencies | `dependencies.plugins` — Codex 平台下自动确保 user scope 的 `git-commit` 可用 |
+| Plugin Dependencies | `dependencies.plugins` — Codex 平台下自动确保 user scope 的 `git-commit` 至少达到指定版本 |
 | Public Slash Commands | `slash-commands/review.md` — 一份公共源码同时生成 Claude `/review` 和 Codex manual-only 入口 skill |
 | Output Styles | `output-styles/` — Claude 专属审查报告格式 |
 | Template 渲染 | `buildConfig.templates` — SKILL.md 和 `slash-commands/*.md` 中按平台渲染 `{{platformName}}`、`{{#if supportsCommands}}` |
@@ -57,10 +57,17 @@ code-review/
 
 ```json
 {
+  "version": "0.2.0",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.8.0"
+    }
+  },
   "dependencies": {
     "plugins": [
       {
         "name": "git-commit",
+        "minVersion": "0.3.0",
         "target": { "scope": "user" },
         "when": { "platforms": ["codex"] },
         "inheritInstallOptions": true
@@ -70,11 +77,11 @@ code-review/
 }
 ```
 
-这表示 `code-review` 安装或升级到 Codex 时需要 `git-commit`，并且依赖位置固定为 user scope；Claude 安装不会展开这条依赖。若用户安装 `code-review -p codex -s project`，AW 会优先写当前项目的 `code-review`，同时自动确保 Codex user scope 下的 `git-commit` 健康。`inheritInstallOptions: true` 只影响自动安装 `git-commit` 时可继承的插件级安装选项；如果用户已经显式安装过该依赖，父插件卸载不会自动删除它。
+这表示 `code-review` artifact 需要 `@yiliang/aw >= 0.8.0`，安装或升级到 Codex 时需要 `git-commit >= 0.3.0`，并且依赖位置固定为 user scope；Claude 安装不会展开这条依赖。若用户安装 `code-review -p codex -s project`，AW 会优先写当前项目的 `code-review`，同时自动确保 Codex user scope 下的 `git-commit` 健康且版本满足最低要求。`inheritInstallOptions: true` 只影响自动安装 `git-commit` 时可继承的插件级安装选项；如果用户已经显式安装过该依赖，父插件卸载不会自动删除它。
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，两个平台的 embedded bundle 内容不同。此外，Codex 的 extensions 产物不在 build 阶段生成，而是在安装阶段由 `CodexAdapter.installExtensions()` 动态写入。
+运行 `pnpm build` 后，两个平台的 staging/runtime bundle 内容不同。此外，Codex 的 extensions 产物不在 build 阶段生成，而是在安装阶段由 `CodexAdapter.installExtensions()` 动态写入。正式发布时，这些 bundle 进入 `@yiliang/aw-plugins` full catalog 包；`@yiliang/aw` CLI tarball 不再把它们作为 embedded catalog fallback 发布。
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 
@@ -86,11 +93,13 @@ code-review/
 
 **平台原生 manifest 都不包含**：`dependencies`。依赖声明只保留在 runtime `.agents-plugin/plugin.json`，由 AW CLI 的 dependency planner 解释。
 
+**catalog manifest 负责记录**：catalog version、catalog channel、catalog 级 `compatibility.aw.minVersion`、sidecar/full package identity、当前快照里每个插件的单一版本，以及 history 中每个已发布插件的 `artifactDigest` / `manifestDigest`。这些文件由发布流程生成，不手改。
+
 **Codex bundle 不包含**：output-styles/、Claude-only manifest overrides、extensions 衍生产物（均在安装时生成）
 
 **安装/升级时执行**：`scripts.lifecycle.install` / `scripts.lifecycle.upgrade` 会收到 `AW_PLUGIN_CONTEXT`，其中包含 effective config、config sources、平台、scope、bundle root 和生成 artifacts。失败会阻断命令。
 
-**依赖规划顺序**：安装或升级 `code-review` 时，AW 会先按当前 platform 过滤依赖。Codex 路径会先检查 / 自动安装 `git-commit`，再写入或升级 `code-review`；Claude 路径不会处理该依赖。`aw status --json` 会把这条声明放入 `dependencies.declared`，只有 Codex 位置会进入 `resolved` / `satisfied` / `missing`。
+**依赖规划顺序**：安装或升级 `code-review` 时，AW 会先按当前 platform 过滤依赖。Codex 路径会先检查 / 自动安装或升级 `git-commit` 到满足 `minVersion` 的 current catalog 版本，再写入或升级 `code-review`；Claude 路径不会处理该依赖。`aw status --json` 会把这条声明放入 `dependencies.declared`，只有 Codex 位置会进入 `resolved` / `satisfied` / `missing`，并展示最低版本、已安装版本和候选版本。
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 优先使用 install record 引用的 historical lifecycle runtime，避免 current catalog 已刷新时误用新版脚本。这个 runtime 不是完整 install snapshot，只用于安全卸载。`aw uninstall` 默认保留 AW config；需要随主体卸载成功一起删除当前 target 配置时传 `--remove-config`。只清配置、不动安装状态时运行 `aw config reset code-review -s user|project --yes`。
 

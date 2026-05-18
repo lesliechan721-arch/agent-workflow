@@ -340,6 +340,87 @@ describe('repair command P8', () => {
     expect(cache.artifacts[0]?.lastRefresh?.event).toBe('repair');
   });
 
+  it('replays the installed version from historical runtime when current catalog is unavailable', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-repair-historical-runtime-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    const updatedRecord = await fs.readJson(fixture.files.installRecordPath) as {
+      record: {
+        source: {
+          manifestDigest: string;
+          bundleFingerprint: string;
+        };
+        lifecycle?: {
+          manifestPath: string;
+          bundleRoot: string;
+          sourceManifestDigest: string;
+          bundleFingerprint: string;
+        };
+      };
+    };
+    if (!updatedRecord.record.lifecycle) {
+      throw new Error('missing historical lifecycle runtime in fixture');
+    }
+    const historicalManifestDigest = await calculateFileDigest(updatedRecord.record.lifecycle.manifestPath);
+    const historicalBundleFingerprint = await calculatePluginBundleFingerprint(updatedRecord.record.lifecycle.bundleRoot);
+    updatedRecord.record.source.manifestDigest = historicalManifestDigest;
+    updatedRecord.record.source.bundleFingerprint = historicalBundleFingerprint;
+    updatedRecord.record.lifecycle.sourceManifestDigest = historicalManifestDigest;
+    updatedRecord.record.lifecycle.bundleFingerprint = historicalBundleFingerprint;
+    await fs.writeJson(fixture.files.installRecordPath, updatedRecord, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    await fs.remove(fixture.target.repoArtifactPath);
+
+    const adapter = new FakeRepairAdapter();
+    adapter.installExtensions.mockImplementation(async () => {
+      await fs.outputFile(fixture.target.repoArtifactPath, fixture.target.repoArtifactContent, 'utf8');
+      return [{
+        path: fixture.target.repoArtifactPath,
+        kind: 'instruction',
+        platform: 'codex',
+        id: `${fixture.target.pluginSlug}-instruction`,
+        target: 'codex.developerInstructionsBlock',
+        artifactKey: `${fixture.target.pluginSlug}.skill`,
+        contentDigest: digest(fixture.target.repoArtifactContent),
+      }];
+    });
+
+    const result = await repairCommand(
+      [fixture.target.location.plugin],
+      {
+        cwd: fixture.paths.repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        json: true,
+      },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        adapters: {
+          codex: adapter,
+          claude: new FakeClaudeRepairAdapter(),
+        },
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: 'codex',
+          scope: 'project',
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+        }],
+      } as never,
+    );
+
+    expect(adapter.installExtensions).toHaveBeenCalled();
+    expect(result.payload.locations[0]).toMatchObject({
+      action: 'sameBundleRepair',
+      changed: {
+        artifactsReapplied: true,
+      },
+    });
+    await expect(fs.readFile(fixture.target.repoArtifactPath, 'utf8')).resolves.toBe(fixture.target.repoArtifactContent);
+  });
+
   it('uses the current effective config for repair instead of the install record skill trigger preference', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await makeTempDir('aw-repair-effective-config-'),

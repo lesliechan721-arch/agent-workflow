@@ -66,6 +66,10 @@ export function setEmbeddedPluginsRootOverrideForTests(rootDir: string | null): 
   validatedEmbeddedPluginRoots.clear();
 }
 
+export function getEmbeddedPluginsRootOverrideForTests(): string | null {
+  return embeddedPluginsRootOverride;
+}
+
 export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.AW_CLAUDE_HOME || path.join(os.homedir(), '.claude');
 }
@@ -76,6 +80,31 @@ export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
 
 export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.AW_HOME || path.join(os.homedir(), '.aw');
+}
+
+export function resolveCurrentCatalogCacheRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(resolveAwHome(env), 'catalog-cache');
+}
+
+export function resolveCurrentCatalogCacheEntriesDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(resolveCurrentCatalogCacheRoot(env), 'entries');
+}
+
+export function resolveCurrentCatalogCacheEntryDir(
+  cacheKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(resolveCurrentCatalogCacheEntriesDir(env), cacheKey);
+}
+
+export function resolveCurrentCatalogCacheStagingDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(resolveCurrentCatalogCacheRoot(env), 'staging');
 }
 
 export async function resolveAwHomeCanonical(
