@@ -236,7 +236,7 @@ renderer plan 示例：
 
 `codex.agentRole` 管理 Codex agent role 注册项和 role layer 文件。manifest target 必须静态声明 `roleKey`，用于安装前 role namespace 冲突检查；renderer plan 里的 `roleKey` 必须完全匹配。`present` content 包含 `registration.description` 和 `roleFile`；`registration.config_file` 由 AW 生成，renderer 不能提供。`roleFile.name` 必须等于 `roleKey`，可包含 Codex-only 的 `model` 和 `model_reasoning_effort`。project scope 下它的 `projectManagedKind` 应声明为 `agent`，不要把内部 `kind = "codexRole"` 写入 install record artifact identity。
 
-动态 `codex.skill` 适合配置驱动的 skill。不要用 lifecycle 直接改 `.agents/skills/**`、`~/.codex/**` 或 `~/.aw/plugins/**` 来“刷新 skill”；那会绕过 install record、trigger preference、diagnostic cache、status/diagnose/repair 和 uninstall/stale prune。固定不随配置变化的 skill 仍放在 `skills/` 静态目录即可。
+动态 `codex.skill` 适合配置驱动的 skill。不要用 lifecycle 直接改 `.agents/skills/**`、`~/.codex/**` 或 `~/.aw/plugins/**` 来“刷新 skill”；那会绕过 install record、trigger preference、diagnostic cache，以及 `aw status --verbose`、`aw repair`、`aw cleanup` 和 uninstall/stale prune 依赖的状态链路。固定不随配置变化的 skill 仍放在 `skills/` 静态目录即可。
 
 > P0/P11 runtime contract：`codex-explore` 以 `codex.skill` 形态发布通用只读探索 workflow。它可以覆盖代码库、文档、网络资料、日志和用户材料；公开文档和 release 说明需要同时写清，具体来源访问取决于当前会话工具、权限、联网策略和用户提供的上下文。
 

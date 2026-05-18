@@ -105,21 +105,32 @@ describe('public docs', () => {
   });
 
   it('keeps removed public CLI entry points out of public docs', async () => {
-    const publicDocs = [
+    const diagnoseMigrationDocs = [
+      'README.md',
+      'docs/plugin-authoring.md',
+      'docs/plugin-installation.md',
+      'docs/plugin-installation-technical-details.md',
+    ];
+    const cliFlagDocs = [
       'README.md',
       'docs/plugin-installation.md',
       'docs/plugin-installation-technical-details.md',
     ];
 
-    const combined = (await Promise.all(publicDocs.map((file) => readRepoFile(file)))).join('\n');
+    const combined = (await Promise.all(diagnoseMigrationDocs.map((file) => readRepoFile(file)))).join('\n');
+    const cliFlagsCombined = (await Promise.all(cliFlagDocs.map((file) => readRepoFile(file)))).join('\n');
 
     expect(combined).not.toContain('aw diagnose');
     expect(combined).not.toContain('diagnose --deep');
-    expect(combined).not.toContain('--platform auto');
-    expect(combined).not.toContain('--skill-trigger');
+    expect(combined).not.toContain('status/diagnose/repair');
+    expect(combined).not.toContain('status / diagnose / repair');
+    expect(combined).not.toContain('`status` / `diagnose`');
+    expect(combined).not.toContain('重新运行 diagnose');
     expect(combined).toContain('aw status --verbose');
     expect(combined).toContain('aw repair --dependency-index');
     expect(combined).toContain('aw cleanup --dependency-index --prune-stale <token> --yes');
+    expect(cliFlagsCombined).not.toContain('--platform auto');
+    expect(cliFlagsCombined).not.toContain('--skill-trigger');
   });
 
   it('documents the SkillTrigger author contract without install-time override fields', async () => {

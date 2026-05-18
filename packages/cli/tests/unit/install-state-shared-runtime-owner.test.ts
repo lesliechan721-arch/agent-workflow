@@ -568,7 +568,64 @@ describe('install-state shared runtime owner', () => {
     await expect(fs.pathExists(siblingRecordPath)).resolves.toBe(true);
   });
 
-  it('falls back to embedded default during replay when the owner record digest is invalid', async () => {
+  it('fails closed during replay when the owner file is missing', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-replay-missing-owner-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-replay-missing-owner-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-replay-missing-owner-root-');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const runtimeTarget: SkillTriggerMaterializationTarget = {
+      platform: 'claude',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+    const ownerLocation = makeLocation({ platform: 'claude', scope: 'user' });
+    const ownerRecord = makeRecord(ownerLocation, 'manual');
+    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
+    const ownerPath = getSharedSkillTriggerRuntimeOwnerPath({
+      pluginName: ownerLocation.plugin,
+      platform: ownerLocation.platform,
+      env,
+    });
+
+    await writeBundlePlugin({ rootDir: embeddedRoot });
+    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
+    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
+    await setRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+    await fs.remove(ownerPath);
+
+    const replay = await replaySharedSkillTriggerRuntimeFromOwner({
+      pluginName: ownerLocation.plugin,
+      platform: ownerLocation.platform,
+      embeddedRoot,
+      target: runtimeTarget,
+      env,
+    });
+
+    expect(replay.status).toBe('failClosed');
+    if (replay.status === 'failClosed') {
+      expect(replay.failClosedCode).toBe('ownerStateInvalid');
+      expect(replay.failClosedReason).toContain('shared runtime owner 无法验证');
+      expect(replay.failClosedReason).toContain('owner 状态不可读（missing）');
+      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
+      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.warnings).toEqual([replay.failClosedReason]);
+      expect(replay.ownerInspection.read.status).toBe('missing');
+    }
+    await expectRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+  });
+
+  it('fails closed during replay when the owner record digest is invalid', async () => {
     const embeddedRoot = await makeTempDir('aw-shared-owner-replay-embedded-');
     const marketplaceRoot = await makeTempDir('aw-shared-owner-replay-marketplace-');
     const root = await makeTempDir('aw-shared-owner-replay-root-');
@@ -611,17 +668,123 @@ describe('install-state shared runtime owner', () => {
       env,
     });
 
-    expect(replay.source).toBe('embeddedDefault');
-    expect(replay.warnings[0]).toContain('已回退到 embedded 默认策略');
+    expect(replay.status).toBe('failClosed');
+    if (replay.status === 'failClosed') {
+      expect(replay.failClosedCode).toBe('ownerUnverified');
+      expect(replay.failClosedReason).toContain('shared runtime owner 无法验证');
+      expect(replay.failClosedReason).toContain('owner record digest 不匹配');
+      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
+      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.warnings).toEqual([replay.failClosedReason]);
+    }
     await expectRuntimePreference({
       embeddedRoot,
       target: runtimeTarget,
       platform: 'claude',
-      preference: 'default',
+      preference: 'manual',
     });
   });
 
-  it('does not replay manifest-declared codex.skill entries through shared runtime owner fallback', async () => {
+  it('fails closed during replay when the owner record location does not match the owner file', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-replay-mismatch-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-replay-mismatch-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-replay-mismatch-root-');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const runtimeTarget: SkillTriggerMaterializationTarget = {
+      platform: 'claude',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+    const ownerLocation = makeLocation({ platform: 'claude', scope: 'user' });
+    const mismatchedRecordLocation = makeLocation({ platform: 'claude', scope: 'project', projectKey: root });
+    const ownerRecord = makeRecord(mismatchedRecordLocation, 'manual');
+    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
+
+    await writeBundlePlugin({ rootDir: embeddedRoot });
+    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
+    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
+    await setRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+
+    const replay = await replaySharedSkillTriggerRuntimeFromOwner({
+      pluginName: ownerLocation.plugin,
+      platform: ownerLocation.platform,
+      embeddedRoot,
+      target: runtimeTarget,
+      env,
+    });
+
+    expect(replay.status).toBe('failClosed');
+    if (replay.status === 'failClosed') {
+      expect(replay.failClosedCode).toBe('ownerUnverified');
+      expect(replay.failClosedReason).toContain('owner record location 与 owner 文件不一致');
+      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
+      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+    }
+    await expectRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+  });
+
+  it('fails closed during replay when the owner effective config cannot be parsed', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-replay-config-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-replay-config-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-replay-config-root-');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const runtimeTarget: SkillTriggerMaterializationTarget = {
+      platform: 'claude',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+    const ownerLocation = makeLocation({ platform: 'claude', scope: 'user' });
+    const ownerRecord = makeRecord(ownerLocation, 'manual');
+    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
+    const userConfigPath = path.join(env.AW_HOME!, 'plugin-config', ownerLocation.plugin, 'config.json');
+
+    await writeBundlePlugin({ rootDir: embeddedRoot });
+    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
+    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
+    await setRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+    await fs.outputFile(userConfigPath, '{"$aw":', 'utf8');
+
+    const replay = await replaySharedSkillTriggerRuntimeFromOwner({
+      pluginName: ownerLocation.plugin,
+      platform: ownerLocation.platform,
+      embeddedRoot,
+      target: runtimeTarget,
+      env,
+    });
+
+    expect(replay.status).toBe('failClosed');
+    if (replay.status === 'failClosed') {
+      expect(replay.failClosedCode).toBe('ownerEffectiveConfigInvalid');
+      expect(replay.failClosedReason).toContain('shared runtime owner 当前 effective SkillTrigger 配置不可解析');
+      expect(replay.failClosedReason).toContain(`aw repair ${ownerLocation.plugin} --platform ${ownerLocation.platform} --scope ${ownerLocation.scope}`);
+      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+    }
+    await expectRuntimePreference({
+      embeddedRoot,
+      target: runtimeTarget,
+      platform: 'claude',
+      preference: 'manual',
+    });
+  });
+
+  it('does not replay manifest-declared codex.skill entries through shared runtime owner replay', async () => {
     const embeddedRoot = await makeTempDir('aw-shared-owner-dynamic-embedded-');
     const marketplaceRoot = await makeTempDir('aw-shared-owner-dynamic-marketplace-');
     const root = await makeTempDir('aw-shared-owner-dynamic-root-');
@@ -663,9 +826,12 @@ describe('install-state shared runtime owner', () => {
       env,
     });
 
-    expect(replay.source).toBe('owner');
-    expect(replay.preference).toBe('default');
-    expect(replay.materialization.generatedArtifacts).toEqual([]);
+    expect(replay.status).toBe('replayed');
+    if (replay.status === 'replayed') {
+      expect(replay.source).toBe('owner');
+      expect(replay.preference).toBe('default');
+      expect(replay.materialization.generatedArtifacts).toEqual([]);
+    }
     await expectRuntimePreference({
       embeddedRoot,
       target: runtimeTarget,

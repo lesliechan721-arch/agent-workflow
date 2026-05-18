@@ -500,7 +500,7 @@ describe('diagnose P7', () => {
     };
     expect(rendererRunner.run).not.toHaveBeenCalled();
     expect(payload.locations[0]?.summary).toContain('历史 dynamic tracking');
-    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status / diagnose / repair 中隐式迁移');
+    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status --verbose / repair / cleanup 中隐式迁移');
     expect(payload.locations[0]?.legacyDynamicTracking).toEqual([
       expect.objectContaining({
         id: 'lightweight-instruction',

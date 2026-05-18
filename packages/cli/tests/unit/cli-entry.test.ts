@@ -683,6 +683,22 @@ describe('cli entry', () => {
     expect(readStderr()).toBe('');
   });
 
+  it('fails diagnose help before Commander renders legacy help output', async () => {
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['diagnose', '--help'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(readStdout()).toBe('');
+    expect(readStderr()).toContain('`aw diagnose` 已移除，请改用 `aw status --verbose`');
+    expect(readStderr()).not.toContain('Usage: aw diagnose');
+    expect(readStderr()).not.toContain('--deep');
+  });
+
   it('fails diagnose entrypoints with a migration error and empty stdout', async () => {
     const { runCli } = await import('../../src/index.js');
 
@@ -701,6 +717,7 @@ describe('cli entry', () => {
     )).toBe(1);
     expect(capture.readStdout()).toBe('');
     expect(capture.readStderr()).toContain('请改用 `aw status git-commit --verbose`');
+    expect(capture.readStderr()).toContain('原 `--deep` 诊断已并入 `status --verbose`');
   });
 
   it('rejects legacy --platform auto before dispatching public write commands', async () => {

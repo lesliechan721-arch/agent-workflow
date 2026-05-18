@@ -51,7 +51,7 @@
 | `~/.aw` / AW_HOME | 本机 AW runtime 目录和 local marketplace 镜像 | 给 native runtime 提供可注册的 marketplace，也保存跨 scope 的 AW 状态 |
 | install record | 某个 plugin + platform + scope + location 在本机的安装真值 | 后续判断“这里是否安装过”“卸载时应该清什么”主要看它 |
 | project artifact identity | project scope 下可提交的共享身份线索 | fresh clone 后，本机没有 install record，也能识别仓库里已有 AW 产物并提示认领 |
-| diagnostic cache | 诊断缓存，特别是动态 artifact 最近一次生成和刷新结果 | `status` / `diagnose` 可以只读展示健康状态，不必每次重新执行 renderer |
+| diagnostic cache | 诊断缓存，特别是动态 artifact 最近一次生成和刷新结果 | `aw status` / `aw status --verbose` 可以只读展示健康状态，不必每次重新执行 renderer |
 | dependency index | 从 install records 重建的反向依赖索引 | 卸载时防止删掉仍被其它插件依赖的自动依赖 |
 | lifecycle runtime | 安装时保存的最小历史运行面 | 卸载、repair 或 reinstall 需要撤销旧副作用时使用 |
 | native transaction marker | 平台 native 写入已经发生，但 AW record 还没提交成功时留下的短生命周期标记 | 安装中断后，`repair` 或 `cleanup` 可以据此收口 |

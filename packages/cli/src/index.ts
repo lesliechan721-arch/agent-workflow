@@ -34,7 +34,6 @@ import {
   resolveConfigWriteScope,
   assertNoDeprecatedSkillTriggerOption,
   normalizeCommandOptions,
-  normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
   normalizeRepairCommandOptions,
   normalizeReinstallCommandOptions,
@@ -109,6 +108,66 @@ function assertNoDeprecatedSkillTriggerArgv(argv: string[]): void {
       );
     }
   }
+}
+
+function extractLegacyDiagnosePlugins(argv: string[]): string[] {
+  const plugins: string[] = [];
+  let positionalOnly = false;
+
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token) {
+      continue;
+    }
+    if (positionalOnly) {
+      plugins.push(token);
+      continue;
+    }
+    if (token === '--') {
+      positionalOnly = true;
+      continue;
+    }
+    if (
+      token === '-s' ||
+      token === '--scope' ||
+      token === '-p' ||
+      token === '--platform' ||
+      token === '--log-file'
+    ) {
+      if (index + 1 < argv.length) {
+        index += 1;
+      }
+      continue;
+    }
+    if (
+      token.startsWith('--scope=') ||
+      token.startsWith('--platform=') ||
+      token.startsWith('--log-file=')
+    ) {
+      continue;
+    }
+    if (token.startsWith('-')) {
+      continue;
+    }
+    plugins.push(token);
+  }
+
+  return plugins;
+}
+
+function createDiagnoseMigrationError(argv: string[]): Error | null {
+  if (argv[0] !== 'diagnose') {
+    return null;
+  }
+
+  const plugins = extractLegacyDiagnosePlugins(argv);
+  const suggested = plugins.length > 0
+    ? `aw status ${plugins.join(' ')} --verbose`
+    : 'aw status --verbose';
+  const details = argv.includes('--deep')
+    ? '（原 `--deep` 诊断已并入 `status --verbose`）'
+    : '';
+  return new Error(`\`aw diagnose\` 已移除，请改用 \`${suggested}\`${details}。`);
 }
 
 function createDefaultIo(): CliIo {
@@ -1524,37 +1583,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeLine(io.stdout, result.output);
     });
 
-  program
-    .command('diagnose', { hidden: true })
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'filter by scope')
-    .option('-p, --platform <platform>', 'filter by platform')
-    .option('--deep', 'run dynamic artifact renderer without writing diagnostic cache', false)
-    .option('-v, --verbose', 'show diagnose details and command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .option('-j, --json', 'print diagnose result as JSON', false)
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        json?: boolean;
-        deep?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      const commandOptions = normalizeDiagnoseCommandOptions({
-        cwd,
-        ...rawOptions,
-      });
-      const renderedPlugins = (plugins ?? []).join(' ').trim();
-      const suggested = renderedPlugins.length > 0
-        ? `aw status ${renderedPlugins} --verbose`
-        : 'aw status --verbose';
-      const details = commandOptions.deep ? '（原 `--deep` 诊断已并入 `status --verbose`）' : '';
-      throw new Error(`\`aw diagnose\` 已移除，请改用 \`${suggested}\`${details}。`);
-    });
-
   Object.assign(program, { __awCommandExitState: commandExitState });
   return program;
 }
@@ -1607,6 +1635,10 @@ export async function runCli(
       return await runActionWithContext(context, () => runConsoleController(context));
     }
     assertNoDeprecatedSkillTriggerArgv(argv);
+    const diagnoseMigrationError = createDiagnoseMigrationError(argv);
+    if (diagnoseMigrationError) {
+      throw diagnoseMigrationError;
+    }
     const program = buildProgram({
       ...options,
       io,

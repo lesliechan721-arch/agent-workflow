@@ -1425,7 +1425,7 @@ function createFindings(options: {
     findings.push(
       `检测到当前 manifest 已移除的历史 dynamic tracking：${legacyDynamicTracking
         .map((entry) => `${entry.id}(${entry.target})`)
-        .join('、')}。本轮不会在 status / diagnose / repair 中隐式迁移这些旧入口。`,
+        .join('、')}。本轮不会在 status --verbose / repair / cleanup 中隐式迁移这些旧入口。`,
     );
   }
   if (deepDiagnose.attempted && deepDiagnose.rendered) {

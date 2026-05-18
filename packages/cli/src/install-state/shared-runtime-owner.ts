@@ -3,6 +3,8 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.js';
+import { readPluginManifest } from '../utils/manifest.js';
+import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
 import {
   assessSharedSkillTriggerRuntimeSemantics,
   commitMaterializedSkillTriggerPreference,
@@ -91,13 +93,25 @@ export interface SharedSkillTriggerRuntimeStageBundle {
   stages: InstallStateTransactionStage[];
 }
 
-export interface SharedSkillTriggerRuntimeReplayResult {
-  source: 'owner' | 'embeddedDefault';
-  preference: SkillTriggerPreference;
-  ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
-  warnings: string[];
-  materialization: SkillTriggerMaterializationResult;
-}
+export type SharedSkillTriggerRuntimeReplayResult =
+  | {
+    status: 'replayed';
+    source: 'owner';
+    preference: SkillTriggerPreference;
+    ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
+    warnings: string[];
+    materialization: SkillTriggerMaterializationResult;
+  }
+  | {
+    status: 'failClosed';
+    failClosedCode:
+      | 'ownerStateInvalid'
+      | 'ownerUnverified'
+      | 'ownerEffectiveConfigInvalid';
+    failClosedReason: string;
+    ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
+    warnings: string[];
+  };
 
 function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
   return left.plugin === right.plugin
@@ -141,6 +155,24 @@ function formatOwnerInvalidReason(inspection: SharedSkillTriggerRuntimeOwnerInsp
     return 'owner record location 与 owner 文件不一致';
   }
   return 'owner 状态不可验证';
+}
+
+function formatReplayRepairGuidance(ownerLocation?: PluginLocation): string {
+  if (!ownerLocation) {
+    return '对应目标的 `aw repair`';
+  }
+
+  return `\`aw repair ${ownerLocation.plugin} --platform ${ownerLocation.platform} --scope ${ownerLocation.scope}\``;
+}
+
+function buildReplayFailClosedMessage(options: {
+  pluginName: string;
+  platform: PlatformName;
+  detail: string;
+  ownerLocation?: PluginLocation;
+}): string {
+  return `[${options.platform}/${options.pluginName}] ${options.detail}；shared runtime replay 已 fail closed。` +
+    `请先运行 ${formatReplayRepairGuidance(options.ownerLocation)}，如需改写，请重跑单目标写命令并加 \`--takeover-shared-runtime\`。`;
 }
 
 async function verifyOwnerRecordDigest(owner: SharedSkillTriggerRuntimeOwner): Promise<boolean> {
@@ -604,15 +636,70 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     platform: options.platform,
     env: options.env,
   });
-  const source = ownerInspection.usable ? 'owner' : 'embeddedDefault';
-  const preference: SkillTriggerPreference = 'default';
-  const warnings: string[] = [];
-
-  if (!ownerInspection.usable && ownerInspection.read.status !== 'missing') {
-    warnings.push(
-      `[${options.platform}/${options.pluginName}] shared runtime owner 无法验证（${formatOwnerInvalidReason(ownerInspection)}），已回退到 embedded 默认策略；请运行 diagnose / repair，需要转移控制权时请使用单目标写命令并加 --takeover-shared-runtime。`,
-    );
+  if (!ownerInspection.usable) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail: `shared runtime owner 无法验证（${formatOwnerInvalidReason(ownerInspection)}）`,
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: ownerInspection.read.status === 'ok' ? 'ownerUnverified' : 'ownerStateInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
   }
+
+  const ownerLocation = ownerInspection.read.value.owner;
+  if (ownerLocation.scope === 'project' && !ownerLocation.projectKey) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail: 'shared runtime owner 当前 effective SkillTrigger 配置不可解析（owner projectKey 缺失）',
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: 'ownerEffectiveConfigInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
+  }
+
+  let preference: SkillTriggerPreference;
+  try {
+    const plugin = await readPluginManifest(
+      path.join(options.embeddedRoot, 'plugins', options.pluginName),
+      { mode: 'bundle' },
+    );
+    preference = await resolveUniformSkillTriggerPreference({
+      plugin,
+      platform: ownerLocation.platform,
+      scope: ownerLocation.scope,
+      cwd: ownerLocation.scope === 'project'
+        ? ownerLocation.projectKey
+        : process.cwd(),
+      env: options.env,
+    });
+  } catch (error) {
+    const failClosedReason = buildReplayFailClosedMessage({
+      pluginName: options.pluginName,
+      platform: options.platform,
+      detail:
+        `shared runtime owner 当前 effective SkillTrigger 配置不可解析（${error instanceof Error ? error.message : String(error)}）`,
+      ownerLocation,
+    });
+    return {
+      status: 'failClosed',
+      failClosedCode: 'ownerEffectiveConfigInvalid',
+      failClosedReason,
+      ownerInspection,
+      warnings: [failClosedReason],
+    };
+  }
+
+  const warnings: string[] = [];
 
   const materialization = await materializeSkillTriggerPreference({
     pluginName: options.pluginName,
@@ -635,7 +722,8 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
   }
 
   return {
-    source,
+    status: 'replayed',
+    source: 'owner',
     preference,
     ownerInspection,
     warnings,
