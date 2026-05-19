@@ -1,2 +1,2 @@
-[permissions.workspace.filesystem.":project_roots"]
+[permissions.workspace.filesystem.":workspace_roots"]
 ".agents" = "write"
