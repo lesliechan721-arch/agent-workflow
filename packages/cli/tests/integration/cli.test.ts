@@ -28,6 +28,7 @@ import {
   validateLocalMarketplaceLayout,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { resolveCatalogPlugins } from '../../src/utils/plugin-catalog.js';
 import { readTrackingManifest } from '../../src/utils/tracking.js';
 import type {
@@ -491,13 +492,22 @@ async function updateEmbeddedGitCommitManifest(
   embeddedRoot: string,
   update: (manifest: Record<string, unknown>) => void,
 ): Promise<void> {
-  const manifestPath = path.join(embeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+  const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
+  const manifestPath = path.join(catalogRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
   update(manifest);
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function resolveCatalogFixtureRoot(rootDir: string): Promise<string> {
+  const fullRoot = getCatalogFullPackageRoot(rootDir);
+  return await fs.pathExists(path.join(fullRoot, 'plugins'))
+    ? fullRoot
+    : rootDir;
+}
+
 async function removeEmbeddedGitCommitReviewSkill(embeddedRoot: string): Promise<void> {
+  const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
   await updateEmbeddedGitCommitManifest(embeddedRoot, (manifest) => {
     const skillTriggers = manifest.skillTriggers as Record<string, unknown> | undefined;
     if (skillTriggers) {
@@ -505,12 +515,12 @@ async function removeEmbeddedGitCommitReviewSkill(embeddedRoot: string): Promise
     }
     manifest.version = '0.2.0';
   });
-  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', 'skills', 'review'));
-  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'review'));
+  await fs.remove(path.join(catalogRoot, 'plugins', 'git-commit', 'skills', 'review'));
+  await fs.remove(path.join(catalogRoot, 'plugins', 'git-commit', 'codex', 'skills', 'review'));
 }
 
 async function removeEmbeddedGitCommitReviewMcp(embeddedRoot: string): Promise<void> {
-  const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+  const pluginRoot = path.join(await resolveCatalogFixtureRoot(embeddedRoot), 'plugins', 'git-commit');
   const visit = async (currentDir: string): Promise<void> => {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -712,7 +722,7 @@ describe('CLI integration', () => {
     expect(result.changed).toBe(true);
     expect(result.catalog).toMatchObject({
       source: 'local',
-      rootDir: embeddedRoot,
+      rootDir: getCatalogFullPackageRoot(embeddedRoot),
     });
     await expect(fs.pathExists(path.join(awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(awHome, 'plugins', 'git-commit'))).resolves.toBe(false);

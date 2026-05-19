@@ -13,6 +13,7 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -121,7 +122,7 @@ describe('runtime env integration', () => {
     expect(result.reports[0]?.plugins[0]?.currentCatalog).toMatchObject({
       available: true,
       source: 'local',
-      rootDir: embeddedRoot,
+      rootDir: getCatalogFullPackageRoot(embeddedRoot),
       sidecarManifestPackage: {
         source: 'localFixture',
       },

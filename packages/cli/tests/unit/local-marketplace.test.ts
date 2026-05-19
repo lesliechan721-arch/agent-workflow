@@ -25,6 +25,7 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readJsonFile } from '../../src/utils/json.js';
+import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
@@ -66,6 +67,50 @@ async function makeWorkspace(
   const awHome = path.join(root, 'aw-home');
 
   return { repoRoot, awHome, embeddedRoot };
+}
+
+function createStaticCatalogPackageSource(options: {
+  manifest: Record<string, unknown>;
+  sidecarRoot: string;
+  fullRoot: string;
+  channel: 'latest' | 'beta';
+  version: string;
+}) {
+  return {
+    resolveIdentityByDistTag: async (packageName: string) => ({
+      packageName,
+      version: options.version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${options.version}`
+        : `sha512-full-${options.version}`,
+      requestedDistTag: options.channel,
+    }),
+    resolveIdentityByVersion: async (packageName: string, version: string) => ({
+      packageName,
+      version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${version}`
+        : `sha512-full-${version}`,
+    }),
+    downloadArchive: async (identity: { packageName: string }) => ({
+      identity,
+      manifestText: await fs.readFile(
+        path.join(
+          identity.packageName === '@yiliang/aw-plugins-manifest'
+            ? options.sidecarRoot
+            : options.fullRoot,
+          'catalog-manifest.json',
+        ),
+        'utf8',
+      ),
+      rawManifest: options.manifest,
+      packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
+        ? options.sidecarRoot
+        : options.fullRoot,
+      materialize: async () => {},
+      dispose: async () => {},
+    }),
+  };
 }
 
 function codexOpenAiYamlPath(rootDir: string, pluginName = 'git-commit'): string {
@@ -112,6 +157,7 @@ async function listSkillBackupDirs(
 }
 
 afterEach(async () => {
+  setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
   delete process.env.AW_CODEX_HOME;
@@ -287,6 +333,30 @@ describe('local marketplace', () => {
           lastResolvedVersion: '0.1.0',
         },
       },
+    });
+  });
+
+  it('falls back to the current catalog cache source when embedded bundles are unavailable', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    const missingEmbeddedRoot = path.join(awHome, 'missing-plugins-dist');
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json'));
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    setEmbeddedPluginsRootOverrideForTests(missingEmbeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+    await expect(readJsonFile<{ bundleFingerprint: string }>(path.join(awHome, 'config.json'))).resolves.toMatchObject({
+      bundleFingerprint: await calculateBundleFingerprint(fullRoot),
     });
   });
 

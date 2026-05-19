@@ -623,7 +623,7 @@ describe('Codex project installability', () => {
       platforms: ['codex'],
       plugins: ['mcp-only'],
       marketplace: {
-        source: 'embedded',
+        source: 'local',
         changed: false,
       },
     });

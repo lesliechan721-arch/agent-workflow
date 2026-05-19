@@ -549,6 +549,11 @@ function installActionDisabledReason(cell: StatusMatrixCell): string | undefined
   if (cell.disabledReason) {
     return cell.disabledReason;
   }
+  if (cell.installState) {
+    return cell.installState.currentCatalogAvailable
+      ? undefined
+      : 'current catalog 当前不可用；恢复后才能安装、升级或查看可安装版本。';
+  }
   if (!catalogUsable(cell.report) || cell.report?.currentCatalog?.available !== true) {
     return 'current catalog 当前不可用；恢复后才能安装、升级或查看可安装版本。';
   }

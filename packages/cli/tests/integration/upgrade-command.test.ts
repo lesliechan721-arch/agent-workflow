@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initCommand } from '../../src/commands/init.js';
 import * as commonModule from '../../src/commands/common.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import type {
   GeneratedArtifact,
@@ -506,6 +507,12 @@ describe('upgrade command coverage', () => {
       AW_FORCE_CODEX_AVAILABLE: '1',
     };
     await writeInstalledLedger(createAvailableLedger(), env);
+    await writeCodexNativeRecoveryBreadcrumb({
+      pluginName: 'git-commit',
+      state: 'post_check_failed',
+      reason: 'native_install_post_check_failed',
+      env,
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
@@ -515,6 +522,8 @@ describe('upgrade command coverage', () => {
         nativeRecoveryReason: 'native_install_post_check_failed',
       },
     });
+    const readOnlyCatalogSpy = vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution')
+      .mockRejectedValue(new Error('HTTP 404 Not Found'));
     const resolveInstallOptionsSpy = vi.spyOn(commonModule, 'resolveInstallOptionsForTargets');
     const lifecycleSpy = vi.spyOn(pluginScriptsModule, 'runLifecycleScript');
 
@@ -538,6 +547,7 @@ describe('upgrade command coverage', () => {
       'git-commit 当前只有 Codex native recovery breadcrumb，安装尚未完整成功；请先运行 aw install git-commit -p codex -s user 修复，或运行 aw uninstall git-commit -p codex -s user 清理。',
     );
 
+    expect(readOnlyCatalogSpy).not.toHaveBeenCalled();
     expect(resolveInstallOptionsSpy).not.toHaveBeenCalled();
     expect(lifecycleSpy).not.toHaveBeenCalled();
     expect(codex.installCalls).toEqual([]);

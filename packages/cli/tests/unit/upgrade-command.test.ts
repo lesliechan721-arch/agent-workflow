@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as commonModule from '../../src/commands/common.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
 import type {
@@ -102,6 +103,7 @@ function mockCatalogTargets(options: {
   explicitTargets: ResolvedPluginTarget[];
   allTargets: ResolvedPluginTarget[];
   ledger: InstalledLedger;
+  catalogRoot?: string;
 }): void {
   vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockResolvedValue({
     ledger: options.ledger,
@@ -111,6 +113,12 @@ function mockCatalogTargets(options: {
   vi.spyOn(commonModule, 'loadPluginTargetsForCommand').mockResolvedValue(
     options.allTargets,
   );
+  if (options.catalogRoot) {
+    vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution').mockResolvedValue({
+      rootDir: options.catalogRoot,
+      source: 'embedded',
+    });
+  }
 }
 
 function createInstallSource(kind: 'explicit' | 'dependency') {
@@ -329,6 +337,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [explicitTarget],
       allTargets: [explicitTarget],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
@@ -429,6 +438,7 @@ describe('upgrade command dependency graph', () => {
         missingDependencyTarget,
       ],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
@@ -657,6 +667,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [explicitTarget],
       allTargets: [explicitTarget, newDependencyTarget],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
@@ -757,6 +768,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [explicitTarget],
       allTargets: [explicitTarget, dependencyTarget],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
@@ -864,6 +876,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [target],
       allTargets: [target],
       ledger: await readInstalledLedger(env),
+      catalogRoot: builder.paths.repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', builder.paths.repoRoot, env, {
@@ -943,6 +956,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [codexTarget, claudeTarget],
       allTargets: [codexTarget, claudeTarget],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {
@@ -1043,6 +1057,7 @@ describe('upgrade command dependency graph', () => {
       explicitTargets: [target],
       allTargets: [target],
       ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
     });
 
     const codex = new UpgradeTestAdapter('codex', repoRoot, env, {

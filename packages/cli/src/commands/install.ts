@@ -43,7 +43,6 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  resolveEmbeddedPluginsRoot,
   resolveRepoRoot,
 } from '../utils/paths.js';
 import {
@@ -303,6 +302,10 @@ function normalizeErrorMessage(error: unknown): string {
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveCatalogRootFromPlugin(plugin: PluginMeta): string {
+  return path.dirname(path.dirname(plugin.rootDir));
 }
 
 function toInstallRecordInstallSource(
@@ -1476,10 +1479,8 @@ async function installTargetOnPlatform(
     }
 
     if (materializeSkillTriggers) {
-      const [embeddedRoot, writtenScope] = await Promise.all([
-        resolveEmbeddedPluginsRoot(),
-        resolveScopeIdentityForTarget(platform, options),
-      ]);
+      const sourceCatalogRoot = resolveCatalogRootFromPlugin(target.currentPlugin!);
+      const writtenScope = await resolveScopeIdentityForTarget(platform, options);
       const marketplaceRoot = resolveAwHome(env);
       const materializationTarget = platform === 'codex' && options.scope === 'project'
         ? {
@@ -1500,7 +1501,7 @@ async function installTargetOnPlatform(
           pluginName: target.pluginName,
           platform,
           marketplaceRoot,
-          embeddedRoot,
+          embeddedRoot: sourceCatalogRoot,
         });
       }
 
@@ -1510,7 +1511,7 @@ async function installTargetOnPlatform(
         resolvedOptions: {
           skillTriggerPreference: materializationPreference,
         },
-        embeddedRoot,
+        embeddedRoot: sourceCatalogRoot,
         ...(materializationTarget
           ? { target: materializationTarget }
           : { marketplaceRootOrStagingRoot: marketplaceRoot }),
@@ -1530,7 +1531,7 @@ async function installTargetOnPlatform(
           pluginName: target.pluginName,
           platform,
           preference: materializationPreference,
-          embeddedRoot,
+          embeddedRoot: sourceCatalogRoot,
         });
       }
     }
@@ -1731,7 +1732,6 @@ async function installTargetOnPlatform(
       plannedRuntimeSignatureAfter &&
       writtenScopeIdentity
     ) {
-      const embeddedRoot = await resolveEmbeddedPluginsRoot();
       const conflictResult = await collectSkillTriggerSiblingConflictWarnings({
         ledgerBefore: baselineLedger,
         ledgerAfter: nextLedger,
@@ -1740,7 +1740,7 @@ async function installTargetOnPlatform(
         writtenScopeIdentity,
         runtimeSignatureBefore,
         plannedRuntimeSignatureAfter,
-        embeddedRoot,
+        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
       });
       pendingConflictWarnings.push(
         ...conflictResult.warnings,
@@ -1879,7 +1879,7 @@ async function installTargetOnPlatform(
     if (materializeSkillTriggers) {
       const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
         location: toInstallStateLocation(location),
-        embeddedRoot: await resolveEmbeddedPluginsRoot(),
+        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
         target: createSkillTriggerMaterializationTarget(platform, options.scope, options.cwd, env),
         preference: materializationPreference,
         command: operation === 'upgrade' ? 'upgrade' : 'install',
@@ -3216,8 +3216,6 @@ async function preflightInstallGraphWrites(options: {
     );
   }
 
-  const embeddedRoot = await resolveEmbeddedPluginsRoot();
-
   for (const { location, target, status } of writeTargets) {
     const locationKey = serializePluginLocation(location);
     const resolvedInstallOptions = options.resolvedInstallOptionsByLocation.get(locationKey);
@@ -3298,7 +3296,7 @@ async function preflightInstallGraphWrites(options: {
     if (resolvedInstallOptions && shouldMaterializeSkillTriggers(location.platform, location.scope, resolvedInstallOptions)) {
       const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
         location: toInstallStateLocation(location),
-        embeddedRoot,
+        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
         target: createSkillTriggerMaterializationTarget(
           location.platform,
           location.scope,

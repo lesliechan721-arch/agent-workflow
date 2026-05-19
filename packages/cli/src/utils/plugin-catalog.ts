@@ -45,6 +45,10 @@ import {
   resolveAwHome,
   resolveCurrentCatalogCacheStagingDir,
 } from './paths.js';
+import {
+  getCatalogFullPackageRoot,
+  getCatalogSidecarPackageRoot,
+} from './bundle-layout.js';
 
 export interface ResolveCurrentCatalogOptions {
   cliVersion?: CliVersion;
@@ -1156,8 +1160,13 @@ async function tryResolveFixtureCatalogOverride(
     return null;
   }
 
-  const manifestPath = path.join(overrideRoot, '.catalog', CURRENT_CATALOG_MANIFEST_FILE);
-  if (!(await fs.pathExists(manifestPath))) {
+  const sidecarPackageRoot = getCatalogSidecarPackageRoot(overrideRoot);
+  const fullPackageRoot = getCatalogFullPackageRoot(overrideRoot);
+  const manifestPath = path.join(sidecarPackageRoot, CURRENT_CATALOG_MANIFEST_FILE);
+  if (
+    !(await fs.pathExists(manifestPath)) ||
+    !(await fs.pathExists(path.join(fullPackageRoot, CURRENT_CATALOG_MANIFEST_FILE)))
+  ) {
     return null;
   }
 
@@ -1178,7 +1187,7 @@ async function tryResolveFixtureCatalogOverride(
   }
 
   return {
-    rootDir: overrideRoot,
+    rootDir: fullPackageRoot,
     source: 'local',
     selector,
     sidecarManifestPackage: {

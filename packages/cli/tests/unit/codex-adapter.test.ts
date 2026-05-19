@@ -11,6 +11,12 @@ import {
   pruneCodexTrackedArtifacts,
 } from '../../src/adapters/codex.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
+import {
+  getCanonicalCatalogManifestPath,
+  getCatalogFullManifestPath,
+  getCatalogFullPackageRoot,
+  getCatalogSidecarManifestPath,
+} from '../../src/utils/bundle-layout.js';
 import { getGeneratedArtifactIdentityKey } from '../../src/utils/generated-artifacts.js';
 import {
   createAvailableLedger,
@@ -115,15 +121,51 @@ async function removePluginFromEmbeddedCatalog(
   embeddedRoot: string,
   pluginName: string,
 ): Promise<void> {
-  await fs.remove(path.join(embeddedRoot, 'plugins', pluginName));
+  const fullCatalogRoot = getCatalogFullPackageRoot(embeddedRoot);
+
+  for (const pluginsRoot of [
+    path.join(embeddedRoot, 'plugins'),
+    path.join(fullCatalogRoot, 'plugins'),
+  ]) {
+    await fs.remove(path.join(pluginsRoot, pluginName));
+  }
+
   for (const manifestPath of [
     path.join(embeddedRoot, '.claude-plugin', 'marketplace.json'),
     path.join(embeddedRoot, '.agents', 'plugins', 'marketplace.json'),
+    path.join(fullCatalogRoot, '.claude-plugin', 'marketplace.json'),
+    path.join(fullCatalogRoot, '.agents', 'plugins', 'marketplace.json'),
   ]) {
+    if (!(await fs.pathExists(manifestPath))) {
+      continue;
+    }
     const manifest = await fs.readJson(manifestPath);
     manifest.plugins = (manifest.plugins ?? []).filter(
       (entry: { name?: string }) => entry.name !== pluginName,
     );
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  }
+
+  for (const manifestPath of [
+    getCanonicalCatalogManifestPath(embeddedRoot),
+    getCatalogSidecarManifestPath(embeddedRoot),
+    getCatalogFullManifestPath(embeddedRoot),
+  ]) {
+    if (!(await fs.pathExists(manifestPath))) {
+      continue;
+    }
+    const manifest = await fs.readJson(manifestPath);
+    manifest.entries = (manifest.entries ?? []).filter(
+      (entry: { name?: string }) => entry.name !== pluginName,
+    );
+    if (manifest.history?.releases) {
+      manifest.history.releases = manifest.history.releases.map((release: {
+        plugins?: Array<{ name?: string }>;
+      }) => ({
+        ...release,
+        plugins: (release.plugins ?? []).filter((entry) => entry.name !== pluginName),
+      }));
+    }
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
   }
 }

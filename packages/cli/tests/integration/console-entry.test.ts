@@ -218,6 +218,10 @@ describe('console entry', () => {
           }],
         },
       }]);
+    const loadConsoleItemsResult = vi.fn(async (...args: Parameters<typeof loadConsoleItems>) => ({
+      items: await loadConsoleItems(...args),
+      catalogUnavailable: false,
+    }));
     const statusCommand = vi.fn()
       .mockResolvedValueOnce({
         output: '',
@@ -293,6 +297,7 @@ describe('console entry', () => {
 
     vi.doMock('../../src/commands/status.js', () => ({
       loadConsoleItems,
+      loadConsoleItemsResult,
       statusCommand,
     }));
     vi.doMock('../../src/commands/common.js', () => ({ preparePluginTargetsForCommand }));

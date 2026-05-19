@@ -3,7 +3,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CliExecutionContext } from '../../src/commands/runtime.js';
 import type {
@@ -19,6 +19,7 @@ import { createFakeConsoleDriver, createFakePrompt } from '../helpers/fake-conso
 
 const statusCommand = vi.fn();
 const loadConsoleItems = vi.fn();
+const loadConsoleItemsResult = vi.fn();
 const diagnoseCommand = vi.fn();
 const installCommand = vi.fn();
 const upgradeCommand = vi.fn();
@@ -71,7 +72,7 @@ planConsoleGraphWriteTargets.mockImplementation(async (options: {
   })),
 }));
 
-vi.mock('../../src/commands/status.js', () => ({ statusCommand, loadConsoleItems }));
+vi.mock('../../src/commands/status.js', () => ({ statusCommand, loadConsoleItems, loadConsoleItemsResult }));
 vi.mock('../../src/commands/diagnose.js', () => ({ diagnoseCommand }));
 vi.mock('../../src/commands/install.js', () => ({ installCommand }));
 vi.mock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
@@ -103,6 +104,13 @@ vi.mock('../../src/utils/plugin-config.js', async () => {
 });
 
 const tempDirs: string[] = [];
+
+beforeEach(() => {
+  loadConsoleItemsResult.mockImplementation(async (...args: Parameters<typeof loadConsoleItems>) => ({
+    items: await loadConsoleItems(...args),
+    catalogUnavailable: false,
+  }));
+});
 
 function plugin(configSchema?: PluginMeta['manifest']['config']): PluginMeta {
   return {
@@ -436,7 +444,10 @@ describe('console controller stage 5', () => {
     statusCommand.mockResolvedValue(createBaseStatusResult({
       currentCatalogAvailable: false,
     }));
-    loadConsoleItems.mockResolvedValue([item()]);
+    loadConsoleItemsResult.mockResolvedValue({
+      items: [item()],
+      catalogUnavailable: true,
+    });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, consoleDriver } = createContext([
@@ -446,6 +457,29 @@ describe('console controller stage 5', () => {
     await expect(runConsoleController(context)).resolves.toBe(0);
     expect(consoleDriver.views[0]?.lines).toContain('插件目录不可用，仅显示已发现安装；恢复后可安装或升级。');
     expect(consoleDriver.views[0]?.lines.some((line) => line.includes('Git Commit'))).toBe(true);
+  });
+
+  it('loads the home page through a single consolidated status pass', async () => {
+    loadConsoleItemsResult.mockResolvedValue({
+      items: [item()],
+      catalogUnavailable: false,
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context } = createContext([
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(loadConsoleItemsResult).toHaveBeenCalledTimes(1);
+    expect(loadConsoleItemsResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/workspace',
+        includeCatalogOnly: true,
+      }),
+      context,
+    );
+    expect(statusCommand).not.toHaveBeenCalled();
   });
 
   it('renders legacy config placeholders on home without install-style primary actions', async () => {

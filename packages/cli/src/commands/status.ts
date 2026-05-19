@@ -3463,35 +3463,41 @@ const CONSOLE_SUMMARY_PRIORITY: Record<PluginConsoleStatus, number> = {
   notInstalled: 0,
 };
 
-export async function loadConsoleItems(
-  rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
-  runtime: StatusCommandRuntime = {},
-): Promise<ConsoleControllerItem[]> {
-  const options = normalizeStatusCommandOptions(rawOptions);
-  const runtimeWithSelector = {
-    ...runtime,
-    env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
-  } satisfies StatusCommandRuntime;
-  const base = await statusCommand([], {
-    ...rawOptions,
-    ...options,
-  }, runtimeWithSelector);
+export interface ConsoleItemsLoadResult {
+  items: ConsoleControllerItem[];
+  catalogUnavailable: boolean;
+}
+
+type StatusCommandResult = Awaited<ReturnType<typeof statusCommand>>;
+
+function isConsoleCatalogUnavailable(base: StatusCommandResult): boolean {
+  return base.matrix.cells.length > 0 &&
+    base.matrix.cells.every((cell) => cell.report?.currentCatalog?.available !== true);
+}
+
+async function buildConsoleItemsFromStatusResult(options: {
+  base: StatusCommandResult;
+  rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean };
+  normalizedOptions: ReturnType<typeof normalizeStatusCommandOptions>;
+  runtimeWithSelector: StatusCommandRuntime;
+}): Promise<ConsoleControllerItem[]> {
+  const { base, rawOptions, normalizedOptions, runtimeWithSelector } = options;
   if (!rawOptions.includeCatalogOnly) {
     return base.consoleControllerItems;
   }
 
   const context = createCommandExecutionContext(runtimeWithSelector);
   const configStorePluginNames = await listPluginConfigStorePluginNames({
-    cwd: options.cwd,
+    cwd: normalizedOptions.cwd,
     env: context.env,
   });
   const candidates = base.catalog.reasonCode
     ? []
     : await buildCommandCandidates({
         command: 'status',
-        cwd: options.cwd,
-        scopeFilter: options.scope,
-        platformFilter: options.platform,
+        cwd: normalizedOptions.cwd,
+        scopeFilter: normalizedOptions.scope,
+        platformFilter: normalizedOptions.platform,
         env: context.env,
         includeCatalogOnly: true,
       });
@@ -3500,8 +3506,8 @@ export async function loadConsoleItems(
   const extraMatrix = createStatusMatrixFromCandidates({
     candidates,
     detection: base.matrix.detection,
-    scope: options.scope,
-    platform: options.platform,
+    scope: normalizedOptions.scope,
+    platform: normalizedOptions.platform,
   });
   const extraCells = extraMatrix.cells.filter((cell) => !baseCellKeys.has(createPluginConsoleLocationKey(cell)));
   const mergedMatrix: StatusMatrixReport = extraCells.length === 0
@@ -3522,11 +3528,13 @@ export async function loadConsoleItems(
     ...mergedMatrix.cells.map((cell) => cell.pluginName),
     ...configStorePluginNames,
   ])];
+  const unresolvedConfigPluginNames = pluginNames
+    .filter((pluginName) => !base.configProjectionByPluginName?.[pluginName]);
   const resolvedConfigProjectionByPluginName = await resolveConsoleConfigProjectionByPluginName({
-    pluginNames,
+    pluginNames: unresolvedConfigPluginNames,
     currentPluginByName,
     catalog: base.catalog,
-    cwd: options.cwd,
+    cwd: normalizedOptions.cwd,
     env: context.env,
   });
   const configProjectionByPluginName = {
@@ -3551,4 +3559,35 @@ export async function loadConsoleItems(
     CONSOLE_SUMMARY_PRIORITY[right.summary.status] - CONSOLE_SUMMARY_PRIORITY[left.summary.status] ||
     left.summary.title.localeCompare(right.summary.title),
   );
+}
+
+export async function loadConsoleItemsResult(
+  rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
+  runtime: StatusCommandRuntime = {},
+): Promise<ConsoleItemsLoadResult> {
+  const options = normalizeStatusCommandOptions(rawOptions);
+  const runtimeWithSelector = {
+    ...runtime,
+    env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
+  } satisfies StatusCommandRuntime;
+  const base = await statusCommand([], {
+    ...rawOptions,
+    ...options,
+  }, runtimeWithSelector);
+  return {
+    items: await buildConsoleItemsFromStatusResult({
+      base,
+      rawOptions,
+      normalizedOptions: options,
+      runtimeWithSelector,
+    }),
+    catalogUnavailable: isConsoleCatalogUnavailable(base),
+  };
+}
+
+export async function loadConsoleItems(
+  rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
+  runtime: StatusCommandRuntime = {},
+): Promise<ConsoleControllerItem[]> {
+  return (await loadConsoleItemsResult(rawOptions, runtime)).items;
 }

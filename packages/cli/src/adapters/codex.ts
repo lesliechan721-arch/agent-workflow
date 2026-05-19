@@ -4242,14 +4242,13 @@ export class CodexAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [ledger, trackedGeneratedArtifacts, currentCatalog, projectKey, repoRoot, embeddedRoot, awHome] =
+    const [ledger, trackedGeneratedArtifacts, currentCatalog, projectKey, repoRoot, awHome] =
       await Promise.all([
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
         resolveCurrentCatalog(this.env),
         resolveCodexProjectKey(this.cwd),
         resolveRepoRoot(this.cwd),
-        resolveEmbeddedPluginsRoot(),
         resolveAwHomeCanonical(this.env),
       ]);
     let generatedArtifacts = trackedGeneratedArtifacts;
@@ -4312,6 +4311,7 @@ export class CodexAdapter implements PlatformAdapter {
     const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );
+    const sourceCatalogRoot = currentCatalog.rootDir;
     const ledgerScopeInitialized = resolveScopeInitialized(
       ledger,
       plugin.manifest.name,
@@ -4343,6 +4343,10 @@ export class CodexAdapter implements PlatformAdapter {
       scopeInitialized === 'yes' ||
       trackingEvidenceUsable ||
       sharedNativeRefEvidence;
+    const catalogCompatibilityScopeEvidence =
+      currentScopeManagedEvidence ||
+      Boolean(trackingRecord) ||
+      generatedArtifacts.length > 0;
     const recoveryBreadcrumb = scope === 'user'
       ? await readCodexNativeRecoveryBreadcrumb(plugin.manifest.name, this.env)
       : null;
@@ -4379,7 +4383,7 @@ export class CodexAdapter implements PlatformAdapter {
     const installedCapabilities = normalizeCodexCapabilitySnapshot(installedCapabilitySnapshot);
     const catalogCompatibility = resolveCodexCatalogCompatibility({
       currentManifestPresent: currentCatalogAvailable,
-      currentScopeManagedEvidence,
+      currentScopeManagedEvidence: catalogCompatibilityScopeEvidence,
       platformNativeFallbackEvidence,
       currentCapabilities,
       installedCapabilitySnapshot,
@@ -4643,7 +4647,7 @@ export class CodexAdapter implements PlatformAdapter {
       ledger,
       currentCatalog,
       currentCatalogAvailable,
-      embeddedRoot,
+      embeddedRoot: sourceCatalogRoot,
       ...(scope === 'project'
         ? {
             runtimeTarget: {
@@ -4727,7 +4731,7 @@ export class CodexAdapter implements PlatformAdapter {
       if (currentCatalogAvailable) {
         try {
           const resolution = await resolveSkillTriggerPolicies({
-            embeddedRoot,
+            embeddedRoot: sourceCatalogRoot,
             pluginName: plugin.manifest.name,
             platform: 'codex',
           });
@@ -4808,7 +4812,7 @@ export class CodexAdapter implements PlatformAdapter {
               );
             if (policy && canCompare) {
               const comparison = await compareCodexRepoSkillToPristine({
-                embeddedRoot,
+                embeddedRoot: sourceCatalogRoot,
                 pluginName: plugin.manifest.name,
                 skillName,
                 actualSkillRoot: skillPath,

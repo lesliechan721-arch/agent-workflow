@@ -24,7 +24,13 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
-import { createAvailableLedger, readInstalledLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
+import {
+  createAvailableLedger,
+  readInstalledLedger,
+  validateLocalMarketplaceLayout,
+  writeInstalledLedger,
+} from '../../src/utils/local-marketplace.js';
+import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import {
   inspectGlobalDependencyIndex,
   readDynamicArtifactDiagnosticCacheAt,
@@ -127,6 +133,50 @@ async function readInstallRecord(options: {
     },
     env: options.env,
   });
+}
+
+function createStaticCatalogPackageSource(options: {
+  manifest: Record<string, unknown>;
+  sidecarRoot: string;
+  fullRoot: string;
+  channel: 'latest' | 'beta';
+  version: string;
+}) {
+  return {
+    resolveIdentityByDistTag: async (packageName: string) => ({
+      packageName,
+      version: options.version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${options.version}`
+        : `sha512-full-${options.version}`,
+      requestedDistTag: options.channel,
+    }),
+    resolveIdentityByVersion: async (packageName: string, version: string) => ({
+      packageName,
+      version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${version}`
+        : `sha512-full-${version}`,
+    }),
+    downloadArchive: async (identity: { packageName: string }) => ({
+      identity,
+      manifestText: await fs.readFile(
+        path.join(
+          identity.packageName === '@yiliang/aw-plugins-manifest'
+            ? options.sidecarRoot
+            : options.fullRoot,
+          'catalog-manifest.json',
+        ),
+        'utf8',
+      ),
+      rawManifest: options.manifest,
+      packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
+        ? options.sidecarRoot
+        : options.fullRoot,
+      materialize: async () => {},
+      dispose: async () => {},
+    }),
+  };
 }
 
 async function readDependencyIndex(env: NodeJS.ProcessEnv) {
@@ -501,6 +551,7 @@ function resolvedInstallOptions(): ResolvedInstallOptions {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -782,6 +833,61 @@ describe('install command P6 install-state semantics', () => {
     ).rejects.toThrow(
       '请先恢复该插件到当前 catalog，或运行 `aw uninstall git-commit -p codex -s user` 清理 Codex native 残留。',
     );
+  });
+
+  it('falls back to the current catalog package when runtimeWritable install cannot read plugins-dist', async () => {
+    const { repoRoot, env, embeddedRoot } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const target = {
+      pluginName: plugin.manifest.name,
+      plugin,
+      currentPlugin: plugin,
+      embeddedPlugin: undefined,
+      source: 'currentCatalog' as const,
+    };
+    mockCatalogTargets({
+      explicitTargets: [target],
+      allTargets: [target],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const result = await installCommand(
+      [plugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        env,
+        adapters: {
+          codex: new FakeCodexAdapter(env),
+          claude: new FakeClaudeAdapter(),
+        },
+      },
+    );
+
+    expect(result.marketplace).toMatchObject({
+      source: 'local',
+      changed: true,
+    });
+    await expect(validateLocalMarketplaceLayout(String(env.AW_HOME))).resolves.toBeUndefined();
   });
 
   it('auto-installs missing dependencies, writes parent edges after success, and exposes receipt metadata', async () => {

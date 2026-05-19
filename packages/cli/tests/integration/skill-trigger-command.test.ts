@@ -20,6 +20,7 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import {
   calculateBundleFingerprint,
   createAvailableLedger,
@@ -237,17 +238,26 @@ async function updateEmbeddedManifest(
   pluginName: string,
   update: (manifest: Record<string, unknown>) => void,
 ): Promise<void> {
-  const manifestPath = path.join(embeddedRoot, 'plugins', pluginName, '.agents-plugin', 'plugin.json');
+  const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
+  const manifestPath = path.join(catalogRoot, 'plugins', pluginName, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
   update(manifest);
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
+async function resolveCatalogFixtureRoot(rootDir: string): Promise<string> {
+  const fullRoot = getCatalogFullPackageRoot(rootDir);
+  return await fs.pathExists(path.join(fullRoot, 'plugins'))
+    ? fullRoot
+    : rootDir;
+}
+
 async function createCorruptedEmbeddedRoot(repoRoot: string): Promise<string> {
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
   await fs.remove(
-    path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'agents', 'openai.yaml'),
+    path.join(catalogRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'agents', 'openai.yaml'),
   );
   return embeddedRoot;
 }
@@ -283,7 +293,8 @@ async function removeEmbeddedMcpFromGitCommit(
     delete manifest.mcpServers;
     manifest.version = '0.2.0';
   });
-  await fs.remove(path.join(embeddedRoot, 'plugins', 'git-commit', '.mcp.json'));
+  const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
+  await fs.remove(path.join(catalogRoot, 'plugins', 'git-commit', '.mcp.json'));
 }
 
 async function cloneFixturePlugin(repoRoot: string, sourceName: string, targetName: string): Promise<void> {
@@ -1588,9 +1599,10 @@ describe('skill trigger command integration', () => {
         env: process.env,
       },
     );
+    const currentCatalogRoot = await resolveCatalogFixtureRoot(workspace.embeddedRoot);
     await fs.writeFile(
       path.join(
-        workspace.embeddedRoot,
+        currentCatalogRoot,
         'plugins',
         'git-commit',
         'codex',
@@ -1745,9 +1757,10 @@ describe('skill trigger command integration', () => {
   it('fails strict explicit malformed skills before native install', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
+    const currentCatalogRoot = await resolveCatalogFixtureRoot(workspace.embeddedRoot);
     await fs.writeFile(
       path.join(
-        workspace.embeddedRoot,
+        currentCatalogRoot,
         'plugins',
         'git-commit',
         'codex',
@@ -2590,7 +2603,7 @@ describe('skill trigger command integration', () => {
       currentCatalog: expect.objectContaining({
         source: 'local',
         available: true,
-        rootDir: workspace.embeddedRoot,
+        rootDir: getCatalogFullPackageRoot(workspace.embeddedRoot),
         sidecarManifestPackage: expect.objectContaining({
           source: 'localFixture',
         }),
@@ -2640,7 +2653,7 @@ describe('skill trigger command integration', () => {
       currentCatalog: expect.objectContaining({
         source: 'local',
         available: true,
-        rootDir: workspace.embeddedRoot,
+        rootDir: getCatalogFullPackageRoot(workspace.embeddedRoot),
         sidecarManifestPackage: expect.objectContaining({
           source: 'localFixture',
         }),

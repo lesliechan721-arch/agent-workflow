@@ -652,8 +652,10 @@ function createPromptInputProxy(options: {
   };
   const source = options.input as NodeJS.ReadableStream & {
     isTTY?: boolean;
+    isRaw?: boolean;
     setRawMode?: (mode: boolean) => unknown;
   };
+  const sourceWasRaw = source.isRaw === true;
   proxied.isTTY = source.isTTY;
   if (typeof source.setRawMode === 'function') {
     proxied.setRawMode = (mode: boolean) => source.setRawMode?.(mode);
@@ -683,6 +685,10 @@ function createPromptInputProxy(options: {
       source.off('end', onEnd);
       source.off('close', onClose);
       source.off('error', onError);
+      if (source.isTTY && typeof source.setRawMode === 'function') {
+        source.setRawMode(sourceWasRaw);
+      }
+      source.pause();
       proxied.end();
     },
   };

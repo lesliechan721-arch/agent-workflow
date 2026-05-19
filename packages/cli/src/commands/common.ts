@@ -756,7 +756,6 @@ async function hasTrackingManagedEvidenceForTarget(
 async function prepareCatalogState(
   mode: CatalogPreparationMode,
   env: NodeJS.ProcessEnv,
-  ledger?: InstalledLedger,
   context?: CommandExecutionContext,
 ): Promise<PreparedCatalogState> {
   if (mode === 'runtimeWritable') {
@@ -774,19 +773,7 @@ async function prepareCatalogState(
     };
   }
 
-  const [currentCatalog, embeddedRoot] = await Promise.all([
-    resolveCurrentCatalog(env),
-    resolveEmbeddedPluginsRoot(),
-  ]);
-  const catalog =
-    ledger?.ledgerState.status === 'degraded' && currentCatalog.source === 'local'
-      ? {
-        rootDir: embeddedRoot,
-        source: 'embedded' as const,
-        reason: 'installed.json 处于 degraded 状态，read-only catalog 回退到 embedded bundle。',
-        reasonCode: 'localLedgerDegraded' as const,
-      }
-      : currentCatalog;
+  const catalog = await resolveCurrentCatalog(env);
 
   return {
     catalog,
@@ -810,7 +797,7 @@ export async function preparePluginTargetsForCommand(
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
+  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
   const loadedTargets = await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,
     allowHistoricalFallback: options.allowHistoricalFallback,
@@ -836,7 +823,7 @@ export async function prepareCommandEnvironment(
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
+  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
 
   return {
     ledger,
@@ -1206,7 +1193,7 @@ export async function loadPluginTargetsForCommand(
   const ledger = catalogMode === 'readOnly'
     ? await readInstalledLedger(env)
     : undefined;
-  const catalogState = await prepareCatalogState(catalogMode, env, ledger, options.context);
+  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
 
   return (await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,

@@ -41,8 +41,7 @@ import { cleanupCommand, isCleanupExecutionFailure } from './cleanup.js';
 import { reinstallCommand } from './reinstall.js';
 import { repairCommand } from './repair.js';
 import {
-  loadConsoleItems as loadConsoleControllerItems,
-  statusCommand,
+  loadConsoleItemsResult,
 } from './status.js';
 import { uninstallCommand } from './uninstall.js';
 import { upgradeCommand } from './upgrade.js';
@@ -413,20 +412,14 @@ function inheritedCatalogSelectorOptions(
 }
 
 async function loadConsoleHomeState(context: CliExecutionContext): Promise<ConsoleHomeState> {
-  const base = await statusCommand([], {
-    cwd: context.cwd,
-    ...inheritedCatalogSelectorOptions(context),
-  }, context);
-  const items = await loadConsoleControllerItems({
+  const result = await loadConsoleItemsResult({
     cwd: context.cwd,
     includeCatalogOnly: true,
     ...inheritedCatalogSelectorOptions(context),
   }, context);
-  const catalogUnavailable = base.matrix.cells.length > 0 &&
-    base.matrix.cells.every((cell) => cell.report?.currentCatalog?.available !== true);
   return {
-    items,
-    ...(catalogUnavailable
+    items: result.items,
+    ...(result.catalogUnavailable
       ? { banner: '插件目录不可用，仅显示已发现安装；恢复后可安装或升级。' }
       : {}),
   };
@@ -1116,6 +1109,7 @@ async function executeWithDeferredExit<T>(
     if (rawModeEnabled) {
       stdin.setRawMode?.(false);
     }
+    stdin.pause();
   }
 }
 

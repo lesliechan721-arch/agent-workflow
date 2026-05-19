@@ -33,7 +33,6 @@ import {
   resolveAwHome,
   resolveClaudePaths,
   resolveClaudeProjectKey,
-  resolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
 import { validateRenderedClaudePermissions } from '../utils/rendered-contract.js';
 import {
@@ -566,7 +565,7 @@ export class ClaudeAdapter implements PlatformAdapter {
   async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
-    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog, embeddedRoot] =
+    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog] =
       await Promise.all([
         readClaudeSettings(paths.settingsPath),
         readKnownMarketplaceState(paths.knownMarketplacesPath),
@@ -574,7 +573,6 @@ export class ClaudeAdapter implements PlatformAdapter {
         readInstalledLedger(this.env),
         collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir),
         resolveCurrentCatalog(this.env),
-        resolveEmbeddedPluginsRoot(),
       ]);
 
     const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude', this.env);
@@ -694,7 +692,7 @@ export class ClaudeAdapter implements PlatformAdapter {
       ledger,
       currentCatalog,
       currentCatalogAvailable,
-      embeddedRoot,
+      embeddedRoot: currentCatalog.rootDir,
     });
     if (skillTriggerStatus) {
       driftWarnings.push(...skillTriggerStatus.warnings);

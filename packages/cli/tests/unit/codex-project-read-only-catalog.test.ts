@@ -9,6 +9,7 @@ import { preparePluginTargetsForCommand } from '../../src/commands/common.js';
 import { createHistoricalPluginTarget } from '../../src/commands/common.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import { resolveCurrentCatalog } from '../../src/utils/plugin-catalog.js';
@@ -177,7 +178,7 @@ describe.each([
           const catalog = await resolveCurrentCatalog(workspace.env);
           if (expectedCatalogSource) {
             expect(catalog).toMatchObject({
-              rootDir: workspace.embeddedRoot,
+              rootDir: getCatalogFullPackageRoot(workspace.embeddedRoot),
               source: expectedCatalogSource,
             });
           }

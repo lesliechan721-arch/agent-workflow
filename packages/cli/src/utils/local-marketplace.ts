@@ -37,7 +37,6 @@ import { validateBundleLayout } from './bundle-layout.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
-  getStrictSemVerValidationIssue,
   tryParseStrictSemVer,
 } from './manifest.js';
 import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
@@ -906,9 +905,10 @@ function classifyLocalSourceVersionStatus(options: {
 
 async function inspectLocalMarketplaceState(
   env: NodeJS.ProcessEnv = process.env,
+  bundleRootOverride?: string,
 ): Promise<LocalMarketplaceInspection> {
   const awHome = resolveAwHome(env);
-  const embeddedRoot = await resolveEmbeddedPluginsRoot();
+  const embeddedRoot = bundleRootOverride ?? await resolveEmbeddedPluginsRoot();
   const [packageInfo, bundleFingerprint, configInspection] = await Promise.all([
     readCliPackageInfo(),
     calculateBundleFingerprint(embeddedRoot),
@@ -947,116 +947,11 @@ async function inspectLocalMarketplaceState(
   };
 }
 
-function createCatalogReason(
-  code: NonNullable<CatalogResolution['reasonCode']>,
-  message: string,
-): Required<Pick<CatalogResolution, 'reason' | 'reasonCode'>> {
-  return {
-    reason: message,
-    reasonCode: code,
-  };
-}
-
-function resolveEmbeddedCatalogFallback(
-  inspection: LocalMarketplaceInspection,
-): Required<Pick<CatalogResolution, 'reason' | 'reasonCode'>> {
-  const validConfig = inspection.configInspection.state === 'valid'
-    ? inspection.configInspection.config
-    : null;
-  if (inspection.sourceVersionStatus === 'absent') {
-    return createCatalogReason(
-      'localCatalogMissing',
-      'local marketplace config is missing.',
-    );
-  }
-  if (inspection.sourceVersionStatus === 'missing') {
-    return createCatalogReason(
-      'localCatalogSourceVersionMissing',
-      'local marketplace sourceVersion is missing.',
-    );
-  }
-  if (
-    inspection.configInspection.state === 'invalid' &&
-    inspection.configInspection.sourceVersion === undefined
-  ) {
-    return createCatalogReason(
-      'localCatalogConfigInvalid',
-      'local marketplace config is unreadable or uses an unsupported schema.',
-    );
-  }
-  if (inspection.sourceVersionStatus === 'invalid') {
-    const issue = getStrictSemVerValidationIssue(
-      inspection.configInspection.sourceVersion,
-      'local marketplace config.sourceVersion',
-    );
-    return createCatalogReason(
-      'localCatalogSourceVersionInvalid',
-      issue?.message ?? 'Invalid local marketplace config.sourceVersion: expected a strict SemVer 2.0.0 string.',
-    );
-  }
-  if (inspection.sourceVersionStatus === 'ahead') {
-    return createCatalogReason(
-      'localCatalogSourceVersionAhead',
-      `local marketplace sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} is newer than current CLI version ${inspection.packageInfo.version}.`,
-    );
-  }
-  if (inspection.sourceVersionStatus === 'behind') {
-    return createCatalogReason(
-      'localCatalogSourceVersionBehind',
-      `local marketplace sourceVersion ${inspection.configInspection.sourceVersion ?? 'unknown'} is older than current CLI version ${inspection.packageInfo.version}.`,
-    );
-  }
-  if (inspection.configInspection.state === 'invalid') {
-    return createCatalogReason(
-      'localCatalogConfigInvalid',
-      'local marketplace config is unreadable or uses an unsupported schema.',
-    );
-  }
-  if (
-    validConfig &&
-    validConfig.bundleFingerprint !== inspection.bundleFingerprint
-  ) {
-    return createCatalogReason(
-      'localCatalogFingerprintMismatch',
-      'local marketplace fingerprint does not match the current embedded bundle.',
-    );
-  }
-  if (inspection.layoutError) {
-    return createCatalogReason(
-      'localCatalogLayoutInvalid',
-      inspection.layoutError,
-    );
-  }
-  return createCatalogReason(
-    'localCatalogConfigInvalid',
-    'local marketplace is not usable.',
-  );
-}
-
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
-  const inspection = await inspectLocalMarketplaceState(env);
-  const validConfig = inspection.configInspection.state === 'valid'
-    ? inspection.configInspection.config
-    : null;
-  if (
-    validConfig &&
-    inspection.sourceVersionStatus === 'equal' &&
-    validConfig.bundleFingerprint === inspection.bundleFingerprint &&
-    inspection.layoutHealthy
-  ) {
-    return {
-      rootDir: inspection.awHome,
-      source: 'local',
-    };
-  }
-
-  return {
-    rootDir: inspection.embeddedRoot,
-    source: 'embedded',
-    ...resolveEmbeddedCatalogFallback(inspection),
-  };
+  const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
+  return resolveCurrentCatalog(env);
 }
 
 async function isFreshLocalMarketplace(
@@ -1266,7 +1161,15 @@ export async function initializeLocalMarketplace(
   options: { force: boolean; env?: NodeJS.ProcessEnv; gate?: LocalMarketplaceGateOptions },
 ): Promise<EnsureLocalMarketplaceResult> {
   const env = options.env ?? process.env;
-  const inspection = await inspectLocalMarketplaceState(env);
+  let bundleRootOverride: string | undefined;
+  try {
+    bundleRootOverride = await resolveEmbeddedPluginsRoot();
+  } catch {
+    const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
+    bundleRootOverride = (await resolveCurrentCatalog(env)).rootDir;
+    await validateBundleLayout(bundleRootOverride);
+  }
+  const inspection = await inspectLocalMarketplaceState(env, bundleRootOverride);
   const validConfig = inspection.configInspection.state === 'valid'
     ? inspection.configInspection.config
     : null;

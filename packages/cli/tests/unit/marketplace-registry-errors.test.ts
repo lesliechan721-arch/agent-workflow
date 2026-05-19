@@ -49,6 +49,80 @@ async function writeProjectNpmrc(contents: string): Promise<{
   };
 }
 
+async function writeWorkspaceProjectNpmrc(
+  contents: string,
+  workspaces: unknown = ['packages/*'],
+): Promise<{
+  childDir: string;
+}> {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-workspace-'));
+  tempDirs.push(projectDir);
+  await fs.writeFile(path.join(projectDir, 'package.json'), JSON.stringify({
+    name: 'workspace-root',
+    workspaces,
+  }), 'utf8');
+  await fs.writeFile(path.join(projectDir, '.npmrc'), contents, 'utf8');
+
+  const packageDir = path.join(projectDir, 'packages', 'example');
+  await fs.ensureDir(packageDir);
+  await fs.writeFile(path.join(packageDir, 'package.json'), '{"name":"example"}', 'utf8');
+
+  const childDir = path.join(packageDir, 'src');
+  await fs.ensureDir(childDir);
+
+  return {
+    childDir,
+  };
+}
+
+async function writeNestedWorkspaceProjectNpmrc(): Promise<{
+  childDir: string;
+}> {
+  const outerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-nested-workspace-'));
+  tempDirs.push(outerRoot);
+  await fs.writeFile(path.join(outerRoot, 'package.json'), JSON.stringify({
+    name: 'outer-workspace-root',
+    workspaces: ['projects/*'],
+  }), 'utf8');
+  await fs.writeFile(path.join(outerRoot, '.npmrc'), '//registry.example.test/:_authToken=outer-workspace-token\n', 'utf8');
+
+  const innerRoot = path.join(outerRoot, 'projects', 'inner-workspace');
+  await fs.ensureDir(innerRoot);
+  await fs.writeFile(path.join(innerRoot, 'package.json'), JSON.stringify({
+    name: 'inner-workspace-root',
+    workspaces: ['packages/*'],
+  }), 'utf8');
+  await fs.writeFile(path.join(innerRoot, '.npmrc'), '//registry.example.test/:_authToken=inner-workspace-token\n', 'utf8');
+
+  const packageDir = path.join(innerRoot, 'packages', 'example');
+  await fs.ensureDir(packageDir);
+  await fs.writeFile(path.join(packageDir, 'package.json'), '{"name":"example"}', 'utf8');
+
+  const childDir = path.join(packageDir, 'src');
+  await fs.ensureDir(childDir);
+
+  return {
+    childDir,
+  };
+}
+
+async function writeProjectNpmrcWithLockfileChild(contents: string): Promise<{
+  childDir: string;
+}> {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-lockfile-'));
+  tempDirs.push(projectDir);
+  await fs.writeFile(path.join(projectDir, 'package.json'), '{}', 'utf8');
+  await fs.writeFile(path.join(projectDir, '.npmrc'), contents, 'utf8');
+
+  const childDir = path.join(projectDir, 'nested', 'child');
+  await fs.ensureDir(childDir);
+  await fs.writeFile(path.join(childDir, 'package-lock.json'), '{}', 'utf8');
+
+  return {
+    childDir,
+  };
+}
+
 function getFetchAuthorizationHeader(callIndex = 0): string | null {
   const fetchMock = vi.mocked(globalThis.fetch);
   const requestInit = fetchMock.mock.calls[callIndex]?.[1] as RequestInit | undefined;
@@ -94,6 +168,136 @@ describe('registry catalog package identity errors', () => {
   it('reads the project npmrc auth token from the npm local prefix when running in a child directory', async () => {
     const homeDir = await writeUserNpmrc('');
     const { childDir } = await writeProjectNpmrc('//registry.example.test/:_authToken=project-prefix-token\n');
+    process.chdir(childDir);
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        ...registryEnv,
+        HOME: homeDir,
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer project-prefix-token');
+  });
+
+  it('reads the workspace root npmrc auth token when running inside an npm workspace package', async () => {
+    const homeDir = await writeUserNpmrc('');
+    const { childDir } = await writeWorkspaceProjectNpmrc('//registry.example.test/:_authToken=workspace-root-token\n');
+    process.chdir(childDir);
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        ...registryEnv,
+        HOME: homeDir,
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer workspace-root-token');
+  });
+
+  it('normalizes npm workspace patterns before resolving the workspace root npmrc', async () => {
+    const homeDir = await writeUserNpmrc('');
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    const workspaceCases: unknown[] = [
+      ['./packages/*'],
+      ['/packages/*'],
+      ['packages/*/'],
+      { packages: ['./packages/*'] },
+    ];
+
+    for (const [index, workspaces] of workspaceCases.entries()) {
+      const token = `workspace-root-token-${index}`;
+      const { childDir } = await writeWorkspaceProjectNpmrc(
+        `//registry.example.test/:_authToken=${token}\n`,
+        workspaces,
+      );
+      process.chdir(childDir);
+
+      await expect(resolveCatalogPackageIdentityByVersion(
+        '@yiliang/aw-plugins',
+        '2.0.0',
+        {
+          ...registryEnv,
+          HOME: homeDir,
+        },
+      )).resolves.toMatchObject({
+        version: '2.0.0',
+      });
+
+      expect(getFetchAuthorizationHeader(index)).toBe(`Bearer ${token}`);
+    }
+  });
+
+  it('stops at the first matching workspace root when resolving the project npmrc', async () => {
+    const homeDir = await writeUserNpmrc('');
+    const { childDir } = await writeNestedWorkspaceProjectNpmrc();
+    process.chdir(childDir);
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        ...registryEnv,
+        HOME: homeDir,
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer inner-workspace-token');
+  });
+
+  it('ignores package-lock.json when resolving the project npmrc local prefix', async () => {
+    const homeDir = await writeUserNpmrc('');
+    const { childDir } = await writeProjectNpmrcWithLockfileChild('//registry.example.test/:_authToken=project-prefix-token\n');
     process.chdir(childDir);
     stubRegistryMetadata({
       versions: {

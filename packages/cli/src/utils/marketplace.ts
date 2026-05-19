@@ -183,28 +183,119 @@ function resolveNpmUserConfigPath(
   return path.join(resolveNpmHomeDir(env), '.npmrc');
 }
 
-const npmLocalPrefixMarkers = [
-  'node_modules',
-  'package.json',
-  'package-lock.json',
-] as const;
+const npmNodeModulesMarker = 'node_modules';
+const npmPackageJsonMarker = 'package.json';
+
+function readNpmWorkspacePatternsFromPackageJson(
+  manifest: unknown,
+): string[] {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    return [];
+  }
+
+  const workspaces = (manifest as { workspaces?: unknown }).workspaces;
+  if (Array.isArray(workspaces)) {
+    return workspaces.filter((pattern): pattern is string => typeof pattern === 'string' && pattern.trim() !== '');
+  }
+
+  if (!workspaces || typeof workspaces !== 'object' || Array.isArray(workspaces)) {
+    return [];
+  }
+
+  const packages = (workspaces as { packages?: unknown }).packages;
+  if (!Array.isArray(packages)) {
+    return [];
+  }
+
+  return packages.filter((pattern): pattern is string => typeof pattern === 'string' && pattern.trim() !== '');
+}
+
+async function resolveNpmWorkspacePatterns(
+  packageJsonPath: string,
+): Promise<string[]> {
+  try {
+    return readNpmWorkspacePatternsFromPackageJson(await readJsonFile<unknown>(packageJsonPath));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeNpmWorkspacePattern(
+  pattern: string,
+): string {
+  const normalizedPattern = path.posix.normalize(pattern.replaceAll('\\', path.posix.sep))
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+  return normalizedPattern === '.' ? '' : normalizedPattern;
+}
+
+function matchesNpmWorkspacePackagePath(
+  workspaceRoot: string,
+  packageDir: string,
+  workspacePatterns: readonly string[],
+): boolean {
+  if (workspacePatterns.length === 0) {
+    return false;
+  }
+
+  const relativePackagePath = path.relative(workspaceRoot, packageDir);
+  if (!relativePackagePath || relativePackagePath.startsWith('..')) {
+    return false;
+  }
+
+  const normalizedPackagePath = relativePackagePath.split(path.sep).join(path.posix.sep);
+  let matched = false;
+
+  for (const rawPattern of workspacePatterns) {
+    const trimmedPattern = rawPattern.trim();
+    if (!trimmedPattern) {
+      continue;
+    }
+
+    const negated = trimmedPattern.startsWith('!');
+    const pattern = normalizeNpmWorkspacePattern(
+      negated ? trimmedPattern.slice(1) : trimmedPattern,
+    );
+    if (!pattern) {
+      continue;
+    }
+
+    if (path.posix.matchesGlob(normalizedPackagePath, pattern)) {
+      matched = !negated;
+    }
+  }
+
+  return matched;
+}
 
 async function resolveNpmLocalPrefix(
   cwd = process.cwd(),
 ): Promise<string> {
   const startDir = path.resolve(cwd);
   let currentDir = startDir;
+  let localPrefix: string | null = null;
 
   while (true) {
-    for (const marker of npmLocalPrefixMarkers) {
-      if (await fs.pathExists(path.join(currentDir, marker))) {
-        return currentDir;
+    const packageJsonPath = path.join(currentDir, npmPackageJsonMarker);
+    if (await fs.pathExists(packageJsonPath)) {
+      if (localPrefix === null) {
+        localPrefix = currentDir;
+      } else {
+        const workspacePatterns = await resolveNpmWorkspacePatterns(packageJsonPath);
+        if (matchesNpmWorkspacePackagePath(currentDir, localPrefix, workspacePatterns)) {
+          return currentDir;
+        }
       }
+    } else if (
+      localPrefix === null
+      && await fs.pathExists(path.join(currentDir, npmNodeModulesMarker))
+    ) {
+      localPrefix = currentDir;
     }
 
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) {
-      return startDir;
+      return localPrefix ?? startDir;
     }
     currentDir = parentDir;
   }

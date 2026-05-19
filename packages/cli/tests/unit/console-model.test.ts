@@ -814,6 +814,24 @@ describe('console-model', () => {
     expect(unavailable.pageItem.primaryActionLabel).toBeUndefined();
   });
 
+  it('keeps install enabled for catalog-only candidates without a report when current catalog is available', () => {
+    const candidate = singleController(cell({
+      health: 'notInstalled',
+      healthSource: 'currentCatalog',
+      report: undefined,
+      installState: installState({
+        kind: 'notInstalled',
+        summary: '当前还没有发现安装。',
+        repairAvailable: false,
+        currentCatalogAvailable: true,
+      }),
+    }));
+
+    expect(candidate.summary.status).toBe('notInstalled');
+    expect(candidate.summary.features.find((feature) => feature.kind === 'install')?.disabledReason).toBeUndefined();
+    expect(candidate.pageItem.primaryActionLabel).toBe('安装');
+  });
+
   it('keeps controller-only actions and commands out of public summaries', () => {
     const controller = singleController(reasonFixture('artifactRefreshFailed'));
     const summary = controller.summary;

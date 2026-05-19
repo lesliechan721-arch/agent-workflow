@@ -92,17 +92,16 @@ import {
 } from '../utils/paths.js';
 import {
   compareStrictSemVerFields,
-  resolvePluginsFromCatalog,
 } from '../utils/manifest.js';
 import {
   readInstalledLedger,
-  resolveReadOnlyCatalogResolution,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
 import {
   serializePluginLocation,
   sortPluginLocations,
 } from '../utils/plugin-dependency-location.js';
+import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recovery.js';
 import {
   planPluginDependencyUpgradeAll,
   planPluginDependencyWrites,
@@ -648,7 +647,6 @@ async function preflightExplicitUpgradeTargets(
 async function preflightExplicitCodexUserRecoveryOnlyTargets(options: {
   pluginNames: string[];
   commandOptions: UpgradeCommandOptions;
-  adapters: Record<PlatformName, PlatformAdapter>;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
   if (
@@ -659,40 +657,18 @@ async function preflightExplicitCodexUserRecoveryOnlyTargets(options: {
     return;
   }
 
-  const catalog = await resolveReadOnlyCatalogResolution(options.env);
-  let plugins: PluginMeta[];
-  try {
-    plugins = await resolvePluginsFromCatalog(catalog.rootDir, options.pluginNames);
-  } catch {
-    return;
-  }
-
-  const pluginByName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]));
+  const ledger = await readInstalledLedger(options.env);
   for (const pluginName of options.pluginNames) {
-    const plugin = pluginByName.get(pluginName);
-    if (!plugin) {
+    const hasManagedLedgerEvidence =
+      ledger.plugins[pluginName]?.platforms.codex?.userScope?.managed === true;
+    if (hasManagedLedgerEvidence) {
       continue;
     }
-    const pluginStatus = await readUpgradeTargetStatus(
-      options.adapters,
-      'codex',
-      {
-        pluginName,
-        plugin,
-        currentPlugin: plugin,
-        embeddedPlugin: plugin,
-        source: 'historical',
-      },
-      'user',
-    );
-    const blockReason = getCodexUserUpgradeBlockReason(
-      pluginName,
-      pluginStatus,
-      'user',
-      'codex',
-    );
-    if (blockReason) {
-      throw new Error(blockReason);
+
+    if (await readCodexNativeRecoveryBreadcrumb(pluginName, options.env)) {
+      throw new Error(
+        `${pluginName} 当前只有 Codex native recovery breadcrumb，安装尚未完整成功；${createCodexUserRepairSuggestion(pluginName)}`,
+      );
     }
   }
 }
@@ -2231,7 +2207,6 @@ export async function upgradeCommand(
   await preflightExplicitCodexUserRecoveryOnlyTargets({
     pluginNames,
     commandOptions: options,
-    adapters,
     env,
   });
 

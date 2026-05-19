@@ -26,6 +26,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { calculateCatalogEntryDigestsFromRoot } from '../../src/utils/catalog-digests.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { upsertCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { getTrackingManifestPath, upsertTrackingRecord } from '../../src/utils/tracking.js';
@@ -79,7 +80,7 @@ async function makeWorkspace(): Promise<{
   setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
     manifest: remoteCatalog.manifest,
     sidecarRoot: remoteCatalog.sidecarRoot,
-    fullRoot: embeddedRoot,
+    fullRoot: remoteCatalog.fullRoot,
     channel: 'beta',
     version: '1.0.0-beta.14',
   }));
@@ -135,7 +136,7 @@ async function makeWorkspaceWithMutator(
   setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
     manifest: remoteCatalog.manifest,
     sidecarRoot: remoteCatalog.sidecarRoot,
-    fullRoot: embeddedRoot,
+    fullRoot: remoteCatalog.fullRoot,
     channel: 'beta',
     version: '1.0.0-beta.14',
   }));
@@ -156,9 +157,10 @@ async function createRemoteCatalogFromEmbeddedRoot(options: {
   channel: 'latest' | 'beta';
   minAwVersion: string;
 }) {
-  const plugins = await resolvePluginsFromCatalog(options.embeddedRoot, undefined);
+  const fullRoot = getCatalogFullPackageRoot(options.embeddedRoot);
+  const plugins = await resolvePluginsFromCatalog(fullRoot, undefined);
   const entries = await Promise.all(plugins.map(async (plugin) => {
-    const pluginRoot = path.join(options.embeddedRoot, 'plugins', plugin.manifest.name);
+    const pluginRoot = path.join(fullRoot, 'plugins', plugin.manifest.name);
     const digests = await calculateCatalogEntryDigestsFromRoot(pluginRoot);
     return {
       name: plugin.manifest.name,
@@ -218,11 +220,12 @@ async function createRemoteCatalogFromEmbeddedRoot(options: {
   const sidecarRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-discovery-sidecar-'));
   tempDirs.push(sidecarRoot);
   await fs.writeJson(path.join(sidecarRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
-  await fs.writeJson(path.join(options.embeddedRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
+  await fs.writeJson(path.join(fullRoot, 'catalog-manifest.json'), manifest, { spaces: 2 });
 
   return {
     manifest,
     sidecarRoot,
+    fullRoot,
   };
 }
 
@@ -525,7 +528,7 @@ describe('managed plugin discovery', () => {
           path.join(
             identity.packageName === '@yiliang/aw-plugins-manifest'
               ? remoteCatalog.sidecarRoot
-              : embeddedRoot,
+              : remoteCatalog.fullRoot,
             'catalog-manifest.json',
           ),
           'utf8',
@@ -533,7 +536,7 @@ describe('managed plugin discovery', () => {
         rawManifest: remoteCatalog.manifest,
         packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
           ? remoteCatalog.sidecarRoot
-          : embeddedRoot,
+          : remoteCatalog.fullRoot,
         materialize: async () => {},
         dispose: async () => {},
       }),
