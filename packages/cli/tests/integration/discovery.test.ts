@@ -25,9 +25,9 @@ import {
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { calculateCatalogEntryDigestsFromRoot } from '../../src/utils/catalog-digests.js';
 import { upsertCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
-import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
 import { getTrackingManifestPath, upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -159,6 +159,7 @@ async function createRemoteCatalogFromEmbeddedRoot(options: {
   const plugins = await resolvePluginsFromCatalog(options.embeddedRoot, undefined);
   const entries = await Promise.all(plugins.map(async (plugin) => {
     const pluginRoot = path.join(options.embeddedRoot, 'plugins', plugin.manifest.name);
+    const digests = await calculateCatalogEntryDigestsFromRoot(pluginRoot);
     return {
       name: plugin.manifest.name,
       version: plugin.manifest.version,
@@ -171,8 +172,8 @@ async function createRemoteCatalogFromEmbeddedRoot(options: {
       compatibility: plugin.manifest.compatibility,
       ...(plugin.manifest.dependencies ? { dependencies: plugin.manifest.dependencies } : {}),
       source: `./plugins/${plugin.manifest.name}`,
-      artifactDigest: await calculatePluginBundleFingerprint(pluginRoot),
-      manifestDigest: await calculateFileDigest(plugin.manifestPath),
+      artifactDigest: digests.artifactDigest,
+      manifestDigest: digests.manifestDigest,
     };
   }));
   const manifest = {
