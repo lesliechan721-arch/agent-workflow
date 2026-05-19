@@ -110,6 +110,94 @@ export async function runCommand(command, args, options = {}) {
   });
 }
 
+async function captureCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: {
+        ...process.env,
+        ...(options.env ?? {}),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      const reason =
+        signal === null
+          ? `exit code ${code ?? 'unknown'}`
+          : `signal ${signal}`;
+      const detail = stderr.trim() || stdout.trim();
+      reject(
+        new Error(
+          detail
+            ? `${detail}\nCommand failed: ${command} ${args.join(' ')} (${reason})`
+            : `Command failed: ${command} ${args.join(' ')} (${reason})`,
+        ),
+      );
+    });
+  });
+}
+
+function normalizeGitStatusPath(statusLine) {
+  if (!statusLine || statusLine.length < 4) {
+    return null;
+  }
+
+  const rawPath = statusLine.slice(3).trim();
+  if (!rawPath) {
+    return null;
+  }
+
+  const renamedPath = rawPath.includes(' -> ')
+    ? rawPath.split(' -> ').at(-1)
+    : rawPath;
+
+  return renamedPath ? renamedPath.replaceAll('\\', '/') : null;
+}
+
+export async function resolveCliPublishGitCheckArgs() {
+  const allowedDirtyPaths = new Set([
+    relativeToRepo(rootPackageJsonPath),
+    relativeToRepo(cliPackageJsonPath),
+  ]);
+  const { stdout } = await captureCommand('git', [
+    'status',
+    '--porcelain',
+    '--untracked-files=all',
+  ]);
+  const dirtyPaths = stdout
+    .split('\n')
+    .map((line) => normalizeGitStatusPath(line))
+    .filter((path) => Boolean(path));
+  const unexpectedDirtyPaths = dirtyPaths.filter((path) => !allowedDirtyPaths.has(path));
+
+  if (unexpectedDirtyPaths.length > 0) {
+    const allowedPathsText = Array.from(allowedDirtyPaths).join(', ');
+    const unexpectedChanges = unexpectedDirtyPaths.map((path) => `- ${path}`).join('\n');
+    throw new Error(
+      `Refusing to publish from a dirty working tree. Only ${allowedPathsText} may be modified by the version sync step.\nUnexpected changes:\n${unexpectedChanges}`,
+    );
+  }
+
+  return dirtyPaths.length > 0 ? ['--no-git-checks'] : [];
+}
+
 export async function ensureDirectory(directoryPath) {
   await fs.mkdir(directoryPath, { recursive: true });
 }
