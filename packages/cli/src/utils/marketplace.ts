@@ -183,6 +183,39 @@ function resolveNpmUserConfigPath(
   return path.join(resolveNpmHomeDir(env), '.npmrc');
 }
 
+const npmLocalPrefixMarkers = [
+  'node_modules',
+  'package.json',
+  'package-lock.json',
+] as const;
+
+async function resolveNpmLocalPrefix(
+  cwd = process.cwd(),
+): Promise<string> {
+  const startDir = path.resolve(cwd);
+  let currentDir = startDir;
+
+  while (true) {
+    for (const marker of npmLocalPrefixMarkers) {
+      if (await fs.pathExists(path.join(currentDir, marker))) {
+        return currentDir;
+      }
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return startDir;
+    }
+    currentDir = parentDir;
+  }
+}
+
+async function resolveNpmProjectConfigPath(
+  cwd = process.cwd(),
+): Promise<string> {
+  return path.join(await resolveNpmLocalPrefix(cwd), '.npmrc');
+}
+
 function stripMatchingQuotes(value: string): string {
   if (
     value.length >= 2
@@ -262,12 +295,53 @@ function normalizeNpmAuthPrefix(prefix: string): string {
   return `//${host}${pathname.endsWith('/') ? pathname : `${pathname}/`}`;
 }
 
+function applyNpmAuthConfigValue(
+  config: NpmAuthConfig,
+  field: '_authToken' | '_auth' | 'username' | '_password',
+  value: string,
+): void {
+  const nextValue = value.trim() === '' ? undefined : value;
+
+  switch (field) {
+    case '_authToken':
+      if (nextValue === undefined) {
+        delete config.token;
+      } else {
+        config.token = nextValue;
+      }
+      break;
+    case '_auth':
+      if (nextValue === undefined) {
+        delete config.auth;
+      } else {
+        config.auth = nextValue;
+      }
+      break;
+    case 'username':
+      if (nextValue === undefined) {
+        delete config.username;
+      } else {
+        config.username = nextValue;
+      }
+      break;
+    case '_password':
+      if (nextValue === undefined) {
+        delete config.password;
+      } else {
+        config.password = nextValue;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 async function readNpmAuthConfigs(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Map<string, NpmAuthConfig>> {
   const configPaths = [
     resolveNpmUserConfigPath(env),
-    path.join(process.cwd(), '.npmrc'),
+    await resolveNpmProjectConfigPath(),
   ];
   const authConfigs = new Map<string, NpmAuthConfig>();
   const visited = new Set<string>();
@@ -301,25 +375,8 @@ async function readNpmAuthConfigs(
         continue;
       }
 
-      const nextConfig = authConfigs.get(prefix) ?? {};
-      if (value.trim() !== '') {
-        switch (field) {
-          case '_authToken':
-            nextConfig.token = value;
-            break;
-          case '_auth':
-            nextConfig.auth = value;
-            break;
-          case 'username':
-            nextConfig.username = value;
-            break;
-          case '_password':
-            nextConfig.password = value;
-            break;
-          default:
-            break;
-        }
-      }
+      const nextConfig = { ...(authConfigs.get(prefix) ?? {}) };
+      applyNpmAuthConfigValue(nextConfig, field, value);
       authConfigs.set(prefix, nextConfig);
     }
   }
