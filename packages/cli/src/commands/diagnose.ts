@@ -1366,6 +1366,14 @@ function createFindings(options: {
   } else if (projection.nativeTransactionKind === 'markerOnlyInstall' || projection.nativeTransactionKind === 'markerOnlyUninstall') {
     findings.push('只检测到原生 marker 残留，没有对应安装记录。');
   }
+  if (hasIssue(projection, 'installRecordInvalid')) {
+    const read = evidence.installRecord.read;
+    const issue = projection.issues.find((entry) => entry.code === 'installRecordInvalid');
+    const detail = read.status !== 'ok' && read.status !== 'missing' && 'error' in read
+      ? read.error
+      : issue?.detail;
+    findings.push(detail ? `安装记录不可读：${detail}。` : '安装记录不可读。');
+  }
   if (projection.catalogDrift) {
     findings.push('当前目录里的插件来源已经变化；这更像升级提示，不当作文件损坏。');
   }

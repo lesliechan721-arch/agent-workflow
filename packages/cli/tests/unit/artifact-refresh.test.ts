@@ -22,11 +22,13 @@ vi.mock('../../src/commands/codex-project-safety.js', () => ({
   preflightCodexProjectWriteSafety: vi.fn(async () => {}),
 }));
 
-vi.mock('../../src/utils/local-marketplace.js', () => ({
-  getLocalMarketplaceCodexSkillRoot: (rootDir: string, pluginName: string, skillKey: string) =>
-    path.join(rootDir, 'plugins', pluginName, 'codex', 'skills', skillKey),
-  readInstalledLedger: vi.fn(async () => ({ plugins: {} })),
-}));
+vi.mock('../../src/utils/local-marketplace.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/utils/local-marketplace.js')>();
+  return {
+    ...actual,
+    readInstalledLedger: vi.fn(async () => ({ plugins: {} })),
+  };
+});
 
 import { reapplyConfigRefresh } from '../../src/utils/artifact-refresh.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
@@ -133,6 +135,16 @@ async function writeHistoricalInstallRecord(options: {
   };
   const sourceManifestPath = path.join(sourceBundleRoot, '.agents-plugin', 'plugin.json');
   await fs.outputJson(sourceManifestPath, manifest, { spaces: 2 });
+  await fs.outputJson(
+    path.join(sourceBundleRoot, '.codex-plugin', 'plugin.json'),
+    {
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+      compatibility: manifest.compatibility,
+    },
+    { spaces: 2 },
+  );
   await options.prepareBundle?.(sourceBundleRoot);
 
   const [manifestDigest, bundleFingerprint] = await Promise.all([
@@ -397,6 +409,11 @@ describe('artifact refresh reapply helper', () => {
       await expect(
         fs.readFile(path.join(stagedRoot, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
       ).resolves.toBe('historical refreshed skill\n');
+      await expect(
+        fs.readJson(path.join(stagedRoot, 'plugins', plugin.manifest.name, '.codex-plugin', 'plugin.json')),
+      ).resolves.toMatchObject({
+        skills: './codex/skills',
+      });
     });
 
     const receipt = await reapplyConfigRefresh({

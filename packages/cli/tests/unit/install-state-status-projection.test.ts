@@ -498,6 +498,36 @@ describe('projectInstallState', () => {
     ]));
   });
 
+  it('keeps installs healthy when stale version metadata points at the same catalog artifact', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-stale-version-metadata-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    const installRecord = await fs.readJson(fixture.files.installRecordPath) as InstallRecordFile;
+    installRecord.record.source.pluginVersion = '9.0.0';
+    if (installRecord.record.lifecycle) {
+      installRecord.record.lifecycle.pluginVersion = '9.0.0';
+    }
+    await fs.writeJson(fixture.files.installRecordPath, installRecord, { spaces: 2 });
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
+  });
+
   it('projects an abnormal state when the current catalog version is lower than the installed version', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await makeTempDir('aw-install-state-version-regression-'),

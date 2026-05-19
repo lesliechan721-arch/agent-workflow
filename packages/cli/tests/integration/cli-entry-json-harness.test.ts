@@ -31,6 +31,8 @@ function fixturePath(...segments: string[]): string {
 async function makeWorkspace(): Promise<{
   repoRoot: string;
   awHome: string;
+  codexHome: string;
+  claudeHome: string;
   embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
@@ -41,13 +43,19 @@ async function makeWorkspace(): Promise<{
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
   const awHome = path.join(root, 'aw-home');
+  const codexHome = path.join(root, 'codex-home');
+  const claudeHome = path.join(root, 'claude-home');
   return {
     repoRoot,
     awHome,
+    codexHome,
+    claudeHome,
     embeddedRoot,
     env: {
       ...process.env,
       AW_HOME: awHome,
+      AW_CODEX_HOME: codexHome,
+      AW_CLAUDE_HOME: claudeHome,
     },
   };
 }
@@ -334,6 +342,7 @@ describe('cli entry JSON stdout harness', () => {
       platform: 'codex',
       scope: 'user',
     }, workspace.env);
+    expect(recordPath).toContain(path.join(workspace.codexHome, '.agent-workflows', 'records'));
     const recordId = path.basename(recordPath, '.json');
     const sourceBundleRoot = path.join(workspace.embeddedRoot, 'plugins', 'git-commit');
     const sourceManifestPath = path.join(sourceBundleRoot, '.agents-plugin', 'plugin.json');

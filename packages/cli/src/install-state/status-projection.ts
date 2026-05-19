@@ -401,10 +401,19 @@ function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallI
     return [];
   }
 
-  const installedVersion = evidence.installRecord.read.status === 'ok'
-    ? evidence.installRecord.read.value.record.source.pluginVersion
+  const installedSource = evidence.installRecord.read.status === 'ok'
+    ? evidence.installRecord.read.value.record.source
     : null;
+  const installedVersion = installedSource?.pluginVersion ?? null;
   if (!installedVersion) {
+    return [];
+  }
+
+  const sameArtifactIdentity =
+    installedSource?.manifestDigest === currentCatalogSource.manifestDigest &&
+    installedSource?.bundleFingerprint === currentCatalogSource.bundleFingerprint;
+  if (sameArtifactIdentity) {
+    // Older records can carry stale version metadata while still pointing at the same accepted artifact.
     return [];
   }
 
