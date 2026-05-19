@@ -221,6 +221,56 @@ describe('local-plugin generator', () => {
     });
   });
 
+  it('declares the Codex skills root for user dynamic codex.skill targets', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readFixturePluginManifest(repoRoot);
+    delete manifest.skills;
+    manifest.skillTriggers = {
+      'dynamic-explore': {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+    };
+    manifest.config = {
+      schema: {
+        explorerModel: {
+          type: 'string',
+          default: 'gpt-5.4-mini',
+        },
+      },
+    };
+    manifest.artifacts = {
+      targets: [
+        {
+          id: 'dynamic-explore-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: ['explorerModel'],
+          skillKey: 'dynamic-explore',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+    const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    expect(result.platformManifests.codex).toMatchObject({
+      skills: './codex/skills',
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      skills: './codex/skills',
+    });
+    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(true);
+  });
+
   it('generates only Codex bundle outputs for Codex-only plugins and removes stale Claude outputs', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

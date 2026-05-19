@@ -89,6 +89,14 @@ function warnEmptyPluginDependencies(plugin: PluginMeta): void {
   }
 }
 
+function hasCodexUserDynamicSkillTarget(plugin: PluginMeta): boolean {
+  return (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === 'codex' &&
+    target.scopes.includes('user') &&
+    target.target === 'codex.skill',
+  );
+}
+
 function toPlatformRelativePath(value: string, platform: PlatformName): string {
   return `./${platform}/${stripDotSlash(value)}`;
 }
@@ -928,6 +936,11 @@ export async function bundleLocalPlugin(
           }
         }
       }
+    }
+
+    if (codexManifest && hasCodexUserDynamicSkillTarget(plugin)) {
+      codexManifest.skills ??= './codex/skills';
+      await fs.ensureDir(path.join(outputRoot, 'codex', 'skills'));
     }
 
     for (const filePath of await collectAwRuntimeFiles(plugin)) {

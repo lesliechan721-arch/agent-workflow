@@ -1264,7 +1264,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('installs Codex user dynamic skill into AW runtime without requiring a native cache runtime skill copy', async () => {
+  it('installs Codex user dynamic skill through native cache and enabled config', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -1306,8 +1306,11 @@ describe('codex-explore integration acceptance', () => {
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
-    const [runtimeSkill, statusResult] = await Promise.all([
+    const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
+    const nativeCacheRoot = resolveCodexExploreNativeCachePath(process.env, 'codex-explore');
+    const [runtimeSkill, rawConfig, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
+      fs.readFile(userPaths.configTomlPath, 'utf8'),
       statusCommand(
         ['codex-explore'],
         {
@@ -1330,7 +1333,10 @@ describe('codex-explore integration acceptance', () => {
 
     expect(runtimeSkill).toContain('model=gpt-5.5');
     expect(runtimeSkill).toContain('reasoning=high');
-    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
+    expect(rawConfig).toContain('[plugins."codex-explore@aw"]');
+    expect(rawConfig).toContain('enabled = true');
+    await expect(fs.pathExists(path.join(nativeCacheRoot, 'plugin.json'))).resolves.toBe(true);
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('model=gpt-5.5');
     expect(skillArtifact).toMatchObject({
       target: 'codex.skill',
       state: 'present',
@@ -1338,6 +1344,42 @@ describe('codex-explore integration acceptance', () => {
       configDigest: expect.stringMatching(/^sha256:/),
       contentDigest: expect.stringMatching(/^sha256:/),
     });
+  });
+
+  it('prewarms local marketplace before materializing Codex user dynamic skill for native install', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
+    await configureCodexExploreSkillOnlyArtifact(repoRoot);
+    await writeCodexExploreSkillOnlyRenderer(repoRoot);
+    const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    await expect(fs.readFile(userDynamicSkillPath(awHome), 'utf8')).resolves.toContain('Dynamic Explore');
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({ skills: './codex/skills' });
+    await expect(
+      fs.readJson(
+        path.join(
+          resolveCodexExploreNativeCachePath(process.env, 'codex-explore'),
+          '.codex-plugin',
+          'plugin.json',
+        ),
+      ),
+    ).resolves.toMatchObject({ skills: './codex/skills' });
   });
 
   it('refreshes Codex user dynamic skill and native cache while preserving manual trigger preference', async () => {
@@ -1716,6 +1758,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const beforeRuntimeSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
+    const beforeCachedSkill = await fs.readFile(cachedDynamicSkillPath(process.env), 'utf8');
     const statusBefore = await statusCommand(
       ['codex-explore'],
       {
@@ -1773,8 +1816,9 @@ describe('codex-explore integration acceptance', () => {
       },
     });
 
-    const [afterRuntimeSkill, statusResult] = await Promise.all([
+    const [afterRuntimeSkill, afterCachedSkill, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
+      fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
       statusCommand(
         ['codex-explore'],
         {
@@ -1796,7 +1840,7 @@ describe('codex-explore integration acceptance', () => {
     const skillArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-skill');
 
     expect(afterRuntimeSkill).toBe(beforeRuntimeSkill);
-    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
+    expect(afterCachedSkill).toBe(beforeCachedSkill);
     expect(skillArtifact.lastRefresh).toMatchObject({
       status: 'failed',
       event: 'config',
@@ -2071,8 +2115,8 @@ describe('codex-explore integration acceptance', () => {
 
     expect(runtimeSkill).toContain('model=gpt-5.5');
     expect(runtimeSkill).toContain('reasoning=high');
-    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
-    await expect(fs.pathExists(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(false);
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('model=gpt-5.5');
+    await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
     expect(runtimeAllowsImplicitInvocation).toBe(true);
     expect(statusSkill).toMatchObject({
       configDigest: repairedSkill?.configDigest,
@@ -2178,7 +2222,7 @@ describe('codex-explore integration acceptance', () => {
     expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
     expect(recordOptions.skillTriggerPreference).toBe('auto');
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
-    await expect(fs.pathExists(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(false);
+    await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
   });
 
   it('project repair fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
@@ -2355,7 +2399,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     await expect(fs.readFile(userDynamicSkillPath(awHome), 'utf8')).resolves.toContain('Dynamic Explore');
-    await expect(fs.pathExists(cachedDynamicSkillPath(process.env))).resolves.toBe(false);
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(false);
   });
 
@@ -2458,7 +2502,9 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(userDynamicSkillPath(awHome, 'codex-explore-v2'), 'utf8')).resolves.toContain(
       'Dynamic Explore V2',
     );
-    await expect(fs.pathExists(cachedDynamicSkillPath(process.env, 'codex-explore-v2'))).resolves.toBe(false);
+    await expect(fs.readFile(cachedDynamicSkillPath(process.env, 'codex-explore-v2'), 'utf8')).resolves.toContain(
+      'Dynamic Explore V2',
+    );
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome, 'codex-explore-v2'))).resolves.toBe(false);
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
     expect(trackingArtifacts.find((artifact) => artifact.id === 'codex-explore-skill-v2')).toMatchObject({

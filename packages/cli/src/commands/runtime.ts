@@ -677,6 +677,7 @@ function createPromptInputProxy(options: {
   source.on('end', onEnd);
   source.on('close', onClose);
   source.on('error', onError);
+  source.resume();
 
   return {
     input: proxied,

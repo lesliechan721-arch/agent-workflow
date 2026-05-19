@@ -129,7 +129,10 @@ export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boo
     plugin.manifest.skills ||
       plugin.manifest.slashCommands ||
       plugin.manifest.mcpServers ||
-      plugin.manifest.apps,
+      plugin.manifest.apps ||
+      getCodexDynamicArtifactTargets(plugin, { scope: 'user' }).some((target) =>
+        target.target === 'codex.skill'
+      ),
   );
 }
 

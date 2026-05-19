@@ -725,6 +725,30 @@ describe('adapter status helpers', () => {
         ],
       },
     });
+    const dynamicSkillOnlyPlugin = makePluginMeta({
+      config: {
+        schema: {
+          explorerModel: {
+            type: 'string',
+            default: 'gpt-5.4-mini',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          {
+            id: 'codex-explore-skill',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: ['explorerModel'],
+            skillKey: 'codex-explore',
+          },
+        ],
+      },
+    });
     const claudeOnlyDynamicArtifactsPlugin = makePluginMeta({
       marketplace: {
         category: 'workflow',
@@ -793,6 +817,8 @@ describe('adapter status helpers', () => {
     expect(requiresCodexNativePlugin(mcpOnlyPlugin, 'project')).toBe(false);
     expect(requiresCodexNativePlugin(appsOnlyPlugin, 'user')).toBe(true);
     expect(requiresCodexNativePlugin(appsOnlyPlugin, 'project')).toBe(false);
+    expect(requiresCodexNativePlugin(dynamicSkillOnlyPlugin, 'user')).toBe(true);
+    expect(requiresCodexNativePlugin(dynamicSkillOnlyPlugin, 'project')).toBe(false);
     expect(requiresCodexNativePlugin(extensionsOnlyPlugin, 'user')).toBe(false);
     expect(requiresCodexNativePlugin(extensionsOnlyPlugin, 'project')).toBe(false);
 

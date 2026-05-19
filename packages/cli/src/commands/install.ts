@@ -33,6 +33,7 @@ import type {
   UpgradeCommandOptions,
 } from '../types.js';
 import {
+  ensureLocalMarketplace,
   getInstalledLedgerPath,
   readInstalledLedger,
   writeInstalledLedger,
@@ -1476,6 +1477,8 @@ async function installTargetOnPlatform(
         target.currentPlugin.manifest.name,
         env,
       );
+      const localMarketplace = await ensureLocalMarketplace(env);
+      warnings.push(...(localMarketplace.warnings ?? []));
     }
 
     if (materializeSkillTriggers) {

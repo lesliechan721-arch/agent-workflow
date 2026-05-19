@@ -316,6 +316,7 @@ describe('command runtime', () => {
       input.isRaw = mode;
     });
     input.setRawMode = setRawMode;
+    const resume = vi.spyOn(input, 'resume');
     const pause = vi.spyOn(input, 'pause');
     const prompt = createInquirerPrompt({
       input,
@@ -338,6 +339,7 @@ describe('command runtime', () => {
 
     expect(setRawMode).toHaveBeenLastCalledWith(false);
     expect(input.isRaw).toBe(false);
+    expect(resume).toHaveBeenCalled();
     expect(pause).toHaveBeenCalled();
   });
 
