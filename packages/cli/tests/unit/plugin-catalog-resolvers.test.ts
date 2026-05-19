@@ -9,6 +9,7 @@ import { stageCatalogArtifacts } from '../../scripts/plugin-staging.js';
 import type { CatalogChannel } from '../../src/types.js';
 import { resolvePluginsFromCatalog } from '../../src/utils/manifest.js';
 import {
+  clearCurrentCatalogResolutionMemoForTests,
   resolveCurrentCatalog,
   resolveCatalogPlugins,
 } from '../../src/utils/plugin-catalog.js';
@@ -201,12 +202,14 @@ function createFakeCatalogPackageSource(options: {
   distTags?: Partial<Record<CatalogChannel, string>>;
   manifestPackages?: Record<string, FakePackageRecord>;
   fullPackages?: Record<string, FakePackageRecord>;
+  operations?: string[];
 }): CatalogPackageSource {
   const manifestPackages = options.manifestPackages ?? {};
   const fullPackages = options.fullPackages ?? {};
 
   return {
     resolveIdentityByDistTag: async (packageName, distTag) => {
+      options.operations?.push(`identity:${packageName}:${distTag}`);
       const version = options.distTags?.[distTag];
       if (!version) {
         throw new Error(`missing dist-tag ${distTag}`);
@@ -218,6 +221,7 @@ function createFakeCatalogPackageSource(options: {
       return record.identity;
     },
     resolveIdentityByVersion: async (packageName, version) => {
+      options.operations?.push(`identity:${packageName}:${version}`);
       const record = (packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(packageName, version)];
       if (!record) {
         throw new Error(`missing ${packageName}@${version}`);
@@ -225,6 +229,7 @@ function createFakeCatalogPackageSource(options: {
       return record.identity;
     },
     downloadArchive: async (identity) => {
+      options.operations?.push(`download:${identity.packageName}:${identity.version}`);
       const record = (identity.packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(identity.packageName, identity.version)];
       if (!record) {
         throw new Error(`missing ${identity.packageName}@${identity.version}`);
@@ -256,6 +261,7 @@ function createFakeCatalogPackageSource(options: {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
   delete process.env.AW_CLI_VERSION;
   delete process.env.AW_CATALOG_CHANNEL;
@@ -375,6 +381,58 @@ describe('plugin catalog resolvers', () => {
     });
   });
 
+  it('memoizes current catalog resolution for the same process inputs', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const operations: string[] = [];
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const first = await resolveCurrentCatalog(env);
+    const second = await resolveCurrentCatalog(env);
+
+    expect(second).toBe(first);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+  });
+
   it('falls back to a matching cache entry only after the catalog identity is resolved', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogPackage = await createValidCatalogPackage({
@@ -415,6 +473,7 @@ describe('plugin catalog resolvers', () => {
 
     const seeded = await resolveCurrentCatalog(env);
     expect(seeded.source).toBe('remote');
+    clearCurrentCatalogResolutionMemoForTests();
 
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: {

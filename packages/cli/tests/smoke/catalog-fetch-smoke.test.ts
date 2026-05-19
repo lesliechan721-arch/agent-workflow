@@ -170,6 +170,21 @@ afterEach(async () => {
     'marketplace.js',
   );
   if (await fs.pathExists(distMarketplacePath)) {
+    const distPluginCatalogPath = path.join(
+      repoRoot(),
+      'packages',
+      'cli',
+      'dist',
+      'src',
+      'utils',
+      'plugin-catalog.js',
+    );
+    if (await fs.pathExists(distPluginCatalogPath)) {
+      const distPluginCatalog = await import(pathToFileURL(distPluginCatalogPath).href) as {
+        clearCurrentCatalogResolutionMemoForTests: () => void;
+      };
+      distPluginCatalog.clearCurrentCatalogResolutionMemoForTests();
+    }
     const distMarketplace = await import(pathToFileURL(distMarketplacePath).href) as {
       setCatalogPackageSourceForTests: (source: unknown) => void;
     };
@@ -190,6 +205,7 @@ describe('catalog fetch smoke', () => {
     const distPluginCatalog = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
     ) as {
+      clearCurrentCatalogResolutionMemoForTests: () => void;
       resolveCurrentCatalog: (env?: NodeJS.ProcessEnv) => Promise<Record<string, unknown>>;
     };
     const distMarketplace = await import(
@@ -257,6 +273,7 @@ describe('catalog fetch smoke', () => {
 
     operations.length = 0;
     fullRecord.failDownload = 'simulated full tarball outage';
+    distPluginCatalog.clearCurrentCatalogResolutionMemoForTests();
     const cachedResolution = await distPluginCatalog.resolveCurrentCatalog(env);
     expect(cachedResolution).toMatchObject({
       source: 'cache',

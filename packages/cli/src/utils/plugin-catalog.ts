@@ -21,6 +21,7 @@ import {
   buildCurrentCatalogCacheKey,
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
+  serializeCatalogSelectorForCache,
   writeCurrentCatalogCacheEntry,
 } from './local-marketplace.js';
 import { calculateCatalogEntryDigestsFromRoot } from './catalog-digests.js';
@@ -83,6 +84,8 @@ interface ResolvedCatalogTarget {
   historySchemaVersion: number | null;
   resolutionSource: NonNullable<CatalogResolution['fullCatalog']>['resolutionSource'];
 }
+
+const currentCatalogResolutionMemo = new Map<string, Promise<CatalogResolution>>();
 
 function calculateManifestTextDigest(manifestText: string): string {
   return `sha256:${crypto.createHash('sha256').update(manifestText).digest('hex')}`;
@@ -271,6 +274,47 @@ async function resolveEffectiveCatalogSelector(
     selector.overrideSource = overrides.overrideSource;
   }
   return selector;
+}
+
+function buildCurrentCatalogMemoKey(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+): string {
+  const payload = {
+    selector: serializeCatalogSelectorForCache(selector),
+    overrideSource: selector.overrideSource ?? null,
+    awHome: resolveAwHome(env),
+    registry: env.AW_NPM_REGISTRY_URL || env.npm_config_registry || env.NPM_CONFIG_REGISTRY || null,
+    npmUserConfig: env.npm_config_userconfig || env.NPM_CONFIG_USERCONFIG || null,
+    home: env.HOME || null,
+    userprofile: env.USERPROFILE || null,
+    embeddedOverrideRoot: getEmbeddedPluginsRootOverrideForTests(),
+  };
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(payload))
+    .digest('hex');
+}
+
+function resolveCurrentCatalogUncached(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+): Promise<CatalogResolution> {
+  return (async () => {
+    if (!hasCatalogPackageSourceOverrideForTests()) {
+      const fixtureCatalog = await tryResolveFixtureCatalogOverride(selector);
+      if (fixtureCatalog) {
+        return fixtureCatalog;
+      }
+    }
+
+    const target = await resolveCatalogTarget(selector, env);
+    return await resolveValidatedCatalogRoot(selector, target, env);
+  })();
+}
+
+export function clearCurrentCatalogResolutionMemoForTests(): void {
+  currentCatalogResolutionMemo.clear();
 }
 
 function parseCatalogSummary(
@@ -1223,15 +1267,20 @@ export async function resolveCurrentCatalog(
   options: ResolveCurrentCatalogOptions = {},
 ): Promise<CatalogResolution> {
   const selector = await resolveEffectiveCatalogSelector(env, options);
-  if (!hasCatalogPackageSourceOverrideForTests()) {
-    const fixtureCatalog = await tryResolveFixtureCatalogOverride(selector);
-    if (fixtureCatalog) {
-      return fixtureCatalog;
-    }
+  const memoKey = buildCurrentCatalogMemoKey(selector, env);
+  const memoized = currentCatalogResolutionMemo.get(memoKey);
+  if (memoized) {
+    return memoized;
   }
 
-  const target = await resolveCatalogTarget(selector, env);
-  return await resolveValidatedCatalogRoot(selector, target, env);
+  const resolution = resolveCurrentCatalogUncached(selector, env);
+  currentCatalogResolutionMemo.set(memoKey, resolution);
+  try {
+    return await resolution;
+  } catch (error) {
+    currentCatalogResolutionMemo.delete(memoKey);
+    throw error;
+  }
 }
 
 export async function resolveCatalogPlugins(

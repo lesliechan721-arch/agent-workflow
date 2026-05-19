@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   CatalogResolutionError,
+  clearCurrentCatalogResolutionMemoForTests,
   resolveCatalogSelector,
   resolveCurrentCatalog,
 } from '../../src/utils/plugin-catalog.js';
@@ -77,6 +78,7 @@ function createManifest(options: {
 }
 
 afterEach(async () => {
+  clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
   delete process.env.AW_CLI_VERSION;
   delete process.env.AW_CATALOG_CHANNEL;
