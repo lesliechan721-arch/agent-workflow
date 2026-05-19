@@ -6,7 +6,7 @@
 
 ## Overview
 
-`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`，真正发布的包是 `packages/cli`（`@yiliang/aw`）。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
+`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@yiliang/aw`）；插件通过独立的 sidecar/full catalog 包 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
 ## Maintenance Principles
 
@@ -15,18 +15,26 @@
 ## Build & Test Commands
 
 - `pnpm install` — 安装工作区依赖
-- `pnpm build` — 编译 `@yiliang/aw` 并生成 `packages/cli/plugins-dist` runtime bundle
+- `pnpm build` — 编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle（`packages/cli/plugins-dist`）
 - `pnpm test` — 运行全部 Vitest 用例
 - `pnpm test:unit` — 只跑单元测试
 - `pnpm test:integration` — 验证 CLI 命令编排、adapter 集成和夹具行为
 - `pnpm test:coverage` — 生成覆盖率报告
 - `pnpm test:smoke` — 验证真实 build/pack 产物（不进入常规 `pnpm test`）
 - `pnpm test:smoke:build` — 只校验 `pnpm build` 产物
-- `pnpm test:smoke:pack` — 只校验 `pnpm pack:cli` 的 tarball 内容
-- `pnpm run release:pack` / `make pack` — 生成 `.release/tarballs/` 下的本地 tarball
-- `pnpm run release:local` / `make local-install` — 跑本地开发验证链路，并执行本地 `npm install -g`
-- `make beta-release VERSION=x.y.z-beta.n` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布测试版 `beta` dist-tag
-- `make release VERSION=x.y.z` — 同步根目录和 `packages/cli/package.json` 版本号，跑完整校验后发布正式版 `latest`
+- `pnpm test:smoke:pack:cli` — 校验 CLI tarball 内容
+- `pnpm test:smoke:pack:catalog` — 校验 sidecar/full catalog tarball 内容
+- `pnpm test:smoke:pack` — 串行校验 CLI 与 catalog tarball
+- `pnpm test:smoke:fetch` — 校验 catalog fetch / selector / cache fallback 相关 smoke
+- `pnpm plugin:test <plugin>` — 运行单个插件的 Node 脚本测试；`--all` 才会让任一坏插件阻断整轮
+- `pnpm test:smoke:plugin-scripts` — 校验真实插件脚本 staging、依赖闭包和 bundle 布局
+- `make verify-cli` / `make verify-catalog` / `make verify-release` — 分别校验 CLI-only、catalog-only、组合发布链路
+- `pnpm run release:pack:cli` / `make pack-cli` — 生成 CLI 本地 tarball
+- `pnpm run release:pack:catalog -- --catalog-version x.y.z` / `make pack-catalog CATALOG_VERSION=x.y.z` — 生成 sidecar/full catalog tarball
+- `pnpm run release:pack -- --catalog-version x.y.z` / `make pack CATALOG_VERSION=x.y.z` — 同时生成 CLI 与 catalog tarball
+- `pnpm run release:local` / `make local-install` — 跑 CLI 本地发布验证链路，并执行本地 `npm install -g`
+- `make beta-release CLI_VERSION=x.y.z-beta.n CATALOG_VERSION=a.b.c-beta.n` — 校验并发布 CLI 测试版和 beta catalog
+- `make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c` — 校验并发布 CLI 正式版和 latest catalog
 - `pnpm publish:cli` — 兼容旧入口；不改版本号，只发布当前已经写入的稳定版本到 `packages/cli/package.json` 的 `publishConfig.registry`
 
 ## References

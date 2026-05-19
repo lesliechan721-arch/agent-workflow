@@ -1,6 +1,6 @@
 # Agent Workflows
 
-Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；CLI 会把仓库内插件打包成 embedded bundle / 本机 runtime，并按平台和 scope 安装到对应位置。
+Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；插件通过 `@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包分发。CLI 解析当前 catalog，把插件按平台和 scope 安装到 Codex / Claude Code 对应位置。
 
 ## 快速使用
 
@@ -28,7 +28,7 @@ aw install git-commit -p codex -s user
 aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来显式初始化 `~/.aw`，需要 native plugin runtime 的安装和升级命令也会在必要时自动同步本机 runtime。纯 Codex project 路径只读使用 catalog，不会为了安装当前仓库产物去修复或注册用户级 Codex runtime。绑定真实插件 target 的写入型命令需要显式传 `-p codex|claude|both`。
+`aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@yiliang/aw-plugins-manifest`，再获取同版本 `@yiliang/aw-plugins` 并校验 digest；它不安装插件、不升级插件、不写 install record，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写入型命令需要显式传 `-p codex|claude|both`。
 
 常用排障命令：
 
@@ -43,9 +43,10 @@ aw cleanup git-commit -p codex -s project
 aw cleanup git-commit -p codex -s project --remove-config
 aw cleanup --dependency-index --prune-stale <token> --yes
 aw reinstall git-commit -p codex -s user
-aw config set git-commit commitStyle conventional -s user
-aw config unset git-commit commitStyle -s user
-aw config reset git-commit -s user --yes
+aw config list codex-explore -s user
+aw config set codex-explore explorerModel gpt-5.4-mini -s user
+aw config unset codex-explore modelReasoningEffort -s user
+aw config reset codex-explore -s user --yes
 aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
 
@@ -72,19 +73,28 @@ make test
 
 常用命令：
 
-- `make build`：编译 `@yiliang/aw`，并生成 `packages/cli/plugins-dist`
+- `make build`：编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle
 - `make test`：运行单元测试和集成测试
-- `make verify-local`：校验本地开发发包链路（`test` + `smoke build`）
-- `make pack`：输出本地 tarball 到 `.release/tarballs/`
-- `make local-install`：打包并执行本地 `npm install -g`，验证最终安装链路
-- `make beta-release VERSION=0.2.0-beta.0`：同步测试版版本号并发布 `beta` tag
-- `make release VERSION=0.2.0`：同步正式版版本号，跑完整校验后发布 `latest`
+- `make verify-local`：校验 CLI 本地发布链路（常规测试、build smoke、CLI pack smoke、catalog fetch smoke）
+- `make verify-cli`：校验 CLI-only 发布链路
+- `make verify-catalog`：校验 catalog-only 发布链路
+- `make verify-release`：校验 CLI + catalog 组合发布链路
+- `make pack-cli`：输出 CLI tarball 到 `.release/tarballs/`
+- `make pack-catalog CATALOG_VERSION=1.2.0-beta.1`：输出 sidecar/full catalog tarball
+- `make pack CATALOG_VERSION=1.2.0-beta.1`：同时输出 CLI 与 catalog tarball
+- `make local-install`：打包 CLI 并执行本地 `npm install -g`，验证最终安装链路
+- `make beta-release CLI_VERSION=1.0.0-beta.17 CATALOG_VERSION=1.2.0-beta.1`：校验并发布 CLI 测试版和 beta catalog
+- `make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0`：校验并发布 CLI 正式版和 latest catalog
 
 如果更习惯直接调用脚本，也可以使用：
 
 - `pnpm run release:local`：本地开发安装流程
-- `pnpm run release:publish:beta`：发布当前已经写入的测试版版本
-- `pnpm publish:cli`：发布当前已经写入的正式版版本，兼容旧入口
+- `pnpm run release:pack:cli`：生成 CLI tarball
+- `pnpm run release:pack:catalog -- --catalog-version 1.2.0-beta.1`：生成 catalog tarball
+- `pnpm run release:publish:cli:beta` / `pnpm run release:publish:cli:latest`：只发布当前已经写入版本的 CLI 包
+- `pnpm run release:publish:catalog:beta -- --catalog-version 1.2.0-beta.1`：只发布 beta catalog
+- `pnpm run release:publish:beta -- --cli-version 1.0.0-beta.17 --catalog-version 1.2.0-beta.1`：组合发布测试版
+- `pnpm publish:cli`：发布当前已经写入的正式版 CLI，兼容旧入口
 
 ## 本地开发与发版流程
 
@@ -97,28 +107,29 @@ make local-install
 aw init --force
 ```
 
-这条链路会先跑常规测试，再生成 tarball，并用 `npm install -g` 安装本地包。安装完成后，如果需要刷新 `~/.aw` 里的本机 marketplace，再执行一次 `aw init --force`。
+这条链路会先跑 CLI 发布校验，再生成 CLI tarball，并用 `npm install -g` 安装本地包。安装完成后，如果需要刷新 `~/.aw` 里的 catalog cache，再执行一次 `aw init --force`。
 
 ### 2. 测试版发布
 
 ```bash
-make beta-release VERSION=0.2.0-beta.0
+make beta-release CLI_VERSION=1.0.0-beta.17 CATALOG_VERSION=1.2.0-beta.1
 ```
 
-这条链路会同步根目录和 `packages/cli/package.json` 的版本号，跑完整发布校验，并以 `beta` dist-tag 发布，适合灰度验证和联调。
+这条链路会同步根目录和 `packages/cli/package.json` 的 CLI 版本，校验 beta catalog version，跑 CLI + catalog 发布校验，并以 `beta` dist-tag 发布两类包，适合灰度验证和联调。
 
 ### 3. 正式版发布
 
 ```bash
-make release VERSION=0.2.0
+make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 ```
 
-正式版要求稳定 semver，不允许带 prerelease 后缀。流程会同步版本号、执行完整校验、重新打 tarball，并按 `packages/cli/package.json` 的 `publishConfig.registry` 发布到 `latest`。
+正式版的 CLI version 和 catalog version 都必须是 stable SemVer，不允许带 prerelease 后缀。流程会同步 CLI 版本、校验 catalog 版本、执行完整校验，并把 CLI 与 catalog 包发布到 `latest`。
 
 ## 仓库结构
 
 - `packages/cli/`：发布包 `@yiliang/aw` 的源码、测试和 build 脚本
-- `plugins/`：插件源码，只维护 `.agents-plugin/plugin.json` 和插件能力文件
+- `plugins/`：插件源码，只维护 `.agents-plugin/plugin.json`、`marketplace-source.json` 和插件能力文件
+- `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-agent-workflows-plugin/`：创建和维护插件的作者工具
 - `docs/`：公开架构、安装、测试和作者文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档
@@ -135,4 +146,4 @@ make release VERSION=0.2.0
 
 ## 生成物原则
 
-插件源码层以 `plugins/<name>/.agents-plugin/plugin.json` 为真值。`packages/cli/plugins-dist/`、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/` 和本机 `~/.aw/` 都是生成或运行时目录，不手工维护。
+插件源码层以 `plugins/<name>/.agents-plugin/plugin.json` 为真值。`packages/cli/plugins-dist/` 是本地 build / catalog 打包用的 staging 产物，不是 CLI tarball 的正式插件兜底；`packages/cli/dist/`、`packages/cli/coverage/`、`.release/` 和本机 `~/.aw/` 都是生成或运行时目录，不手工维护。
