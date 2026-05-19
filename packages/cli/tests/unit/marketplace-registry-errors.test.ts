@@ -1,3 +1,7 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -5,6 +9,8 @@ import {
   resolveCatalogPackageIdentityByVersion,
   setCatalogPackageSourceForTests,
 } from '../../src/utils/marketplace.js';
+
+const tempDirs: string[] = [];
 
 function stubRegistryMetadata(metadata: unknown) {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(metadata), {
@@ -19,12 +25,84 @@ const registryEnv = {
   AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
 };
 
-afterEach(() => {
+async function writeUserNpmrc(contents: string): Promise<string> {
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-home-'));
+  tempDirs.push(homeDir);
+  await fs.writeFile(path.join(homeDir, '.npmrc'), contents, 'utf8');
+  return homeDir;
+}
+
+function getFetchAuthorizationHeader(callIndex = 0): string | null {
+  const fetchMock = vi.mocked(globalThis.fetch);
+  const requestInit = fetchMock.mock.calls[callIndex]?.[1] as RequestInit | undefined;
+  return new Headers(requestInit?.headers).get('authorization');
+}
+
+afterEach(async () => {
   vi.unstubAllGlobals();
   setCatalogPackageSourceForTests(null);
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('registry catalog package identity errors', () => {
+  it('reads the user npmrc auth token for registry metadata requests', async () => {
+    const homeDir = await writeUserNpmrc('//registry.example.test/:_authToken=${NPM_TOKEN}\n');
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        ...registryEnv,
+        HOME: homeDir,
+        NPM_TOKEN: 'user-home-token',
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer user-home-token');
+  });
+
+  it('prefers the most specific path-scoped npmrc auth token', async () => {
+    const homeDir = await writeUserNpmrc([
+      '//registry.example.test/:_authToken=host-token',
+      '//registry.example.test/team/:_authToken=path-token',
+    ].join('\n'));
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/team/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        AW_NPM_REGISTRY_URL: 'https://registry.example.test/team/',
+        HOME: homeDir,
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer path-token');
+  });
+
   it('distinguishes a missing exact package version from malformed version metadata', async () => {
     stubRegistryMetadata({
       versions: {
