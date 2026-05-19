@@ -61,6 +61,30 @@ export function getLocalMarketplaceCodexSkillRoot(
   return path.join(getLocalMarketplaceCodexSkillsRoot(rootDir, pluginName), skillKey);
 }
 
+const CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT = './codex/skills';
+
+function getCodexPlatformPluginManifestPath(pluginRoot: string): string {
+  return path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+}
+
+export async function ensureLocalMarketplaceCodexSkillsManifest(
+  rootDir: string,
+  pluginName: string,
+): Promise<void> {
+  const manifestPath = getCodexPlatformPluginManifestPath(
+    getLocalMarketplacePluginRoot(rootDir, pluginName),
+  );
+  const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
+  if (manifest.skills === CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT) {
+    return;
+  }
+
+  await writeJsonFile(manifestPath, {
+    ...manifest,
+    skills: CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT,
+  });
+}
+
 export interface LocalMarketplaceGateOptions {
   interactive?: boolean;
   confirmOverwrite?: (options: { message: string; defaultValue: boolean }) => Promise<boolean>;
@@ -1067,6 +1091,10 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
         overwrite: true,
         errorOnExist: false,
       });
+      await ensureLocalMarketplaceCodexSkillsManifest(
+        options.marketplaceRoot,
+        recordFile.record.pluginName,
+      );
     }
   }
 

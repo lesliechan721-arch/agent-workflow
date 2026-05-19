@@ -94,6 +94,7 @@ import {
 } from '../utils/codex-native-recovery.js';
 import {
   ensureLocalMarketplace,
+  ensureLocalMarketplaceCodexSkillsManifest,
   getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
   resolveCodexProjectScopeInitialized,
@@ -3805,6 +3806,12 @@ export class CodexAdapter implements PlatformAdapter {
           const writtenPaths = artifact.state === 'disabled'
             ? (await fs.remove(skillPath), [] as string[])
             : await writeCodexSkillTree(skillPath, expectedTree);
+          if (artifact.state === 'present') {
+            await ensureLocalMarketplaceCodexSkillsManifest(
+              resolveAwHome(this.env),
+              plugin.manifest.name,
+            );
+          }
 
           artifacts.push({
             path: skillPath,
@@ -4559,13 +4566,15 @@ export class CodexAdapter implements PlatformAdapter {
       }
       const subject = artifact.target === 'codex.developerInstructionsBlock'
         ? `Codex instruction artifact "${artifact.id ?? plugin.manifest.name}"`
-        : `Codex role artifact "${
-          resolveCodexRoleIdentity({
-            target: artifact.target,
-            roleKey: artifact.roleKey,
-            artifactKey: artifact.artifactKey,
-          }) ?? artifact.id ?? artifact.path
-        }"`;
+        : artifact.target === 'codex.skill'
+          ? `Codex skill artifact "${artifact.artifactKey ?? artifact.id ?? artifact.path}"`
+          : `Codex role artifact "${
+            resolveCodexRoleIdentity({
+              target: artifact.target,
+              roleKey: artifact.roleKey,
+              artifactKey: artifact.artifactKey,
+            }) ?? artifact.id ?? artifact.path
+          }"`;
       const detail = artifact.diagnostics[0] ? ` ${artifact.diagnostics[0]}` : '';
       if (artifact.health === 'blockMissing' || artifact.health === 'roleLayerMissing' || artifact.health === 'missing') {
         driftWarnings.push(`${subject} 缺失。${detail}`.trim());

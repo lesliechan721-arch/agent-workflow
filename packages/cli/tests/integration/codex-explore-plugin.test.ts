@@ -671,6 +671,13 @@ function resolveCodexExploreNativeCachePath(env: NodeJS.ProcessEnv, pluginName: 
     : codexExploreNativeCachePath(env, pluginName);
 }
 
+async function removeCodexPlatformSkillsDeclaration(pluginRoot: string): Promise<void> {
+  const manifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  delete manifest.skills;
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+}
+
 function resolveMarketplacePluginRootSync(
   marketplacePath: string | undefined,
   fallbackRoot: string,
@@ -1351,6 +1358,11 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    await removeCodexPlatformSkillsDeclaration(path.join(
+      embeddedRoot,
+      'plugins',
+      'codex-explore',
+    ));
     process.env.AW_HOME = awHome;
     process.env.AW_CODEX_HOME = codexHome;
     process.env.AW_FORCE_CODEX_AVAILABLE = '1';

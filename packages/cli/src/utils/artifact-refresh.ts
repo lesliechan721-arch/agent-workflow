@@ -29,7 +29,11 @@ import type {
   TrackingPluginRecord,
 } from '../types.js';
 import { mergeGeneratedArtifacts } from './generated-artifacts.js';
-import { getLocalMarketplaceCodexSkillRoot, readInstalledLedger } from './local-marketplace.js';
+import {
+  ensureLocalMarketplaceCodexSkillsManifest,
+  getLocalMarketplaceCodexSkillRoot,
+  readInstalledLedger,
+} from './local-marketplace.js';
 import {
   commitMaterializedSkillTriggerPreference,
   materializeSkillTriggerPreference,
@@ -401,6 +405,7 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
         overwrite: true,
         errorOnExist: false,
       });
+      await ensureLocalMarketplaceCodexSkillsManifest(stagingRoot, pluginName);
     }
 
     const marketplacePath = path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json');
