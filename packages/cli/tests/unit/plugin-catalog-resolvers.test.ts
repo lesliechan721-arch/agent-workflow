@@ -543,6 +543,115 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
+  for (const scenario of [
+    {
+      name: 'current catalog target is too new for this CLI',
+      reasonCode: 'awVersionTooLow',
+      createBlockedManifest: () => createIncompatibleLatestSidecar({
+        catalogVersion: '2.0.0',
+        minAwVersion: '9.0.0',
+        fallbackVersion: '1.5.0',
+        fallbackMinAwVersion: '8.0.0',
+        channel: 'latest',
+      }),
+    },
+    {
+      name: 'current catalog history is unusable',
+      reasonCode: 'catalogHistoryUnavailable',
+      createBlockedManifest: () => ({
+        ...createIncompatibleLatestSidecar({
+          catalogVersion: '2.0.0',
+          minAwVersion: '9.0.0',
+          fallbackVersion: '1.0.0',
+          fallbackMinAwVersion: '1.0.0',
+          channel: 'latest',
+        }),
+        history: {},
+      }),
+    },
+  ]) {
+    it(`does not reuse a process memo when the ${scenario.name}`, async () => {
+      const { repoRoot, env } = await makeRepoWorkspace();
+      const catalogV1 = await createValidCatalogPackage({
+        repoRoot,
+        catalogVersion: '1.0.0',
+        channel: 'latest',
+        minAwVersion: '1.0.0',
+      });
+      const blockedManifest = scenario.createBlockedManifest();
+      const blockedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-blocked-'));
+      tempDirs.push(blockedRoot);
+      await fs.writeJson(path.join(blockedRoot, 'catalog-manifest.json'), blockedManifest, { spaces: 2 });
+
+      setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+        distTags: {
+          latest: '1.0.0',
+        },
+        manifestPackages: {
+          [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+            identity: {
+              packageName: '@yiliang/aw-plugins-manifest',
+              version: '1.0.0',
+              integrity: 'sha512-sidecar-1',
+              requestedDistTag: 'latest',
+            },
+            rootDir: catalogV1.sidecarRoot,
+            manifest: catalogV1.manifest,
+          },
+        },
+        fullPackages: {
+          [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+            identity: {
+              packageName: '@yiliang/aw-plugins',
+              version: '1.0.0',
+              integrity: 'sha512-full-1',
+            },
+            rootDir: catalogV1.fullRoot,
+            manifest: catalogV1.manifest,
+          },
+        },
+      }));
+
+      await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+        catalogVersion: '1.0.0',
+      });
+
+      const operations: string[] = [];
+      setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+        distTags: {
+          latest: '2.0.0',
+        },
+        manifestPackages: {
+          [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+            identity: {
+              packageName: '@yiliang/aw-plugins-manifest',
+              version: '2.0.0',
+              integrity: 'sha512-sidecar-2',
+              requestedDistTag: 'latest',
+            },
+            rootDir: blockedRoot,
+            manifest: blockedManifest,
+          },
+        },
+        operations,
+      }));
+
+      await expect(resolveCurrentCatalog(env)).rejects.toMatchObject({
+        resolution: {
+          reasonCode: scenario.reasonCode,
+          latestCatalogBlocked: {
+            catalogVersion: '2.0.0',
+            minAwVersion: '9.0.0',
+          },
+        },
+      });
+      expect(operations).toEqual([
+        'identity:@yiliang/aw-plugins-manifest:latest',
+        'download:@yiliang/aw-plugins-manifest:2.0.0',
+      ]);
+    });
+  }
+
   it('drops current catalog process memo when the cached root is removed', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogPackage = await createValidCatalogPackage({

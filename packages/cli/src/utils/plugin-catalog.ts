@@ -349,6 +349,10 @@ function catalogLatestBlockedEvidenceMatches(
   );
 }
 
+function canReuseCurrentCatalogMemoAfterTargetFailure(error: unknown): boolean {
+  return isCatalogResolutionError(error) && error.resolution.reasonCode === 'catalogUnavailable';
+}
+
 function memoizedResolutionMatchesTarget(
   resolved: CatalogResolution,
   target: ResolvedCatalogTarget,
@@ -406,7 +410,11 @@ async function readCurrentCatalogMemo(
     let target: ResolvedCatalogTarget;
     try {
       target = await resolveCatalogTarget(selector, env);
-    } catch {
+    } catch (error) {
+      if (!canReuseCurrentCatalogMemoAfterTargetFailure(error)) {
+        currentCatalogResolutionMemo.delete(memoKey);
+        throw error;
+      }
       return {
         resolution: resolved,
       };
