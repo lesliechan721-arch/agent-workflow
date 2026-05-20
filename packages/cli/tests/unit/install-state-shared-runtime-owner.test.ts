@@ -499,7 +499,7 @@ describe('install-state shared runtime owner', () => {
     expect(owner.status).toBe('ok');
     if (owner.status === 'ok') {
       expect(owner.value.owner).toEqual(contenderLocation);
-      expect(owner.value.preference).toBeUndefined();
+      expect(owner.value.preference).toBe('auto');
     }
     const oldOwnerRecord = await fs.readJson(ownerRecordPath);
     expect(oldOwnerRecord.record.options.skillTriggerPreference).toBe('manual');

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { resolveClaudeCatalogCompatibility } from '../../src/adapters/claude.js';
 import {
@@ -38,9 +38,12 @@ import {
 } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import type { PluginMeta } from '../../src/types.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
-
-const tempDirs: string[] = [];
+import {
+  registerCliEmbeddedRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -77,31 +80,52 @@ function makePluginMeta(overrides: Partial<PluginMeta['manifest']>): PluginMeta 
   };
 }
 
-afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
-});
-
 describe('adapter status helpers', () => {
-  async function makeEmptyEmbeddedRoot(repoRoot: string): Promise<string> {
-    void repoRoot;
+  async function makeEmptyEmbeddedRoot(): Promise<string> {
     return createSyntheticEmbeddedRoot(fixturePath('repo-template'));
   }
 
-  it('keeps historical fallback extension placeholders scoped to their original platform', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-historical-status-'));
-    tempDirs.push(root);
+  function createAdapterStatusEnv(root: string): NodeJS.ProcessEnv {
+    return resolveSafeCliEnv({
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    });
+  }
+
+  async function createAdapterStatusRoot(rootDirPrefix: string): Promise<string> {
+    return registerCliTempRoot(
+      await fs.mkdtemp(path.join(os.tmpdir(), rootDirPrefix)),
+      `adapter status fixture root (${rootDirPrefix})`,
+    );
+  }
+
+  async function createHistoricalWorkspace(rootDirPrefix: string): Promise<{
+    root: string;
+    repoRoot: string;
+    env: NodeJS.ProcessEnv;
+  }> {
+    const root = await createAdapterStatusRoot(rootDirPrefix);
     const repoRoot = path.join(root, 'repo');
     await fs.ensureDir(repoRoot);
     await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
 
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    const embeddedRoot = await makeEmptyEmbeddedRoot();
+    registerCliEmbeddedRoot(
+      embeddedRoot,
+      `adapter status embedded root (${rootDirPrefix})`,
+    );
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    return {
+      root,
+      repoRoot,
+      env: createAdapterStatusEnv(root),
     };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+  }
+
+  it('keeps historical fallback extension placeholders scoped to their original platform', async () => {
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-historical-status-');
 
     const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -158,19 +182,7 @@ describe('adapter status helpers', () => {
   });
 
   it('does not synthesize Codex historical hook placeholders from ledger-only repo-managed booleans', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-history-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-codex-history-');
 
     await writeInstalledLedger(
       {
@@ -209,19 +221,7 @@ describe('adapter status helpers', () => {
   });
 
   it('recovers Codex repo skill and MCP placeholders from tracking-only historical evidence', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-repo-tracking-history-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-codex-repo-tracking-history-');
 
     const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
     await upsertTrackingRecord(codexPaths.trackingDir, 'repo-history', [
@@ -254,19 +254,7 @@ describe('adapter status helpers', () => {
   });
 
   it('recovers Codex historical placeholders from snapshot managed kinds', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-managed-kinds-history-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-codex-managed-kinds-history-');
 
     const codexProjectKey = await resolveCodexProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -314,19 +302,7 @@ describe('adapter status helpers', () => {
   });
 
   it('recovers tracked Codex dynamic artifact identities without synthesizing historical-agent placeholders', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-dynamic-history-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-codex-dynamic-history-');
 
     const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
     const rolePath = path.join(codexPaths.configDir, 'agents', 'aw-history-role.toml');
@@ -400,19 +376,7 @@ describe('adapter status helpers', () => {
   });
 
   it('recovers Claude hook-only historical plugins from ledger snapshots without tracking artifacts', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-hook-history-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-claude-hook-history-');
 
     const claudeProjectKey = await resolveClaudeProjectKey(repoRoot);
     await writeInstalledLedger(
@@ -456,8 +420,7 @@ describe('adapter status helpers', () => {
   });
 
   it('resolves Claude runtime and native fallback evidence with scope-sensitive project matching', async () => {
-    const installLocation = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-runtime-'));
-    tempDirs.push(installLocation);
+    const installLocation = await createAdapterStatusRoot('aw-claude-runtime-');
 
     await fs.ensureDir(path.join(installLocation, '.claude-plugin'));
     await fs.ensureDir(path.join(installLocation, 'plugins', 'git-commit'));
@@ -954,8 +917,7 @@ describe('adapter status helpers', () => {
   });
 
   it('applies Codex project installability preflight without native fallback', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-installability-'));
-    tempDirs.push(root);
+    const root = await createAdapterStatusRoot('aw-codex-installability-');
     const repoRoot = path.join(root, 'repo');
     await fs.ensureDir(repoRoot);
     const adapter = new CodexAdapter(repoRoot, async () => {
@@ -999,8 +961,7 @@ describe('adapter status helpers', () => {
   });
 
   it('writes scope-aware Codex capability snapshots and user native refs', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-capability-'));
-    tempDirs.push(root);
+    const root = await createAdapterStatusRoot('aw-codex-capability-');
     const repoRoot = path.join(root, 'repo');
     await fs.ensureDir(repoRoot);
 
@@ -1063,8 +1024,7 @@ describe('adapter status helpers', () => {
   });
 
   it('removes Codex project ledger records without mutating shared native refs', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-ledger-remove-'));
-    tempDirs.push(root);
+    const root = await createAdapterStatusRoot('aw-codex-ledger-remove-');
     const repoRoot = path.join(root, 'repo');
     await fs.ensureDir(repoRoot);
     const projectKey = await fs.realpath(repoRoot);
@@ -1103,19 +1063,7 @@ describe('adapter status helpers', () => {
   });
 
   it('does not count Codex project shared native refs or user native state as project evidence', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-project-evidence-'));
-    tempDirs.push(root);
-    const repoRoot = path.join(root, 'repo');
-    await fs.ensureDir(repoRoot);
-    await fs.writeFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-
-    const env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-    };
-    setEmbeddedPluginsRootOverrideForTests(await makeEmptyEmbeddedRoot(repoRoot));
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-codex-project-evidence-');
 
     const projectKey = await fs.realpath(repoRoot);
     const ledger = createAvailableLedger();

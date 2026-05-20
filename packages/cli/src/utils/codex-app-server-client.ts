@@ -74,6 +74,9 @@ export interface CodexAppServerErrorContext {
   command: string;
   args: string[];
   cwd?: string;
+  envSummary?: string;
+  cwdSource?: string;
+  envSource?: string;
   pid?: number;
   method: string;
   requestId?: string;
@@ -135,6 +138,18 @@ function defaultCodexAppServerProcessRunner(
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as unknown as CodexAppServerProcess;
+}
+
+let codexAppServerProcessRunnerOverrideForTests: CodexAppServerProcessRunner | null = null;
+
+export function setCodexAppServerProcessRunnerOverrideForTests(
+  runner: CodexAppServerProcessRunner | null,
+): void {
+  codexAppServerProcessRunnerOverrideForTests = runner;
+}
+
+export function getDefaultCodexAppServerProcessRunner(): CodexAppServerProcessRunner {
+  return codexAppServerProcessRunnerOverrideForTests ?? defaultCodexAppServerProcessRunner;
 }
 
 function describeOperation(method: string): '安装' | '卸载' {
@@ -379,6 +394,9 @@ class CodexAppServerSession {
     try {
       this.process = options.runner(this.invocation);
     } catch (error) {
+      if (error instanceof CodexAppServerError) {
+        throw error;
+      }
       throw createCodexAppServerError({
         category: 'spawn_failure',
         method: 'initialize',
@@ -716,7 +734,7 @@ async function runCodexAppServerOperation<TParams>(options: {
   const session = new CodexAppServerSession({
     invocation,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    runner: options.runner ?? defaultCodexAppServerProcessRunner,
+    runner: options.runner ?? getDefaultCodexAppServerProcessRunner(),
     operationContext: {
       marketplacePath: options.marketplacePath,
       pluginName: options.pluginName,

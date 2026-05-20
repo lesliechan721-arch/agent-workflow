@@ -1,6 +1,4 @@
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -21,20 +19,11 @@ import type {
 import { createAvailableLedger, readInstalledLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import {
   resolveCodexProjectKey,
-  setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
+import { activateCliEmbeddedRoot, createCliTestWorkspace } from '../helpers/workspace.js';
 
 const tempDirs: string[] = [];
-
-function fixturePath(...segments: string[]): string {
-  return path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'fixtures',
-    ...segments,
-  );
-}
 
 async function addLifecycleScripts(repoRoot: string): Promise<void> {
   const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
@@ -80,22 +69,24 @@ async function addLifecycleScripts(repoRoot: string): Promise<void> {
 }
 
 async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; env: NodeJS.ProcessEnv }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-lifecycle-command-'));
-  tempDirs.push(root);
+  const workspace = await createCliTestWorkspace({
+    rootDirPrefix: 'aw-lifecycle-command-',
+    mutateRepo: addLifecycleScripts,
+  });
+  tempDirs.push(workspace.rootDir);
+  tempDirs.push(workspace.embeddedRoot!);
 
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  await addLifecycleScripts(repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  const awHome = path.join(root, 'aw-home');
-  const env = {
-    AW_HOME: awHome,
-    AW_CODEX_HOME: path.join(root, 'codex-home'),
+  const env = resolveSafeCliEnv({
+    ...workspace.env,
     AW_FORCE_CODEX_AVAILABLE: '1',
-    PATH: process.env.PATH ?? '',
-  } as NodeJS.ProcessEnv;
-  return { repoRoot, awHome, embeddedRoot, env };
+  });
+
+  return {
+    repoRoot: workspace.repoRoot,
+    awHome: workspace.awHome,
+    embeddedRoot: workspace.embeddedRoot!,
+    env,
+  };
 }
 
 interface FakePluginState {
@@ -247,7 +238,6 @@ async function readCodexProjectInstallRecord(
 }
 
 afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -255,7 +245,7 @@ afterEach(async () => {
 describe('plugin lifecycle command integration', () => {
   it('runs install lifecycle before install record commit and writes a historical lifecycle runtime', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'plugin lifecycle install embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const codex = new FakeAdapter('codex', workspace.repoRoot);
 
@@ -300,7 +290,7 @@ describe('plugin lifecycle command integration', () => {
 
   it('updates the historical lifecycle runtime reference on upgrade', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'plugin lifecycle upgrade embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const codex = new FakeAdapter('codex', workspace.repoRoot);
 
@@ -345,7 +335,7 @@ describe('plugin lifecycle command integration', () => {
 
   it('runs uninstall lifecycle from the historical runtime before native uninstall and garbage-collects it', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'plugin lifecycle uninstall embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const codex = new FakeAdapter('codex', workspace.repoRoot);
 
@@ -383,7 +373,7 @@ describe('plugin lifecycle command integration', () => {
 
   it('reports status health from the current catalog without leaking sensitive config values', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'plugin lifecycle status embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const codex = new FakeAdapter('codex', workspace.repoRoot);
 
@@ -407,7 +397,7 @@ describe('plugin lifecycle command integration', () => {
 
   it('keeps status health on the current catalog even when the historical runtime is missing', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'plugin lifecycle missing runtime embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const codex = new FakeAdapter('codex', workspace.repoRoot);
 

@@ -7,6 +7,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CommandWarningError } from '../../src/types.js';
 import { NativeCliError } from '../../src/utils/native-cli.js';
+import {
+  createSafeCliExecutionContext,
+  createSafeCommandExecutionContext,
+  runSafeCli,
+} from '../helpers/cli-runtime.js';
+import { runCliEntry } from '../helpers/cli-entry.js';
+import { TestPathFenceError } from '../helpers/test-isolation.js';
+import {
+  getCurrentSourceTestIsolation,
+  getSourceTestRepositoryCwd,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -25,6 +36,23 @@ function createCapturedIo() {
     },
     readStdout: () => stdout,
     readStderr: () => stderr,
+  };
+}
+
+function currentReceiptTestPaths(): {
+  cwd: string;
+  awHome: string;
+  env: NodeJS.ProcessEnv;
+  pathFromCwd: (...segments: string[]) => string;
+} {
+  const isolation = getCurrentSourceTestIsolation();
+  const cwd = isolation.layout.fixtureCwd;
+  const awHome = isolation.layout.awHomeDir;
+  return {
+    cwd,
+    awHome,
+    env: { ...isolation.env },
+    pathFromCwd: (...segments: string[]) => path.join(cwd, ...segments),
   };
 }
 
@@ -47,6 +75,105 @@ afterEach(async () => {
 });
 
 describe('cli entry', () => {
+  it('runCliEntry 默认注入安全 env、cwd，并捕获 IO', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const runCli = vi.fn(async (_argv: string[], options = {}) => {
+      expect(options.cwd).toBe(process.cwd());
+      expect(options.env).toMatchObject({
+        AW_HOME: isolation.env.AW_HOME,
+        AW_CODEX_HOME: isolation.env.AW_CODEX_HOME,
+        AW_CLAUDE_HOME: isolation.env.AW_CLAUDE_HOME,
+      });
+      options.io?.stdout?.('safe stdout');
+      options.io?.stderr?.('safe stderr');
+      return 0;
+    });
+
+    const result = await runCliEntry(['status'], { runCli });
+
+    expect(runCli).toHaveBeenCalledOnce();
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('safe stdout');
+    expect(result.stderr).toBe('safe stderr');
+  });
+
+  it('runCliEntry 会在调用前拦截不安全的 env 覆盖', async () => {
+    const runCli = vi.fn(async () => 0);
+
+    await expect(runCliEntry(
+      ['status'],
+      {
+        runCli,
+        env: {
+          AW_HOME: getSourceTestRepositoryCwd(),
+        } as NodeJS.ProcessEnv,
+      },
+    )).rejects.toBeInstanceOf(TestPathFenceError);
+    expect(runCli).not.toHaveBeenCalled();
+  });
+
+  it('runSafeCli 默认注入安全 env 和 cwd', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const runCli = vi.fn(async () => 0);
+
+    await runSafeCli(['--version'], { runCli });
+
+    expect(runCli).toHaveBeenCalledWith(['--version'], expect.objectContaining({
+      cwd: process.cwd(),
+      env: expect.objectContaining({
+        AW_HOME: isolation.env.AW_HOME,
+        AW_CODEX_HOME: isolation.env.AW_CODEX_HOME,
+        AW_CLAUDE_HOME: isolation.env.AW_CLAUDE_HOME,
+      }),
+    }));
+  });
+
+  it('safe context helper 继承安全 env，并允许显式 env overlay', () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const commandContext = createSafeCommandExecutionContext({
+      env: {
+        AW_FORCE_CLAUDE_AVAILABLE: '1',
+      } as NodeJS.ProcessEnv,
+    });
+    const cliContext = createSafeCliExecutionContext();
+
+    expect(commandContext.env).toMatchObject({
+      AW_HOME: isolation.env.AW_HOME,
+      AW_FORCE_CLAUDE_AVAILABLE: '1',
+    });
+    expect(cliContext.cwd).toBe(process.cwd());
+    expect(cliContext.env).toMatchObject({
+      AW_HOME: isolation.env.AW_HOME,
+    });
+  });
+
+  it('safe command context 允许显式注入 fake native runner', async () => {
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: 'fake native stdout',
+      stderr: '',
+    }));
+    const context = createSafeCommandExecutionContext({
+      nativeCliRunner,
+    });
+
+    const result = await context.nativeCliRunner({
+      command: 'codex',
+      args: ['plugin', 'marketplace', 'add', context.env.AW_HOME!],
+      cwd: process.cwd(),
+      env: context.env,
+    });
+
+    expect(nativeCliRunner).toHaveBeenCalledOnce();
+    expect(result.stdout).toBe('fake native stdout');
+  });
+
+  it('safe CLI context helper 会拦截不安全的 cwd 覆盖', () => {
+    expect(() => createSafeCliExecutionContext({
+      cwd: getSourceTestRepositoryCwd(),
+    })).toThrow(TestPathFenceError);
+  });
+
   it.each([
     ['--version'],
     ['-V'],
@@ -111,6 +238,7 @@ describe('cli entry', () => {
   });
 
   it('prints a readable install receipt without English warning prefixes', async () => {
+    const { cwd, awHome, env } = currentReceiptTestPaths();
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -118,10 +246,10 @@ describe('cli entry', () => {
         codex: ['git-commit'],
       },
       marketplace: {
-        rootDir: '/tmp/aw-home',
+        rootDir: awHome,
         changed: false,
         catalog: {
-          rootDir: '/tmp/aw-home',
+          rootDir: awHome,
           source: 'local',
         },
       },
@@ -137,8 +265,8 @@ describe('cli entry', () => {
     const exitCode = await runCli(
       ['install', 'git-commit', '--platform', 'codex', '--scope', 'user'],
       {
-        cwd: '/tmp/workspace',
-        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        cwd,
+        env,
         io,
       },
     );
@@ -152,17 +280,18 @@ describe('cli entry', () => {
   });
 
   it('prints repo-managed Codex project receipts without native marketplace success lines', async () => {
+    const { cwd, awHome, env, pathFromCwd } = currentReceiptTestPaths();
     const repoManagedArtifacts = [
       {
         platform: 'codex',
         kind: 'skill',
-        path: '/tmp/workspace/.agents/skills/repo-check',
+        path: pathFromCwd('.agents', 'skills', 'repo-check'),
         artifactKey: 'repo-check',
       },
       {
         platform: 'codex',
         kind: 'mcpServer',
-        path: '/tmp/workspace/.codex/config.toml',
+        path: pathFromCwd('.codex', 'config.toml'),
         artifactKey: 'acme.tools v1',
       },
     ];
@@ -172,11 +301,11 @@ describe('cli entry', () => {
       nativePlugins: {},
       repoManagedArtifacts,
       marketplace: {
-        rootDir: '/tmp/embedded-aw',
+        rootDir: pathFromCwd('.embedded-aw'),
         changed: false,
         mode: 'readOnly',
         catalog: {
-          rootDir: '/tmp/embedded-aw',
+          rootDir: pathFromCwd('.embedded-aw'),
           source: 'embedded',
         },
       },
@@ -195,11 +324,11 @@ describe('cli entry', () => {
       nativePlugins: {},
       repoManagedArtifacts,
       marketplace: {
-        rootDir: '/tmp/embedded-aw',
+        rootDir: pathFromCwd('.embedded-aw'),
         changed: false,
         mode: 'readOnly',
         catalog: {
-          rootDir: '/tmp/embedded-aw',
+          rootDir: pathFromCwd('.embedded-aw'),
           source: 'embedded',
         },
       },
@@ -218,8 +347,8 @@ describe('cli entry', () => {
     ] as const) {
       const capture = createCapturedIo();
       expect(await runCli(args, {
-        cwd: '/tmp/workspace',
-        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        cwd,
+        env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv,
         io: capture.io,
       })).toBe(0);
       const stdout = capture.readStdout();
@@ -235,6 +364,7 @@ describe('cli entry', () => {
   });
 
   it('prints readable uninstall and upgrade receipts', async () => {
+    const { cwd, awHome, env } = currentReceiptTestPaths();
     const uninstallCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -247,10 +377,10 @@ describe('cli entry', () => {
         claude: ['git-commit'],
       },
       marketplace: {
-        rootDir: '/tmp/aw-home',
+        rootDir: awHome,
         changed: true,
         catalog: {
-          rootDir: '/tmp/aw-home',
+          rootDir: awHome,
           source: 'local',
         },
       },
@@ -264,7 +394,7 @@ describe('cli entry', () => {
     let capture = createCapturedIo();
     expect(await runCli(
       ['uninstall', 'git-commit', '--platform', 'codex'],
-      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
+      { cwd, env, io: capture.io },
     )).toBe(0);
     expect(capture.readStdout()).toContain('已卸载 git-commit。');
     expect(capture.readStdout()).toContain('目标：Codex；当前用户。');
@@ -273,7 +403,7 @@ describe('cli entry', () => {
     capture = createCapturedIo();
     expect(await runCli(
       ['upgrade', 'git-commit', '--platform', 'claude'],
-      { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io: capture.io },
+      { cwd, env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
     expect(capture.readStdout()).toContain('已升级 git-commit。');
     expect(capture.readStdout()).toContain('目标：Claude Code；当前用户。');
@@ -293,6 +423,7 @@ describe('cli entry', () => {
     'projectConfigUnreadable',
     'unmanagedRepoArtifactConflict',
   ])('prints skipped upgrade receipts and exits 1 when every target is skipped (%s)', async (code) => {
+    const { cwd, awHome, env } = currentReceiptTestPaths();
     const upgradeCommand = vi.fn(async () => ({
       plugins: [],
       platforms: ['codex'],
@@ -313,8 +444,8 @@ describe('cli entry', () => {
     const exitCode = await runCli(
       ['upgrade', '--all', '--platform', 'codex', '--scope', 'project'],
       {
-        cwd: '/tmp/workspace',
-        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        cwd,
+        env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv,
         io: capture.io,
       },
     );
@@ -326,6 +457,7 @@ describe('cli entry', () => {
   });
 
   it('prints succeeded + skipped upgrade receipts and keeps exit 0', async () => {
+    const { cwd, awHome, env } = currentReceiptTestPaths();
     const upgradeCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex', 'claude'],
@@ -341,10 +473,10 @@ describe('cli entry', () => {
         claude: ['git-commit'],
       },
       marketplace: {
-        rootDir: '/tmp/aw-home',
+        rootDir: awHome,
         changed: false,
         catalog: {
-          rootDir: '/tmp/aw-home',
+          rootDir: awHome,
           source: 'local',
         },
       },
@@ -356,8 +488,8 @@ describe('cli entry', () => {
     const exitCode = await runCli(
       ['upgrade', '--all', '--platform', 'both', '--scope', 'project'],
       {
-        cwd: '/tmp/workspace',
-        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        cwd,
+        env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv,
         io: capture.io,
       },
     );
@@ -370,14 +502,15 @@ describe('cli entry', () => {
   });
 
   it('prints embedded catalog receipts only when the command returns that decision', async () => {
+    const { cwd, awHome, env, pathFromCwd } = currentReceiptTestPaths();
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
       marketplace: {
-        rootDir: '/tmp/aw-home',
+        rootDir: awHome,
         changed: false,
         catalog: {
-          rootDir: '/tmp/embedded-aw',
+          rootDir: pathFromCwd('.embedded-aw'),
           source: 'embedded',
           reason: 'local marketplace is missing, stale, or unhealthy',
         },
@@ -393,7 +526,7 @@ describe('cli entry', () => {
 
     expect(await runCli(
       ['install', 'git-commit', '--platform', 'codex'],
-      { cwd: '/tmp/workspace', env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv, io },
+      { cwd, env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv, io },
     )).toBe(0);
 
     const stdout = readStdout();
@@ -1590,6 +1723,7 @@ describe('cli entry', () => {
   });
 
   it('P0 baseline: default install receipts should not leak internal implementation nouns', async () => {
+    const { cwd, awHome, env } = currentReceiptTestPaths();
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
       platforms: ['codex'],
@@ -1597,10 +1731,10 @@ describe('cli entry', () => {
         codex: ['git-commit'],
       },
       marketplace: {
-        rootDir: '/tmp/aw-home',
+        rootDir: awHome,
         changed: false,
         catalog: {
-          rootDir: '/tmp/aw-home',
+          rootDir: awHome,
           source: 'local',
         },
       },
@@ -1616,8 +1750,8 @@ describe('cli entry', () => {
     const exitCode = await runCli(
       ['install', 'git-commit', '--platform', 'codex', '--scope', 'user'],
       {
-        cwd: '/tmp/workspace',
-        env: { AW_HOME: '/tmp/aw-home' } as NodeJS.ProcessEnv,
+        cwd,
+        env: { ...env, AW_HOME: awHome } as NodeJS.ProcessEnv,
         io,
       },
     );

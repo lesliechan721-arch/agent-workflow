@@ -2566,6 +2566,23 @@ describe('CodexAdapter', () => {
     expect(nativeCliRunner).not.toHaveBeenCalled();
   });
 
+  it('uses the default native guard when tests forget to inject a Codex native runner', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('请显式注入 fake native runner');
+  });
+
+  it('uses the default app-server guard when tests forget to inject a fake Codex app-server harness', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
+
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('测试默认禁止启动真实 `codex app-server`');
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('fake app-server harness');
+  });
+
   it('wraps native marketplace add failures with an actionable Codex error', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

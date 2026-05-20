@@ -31,6 +31,11 @@ import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js'
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { TestPathFenceError } from '../helpers/test-isolation.js';
+import {
+  getSourceTestRepositoryCwd,
+  runWithCurrentRepositoryCwdAsReadOnly,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -159,14 +164,36 @@ async function listSkillBackupDirs(
 }
 
 afterEach(async () => {
-  setCatalogPackageSourceForTests(null);
-  setEmbeddedPluginsRootOverrideForTests(null);
-  delete process.env.AW_HOME;
-  delete process.env.AW_CODEX_HOME;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('local marketplace', () => {
+  it('blocks local marketplace writes when AW_HOME points at a read-only fixture root', async () => {
+    const { embeddedRoot } = await makeWorkspace();
+    const repositoryCwd = path.resolve(getSourceTestRepositoryCwd(), '..', '..');
+    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
+      const repositoryCwd = process.cwd();
+      setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+      const error = await initializeLocalMarketplace({
+        force: true,
+        env: {
+          ...process.env,
+          AW_HOME: path.join(repositoryCwd, '.aw-readonly'),
+        },
+      }).catch((value) => value);
+      expect(error).toBeInstanceOf(TestPathFenceError);
+      expect((error as TestPathFenceError).details).toMatchObject({
+        access: 'write',
+        source: 'AW_HOME',
+        reason: 'writeToReadOnlyRoot',
+        conflictingRoot: {
+          path: repositoryCwd,
+        },
+      });
+    }, { repositoryCwd });
+  });
+
   it('writes and reads isolated current catalog cache entries', async () => {
     const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-'));
     tempDirs.push(cacheRoot);

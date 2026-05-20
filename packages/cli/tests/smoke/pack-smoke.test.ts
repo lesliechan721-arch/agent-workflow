@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
@@ -21,6 +23,16 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
+}
+
+function registerSmokeWritableRoot(rootPath: string, source: string): string {
+  return registerCurrentTestWritableStateRoot(rootPath, source);
+}
+
+async function createSmokeTempRoot(prefix: string, source: string): Promise<string> {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(rootPath);
+  return registerSmokeWritableRoot(rootPath, source);
 }
 
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
@@ -60,11 +72,12 @@ describe('pack smoke', () => {
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pack-smoke-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot('aw-pack-smoke-', 'pack smoke temp root');
 
     const packDir = path.join(tempRoot, 'pack');
     const unpackDir = path.join(tempRoot, 'unpack');
+    registerSmokeWritableRoot(packDir, 'pack smoke tarball staging root');
+    registerSmokeWritableRoot(unpackDir, 'pack smoke tarball unpack root');
     await fs.ensureDir(packDir);
     await fs.ensureDir(unpackDir);
 
@@ -98,13 +111,19 @@ describe('pack smoke', () => {
   it('bundles public slashCommands correctly from the unpacked tarball runtime', async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pack-slash-commands-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-pack-slash-commands-',
+      'pack smoke slash commands temp root',
+    );
 
     const packDir = path.join(tempRoot, 'pack');
     const unpackDir = path.join(tempRoot, 'unpack');
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
+    registerSmokeWritableRoot(packDir, 'pack smoke slash commands tarball staging root');
+    registerSmokeWritableRoot(unpackDir, 'pack smoke slash commands unpack root');
+    registerSmokeWritableRoot(tempRepo, 'pack smoke slash commands repo root');
+    registerSmokeWritableRoot(outputRoot, 'pack smoke slash commands output root');
     await fs.ensureDir(packDir);
     await fs.ensureDir(unpackDir);
     await fs.copy(fixturePath('repo-template'), tempRepo);

@@ -48,6 +48,18 @@ export type NativeCliRunner = (
   invocation: NativeCliInvocation,
 ) => Promise<NativeCliResult>;
 
+let nativeCliRunnerOverrideForTests: NativeCliRunner | null = null;
+
+export function setNativeCliRunnerOverrideForTests(
+  runner: NativeCliRunner | null,
+): void {
+  nativeCliRunnerOverrideForTests = runner;
+}
+
+export function getDefaultNativeCliRunner(): NativeCliRunner {
+  return nativeCliRunnerOverrideForTests ?? execFileNativeCliRunner;
+}
+
 function isAbortLikeError(error: unknown): boolean {
   return Boolean(
     error &&
@@ -117,7 +129,7 @@ export const execFileNativeCliRunner: NativeCliRunner = async (
 
 export async function runNativeCli(
   invocation: NativeCliInvocation,
-  runner: NativeCliRunner = execFileNativeCliRunner,
+  runner?: NativeCliRunner,
 ): Promise<NativeCliResult> {
-  return runner(invocation);
+  return (runner ?? getDefaultNativeCliRunner())(invocation);
 }

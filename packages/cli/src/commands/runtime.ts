@@ -20,8 +20,9 @@ import {
   createNoopReporter,
 } from '../output/reporter.js';
 import type { NativeCliInvocation, NativeCliResult, NativeCliRunner } from '../utils/native-cli.js';
-import { NativeCliError, execFileNativeCliRunner } from '../utils/native-cli.js';
+import { NativeCliError, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { PlatformAdapter, PlatformName } from '../types.js';
 import type { Scope } from '../types.js';
 
@@ -255,13 +256,39 @@ function createTimestampForPath(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+function assertDebugLogPathForTests(
+  logFile: string,
+  source: 'default' | 'explicit',
+  commandName: string,
+): string {
+  return assertTestWritablePath(
+    logFile,
+    source === 'explicit'
+      ? '--log-file'
+      : commandName === 'status'
+        ? 'AW_DEBUG default status log file'
+        : 'AW_DEBUG default log file',
+    source === 'explicit'
+      ? '用 createIsolatedTestEnv() 提供安全 cwd/TMPDIR/AW_HOME，或通过 registerWritableStateRoot() 登记 --log-file 目标路径。'
+      : '用 createIsolatedTestEnv() 生成默认 TMPDIR/AW_HOME，或通过 registerWritableStateRoot() 登记调试日志目录。',
+  );
+}
+
 function defaultLogFile(commandName: string, env: NodeJS.ProcessEnv): string {
   const fileName = `aw-${createTimestampForPath()}-${commandName}.log`;
   if (commandName === 'status') {
-    return path.join(os.tmpdir(), 'agent-workflows', fileName);
+    return assertDebugLogPathForTests(
+      path.join(os.tmpdir(), 'agent-workflows', fileName),
+      'default',
+      commandName,
+    );
   }
 
-  return path.join(resolveAwHome(env), 'logs', fileName);
+  return assertDebugLogPathForTests(
+    path.join(resolveAwHome(env), 'logs', fileName),
+    'default',
+    commandName,
+  );
 }
 
 export function createCommandDiagnostics(
@@ -280,7 +307,9 @@ export function createCommandDiagnostics(
     metadata: input.metadata,
     ...(hasLogFile
       ? {
-          logFile: input.logFile ?? defaultLogFile(commandName, env),
+          logFile: input.logFile
+            ? assertDebugLogPathForTests(input.logFile, 'explicit', commandName)
+            : defaultLogFile(commandName, env),
           logFileSource: input.logFile ? input.logFileSource ?? 'explicit' : 'default',
         }
       : {}),
@@ -1376,7 +1405,7 @@ export function createCommandExecutionContext(
   const diagnostics = createCommandDiagnostics(input.diagnostics, env);
   const reporter = input.reporter ?? createNoopReporter();
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
-  const baseRunner = input.nativeCliRunner ?? execFileNativeCliRunner;
+  const baseRunner = input.nativeCliRunner ?? getDefaultNativeCliRunner();
   const contextShell: Pick<CommandExecutionContext, 'reporter' | 'debugLogger'> = {
     reporter,
     debugLogger,

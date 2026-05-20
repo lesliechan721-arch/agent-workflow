@@ -10,9 +10,29 @@ import {
 } from '../constants.js';
 import type { PlatformName, Scope } from '../types.js';
 import { validateBundleLayout } from './bundle-layout.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 let embeddedPluginsRootOverride: string | null = null;
 const validatedEmbeddedPluginRoots = new Set<string>();
+
+function assertWritableHomePathForTests(
+  targetPath: string,
+  source: string,
+  recommendedFix: string,
+): string {
+  return assertTestWritablePath(targetPath, source, recommendedFix);
+}
+
+function assertWritableCatalogCachePathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 current catalog cache 根。',
+  );
+}
 
 export function resolveCliPackageRoot(): string {
   let currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -71,40 +91,67 @@ export function getEmbeddedPluginsRootOverrideForTests(): string | null {
 }
 
 export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.AW_CLAUDE_HOME || path.join(os.homedir(), '.claude');
+  const home = env.AW_CLAUDE_HOME || path.join(os.homedir(), '.claude');
+  return assertWritableHomePathForTests(
+    home,
+    env.AW_CLAUDE_HOME ? 'AW_CLAUDE_HOME' : 'AW_CLAUDE_HOME fallback (os.homedir())',
+    '用 createIsolatedTestEnv() 生成默认 AW_CLAUDE_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Claude home。',
+  );
 }
 
 export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.AW_CODEX_HOME || path.join(os.homedir(), '.codex');
+  const home = env.AW_CODEX_HOME || path.join(os.homedir(), '.codex');
+  return assertWritableHomePathForTests(
+    home,
+    env.AW_CODEX_HOME ? 'AW_CODEX_HOME' : 'AW_CODEX_HOME fallback (os.homedir())',
+    '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Codex home。',
+  );
 }
 
 export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.AW_HOME || path.join(os.homedir(), '.aw');
+  const home = env.AW_HOME || path.join(os.homedir(), '.aw');
+  return assertWritableHomePathForTests(
+    home,
+    env.AW_HOME ? 'AW_HOME' : 'AW_HOME fallback (os.homedir())',
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 AW home。',
+  );
 }
 
 export function resolveCurrentCatalogCacheRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(resolveAwHome(env), 'catalog-cache');
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveAwHome(env), 'catalog-cache'),
+    'current catalog cache root',
+  );
 }
 
 export function resolveCurrentCatalogCacheEntriesDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(resolveCurrentCatalogCacheRoot(env), 'entries');
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveCurrentCatalogCacheRoot(env), 'entries'),
+    'current catalog cache entries',
+  );
 }
 
 export function resolveCurrentCatalogCacheEntryDir(
   cacheKey: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(resolveCurrentCatalogCacheEntriesDir(env), cacheKey);
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveCurrentCatalogCacheEntriesDir(env), cacheKey),
+    'current catalog cache entry',
+  );
 }
 
 export function resolveCurrentCatalogCacheStagingDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(resolveCurrentCatalogCacheRoot(env), 'staging');
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveCurrentCatalogCacheRoot(env), 'staging'),
+    'current catalog cache staging',
+  );
 }
 
 export async function resolveAwHomeCanonical(
@@ -114,7 +161,11 @@ export async function resolveAwHomeCanonical(
 }
 
 export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(getClaudeHome(env), 'plugins');
+  return assertWritableHomePathForTests(
+    path.join(getClaudeHome(env), 'plugins'),
+    'Claude plugins root',
+    '用 createIsolatedTestEnv() 生成默认 AW_CLAUDE_HOME，或通过 registerWritableStateRoot() 登记 Claude plugins 根。',
+  );
 }
 
 export function getEmbeddedPluginsRootCandidate(): string {

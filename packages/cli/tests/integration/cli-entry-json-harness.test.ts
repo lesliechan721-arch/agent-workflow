@@ -96,6 +96,7 @@ afterEach(async () => {
 
 describe('cli entry JSON stdout harness', () => {
   it('parses CLI stdout JSON across json, verbose, and debug flag combinations', async () => {
+    vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-json-'));
     tempDirs.push(tempDir);
 

@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +27,25 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
+function registerSmokeWritableRoot(rootPath: string, source: string): string {
+  return registerCurrentTestWritableStateRoot(rootPath, source);
+}
+
+async function createSmokeTempRoot(prefix: string, source: string): Promise<string> {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(rootPath);
+  return registerSmokeWritableRoot(rootPath, source);
+}
+
+async function buildCli(root: string): Promise<void> {
+  await execFileAsync('pnpm', ['build'], {
+    cwd: root,
+    env: process.env,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  await installCurrentSmokeDistIsolationBridge();
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -35,11 +56,7 @@ describe('build smoke', () => {
     const outputRoot = path.join(root, 'packages', 'cli', 'plugins-dist');
     await fs.remove(outputRoot);
 
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    await buildCli(root);
 
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
@@ -191,11 +208,7 @@ describe('build smoke', () => {
     const packageJson = await fs.readJson(path.join(root, 'packages', 'cli', 'package.json')) as {
       version: string;
     };
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    await buildCli(root);
 
     await expect(
       execFileAsync('node', ['packages/cli/dist/index.js', '--help'], {
@@ -231,9 +244,9 @@ describe('build smoke', () => {
       stderr: expect.stringContaining('不再接受 `--skill-trigger` / `-t`'),
     });
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dist-entry-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot('aw-dist-entry-', 'build smoke dist entry temp root');
     const awHome = path.join(tempRoot, 'aw-home');
+    registerSmokeWritableRoot(awHome, 'build smoke dist entry AW_HOME');
     await expect(
       execFileAsync('node', ['packages/cli/dist/index.js', 'init', '--force'], {
         cwd: root,
@@ -250,16 +263,13 @@ describe('build smoke', () => {
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {
     const root = repoRoot();
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    await buildCli(root);
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-smoke-assets-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot('aw-smoke-assets-', 'build smoke assets temp root');
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
+    registerSmokeWritableRoot(tempRepo, 'build smoke assets repo root');
+    registerSmokeWritableRoot(outputRoot, 'build smoke assets output root');
     await fs.copy(fixturePath('repo-template'), tempRepo);
     const manifestPath = path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
@@ -333,16 +343,16 @@ describe('build smoke', () => {
 
   it('bundles public slashCommands through the compiled bundler without shipping raw source directories', async () => {
     const root = repoRoot();
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    await buildCli(root);
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-smoke-slash-commands-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-smoke-slash-commands-',
+      'build smoke slash commands temp root',
+    );
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
+    registerSmokeWritableRoot(tempRepo, 'build smoke slash commands repo root');
+    registerSmokeWritableRoot(outputRoot, 'build smoke slash commands output root');
     await fs.copy(fixturePath('repo-template'), tempRepo);
     await fs.copy(
       fixturePath('codex-project-repo-managed', 'plugins', 'slashCommands-only'),
@@ -387,16 +397,16 @@ describe('build smoke', () => {
 
   it('bundles scripts.node plugins through the compiled staging bundle path', async () => {
     const root = repoRoot();
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    await buildCli(root);
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-smoke-scripts-node-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-smoke-scripts-node-',
+      'build smoke scripts.node temp root',
+    );
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
+    registerSmokeWritableRoot(tempRepo, 'build smoke scripts.node repo root');
+    registerSmokeWritableRoot(outputRoot, 'build smoke scripts.node output root');
     await fs.copy(fixturePath('repo-template'), tempRepo);
     await writeNodeScriptFixture(tempRepo);
 

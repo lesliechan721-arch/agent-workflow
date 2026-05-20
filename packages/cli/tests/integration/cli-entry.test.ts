@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAdapter } from '../../src/adapters/claude.js';
 import { CodexAdapter } from '../../src/adapters/codex.js';
 import * as discoveryModule from '../../src/commands/discovery.js';
-import { runCli } from '../../src/index.js';
+import { runCli as runCliRaw } from '../../src/index.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
@@ -40,14 +40,19 @@ import {
 import {
   resolveCodexPaths,
   resolveCodexProjectKey,
-  setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import {
   createCapturedCliIo as createCapturedIo,
   runCliEntry,
 } from '../helpers/cli-entry.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { runSafeCli as runCli } from '../helpers/cli-runtime.js';
+import {
+  activateCliEmbeddedRoot,
+  createCliTestWorkspace,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
 import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
+import { withCurrentTestSafeCwd } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 const DEFAULT_STATUS_FORBIDDEN_TERMS = [
@@ -64,6 +69,10 @@ const DEFAULT_STATUS_FORBIDDEN_TERMS = [
   'currentCatalog',
   'marketplace',
 ];
+
+function normalizeMacTmpPath(value: string): string {
+  return value.replace(/^\/private(?=\/var\/folders\/)/, '');
+}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -82,33 +91,14 @@ async function makeWorkspace(): Promise<{
   embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-'));
-  tempDirs.push(root);
-
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  const awHome = path.join(root, 'aw-home');
-  const codexHome = path.join(root, 'codex-home');
-  const claudeHome = path.join(root, 'claude-home');
-
-  const env = {
-    ...process.env,
-    AW_HOME: awHome,
-    AW_CODEX_HOME: codexHome,
-    AW_CLAUDE_HOME: claudeHome,
-    AW_FORCE_CODEX_AVAILABLE: '1',
-    PATH: '',
-  } as NodeJS.ProcessEnv;
-
+  const workspace = await createCliTestWorkspace();
   return {
-    repoRoot,
-    awHome,
-    codexHome,
-    claudeHome,
-    embeddedRoot,
-    env,
+    repoRoot: workspace.repoRoot,
+    awHome: workspace.awHome,
+    codexHome: workspace.codexHome,
+    claudeHome: workspace.claudeHome,
+    embeddedRoot: workspace.embeddedRoot!,
+    env: workspace.env,
   };
 }
 
@@ -122,34 +112,16 @@ async function makeWorkspaceWithMutator(
   embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-entry-'));
-  tempDirs.push(root);
-
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  await mutateRepo(repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  const awHome = path.join(root, 'aw-home');
-  const codexHome = path.join(root, 'codex-home');
-  const claudeHome = path.join(root, 'claude-home');
-
-  const env = {
-    ...process.env,
-    AW_HOME: awHome,
-    AW_CODEX_HOME: codexHome,
-    AW_CLAUDE_HOME: claudeHome,
-    AW_FORCE_CODEX_AVAILABLE: '1',
-    PATH: '',
-  } as NodeJS.ProcessEnv;
-
+  const workspace = await createCliTestWorkspace({
+    mutateRepo,
+  });
   return {
-    repoRoot,
-    awHome,
-    codexHome,
-    claudeHome,
-    embeddedRoot,
-    env,
+    repoRoot: workspace.repoRoot,
+    awHome: workspace.awHome,
+    codexHome: workspace.codexHome,
+    claudeHome: workspace.claudeHome,
+    embeddedRoot: workspace.embeddedRoot!,
+    env: workspace.env,
   };
 }
 
@@ -276,6 +248,13 @@ function createCodexMarketplaceAddRunner(
       stdout: '',
       stderr: '',
     };
+  };
+}
+
+function createGuardOnlyWorkspaceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    AW_FORCE_CODEX_AVAILABLE: '1',
   };
 }
 
@@ -453,14 +432,43 @@ class FakeCliCleanupAdapter extends PassiveAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('cli entry integration', () => {
+  it('runCliEntry 可以只注入 env overlay，并默认复用当前安全 cwd 与共享 home', async () => {
+    const workspace = await makeWorkspace();
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
+
+    expect(workspace.awHome).toBe(process.env.AW_HOME);
+    expect(workspace.codexHome).toBe(process.env.AW_CODEX_HOME);
+    expect(workspace.claudeHome).toBe(process.env.AW_CLAUDE_HOME);
+
+    await withCurrentTestSafeCwd(workspace.repoRoot, async () => {
+      const result = await runCliEntry(
+        ['init', '--json'],
+        {
+          env: {
+            AW_FORCE_CODEX_AVAILABLE: '1',
+          } as NodeJS.ProcessEnv,
+        },
+      );
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.parseJsonStdout<Record<string, unknown>>()).toMatchObject({
+        command: 'init',
+        catalog: {
+          fullCatalog: {
+            freshness: 'localFixture',
+          },
+        },
+      });
+    });
+  });
+
   it('emits init --json catalog warmup receipt fields without borrowing status/config schemas', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -510,6 +518,7 @@ describe('cli entry integration', () => {
   it('lets cleanup --force remove the target while keeping verified dependents and printing the follow-up guidance', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-cleanup-force-'));
     tempDirs.push(root);
+    registerCliTempRoot(root, 'cli entry cleanup force root');
     const builder = await createMinimalPluginInstallStateFixtureBuilder(root);
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
     const configPath = path.join(builder.paths.codexHome, 'config.toml');
@@ -579,7 +588,7 @@ describe('cli entry integration', () => {
 
   it('rejects schema-aware config commands for plugins without AW config schema', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -600,7 +609,7 @@ describe('cli entry integration', () => {
 
   it('supports aw config set/get/reset without leaking schema-less raw values', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let capture = createCapturedIo();
 
     let exitCode = await runCli(
@@ -767,7 +776,7 @@ describe('cli entry integration', () => {
 
   it('supports built-in SkillTrigger config for plugins without ordinary config schema', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let capture = createCapturedIo();
 
     let exitCode = await runCli(
@@ -866,7 +875,7 @@ describe('cli entry integration', () => {
 
   it('treats fixed and orphaned SkillTrigger entries as built-in config fields', async () => {
     const workspace = await makeWorkspaceWithMutator(makeGitCommitSkillTriggerFixed);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     await fs.outputJson(
       path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
       {
@@ -947,7 +956,7 @@ describe('cli entry integration', () => {
 
   it('rejects project-local SkillTrigger reads and writes while surfacing invalid stored values in project scope', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const localStorePath = path.join(
       workspace.repoRoot,
       '.agent-workflows',
@@ -1040,7 +1049,7 @@ describe('cli entry integration', () => {
 
   it('rejects removed config configure subcommand', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -1059,7 +1068,7 @@ describe('cli entry integration', () => {
 
   it('requires --yes for existing config reset and never prompts', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const userConfigPath = path.join(
       workspace.awHome,
       'plugin-config',
@@ -1148,7 +1157,7 @@ describe('cli entry integration', () => {
 
   it('scopes config get/list JSON diagnostics to the requested store', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     await fs.outputJson(
       path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
       {
@@ -1237,7 +1246,7 @@ describe('cli entry integration', () => {
 
   it('prints repair guidance for invalid config in get and list output', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaWithFileToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     await fs.outputJson(
       path.join(workspace.repoRoot, '.agent-workflows', 'plugin-config', 'git-commit', 'config.json'),
       {
@@ -1278,7 +1287,7 @@ describe('cli entry integration', () => {
 
   it('rejects deprecated --skill-trigger at the source entry', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
 
     const exitCode = await runCli(
@@ -1296,7 +1305,7 @@ describe('cli entry integration', () => {
 
   it('rejects install --skill-trigger before writing runtime state', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const nativeCalls: NativeCliInvocation[] = [];
     const { io, readStderr } = createCapturedIo();
     const codexRuntime = createCodexNativeCliRuntime(workspace, nativeCalls);
@@ -1336,7 +1345,7 @@ describe('cli entry integration', () => {
 
   it('uses the injected native runner for Codex marketplace add failures in runCli', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
       throw new NativeCliError({
@@ -1364,7 +1373,7 @@ describe('cli entry integration', () => {
 
   it('records native marketplace add failure details in the debug log', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const logFile = path.join(workspace.awHome, 'native-debug.log');
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
@@ -1378,7 +1387,7 @@ describe('cli entry integration', () => {
       });
     };
 
-    const exitCode = await runCli(
+    const exitCode = await runCliRaw(
       [
         'install',
         'git-commit',
@@ -1401,13 +1410,25 @@ describe('cli entry integration', () => {
     const logLines = (await fs.readFile(logFile, 'utf8')).trim().split('\n');
     const logEntries = logLines
       .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
-    const nativeErrorEntry = logEntries
-      .find((entry) => entry.event.type === 'native:error');
+    const nativeErrorEntry = logEntries.find((entry) => {
+      const error = entry.event.data?.error as {
+        exitCode?: unknown;
+        stdout?: unknown;
+        stderr?: unknown;
+        causeCode?: unknown;
+      } | undefined;
+      return (
+        error?.exitCode === 77 &&
+        error.stdout === 'native stdout' &&
+        error.stderr === 'native stderr' &&
+        error.causeCode === 'EACCES'
+      );
+    });
     expect(nativeErrorEntry?.event.data).toMatchObject({
       invocation: {
         command: 'codex',
         args: ['plugin', 'marketplace', 'add', await fs.realpath(workspace.awHome)],
-        cwd: workspace.repoRoot,
+        cwd: normalizeMacTmpPath(workspace.repoRoot),
       },
       error: {
         exitCode: 77,
@@ -1433,7 +1454,7 @@ describe('cli entry integration', () => {
 
   it('prints a readable Codex native add error when the runner has no output', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
       throw new NativeCliError({
@@ -1459,9 +1480,45 @@ describe('cli entry integration', () => {
     expect(readStderr()).toContain('exit code 1');
   });
 
+  it('runCliEntry 默认阻止真实 Codex native runner，并提示注入 fake runner', async () => {
+    const workspace = await makeWorkspace();
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
+
+    const result = await runCliEntry(
+      ['install', 'git-commit', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: createGuardOnlyWorkspaceEnv(workspace.env),
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('请显式注入 fake native runner');
+    expect(result.stderr).toContain('createSafeCliRuntimeOptions().cwd');
+    expect(result.stderr).toContain('createSafeCliRuntimeOptions().env');
+  });
+
+  it('runCliEntry 默认阻止真实 codex app-server，并提示注入 fake harness', async () => {
+    const workspace = await makeWorkspace();
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
+
+    const result = await runCliEntry(
+      ['install', 'git-commit', '--platform', 'codex'],
+      {
+        cwd: workspace.repoRoot,
+        env: workspace.env,
+        nativeCliRunner: createCodexMarketplaceAddRunner(workspace),
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('测试默认禁止启动真实 `codex app-server`');
+    expect(result.stderr).toContain('fake app-server harness');
+  });
+
   it('prints verbose command decisions during install', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const codexRuntime = createCodexNativeCliRuntime(workspace);
     const installSideEffect = codexRuntime.scheduleInstallSideEffect();
@@ -1497,7 +1554,7 @@ describe('cli entry integration', () => {
 
   it('explains missing recovery evidence in stderr and debug events when the native write already happened', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const logFile = path.join(workspace.awHome, 'native-recovery-risk.log');
     const capture = createCapturedIo();
     const codexRuntime = createCodexNativeCliRuntime(workspace);
@@ -1551,7 +1608,7 @@ describe('cli entry integration', () => {
 
   it('persists marketplace, rpc, recovery, and post-check events in the debug log for successful Codex user installs and uninstalls', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
     const installLogFile = path.join(workspace.awHome, 'native-install-events.log');
     let capture = createCapturedIo();
@@ -1671,7 +1728,7 @@ describe('cli entry integration', () => {
 
   it('rejects explicit upgrade --skill-trigger before rewriting installed runtime', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     const capture = createCapturedIo();
     const codexRuntime = createCodexNativeCliRuntime(workspace);
@@ -1710,7 +1767,7 @@ describe('cli entry integration', () => {
 
   it('rejects upgrade --all --skill-trigger at the entry layer', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
 
     const exitCode = await runCli(
@@ -1728,7 +1785,7 @@ describe('cli entry integration', () => {
 
   it('fails upgrade --all at the local catalog gate before degraded replay warnings', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
     let capture = createCapturedIo();
     expect(await runCli(
@@ -1760,7 +1817,7 @@ describe('cli entry integration', () => {
 
   it('prints degraded replay warnings before explicit upgrade inheritance errors', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
     let capture = createCapturedIo();
     expect(await runCli(
@@ -1808,7 +1865,7 @@ describe('cli entry integration', () => {
 
   it('prints preparation warnings once for init and install entry flows', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
     let capture = createCapturedIo();
     expect(await runCli(
@@ -1879,7 +1936,7 @@ describe('cli entry integration', () => {
     ['config reset', ['config', 'reset', 'git-commit', '--no-interactive']],
   ])('rejects removed interactive flags for %s', async (_label, argv) => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -1897,7 +1954,7 @@ describe('cli entry integration', () => {
 
   it('rejects removed uninstall --force at the CLI entry', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -1919,7 +1976,7 @@ describe('cli entry integration', () => {
     ['upgrade', ['upgrade'], 'upgrade 命令至少需要一个插件名', '`aw upgrade <plugin>` / `aw upgrade --all`'],
   ])('does not prompt for missing %s targets', async (_label, argv, message, hint) => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let promptCalled = false;
     const capture = createCapturedIo();
 
@@ -1959,7 +2016,7 @@ describe('cli entry integration', () => {
 
   it('fails install required config without prompting and points to aw config set or aw', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let promptCalled = false;
     const capture = createCapturedIo();
 
@@ -1993,7 +2050,7 @@ describe('cli entry integration', () => {
 
   it('fails upgrade required config without prompting and points to aw config set or aw', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     await fs.outputJson(
       path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
       { token: 'user-secret' },
@@ -2050,8 +2107,7 @@ describe('cli entry integration', () => {
     const workspace = await makeWorkspaceWithMutator((repoRoot) =>
       addNativeHookOnlyPlugin(repoRoot),
     );
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    const nativeCalls: NativeCliInvocation[] = [];
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const logFile = path.join(workspace.awHome, 'repo-managed-debug.log');
     const capture = createCapturedIo();
 
@@ -2071,12 +2127,10 @@ describe('cli entry integration', () => {
         cwd: workspace.repoRoot,
         env: workspace.env,
         io: capture.io,
-        nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
       },
     );
 
     expect(exitCode, capture.readStderr()).toBe(0);
-    expect(nativeCalls).toEqual([]);
     expect(capture.readStdout()).toContain('已安装 prompt-guard。');
     expect(capture.readStdout()).toContain('目标：Codex；当前项目。');
     expect(capture.readStdout()).toContain('已更新项目文件：.codex/hooks.json、.codex/.agent-workflows-manifest.json。');
@@ -2087,8 +2141,8 @@ describe('cli entry integration', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
-    expect(logEntries.find((entry) => entry.event.type === 'run:metadata')?.event.data).toMatchObject({
-      cwd: workspace.repoRoot,
+    const runMetadata = logEntries.find((entry) => entry.event.type === 'run:metadata')?.event.data;
+    expect(runMetadata).toMatchObject({
       awHome: workspace.awHome,
       rawArgv: [
         'install',
@@ -2102,6 +2156,9 @@ describe('cli entry integration', () => {
         logFile,
       ],
     });
+    expect(normalizeMacTmpPath(String(runMetadata?.cwd))).toBe(
+      normalizeMacTmpPath(workspace.repoRoot),
+    );
     expect(logEntries).toContainEqual(
       expect.objectContaining({
         event: expect.objectContaining({
@@ -2127,7 +2184,7 @@ describe('cli entry integration', () => {
       addCodexProjectFixturePlugins(repoRoot, ['skills-mcp']),
     );
     await trustCodexProject(workspace);
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const nativeCalls: NativeCliInvocation[] = [];
 
     let capture = createCapturedIo();
@@ -2196,7 +2253,7 @@ describe('cli entry integration', () => {
 
   it('rejects --no-interactive as an unknown option', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -2214,7 +2271,7 @@ describe('cli entry integration', () => {
 
   it('does not prompt in CI even when a fake prompt is injected', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let promptCalled = false;
     const prompt = {
       selectScope: async () => {
@@ -2252,7 +2309,7 @@ describe('cli entry integration', () => {
 
   it('fails bare aw in CI with console guidance instead of help output', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const capture = createCapturedIo();
 
     const exitCode = await runCli(
@@ -2277,7 +2334,7 @@ describe('cli entry integration', () => {
 
   it('keeps real status JSON stdout parseable when verbose or debug is enabled', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
     for (const flags of [
       ['--json'],
@@ -2322,7 +2379,7 @@ describe('cli entry integration', () => {
 
   it('reports Codex marketplace source drift in status JSON and default next steps', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     let capture = createCapturedIo();
     const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
     await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
@@ -2470,7 +2527,7 @@ describe('cli entry integration', () => {
 
     for (const testCase of cases) {
       const workspace = await makeWorkspace();
-      setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+      activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
       await testCase.setup(workspace);
 
       const jsonResult = await runCliEntry(
@@ -2513,7 +2570,7 @@ describe('cli entry integration', () => {
 
   it('keeps stdout empty when status --json fails before rendering', async () => {
     const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     vi.spyOn(discoveryModule, 'buildCommandCandidates')
       .mockRejectedValueOnce(new Error('simulated status discovery failure'));
 

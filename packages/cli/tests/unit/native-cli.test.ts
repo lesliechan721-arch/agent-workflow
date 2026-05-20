@@ -5,8 +5,27 @@ import {
   execFileNativeCliRunner,
   runNativeCli,
 } from '../../src/utils/native-cli.js';
+import { TestNativeCliGuardError } from '../helpers/native-guard.js';
 
 describe('native-cli', () => {
+  it('blocks guarded agent CLIs by default in tests', async () => {
+    const invocation = {
+      command: 'codex',
+      args: ['plugin', 'marketplace', 'add', '/tmp/aw-home'],
+      cwd: '/tmp/workspace',
+      env: {
+        AW_HOME: '/tmp/aw-home',
+        PATH: '/tmp/bin',
+      } as NodeJS.ProcessEnv,
+    };
+
+    await expect(runNativeCli(invocation)).rejects.toBeInstanceOf(TestNativeCliGuardError);
+    await expect(runNativeCli(invocation)).rejects.toThrow('请显式注入 fake native runner');
+    await expect(runNativeCli(invocation)).rejects.toThrow(
+      'cwd 来源: runNativeCli()/createCommandExecutionContext() invocation.cwd',
+    );
+  });
+
   it('passes invocations through fake runners', async () => {
     const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
 

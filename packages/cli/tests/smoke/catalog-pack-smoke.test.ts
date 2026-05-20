@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
@@ -27,6 +29,16 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
     files.push(entry.name);
   }
   return files.sort();
+}
+
+function registerSmokeWritableRoot(rootPath: string, source: string): string {
+  return registerCurrentTestWritableStateRoot(rootPath, source);
+}
+
+async function createSmokeTempRoot(prefix: string, source: string): Promise<string> {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(rootPath);
+  return registerSmokeWritableRoot(rootPath, source);
 }
 
 async function unpackSingleTarball(packDir: string, unpackDir: string): Promise<string> {
@@ -50,13 +62,20 @@ afterEach(async () => {
 describe('catalog pack smoke', () => {
   it('packs sidecar and full catalog tarballs directly from staging output', async () => {
     const root = repoRoot();
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-pack-smoke-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-catalog-pack-smoke-',
+      'catalog pack smoke temp root',
+    );
     const outputRoot = path.join(tempRoot, 'plugins-dist');
     const sidecarPackDir = path.join(tempRoot, 'sidecar-pack');
     const sidecarUnpackDir = path.join(tempRoot, 'sidecar-unpack');
     const fullPackDir = path.join(tempRoot, 'full-pack');
     const fullUnpackDir = path.join(tempRoot, 'full-unpack');
+    registerSmokeWritableRoot(outputRoot, 'catalog pack smoke output root');
+    registerSmokeWritableRoot(sidecarPackDir, 'catalog pack smoke sidecar pack root');
+    registerSmokeWritableRoot(sidecarUnpackDir, 'catalog pack smoke sidecar unpack root');
+    registerSmokeWritableRoot(fullPackDir, 'catalog pack smoke full pack root');
+    registerSmokeWritableRoot(fullUnpackDir, 'catalog pack smoke full unpack root');
 
     const { bundlePlugins } = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'scripts', 'bundle-plugins.ts')).href,

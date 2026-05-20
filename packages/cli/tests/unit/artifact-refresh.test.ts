@@ -42,6 +42,10 @@ import {
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
 import { readTrackingManifest, writeTrackingManifest } from '../../src/utils/tracking.js';
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -554,6 +558,100 @@ describe('artifact refresh reapply helper', () => {
       status: 'succeeded',
       triggerKeys: ['explorerModel'],
     });
+    expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks staged historical marketplace writes outside registered temp roots and allows them after registration', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-stage-fence-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin('staged-cache');
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    const artifactPath = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore');
+    await fs.outputFile(path.join(artifactPath, 'SKILL.md'), 'old runtime skill\n');
+    const trackedArtifact = createTrackedDynamicSkillArtifact({
+      artifactPath,
+      refreshKeys: ['explorerModel'],
+    });
+    await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'user',
+      artifacts: [trackedArtifact],
+      historicalVersion: '0.0.7',
+    });
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-05T00:00:00.000Z',
+          artifacts: [trackedArtifact],
+        },
+      },
+    });
+
+    codexAdapterInstallExtensions.mockImplementation(async () => {
+      await fs.outputFile(path.join(artifactPath, 'SKILL.md'), 'historical refreshed skill\n');
+      return [
+        createTrackedDynamicSkillArtifact({
+          artifactPath,
+          refreshKeys: ['explorerModel'],
+        }),
+      ];
+    });
+
+    const isolation = getCurrentSourceTestIsolation();
+    const externalTmpRoot = path.join(isolation.layout.rootDir, 'external-artifact-refresh-stage');
+    await fs.ensureDir(externalTmpRoot);
+
+    codexAdapterInstallPluginFromMarketplace.mockImplementation(async (
+      _refreshPlugin: PluginMeta,
+      _scope: string,
+      options: { marketplacePath?: string },
+    ) => {
+      expect(options.marketplacePath).toContain(externalTmpRoot);
+    });
+
+    const tmpdirSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(externalTmpRoot);
+    try {
+      await expect(
+        reapplyConfigRefresh({
+          plugin,
+          commandScope: 'user',
+          cwd: repoRoot,
+          env,
+        }),
+      ).resolves.toMatchObject({
+        attempted: true,
+        status: 'failed',
+        error: expect.stringContaining('staging root'),
+      });
+
+      registerCurrentTestWritableStateRoot(
+        externalTmpRoot,
+        'artifact refresh staged historical marketplace root',
+      );
+
+      await expect(reapplyConfigRefresh({
+        plugin,
+        commandScope: 'user',
+        cwd: repoRoot,
+        env,
+      })).resolves.toMatchObject({
+        attempted: true,
+        status: 'succeeded',
+      });
+    } finally {
+      tmpdirSpy.mockRestore();
+    }
+
     expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
   });
 

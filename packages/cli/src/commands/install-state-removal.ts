@@ -92,6 +92,7 @@ import {
 } from '../utils/local-marketplace.js';
 import { resolveSkillTriggerPolicies } from '../utils/skill-trigger-preferences.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import { sha256Hex } from '../install-state/internal.js';
 
 export interface InstallStateRemovalRuntime extends CommandExecutionContextInput {
@@ -206,6 +207,17 @@ function createMaterializationTarget(
     kind: 'localMarketplaceRuntime',
     root: resolveAwHome(env),
   };
+}
+
+function assertCleanupBackupPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 cleanup backup 路径。',
+  );
 }
 
 function resolveTrackingDir(
@@ -922,14 +934,20 @@ async function backupFiles(filePaths: string[], env: NodeJS.ProcessEnv): Promise
   if (filePaths.length === 0) {
     return [];
   }
-  const backupRoot = path.join(resolveAwHome(env), 'cleanup-backups', Date.now().toString());
+  const backupRoot = assertCleanupBackupPathForTests(
+    path.join(resolveAwHome(env), 'cleanup-backups', Date.now().toString()),
+    'cleanup backup root',
+  );
   const backedUp: string[] = [];
   await fs.ensureDir(backupRoot);
   for (const filePath of filePaths) {
     if (!(await fs.pathExists(filePath))) {
       continue;
     }
-    const destination = path.join(backupRoot, path.basename(filePath));
+    const destination = assertCleanupBackupPathForTests(
+      path.join(backupRoot, path.basename(filePath)),
+      'cleanup backup file',
+    );
     await fs.copy(filePath, destination, { overwrite: true });
     backedUp.push(destination);
   }

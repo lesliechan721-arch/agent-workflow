@@ -12,7 +12,6 @@ import {
 import { createInteractiveInstallPlan } from '../../src/commands/interactive.js';
 import { installCommand, installTargetsOnPlatforms } from '../../src/commands/install.js';
 import { normalizeInstallCommandOptions } from '../../src/commands/options.js';
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
 import type {
@@ -36,12 +35,15 @@ import {
 } from '../../src/utils/paths.js';
 import { readTrackingManifest } from '../../src/utils/tracking.js';
 import { readInstalledLedger } from '../../src/utils/local-marketplace.js';
+import { createSafeCommandExecutionContext, resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import {
   runWithZeroWriteSnapshot,
 } from '../helpers/repo-managed-state.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
-
-const tempDirs: string[] = [];
+import {
+  registerCliEmbeddedRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -81,8 +83,10 @@ async function makeWorkspace(pluginDirs: string[]): Promise<{
   embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-project-installability-'));
-  tempDirs.push(root);
+  const root = registerCliTempRoot(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-project-installability-')),
+    'Codex project installability workspace root',
+  );
 
   const repoRoot = path.join(root, 'repo');
   await fs.ensureDir(path.join(repoRoot, 'plugins'));
@@ -99,16 +103,15 @@ async function makeWorkspace(pluginDirs: string[]): Promise<{
     );
   }
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'Codex project installability embedded root');
 
-  const env = {
-    ...process.env,
+  const env = resolveSafeCliEnv({
     AW_HOME: path.join(root, 'aw-home'),
     AW_CODEX_HOME: path.join(root, 'codex-home'),
     AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     AW_FORCE_CODEX_AVAILABLE: '1',
     PATH: '',
-  } as NodeJS.ProcessEnv;
+  });
 
   setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
   return {
@@ -138,7 +141,7 @@ async function updateWorkspacePluginManifest(
 
 async function refreshWorkspaceEmbeddedRoot(workspace: { repoRoot: string }): Promise<void> {
   const embeddedRoot = await createSyntheticEmbeddedRoot(workspace.repoRoot);
-  tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'Codex project installability refreshed embedded root');
   setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 }
 
@@ -233,9 +236,8 @@ class RecordingAdapter implements PlatformAdapter {
   }
 }
 
-afterEach(async () => {
+afterEach(() => {
   setEmbeddedPluginsRootOverrideForTests(null);
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('Codex project installability', () => {
@@ -847,7 +849,7 @@ describe('Codex project installability', () => {
       disabledReason?: string;
       id: string;
     }> = [];
-    const context = createCommandExecutionContext({
+    const context = createSafeCommandExecutionContext({
       env: workspace.env,
       interactive: true,
       prompt: {
@@ -916,7 +918,7 @@ describe('Codex project installability', () => {
       selectable: boolean;
       disabledReason?: string;
     }> = [];
-    const context = createCommandExecutionContext({
+    const context = createSafeCommandExecutionContext({
       env: workspace.env,
       interactive: true,
       prompt: {
@@ -972,7 +974,7 @@ describe('Codex project installability', () => {
     const promptOrder: string[] = [];
     const platformCalls: Array<{ available: string[]; message?: string }> = [];
     const scopeCalls: Scope[] = [];
-    const context = createCommandExecutionContext({
+    const context = createSafeCommandExecutionContext({
       env: workspace.env,
       interactive: true,
       prompt: {
@@ -1045,7 +1047,7 @@ describe('Codex project installability', () => {
       scope?: string;
       selectable: boolean;
     }> = [];
-    const context = createCommandExecutionContext({
+    const context = createSafeCommandExecutionContext({
       env: workspace.env,
       interactive: true,
       prompt: {
@@ -1107,7 +1109,7 @@ describe('Codex project installability', () => {
     await refreshWorkspaceEmbeddedRoot(workspace);
 
     let promptCalled = false;
-    const context = createCommandExecutionContext({
+    const context = createSafeCommandExecutionContext({
       env: workspace.env,
       interactive: true,
       prompt: {

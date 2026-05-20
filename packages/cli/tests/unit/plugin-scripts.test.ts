@@ -27,6 +27,11 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import {
+  getCurrentSourceTestIsolation,
+  getSourceTestRepositoryCwd,
+  registerCurrentTestReadonlyFixtureRoot,
+} from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -207,6 +212,36 @@ describe('plugin lifecycle scripts', () => {
 
     await written.cleanup();
     await expect(fs.pathExists(written.contextPath)).resolves.toBe(false);
+  });
+
+  it('blocks lifecycle context temp writes when AW_HOME points at a read-only fixture root', async () => {
+    const root = await makeTempRoot('aw-plugin-scripts-context-fence-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest('context-fence-plugin');
+    delete manifest.config;
+    const plugin = await writePlugin(root, manifest);
+    const repositoryCwd = getSourceTestRepositoryCwd();
+    registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
+    const env = { AW_HOME: repositoryCwd } as NodeJS.ProcessEnv;
+    const target = await resolveLifecycleScriptTarget({
+      event: 'install',
+      pluginName: plugin.manifest.name,
+      platform: 'codex',
+      currentPlugin: plugin,
+      cwd,
+      runtimeOs: 'linux',
+      env,
+    });
+
+    await expect(writeLifecycleScriptContext({
+      target,
+      event: 'install',
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    })).rejects.toThrow(/source: AW_HOME/);
   });
 
   it('runs a node lifecycle script with isolated env and cleans context on success', async () => {
@@ -645,11 +680,12 @@ describe('plugin lifecycle scripts', () => {
   });
 
   it('builds an isolated spawn env from the command env whitelist', () => {
+    const isolation = getCurrentSourceTestIsolation();
     const env = buildLifecycleSpawnEnv({
       commandEnv: {
-        AW_HOME: '/aw',
-        AW_CODEX_HOME: '/codex',
-        AW_CLAUDE_HOME: '/claude',
+        AW_HOME: isolation.layout.awHomeDir,
+        AW_CODEX_HOME: isolation.layout.codexHomeDir,
+        AW_CLAUDE_HOME: isolation.layout.claudeHomeDir,
         HOME: '/real-home',
         TMPDIR: '/real-tmp',
         PATH: '/bin',
@@ -666,9 +702,9 @@ describe('plugin lifecycle scripts', () => {
     });
 
     expect(env).toMatchObject({
-      AW_HOME: '/aw',
-      AW_CODEX_HOME: '/codex',
-      AW_CLAUDE_HOME: '/claude',
+      AW_HOME: isolation.layout.awHomeDir,
+      AW_CODEX_HOME: isolation.layout.codexHomeDir,
+      AW_CLAUDE_HOME: isolation.layout.claudeHomeDir,
       PATH: '/bin',
       HOME: '/isolated/home',
       TMPDIR: '/isolated/tmp',
@@ -679,7 +715,7 @@ describe('plugin lifecycle scripts', () => {
 
     const defaults = buildLifecycleSpawnEnv({
       commandEnv: {
-        AW_HOME: '/aw',
+        AW_HOME: isolation.layout.awHomeDir,
         PATH: '/bin',
       } as NodeJS.ProcessEnv,
       contextPath: '/ctx.json',
@@ -691,10 +727,10 @@ describe('plugin lifecycle scripts', () => {
       bundleRoot: '/bundle',
       runtimeOs: 'linux',
     });
-    expect(defaults.AW_CODEX_HOME).toBe('/aw/isolated-codex-home');
-    expect(defaults.AW_CLAUDE_HOME).toBe('/aw/isolated-claude-home');
+    expect(defaults.AW_CODEX_HOME).toBe(path.join(isolation.layout.awHomeDir, 'isolated-codex-home'));
+    expect(defaults.AW_CLAUDE_HOME).toBe(path.join(isolation.layout.awHomeDir, 'isolated-claude-home'));
 
-    const windowsAwHome = 'C:\\aw';
+    const windowsAwHome = isolation.layout.awHomeDir;
     const windowsTempDir = 'C:\\isolated';
     const windowsEnv = buildLifecycleSpawnEnv({
       commandEnv: {
@@ -973,5 +1009,26 @@ describe('plugin lifecycle scripts', () => {
     expect(result.deleted).toContain(orphan.snapshotRoot);
     await expect(fs.pathExists(kept.bundleRoot)).resolves.toBe(true);
     await expect(fs.pathExists(orphan.bundleRoot)).resolves.toBe(false);
+  });
+
+  it('blocks lifecycle snapshot staging when AW_HOME points at a read-only fixture root', async () => {
+    const root = await makeTempRoot('aw-plugin-scripts-snapshot-fence-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const manifest = createManifest('snapshot-fence-plugin');
+    delete manifest.config;
+    const plugin = await writePlugin(root, manifest);
+    const repositoryCwd = getSourceTestRepositoryCwd();
+    registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
+
+    await expect(prepareLifecycleConfigSnapshot({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      env: {
+        AW_HOME: repositoryCwd,
+      } as NodeJS.ProcessEnv,
+    })).rejects.toThrow(/source: AW_HOME/);
   });
 });

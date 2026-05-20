@@ -14,6 +14,7 @@ import {
   readInstallRecordFileSafe,
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
+import { runWithCurrentRepositoryCwdAsReadOnly } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -366,22 +367,24 @@ describe('minimal plugin install state fixtures', () => {
   });
 
   it('keeps lightweight regression coverage for config set/unset/reset and the removed config configure entry', async () => {
-    const cliIndexSource = await fs.readFile(
-      path.join(process.cwd(), 'src/index.ts'),
-      'utf8',
-    );
-    const cliEntryTestSource = await fs.readFile(
-      path.join(process.cwd(), 'tests/integration/cli-entry.test.ts'),
-      'utf8',
-    );
+    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
+      const cliIndexSource = await fs.readFile(
+        path.join(process.cwd(), 'src/index.ts'),
+        'utf8',
+      );
+      const cliEntryTestSource = await fs.readFile(
+        path.join(process.cwd(), 'tests/integration/cli-entry.test.ts'),
+        'utf8',
+      );
 
-    expect(cliIndexSource).toContain(".command('set')");
-    expect(cliIndexSource).toContain(".command('unset')");
-    expect(cliIndexSource).toContain(".command('reset')");
-    expect(cliIndexSource).not.toContain(".command('configure')");
+      expect(cliIndexSource).toContain(".command('set')");
+      expect(cliIndexSource).toContain(".command('unset')");
+      expect(cliIndexSource).toContain(".command('reset')");
+      expect(cliIndexSource).not.toContain(".command('configure')");
 
-    expect(cliEntryTestSource).toContain('supports aw config set/get/reset without leaking schema-less raw values');
-    expect(cliEntryTestSource).toContain('rejects removed config configure subcommand');
-    expect(cliEntryTestSource).toContain("['config', 'configure', 'git-commit']");
+      expect(cliEntryTestSource).toContain('supports aw config set/get/reset without leaking schema-less raw values');
+      expect(cliEntryTestSource).toContain('rejects removed config configure subcommand');
+      expect(cliEntryTestSource).toContain("['config', 'configure', 'git-commit']");
+    });
   });
 });

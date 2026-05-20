@@ -39,9 +39,17 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  activateCliEmbeddedRoot,
+  registerCliCatalogSourceRoot,
+  registerCliEmbeddedRoot,
+  registerCliFixtureRepoRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
+import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
@@ -55,46 +63,119 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
-async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
+function registerRepoFixtureRoots(): void {
+  registerCurrentTestReadonlyFixtureRoot(fixturePath(), 'cli integration fixture root');
+}
+
+function replaceProcessEnv(nextEnv: NodeJS.ProcessEnv): void {
+  const nextKeys = new Set(Object.keys(nextEnv));
+
+  for (const key of Object.keys(process.env)) {
+    if (!nextKeys.has(key)) {
+      delete process.env[key];
+    }
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+function registerEmbeddedCatalogRoots(
+  embeddedRoot: string,
+  source: string,
+): void {
+  registerCliEmbeddedRoot(embeddedRoot, `${source} embedded root`);
+  registerCliCatalogSourceRoot(
+    getCatalogFullPackageRoot(embeddedRoot),
+    `${source} catalog source root`,
+  );
+}
+
+async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string; claudeHome: string }> {
+  registerRepoFixtureRoots();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-'));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'cli integration root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'cli integration repo root');
   await removeAppsFromGitCommit(repoRoot);
   if (await fs.pathExists(path.join(repoRoot, '.codex'))) {
     await fs.chmod(path.join(repoRoot, '.codex'), 0o700).catch(() => undefined);
   }
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerEmbeddedCatalogRoots(embeddedRoot, 'cli integration');
 
   return {
     repoRoot,
     awHome: path.join(root, 'aw-home'),
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
+    claudeHome: path.join(root, 'claude-home'),
   };
 }
 
 async function makeWorkspaceWithMutator(
   mutateRepo: (repoRoot: string) => Promise<void>,
-): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
+): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string; claudeHome: string }> {
+  registerRepoFixtureRoots();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-'));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'cli integration mutated root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'cli integration mutated repo root');
   await mutateRepo(repoRoot);
   await removeAppsFromGitCommit(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerEmbeddedCatalogRoots(embeddedRoot, 'cli integration mutated');
 
   return {
     repoRoot,
     awHome: path.join(root, 'aw-home'),
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
+    claudeHome: path.join(root, 'claude-home'),
   };
+}
+
+function activateWorkspaceEnv(
+  workspace: {
+    awHome: string;
+    embeddedRoot: string;
+    codexHome?: string;
+    claudeHome?: string;
+  },
+  options: {
+    forceCodex?: boolean;
+    forceClaude?: boolean;
+    overrides?: NodeJS.ProcessEnv;
+  } = {},
+): NodeJS.ProcessEnv {
+  const env = resolveSafeCliEnv({
+    AW_HOME: workspace.awHome,
+    ...(workspace.codexHome ? { AW_CODEX_HOME: workspace.codexHome } : {}),
+    ...(workspace.claudeHome ? { AW_CLAUDE_HOME: workspace.claudeHome } : {}),
+    ...(options.forceCodex ? { AW_FORCE_CODEX_AVAILABLE: '1' } : {}),
+    ...(options.forceClaude ? { AW_FORCE_CLAUDE_AVAILABLE: '1' } : {}),
+    ...options.overrides,
+  });
+  replaceProcessEnv(env);
+  activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli integration embedded root activation');
+  return env;
+}
+
+function normalizeMacTmpPath(value: string): string {
+  return value.replace(/^\/private(?=\/var\/folders\/)/, '');
 }
 
 async function readInstallRecord(options: {
@@ -702,28 +783,23 @@ async function addInstructionAndHookOnlyPlugins(repoRoot: string): Promise<void>
 }
 
 afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  delete process.env.AW_HOME;
-  delete process.env.AW_CLAUDE_HOME;
-  delete process.env.AW_CODEX_HOME;
-  delete process.env.AW_FORCE_CODEX_AVAILABLE;
-  delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('CLI integration', () => {
   it('keeps aw init --force scoped to current catalog resolution without materializing ~/.aw runtime state', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, embeddedRoot });
 
     const result = await initCommand({ force: true });
 
     expect(result.changed).toBe(true);
     expect(result.catalog).toMatchObject({
       source: 'local',
-      rootDir: getCatalogFullPackageRoot(embeddedRoot),
     });
+    expect(normalizeMacTmpPath(result.catalog.rootDir)).toBe(
+      normalizeMacTmpPath(getCatalogFullPackageRoot(embeddedRoot)),
+    );
     await expect(fs.pathExists(path.join(awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(awHome, 'plugins', 'git-commit'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(awHome, 'installed.json'))).resolves.toBe(false);
@@ -733,11 +809,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (workspaceRepoRoot) => addNativeHookOnlyPlugin(workspaceRepoRoot, 'prompt-guard'),
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceCodex: true, forceClaude: true });
 
     const result = await initCommand({ force: true });
     await expect(validateLocalMarketplaceLayout(result.rootDir)).resolves.toBeUndefined();
@@ -752,10 +824,7 @@ describe('CLI integration', () => {
 
   it('keeps status read-only when ~/.aw is stale and falls back to the embedded catalog', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await fs.ensureDir(awHome);
     await fs.writeJson(
@@ -788,11 +857,7 @@ describe('CLI integration', () => {
 
   it('supports historical status fallback and queries both platforms when status omits --platform', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceCodex: true, forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -840,10 +905,7 @@ describe('CLI integration', () => {
 
   it('keeps status structured fields on install-record truth even if adapter reports degraded compatibility metadata', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
     await installCommand(
@@ -898,10 +960,7 @@ describe('CLI integration', () => {
 
   it('renders daily status summaries without raw diagnostic field names by default', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -957,10 +1016,7 @@ describe('CLI integration', () => {
         },
       });
     });
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
     await initCommand({ force: true });
 
     const result = await statusCommand(
@@ -997,10 +1053,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addRequiredConfigSchemaToGitCommit,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1071,10 +1124,7 @@ describe('CLI integration', () => {
         }));
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1167,10 +1217,7 @@ describe('CLI integration', () => {
         }));
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1212,10 +1259,7 @@ describe('CLI integration', () => {
 
   it('reports unknown status targets as notInstalled instead of throwing', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1241,10 +1285,7 @@ describe('CLI integration', () => {
 
   it('lists managed plugin summaries when status has no plugin argument', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
     await installCommand(
@@ -1289,10 +1330,7 @@ describe('CLI integration', () => {
 
   it('omits catalogCompatibility when the current catalog is available but no compatibility state applies', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1323,10 +1361,7 @@ describe('CLI integration', () => {
 
   it('reports Unknown plugin for install misses but keeps status fallback on historical evidence', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1381,11 +1416,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceCodex: true, forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -1448,11 +1479,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       async (root) => addNativeHookOnlyPlugin(root, 'prompt-guard'),
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceCodex: true, forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -1490,10 +1517,7 @@ describe('CLI integration', () => {
 
   it('marks installed.json degraded after native state succeeded but later install failed', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1528,10 +1552,7 @@ describe('CLI integration', () => {
 
   it('marks installed.json degraded with artifact_write when instruction-only codex install fails after artifacts are written', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(addInstructionOnlyPlugin);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1568,10 +1589,7 @@ describe('CLI integration', () => {
 
   it('rolls back real Codex repo-managed artifacts when install fails before tracking is written', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1626,10 +1644,7 @@ describe('CLI integration', () => {
         await addGitCommitReviewMcp(workspaceRepoRoot);
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
     await installCommand(
@@ -1691,11 +1706,7 @@ describe('CLI integration', () => {
 
   it('rejects upgrade --all on degraded ledger and still installs both targets when fresh install preflight tolerates unknown scopeInitialized', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceCodex: true, forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -1759,10 +1770,7 @@ describe('CLI integration', () => {
 
   it('keeps capability-changed and missing managed plugins non-fatal during upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1853,10 +1861,7 @@ describe('CLI integration', () => {
         }));
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -1939,10 +1944,7 @@ describe('CLI integration', () => {
 
   it('keeps Claude user ledger untouched when uninstalling only project scope', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -2026,10 +2028,7 @@ describe('CLI integration', () => {
 
   it('keeps Codex shared user native state when user uninstall still has project shared refs', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -2117,10 +2116,7 @@ describe('CLI integration', () => {
 
   it('keeps Codex shared user native state when uninstalling project scope', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
 
@@ -2194,10 +2190,7 @@ describe('CLI integration', () => {
 
   it('preserves remaining Codex hooks when another tracked plugin disappears from the current catalog', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(addHookOnlyPlugin);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await installCommand(
       ['git-commit', 'npm-guard'],
@@ -2230,7 +2223,8 @@ describe('CLI integration', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'npm-guard'));
     const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(nextEmbeddedRoot);
-    setEmbeddedPluginsRootOverrideForTests(nextEmbeddedRoot);
+    registerEmbeddedCatalogRoots(nextEmbeddedRoot, 'cli integration refreshed');
+    activateCliEmbeddedRoot(nextEmbeddedRoot, 'cli integration refreshed embedded root');
 
     await uninstallCommand(
       ['git-commit'],
@@ -2270,10 +2264,7 @@ describe('CLI integration', () => {
 
   it('keeps historical Codex hooks when uninstalling an instruction-only plugin after ~/.aw is refreshed', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(addInstructionAndHookOnlyPlugins);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await installCommand(
       ['docs-note', 'npm-guard'],
@@ -2288,7 +2279,8 @@ describe('CLI integration', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'npm-guard'));
     const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(nextEmbeddedRoot);
-    setEmbeddedPluginsRootOverrideForTests(nextEmbeddedRoot);
+    registerEmbeddedCatalogRoots(nextEmbeddedRoot, 'cli integration refreshed');
+    activateCliEmbeddedRoot(nextEmbeddedRoot, 'cli integration refreshed embedded root');
 
     await initCommand({ force: true });
 
@@ -2333,10 +2325,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addNativeHookOnlyPlugin,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await initCommand({ force: true });
     const { plugins } = await resolveCatalogPlugins(['prompt-guard'], process.env);
@@ -2391,10 +2380,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addMixedHookPlugin,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
     await seedCodexExternalHooks(repoRoot);
 
     await installCommand(
@@ -2489,10 +2475,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addNativeAndMixedHookPlugins,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
     await seedCodexExternalMultiHandlerHooks(repoRoot);
 
     await installCommand(
@@ -2584,10 +2567,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addNativeAndMixedHookPlugins,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
     await seedCodexExternalHooks(repoRoot);
     await trustCodexProject(codexHome, repoRoot);
 
@@ -2603,7 +2583,8 @@ describe('CLI integration', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'prompt-guard'));
     const withoutPromptGuard = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(withoutPromptGuard);
-    setEmbeddedPluginsRootOverrideForTests(withoutPromptGuard);
+    registerEmbeddedCatalogRoots(withoutPromptGuard, 'cli integration without prompt guard');
+    activateCliEmbeddedRoot(withoutPromptGuard, 'cli integration without prompt guard embedded root');
     await initCommand({ force: true });
 
     await upgradeCommand(
@@ -2641,7 +2622,8 @@ describe('CLI integration', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'mixed-guard'));
     const withoutHookPlugins = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(withoutHookPlugins);
-    setEmbeddedPluginsRootOverrideForTests(withoutHookPlugins);
+    registerEmbeddedCatalogRoots(withoutHookPlugins, 'cli integration without hook plugins');
+    activateCliEmbeddedRoot(withoutHookPlugins, 'cli integration without hook plugins embedded root');
     await initCommand({ force: true });
 
     const nativeStatus = await statusCommand(
@@ -2685,10 +2667,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addMixedHookPlugin,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await installCommand(
       ['mixed-guard'],
@@ -2756,11 +2735,7 @@ describe('CLI integration', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addClaudeNativeHookOnlyPlugin,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_CLAUDE_HOME = path.join(path.dirname(codexHome), 'claude-home');
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceClaude: true });
 
     await initCommand({ force: true });
     const { plugins } = await resolveCatalogPlugins(['claude-compact'], process.env);
@@ -2821,7 +2796,8 @@ describe('CLI integration', () => {
     await fs.remove(path.join(repoRoot, 'plugins', 'claude-compact'));
     const withoutClaudePlugin = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(withoutClaudePlugin);
-    setEmbeddedPluginsRootOverrideForTests(withoutClaudePlugin);
+    registerEmbeddedCatalogRoots(withoutClaudePlugin, 'cli integration without Claude plugin');
+    activateCliEmbeddedRoot(withoutClaudePlugin, 'cli integration without Claude plugin embedded root');
     await initCommand({ force: true });
 
     const result = await statusCommand(
@@ -2852,10 +2828,7 @@ describe('CLI integration', () => {
 
   it('anchors Codex project artifacts at the repo root when commands run from a subdirectory', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceCodex: true });
 
     await fs.ensureDir(path.join(repoRoot, '.git'));
     const subdir = path.join(repoRoot, 'packages', 'feature');

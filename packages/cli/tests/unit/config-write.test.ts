@@ -44,13 +44,32 @@ import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
+import * as pluginConfigModule from '../../src/utils/plugin-config.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
 import * as skillTriggerModule from '../../src/utils/skill-trigger-preferences.js';
 import { writeTrackingManifest } from '../../src/utils/tracking.js';
+import {
+  TestPathFenceError,
+  normalizeAbsolutePath,
+} from '../helpers/path-fence.js';
+import {
+  getSourceTestRepositoryCwd,
+  registerCurrentTestWritableStateRoot,
+  runWithCurrentRepositoryCwdAsReadOnly,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
+
+interface ExpectedAsyncPathFenceViolation {
+  access: 'read' | 'write';
+  path: string;
+  source: string;
+  reason?: 'outsideRegisteredRoots' | 'writeToReadOnlyRoot';
+  conflictingRootPath?: string;
+  recommendedFixIncludes?: string;
+}
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -139,7 +158,39 @@ async function materializePlugin(root: string, plugin: PluginMeta): Promise<Plug
   };
 }
 
+async function expectAsyncPathFenceViolation(
+  action: () => Promise<unknown>,
+  expected: ExpectedAsyncPathFenceViolation,
+): Promise<TestPathFenceError> {
+  let caughtError: unknown;
+
+  try {
+    await action();
+  } catch (error) {
+    caughtError = error;
+  }
+
+  expect(caughtError).toBeInstanceOf(TestPathFenceError);
+  const pathFenceError = caughtError as TestPathFenceError;
+  expect(pathFenceError.details.access).toBe(expected.access);
+  expect(pathFenceError.details.source).toBe(expected.source);
+  expect(pathFenceError.details.normalizedUnsafePath).toBe(normalizeAbsolutePath(expected.path));
+
+  if (expected.reason) {
+    expect(pathFenceError.details.reason).toBe(expected.reason);
+  }
+  if (expected.conflictingRootPath) {
+    expect(pathFenceError.details.conflictingRoot?.path).toBe(normalizeAbsolutePath(expected.conflictingRootPath));
+  }
+  if (expected.recommendedFixIncludes) {
+    expect(pathFenceError.details.recommendedFix).toContain(expected.recommendedFixIncludes);
+  }
+
+  return pathFenceError;
+}
+
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -294,6 +345,85 @@ describe('plugin config write helper', () => {
     });
   });
 
+  it('replays project-scope Codex SkillTrigger runtime into .agents/skills', async () => {
+    const root = await makeTempRoot('aw-config-write-project-built-in-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+
+    const basePlugin = createPlugin('project-skill-plugin');
+    const plugin = await materializePlugin(root, {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: './skills',
+        skillTriggers: {
+          commit: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        config: undefined,
+      },
+    } as PluginMeta);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+    vi.spyOn(skillTriggerModule, 'commitMaterializedSkillTriggerPreference').mockResolvedValue(undefined);
+
+    const receipt = await applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    });
+
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+    ]));
+    expect(materializeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({
+        platform: 'codex',
+        scope: 'project',
+        kind: 'repoSkill',
+        root: path.join(repoRoot, '.agents', 'skills'),
+      }),
+    }));
+  });
+
   it('returns a no-op when replaying built-in runtime for plugins without SkillTrigger fields', async () => {
     const root = await makeTempRoot('aw-config-write-no-built-in-');
     const cwd = path.join(root, 'repo');
@@ -305,6 +435,125 @@ describe('plugin config write helper', () => {
       cwd,
       env: {} as NodeJS.ProcessEnv,
     })).resolves.toEqual([]);
+  });
+
+  it('blocks project shared config writes when cwd is only registered as a read-only repo fixture', async () => {
+    const root = await makeTempRoot('aw-config-write-readonly-project-');
+    const repositoryCwd = pluginConfigModule.resolveAwProjectRoot(getSourceTestRepositoryCwd());
+    const plugin = await materializePlugin(
+      root,
+      createPlugin('readonly-project-config-plugin'),
+    );
+
+    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
+      const repositoryCwd = process.cwd();
+      const projectRoot = pluginConfigModule.resolveAwProjectRoot(repositoryCwd);
+
+      await expectAsyncPathFenceViolation(
+        () => applyPluginConfigWrite({
+          plugin,
+          scope: 'project',
+          cwd: repositoryCwd,
+          env: process.env,
+          request: {
+            updates: {
+              retries: '2',
+            },
+          },
+        }),
+        {
+          access: 'write',
+          path: path.join(
+            projectRoot,
+            '.agent-workflows',
+            'plugin-config',
+            plugin.manifest.name,
+            'config.json',
+          ),
+          source: 'project shared plugin config store (.agent-workflows/plugin-config)',
+          reason: 'writeToReadOnlyRoot',
+          conflictingRootPath: projectRoot,
+          recommendedFixIncludes: 'withSafeTestCwd()',
+        },
+      );
+      expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+    }, { repositoryCwd });
+  });
+
+  it('reports a failed target result when only .agent-workflows is writable but .agents/skills stays read-only', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-readonly-runtime-');
+    const repositoryCwd = pluginConfigModule.resolveAwProjectRoot(getSourceTestRepositoryCwd());
+    const basePlugin = createPlugin('readonly-runtime-plugin');
+    const plugin = await materializePlugin(root, {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: './skills',
+        skillTriggers: {
+          commit: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        config: undefined,
+      },
+    } as PluginMeta);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+
+    vi.spyOn(pluginConfigModule, 'writePluginConfigStore').mockResolvedValue({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      path: '',
+    });
+
+    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
+      const repositoryCwd = process.cwd();
+      const projectRoot = pluginConfigModule.resolveAwProjectRoot(repositoryCwd);
+      registerCurrentTestWritableStateRoot(
+        path.join(projectRoot, '.agent-workflows'),
+        'project config store',
+      );
+
+      vi.mocked(pluginConfigModule.writePluginConfigStore).mockResolvedValue({
+        pluginName: plugin.manifest.name,
+        scope: 'project',
+        path: path.join(
+          projectRoot,
+          '.agent-workflows',
+          'plugin-config',
+          plugin.manifest.name,
+          'config.json',
+        ),
+      });
+
+      const receipt = await applyBuiltInConfigWrite({
+        pluginName: plugin.manifest.name,
+        plugin,
+        scope: 'project',
+        cwd: repositoryCwd,
+        env: process.env,
+        key: 'aw.skillTriggers.commit.trigger',
+        action: 'set',
+        value: 'manual',
+      });
+
+      expect(receipt.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          target: {
+            pluginName: plugin.manifest.name,
+            platform: 'codex',
+            scope: 'project',
+          },
+          action: 'configApply',
+          state: 'failed',
+          message: expect.stringContaining(path.join(projectRoot, '.agents', 'skills')),
+        }),
+      ]));
+    }, { repositoryCwd });
   });
 
   it('prewrites project shared config without refresh when the current project has no local record', async () => {

@@ -2,7 +2,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 
+import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { expectPathFenceViolation } from '../helpers/test-isolation.js';
+import {
+  getCurrentSourceTestIsolation,
+  getSourceTestRepositoryCwd,
+  registerCurrentTestReadonlyFixtureRoot,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 
 afterEach(() => {
   vi.resetModules();
@@ -47,9 +56,7 @@ describe('command runtime', () => {
         isTTY: true,
         write: (text) => output.push(text),
       },
-      env: {
-        AW_HOME: '/tmp/aw-home',
-      } as NodeJS.ProcessEnv,
+      env: process.env,
       diagnostics: {
         commandName: 'status',
       },
@@ -79,9 +86,7 @@ describe('command runtime', () => {
         isTTY: true,
         write: vi.fn(),
       },
-      env: {
-        AW_HOME: '/tmp/aw-home',
-      } as NodeJS.ProcessEnv,
+      env: process.env,
       diagnostics: {
         commandName: 'console',
       },
@@ -386,24 +391,94 @@ describe('command runtime', () => {
 
   it('keeps status debug logs in the system temp dir by default', async () => {
     const { createCommandDiagnostics } = await import('../../src/commands/runtime.js');
-    const env = {
-      AW_HOME: '/tmp/aw-home',
-    } as NodeJS.ProcessEnv;
+    const isolation = getCurrentSourceTestIsolation();
 
     const statusDiagnostics = createCommandDiagnostics({
       commandName: 'status',
       debug: true,
-    }, env);
+    }, process.env);
     const installDiagnostics = createCommandDiagnostics({
       commandName: 'install',
       debug: true,
-    }, env);
+    }, process.env);
 
     expect(statusDiagnostics).toMatchObject({
       debug: true,
       verbose: true,
     });
-    expect(statusDiagnostics.logFile).toContain(path.join(os.tmpdir(), 'agent-workflows'));
-    expect(installDiagnostics.logFile).toContain(path.join('/tmp/aw-home', 'logs'));
+    expect(statusDiagnostics.logFile).toContain(path.join(isolation.layout.tmpDir, 'agent-workflows'));
+    expect(installDiagnostics.logFile).toContain(path.join(isolation.layout.awHomeDir, 'logs'));
+  });
+
+  it('blocks explicit debug log files outside writable test roots', async () => {
+    const { createCommandDiagnostics } = await import('../../src/commands/runtime.js');
+    const repositoryCwd = getSourceTestRepositoryCwd();
+    registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
+
+    expectPathFenceViolation(
+      () => createCommandDiagnostics({
+        commandName: 'install',
+        debug: true,
+        logFile: path.join(repositoryCwd, 'runtime-debug.log'),
+      }, process.env),
+      {
+        access: 'write',
+        path: path.join(repositoryCwd, 'runtime-debug.log'),
+        source: '--log-file',
+        reason: 'writeToReadOnlyRoot',
+        conflictingRootPath: repositoryCwd,
+        recommendedFixIncludes: 'registerWritableStateRoot()',
+      },
+    );
+  });
+
+  it('blocks status debug logs in unregistered temp roots and allows them after registration', async () => {
+    const { createCommandDiagnostics } = await import('../../src/commands/runtime.js');
+    const isolation = getCurrentSourceTestIsolation();
+    const externalTmpRoot = path.join(isolation.layout.rootDir, 'runtime-external-tmp');
+    await fs.ensureDir(externalTmpRoot);
+
+    const tmpdirSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(externalTmpRoot);
+    try {
+      let error: unknown;
+      try {
+        createCommandDiagnostics({
+          commandName: 'status',
+          debug: true,
+        }, process.env);
+      } catch (caught) {
+        error = caught;
+      }
+
+      const violation = expectPathFenceViolation(
+        () => {
+          throw error;
+        },
+        {
+          access: 'write',
+          path: error instanceof Error
+            ? /Unsafe test write path: ([^\n]+)/.exec(error.message)?.[1] ?? path.join(externalTmpRoot, 'agent-workflows', 'unknown.log')
+            : path.join(externalTmpRoot, 'agent-workflows', 'unknown.log'),
+          source: 'AW_DEBUG default status log file',
+          reason: 'outsideRegisteredRoots',
+          recommendedFixIncludes: 'registerWritableStateRoot()',
+        },
+      );
+      expect(violation.details.normalizedUnsafePath).toContain(
+        path.join(externalTmpRoot, 'agent-workflows'),
+      );
+
+      registerCurrentTestWritableStateRoot(
+        externalTmpRoot,
+        'runtime status debug temp root',
+      );
+
+      expect(createCommandDiagnostics({
+        commandName: 'status',
+        debug: true,
+      }, process.env).logFile).toContain(externalTmpRoot);
+    } finally {
+      tmpdirSpy.mockRestore();
+    }
   });
 });

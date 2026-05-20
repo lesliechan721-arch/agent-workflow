@@ -80,6 +80,31 @@ class SynchronousReplyCodexAppServerProcess
 }
 
 describe('codex-app-server-client', () => {
+  it('blocks real codex app-server by default in tests', async () => {
+    const message = await captureErrorMessage(
+      installCodexPluginViaAppServer({
+        cwd: '/tmp/project',
+        env: {
+          PATH: '/tmp/bin',
+          AW_HOME: '/tmp/aw-home',
+        } as NodeJS.ProcessEnv,
+        marketplacePath: '/tmp/aw-home/.agents/plugins/marketplace.json',
+        pluginName: 'git-commit',
+      }),
+    );
+
+    expect(message).toContain('测试默认禁止启动真实 `codex app-server`');
+    expect(message).toContain('fake app-server harness');
+    expect(message).toContain('command="codex"');
+    expect(message).toContain('args=["app-server"]');
+    expect(message).toContain(
+      'cwdSource="installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.cwd"',
+    );
+    expect(message).toContain(
+      'envSource="installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.env"',
+    );
+  });
+
   it('registers pending requests before writing so synchronous app-server replies are matched', async () => {
     const child = new SynchronousReplyCodexAppServerProcess();
     const runner: CodexAppServerProcessRunner = () => child;
@@ -87,7 +112,7 @@ describe('codex-app-server-client', () => {
     await expect(
       installCodexPluginViaAppServer({
         cwd: '/tmp/project',
-        env: { PATH: '/tmp/bin' },
+        env: { PATH: '/tmp/bin' } as NodeJS.ProcessEnv,
         marketplacePath: '/tmp/aw/.agents/plugins/marketplace.json',
         pluginName: 'git-commit',
         timeoutMs: 25,
@@ -156,7 +181,10 @@ describe('codex-app-server-client', () => {
 
     const result = await installCodexPluginViaAppServer({
       cwd: '/tmp/project',
-      env: { PATH: '/tmp/bin' },
+      env: {
+        PATH: '/tmp/bin',
+        AW_HOME: '/tmp/aw-home',
+      } as NodeJS.ProcessEnv,
       marketplacePath: '/tmp/aw/.agents/plugins/marketplace.json',
       pluginName: 'git-commit',
       clientVersion: '1.2.3',
@@ -168,7 +196,10 @@ describe('codex-app-server-client', () => {
         command: 'codex',
         args: ['app-server'],
         cwd: '/tmp/project',
-        env: { PATH: '/tmp/bin' },
+        env: {
+          PATH: '/tmp/bin',
+          AW_HOME: '/tmp/aw-home',
+        },
       },
     ]);
     expect(harness.stdinMessages.map((message) => message.json)).toEqual([
@@ -260,6 +291,22 @@ describe('codex-app-server-client', () => {
       },
     ]);
     expect(result.result).toEqual({ removed: true });
+  });
+
+  it('restores the default guard after a previous test injected a fake harness', async () => {
+    const message = await captureErrorMessage(
+      uninstallCodexPluginViaAppServer({
+        cwd: '/tmp/project',
+        env: {
+          PATH: '/tmp/bin',
+          AW_HOME: '/tmp/aw-home',
+        } as NodeJS.ProcessEnv,
+        pluginId: 'git-commit@aw',
+      }),
+    );
+
+    expect(message).toContain('测试默认禁止启动真实 `codex app-server`');
+    expect(message).toContain('fake app-server harness');
   });
 
   it('maps spawn failures to actionable AW errors', async () => {

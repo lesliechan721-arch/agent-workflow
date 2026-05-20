@@ -1,6 +1,4 @@
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,7 +6,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runConsoleController } from '../../src/commands/console.js';
 import { initCommand } from '../../src/commands/init.js';
 import { installCommand } from '../../src/commands/install.js';
-import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { readInstallRecordFileAt } from '../../src/install-state/facade.js';
 import { getInstallStatePrivateRoot } from '../../src/install-state/paths.js';
 import type { InstallRecordFile } from '../../src/install-state/types.js';
@@ -27,33 +24,16 @@ import {
   removeCodexPluginEnabledFile,
   upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createSafeCliExecutionContext, resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createFakeConsoleDriver, createFakePrompt } from '../helpers/fake-console.js';
+import { activateCliEmbeddedRoot, createCliTestWorkspace } from '../helpers/workspace.js';
 
 const tempDirs: string[] = [];
-const originalEnv = {
-  AW_HOME: process.env.AW_HOME,
-  AW_CODEX_HOME: process.env.AW_CODEX_HOME,
-  AW_CLAUDE_HOME: process.env.AW_CLAUDE_HOME,
-  AW_FORCE_CODEX_AVAILABLE: process.env.AW_FORCE_CODEX_AVAILABLE,
-  AW_FORCE_CLAUDE_AVAILABLE: process.env.AW_FORCE_CLAUDE_AVAILABLE,
-  PATH: process.env.PATH,
-};
 
 interface FakePluginState {
   nativeInstalled?: boolean;
   scopeInitialized?: 'yes' | 'no';
   managedEvidence?: boolean;
-}
-
-function fixturePath(...segments: string[]): string {
-  return path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'fixtures',
-    ...segments,
-  );
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -70,22 +50,24 @@ async function makeWorkspace(): Promise<{
   codexHome: string;
   claudeHome: string;
   embeddedRoot: string;
+  env: NodeJS.ProcessEnv;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-console-duplicate-'));
-  tempDirs.push(root);
-
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  await removeAppsFromGitCommit(repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-
+  const workspace = await createCliTestWorkspace({
+    rootDirPrefix: 'aw-console-duplicate-',
+    mutateRepo: removeAppsFromGitCommit,
+  });
+  tempDirs.push(workspace.rootDir);
+  tempDirs.push(workspace.embeddedRoot!);
   return {
-    repoRoot,
-    awHome: path.join(root, 'aw-home'),
-    codexHome: path.join(root, 'codex-home'),
-    claudeHome: path.join(root, 'claude-home'),
-    embeddedRoot,
+    repoRoot: workspace.repoRoot,
+    awHome: workspace.awHome,
+    codexHome: workspace.codexHome,
+    claudeHome: workspace.claudeHome,
+    embeddedRoot: workspace.embeddedRoot!,
+    env: resolveSafeCliEnv({
+      ...workspace.env,
+      AW_FORCE_CODEX_AVAILABLE: '1',
+    }),
   };
 }
 
@@ -94,13 +76,10 @@ function configureWorkspaceEnv(workspace: {
   codexHome: string;
   claudeHome: string;
   embeddedRoot: string;
-}): void {
-  process.env.AW_HOME = workspace.awHome;
-  process.env.AW_CODEX_HOME = workspace.codexHome;
-  process.env.AW_CLAUDE_HOME = workspace.claudeHome;
-  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-  process.env.PATH = '';
-  setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+  env: NodeJS.ProcessEnv;
+}): NodeJS.ProcessEnv {
+  activateCliEmbeddedRoot(workspace.embeddedRoot, 'console duplicate workspace embedded root');
+  return workspace.env;
 }
 
 function codexNativeManifestPath(codexHome: string, pluginName: string): string {
@@ -139,6 +118,7 @@ class FakeAdapter implements PlatformAdapter {
 
   constructor(
     name: PlatformName,
+    private readonly env: NodeJS.ProcessEnv,
     private readonly states: Record<string, FakePluginState> = {},
   ) {
     this.name = name;
@@ -157,14 +137,14 @@ class FakeAdapter implements PlatformAdapter {
     const state = this.getState(plugin.manifest.name);
     state.nativeInstalled = true;
     if (this.name === 'codex' && scope === 'user') {
-      await writeCodexNativeEvidence(process.env.AW_CODEX_HOME!, plugin.manifest.name);
+      await writeCodexNativeEvidence(this.env.AW_CODEX_HOME!, plugin.manifest.name);
     }
   }
 
   async uninstallPlugin(plugin: PluginMeta, scope: 'project' | 'user'): Promise<void> {
     this.getState(plugin.manifest.name).nativeInstalled = false;
     if (this.name === 'codex' && scope === 'user') {
-      await removeCodexNativeEvidence(process.env.AW_CODEX_HOME!, plugin.manifest.name);
+      await removeCodexNativeEvidence(this.env.AW_CODEX_HOME!, plugin.manifest.name);
     }
   }
 
@@ -228,10 +208,10 @@ class FakeAdapter implements PlatformAdapter {
   }
 }
 
-function createAdapters(): Record<PlatformName, PlatformAdapter> {
+function createAdapters(env: NodeJS.ProcessEnv): Record<PlatformName, PlatformAdapter> {
   return {
-    codex: new FakeAdapter('codex'),
-    claude: new FakeAdapter('claude'),
+    codex: new FakeAdapter('codex', env),
+    claude: new FakeAdapter('claude', env),
   };
 }
 
@@ -241,14 +221,10 @@ async function seedLegacyCodexUserHealthySiblingInstall(workspace: {
   codexHome: string;
   claudeHome: string;
   embeddedRoot: string;
+  env: NodeJS.ProcessEnv;
 }): Promise<void> {
   const sibling = await makeWorkspace();
-  process.env.AW_HOME = workspace.awHome;
-  process.env.AW_CODEX_HOME = workspace.codexHome;
-  process.env.AW_CLAUDE_HOME = workspace.claudeHome;
-  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-  process.env.PATH = '';
-  setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+  const env = configureWorkspaceEnv(workspace);
 
   await installCommand(
     ['git-commit'],
@@ -259,18 +235,17 @@ async function seedLegacyCodexUserHealthySiblingInstall(workspace: {
       requestedSkillTrigger: 'manual',
     },
     {
-      adapters: createAdapters(),
-      env: process.env,
+      adapters: createAdapters(env),
+      env,
     },
   );
-
-  configureWorkspaceEnv(workspace);
 }
 
 async function readScopedInstallRecords(
   cwd: string,
   platform: PlatformName,
   scope: 'user' | 'project',
+  env: NodeJS.ProcessEnv,
 ): Promise<InstallRecordFile[]> {
   const recordsDir = path.join(
     getInstallStatePrivateRoot(
@@ -281,7 +256,7 @@ async function readScopedInstallRecords(
         scope,
         ...(scope === 'project' ? { projectKey: 'repo:fixture-project' } : {}),
       },
-      process.env,
+      env,
     ),
     'records',
   );
@@ -303,22 +278,15 @@ async function readScopedInstallRecords(
 }
 
 afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  process.env.AW_HOME = originalEnv.AW_HOME;
-  process.env.AW_CODEX_HOME = originalEnv.AW_CODEX_HOME;
-  process.env.AW_CLAUDE_HOME = originalEnv.AW_CLAUDE_HOME;
-  process.env.AW_FORCE_CODEX_AVAILABLE = originalEnv.AW_FORCE_CODEX_AVAILABLE;
-  process.env.AW_FORCE_CLAUDE_AVAILABLE = originalEnv.AW_FORCE_CLAUDE_AVAILABLE;
-  process.env.PATH = originalEnv.PATH;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('console duplicate resolution integration', () => {
   it('does not surface duplicate-resolution cleanup for a healthy dual-scope sibling state', async () => {
     const workspace = await makeWorkspace();
-    configureWorkspaceEnv(workspace);
-    await initCommand({ force: true, env: process.env });
-    await writeInstalledLedger(createAvailableLedger(), process.env);
+    const env = configureWorkspaceEnv(workspace);
+    await initCommand({ force: true, env });
+    await writeInstalledLedger(createAvailableLedger(), env);
 
     await installCommand(
       ['git-commit'],
@@ -329,27 +297,27 @@ describe('console duplicate resolution integration', () => {
         requestedSkillTrigger: 'auto',
       },
       {
-        adapters: createAdapters(),
-        env: process.env,
+        adapters: createAdapters(env),
+        env,
       },
     );
     await seedLegacyCodexUserHealthySiblingInstall(workspace);
 
-    expect(await readScopedInstallRecords(workspace.repoRoot, 'codex', 'project')).toHaveLength(1);
-    expect(await readScopedInstallRecords(workspace.repoRoot, 'codex', 'user')).toHaveLength(1);
+    expect(await readScopedInstallRecords(workspace.repoRoot, 'codex', 'project', env)).toHaveLength(1);
+    expect(await readScopedInstallRecords(workspace.repoRoot, 'codex', 'user', env)).toHaveLength(1);
 
     const prompt = createFakePrompt([
       { method: 'select', value: 'git-commit' },
       { method: 'select', action: 'exit' },
     ]);
     const consoleDriver = createFakeConsoleDriver();
-    const context = createCliExecutionContext({
+    const context = createSafeCliExecutionContext({
       cwd: workspace.repoRoot,
-      env: process.env,
+      env,
       prompt,
       consoleDriver,
       interactive: true,
-      adapters: createAdapters(),
+      adapters: createAdapters(env),
       io: {
         stdout: () => undefined,
         stderr: () => undefined,
@@ -357,8 +325,8 @@ describe('console duplicate resolution integration', () => {
     });
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'project')).resolves.toHaveLength(1);
-    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'user')).resolves.toHaveLength(1);
+    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'project', env)).resolves.toHaveLength(1);
+    await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'user', env)).resolves.toHaveLength(1);
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
     expect(detailView?.lines).toContain('✓ 已安装');
     expect(detailView?.lines).toContain('✓ Codex（个人）');

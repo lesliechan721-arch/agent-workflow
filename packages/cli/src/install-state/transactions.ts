@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { writeJsonFile } from '../utils/json.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
   deleteGlobalDependencyIndexRecord,
   upsertGlobalDependencyIndexRecord,
@@ -123,10 +124,15 @@ function createAtomicJsonWriteStage(options: {
   finalizeWarningCode: string;
 }): Promise<InstallStateTransactionStage> {
   return (async () => {
-    options.validate?.(options.value, options.filePath);
-    const stagingPath = createTempPath(options.filePath, 'aw-staging');
-    const backupPath = createTempPath(options.filePath, 'aw-backup');
-    await fs.ensureDir(path.dirname(options.filePath));
+    const filePath = assertTestWritablePath(
+      options.filePath,
+      options.label,
+      '用 createIsolatedTestEnv() 生成默认测试状态根，或通过 registerWritableStateRoot()/withSafeTestCwd() 登记当前写入目标。',
+    );
+    options.validate?.(options.value, filePath);
+    const stagingPath = createTempPath(filePath, 'aw-staging');
+    const backupPath = createTempPath(filePath, 'aw-backup');
+    await fs.ensureDir(path.dirname(filePath));
     await writeJsonFile(stagingPath, options.value);
 
     let committed = false;
@@ -137,20 +143,20 @@ function createAtomicJsonWriteStage(options: {
         if (committed) {
           return;
         }
-        if (await fs.pathExists(options.filePath)) {
-          await fs.move(options.filePath, backupPath, { overwrite: true });
+        if (await fs.pathExists(filePath)) {
+          await fs.move(filePath, backupPath, { overwrite: true });
         }
-        await fs.move(stagingPath, options.filePath, { overwrite: true });
+        await fs.move(stagingPath, filePath, { overwrite: true });
         committed = true;
       },
       async rollback() {
         try {
           if (committed) {
             if (await fs.pathExists(backupPath)) {
-              await removePathIfExists(options.filePath);
-              await fs.move(backupPath, options.filePath, { overwrite: true });
+              await removePathIfExists(filePath);
+              await fs.move(backupPath, filePath, { overwrite: true });
             } else {
-              await removePathIfExists(options.filePath);
+              await removePathIfExists(filePath);
             }
           } else {
             await removePathIfExists(stagingPath);
@@ -160,7 +166,7 @@ function createAtomicJsonWriteStage(options: {
           return createWarning(
             options.rollbackWarningCode,
             `${options.label} rollback failed.`,
-            options.filePath,
+            filePath,
             error,
           );
         }
@@ -176,7 +182,7 @@ function createAtomicJsonWriteStage(options: {
           return createWarning(
             options.finalizeWarningCode,
             `${options.label} finalize failed.`,
-            options.filePath,
+            filePath,
             error,
           );
         }
@@ -191,7 +197,12 @@ function createAtomicDeleteStage(options: {
   rollbackWarningCode: string;
   finalizeWarningCode: string;
 }): InstallStateTransactionStage {
-  const backupPath = createTempPath(options.filePath, 'aw-delete-backup');
+  const filePath = assertTestWritablePath(
+    options.filePath,
+    options.label,
+    '用 createIsolatedTestEnv() 生成默认测试状态根，或通过 registerWritableStateRoot()/withSafeTestCwd() 登记当前写入目标。',
+  );
+  const backupPath = createTempPath(filePath, 'aw-delete-backup');
   let committed = false;
   let deleted = false;
 
@@ -201,26 +212,26 @@ function createAtomicDeleteStage(options: {
       if (committed) {
         return;
       }
-      if (!(await fs.pathExists(options.filePath))) {
+      if (!(await fs.pathExists(filePath))) {
         committed = true;
         return;
       }
-      await fs.ensureDir(path.dirname(options.filePath));
-      await fs.move(options.filePath, backupPath, { overwrite: true });
+      await fs.ensureDir(path.dirname(filePath));
+      await fs.move(filePath, backupPath, { overwrite: true });
       committed = true;
       deleted = true;
     },
     async rollback() {
       try {
         if (committed && deleted && (await fs.pathExists(backupPath))) {
-          await fs.move(backupPath, options.filePath, { overwrite: true });
+          await fs.move(backupPath, filePath, { overwrite: true });
         }
         return undefined;
       } catch (error) {
         return createWarning(
           options.rollbackWarningCode,
           `${options.label} rollback failed.`,
-          options.filePath,
+          filePath,
           error,
         );
       }
@@ -233,7 +244,7 @@ function createAtomicDeleteStage(options: {
         return createWarning(
           options.finalizeWarningCode,
           `${options.label} finalize failed.`,
-          options.filePath,
+          filePath,
           error,
         );
       }
@@ -457,6 +468,7 @@ export function createInstallRecordWriteStage(options: {
     options.cwd!,
     options.location!,
     options.env,
+    'write',
   );
   return createAtomicJsonWriteStage({
     label: 'install record',
@@ -486,6 +498,7 @@ export function createInstallRecordDeleteStage(options: {
     options.cwd!,
     options.location!,
     options.env,
+    'write',
   );
   return createAtomicDeleteStage({
     label: 'install record',
@@ -513,6 +526,7 @@ export function createProjectArtifactIdentityWriteStage(options: {
   const filePath = options.filePath ?? getProjectArtifactSharedIdentityPath({
     repoRoot: options.repoRoot!,
     locator: options.locator!,
+    access: 'write',
   });
   return createAtomicJsonWriteStage({
     label: 'project artifact identity',
@@ -539,6 +553,7 @@ export function createProjectArtifactIdentityDeleteStage(options: {
   const filePath = options.filePath ?? getProjectArtifactSharedIdentityPath({
     repoRoot: options.repoRoot!,
     locator: options.locator!,
+    access: 'write',
   });
   return createAtomicDeleteStage({
     label: 'project artifact identity',
@@ -578,6 +593,7 @@ export async function createDynamicArtifactDiagnosticCacheWriteStage(options: {
     options.cwd!,
     options.location!,
     options.env,
+    'write',
   );
   let currentCache = options.currentCache;
   if (currentCache === undefined) {
@@ -623,11 +639,15 @@ export function createSharedRuntimeOwnerWriteStage(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<InstallStateTransactionStage> {
   return (async () => {
-    const ownerPath = getSharedSkillTriggerRuntimeOwnerPath({
-      pluginName: options.recordFile.record.pluginName,
-      platform: options.recordFile.record.platform,
-      env: options.env,
-    });
+    const ownerPath = assertTestWritablePath(
+      getSharedSkillTriggerRuntimeOwnerPath({
+        pluginName: options.recordFile.record.pluginName,
+        platform: options.recordFile.record.platform,
+        env: options.env,
+      }),
+      'shared runtime owner',
+      '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 shared runtime owner 目标路径。',
+    );
     const stagingPath = createTempPath(ownerPath, 'aw-staging');
     const backupPath = createTempPath(ownerPath, 'aw-backup');
     let committed = false;
@@ -734,13 +754,18 @@ export function createDeletePathPostCommitAction(options: {
   warningCode: string;
   warningMessage: string;
 }): InstallStateTransactionPostCommitAction {
+  const filePath = assertTestWritablePath(
+    options.filePath,
+    options.label,
+    '用 createIsolatedTestEnv() 生成默认测试状态根，或通过 registerWritableStateRoot()/withSafeTestCwd() 登记当前写入目标。',
+  );
   return {
     label: options.label,
     async run() {
-      await removePathIfExists(options.filePath);
+      await removePathIfExists(filePath);
     },
     toWarning(error) {
-      return createWarning(options.warningCode, options.warningMessage, options.filePath, error);
+      return createWarning(options.warningCode, options.warningMessage, filePath, error);
     },
   };
 }

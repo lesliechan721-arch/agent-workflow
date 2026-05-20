@@ -9,8 +9,7 @@ import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
 import { writeMinimalPluginInstallStateFixture } from '../helpers/minimal-plugin-install-state-fixtures.js';
-
-const tempDirs: string[] = [];
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 
 function mockCurrentCatalogBlockedByAwVersion(): void {
   vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(new CatalogResolutionError({
@@ -34,16 +33,21 @@ function mockCurrentCatalogBlockedByAwVersion(): void {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
+
+async function createStatusFixture(rootDirPrefix: string) {
+  return writeMinimalPluginInstallStateFixture({
+    rootDir: registerCurrentTestWritableStateRoot(
+      await fs.mkdtemp(path.join(os.tmpdir(), rootDirPrefix)),
+      `status fixture root (${rootDirPrefix})`,
+    ),
+    scenario: 'installed',
+  });
+}
 
 describe('status command P8', () => {
   it('keeps verbose status on local evidence when current catalog resolution fails closed', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-command-')),
-      scenario: 'installed',
-    });
-    tempDirs.push(fixture.paths.rootDir);
+    const fixture = await createStatusFixture('aw-status-command-');
 
     mockCurrentCatalogBlockedByAwVersion();
 
@@ -97,11 +101,7 @@ describe('status command P8', () => {
   });
 
   it('shows unreadable install record details in verbose status findings', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-invalid-record-')),
-      scenario: 'installed',
-    });
-    tempDirs.push(fixture.paths.rootDir);
+    const fixture = await createStatusFixture('aw-status-invalid-record-');
     mockCurrentCatalogBlockedByAwVersion();
 
     const record = await fs.readJson(fixture.files.installRecordPath) as {

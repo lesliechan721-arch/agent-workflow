@@ -17,6 +17,7 @@ import { readJsonFile } from './json.js';
 import { validateCatalogManifest } from './manifest.js';
 import { resolveCliPackageRoot, resolveCurrentCatalogCacheStagingDir, getMarketplaceManifestPath } from './paths.js';
 import { runNativeCli } from './native-cli.js';
+import { assertTestReadablePath } from './test-path-fence.js';
 
 interface RegistryPackageVersionMetadata {
   version?: string;
@@ -177,10 +178,25 @@ function resolveNpmUserConfigPath(
 ): string {
   const override = env.npm_config_userconfig || env.NPM_CONFIG_USERCONFIG;
   if (typeof override === 'string' && override.trim() !== '') {
-    return path.resolve(override.trim());
+    return assertTestReadablePath(
+      path.resolve(override.trim()),
+      typeof env.npm_config_userconfig === 'string' && env.npm_config_userconfig.trim() !== ''
+        ? 'npm_config_userconfig'
+        : 'NPM_CONFIG_USERCONFIG',
+      '用 createIsolatedTestEnv() 生成默认 npm userconfig，或通过 registerReadonlyFixtureRoot()/registerWritableStateRoot() 登记测试 npmrc 路径。',
+    );
   }
 
-  return path.join(resolveNpmHomeDir(env), '.npmrc');
+  const homeSource = typeof env.HOME === 'string' && env.HOME.trim() !== ''
+    ? 'HOME/.npmrc'
+    : typeof env.USERPROFILE === 'string' && env.USERPROFILE.trim() !== ''
+      ? 'USERPROFILE/.npmrc'
+      : 'os.homedir()/.npmrc';
+  return assertTestReadablePath(
+    path.join(resolveNpmHomeDir(env), '.npmrc'),
+    homeSource,
+    '用 createIsolatedTestEnv() 生成默认 npm userconfig，或通过 registerReadonlyFixtureRoot()/registerWritableStateRoot() 登记测试 npmrc 路径。',
+  );
 }
 
 const npmNodeModulesMarker = 'node_modules';

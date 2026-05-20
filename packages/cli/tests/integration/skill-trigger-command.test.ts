@@ -37,11 +37,18 @@ import {
   removeCodexPluginEnabledFile,
   upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  activateCliEmbeddedRoot,
+  registerCliCatalogSourceRoot,
+  registerCliEmbeddedRoot,
+  registerCliFixtureRepoRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
+import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
-const originalPath = process.env.PATH;
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -50,6 +57,28 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
+}
+
+function registerRepoFixtureRoots(): void {
+  registerCurrentTestReadonlyFixtureRoot(fixturePath(), 'skill trigger fixture root');
+}
+
+function replaceProcessEnv(nextEnv: NodeJS.ProcessEnv): void {
+  const nextKeys = new Set(Object.keys(nextEnv));
+
+  for (const key of Object.keys(process.env)) {
+    if (!nextKeys.has(key)) {
+      delete process.env[key];
+    }
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 }
 
 async function makeWorkspace(
@@ -61,15 +90,23 @@ async function makeWorkspace(
   claudeHome: string;
   embeddedRoot: string;
 }> {
+  registerRepoFixtureRoots();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-trigger-command-'));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'skill trigger root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'skill trigger repo root');
   await removeAppsFromGitCommit(repoRoot);
   await customizeRepo?.(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'skill trigger embedded root');
+  registerCliCatalogSourceRoot(
+    getCatalogFullPackageRoot(embeddedRoot),
+    'skill trigger catalog source root',
+  );
 
   return {
     repoRoot,
@@ -78,6 +115,30 @@ async function makeWorkspace(
     claudeHome: path.join(root, 'claude-home'),
     embeddedRoot,
   };
+}
+
+function activateWorkspaceEnv(
+  workspace: {
+    awHome: string;
+    codexHome: string;
+    claudeHome?: string;
+    embeddedRoot: string;
+  },
+  platforms: Array<'codex' | 'claude'> = ['codex'],
+  overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const env = resolveSafeCliEnv({
+    AW_HOME: workspace.awHome,
+    AW_CODEX_HOME: workspace.codexHome,
+    ...(workspace.claudeHome ? { AW_CLAUDE_HOME: workspace.claudeHome } : {}),
+    PATH: '',
+    ...(platforms.includes('codex') ? { AW_FORCE_CODEX_AVAILABLE: '1' } : {}),
+    ...(platforms.includes('claude') ? { AW_FORCE_CLAUDE_AVAILABLE: '1' } : {}),
+    ...overrides,
+  });
+  replaceProcessEnv(env);
+  activateCliEmbeddedRoot(workspace.embeddedRoot, 'skill trigger embedded root activation');
+  return env;
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -255,7 +316,9 @@ async function resolveCatalogFixtureRoot(rootDir: string): Promise<string> {
 async function createCorruptedEmbeddedRoot(repoRoot: string): Promise<string> {
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'skill trigger corrupted embedded root');
   const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
+  registerCliCatalogSourceRoot(catalogRoot, 'skill trigger corrupted catalog source root');
   await fs.remove(
     path.join(catalogRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'agents', 'openai.yaml'),
   );
@@ -374,6 +437,10 @@ function createDegradedLedger(): InstalledLedger {
     },
     plugins: {},
   };
+}
+
+function normalizeMacTmpPath(value: string): string {
+  return value.replace(/^\/private(?=\/var\/folders\/)/, '');
 }
 
 interface FakePluginState {
@@ -499,18 +566,8 @@ function configureWorkspaceEnv(workspace: {
   codexHome: string;
   claudeHome: string;
   embeddedRoot: string;
-}, platforms: Array<'codex' | 'claude'> = ['codex']): void {
-  process.env.AW_HOME = workspace.awHome;
-  process.env.AW_CODEX_HOME = workspace.codexHome;
-  process.env.AW_CLAUDE_HOME = workspace.claudeHome;
-  process.env.PATH = '';
-  if (platforms.includes('codex')) {
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-  }
-  if (platforms.includes('claude')) {
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-  }
-  setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+}, platforms: Array<'codex' | 'claude'> = ['codex']): NodeJS.ProcessEnv {
+  return activateWorkspaceEnv(workspace, platforms);
 }
 
 function createAdapters(
@@ -534,12 +591,7 @@ async function seedLegacyCodexUserHealthySiblingInstall(options: {
   requestedSkillTrigger: 'manual' | 'auto' | 'default';
 }): Promise<void> {
   const sibling = await makeWorkspace();
-  process.env.AW_HOME = options.workspace.awHome;
-  process.env.AW_CODEX_HOME = options.workspace.codexHome;
-  process.env.AW_CLAUDE_HOME = options.workspace.claudeHome;
-  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-  process.env.PATH = '';
-  setEmbeddedPluginsRootOverrideForTests(options.workspace.embeddedRoot);
+  activateWorkspaceEnv(options.workspace);
 
   await installCommand(
     ['git-commit'],
@@ -554,8 +606,6 @@ async function seedLegacyCodexUserHealthySiblingInstall(options: {
       env: process.env,
     },
   );
-
-  configureWorkspaceEnv(options.workspace);
 }
 
 async function readScopedInstallRecords(
@@ -663,14 +713,6 @@ function findReportedPlugin(
 }
 
 afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  process.env.PATH = originalPath;
-  delete process.env.AW_HOME;
-  delete process.env.AW_CODEX_HOME;
-  delete process.env.AW_CLAUDE_HOME;
-  delete process.env.AW_FORCE_CODEX_AVAILABLE;
-  delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
-  delete process.env.AW_TEST_LIFECYCLE_LOG;
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -678,11 +720,7 @@ afterEach(async () => {
 describe('skill trigger command integration', () => {
   it('blocks degraded repeated install when skill trigger preferences can only be recovered from config management', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true, env: process.env });
 
@@ -740,11 +778,7 @@ describe('skill trigger command integration', () => {
 
   it('allows degraded new installs with implicit default and allows explicit upgrade overrides', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true, env: process.env });
     await writeInstalledLedger(createDegradedLedger(), process.env);
@@ -825,11 +859,7 @@ describe('skill trigger command integration', () => {
 
   it('blocks degraded explicit upgrade when skill trigger preferences can only be recovered from config management', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true, env: process.env });
 
@@ -966,11 +996,7 @@ describe('skill trigger command integration', () => {
 
   it('rejects deprecated upgrade overrides and degraded upgrade --all', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true, env: process.env });
 
@@ -2105,7 +2131,7 @@ describe('skill trigger command integration', () => {
       },
     );
 
-    setEmbeddedPluginsRootOverrideForTests(await createCorruptedEmbeddedRoot(workspace.repoRoot));
+    activateCliEmbeddedRoot(await createCorruptedEmbeddedRoot(workspace.repoRoot), 'skill trigger corrupted embedded root activation');
 
     const result = await uninstallCommand(
       ['git-commit'],
@@ -2603,12 +2629,14 @@ describe('skill trigger command integration', () => {
       currentCatalog: expect.objectContaining({
         source: 'local',
         available: true,
-        rootDir: getCatalogFullPackageRoot(workspace.embeddedRoot),
         sidecarManifestPackage: expect.objectContaining({
           source: 'localFixture',
         }),
       }),
     });
+    expect(normalizeMacTmpPath(String(plugin.currentCatalog?.rootDir))).toBe(
+      normalizeMacTmpPath(getCatalogFullPackageRoot(workspace.embeddedRoot)),
+    );
     expect(plugin.currentCatalog).not.toHaveProperty('reasonCode');
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
   });
@@ -2653,12 +2681,14 @@ describe('skill trigger command integration', () => {
       currentCatalog: expect.objectContaining({
         source: 'local',
         available: true,
-        rootDir: getCatalogFullPackageRoot(workspace.embeddedRoot),
         sidecarManifestPackage: expect.objectContaining({
           source: 'localFixture',
         }),
       }),
     });
+    expect(normalizeMacTmpPath(String(plugin.currentCatalog?.rootDir))).toBe(
+      normalizeMacTmpPath(getCatalogFullPackageRoot(workspace.embeddedRoot)),
+    );
     expect(plugin.currentCatalog).not.toHaveProperty('reasonCode');
     await expect(fs.pathExists(path.join(workspace.awHome, '.claude-plugin', 'marketplace.json'))).resolves.toBe(false);
   });

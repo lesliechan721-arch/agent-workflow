@@ -80,6 +80,7 @@ import {
   upsertTrackingRecordInManifest,
   writeTrackingManifest,
 } from './tracking.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 export interface ArtifactRefreshReceiptArtifact {
   platform: 'codex';
@@ -135,6 +136,17 @@ function isTrackedCodexDynamicArtifact(
 
 function uniqueSorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort();
+}
+
+function assertArtifactRefreshStagingPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记 artifact refresh staging 路径。',
+  );
 }
 
 async function inferCodexUserDynamicSkillPreferenceFromRuntime(options: {
@@ -345,9 +357,17 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
   skillTriggerPreference?: SkillTriggerPreference;
   env: NodeJS.ProcessEnv;
 }): Promise<{ rootDir: string; marketplacePath: string }> {
-  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-refresh-marketplace-'));
+  const stagingRoot = await fs.mkdtemp(
+    assertArtifactRefreshStagingPathForTests(
+      path.join(os.tmpdir(), 'aw-codex-refresh-marketplace-'),
+      'artifact refresh historical marketplace staging root',
+    ),
+  );
   const pluginName = options.plugin.manifest.name;
-  const stagedPluginRoot = path.join(stagingRoot, 'plugins', pluginName);
+  const stagedPluginRoot = assertArtifactRefreshStagingPathForTests(
+    path.join(stagingRoot, 'plugins', pluginName),
+    'artifact refresh staged plugin root',
+  );
   try {
     await fs.copy(options.plugin.rootDir, stagedPluginRoot, {
       overwrite: true,
@@ -382,6 +402,10 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
         pluginName,
         artifact.artifactKey,
       );
+      assertArtifactRefreshStagingPathForTests(
+        stagedSkillRoot,
+        'artifact refresh staged Codex skill root',
+      );
       if (artifact.state === 'disabled') {
         await fs.remove(stagedSkillRoot);
         continue;
@@ -408,7 +432,10 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
       await ensureLocalMarketplaceCodexSkillsManifest(stagingRoot, pluginName);
     }
 
-    const marketplacePath = path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json');
+    const marketplacePath = assertArtifactRefreshStagingPathForTests(
+      path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json'),
+      'artifact refresh staged marketplace manifest',
+    );
     await fs.outputJson(marketplacePath, createSinglePluginCodexMarketplace(options.plugin), {
       spaces: 2,
     });
