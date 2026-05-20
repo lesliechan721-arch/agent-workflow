@@ -25,6 +25,7 @@ import {
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
+const originalCwd = process.cwd();
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -260,6 +261,7 @@ function createFakeCatalogPackageSource(options: {
 }
 
 afterEach(async () => {
+  process.chdir(originalCwd);
   vi.restoreAllMocks();
   clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
@@ -425,6 +427,63 @@ describe('plugin catalog resolvers', () => {
     const second = await resolveCurrentCatalog(env);
 
     expect(second).toBe(first);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+  });
+
+  it('partitions current catalog process memo by cwd', async () => {
+    const firstWorkspace = await makeRepoWorkspace();
+    const secondWorkspace = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot: firstWorkspace.repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const operations: string[] = [];
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    process.chdir(firstWorkspace.repoRoot);
+    const first = await resolveCurrentCatalog(firstWorkspace.env, { forceRefresh: true });
+    operations.length = 0;
+
+    process.chdir(secondWorkspace.repoRoot);
+    const second = await resolveCurrentCatalog(firstWorkspace.env, { forceRefresh: true });
+
+    expect(second).not.toBe(first);
     expect(operations).toEqual([
       'identity:@yiliang/aw-plugins-manifest:latest',
       'download:@yiliang/aw-plugins-manifest:1.0.0',

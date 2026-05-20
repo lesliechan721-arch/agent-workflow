@@ -11,6 +11,8 @@ import {
   readCodexNativeRecoveryBreadcrumb,
   writeCodexNativeRecoveryBreadcrumb,
 } from '../../src/utils/codex-native-recovery.js';
+import { createRecordId } from '../../src/install-state/ids.js';
+import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
 import {
   buildCurrentCatalogCacheKey,
   calculateBundleFingerprint,
@@ -986,6 +988,79 @@ describe('local marketplace', () => {
     ))).resolves.toBe(false);
     expect(await listSkillBackupDirs(awHome)).toEqual([]);
     expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
+  });
+
+  it('skips retained Codex user dynamic skill records for plugins missing from the current catalog', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const codexHome = path.join(path.dirname(awHome), 'codex-home');
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const retiredSkillRoot = path.join(
+      awHome,
+      'plugins',
+      'retired-plugin',
+      'codex',
+      'skills',
+      'retired-skill',
+    );
+    await fs.outputFile(path.join(retiredSkillRoot, 'SKILL.md'), '# Retired\n', 'utf8');
+    await fs.outputFile(
+      path.join(retiredSkillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    const location: PluginLocation = {
+      plugin: 'retired-plugin',
+      platform: 'codex',
+      scope: 'user',
+    };
+    const recordId = createRecordId(location);
+    const recordFile: InstallRecordFile = {
+      version: 2,
+      recordId,
+      record: {
+        pluginName: location.plugin,
+        platform: location.platform,
+        scope: location.scope,
+        installedAt: '2026-04-28T00:00:00.000Z',
+        updatedAt: '2026-04-28T00:00:00.000Z',
+        source: {
+          pluginVersion: '0.1.0',
+          manifestDigest: 'sha256:retired-manifest',
+          bundleFingerprint: 'sha256:retired-bundle',
+        },
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        artifacts: [{
+          kind: 'skill',
+          platform: 'codex',
+          path: retiredSkillRoot,
+          artifactKey: 'retired-skill',
+          id: 'retired-skill',
+          target: 'codex.skill',
+          state: 'present',
+        }],
+        dependencyEdges: [],
+      },
+    };
+    await fs.outputJson(
+      path.join(codexHome, '.agent-workflows', 'records', `${recordId}.json`),
+      recordFile,
+      { spaces: 2 },
+    );
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(result.warnings.join('\n')).toContain(
+      '跳过 user dynamic skill replay：current catalog 缺少 Codex plugin retired-plugin。',
+    );
+    await expect(fs.pathExists(path.join(awHome, 'plugins', 'retired-plugin'))).resolves.toBe(false);
   });
 
   it('ignores Codex project scope records when replaying the shared runtime winner', async () => {

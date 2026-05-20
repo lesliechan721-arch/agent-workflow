@@ -22,6 +22,7 @@ import type {
 } from '../types.js';
 import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
 import { readInstallRecordFileAt } from '../install-state/facade.js';
+import type { InstallRecordArtifact } from '../install-state/types.js';
 import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
 import {
@@ -1054,11 +1055,24 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
       continue;
     }
 
-    for (const artifact of recordFile.record.artifacts) {
-      if (artifact.target !== 'codex.skill' || !artifact.artifactKey) {
-        continue;
-      }
+    const dynamicSkillArtifacts = recordFile.record.artifacts
+      .filter((artifact): artifact is InstallRecordArtifact & { artifactKey: string } =>
+        artifact.target === 'codex.skill' && Boolean(artifact.artifactKey));
+    if (dynamicSkillArtifacts.length === 0) {
+      continue;
+    }
 
+    const targetPluginManifestPath = getCodexPlatformPluginManifestPath(
+      getLocalMarketplacePluginRoot(options.marketplaceRoot, recordFile.record.pluginName),
+    );
+    if (!(await fs.pathExists(targetPluginManifestPath))) {
+      warnings.push(
+        `跳过 user dynamic skill replay：current catalog 缺少 Codex plugin ${recordFile.record.pluginName}。`,
+      );
+      continue;
+    }
+
+    for (const artifact of dynamicSkillArtifacts) {
       const targetSkillRoot = getLocalMarketplaceCodexSkillRoot(
         options.marketplaceRoot,
         recordFile.record.pluginName,

@@ -541,6 +541,7 @@ type DefaultReplaySourceValidationResult =
 async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
   location: PluginLocation;
   lifecycle?: HistoricalLifecycleRuntimeRef;
+  currentPlugin?: PluginMeta;
 }): Promise<DefaultReplaySourceValidationResult> {
   if (!options.lifecycle) {
     return {
@@ -560,6 +561,23 @@ async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
   });
   if (verified.status !== 'ok') {
     return verified;
+  }
+
+  if (!options.currentPlugin) {
+    return {
+      status: 'invalid',
+      reason: '缺少当前 bundle 参照，无法判断 historical lifecycle bundle 是否过期',
+    };
+  }
+
+  if (
+    options.currentPlugin.manifest.name !== options.location.plugin ||
+    options.currentPlugin.manifest.version !== options.lifecycle.pluginVersion
+  ) {
+    return {
+      status: 'invalid',
+      reason: `historical lifecycle version ${options.lifecycle.pluginVersion} 与当前 bundle version ${options.currentPlugin.manifest.version} 不一致`,
+    };
   }
 
   let policyCount: number;
@@ -608,6 +626,7 @@ async function createBestEffortSharedRuntimeRemovalStagesWithoutEmbeddedRoot(opt
     | { platform: 'claude'; scope: Scope; kind: 'localMarketplaceRuntime'; root: string };
   env: NodeJS.ProcessEnv;
   lifecycle?: HistoricalLifecycleRuntimeRef;
+  currentPlugin?: PluginMeta;
   force?: boolean;
   error?: string;
 }): Promise<SharedSkillTriggerRuntimeStageBundle> {
@@ -630,6 +649,7 @@ async function createBestEffortSharedRuntimeRemovalStagesWithoutEmbeddedRoot(opt
   const defaultReplaySource = await validateHistoricalLifecycleBundleForDefaultReplay({
     location: options.location,
     lifecycle: options.lifecycle,
+    currentPlugin: options.currentPlugin,
   });
   const replayWarningPrefix =
     `[${renderLocation(options.location)}] embedded bundle 不可用，无法安全重放 shared skill trigger runtime default`;
@@ -836,6 +856,7 @@ export async function tryUninstallUsingInstallState(options: {
         target: removalTarget,
         env: context.env,
         lifecycle: recordRead.value.record.lifecycle,
+        currentPlugin: options.target.currentPlugin ?? options.target.embeddedPlugin,
         force: options.commandOptions.force === true,
         error: embeddedRootAttempt.error,
       });
@@ -1164,6 +1185,7 @@ export async function cleanupInstallStateTarget(options: {
           target: removalTarget,
           env: context.env,
           lifecycle: recordRead.status === 'ok' ? recordRead.value.record.lifecycle : undefined,
+          currentPlugin: options.target?.currentPlugin ?? options.target?.embeddedPlugin,
           force: options.commandOptions.force === true,
           error: embeddedRootAttempt.error,
         })

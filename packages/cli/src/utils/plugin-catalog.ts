@@ -289,6 +289,7 @@ function buildCurrentCatalogMemoKey(
     awHome: resolveAwHome(env),
     registry: env.AW_NPM_REGISTRY_URL || env.npm_config_registry || env.NPM_CONFIG_REGISTRY || null,
     npmUserConfig: env.npm_config_userconfig || env.NPM_CONFIG_USERCONFIG || null,
+    cwd: path.resolve(process.cwd()),
     home: env.HOME || null,
     userprofile: env.USERPROFILE || null,
     embeddedOverrideRoot: getEmbeddedPluginsRootOverrideForTests(),

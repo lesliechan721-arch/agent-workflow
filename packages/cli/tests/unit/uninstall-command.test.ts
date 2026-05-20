@@ -1059,4 +1059,76 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
     expect(codex.uninstallPluginCalls).toEqual(['git-commit']);
   });
+
+  it('refuses to release the shared owner from a stale historical bundle without shared skill runtime', async () => {
+    const builder = await makeBuilder();
+    const targetState = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const recordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${targetState.recordId}.json`,
+    );
+    const ownerPath = path.join(
+      builder.paths.awHome,
+      'shared-runtime-owners',
+      'codex',
+      `${targetState.pluginSlug}.${targetState.pluginHash}.json`,
+    );
+
+    await builder.writeRepoArtifact(targetState);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(targetState);
+    await builder.writeInstallRecord(targetState, lifecycle);
+    const sanitizedRecord = await rewriteSanitizedInstallRecordForP2(recordPath);
+    const verifiedLifecycle = {
+      ...lifecycle,
+      sourceManifestDigest: await calculateFileDigest(lifecycle.manifestPath),
+      bundleFingerprint: await calculatePluginBundleFingerprint(lifecycle.bundleRoot),
+    };
+    const patchedRecord = {
+      ...sanitizedRecord,
+      record: {
+        ...sanitizedRecord.record,
+        source: {
+          ...sanitizedRecord.record.source,
+          manifestDigest: verifiedLifecycle.sourceManifestDigest,
+          bundleFingerprint: verifiedLifecycle.bundleFingerprint,
+        },
+        lifecycle: verifiedLifecycle,
+      },
+    };
+    await fs.writeJson(recordPath, patchedRecord, { spaces: 2 });
+    await builder.writeExternalNativeEvidence(targetState);
+    await builder.writeSharedRuntimeOwner(targetState, recordPath);
+    await builder.writeDependencyIndex([{ target: targetState, record: patchedRecord }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+
+    const currentPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
+    currentPlugin.manifest.version = '0.2.0';
+    setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
+
+    await expect(uninstallTargetsOnPlatforms(
+      [makeTarget(currentPlugin)],
+      ['codex'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      makeRuntime(
+        {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        { codex: new FakeAdapter() },
+      ),
+    )).rejects.toThrow(
+      'historical lifecycle version 0.1.0 与当前 bundle version 0.2.0 不一致',
+    );
+
+    await expect(fs.pathExists(ownerPath)).resolves.toBe(true);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(true);
+  });
 });
