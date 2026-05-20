@@ -44,9 +44,11 @@ import {
   cleanupOrphanedAutoDependenciesAfterFailedInstall,
   commitInstalledScopeDependencyEdges,
   createPluginLocationForPlatform,
+  disposePinnedCatalogRoot,
   ensureRollbackRemovedDependencyLocation,
   initializeInstalledScopeDependencyMetadata,
   installTargetsOnPlatforms,
+  pinCurrentCatalogTargetsForLocalMarketplaceRebuild,
   resolveGraphInstallOptionsByLocation,
   resolveProjectKeysByPlatform,
   toInstalledScopeInstallOptions,
@@ -2221,6 +2223,7 @@ export async function upgradeCommand(
     },
   );
   let commandWarnings = prepared.warnings;
+  const pinnedCatalogRoots: string[] = [];
   await emitCommandEvent(context, {
     type: 'catalog:resolved',
     data: {
@@ -2305,6 +2308,12 @@ export async function upgradeCommand(
       options,
       context,
     );
+    pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+      targets: preparedGraph.plan.writeOrder
+        .map((location) => preparedGraph.graphContext.targetByPlugin.get(location.plugin))
+        .filter((target): target is ResolvedPluginTarget => Boolean(target)),
+      env,
+    }));
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: 'runtimeWritable',
       env,
@@ -2349,5 +2358,7 @@ export async function upgradeCommand(
       error,
       withEarlyDegradedLedgerWarning(commandWarnings, prepared.ledger),
     );
+  } finally {
+    await Promise.all(pinnedCatalogRoots.map((rootDir) => disposePinnedCatalogRoot(rootDir)));
   }
 }

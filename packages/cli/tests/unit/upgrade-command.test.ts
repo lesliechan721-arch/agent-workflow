@@ -303,12 +303,108 @@ class UpgradeTestAdapter implements PlatformAdapter {
   }
 }
 
+class RootCheckingUpgradeAdapter extends UpgradeTestAdapter {
+  readonly upgradedBundleRoots: string[] = [];
+
+  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+    this.upgradedBundleRoots.push(plugin.rootDir);
+    expect(await fs.pathExists(path.join(plugin.rootDir, '.agents-plugin', 'plugin.json'))).toBe(true);
+    return super.installExtensions(plugin, scope);
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('upgrade command dependency graph', () => {
+  it('pins current catalog cache targets before explicit upgrade rebuilds the local marketplace', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const catalogRoot = path.join(String(env.AW_HOME), 'catalog-cache', 'entries', 'current', 'package');
+    await fs.ensureDir(path.join(catalogRoot, '.claude-plugin'));
+    await fs.ensureDir(path.join(catalogRoot, '.agents'));
+    const plugin = await writeSyntheticPlugin(catalogRoot, {
+      ...createDependencyPluginManifest({
+        name: 'cache-backed-upgrade',
+      }),
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+    });
+
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [plugin.manifest.name]: {
+          lastResolvedVersion: plugin.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: plugin.manifest.version,
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+
+    const target = createResolvedTarget(plugin);
+    const preparedLedger = await readInstalledLedger(env);
+    mockCatalogTargets({
+      explicitTargets: [target],
+      allTargets: [target],
+      ledger: preparedLedger,
+      catalogRoot,
+    });
+    vi.spyOn(commonModule, 'prepareCommandEnvironment').mockImplementation(async () => {
+      await fs.remove(path.join(String(env.AW_HOME), 'catalog-cache'));
+      return {
+        ledger: preparedLedger,
+        warnings: [],
+        marketplace: {
+          rootDir: String(env.AW_HOME),
+          source: 'local' as const,
+          changed: true,
+          mode: 'runtimeWritable' as const,
+          catalog: {
+            rootDir: String(env.AW_HOME),
+            source: 'local' as const,
+          },
+        },
+      };
+    });
+
+    const codex = new RootCheckingUpgradeAdapter('codex', repoRoot, env, {
+      [plugin.manifest.name]: {
+        scopeInitialized: 'yes',
+        nativeInstalled: true,
+        marketplaceRegistered: true,
+      },
+    });
+
+    await upgradeCommand(
+      [plugin.manifest.name],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new UpgradeTestAdapter('claude', repoRoot, env),
+        },
+      },
+    );
+
+    expect(codex.upgradedBundleRoots).toHaveLength(1);
+    expect(codex.upgradedBundleRoots[0]).toContain('.aw-current-catalog-source-');
+  });
+
   it('marks explicitly upgraded auto dependencies as requested while preserving dependency kind', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({

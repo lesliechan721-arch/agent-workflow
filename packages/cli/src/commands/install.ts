@@ -369,7 +369,7 @@ async function pinCurrentCatalogTargetForLocalMarketplaceRebuild(
   return pinnedRoot;
 }
 
-async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options: {
+export async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options: {
   targets: Iterable<ResolvedPluginTarget>;
   env: NodeJS.ProcessEnv;
 }): Promise<string[]> {
@@ -394,7 +394,7 @@ async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options: {
   return pinnedRoots;
 }
 
-async function disposePinnedCatalogRoot(rootDir: string | undefined): Promise<void> {
+export async function disposePinnedCatalogRoot(rootDir: string | undefined): Promise<void> {
   if (!rootDir) {
     return;
   }

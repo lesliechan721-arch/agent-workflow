@@ -140,6 +140,42 @@ function createUnavailableCatalogPackageSource() {
   };
 }
 
+async function rewriteStagedCatalogVersion(
+  embeddedRoot: string,
+  catalogVersion: string,
+): Promise<void> {
+  const manifestPaths = [
+    path.join(embeddedRoot, '.catalog', 'catalog-manifest.json'),
+    path.join(embeddedRoot, '.catalog', 'sidecar', 'catalog-manifest.json'),
+    path.join(embeddedRoot, '.catalog', 'full', 'catalog-manifest.json'),
+  ];
+
+  for (const manifestPath of manifestPaths) {
+    if (!(await fs.pathExists(manifestPath))) {
+      continue;
+    }
+
+    const manifest = await fs.readJson(manifestPath) as {
+      catalogVersion: string;
+      packages: {
+        sidecar: { version: string };
+        full: { version: string };
+      };
+      history: {
+        releases: Array<{ catalogVersion: string }>;
+      };
+    };
+    manifest.catalogVersion = catalogVersion;
+    manifest.packages.sidecar.version = catalogVersion;
+    manifest.packages.full.version = catalogVersion;
+    const latestRelease = manifest.history.releases.at(-1);
+    if (latestRelease) {
+      latestRelease.catalogVersion = catalogVersion;
+    }
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  }
+}
+
 async function writeStaleLocalMarketplaceConfig(awHome: string): Promise<void> {
   await fs.ensureDir(awHome);
   await fs.writeJson(
@@ -224,6 +260,61 @@ it('reuses a healthy rebuilt local marketplace for read-only target preparation 
     source: 'currentCatalog',
   }]);
   expect(prepared.targets[0]?.currentPlugin?.rootDir).toBe(path.join(workspace.awHome, 'plugins', 'mcp-only'));
+});
+
+it('prefers the resolved current catalog over a healthy local marketplace snapshot', async () => {
+  const workspace = await makeWorkspace(['mcp-only']);
+  await initializeLocalMarketplace({ force: true, env: workspace.env });
+
+  const pluginManifestPath = path.join(
+    workspace.repoRoot,
+    'plugins',
+    'mcp-only',
+    '.agents-plugin',
+    'plugin.json',
+  );
+  const pluginManifest = await fs.readJson(pluginManifestPath) as { version: string };
+  pluginManifest.version = '9.9.9';
+  await fs.writeJson(pluginManifestPath, pluginManifest, { spaces: 2 });
+
+  const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(workspace.repoRoot);
+  tempDirs.push(nextEmbeddedRoot);
+  await rewriteStagedCatalogVersion(nextEmbeddedRoot, '9.9.9-beta.1');
+  const sidecarRoot = path.join(nextEmbeddedRoot, '.catalog', 'sidecar');
+  const fullRoot = getCatalogFullPackageRoot(nextEmbeddedRoot);
+  const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+    channel: 'latest' | 'beta';
+    catalogVersion: string;
+  };
+  clearCurrentCatalogResolutionMemoForTests();
+  setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+    manifest,
+    sidecarRoot,
+    fullRoot,
+    channel: manifest.channel,
+    version: manifest.catalogVersion,
+  }));
+
+  const prepared = await preparePluginTargetsForCommand(
+    workspace.repoRoot,
+    'project',
+    ['mcp-only'],
+    {
+      catalogMode: 'readOnly',
+      env: workspace.env,
+    },
+  );
+
+  expect(prepared.marketplace).toMatchObject({
+    source: 'remote',
+    changed: false,
+    mode: 'readOnly',
+    catalog: {
+      catalogVersion: '9.9.9-beta.1',
+    },
+  });
+  expect(prepared.targets[0]?.currentPlugin?.manifest.version).toBe('9.9.9');
+  expect(prepared.targets[0]?.currentPlugin?.rootDir).not.toBe(path.join(workspace.awHome, 'plugins', 'mcp-only'));
 });
 
 describe.each([

@@ -975,11 +975,22 @@ async function inspectLocalMarketplaceState(
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
-  const awHome = resolveAwHome(env);
   const hasCatalogSelectorOverride = env.AW_CATALOG_VERSION !== undefined ||
     env.AW_CATALOG_CHANNEL === 'latest' ||
     env.AW_CATALOG_CHANNEL === 'beta' ||
     env.AW_CLI_VERSION !== undefined;
+  const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
+  let currentCatalogError: unknown;
+  try {
+    return await resolveCurrentCatalog(env);
+  } catch (error) {
+    if (hasCatalogSelectorOverride) {
+      throw error;
+    }
+    currentCatalogError = error;
+  }
+
+  const awHome = resolveAwHome(env);
   const [packageInfo, config] = await Promise.all([
     readCliPackageInfo(),
     readLocalMarketplaceConfig(awHome),
@@ -1002,8 +1013,7 @@ export async function resolveReadOnlyCatalogResolution(
     }
   }
 
-  const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
-  return resolveCurrentCatalog(env);
+  throw currentCatalogError;
 }
 
 async function isFreshLocalMarketplace(
