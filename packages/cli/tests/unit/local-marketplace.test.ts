@@ -226,14 +226,14 @@ describe('local marketplace', () => {
     }, { repositoryCwd });
   });
 
-  it('uses TMPDIR-backed staging and backup roots when rebuilding a custom AW_HOME', async () => {
+  it('uses AW_HOME-backed staging and TMPDIR-backed backups when rebuilding a custom AW_HOME', async () => {
     const { embeddedRoot } = await makeWorkspace();
     const guardedRoot = await fs.mkdtemp(path.join(
       getSourceTestRepositoryCwd(),
       '.aw-local-marketplace-guarded-',
     ));
     tempDirs.push(guardedRoot);
-    registerCurrentTestReadonlyFixtureRoot(guardedRoot, 'guarded local marketplace parent');
+    registerCurrentTestWritableStateRoot(guardedRoot, 'guarded local marketplace parent');
     const awHome = registerCurrentTestWritableStateRoot(
       path.join(guardedRoot, 'aw-home'),
       'guarded local marketplace AW_HOME',
@@ -266,7 +266,7 @@ describe('local marketplace', () => {
 
     const tempRoot = path.join(String(env.TMPDIR), 'aw-cli', 'local-marketplace');
     expect(observedMkdtempPrefixes).toEqual(expect.arrayContaining([
-      expect.stringContaining(path.join(tempRoot, 'staging', '.aw-staging-')),
+      expect.stringContaining(path.join(guardedRoot, '.aw-local-marketplace-staging', '.aw-staging-')),
     ]));
     expect(observedMoveTargets).toEqual(expect.arrayContaining([
       expect.stringContaining(path.join(tempRoot, 'backups', '.aw-backup-')),

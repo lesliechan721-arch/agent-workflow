@@ -3471,8 +3471,7 @@ export interface ConsoleItemsLoadResult {
 type StatusCommandResult = Awaited<ReturnType<typeof statusCommand>>;
 
 function isConsoleCatalogUnavailable(base: StatusCommandResult): boolean {
-  return base.matrix.cells.length > 0 &&
-    base.matrix.cells.every((cell) => cell.report?.currentCatalog?.available !== true);
+  return base.catalog.reasonCode === 'catalogUnavailable';
 }
 
 async function buildConsoleItemsFromStatusResult(options: {

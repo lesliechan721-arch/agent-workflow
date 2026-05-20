@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { statusCommand } from '../../src/commands/status.js';
+import { loadConsoleItemsResult, statusCommand } from '../../src/commands/status.js';
 import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
@@ -28,6 +28,21 @@ function mockCurrentCatalogBlockedByAwVersion(): void {
     },
     reason: 'latest catalog 需要更高的 aw 版本',
     reasonCode: 'awVersionTooLow',
+  }));
+}
+
+function mockCurrentCatalogUnavailable(): void {
+  vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(new CatalogResolutionError({
+    selector: {
+      kind: 'default',
+      cliVersion: '1.0.0',
+      defaultChannel: 'latest',
+    },
+    cacheFallback: {
+      used: false,
+    },
+    reason: 'current catalog is temporarily unavailable',
+    reasonCode: 'catalogUnavailable',
   }));
 }
 
@@ -158,5 +173,17 @@ describe('status command P8', () => {
     expect(payload.locations[0]?.findings).toEqual(expect.arrayContaining([
       expect.stringContaining('安装记录不可读：Invalid install record file.record.lifecycle.runtimeRoot'),
     ]));
+  });
+
+  it('marks console catalogUnavailable when current catalog is unavailable and no plugin rows are present', async () => {
+    mockCurrentCatalogUnavailable();
+
+    await expect(loadConsoleItemsResult(
+      { includeCatalogOnly: true },
+      { env: process.env },
+    )).resolves.toEqual({
+      items: [],
+      catalogUnavailable: true,
+    });
   });
 });

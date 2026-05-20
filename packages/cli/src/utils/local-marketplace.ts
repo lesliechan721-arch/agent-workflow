@@ -1385,6 +1385,14 @@ function resolveLocalMarketplaceTempRoot(env: NodeJS.ProcessEnv): string {
   );
 }
 
+function resolveLocalMarketplaceStagingRoot(awHome: string): string {
+  return assertTestWritablePath(
+    path.join(path.dirname(awHome), '.aw-local-marketplace-staging'),
+    'local marketplace staging root',
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 AW_HOME 同盘 staging 根。',
+  );
+}
+
 function createLocalMarketplaceBackupDirPath(env: NodeJS.ProcessEnv): string {
   return assertTestWritablePath(
     path.join(
@@ -1559,11 +1567,7 @@ export async function initializeLocalMarketplace(
     });
   }
 
-  const stagingParent = assertTestWritablePath(
-    path.join(resolveLocalMarketplaceTempRoot(env), 'staging'),
-    'local marketplace staging root',
-    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记本地 marketplace staging 临时目录根。',
-  );
+  const stagingParent = resolveLocalMarketplaceStagingRoot(inspection.awHome);
   await fs.ensureDir(stagingParent);
   const stagingDir = await fs.mkdtemp(path.join(stagingParent, '.aw-staging-'));
   const warnings: string[] = [];
