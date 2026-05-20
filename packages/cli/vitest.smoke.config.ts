@@ -4,7 +4,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/smoke/**/*.ts'],
-    testTimeout: 30000,
+    setupFiles: ['tests/setup/test-isolation.ts', 'tests/setup/test-isolation-smoke.ts'],
+    hookTimeout: 120000,
+    testTimeout: 120000,
     coverage: {
       reporter: ['text', 'html'],
     },

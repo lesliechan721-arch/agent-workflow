@@ -5,7 +5,10 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -159,48 +162,91 @@ function createFakeCatalogPackageSource(options: {
   };
 }
 
+function registerSmokeWritableRoot(rootPath: string, source: string): string {
+  return registerCurrentTestWritableStateRoot(rootPath, source);
+}
+
+async function createSmokeTempRoot(prefix: string, source: string): Promise<string> {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(rootPath);
+  return registerSmokeWritableRoot(rootPath, source);
+}
+
+async function buildCli(root: string): Promise<void> {
+  await execFileAsync('pnpm', ['build'], {
+    cwd: root,
+    env: process.env,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  await installCurrentSmokeDistIsolationBridge();
+}
+
 afterEach(async () => {
-  const distMarketplacePath = path.join(
-    repoRoot(),
-    'packages',
-    'cli',
-    'dist',
-    'src',
-    'utils',
-    'marketplace.js',
-  );
-  if (await fs.pathExists(distMarketplacePath)) {
-    const distPluginCatalogPath = path.join(
-      repoRoot(),
-      'packages',
-      'cli',
-      'dist',
-      'src',
-      'utils',
-      'plugin-catalog.js',
-    );
-    if (await fs.pathExists(distPluginCatalogPath)) {
-      const distPluginCatalog = await import(pathToFileURL(distPluginCatalogPath).href) as {
-        clearCurrentCatalogResolutionMemoForTests: () => void;
-      };
-      distPluginCatalog.clearCurrentCatalogResolutionMemoForTests();
-    }
-    const distMarketplace = await import(pathToFileURL(distMarketplacePath).href) as {
-      setCatalogPackageSourceForTests: (source: unknown) => void;
-    };
-    distMarketplace.setCatalogPackageSourceForTests(null);
-  }
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('catalog fetch smoke', () => {
+  it('keeps smoke dist guards active for repo dist imports without manual bridge setup', async () => {
+    const root = repoRoot();
+
+    const distMarketplace = await import(
+      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
+    ) as {
+      hasCatalogPackageSourceOverrideForTests: () => boolean;
+    };
+    const distPaths = await import(
+      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'paths.js')).href,
+    ) as {
+      getEmbeddedPluginsRootOverrideForTests: () => string | null;
+      resolveAwHome: (env?: NodeJS.ProcessEnv) => string;
+    };
+    const distNativeCli = await import(
+      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'native-cli.js')).href,
+    ) as {
+      runNativeCli: (invocation: {
+        command: string;
+        args: string[];
+        cwd?: string;
+        env?: NodeJS.ProcessEnv;
+      }) => Promise<unknown>;
+    };
+    const distCodexAppServer = await import(
+      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'codex-app-server-client.js')).href,
+    ) as {
+      installCodexPluginViaAppServer: (options: {
+        cwd: string;
+        env: NodeJS.ProcessEnv;
+        marketplacePath: string;
+        pluginName: string;
+      }) => Promise<unknown>;
+    };
+
+    expect(distMarketplace.hasCatalogPackageSourceOverrideForTests()).toBe(false);
+    expect(distPaths.getEmbeddedPluginsRootOverrideForTests()).toBeNull();
+    expect(() => distPaths.resolveAwHome({
+      ...process.env,
+      AW_HOME: path.join(root, 'packages', 'cli', 'dist', '.aw-smoke-readonly'),
+    })).toThrow('Unsafe test write path');
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
+    const guardedFetch = globalThis.fetch as typeof fetch;
+    await expect(guardedFetch('https://example.com')).rejects.toThrow('Network access is disabled in tests.');
+    await expect(distNativeCli.runNativeCli({
+      command: 'codex',
+      args: ['--version'],
+      cwd: process.cwd(),
+      env: process.env,
+    })).rejects.toThrow('测试默认禁止真实 native CLI 调用');
+    await expect(distCodexAppServer.installCodexPluginViaAppServer({
+      cwd: process.cwd(),
+      env: process.env,
+      marketplacePath: path.join(process.cwd(), 'fake-marketplace'),
+      pluginName: 'git-commit',
+    })).rejects.toThrow('测试默认禁止启动真实 `codex app-server`');
+  });
+
   it('resolves sidecar before full and reuses current catalog cache before a later full download', async () => {
     const root = repoRoot();
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 20 * 1024 * 1024,
-    });
+    await buildCli(root);
 
     const distPluginCatalog = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
@@ -214,8 +260,11 @@ describe('catalog fetch smoke', () => {
       setCatalogPackageSourceForTests: (source: unknown) => void;
     };
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-fetch-cache-smoke-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-fetch-cache-smoke-',
+      'catalog fetch smoke cache temp root',
+    );
+    registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch smoke cache AW_HOME');
     const stagedManifest = await fs.readJson(
       path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'sidecar', 'catalog-manifest.json'),
     ) as {
@@ -293,11 +342,7 @@ describe('catalog fetch smoke', () => {
 
   it('uses sidecar history to fall back from incompatible latest to a compatible historical catalog', async () => {
     const root = repoRoot();
-    await execFileAsync('pnpm', ['build'], {
-      cwd: root,
-      env: process.env,
-      maxBuffer: 20 * 1024 * 1024,
-    });
+    await buildCli(root);
 
     const distPluginCatalog = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
@@ -310,8 +355,11 @@ describe('catalog fetch smoke', () => {
       setCatalogPackageSourceForTests: (source: unknown) => void;
     };
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-fetch-history-smoke-'));
-    tempDirs.push(tempRoot);
+    const tempRoot = await createSmokeTempRoot(
+      'aw-fetch-history-smoke-',
+      'catalog fetch smoke history temp root',
+    );
+    registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch smoke history AW_HOME');
     const compatible = await buildCatalogPair({
       sourceCatalogRoot: path.join(root, 'packages', 'cli', 'plugins-dist'),
       targetRoot: tempRoot,

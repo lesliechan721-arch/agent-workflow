@@ -403,6 +403,9 @@ describe('upgrade command dependency graph', () => {
 
     expect(codex.upgradedBundleRoots).toHaveLength(1);
     expect(codex.upgradedBundleRoots[0]).toContain('.aw-current-catalog-source-');
+    expect(codex.upgradedBundleRoots[0]).toContain(
+      path.join(String(env.TMPDIR), 'aw-cli', 'current-catalog-sources'),
+    );
   });
 
   it('marks explicitly upgraded auto dependencies as requested while preserving dependency kind', async () => {

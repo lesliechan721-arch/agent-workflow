@@ -40,6 +40,7 @@ import {
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
 import {
+  resolveCliTempRoot,
   resolveAwHome,
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -47,6 +48,7 @@ import {
   resolveCodexProjectKey,
   resolveRepoRoot,
 } from '../utils/paths.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
   hasSameGeneratedArtifactDesiredIdentity,
   getGeneratedArtifactsFromError,
@@ -333,9 +335,13 @@ async function pinCatalogRootForLocalMarketplaceRebuild(
   sourceCatalogRoot: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const parentDir = path.dirname(resolveAwHome(env));
-  await fs.ensureDir(parentDir);
-  const pinnedRoot = await fs.mkdtemp(path.join(parentDir, '.aw-current-catalog-source-'));
+  const tempRoot = assertTestWritablePath(
+    path.join(resolveCliTempRoot(env), 'current-catalog-sources'),
+    'current catalog local marketplace rebuild temp root',
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记 current catalog rebuild 临时目录根。',
+  );
+  await fs.ensureDir(tempRoot);
+  const pinnedRoot = await fs.mkdtemp(path.join(tempRoot, '.aw-current-catalog-source-'));
   try {
     await fs.copy(path.join(sourceCatalogRoot, '.claude-plugin'), path.join(pinnedRoot, '.claude-plugin'));
     await fs.copy(path.join(sourceCatalogRoot, '.agents'), path.join(pinnedRoot, '.agents'));

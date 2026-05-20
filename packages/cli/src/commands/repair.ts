@@ -29,6 +29,7 @@ import { createRecordId, createSharedIdentityId } from '../install-state/ids.js'
 import { sha256Hex } from '../install-state/internal.js';
 import {
   createProjectArtifactSharedLocator,
+  getInstallRecordPath,
   getInstallStatePrivateRoot,
   resolveProjectArtifactProjectRoot,
   resolveProjectScopeRepoRoot,
@@ -783,11 +784,17 @@ function isRepairRewriteIssue(code: CollectedLocationState['projection']['issues
 async function ensureProjectRepairPrivateState(options: {
   cwd: string;
   location: PluginLocation;
+  env?: NodeJS.ProcessEnv;
 }): Promise<InstallStateReceiptWarning[]> {
   if (options.location.scope !== 'project') {
     return [];
   }
-  const privateRoot = getInstallStatePrivateRoot(options.cwd, options.location);
+  const privateRoot = getInstallStatePrivateRoot(
+    options.cwd,
+    options.location,
+    options.env,
+    'write',
+  );
   const results = await Promise.all([
     ensureProjectPrivateStateIgnore({
       cwd: options.cwd,
@@ -1149,6 +1156,7 @@ async function ensureDependencyLocationHealthy(options: {
   warnings.push(...await ensureProjectRepairPrivateState({
     cwd: dependencyCwd,
     location: options.location,
+    env: options.env,
   }));
   if (options.location.scope === 'project') {
     await assertProjectArtifactIdentityPathVisible({
@@ -1238,11 +1246,7 @@ async function ensureDependencyLocationHealthy(options: {
   }));
   const recordPath = previousRecordRead.status === 'ok'
     ? previousRecordRead.path
-    : path.join(
-        getInstallStatePrivateRoot(dependencyCwd, options.location, options.env),
-        'records',
-        `${nextRecord.recordId}.json`,
-      );
+    : getInstallRecordPath(dependencyCwd, options.location, options.env, 'write');
   stages.push(await createInstallRecordWriteStage({
     filePath: recordPath,
     value: nextRecord,
@@ -1461,6 +1465,7 @@ async function repairInstalledLocation(options: {
   warnings.push(...await ensureProjectRepairPrivateState({
     cwd: options.repairOptions.cwd,
     location,
+    env: options.env,
   }));
 
   if (location.scope === 'project') {
@@ -1766,10 +1771,11 @@ async function repairMarkerOnlyLocation(options: {
     value: recordFile,
     env: options.env,
   }));
-  const recordPath = path.join(
-    getInstallStatePrivateRoot(options.repairOptions.cwd, location, options.env),
-    'records',
-    `${recordFile.recordId}.json`,
+  const recordPath = getInstallRecordPath(
+    options.repairOptions.cwd,
+    location,
+    options.env,
+    'write',
   );
   const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
     location,
@@ -1862,6 +1868,7 @@ async function adoptExistingLocation(options: {
   const warnings = await ensureProjectRepairPrivateState({
     cwd: options.repairOptions.cwd,
     location,
+    env: options.env,
   });
   const adapters = createAdapters(
     options.repairOptions.cwd,
@@ -1940,10 +1947,11 @@ async function adoptExistingLocation(options: {
     currentRecord: recordFile,
     env: options.env,
   }));
-  const recordPath = path.join(
-    getInstallStatePrivateRoot(options.repairOptions.cwd, location, options.env),
-    'records',
-    `${recordFile.recordId}.json`,
+  const recordPath = getInstallRecordPath(
+    options.repairOptions.cwd,
+    location,
+    options.env,
+    'write',
   );
   stages.push(await createInstallRecordWriteStage({
     filePath: recordPath,

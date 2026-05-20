@@ -36,6 +36,7 @@ import { SOURCE_MANIFEST_PATH, readPluginManifest } from './manifest.js';
 import { resolveCatalogPlugins, resolveCurrentCatalog } from './plugin-catalog.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 export const PLUGIN_INSTALL_SNAPSHOTS_DIR = 'plugin-install-snapshots';
 
@@ -173,6 +174,17 @@ function lifecycleCodexHome(env: NodeJS.ProcessEnv): string {
 
 function lifecycleClaudeHome(env: NodeJS.ProcessEnv): string {
   return env.AW_CLAUDE_HOME || path.join(resolveAwHome(env), 'isolated-claude-home');
+}
+
+function assertLifecycleStagingPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME/TMPDIR，或通过 registerWritableStateRoot() 登记 plugin lifecycle staging 路径。',
+  );
 }
 
 export async function calculateFileDigest(filePath: string): Promise<string> {
@@ -320,7 +332,7 @@ export async function prepareLifecycleConfigSnapshot(
   });
   const createdAt = new Date().toISOString();
   const digestSegment = manifestDigest.replace(/^sha256:/, '').slice(0, 16);
-  const snapshotRoot = path.join(
+  const snapshotRoot = assertLifecycleStagingPathForTests(path.join(
     resolveAwHome(env),
     PLUGIN_INSTALL_SNAPSHOTS_DIR,
     options.platform,
@@ -328,10 +340,19 @@ export async function prepareLifecycleConfigSnapshot(
     safePathSegment(scopeIdentity),
     safePathSegment(options.plugin.manifest.name),
     `${digestSegment}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,
+  ), 'plugin lifecycle snapshot root');
+  const bundleRoot = assertLifecycleStagingPathForTests(
+    path.join(snapshotRoot, 'bundle'),
+    'plugin lifecycle snapshot bundle root',
   );
-  const bundleRoot = path.join(snapshotRoot, 'bundle');
-  const stagingRoot = `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`;
-  const stagedBundleRoot = path.join(stagingRoot, 'bundle');
+  const stagingRoot = assertLifecycleStagingPathForTests(
+    `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`,
+    'plugin lifecycle snapshot staging root',
+  );
+  const stagedBundleRoot = assertLifecycleStagingPathForTests(
+    path.join(stagingRoot, 'bundle'),
+    'plugin lifecycle staged bundle root',
+  );
 
   return {
     metadata: {
@@ -359,16 +380,29 @@ export async function prepareLifecycleConfigSnapshot(
 export async function persistLifecycleConfigSnapshot(
   prepared: PreparedLifecycleConfigSnapshot,
 ): Promise<LifecycleConfigSnapshotMetadata> {
-  await fs.ensureDir(path.dirname(prepared.metadata.snapshotRoot));
+  const snapshotRoot = assertLifecycleStagingPathForTests(
+    prepared.metadata.snapshotRoot,
+    'plugin lifecycle snapshot root',
+  );
+  const stagingRoot = assertLifecycleStagingPathForTests(
+    prepared.stagingRoot,
+    'plugin lifecycle snapshot staging root',
+  );
+  const stagedBundleRoot = assertLifecycleStagingPathForTests(
+    prepared.stagedBundleRoot,
+    'plugin lifecycle staged bundle root',
+  );
+
+  await fs.ensureDir(path.dirname(snapshotRoot));
   try {
-    await fs.copy(prepared.sourceBundleRoot, prepared.stagedBundleRoot, {
+    await fs.copy(prepared.sourceBundleRoot, stagedBundleRoot, {
       overwrite: false,
       errorOnExist: true,
     });
-    const stagedManifestPath = path.join(prepared.stagedBundleRoot, SOURCE_MANIFEST_PATH);
+    const stagedManifestPath = path.join(stagedBundleRoot, SOURCE_MANIFEST_PATH);
     const [stagedManifestDigest, stagedBundleFingerprint] = await Promise.all([
       calculateFileDigest(stagedManifestPath),
-      calculatePluginBundleFingerprint(prepared.stagedBundleRoot),
+      calculatePluginBundleFingerprint(stagedBundleRoot),
     ]);
     if (
       stagedManifestDigest !== prepared.metadata.sourceManifestDigest ||
@@ -378,9 +412,9 @@ export async function persistLifecycleConfigSnapshot(
         'Lifecycle config snapshot staging no longer matches the prepared source bundle.',
       );
     }
-    await fs.move(prepared.stagingRoot, prepared.metadata.snapshotRoot, { overwrite: false });
+    await fs.move(stagingRoot, snapshotRoot, { overwrite: false });
   } catch (error) {
-    await fs.remove(prepared.stagingRoot).catch(() => undefined);
+    await fs.remove(stagingRoot).catch(() => undefined);
     throw error;
   }
 
@@ -924,10 +958,21 @@ export async function writeLifecycleScriptContext(options: {
     artifacts: options.artifacts ?? [],
   };
 
-  const tempRoot = path.join(resolveAwHome(options.commandEnv), 'tmp');
+  const tempRoot = assertLifecycleStagingPathForTests(
+    path.join(resolveAwHome(options.commandEnv), 'tmp'),
+    'plugin lifecycle temp root',
+  );
   await fs.ensureDir(tempRoot);
-  const tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-script-'));
-  const contextPath = path.join(tempDir, 'context.json');
+  const tempDir = await fs.mkdtemp(
+    assertLifecycleStagingPathForTests(
+      path.join(tempRoot, 'plugin-script-'),
+      'plugin lifecycle context temp dir',
+    ),
+  );
+  const contextPath = assertLifecycleStagingPathForTests(
+    path.join(tempDir, 'context.json'),
+    'plugin lifecycle context file',
+  );
   await fs.writeJson(contextPath, context, { spaces: 2 });
   try {
     await fs.chmod(contextPath, 0o600);

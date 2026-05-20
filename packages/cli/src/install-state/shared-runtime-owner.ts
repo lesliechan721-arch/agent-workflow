@@ -27,6 +27,7 @@ import { sha256Hex } from './internal.js';
 import { getSharedSkillTriggerRuntimeOwnerPath } from './paths.js';
 import {
   createSharedRuntimeOwnerDeleteStage,
+  createSharedRuntimeOwnerWriteStage,
   type InstallStateReceiptWarning,
   type InstallStateTransactionStage,
 } from './transactions.js';
@@ -431,75 +432,7 @@ async function createSharedRuntimeOwnerIdentityWriteStage(options: {
   recordPath: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<InstallStateTransactionStage> {
-  const ownerPath = getSharedSkillTriggerRuntimeOwnerPath({
-    pluginName: options.recordFile.record.pluginName,
-    platform: options.recordFile.record.platform,
-    env: options.env,
-  });
-  const stagingPath = `${ownerPath}.aw-staging`;
-  const backupPath = `${ownerPath}.aw-backup`;
-  let committed = false;
-
-  return {
-    label: 'shared runtime owner',
-    async commit() {
-      if (committed) {
-        return;
-      }
-      const value: SharedSkillTriggerRuntimeOwner = {
-        version: 1,
-        pluginName: options.recordFile.record.pluginName,
-        platform: options.recordFile.record.platform,
-        owner: locationFromRecord(options.recordFile),
-        ownerRecordPath: options.recordPath,
-        ownerRecordDigest: sha256Hex(await fs.readFile(options.recordPath)),
-        updatedAt: options.recordFile.record.updatedAt,
-      };
-      await fs.ensureDir(path.dirname(ownerPath));
-      await fs.writeJson(stagingPath, value, { spaces: 2 });
-      if (await fs.pathExists(ownerPath)) {
-        await fs.move(ownerPath, backupPath, { overwrite: true });
-      }
-      await fs.move(stagingPath, ownerPath, { overwrite: true });
-      committed = true;
-    },
-    async rollback(): Promise<InstallStateReceiptWarning | void> {
-      try {
-        if (committed) {
-          if (await fs.pathExists(backupPath)) {
-            await fs.remove(ownerPath).catch(() => undefined);
-            await fs.move(backupPath, ownerPath, { overwrite: true });
-          } else {
-            await fs.remove(ownerPath).catch(() => undefined);
-          }
-        } else {
-          await fs.remove(stagingPath).catch(() => undefined);
-        }
-        return undefined;
-      } catch (error) {
-        return {
-          code: 'sharedRuntimeOwnerRollbackFailed',
-          message: 'Shared runtime owner rollback failed.',
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    },
-    async finalize(): Promise<InstallStateReceiptWarning | void> {
-      try {
-        await Promise.all([
-          fs.remove(stagingPath).catch(() => undefined),
-          fs.remove(backupPath).catch(() => undefined),
-        ]);
-        return undefined;
-      } catch (error) {
-        return {
-          code: 'sharedRuntimeOwnerFinalizeFailed',
-          message: 'Shared runtime owner finalize failed.',
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    },
-  };
+  return createSharedRuntimeOwnerWriteStage(options);
 }
 
 export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {

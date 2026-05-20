@@ -19,6 +19,7 @@ import {
   patchPluginConfigStore,
   resolveConfigReadV2,
   readPluginConfigStore,
+  resolveAwProjectRoot,
   resolvePluginConfigSchemaAccess,
   resolveUniformSkillTriggerPreference,
   resetPluginConfigStore,
@@ -85,6 +86,7 @@ import type {
 } from '../types.js';
 import { readInstalledLedger } from './local-marketplace.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from './paths.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -246,6 +248,14 @@ function artifactRefreshTargetMessage(receipt: ArtifactRefreshReceipt): string {
     return '当前没有触发任何需要刷新的 dynamic artifact。';
   }
   return '当前 target 没有需要刷新的 dynamic artifact。';
+}
+
+function resolveProjectCodexSkillRuntimeRoot(cwd: string): string {
+  return assertTestWritablePath(
+    path.join(resolveAwProjectRoot(cwd), '.agents', 'skills'),
+    'Codex project skill runtime (.agents/skills)',
+    '用 withSafeTestCwd() 切到测试可写 cwd，或通过 registerWritableStateRoot() 登记 project fixture 根。',
+  );
 }
 
 function buildDynamicRefreshRawTargetResults(options: {
@@ -471,7 +481,7 @@ async function applyBuiltInSkillTriggerRuntime(options: {
                 platform: 'codex' as const,
                 scope: 'project' as const,
                 kind: 'repoSkill' as const,
-                root: resolveCodexPaths(options.cwd, 'project', options.env).agentsDir,
+                root: resolveProjectCodexSkillRuntimeRoot(options.cwd),
               },
             }
           : {

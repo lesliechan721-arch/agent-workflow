@@ -27,11 +27,17 @@ describe('fake Codex app-server harness', () => {
       },
     ]);
     const runner = harness.createRunner();
+    const env = {
+      PATH: '/tmp/bin',
+      AW_HOME: '/tmp/aw-home',
+    } as NodeJS.ProcessEnv;
     const process = runner({
       command: 'codex',
       args: ['app-server'],
       cwd: '/tmp/project',
+      env,
     });
+    env.PATH = '/tmp/changed';
 
     process.stdin.write('{"id":1,"method":"initialize"}\n');
     process.stdin.write('{"id":2,"method":"plugin/install","params":{"pluginId":"git-commit@aw"}}\n');
@@ -42,6 +48,10 @@ describe('fake Codex app-server harness', () => {
         command: 'codex',
         args: ['app-server'],
         cwd: '/tmp/project',
+        env: {
+          PATH: '/tmp/bin',
+          AW_HOME: '/tmp/aw-home',
+        },
       },
     ]);
     expect(harness.stdinMessages.map((message) => message.json?.method)).toEqual([

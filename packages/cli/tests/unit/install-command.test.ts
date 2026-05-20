@@ -53,7 +53,9 @@ import {
   getDiagnosticCachePath,
   getProjectArtifactSharedIdentityPath,
 } from '../../src/install-state/paths.js';
+import { createCliTestWorkspace, registerCliEmbeddedRoot, registerCliTempRoot } from '../helpers/workspace.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import {
@@ -61,7 +63,6 @@ import {
   createPluginDependencyScenarioFixtures,
 } from '../support/plugin-dependency-fixtures.js';
 
-const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
 
 function fixturePath(...segments: string[]): string {
@@ -80,33 +81,27 @@ async function makeWorkspace(
   env: NodeJS.ProcessEnv;
   embeddedRoot: string;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-command-'));
-  tempDirs.push(root);
-
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  if (manifestUpdater) {
-    const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    manifestUpdater(manifest);
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-  }
-  await execFileAsync('git', ['init', '-q'], { cwd: repoRoot });
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-  return {
-    repoRoot,
-    embeddedRoot,
+  const workspace = await createCliTestWorkspace({
     env: {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      AW_FORCE_CODEX_AVAILABLE: '1',
+      PATH: process.env.PATH,
       AW_FORCE_CLAUDE_AVAILABLE: '1',
     },
+    rootDirPrefix: 'aw-install-command-',
+    mutateRepo: manifestUpdater
+      ? async (repoRoot) => {
+        const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+        const manifest = await fs.readJson(manifestPath);
+        manifestUpdater(manifest);
+        await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      }
+      : undefined,
+  });
+  await execFileAsync('git', ['init', '-q'], { cwd: workspace.repoRoot });
+
+  return {
+    repoRoot: workspace.repoRoot,
+    embeddedRoot: workspace.embeddedRoot!,
+    env: workspace.env,
   };
 }
 
@@ -563,7 +558,6 @@ afterEach(async () => {
   clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('install command P6 install-state semantics', () => {
@@ -825,7 +819,7 @@ describe('install command P6 install-state semantics', () => {
     await writeNativeTransactionMarker(makeNativeInstallMarker('git-commit'), env);
     await fs.remove(path.join(repoRoot, 'plugins', 'git-commit'));
     const missingEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(missingEmbeddedRoot);
+    registerCliEmbeddedRoot(missingEmbeddedRoot, 'install command missing embedded root');
     setEmbeddedPluginsRootOverrideForTests(missingEmbeddedRoot);
 
     await expect(
@@ -1642,16 +1636,17 @@ describe('install command P6 install-state semantics', () => {
 
   it('fails install scope preflight before required config when the sibling scope is already healthy', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-duplicate-')),
+      registerCliTempRoot(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-duplicate-')),
+        'install duplicate fixture root',
+      ),
     );
-    tempDirs.push(builder.paths.rootDir);
-    const env = {
-      ...process.env,
+    const env = resolveSafeCliEnv({
       AW_HOME: builder.paths.awHome,
       AW_CODEX_HOME: builder.paths.codexHome,
       AW_CLAUDE_HOME: builder.paths.claudeHome,
       AW_FORCE_CODEX_AVAILABLE: '1',
-    } satisfies NodeJS.ProcessEnv;
+    });
     const projectKey = await fs.realpath(builder.paths.repoRoot);
     const projectTarget = builder.createTarget({
       pluginName: 'duplicate-install-plugin',
@@ -1693,7 +1688,7 @@ describe('install command P6 install-state semantics', () => {
       { spaces: 2 },
     );
     const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
-    tempDirs.push(embeddedRoot);
+    registerCliEmbeddedRoot(embeddedRoot, 'install duplicate embedded root');
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
     await writeInstalledLedger(createAvailableLedger(), env);
 

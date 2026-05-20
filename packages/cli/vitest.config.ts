@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/unit/**/*.ts', 'tests/integration/**/*.ts'],
-    setupFiles: ['tests/setup/no-network-catalog.ts'],
+    setupFiles: ['tests/setup/test-isolation.ts'],
     coverage: {
       reporter: ['text', 'html'],
     },

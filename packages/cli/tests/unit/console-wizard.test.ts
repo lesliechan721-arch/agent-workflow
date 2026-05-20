@@ -38,6 +38,10 @@ import {
   writeCorruptedCodexUserConfig,
   writeTrackingManifestWithMissingArtifactKey,
 } from '../helpers/repo-managed-state.js';
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -350,6 +354,11 @@ describe('console write decision model', () => {
   });
 
   it('splits same-store required config prompts when form identity differs across platforms', async () => {
+    const syntheticProjectCwd = registerCurrentTestWritableStateRoot(
+      path.join(getCurrentSourceTestIsolation().layout.rootDir, 'console-wizard-synthetic-project'),
+      'console wizard synthetic project cwd',
+    );
+    await fs.ensureDir(syntheticProjectCwd);
     const plugin = syntheticPlugin({
       config: {
         schema: {
@@ -392,7 +401,7 @@ describe('console write decision model', () => {
           requested: true,
         },
       ],
-      cwd: '/workspace',
+      cwd: syntheticProjectCwd,
       defaultScope: 'user',
       env: {} as NodeJS.ProcessEnv,
     });

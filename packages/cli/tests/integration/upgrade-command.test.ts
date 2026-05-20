@@ -20,17 +20,25 @@ import type {
 } from '../../src/types.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import {
   resolveCodexPaths,
   resolveClaudeProjectKey,
   resolveCodexProjectKey,
-  setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  activateCliEmbeddedRoot,
+  registerCliCatalogSourceRoot,
+  registerCliEmbeddedRoot,
+  registerCliFixtureRepoRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
+import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 
 const tempDirs: string[] = [];
-const originalPath = process.env.PATH;
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -41,15 +49,45 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
+function registerRepoFixtureRoots(): void {
+  registerCurrentTestReadonlyFixtureRoot(fixturePath(), 'upgrade command fixture root');
+}
+
+function replaceProcessEnv(nextEnv: NodeJS.ProcessEnv): void {
+  const nextKeys = new Set(Object.keys(nextEnv));
+
+  for (const key of Object.keys(process.env)) {
+    if (!nextKeys.has(key)) {
+      delete process.env[key];
+    }
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
 async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
+  registerRepoFixtureRoots();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-upgrade-command-'));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'upgrade command root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'upgrade command repo root');
   await removeAppsFromGitCommit(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'upgrade command embedded root');
+  registerCliCatalogSourceRoot(
+    getCatalogFullPackageRoot(embeddedRoot),
+    'upgrade command catalog source root',
+  );
 
   return {
     repoRoot,
@@ -62,15 +100,23 @@ async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embe
 async function makeWorkspaceWithMutator(
   mutateRepo: (repoRoot: string) => Promise<void>,
 ): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
+  registerRepoFixtureRoots();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-upgrade-command-'));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'upgrade command mutated root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'upgrade command mutated repo root');
   await removeAppsFromGitCommit(repoRoot);
   await mutateRepo(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
+  registerCliEmbeddedRoot(embeddedRoot, 'upgrade command mutated embedded root');
+  registerCliCatalogSourceRoot(
+    getCatalogFullPackageRoot(embeddedRoot),
+    'upgrade command mutated catalog source root',
+  );
 
   return {
     repoRoot,
@@ -78,6 +124,30 @@ async function makeWorkspaceWithMutator(
     embeddedRoot,
     codexHome: path.join(root, 'codex-home'),
   };
+}
+
+function activateWorkspaceEnv(
+  workspace: {
+    awHome: string;
+    codexHome: string;
+    embeddedRoot: string;
+  },
+  options: {
+    forceClaude?: boolean;
+    overrides?: NodeJS.ProcessEnv;
+  } = {},
+): NodeJS.ProcessEnv {
+  const env = resolveSafeCliEnv({
+    AW_HOME: workspace.awHome,
+    AW_CODEX_HOME: workspace.codexHome,
+    PATH: '',
+    AW_FORCE_CODEX_AVAILABLE: '1',
+    ...(options.forceClaude ? { AW_FORCE_CLAUDE_AVAILABLE: '1' } : {}),
+    ...options.overrides,
+  });
+  replaceProcessEnv(env);
+  activateCliEmbeddedRoot(workspace.embeddedRoot, 'upgrade command embedded root activation');
+  return env;
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -392,13 +462,6 @@ class FakeAdapter implements PlatformAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
-  process.env.PATH = originalPath;
-  delete process.env.AW_HOME;
-  delete process.env.AW_CODEX_HOME;
-  delete process.env.AW_CLAUDE_HOME;
-  delete process.env.AW_FORCE_CODEX_AVAILABLE;
-  delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -608,10 +671,7 @@ describe('upgrade command coverage', () => {
 
   it('refuses explicit upgrade when tracked skill or MCP identity is missing artifactKey', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await fs.outputJson(
       path.join(repoRoot, '.codex', '.agent-workflows-manifest.json'),
@@ -662,11 +722,7 @@ describe('upgrade command coverage', () => {
 
   it('blocks explicit upgrade when only fallback evidence exists', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -699,10 +755,7 @@ describe('upgrade command coverage', () => {
 
   it('reapplies current catalog for capability-changed plugins without pre-uninstall', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -746,11 +799,7 @@ describe('upgrade command coverage', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       addRequiredConfigSchemaToGitCommit,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.PATH = '';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
 
@@ -844,10 +893,7 @@ describe('upgrade command coverage', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       mutateRepo,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -886,10 +932,7 @@ describe('upgrade command coverage', () => {
 
   it('ignores legacy project candidates without explicit retained install source during upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeLegacyCodexProjectCandidateRecord(repoRoot);
@@ -1062,10 +1105,7 @@ describe('upgrade command coverage', () => {
       const workspace = testCase.mutateRepo
         ? await makeWorkspaceWithMutator(testCase.mutateRepo)
         : await makeWorkspace();
-      process.env.AW_HOME = workspace.awHome;
-      process.env.AW_CODEX_HOME = workspace.codexHome;
-      process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-      setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
+      activateWorkspaceEnv(workspace);
 
       await initCommand({ force: true });
       await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -1105,11 +1145,7 @@ describe('upgrade command coverage', () => {
 
   it('keeps successful targets in plugins[] and skipped targets in skipped[] during mixed upgrade --all', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
     const [codexProjectKey, claudeProjectKey] = await Promise.all([
@@ -1204,11 +1240,7 @@ describe('upgrade command coverage', () => {
 
   it('keeps both platform-specific project roots when upgrade --all runs from a subdirectory', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
     const nestedCwd = path.join(repoRoot, 'packages', 'workspace-child');
@@ -1322,11 +1354,7 @@ describe('upgrade command coverage', () => {
 
   it('requires an explicit platform for upgrade --all even when only one managed platform remains', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -1391,10 +1419,7 @@ describe('upgrade command coverage', () => {
 
   it('rejects upgrade --all with --platform both when only one platform is available', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
@@ -1431,11 +1456,7 @@ describe('upgrade command coverage', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       restrictGitCommitToCodex,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -1532,11 +1553,7 @@ describe('upgrade command coverage', () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspaceWithMutator(
       restrictGitCommitToCodex,
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
 
@@ -1645,10 +1662,7 @@ describe('upgrade command coverage', () => {
         }));
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     const ledger = createAvailableLedger();
@@ -1775,10 +1789,7 @@ describe('upgrade command coverage', () => {
         }));
       },
     );
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     const ledger = createAvailableLedger();
@@ -1878,10 +1889,7 @@ describe('upgrade command coverage', () => {
 
   it('rejects upgrade --all takeover before evaluating roots', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);

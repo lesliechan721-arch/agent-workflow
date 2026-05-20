@@ -7,8 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
 import { readJsonFile } from '../../src/utils/json.js';
+import { resolveCatalogPackageIdentityByDistTag } from '../../src/utils/marketplace.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { TestPathFenceError } from '../helpers/test-isolation.js';
+import {
+  getCurrentSourceTestIsolation,
+  getSourceTestRepositoryCwd,
+} from '../setup/test-isolation.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const tempDirs: string[] = [];
@@ -59,6 +65,96 @@ async function addClaudeOnlyFixture(repoRoot: string): Promise<void> {
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
   await fs.remove(path.join(pluginRoot, '.app.json'));
 }
+
+describe('marketplace npm userconfig fencing', () => {
+  it('uses the isolated npm userconfig by default when resolving registry metadata', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      'dist-tags': {
+        latest: '1.2.3',
+      },
+      versions: {
+        '1.2.3': {
+          dist: {
+            integrity: 'sha512-test-integrity',
+            tarball: 'https://example.test/aw-plugins-1.2.3.tgz',
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+      },
+    }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(
+      resolveCatalogPackageIdentityByDistTag(
+        '@yiliang/aw-plugins-manifest',
+        'latest',
+        process.env,
+      ),
+    ).resolves.toMatchObject({
+      packageName: '@yiliang/aw-plugins-manifest',
+      version: '1.2.3',
+      integrity: 'sha512-test-integrity',
+    });
+    expect(process.env.npm_config_userconfig).toBe(isolation.layout.npmUserConfigPath);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('blocks explicit real or unregistered npm userconfig paths before reading ~/.npmrc', async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error('fetch should not run for unsafe npm userconfig paths');
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    const realHomeError = await resolveCatalogPackageIdentityByDistTag(
+      '@yiliang/aw-plugins-manifest',
+      'latest',
+      {
+        npm_config_userconfig: path.join(os.homedir(), '.npmrc'),
+      },
+    ).catch((error) => error);
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+    expect(realHomeError).toBeInstanceOf(TestPathFenceError);
+    expect((realHomeError as TestPathFenceError).details).toMatchObject({
+      access: 'read',
+      source: 'npm_config_userconfig',
+      reason: 'outsideRegisteredRoots',
+    });
+
+    const unregisteredError = await resolveCatalogPackageIdentityByDistTag(
+      '@yiliang/aw-plugins-manifest',
+      'latest',
+      {
+        ...process.env,
+        npm_config_userconfig: path.join(getSourceTestRepositoryCwd(), '.npmrc'),
+      },
+    ).catch((error) => error);
+    expect(unregisteredError).toBeInstanceOf(TestPathFenceError);
+    expect((unregisteredError as TestPathFenceError).details).toMatchObject({
+      access: 'read',
+      source: 'npm_config_userconfig',
+      reason: 'outsideRegisteredRoots',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('marketplace bundle', () => {
   it('filters marketplace entries by platform while preserving shared root metadata', async () => {

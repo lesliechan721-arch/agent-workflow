@@ -71,6 +71,17 @@ export interface FakeCodexAppServerHarness {
   waitForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
+function cloneInvocation(
+  invocation: FakeCodexAppServerInvocation,
+): FakeCodexAppServerInvocation {
+  return {
+    command: invocation.command,
+    args: [...invocation.args],
+    cwd: invocation.cwd,
+    env: invocation.env ? { ...invocation.env } : undefined,
+  };
+}
+
 class FakeProcess
   extends EventEmitter
   implements FakeCodexAppServerProcess {
@@ -280,7 +291,7 @@ export function createFakeCodexAppServerHarness(
     stdinMessages,
     killedSignals,
     spawn(invocation) {
-      invocations.push(invocation);
+      invocations.push(cloneInvocation(invocation));
       triggerSteps('start', startInput);
       return process;
     },

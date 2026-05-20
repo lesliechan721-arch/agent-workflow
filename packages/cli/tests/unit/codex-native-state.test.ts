@@ -2,12 +2,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   assessCodexMarketplaceCleanup,
+  captureCodexNativePluginRollbackBaseline,
   checkCodexNativeInstallPostCheck,
   checkCodexNativeUninstallPostCheck,
+  disposeCodexNativePluginRollbackBaseline,
   listCodexNativeEvidence,
   readCodexNativePluginState,
 } from '../../src/utils/codex-native-state.js';
@@ -16,6 +18,10 @@ import {
   upsertCodexPluginEnabledFile,
 } from '../../src/utils/codex-config.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -287,6 +293,34 @@ describe('codex-native-state', () => {
         cacheStatus: 'ambiguous',
       },
     });
+  });
+
+  it('blocks native cache rollback staging outside registered temp roots and allows it after registration', async () => {
+    const env = await makeEnv();
+    await writeActiveCache(env, 'rollback-cache');
+
+    const isolation = getCurrentSourceTestIsolation();
+    const externalTmpRoot = path.join(isolation.layout.rootDir, 'external-codex-native-cache-tmp');
+    await fs.ensureDir(externalTmpRoot);
+
+    const tmpdirSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(externalTmpRoot);
+    try {
+      await expect(
+        captureCodexNativePluginRollbackBaseline('rollback-cache', env),
+      ).rejects.toThrow(/Codex native cache rollback staging root/);
+
+      registerCurrentTestWritableStateRoot(
+        externalTmpRoot,
+        'codex-native-state rollback staging root',
+      );
+
+      const baseline = await captureCodexNativePluginRollbackBaseline('rollback-cache', env);
+      expect(baseline.cleanupRoot).toContain(externalTmpRoot);
+      expect(baseline.cacheBackupPath).toContain(externalTmpRoot);
+      await disposeCodexNativePluginRollbackBaseline(baseline);
+    } finally {
+      tmpdirSpy.mockRestore();
+    }
   });
 
   it('allows marketplace cleanup only when no enabled config or active cache evidence remains', async () => {

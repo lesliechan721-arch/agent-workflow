@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const execFileAsync = promisify(execFile);
@@ -25,10 +26,28 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
+function registerSmokeWritableRoot(rootPath: string, source: string): string {
+  return registerCurrentTestWritableStateRoot(rootPath, source);
+}
+
+function stripCorepackBootstrapNoise(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter((line) => (
+      line.trim() !== '' &&
+      !line.startsWith('! Corepack is about to download ') &&
+      line !== "$ pnpm --filter @yiliang/aw plugin:test -- git-commit --test-name 'staged smoke generated test'" &&
+      line !== "$ tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js -- git-commit --test-name 'staged smoke generated test'"
+    ))
+    .join('\n');
+}
+
 async function makeTempRepo(): Promise<string> {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-scripts-smoke-'));
   tempDirs.push(tempRoot);
+  registerSmokeWritableRoot(tempRoot, 'plugin scripts smoke temp root');
   const tempRepo = path.join(tempRoot, 'repo');
+  registerSmokeWritableRoot(tempRepo, 'plugin scripts smoke repo root');
   await fs.copy(fixturePath('repo-template'), tempRepo);
   return tempRepo;
 }
@@ -60,7 +79,7 @@ describe('plugin scripts staging smoke', () => {
 
     expect(result.stdout).toContain('git-commit / codex: passed');
     expect(result.stdout).not.toContain('git-commit / claude');
-    expect(result.stderr).toBe('');
+    expect(stripCorepackBootstrapNoise(result.stderr)).toBe('');
 
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'generated.test.mjs')),

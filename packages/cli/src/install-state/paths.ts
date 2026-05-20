@@ -8,6 +8,10 @@ import {
   resolveRepoRootSync,
 } from '../utils/paths.js';
 import {
+  assertTestReadablePath,
+  assertTestWritablePath,
+} from '../utils/test-path-fence.js';
+import {
   createHistoricalLifecycleScopeKey,
   createHistoricalLifecycleRuntimePathSet,
   createRecordId,
@@ -24,31 +28,92 @@ import type {
   ProjectArtifactSharedLocator,
 } from './types.js';
 
+type InstallStatePathAccess = 'read' | 'write';
+
+function assertProjectScopePathForTests(
+  targetPath: string,
+  access: InstallStatePathAccess,
+  source: string,
+): string {
+  const recommendedFix = access === 'write'
+    ? '用 withSafeTestCwd() 切到测试可写 cwd，或通过 registerWritableStateRoot() 登记 project fixture 根。'
+    : '用 registerReadonlyFixtureRoot() 或 runWithRepositoryCwdAsReadOnly() 登记只读 project fixture 根。';
+  return access === 'write'
+    ? assertTestWritablePath(targetPath, source, recommendedFix)
+    : assertTestReadablePath(targetPath, source, recommendedFix);
+}
+
+function assertAwHomeStatePathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 AW_HOME 根。',
+  );
+}
+
 export function getInstallStatePrivateRoot(
   cwd: string,
   location: PluginLocation,
   env: NodeJS.ProcessEnv = process.env,
+  access: InstallStatePathAccess = 'read',
 ): string {
   const configDir = location.platform === 'claude'
     ? resolveClaudePaths(cwd, location.scope, env).configDir
     : resolveCodexPaths(cwd, location.scope, env).configDir;
-  return path.join(configDir, '.agent-workflows');
+  const privateRoot = path.join(configDir, '.agent-workflows');
+  if (location.scope !== 'project') {
+    return privateRoot;
+  }
+  return assertProjectScopePathForTests(
+    privateRoot,
+    access,
+    `${location.platform} project install-state private root`,
+  );
 }
 
 export function getInstallRecordPath(
   cwd: string,
   location: PluginLocation,
   env: NodeJS.ProcessEnv = process.env,
+  access: InstallStatePathAccess = 'read',
 ): string {
-  return path.join(getInstallStatePrivateRoot(cwd, location, env), 'records', `${createRecordId(location)}.json`);
+  const filePath = path.join(
+    getInstallStatePrivateRoot(cwd, location, env, access),
+    'records',
+    `${createRecordId(location)}.json`,
+  );
+  if (location.scope !== 'project') {
+    return filePath;
+  }
+  return assertProjectScopePathForTests(
+    filePath,
+    access,
+    `${location.platform} project install record`,
+  );
 }
 
 export function getDiagnosticCachePath(
   cwd: string,
   location: PluginLocation,
   env: NodeJS.ProcessEnv = process.env,
+  access: InstallStatePathAccess = 'read',
 ): string {
-  return path.join(getInstallStatePrivateRoot(cwd, location, env), 'diagnostics', `${createRecordId(location)}.json`);
+  const filePath = path.join(
+    getInstallStatePrivateRoot(cwd, location, env, access),
+    'diagnostics',
+    `${createRecordId(location)}.json`,
+  );
+  if (location.scope !== 'project') {
+    return filePath;
+  }
+  return assertProjectScopePathForTests(
+    filePath,
+    access,
+    `${location.platform} project dynamic artifact diagnostic cache`,
+  );
 }
 
 export function createProjectArtifactSharedLocator(options: {
@@ -77,21 +142,30 @@ export function createProjectArtifactSharedLocator(options: {
 export function getProjectArtifactSharedIdentityPath(options: {
   repoRoot: string;
   locator: ProjectArtifactSharedLocator;
+  access?: InstallStatePathAccess;
 }): string {
   const sharedIdentityId = createSharedIdentityId(options.locator);
-  return path.join(
+  const filePath = path.join(
     options.repoRoot,
     '.agent-workflows',
     'project-artifacts',
     options.locator.platform,
     `${sharedIdentityId}.json`,
   );
+  return assertProjectScopePathForTests(
+    filePath,
+    options.access ?? 'read',
+    'project artifact shared identity',
+  );
 }
 
 export function getGlobalDependencyIndexPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(resolveAwHome(env), 'dependency-index', 'index.json');
+  return assertAwHomeStatePathForTests(
+    path.join(resolveAwHome(env), 'dependency-index', 'index.json'),
+    'global dependency index',
+  );
 }
 
 export function getNativeTransactionMarkerPath(
@@ -101,12 +175,15 @@ export function getNativeTransactionMarkerPath(
   const pluginId = pluginNameOrId.endsWith('@aw')
     ? pluginNameOrId
     : `${pluginNameOrId}@aw`;
-  return path.join(
-    resolveAwHome(env),
-    'native-recovery',
-    'codex',
-    'user',
-    `${pluginId}.json`,
+  return assertAwHomeStatePathForTests(
+    path.join(
+      resolveAwHome(env),
+      'native-recovery',
+      'codex',
+      'user',
+      `${pluginId}.json`,
+    ),
+    'native transaction marker',
   );
 }
 
@@ -115,11 +192,14 @@ export function getSharedSkillTriggerRuntimeOwnerPath(options: {
   platform: PluginLocation['platform'];
   env?: NodeJS.ProcessEnv;
 }): string {
-  return path.join(
-    resolveAwHome(options.env),
-    'shared-runtime-owners',
-    options.platform,
-    getSharedRuntimeOwnerFileName(options.pluginName),
+  return assertAwHomeStatePathForTests(
+    path.join(
+      resolveAwHome(options.env),
+      'shared-runtime-owners',
+      options.platform,
+      getSharedRuntimeOwnerFileName(options.pluginName),
+    ),
+    'shared runtime owner',
   );
 }
 
@@ -134,11 +214,14 @@ export function createHistoricalLifecycleRuntimePaths(options: {
   manifestRelativePath?: string;
 }): HistoricalLifecycleRuntimePathSet {
   const recordId = options.recordId ?? createRecordId(options.location);
-  const runtimeBaseRoot = path.join(
-    resolveAwHome(options.env),
-    'lifecycle-runtimes',
-    options.location.platform,
-    options.location.scope,
+  const runtimeBaseRoot = assertAwHomeStatePathForTests(
+    path.join(
+      resolveAwHome(options.env),
+      'lifecycle-runtimes',
+      options.location.platform,
+      options.location.scope,
+    ),
+    `${options.location.platform} ${options.location.scope} historical lifecycle runtime root`,
   );
   const scopeKey = createHistoricalLifecycleScopeKey(options.location);
   const runtimeRootBase = path.join(runtimeBaseRoot, scopeKey, recordId);

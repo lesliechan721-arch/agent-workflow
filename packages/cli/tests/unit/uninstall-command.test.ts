@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { uninstallCommand, uninstallTargetsOnPlatforms } from '../../src/commands/uninstall.js';
+import {
+  captureArtifactRollbackState,
+  uninstallCommand,
+  uninstallTargetsOnPlatforms,
+} from '../../src/commands/uninstall.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
@@ -27,10 +31,12 @@ import {
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
 import {
+  resolveCodexPaths,
   resolveClaudeProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import { writeTrackingManifest } from '../../src/utils/tracking.js';
 import type {
   GeneratedArtifact,
   LifecycleConfigSnapshotMetadata,
@@ -41,9 +47,12 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
+import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
-
-const tempDirs: string[] = [];
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -55,9 +64,23 @@ function fixturePath(...segments: string[]): string {
 }
 
 async function makeBuilder() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-uninstall-'));
-  tempDirs.push(root);
+  const root = registerCurrentTestWritableStateRoot(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-uninstall-')),
+    'uninstall fixture root',
+  );
   return createMinimalPluginInstallStateFixtureBuilder(root);
+}
+
+function createBuilderEnv(paths: {
+  awHome: string;
+  codexHome: string;
+  claudeHome: string;
+}): NodeJS.ProcessEnv {
+  return resolveSafeCliEnv({
+    AW_HOME: paths.awHome,
+    AW_CODEX_HOME: paths.codexHome,
+    AW_CLAUDE_HOME: paths.claudeHome,
+  });
 }
 
 async function ensureRepoPlugin(
@@ -118,8 +141,10 @@ async function createLifecycleSnapshotMetadata(options: {
   pluginName: string;
   pluginVersion: string;
 }): Promise<LifecycleConfigSnapshotMetadata> {
-  const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-lifecycle-snapshot-'));
-  tempDirs.push(snapshotRoot);
+  const snapshotRoot = registerCurrentTestWritableStateRoot(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'aw-lifecycle-snapshot-')),
+    'uninstall lifecycle snapshot root',
+  );
 
   const bundleRoot = path.join(snapshotRoot, 'bundle');
   await fs.copy(options.sourcePluginRoot, bundleRoot);
@@ -200,10 +225,59 @@ function makeTarget(plugin: PluginMeta): ResolvedPluginTarget {
 afterEach(async () => {
   vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('uninstall command (P9 install-state path)', () => {
+  it('blocks uninstall rollback staging outside registered temp roots and allows it after registration', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = path.join(isolation.layout.fixtureCwd, 'rollback-repo');
+    await fs.ensureDir(cwd);
+    const plugin = await ensureRepoPlugin(cwd, 'git-commit');
+    const trackedArtifactPath = path.join(cwd, '.codex', 'instructions.md');
+    await fs.outputFile(trackedArtifactPath, 'before\n', 'utf8');
+    await writeTrackingManifest(resolveCodexPaths(cwd, 'user', process.env).trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-20T00:00:00.000Z',
+          artifacts: [{
+            path: trackedArtifactPath,
+            kind: 'instruction',
+            platform: 'codex',
+          }],
+        },
+      },
+    });
+
+    const externalTmpRoot = path.join(isolation.layout.rootDir, 'external-uninstall-rollback');
+    await fs.ensureDir(externalTmpRoot);
+
+    const tmpdirSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(externalTmpRoot);
+    try {
+      await expect(
+        captureArtifactRollbackState('codex', makeTarget(plugin), 'user', cwd, process.env),
+      ).rejects.toThrow(/uninstall rollback staging root/);
+
+      registerCurrentTestWritableStateRoot(
+        externalTmpRoot,
+        'uninstall rollback staging root',
+      );
+
+      const rollbackState = await captureArtifactRollbackState(
+        'codex',
+        makeTarget(plugin),
+        'user',
+        cwd,
+        process.env,
+      );
+      expect(rollbackState.cleanupRoots[0]).toContain(externalTmpRoot);
+      await fs.remove(rollbackState.cleanupRoots[0]);
+    } finally {
+      tmpdirSpy.mockRestore();
+    }
+  });
+
   it('fails before deletion when the target needs cleanup instead of standard uninstall', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
@@ -230,12 +304,7 @@ describe('uninstall command (P9 install-state path)', () => {
           scope: 'user',
           platform: 'codex',
         },
-        makeRuntime({
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
-        }),
+        makeRuntime(createBuilderEnv(builder.paths)),
       ),
     ).rejects.toThrow(/\[reason=unsafeStandardUninstall\].*aw cleanup/);
   });
@@ -286,12 +355,7 @@ describe('uninstall command (P9 install-state path)', () => {
 
     const childPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'cleanup-child');
     const codex = new FakeAdapter();
-    const env = {
-      ...process.env,
-      AW_HOME: builder.paths.awHome,
-      AW_CODEX_HOME: builder.paths.codexHome,
-      AW_CLAUDE_HOME: builder.paths.claudeHome,
-    };
+    const env = createBuilderEnv(builder.paths);
 
     await expect(
       uninstallTargetsOnPlatforms(
@@ -375,12 +439,7 @@ describe('uninstall command (P9 install-state path)', () => {
     await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     const codex = new FakeAdapter();
     const runtime = {
-      env: {
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-        AW_CODEX_HOME: builder.paths.codexHome,
-        AW_CLAUDE_HOME: builder.paths.claudeHome,
-      },
+      env: createBuilderEnv(builder.paths),
       adapters: {
         codex,
         claude: new FakeAdapter(),
@@ -431,12 +490,7 @@ describe('uninstall command (P9 install-state path)', () => {
     );
     const codex = new FakeAdapter();
     const runtime = {
-      env: {
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-        AW_CODEX_HOME: builder.paths.codexHome,
-        AW_CLAUDE_HOME: builder.paths.claudeHome,
-      },
+      env: createBuilderEnv(builder.paths),
       adapters: {
         codex,
         claude: new FakeAdapter(),
@@ -505,10 +559,7 @@ describe('uninstall command (P9 install-state path)', () => {
       pluginName: 'git-commit',
       scope: 'user',
       cwd: builder.paths.repoRoot,
-      env: {
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-      },
+      env: createBuilderEnv(builder.paths),
     });
     await fs.outputJson(configStorePath, { token: 'secret' }, { spaces: 2 });
 
@@ -520,12 +571,7 @@ describe('uninstall command (P9 install-state path)', () => {
         platform: 'codex',
         removeConfig: true,
       },
-      makeRuntime({
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-        AW_CODEX_HOME: builder.paths.codexHome,
-        AW_CLAUDE_HOME: builder.paths.claudeHome,
-      }),
+      makeRuntime(createBuilderEnv(builder.paths)),
     );
 
     expect(result.receiptDetails?.configStoreRemovals).toEqual([{
@@ -589,10 +635,7 @@ describe('uninstall command (P9 install-state path)', () => {
       pluginName: 'git-commit',
       scope: 'user',
       cwd: builder.paths.repoRoot,
-      env: {
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-      },
+      env: createBuilderEnv(builder.paths),
     });
     await fs.outputJson(configStorePath, { token: 'secret' }, { spaces: 2 });
 
@@ -612,12 +655,7 @@ describe('uninstall command (P9 install-state path)', () => {
         platform: 'codex',
         removeConfig: true,
       },
-      makeRuntime({
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-        AW_CODEX_HOME: builder.paths.codexHome,
-        AW_CLAUDE_HOME: builder.paths.claudeHome,
-      }),
+      makeRuntime(createBuilderEnv(builder.paths)),
     );
 
     expect(result.receiptDetails).toMatchObject({
@@ -705,8 +743,10 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
     const builder = await makeBuilder();
     await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
     const repoPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
-    const pristineEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
-    tempDirs.push(pristineEmbeddedRoot);
+    const pristineEmbeddedRoot = registerCurrentTestWritableStateRoot(
+      await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
+      'legacy shared-runtime pristine embedded root',
+    );
 
     const localBundleRoot = path.join(builder.paths.awHome, 'plugins', 'git-commit');
     await fs.copy(path.join(pristineEmbeddedRoot, 'plugins', 'git-commit'), localBundleRoot);
@@ -755,16 +795,13 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
         },
       },
     };
-    const env = {
-      ...process.env,
-      AW_HOME: builder.paths.awHome,
-      AW_CODEX_HOME: builder.paths.codexHome,
-      AW_CLAUDE_HOME: builder.paths.claudeHome,
-    };
+    const env = createBuilderEnv(builder.paths);
     await writeInstalledLedger(ledger, env);
 
-    const brokenEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
-    tempDirs.push(brokenEmbeddedRoot);
+    const brokenEmbeddedRoot = registerCurrentTestWritableStateRoot(
+      await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
+      'legacy shared-runtime broken embedded root',
+    );
     await fs.writeFile(
       path.join(brokenEmbeddedRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json'),
       '{"name":',
@@ -803,8 +840,10 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
     const builder = await makeBuilder();
     await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
     const repoPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
-    const pristineEmbeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
-    tempDirs.push(pristineEmbeddedRoot);
+    const pristineEmbeddedRoot = registerCurrentTestWritableStateRoot(
+      await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
+      'legacy shared-runtime fallback embedded root',
+    );
 
     const localBundleRoot = path.join(builder.paths.awHome, 'plugins', 'git-commit');
     const pristinePluginRoot = path.join(pristineEmbeddedRoot, 'plugins', 'git-commit');
@@ -861,12 +900,7 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
         },
       },
     };
-    const env = {
-      ...process.env,
-      AW_HOME: builder.paths.awHome,
-      AW_CODEX_HOME: builder.paths.codexHome,
-      AW_CLAUDE_HOME: builder.paths.claudeHome,
-    };
+    const env = createBuilderEnv(builder.paths);
     await writeInstalledLedger(ledger, env);
 
     setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
@@ -901,8 +935,10 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
   it('replays verified default runtime before releasing the shared owner when the embedded root is unavailable', async () => {
     const builder = await makeBuilder();
     await fs.copy(fixturePath('repo-template'), builder.paths.repoRoot);
-    const embeddedRoot = await createSyntheticEmbeddedRoot(builder.paths.repoRoot);
-    tempDirs.push(embeddedRoot);
+    const embeddedRoot = registerCurrentTestWritableStateRoot(
+      await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
+      'legacy shared-runtime codex embedded root',
+    );
 
     const targetState = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
     const pristinePluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
@@ -972,12 +1008,7 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
         platform: 'codex',
       },
       makeRuntime(
-        {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
-        },
+        createBuilderEnv(builder.paths),
         { codex },
       ),
     );
@@ -1044,12 +1075,7 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
         platform: 'codex',
       },
       makeRuntime(
-        {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
-        },
+        createBuilderEnv(builder.paths),
         { codex },
       ),
     );
@@ -1116,12 +1142,7 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
         platform: 'codex',
       },
       makeRuntime(
-        {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
-        },
+        createBuilderEnv(builder.paths),
         { codex: new FakeAdapter() },
       ),
     )).rejects.toThrow(

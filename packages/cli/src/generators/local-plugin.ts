@@ -21,6 +21,7 @@ import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import { scanNodeImportContract } from '../utils/plugin-script-contract.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
   renderClaudeSlashCommand,
   renderCodexSlashCommandOpenAiYaml,
@@ -43,6 +44,17 @@ const PLATFORM_MANIFEST_DIRS: Readonly<Record<PlatformName, string>> = {
   claude: '.claude-plugin',
   codex: '.codex-plugin',
 };
+
+function assertLocalPluginStagingPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记 local plugin staging 路径。',
+  );
+}
 
 export type PluginBundleBuildMode = 'build-free' | 'staging' | 'prepared';
 
@@ -640,8 +652,16 @@ async function createStagedPlugin(
   plugin: PluginMeta,
   runner: PluginStagingRunner,
 ): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
-  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-staging-'));
-  const stagingPluginRoot = path.join(stagingRoot, 'plugin');
+  const stagingRoot = await fs.mkdtemp(
+    assertLocalPluginStagingPathForTests(
+      path.join(os.tmpdir(), 'aw-plugin-staging-'),
+      'local plugin bundle staging root',
+    ),
+  );
+  const stagingPluginRoot = assertLocalPluginStagingPathForTests(
+    path.join(stagingRoot, 'plugin'),
+    'local plugin staged plugin root',
+  );
 
   try {
     await fs.copy(plugin.rootDir, stagingPluginRoot, {

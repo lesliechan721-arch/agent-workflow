@@ -1,5 +1,10 @@
 import type { CliIo, CliRuntimeOptions } from '../../src/index.js';
 
+import {
+  createSafeCliRuntimeOptions,
+  type SafeCliRuntimeOptions,
+} from './cli-runtime.js';
+
 export type RunCliEntryFunction = (
   argv: string[],
   options?: CliRuntimeOptions,
@@ -20,7 +25,7 @@ export interface CliEntryResult {
   parseJsonStdout: <T = unknown>() => T;
 }
 
-export type RunCliEntryOptions = CliRuntimeOptions & {
+export type RunCliEntryOptions = SafeCliRuntimeOptions & {
   runCli?: RunCliEntryFunction;
 };
 
@@ -72,6 +77,7 @@ export async function runCliEntry(
   options: RunCliEntryOptions = {},
 ): Promise<CliEntryResult> {
   const { runCli, io: forwardedIo, ...runtimeOptions } = options;
+  const safeRuntimeOptions = createSafeCliRuntimeOptions(runtimeOptions);
   const capture = createCapturedCliIo();
   const io: CliIo = {
     stdout: (text: string) => {
@@ -85,7 +91,7 @@ export async function runCliEntry(
   };
   const execute = runCli ?? (await import('../../src/index.js')).runCli;
   const exitCode = await execute(argv, {
-    ...runtimeOptions,
+    ...safeRuntimeOptions,
     io,
   });
   const stdout = capture.readStdout();

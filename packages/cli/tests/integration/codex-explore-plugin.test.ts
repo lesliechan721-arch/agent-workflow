@@ -16,11 +16,12 @@ import { repairCommand } from '../../src/commands/repair.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
+import { setCodexAppServerProcessRunnerOverrideForTests } from '../../src/utils/codex-app-server-client.js';
+import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { readCodexConfigFile, upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import {
   resolveCodexPaths,
   resolveCodexProjectKey,
-  setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
@@ -30,15 +31,17 @@ import type { PluginMeta, Scope } from '../../src/types.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
+import {
+  activateCliEmbeddedRoot,
+  registerCliCatalogSourceRoot,
+  registerCliEmbeddedRoot,
+  registerCliFixtureRepoRoot,
+  registerCliTempRoot,
+} from '../helpers/workspace.js';
 import { runWithZeroWriteSnapshot } from '../helpers/repo-managed-state.js';
+import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
-const originalPath = process.env.PATH;
-const originalHome = process.env.HOME;
-
-function isolateHostEnv(root: string): void {
-  process.env.HOME = path.join(root, 'home');
-}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -47,6 +50,56 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
+}
+
+function registerRepoFixtureRoots(): void {
+  registerCurrentTestReadonlyFixtureRoot(fixturePath(), 'codex explore fixture root');
+  registerCurrentTestReadonlyFixtureRoot(repoPluginPath('plugins'), 'codex explore workspace plugin root');
+}
+
+function registerEmbeddedCatalogRoots(
+  embeddedRoot: string,
+  source: string,
+): void {
+  registerCliEmbeddedRoot(embeddedRoot, `${source} embedded root`);
+  registerCliCatalogSourceRoot(
+    getCatalogFullPackageRoot(embeddedRoot),
+    `${source} catalog source root`,
+  );
+}
+
+function activateWorkspaceEnv(
+  workspace: {
+    awHome: string;
+    codexHome: string;
+    embeddedRoot: string;
+    homeDir?: string;
+  },
+  options: {
+    forceClaude?: boolean;
+    overrides?: NodeJS.ProcessEnv;
+  } = {},
+): NodeJS.ProcessEnv {
+  const homeDir = workspace.homeDir ?? path.join(path.dirname(workspace.awHome), 'home');
+  process.env.HOME = homeDir;
+  process.env.USERPROFILE = homeDir;
+  process.env.AW_HOME = workspace.awHome;
+  process.env.AW_CODEX_HOME = workspace.codexHome;
+  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
+  if (options.forceClaude) {
+    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+  } else {
+    delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
+  }
+  for (const [key, value] of Object.entries(options.overrides ?? {})) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  activateCliEmbeddedRoot(workspace.embeddedRoot, 'codex explore embedded root activation');
+  return process.env;
 }
 
 function repoPluginPath(...segments: string[]): string {
@@ -82,10 +135,11 @@ async function hydrateEmbeddedCodexExploreTemplates(repoRoot: string, embeddedRo
 }
 
 async function rebuildEmbeddedRoot(repoRoot: string): Promise<string> {
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  const embeddedRoot = await fs.realpath(await createSyntheticEmbeddedRoot(repoRoot));
   await hydrateEmbeddedCodexExploreTemplates(repoRoot, embeddedRoot);
   tempDirs.push(embeddedRoot);
-  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+  registerEmbeddedCatalogRoots(embeddedRoot, 'codex explore rebuilt');
+  activateCliEmbeddedRoot(embeddedRoot, 'codex explore rebuilt embedded root');
   return embeddedRoot;
 }
 
@@ -571,24 +625,29 @@ async function makeWorkspaceWithCodexExplore(): Promise<{
   awHome: string;
   codexHome: string;
   embeddedRoot: string;
+  homeDir: string;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-explore-'));
+  registerRepoFixtureRoots();
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-explore-')));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'codex explore root');
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  registerCliFixtureRepoRoot(repoRoot, 'codex explore repo root');
   await copyWorkspacePlugin(repoRoot, 'codex-explore');
 
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  const embeddedRoot = await fs.realpath(await createSyntheticEmbeddedRoot(repoRoot));
   await hydrateEmbeddedCodexExploreTemplates(repoRoot, embeddedRoot);
   tempDirs.push(embeddedRoot);
-  isolateHostEnv(root);
+  registerEmbeddedCatalogRoots(embeddedRoot, 'codex explore');
 
   return {
     repoRoot,
     awHome: path.join(root, 'aw-home'),
     codexHome: path.join(root, 'codex-home'),
     embeddedRoot,
+    homeDir: path.join(root, 'home'),
   };
 }
 
@@ -598,21 +657,26 @@ async function makeMultiRepoWorkspaceWithCodexExplore(): Promise<{
   awHome: string;
   codexHome: string;
   embeddedRoot: string;
+  homeDir: string;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-explore-multi-'));
+  registerRepoFixtureRoots();
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-explore-multi-')));
   tempDirs.push(root);
+  registerCliTempRoot(root, 'codex explore multi root');
 
   const repoA = path.join(root, 'repo-a');
   const repoB = path.join(root, 'repo-b');
   await fs.copy(fixturePath('repo-template'), repoA);
   await fs.copy(fixturePath('repo-template'), repoB);
+  registerCliFixtureRepoRoot(repoA, 'codex explore repoA root');
+  registerCliFixtureRepoRoot(repoB, 'codex explore repoB root');
   await copyWorkspacePlugin(repoA, 'codex-explore');
   await copyWorkspacePlugin(repoB, 'codex-explore');
 
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoA);
+  const embeddedRoot = await fs.realpath(await createSyntheticEmbeddedRoot(repoA));
   await hydrateEmbeddedCodexExploreTemplates(repoA, embeddedRoot);
   tempDirs.push(embeddedRoot);
-  isolateHostEnv(root);
+  registerEmbeddedCatalogRoots(embeddedRoot, 'codex explore multi');
 
   return {
     repoA,
@@ -620,6 +684,7 @@ async function makeMultiRepoWorkspaceWithCodexExplore(): Promise<{
     awHome: path.join(root, 'aw-home'),
     codexHome: path.join(root, 'codex-home'),
     embeddedRoot,
+    homeDir: path.join(root, 'home'),
   };
 }
 
@@ -813,19 +878,25 @@ function createCodexExploreRuntime(
   };
 }
 
+function installCodexExploreRefreshAppServerOverride(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  setCodexAppServerProcessRunnerOverrideForTests(
+    createCodexExploreAppServerRunner(cwd, env),
+  );
+}
+
 async function seedLegacyCodexExploreUserHealthySiblingInstall(options: {
   repoRoot: string;
   awHome: string;
   codexHome: string;
   embeddedRoot: string;
+  homeDir?: string;
   requestedSkillTrigger?: 'manual' | 'auto' | 'default';
 }): Promise<void> {
   const sibling = await makeWorkspaceWithCodexExplore();
-  process.env.AW_HOME = options.awHome;
-  process.env.AW_CODEX_HOME = options.codexHome;
-  process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-  isolateHostEnv(path.dirname(options.repoRoot));
-  setEmbeddedPluginsRootOverrideForTests(options.embeddedRoot);
+  activateWorkspaceEnv(options);
   await installCommand(
     ['codex-explore'],
     {
@@ -1070,28 +1141,13 @@ async function alignUserRecordSourceToWorkspacePlugin(repoRoot: string, recordPa
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
-  process.env.PATH = originalPath;
-  if (originalHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = originalHome;
-  }
-  delete process.env.AW_HOME;
-  delete process.env.AW_CODEX_HOME;
-  delete process.env.AW_CLAUDE_HOME;
-  delete process.env.AW_FORCE_CODEX_AVAILABLE;
-  delete process.env.AW_FORCE_CLAUDE_AVAILABLE;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('codex-explore integration acceptance', () => {
   it.skip('installs Codex user scope with native enabled, lightweight instruction, and managed role artifacts', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1181,10 +1237,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('uses only default+user render config for Codex user scope install and status, even when project config changes later', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1276,10 +1329,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1363,10 +1413,7 @@ describe('codex-explore integration acceptance', () => {
       'plugins',
       'codex-explore',
     ));
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await installCommand(
       ['codex-explore'],
@@ -1399,10 +1446,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1495,10 +1539,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('refreshes Codex user dynamic skill from historical bundle when local marketplace runtime has rendered templates', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1576,10 +1617,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1618,6 +1656,7 @@ describe('codex-explore integration acceptance', () => {
       embeddedRoot,
       requestedSkillTrigger: 'auto',
     });
+    installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'explorerModel', 'gpt-5.5', '--json'],
@@ -1742,10 +1781,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreDynamicSkillRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -1865,10 +1901,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -1994,10 +2027,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -2141,10 +2171,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2242,10 +2269,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2347,10 +2371,7 @@ describe('codex-explore integration acceptance', () => {
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
     const rebuiltEmbeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(rebuiltEmbeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot: rebuiltEmbeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2429,10 +2450,7 @@ describe('codex-explore integration acceptance', () => {
       title: 'Dynamic Explore V1',
     });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2542,10 +2560,7 @@ describe('codex-explore integration acceptance', () => {
       title: 'Cleanup Residual Skill',
     });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2621,10 +2636,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('installs Codex project scope with repo-managed skill and project-only artifacts without enabling the user native plugin', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -2719,10 +2731,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('installs disabled lightweight instruction by removing the managed block and keeping status out of missing state', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -2780,10 +2789,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('upgrades a disabled rendered role by removing the managed registration and role layer while keeping status out of missing state', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await mutateCodexExploreManifest(repoRoot, (manifest) => {
       const targets = ((manifest.artifacts ?? {}) as { targets?: Array<Record<string, unknown>> }).targets ?? [];
@@ -2795,7 +2801,7 @@ describe('codex-explore integration acceptance', () => {
       }
       roleTarget.states = ['present', 'disabled'];
     });
-    setEmbeddedPluginsRootOverrideForTests(await rebuildEmbeddedRoot(repoRoot));
+    await rebuildEmbeddedRoot(repoRoot);
 
     await initCommand({ force: true });
     await installCommand(
@@ -2838,7 +2844,7 @@ describe('codex-explore integration acceptance', () => {
         '}));',
       ].join('\n'),
     );
-    setEmbeddedPluginsRootOverrideForTests(await rebuildEmbeddedRoot(repoRoot));
+    await rebuildEmbeddedRoot(repoRoot);
 
     await upgradeCommand(
       ['codex-explore'],
@@ -2900,10 +2906,7 @@ describe('codex-explore integration acceptance', () => {
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     await writeCodexExploreLifecycleRecorder(repoRoot, 'lifecycle.log');
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await seedCodexRoleAlias({
@@ -2957,10 +2960,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('keeps $codex-explore auto-triggerable under the default built-in trigger policy on project install', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -2998,10 +2998,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('reports artifact health, projectTrust, and session visibility in status JSON for Codex project scope', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -3051,10 +3048,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('explains invisible reasons in human verbose status for repo trust and higher-priority session layers', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -3142,10 +3136,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('uninstalls historical Codex project artifacts when tracking can recover roleKey from artifactKey', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -3199,10 +3190,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('re-renders Codex user scope artifacts on upgrade using the latest default+user config, without reading project config', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3285,10 +3273,7 @@ describe('codex-explore integration acceptance', () => {
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     await writeCodexExploreLifecycleRecorder(repoRoot, 'lifecycle.log');
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3369,10 +3354,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('re-renders Codex project scope artifacts on upgrade using the latest default+user+project config', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3461,10 +3443,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('refreshes installed user and current-project Codex dynamic artifacts on user config writes', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3587,10 +3566,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('refreshes only current-project artifacts on project config writes and leaves legacy user sibling artifacts healthy', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3700,10 +3676,7 @@ describe('codex-explore integration acceptance', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3752,10 +3725,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('refreshes Codex project artifacts through config set and writes updated digests back to tracking', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3850,10 +3820,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('re-enables lightweight instruction through config unset and rewrites the managed block from current render config', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -3965,10 +3932,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('refreshes tracked artifacts through config reset and restores default render output', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4063,10 +4027,7 @@ describe('codex-explore integration acceptance', () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await writeCodexExploreLifecycleRecorder(repoRoot);
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -4081,6 +4042,7 @@ describe('codex-explore integration acceptance', () => {
 
     const lifecycleLogPath = path.join(awHome, 'lifecycle.log');
     expect((await fs.readFile(lifecycleLogPath, 'utf8')).trim().split('\n').filter(Boolean)).toEqual(['install']);
+    installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
@@ -4108,10 +4070,7 @@ describe('codex-explore integration acceptance', () => {
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     await writeCodexExploreLifecycleRecorder(repoRoot, 'lifecycle.log');
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -4148,10 +4107,7 @@ describe('codex-explore integration acceptance', () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4186,6 +4142,7 @@ describe('codex-explore integration acceptance', () => {
       path.join(repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
       'shadow project skill\n',
     );
+    installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
       ['config', 'set', 'codex-explore', 'explorerModel', 'gpt-5.5', '--json'],
@@ -4217,10 +4174,7 @@ describe('codex-explore integration acceptance', () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -4292,10 +4246,7 @@ describe('codex-explore integration acceptance', () => {
 
   it('records only the current repo in refreshReach while flagging other known legacy project installs as potentially stale', async () => {
     const { repoA, repoB, awHome, codexHome, embeddedRoot } = await makeMultiRepoWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -4322,6 +4273,7 @@ describe('codex-explore integration acceptance', () => {
       codexHome,
       embeddedRoot,
     });
+    installCodexExploreRefreshAppServerOverride(repoA, process.env);
 
     const repoAUserPaths = resolveCodexPaths(repoA, 'user', process.env);
     const repoAProjectPaths = resolveCodexPaths(repoA, 'project', process.env);
@@ -4412,10 +4364,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('keeps the config store when refresh fails and records recent refresh failure diagnostics', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4488,10 +4437,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('keeps already-committed user scope refresh artifacts when the current project refresh unit fails later', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4659,10 +4605,7 @@ describe('codex-explore integration acceptance', () => {
     await addCodexExploreRoleGuidanceInstructionArtifact(repoRoot);
     await writeMultiInstructionCodexExploreRenderer(repoRoot, 'artifact-render.log');
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4766,10 +4709,7 @@ describe('codex-explore integration acceptance', () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await writeRecordingCodexExploreRenderer(repoRoot, { logFileName: 'artifact-render.log' });
     const embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4867,10 +4807,7 @@ describe('codex-explore integration acceptance', () => {
 
   it.skip('keeps the config store and reports recent refresh failure when renderer returns an invalid refresh plan', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -4934,7 +4871,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 `,
     );
     const refreshedEmbeddedRoot = await rebuildEmbeddedRoot(repoRoot);
-    setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
+    activateCliEmbeddedRoot(refreshedEmbeddedRoot, 'codex explore refreshed embedded root');
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
     const managedRolePath = path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explorer.toml');
@@ -5022,10 +4959,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 
   it.skip('rolls back already-written role artifacts when refresh apply fails mid-flight and keeps status diagnosable', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await writePluginConfigStore({
@@ -5141,10 +5075,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 
   it.skip('reinstalls capabilityChanged Codex project artifacts with new dynamic ids and role identity, and prunes old residues', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
     await initCommand({ force: true });
     await installCommand(
@@ -5270,11 +5201,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 
   it('blocks Claude install through marketplace product policy', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
-    process.env.AW_HOME = awHome;
-    process.env.AW_CODEX_HOME = codexHome;
-    process.env.AW_FORCE_CODEX_AVAILABLE = '1';
-    process.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot }, { forceClaude: true });
 
     await initCommand({ force: true });
 

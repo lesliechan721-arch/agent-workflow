@@ -28,12 +28,17 @@ import {
   calculatePluginBundleFingerprint,
 } from './plugin-scripts.js';
 import { resolveSkillTriggerConfigEntries } from './skill-trigger-preferences.js';
+import {
+  assertTestReadablePath,
+  assertTestWritablePath,
+} from './test-path-fence.js';
 import { resolveAwHome, resolveCodexProjectKey, resolveRepoRootSync } from './paths.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
 export type PluginConfigIssueType = 'missing-required' | 'invalid-config';
 export type ProjectConfigStoreLayer = 'shared' | 'local';
+type PluginConfigStorePathAccess = 'read' | 'write';
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
@@ -547,6 +552,7 @@ export function resolvePluginConfigStorePath(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
+  access?: PluginConfigStorePathAccess;
 }): string {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const root = options.scope === 'user'
@@ -555,8 +561,33 @@ export function resolvePluginConfigStorePath(options: {
   const configDir = options.scope === 'project' && options.projectLayer === 'local'
     ? 'plugin-config.local'
     : CONFIG_DIR;
+  const filePath = path.join(root, configDir, pluginName, CONFIG_FILE);
 
-  return path.join(root, configDir, pluginName, CONFIG_FILE);
+  if (options.scope !== 'project') {
+    return filePath;
+  }
+
+  if (options.access === 'read') {
+    return assertTestReadablePath(
+      filePath,
+      options.projectLayer === 'local'
+        ? 'project local plugin config store (.agent-workflows/plugin-config.local)'
+        : 'project shared plugin config store (.agent-workflows/plugin-config)',
+      '用 registerReadonlyFixtureRoot() 或 runWithRepositoryCwdAsReadOnly() 登记只读 project fixture 根；需要写入时改用 withSafeTestCwd() 或 registerWritableStateRoot()。',
+    );
+  }
+
+  if (options.access === 'write') {
+    return assertTestWritablePath(
+      filePath,
+      options.projectLayer === 'local'
+        ? 'project local plugin config store (.agent-workflows/plugin-config.local)'
+        : 'project shared plugin config store (.agent-workflows/plugin-config)',
+      '用 withSafeTestCwd() 切到测试可写 cwd，或通过 registerWritableStateRoot() 登记 project fixture 根。',
+    );
+  }
+
+  return filePath;
 }
 
 async function readStoreFile(filePath: string): Promise<Record<string, unknown>> {
@@ -574,7 +605,10 @@ export async function readPluginConfigStore(options: {
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStore> {
-  const filePath = resolvePluginConfigStorePath(options);
+  const filePath = resolvePluginConfigStorePath({
+    ...options,
+    ...(options.scope === 'project' ? { access: 'read' as const } : {}),
+  });
   if (!(await fs.pathExists(filePath))) {
     return {
       path: filePath,
@@ -636,7 +670,10 @@ export async function writePluginConfigStore(options: {
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStoreReceipt> {
-  const filePath = resolvePluginConfigStorePath(options);
+  const filePath = resolvePluginConfigStorePath({
+    ...options,
+    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
+  });
   await fs.ensureDir(path.dirname(filePath));
   const tempPath = path.join(
     path.dirname(filePath),
@@ -704,7 +741,10 @@ export async function resetPluginConfigStore(options: {
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
 }): Promise<ResetPluginConfigStoreReceipt> {
-  const filePath = resolvePluginConfigStorePath(options);
+  const filePath = resolvePluginConfigStorePath({
+    ...options,
+    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
+  });
   const existed = await fs.pathExists(filePath);
   if (existed) {
     await fs.remove(filePath);

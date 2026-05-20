@@ -5,12 +5,24 @@ import fs from 'fs-extra';
 
 import { readCodexConfigFile } from './codex-config.js';
 import { getCodexHome } from './paths.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 const MARKETPLACE_NAME = 'aw';
 const CACHE_MANIFEST_CANDIDATES = [
   'plugin.json',
   path.join('.codex-plugin', 'plugin.json'),
 ] as const;
+
+function assertCodexNativeRollbackPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR/AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记 Codex native cache rollback/backup 路径。',
+  );
+}
 
 export type CodexNativeCacheStatus = 'missing' | 'active' | 'invalid' | 'ambiguous';
 
@@ -351,8 +363,16 @@ export async function captureCodexNativePluginRollbackBaseline(
     };
   }
 
-  const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-codex-native-cache-${pluginName}-`));
-  const cacheBackupPath = path.join(cleanupRoot, path.basename(cacheRootPath));
+  const cleanupRoot = await fs.mkdtemp(
+    assertCodexNativeRollbackPathForTests(
+      path.join(os.tmpdir(), `aw-codex-native-cache-${pluginName}-`),
+      'Codex native cache rollback staging root',
+    ),
+  );
+  const cacheBackupPath = assertCodexNativeRollbackPathForTests(
+    path.join(cleanupRoot, path.basename(cacheRootPath)),
+    'Codex native cache rollback backup',
+  );
   await fs.copy(cacheRootPath, cacheBackupPath, {
     overwrite: true,
     errorOnExist: false,
@@ -370,17 +390,28 @@ export async function captureCodexNativePluginRollbackBaseline(
 export async function restoreCodexNativePluginRollbackBaseline(
   baseline: CodexNativePluginRollbackBaseline,
 ): Promise<void> {
+  const configPath = assertTestWritablePath(
+    baseline.configPath,
+    'Codex native rollback config path',
+    '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记 Codex config 路径。',
+  );
+  const cacheRootPath = assertTestWritablePath(
+    baseline.cacheRootPath,
+    'Codex native cache rollback restore root',
+    '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记 Codex native cache 根。',
+  );
+
   if (baseline.configContent === null) {
-    await fs.remove(baseline.configPath);
+    await fs.remove(configPath);
   } else {
-    await fs.ensureDir(path.dirname(baseline.configPath));
-    await fs.writeFile(baseline.configPath, baseline.configContent, 'utf8');
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.writeFile(configPath, baseline.configContent, 'utf8');
   }
 
-  await fs.remove(baseline.cacheRootPath);
+  await fs.remove(cacheRootPath);
   if (baseline.cacheBackupPath && await fs.pathExists(baseline.cacheBackupPath)) {
-    await fs.ensureDir(path.dirname(baseline.cacheRootPath));
-    await fs.copy(baseline.cacheBackupPath, baseline.cacheRootPath, {
+    await fs.ensureDir(path.dirname(cacheRootPath));
+    await fs.copy(baseline.cacheBackupPath, cacheRootPath, {
       overwrite: true,
       errorOnExist: false,
     });
@@ -393,7 +424,12 @@ export async function disposeCodexNativePluginRollbackBaseline(
   if (!baseline?.cleanupRoot) {
     return;
   }
-  await fs.remove(baseline.cleanupRoot).catch(() => undefined);
+  await fs.remove(
+    assertCodexNativeRollbackPathForTests(
+      baseline.cleanupRoot,
+      'Codex native cache rollback cleanup root',
+    ),
+  ).catch(() => undefined);
 }
 
 export async function assessCodexMarketplaceCleanup(

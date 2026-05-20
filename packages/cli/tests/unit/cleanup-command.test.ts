@@ -7,6 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { cleanupCommand } from '../../src/commands/cleanup.js';
 import { renderCleanupReceipt } from '../../src/output/command-receipt.js';
+import {
+  createHistoricalLifecycleRuntimePaths,
+  getGlobalDependencyIndexPath,
+  getNativeTransactionMarkerPath,
+  getSharedSkillTriggerRuntimeOwnerPath,
+} from '../../src/install-state/paths.js';
 import { createDependencyIndexPruneToken } from '../../src/install-state/transactions.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
@@ -32,6 +38,7 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -172,11 +179,48 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('cleanup command (P9)', () => {
+  it('resolves AW_HOME-backed install-state paths inside the isolated test state root', () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+      cwd: isolation.layout.fixtureCwd,
+      location: {
+        plugin: 'cleanup-fixture',
+        platform: 'codex',
+        scope: 'user',
+      },
+      manifestDigest: 'sha256:manifest',
+      bundleFingerprint: 'sha256:bundle',
+      nonce: 'cleanup-test',
+      env: process.env,
+      manifestRelativePath: '.agents-plugin/plugin.json',
+    });
+
+    expect(getGlobalDependencyIndexPath(process.env)).toBe(
+      path.join(isolation.layout.awHomeDir, 'dependency-index', 'index.json'),
+    );
+    expect(getNativeTransactionMarkerPath('cleanup-fixture', process.env)).toBe(
+      path.join(isolation.layout.awHomeDir, 'native-recovery', 'codex', 'user', 'cleanup-fixture@aw.json'),
+    );
+    expect(getSharedSkillTriggerRuntimeOwnerPath({
+      pluginName: 'cleanup-fixture',
+      platform: 'codex',
+      env: process.env,
+    })).toContain(path.join(isolation.layout.awHomeDir, 'shared-runtime-owners', 'codex'));
+    expect(getSharedSkillTriggerRuntimeOwnerPath({
+      pluginName: 'cleanup-fixture',
+      platform: 'codex',
+      env: process.env,
+    })).toMatch(/cleanup-fixture.*\.json$/);
+    expect(lifecyclePaths.runtimeRoot).toContain(
+      path.join(isolation.layout.awHomeDir, 'lifecycle-runtimes', 'codex', 'user'),
+    );
+    expect(lifecyclePaths.bundleRoot).toContain(lifecyclePaths.runtimeRoot);
+  });
+
   it('cleans healthy installed targets through the standard uninstall-equivalent path', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'claude', scope: 'user' });
@@ -742,6 +786,9 @@ describe('cleanup command (P9)', () => {
     expect(output).toContain('阻断原因：\n- 无');
     expect(result.warnings.join('\n')).toContain('已备份');
     expect(result.payload.actualBackups?.length ?? 0).toBeGreaterThan(0);
+    expect(result.payload.actualBackups?.[0]?.path).toContain(
+      path.join(builder.paths.awHome, 'cleanup-backups'),
+    );
   });
 
   it('fails closed for unreadable dependency-index references instead of pruning them as stale', async () => {

@@ -55,6 +55,9 @@ afterEach(async () => {
 
 describe('console entry', () => {
   it('runs bare aw through the feature-first console controller', async () => {
+    vi.resetModules();
+    const workspace = await makeWorkspace();
+
     const notInstalledSummary = {
       pluginName: 'git-commit',
       title: 'git-commit',
@@ -318,8 +321,8 @@ describe('console entry', () => {
     const { runCli } = await import('../../src/index.js');
 
     const exitCode = await runCli([], {
-      cwd: '/tmp/workspace',
-      env: {} as NodeJS.ProcessEnv,
+      cwd: workspace.repoRoot,
+      env: workspace.env,
       io: capture.io,
       prompt,
       consoleDriver,
@@ -329,7 +332,7 @@ describe('console entry', () => {
     expect(installCommand).toHaveBeenCalledWith(
       ['git-commit'],
       expect.objectContaining({
-        cwd: '/tmp/workspace',
+        cwd: workspace.repoRoot,
         scope: 'user',
         platform: 'codex',
       }),

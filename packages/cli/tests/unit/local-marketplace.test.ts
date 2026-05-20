@@ -36,6 +36,13 @@ import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js'
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { TestPathFenceError } from '../helpers/test-isolation.js';
+import {
+  getSourceTestRepositoryCwd,
+  registerCurrentTestReadonlyFixtureRoot,
+  registerCurrentTestWritableStateRoot,
+  runWithCurrentRepositoryCwdAsReadOnly,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -193,6 +200,80 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('blocks local marketplace writes when AW_HOME points at a read-only fixture root', async () => {
+    const { embeddedRoot } = await makeWorkspace();
+    const repositoryCwd = path.resolve(getSourceTestRepositoryCwd(), '..', '..');
+    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
+      const repositoryCwd = process.cwd();
+      setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+      const error = await initializeLocalMarketplace({
+        force: true,
+        env: {
+          ...process.env,
+          AW_HOME: path.join(repositoryCwd, '.aw-readonly'),
+        },
+      }).catch((value) => value);
+      expect(error).toBeInstanceOf(TestPathFenceError);
+      expect((error as TestPathFenceError).details).toMatchObject({
+        access: 'write',
+        source: 'AW_HOME',
+        reason: 'writeToReadOnlyRoot',
+        conflictingRoot: {
+          path: repositoryCwd,
+        },
+      });
+    }, { repositoryCwd });
+  });
+
+  it('uses TMPDIR-backed staging and backup roots when rebuilding a custom AW_HOME', async () => {
+    const { embeddedRoot } = await makeWorkspace();
+    const guardedRoot = await fs.mkdtemp(path.join(
+      getSourceTestRepositoryCwd(),
+      '.aw-local-marketplace-guarded-',
+    ));
+    tempDirs.push(guardedRoot);
+    registerCurrentTestReadonlyFixtureRoot(guardedRoot, 'guarded local marketplace parent');
+    const awHome = registerCurrentTestWritableStateRoot(
+      path.join(guardedRoot, 'aw-home'),
+      'guarded local marketplace AW_HOME',
+    );
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const observedMkdtempPrefixes: string[] = [];
+    const observedMoveTargets: string[] = [];
+    const realMkdtemp: typeof fs.mkdtemp = fs.mkdtemp.bind(fs);
+    const realMove: typeof fs.move = fs.move.bind(fs);
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtemp').mockImplementation(async (...args) => {
+      observedMkdtempPrefixes.push(String(args[0]));
+      return realMkdtemp(...args);
+    });
+    const moveSpy = vi.spyOn(fs, 'move').mockImplementation(async (...args) => {
+      observedMoveTargets.push(String(args[1]));
+      return realMove(...args);
+    });
+
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    try {
+      await initializeLocalMarketplace({ force: true, env });
+      await initializeLocalMarketplace({ force: true, env });
+    } finally {
+      mkdtempSpy.mockRestore();
+      moveSpy.mockRestore();
+    }
+
+    const tempRoot = path.join(String(env.TMPDIR), 'aw-cli', 'local-marketplace');
+    expect(observedMkdtempPrefixes).toEqual(expect.arrayContaining([
+      expect.stringContaining(path.join(tempRoot, 'staging', '.aw-staging-')),
+    ]));
+    expect(observedMoveTargets).toEqual(expect.arrayContaining([
+      expect.stringContaining(path.join(tempRoot, 'backups', '.aw-backup-')),
+    ]));
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
   it('falls back to a matching local marketplace only for catalogUnavailable current catalog failures', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace();
     const env = {

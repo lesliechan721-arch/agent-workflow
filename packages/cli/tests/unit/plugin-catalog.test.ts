@@ -11,6 +11,11 @@ import {
   resolveCurrentCatalog,
 } from '../../src/utils/plugin-catalog.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
+import { TestPathFenceError } from '../helpers/test-isolation.js';
+import {
+  getSourceTestRepositoryCwd,
+  registerCurrentTestReadonlyFixtureRoot,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -113,6 +118,48 @@ describe('plugin catalog selector', () => {
 });
 
 describe('plugin catalog failures', () => {
+  it('blocks current catalog cache writes when AW_HOME points at a read-only fixture root', async () => {
+    const manifest = createManifest({
+      catalogVersion: '2.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const rootDir = await makeRootWithManifest(manifest);
+    const repositoryCwd = getSourceTestRepositoryCwd();
+    registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: async () => ({
+        packageName: '@yiliang/aw-plugins-manifest',
+        version: '2.0.0',
+        integrity: 'sha512-sidecar-readonly',
+        requestedDistTag: 'latest',
+      }),
+      resolveIdentityByVersion: async () => ({
+        packageName: '@yiliang/aw-plugins',
+        version: '2.0.0',
+        integrity: 'sha512-full-readonly',
+      }),
+      downloadArchive: async () => createArchive(manifest, rootDir),
+    });
+
+    const error = await resolveCurrentCatalog(
+      {
+        ...process.env,
+        AW_CLI_VERSION: '1.0.0',
+        AW_HOME: path.join(repositoryCwd, '.aw-readonly'),
+      },
+    ).catch((value) => value);
+    expect(error).toBeInstanceOf(TestPathFenceError);
+    expect((error as TestPathFenceError).details).toMatchObject({
+      access: 'write',
+      source: 'AW_HOME',
+      reason: 'writeToReadOnlyRoot',
+      conflictingRoot: {
+        path: repositoryCwd,
+      },
+    });
+  });
+
   it('rejects explicit incompatible catalog versions without history fallback', async () => {
     const manifest = createManifest({
       catalogVersion: '2.0.0-beta.1',

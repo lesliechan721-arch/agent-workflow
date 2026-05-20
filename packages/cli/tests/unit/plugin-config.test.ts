@@ -31,6 +31,11 @@ import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
+import { expectPathFenceViolation } from '../helpers/test-isolation.js';
+import {
+  getSourceTestRepositoryCwd,
+  runWithCurrentRepositoryCwdAsReadOnly,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -616,6 +621,76 @@ describe('plugin config store', () => {
       'configurable-plugin',
       'config.json',
     ));
+  });
+
+  it('allows reading project config stores from a read-only repo fixture but blocks writes there', async () => {
+    const repositoryCwd = resolveAwProjectRoot(getSourceTestRepositoryCwd());
+    await runWithCurrentRepositoryCwdAsReadOnly(() => {
+      const repositoryCwd = process.cwd();
+      const projectRoot = resolveAwProjectRoot(repositoryCwd);
+      const sharedPath = resolvePluginConfigStorePath({
+        pluginName: 'configurable-plugin',
+        scope: 'project',
+        cwd: repositoryCwd,
+        access: 'read',
+      });
+      const localPath = resolvePluginConfigStorePath({
+        pluginName: 'configurable-plugin',
+        scope: 'project',
+        projectLayer: 'local',
+        cwd: repositoryCwd,
+        access: 'read',
+      });
+
+      expect(sharedPath).toBe(path.join(
+        projectRoot,
+        '.agent-workflows',
+        'plugin-config',
+        'configurable-plugin',
+        'config.json',
+      ));
+      expect(localPath).toBe(path.join(
+        projectRoot,
+        '.agent-workflows',
+        'plugin-config.local',
+        'configurable-plugin',
+        'config.json',
+      ));
+
+      expectPathFenceViolation(
+        () => resolvePluginConfigStorePath({
+          pluginName: 'configurable-plugin',
+          scope: 'project',
+          cwd: repositoryCwd,
+          access: 'write',
+        }),
+        {
+          access: 'write',
+          path: sharedPath,
+          source: 'project shared plugin config store (.agent-workflows/plugin-config)',
+          reason: 'writeToReadOnlyRoot',
+          conflictingRootPath: projectRoot,
+          recommendedFixIncludes: 'withSafeTestCwd()',
+        },
+      );
+      expectPathFenceViolation(
+        () => resolvePluginConfigStorePath({
+          pluginName: 'configurable-plugin',
+          scope: 'project',
+          projectLayer: 'local',
+          cwd: repositoryCwd,
+          access: 'write',
+        }),
+        {
+          access: 'write',
+          path: localPath,
+          source: 'project local plugin config store (.agent-workflows/plugin-config.local)',
+          reason: 'writeToReadOnlyRoot',
+          conflictingRootPath: projectRoot,
+          recommendedFixIncludes: 'withSafeTestCwd()',
+        },
+      );
+    }, { repositoryCwd });
   });
 
   it('builds a reusable config form model without exposing sensitive current values', async () => {

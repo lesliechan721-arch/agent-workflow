@@ -68,6 +68,7 @@ import {
   type SkillTriggerMaterializationRollbackHandle,
 } from '../utils/skill-trigger-preferences.js';
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
+import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
   getTrackingManifestPath,
   getTrackingRecord,
@@ -256,6 +257,17 @@ function uniqueArtifactPaths(
   return [...new Set([...paths].map((value) => path.normalize(value)))];
 }
 
+function assertUninstallRollbackPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记 uninstall rollback staging/backup 路径。',
+  );
+}
+
 async function capturePathRollbackState(
   pathname: string,
   backupRoot: string,
@@ -278,7 +290,10 @@ async function capturePathRollbackState(
     };
   }
 
-  const backupPath = path.join(backupRoot, `${index}-${path.basename(normalizedPath)}`);
+  const backupPath = assertUninstallRollbackPathForTests(
+    path.join(backupRoot, `${index}-${path.basename(normalizedPath)}`),
+    'uninstall rollback backup',
+  );
   await fs.copy(normalizedPath, backupPath, {
     overwrite: true,
     errorOnExist: false,
@@ -320,7 +335,12 @@ export async function disposeArtifactRollbackState(
 
   await Promise.all(
     rollbackState.cleanupRoots.map((cleanupRoot) =>
-      fs.remove(cleanupRoot).catch(() => undefined)),
+      fs.remove(
+        assertUninstallRollbackPathForTests(
+          cleanupRoot,
+          'uninstall rollback cleanup root',
+        ),
+      ).catch(() => undefined)),
   );
 }
 
@@ -854,7 +874,12 @@ export async function captureArtifactRollbackState(
         : []),
     ]);
     const cleanupRoot = rollbackPaths.length > 0
-      ? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-uninstall-rollback-'))
+      ? await fs.mkdtemp(
+        assertUninstallRollbackPathForTests(
+          path.join(os.tmpdir(), 'aw-uninstall-rollback-'),
+          'uninstall rollback staging root',
+        ),
+      )
       : undefined;
 
     return {

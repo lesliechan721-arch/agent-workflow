@@ -21,9 +21,23 @@
 - Runtime 环境变量：`tests/integration/runtime-env.test.ts` 覆盖 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 等路径覆写
 - 插件配置与脚本：`plugin-config.test.ts`、`plugin-scripts.test.ts`、`plugin-lifecycle-command.test.ts` 覆盖 AW config、lifecycle context/runner、status health 和命令接入
 
+## Test Isolation
+
+`unit/`、`integration/` 和 `smoke/` 默认加载统一测试隔离 setup。每个用例开始前都会生成安全 env，覆盖 `HOME`、`USERPROFILE`、`AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`、XDG、npm userconfig、`TMPDIR` / `TEMP` / `TMP` 和 debug log 路径，并把全局 `process.cwd()` 切到安全 `fixture-cwd`。未显式 stub 的 `fetch` 默认失败；catalog source、embedded root、catalog memo、fetch stub、env/cwd overlay、native guard 和 app-server guard 会在用例间统一恢复。常规测试不要手写保存/恢复 `process.env`、`process.chdir()`、catalog override 或 embedded root override；只清理测试自己创建的业务状态。
+
+CLI 测试优先使用安全入口。CLI entry 用 `runCliEntry()`，直接调用 CLI runtime 用 `runSafeCli()` 或 `createSafeCliRuntimeOptions()`，命令上下文用 `createSafeCommandExecutionContext()` / `createSafeCliExecutionContext()`。这些 helper 会注入安全 env/cwd、捕获 IO、默认 native guard 和默认 app-server guard；显式传入 env、cwd 或 runner 时仍会走 fence / guard 校验。只有专门验证生产默认值时才直接调用 `runCli()`、`createCommandExecutionContext()` 或 `createCliExecutionContext()`，并在测试名和断言里说清楚原因。
+
+路径 fence 区分只读 fixture 根和可写状态根。显式创建的 temp root、可变项目 fixture、写入型 project cwd 和 staging 目录要登记为可写根，例如 `registerCurrentTestWritableStateRoot()`、`registerCliTempRoot()`、`registerCliFixtureRepoRoot()` 或 `withCurrentTestSafeCwd()`。embedded root、catalog source、真实仓库源码、repo fixture、build/dist/pack 输入等只作为输入读取时登记为只读根，例如 `registerCurrentTestReadonlyFixtureRoot()`、`registerCliEmbeddedRoot()`、`registerCliCatalogSourceRoot()`、`registerCliDistInputRoot()` 或 `runWithCurrentRepositoryCwdAsReadOnly()`。同一路径既要读又要写时，必须分别表达两个意图；只读根不会自动获得写权限。
+
+全局 cwd 由 setup 接管。需要临时进入真实仓库只读检查时，用 `runWithCurrentRepositoryCwdAsReadOnly()` 包住最小代码块；需要可写 project scope 时，用 `createCliTestWorkspace()`、`withCurrentTestSafeCwd()` 或先登记可写根。不要把真实仓库 cwd 当成 project-scope 写入目标，也不要在测试里裸 `process.chdir()` 后靠 `afterEach` 手动恢复。
+
+测试默认禁止真实 native CLI 和真实 `codex app-server`。需要断言 native 行为时，向 safe helper 传入 fake `nativeCliRunner`，并检查 command、args、cwd 和 env；不要依赖本机已安装 `codex` / `claude`。Codex user-scope native install/uninstall 用 `createFakeCodexAppServerHarness()`，通过 `codexAppServerRunner` 注入，并断言 JSONL 协议、stderr、退出和错误分支。只有验证 PATH 查找本身时才创建 stub binary。
+
+zero-write snapshot 只用于事后证明“这条命令不应写状态”。`captureZeroWriteSnapshot()`、`assertZeroWriteSnapshotUnchanged()` 和 `runWithZeroWriteSnapshot()` 可以覆盖 `.agents`、`.codex`、`.claude`、AW config store、install record、native config/cache 等目标，但它们不能替代 fence 或 guard。漏传 env、cwd、根注册、native runner 或 app-server harness 的错误，应先由 fence / guard 在写入或启动进程前暴露；zero-write 只作为补充回归。
+
 ## Regression Contracts
 
-CLI entry 测试优先通过 `CliRuntimeOptions` 注入 fake native runner、fake adapters、fake prompt、reporter 和 debug logger。不要为了普通集成测试依赖真实 `codex` 或 `claude` 可执行文件；只有明确验证 PATH 查找时才创建 stub binary。
+CLI entry 测试优先通过 `runCliEntry()` 或 `runSafeCli()` 注入 fake native runner、fake adapters、fake prompt、reporter 和 debug logger。不要为了普通集成测试依赖真实 `codex` 或 `claude` 可执行文件；只有明确验证 PATH 查找时才创建 stub binary。
 
 install-state fixture 要能按 location 单独构造 record v2、dynamic diagnostic cache、project artifact identity、dependency index、historical lifecycle runtime、native transaction marker 和 shared runtime owner。损坏矩阵至少覆盖：单条 record 损坏不影响同 scope 其它插件、diagnostic cache 损坏只降低动态 artifact 诊断确定性、identity metadata 损坏阻止 adopt-existing、dependency index unreadable / stale 时删除默认 fail closed、Codex user scope 只剩 enabled config 且没有 cache/record/marker 时允许 cleanup 收口、historical lifecycle runtime 缺失时普通卸载需要明确诊断、native marker-only 可以被 repair / cleanup 收口、shared owner record digest 不匹配时不自动重选 owner。project private state 和 project local config fixture 必须默认被 ignore；project shared config 和 project artifact identity fixture 不能默认 ignore。
 

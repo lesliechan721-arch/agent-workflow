@@ -21,6 +21,14 @@ import * as sharedRuntimeOwnerModule from '../../src/install-state/shared-runtim
 import * as transactionsModule from '../../src/install-state/transactions.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
 import {
+  createProjectArtifactSharedLocator,
+  getDiagnosticCachePath,
+  getInstallRecordPath,
+  getInstallStatePrivateRoot,
+  getProjectArtifactSharedIdentityPath,
+  resolveProjectScopeRepoRoot,
+} from '../../src/install-state/paths.js';
+import {
   refreshDependencyIndexDigestsForP2,
   rewriteSanitizedInstallRecordForP2,
 } from '../helpers/install-state-projection-fixtures.js';
@@ -29,6 +37,11 @@ import {
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import { expectPathFenceViolation } from '../helpers/test-isolation.js';
+import {
+  getSourceTestRepositoryCwd,
+  runWithCurrentRepositoryCwdAsReadOnly,
+} from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
 
@@ -261,11 +274,73 @@ class FakeClaudeRepairAdapter implements PlatformAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('repair command P8', () => {
+  it('allows repair to read project install-state paths from a read-only repo fixture but blocks writes there', async () => {
+    const repositoryCwd = resolveProjectScopeRepoRoot(getSourceTestRepositoryCwd());
+    await runWithCurrentRepositoryCwdAsReadOnly(() => {
+      const repositoryCwd = process.cwd();
+      const projectRoot = resolveProjectScopeRepoRoot(repositoryCwd);
+      const cwd = path.join(projectRoot, 'packages', 'cli');
+      const location = {
+        plugin: 'readonly-repair-plugin',
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        projectKey: projectRoot,
+      };
+      const recordPath = getInstallRecordPath(cwd, location, process.env, 'read');
+      const diagnosticCachePath = getDiagnosticCachePath(cwd, location, process.env, 'read');
+      const identityPath = getProjectArtifactSharedIdentityPath({
+        repoRoot: projectRoot,
+        locator: createProjectArtifactSharedLocator({
+          plugin: location.plugin,
+          platform: 'codex',
+          repoRoot: projectRoot,
+          projectRoot,
+        }),
+        access: 'read',
+      });
+
+      expect(recordPath).toContain(path.join(projectRoot, '.codex', '.agent-workflows', 'records'));
+      expect(diagnosticCachePath).toContain(path.join(projectRoot, '.codex', '.agent-workflows', 'diagnostics'));
+      expect(identityPath).toContain(path.join(projectRoot, '.agent-workflows', 'project-artifacts', 'codex'));
+
+      expectPathFenceViolation(
+        () => getInstallStatePrivateRoot(cwd, location, process.env, 'write'),
+        {
+          access: 'write',
+          path: path.join(projectRoot, '.codex', '.agent-workflows'),
+          source: 'codex project install-state private root',
+          reason: 'writeToReadOnlyRoot',
+          conflictingRootPath: projectRoot,
+          recommendedFixIncludes: 'withSafeTestCwd()',
+        },
+      );
+      expectPathFenceViolation(
+        () => getProjectArtifactSharedIdentityPath({
+          repoRoot: projectRoot,
+          locator: createProjectArtifactSharedLocator({
+            plugin: location.plugin,
+            platform: 'codex',
+            repoRoot: projectRoot,
+            projectRoot,
+          }),
+          access: 'write',
+        }),
+        {
+          access: 'write',
+          path: identityPath,
+          source: 'project artifact shared identity',
+          reason: 'writeToReadOnlyRoot',
+          conflictingRootPath: projectRoot,
+          recommendedFixIncludes: 'withSafeTestCwd()',
+        },
+      );
+    }, { repositoryCwd });
+  });
+
   it('reapplies same-bundle artifacts and rewrites record/cache/identity', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await makeTempDir('aw-repair-same-bundle-'),

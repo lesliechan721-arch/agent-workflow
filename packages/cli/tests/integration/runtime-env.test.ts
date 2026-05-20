@@ -1,9 +1,7 @@
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { applyCodexInstallLedger } from '../../src/adapters/codex.js';
 import { statusCommand } from '../../src/commands/status.js';
@@ -14,40 +12,11 @@ import {
 } from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
-import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createSafeCommandExecutionContext } from '../helpers/cli-runtime.js';
+import { activateCliEmbeddedRoot, createCliTestWorkspace } from '../helpers/workspace.js';
 
-const tempDirs: string[] = [];
-
-function fixturePath(...segments: string[]): string {
-  return path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'fixtures',
-    ...segments,
-  );
-}
-
-async function makeWorkspace(): Promise<{
-  repoRoot: string;
-  awHome: string;
-  codexHome: string;
-  embeddedRoot: string;
-}> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-env-'));
-  tempDirs.push(root);
-
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-
-  return {
-    repoRoot,
-    awHome: path.join(root, 'aw-home'),
-    codexHome: path.join(root, 'codex-home'),
-    embeddedRoot,
-  };
+function normalizeMacTmpPath(value: string): string {
+  return value.replace(/^\/private(?=\/var\/folders\/)/, '');
 }
 
 async function removePluginFromLocalMarketplace(
@@ -67,22 +36,12 @@ async function removePluginFromLocalMarketplace(
   }
 }
 
-afterEach(async () => {
-  setEmbeddedPluginsRootOverrideForTests(null);
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
-});
-
 describe('runtime env integration', () => {
   it('honors runtime.env for platform detection, default adapters, and current catalog reads', async () => {
-    const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    const env = {
-      ...process.env,
-      AW_HOME: awHome,
-      AW_CODEX_HOME: codexHome,
-      AW_FORCE_CODEX_AVAILABLE: '1',
-    };
+    const workspace = await createCliTestWorkspace();
+    const { repoRoot, awHome, env } = workspace;
+    const embeddedRoot = workspace.embeddedRoot!;
+    activateCliEmbeddedRoot(embeddedRoot, 'runtime env integration embedded root');
 
     await initializeLocalMarketplace({ force: true, env });
     await removePluginFromLocalMarketplace(awHome, 'git-commit');
@@ -103,9 +62,7 @@ describe('runtime env integration', () => {
         scope: 'user',
         platform: 'codex',
       },
-      {
-        env,
-      },
+      createSafeCommandExecutionContext({ env }),
     );
 
     expect(result.reports).toHaveLength(1);
@@ -122,7 +79,6 @@ describe('runtime env integration', () => {
     expect(result.reports[0]?.plugins[0]?.currentCatalog).toMatchObject({
       available: true,
       source: 'local',
-      rootDir: getCatalogFullPackageRoot(embeddedRoot),
       sidecarManifestPackage: {
         source: 'localFixture',
       },
@@ -131,5 +87,8 @@ describe('runtime env integration', () => {
         freshness: 'localFixture',
       },
     });
+    expect(
+      normalizeMacTmpPath(String(result.reports[0]?.plugins[0]?.currentCatalog?.rootDir)),
+    ).toBe(normalizeMacTmpPath(getCatalogFullPackageRoot(embeddedRoot)));
   });
 });
