@@ -2,6 +2,9 @@
   "name": "agent-workflows",
   "private": true,
   "version": "1.0.0-beta.25",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "pnpm --filter @yiliang/aw build",
     "test": "pnpm --filter @yiliang/aw test",

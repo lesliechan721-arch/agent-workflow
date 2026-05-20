@@ -446,6 +446,108 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
+  it('drops the current catalog process memo after reusing it for a transient target failure', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+    }));
+
+    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    clearCurrentCatalogResolutionMemoForTests();
+
+    const first = await resolveCurrentCatalog(env);
+    expect(first).toMatchObject({
+      source: 'cache',
+      catalogVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      manifestPackages: {},
+      fullPackages: {},
+    }));
+
+    const second = await resolveCurrentCatalog(env);
+    expect(second).toBe(first);
+
+    const operations: string[] = [];
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const recovered = await resolveCurrentCatalog(env);
+    expect(recovered).not.toBe(first);
+    expect(recovered).toMatchObject({
+      source: 'cache',
+      catalogVersion: '1.0.0',
+    });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+    ]);
+  });
+
   it('refreshes a process memo when the current catalog dist-tag moves', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogV1 = await createValidCatalogPackage({

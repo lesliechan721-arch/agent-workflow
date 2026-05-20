@@ -10,8 +10,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as commonModule from '../../src/commands/common.js';
 import * as projectBoundaryModule from '../../src/install-state/project-boundary.js';
 import {
+  disposePinnedCatalogRoot,
   installCommand,
   installTargetsOnPlatforms,
+  pinCurrentCatalogTargetsForLocalMarketplaceRebuild,
 } from '../../src/commands/install.js';
 import { buildCommandReceiptJson, renderCommandReceipt } from '../../src/output/command-receipt.js';
 import type {
@@ -117,6 +119,16 @@ async function writeSyntheticPlugin(
     { spaces: 2 },
   );
   return readPluginManifest(pluginRoot);
+}
+
+function createResolvedTarget(plugin: PluginMeta) {
+  return {
+    pluginName: plugin.manifest.name,
+    plugin,
+    currentPlugin: plugin,
+    embeddedPlugin: undefined,
+    source: 'currentCatalog' as const,
+  };
 }
 
 async function readInstallRecord(options: {
@@ -561,6 +573,72 @@ afterEach(async () => {
 });
 
 describe('install command P6 install-state semantics', () => {
+  it('pins only the selected current catalog plugins for local marketplace rebuilds', async () => {
+    const { env } = await makeWorkspace();
+    const sourceCatalogRoot = path.join(
+      String(env.AW_HOME),
+      'catalog-cache',
+      'entries',
+      'current',
+      'catalog',
+    );
+
+    const selectedA = await writeSyntheticPlugin(sourceCatalogRoot, {
+      ...createDependencyPluginManifest({
+        name: 'selected-a',
+      }),
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+    });
+    const selectedB = await writeSyntheticPlugin(sourceCatalogRoot, {
+      ...createDependencyPluginManifest({
+        name: 'selected-b',
+      }),
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+    });
+    const unselected = await writeSyntheticPlugin(sourceCatalogRoot, {
+      ...createDependencyPluginManifest({
+        name: 'unselected',
+      }),
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+    });
+
+    const targets = [
+      createResolvedTarget(selectedA),
+      createResolvedTarget(selectedB),
+    ];
+
+    const pinnedRoots = await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+      targets,
+      env,
+    });
+
+    expect(pinnedRoots).toHaveLength(1);
+    const [pinnedRoot] = pinnedRoots;
+    try {
+      expect(path.dirname(path.dirname(targets[0]!.currentPlugin!.rootDir))).toBe(pinnedRoot);
+      expect(path.dirname(path.dirname(targets[1]!.currentPlugin!.rootDir))).toBe(pinnedRoot);
+      await expect(fs.pathExists(path.join(pinnedRoot, 'plugins', selectedA.manifest.name, '.agents-plugin', 'plugin.json'))).resolves.toBe(true);
+      await expect(fs.pathExists(path.join(pinnedRoot, 'plugins', selectedB.manifest.name, '.agents-plugin', 'plugin.json'))).resolves.toBe(true);
+      await expect(fs.pathExists(path.join(pinnedRoot, 'plugins', unselected.manifest.name))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(pinnedRoot, '.agents'))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(pinnedRoot, '.claude-plugin'))).resolves.toBe(false);
+    } finally {
+      await disposePinnedCatalogRoot(pinnedRoot);
+    }
+  });
+
   it('repairs a marker-backed Codex user install without creating snapshots before native write, then clears the marker and native-write degraded ledger', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

@@ -13,6 +13,7 @@ import type {
   MarketplaceManifest,
   PlatformName,
 } from '../types.js';
+import { matchesGlob as matchesFileGlob } from './file-rules.js';
 import { readJsonFile } from './json.js';
 import { validateCatalogManifest } from './manifest.js';
 import { resolveCliPackageRoot, resolveCurrentCatalogCacheStagingDir, getMarketplaceManifestPath } from './paths.js';
@@ -276,7 +277,7 @@ function matchesNpmWorkspacePackagePath(
       continue;
     }
 
-    if (path.posix.matchesGlob(normalizedPackagePath, pattern)) {
+    if (matchesFileGlob(normalizedPackagePath, pattern)) {
       matched = !negated;
     }
   }

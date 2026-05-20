@@ -2,7 +2,6 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
 import {
   applyClaudeInstallLedger,
   applyClaudeUninstallLedger,
@@ -333,6 +332,7 @@ async function retargetCurrentCatalogTargetToCatalogRoot(
 
 async function pinCatalogRootForLocalMarketplaceRebuild(
   sourceCatalogRoot: string,
+  pluginNames: Iterable<string>,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
   const tempRoot = assertTestWritablePath(
@@ -343,12 +343,12 @@ async function pinCatalogRootForLocalMarketplaceRebuild(
   await fs.ensureDir(tempRoot);
   const pinnedRoot = await fs.mkdtemp(path.join(tempRoot, '.aw-current-catalog-source-'));
   try {
-    await fs.copy(path.join(sourceCatalogRoot, '.claude-plugin'), path.join(pinnedRoot, '.claude-plugin'));
-    await fs.copy(path.join(sourceCatalogRoot, '.agents'), path.join(pinnedRoot, '.agents'));
-    await fs.copy(path.join(sourceCatalogRoot, 'plugins'), path.join(pinnedRoot, 'plugins'));
-    const manifestPath = path.join(sourceCatalogRoot, CURRENT_CATALOG_MANIFEST_FILE);
-    if (await fs.pathExists(manifestPath)) {
-      await fs.copy(manifestPath, path.join(pinnedRoot, CURRENT_CATALOG_MANIFEST_FILE));
+    await fs.ensureDir(path.join(pinnedRoot, 'plugins'));
+    for (const pluginName of new Set(pluginNames)) {
+      await fs.copy(
+        path.join(sourceCatalogRoot, 'plugins', pluginName),
+        path.join(pinnedRoot, 'plugins', pluginName),
+      );
     }
   } catch (error) {
     await fs.remove(pinnedRoot).catch(() => undefined);
@@ -370,7 +370,11 @@ async function pinCurrentCatalogTargetForLocalMarketplaceRebuild(
     return undefined;
   }
 
-  const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(sourceCatalogRoot, env);
+  const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(
+    sourceCatalogRoot,
+    [target.pluginName],
+    env,
+  );
   await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
   return pinnedRoot;
 }
@@ -380,7 +384,7 @@ export async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options
   env: NodeJS.ProcessEnv;
 }): Promise<string[]> {
   const pinnedRoots: string[] = [];
-  const pinnedRootBySourceRoot = new Map<string, string>();
+  const targetsBySourceRoot = new Map<string, ResolvedPluginTarget[]>();
   for (const target of options.targets) {
     if (target.source !== 'currentCatalog' || !target.currentPlugin) {
       continue;
@@ -389,13 +393,21 @@ export async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options
     if (!shouldRetargetCatalogRootToLocalMarketplace(sourceCatalogRoot, options.env)) {
       continue;
     }
-    let pinnedRoot = pinnedRootBySourceRoot.get(sourceCatalogRoot);
-    if (!pinnedRoot) {
-      pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(sourceCatalogRoot, options.env);
-      pinnedRootBySourceRoot.set(sourceCatalogRoot, pinnedRoot);
-      pinnedRoots.push(pinnedRoot);
+    const bucket = targetsBySourceRoot.get(sourceCatalogRoot) ?? [];
+    bucket.push(target);
+    targetsBySourceRoot.set(sourceCatalogRoot, bucket);
+  }
+
+  for (const [sourceCatalogRoot, targets] of targetsBySourceRoot.entries()) {
+    const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(
+      sourceCatalogRoot,
+      targets.map((target) => target.pluginName),
+      options.env,
+    );
+    pinnedRoots.push(pinnedRoot);
+    for (const target of targets) {
+      await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
     }
-    await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
   }
   return pinnedRoots;
 }

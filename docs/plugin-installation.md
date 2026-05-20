@@ -2,6 +2,7 @@
 
 ## 前置条件
 
+- Node.js 版本至少为 `20`
 - 已全局安装 `@yiliang/aw`（`npm install -g @yiliang/aw`）
 - 至少安装了 Claude Code 或 Codex 其中一个
 

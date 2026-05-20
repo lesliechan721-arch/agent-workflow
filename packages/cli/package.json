@@ -2,6 +2,9 @@
   "name": "@yiliang/aw",
   "version": "1.0.0-beta.25",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "aw": "./dist/index.js"
   },

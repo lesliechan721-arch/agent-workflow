@@ -225,6 +225,45 @@ describe('registry catalog package identity errors', () => {
     expect(getFetchAuthorizationHeader()).toBe('Bearer workspace-root-token');
   });
 
+  it('does not depend on path.posix.matchesGlob when resolving the workspace root npmrc', async () => {
+    const homeDir = await writeUserNpmrc('');
+    const { childDir } = await writeWorkspaceProjectNpmrc('//registry.example.test/:_authToken=workspace-root-token\n');
+    process.chdir(childDir);
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    const posixPath = path.posix as typeof path.posix & {
+      matchesGlob?: typeof path.posix.matchesGlob;
+    };
+    const originalMatchesGlob = posixPath.matchesGlob;
+    posixPath.matchesGlob = undefined;
+
+    try {
+      await expect(resolveCatalogPackageIdentityByVersion(
+        '@yiliang/aw-plugins',
+        '2.0.0',
+        {
+          ...registryEnv,
+          HOME: homeDir,
+        },
+      )).resolves.toMatchObject({
+        version: '2.0.0',
+      });
+    } finally {
+      posixPath.matchesGlob = originalMatchesGlob;
+    }
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer workspace-root-token');
+  });
+
   it('normalizes npm workspace patterns before resolving the workspace root npmrc', async () => {
     const homeDir = await writeUserNpmrc('');
     stubRegistryMetadata({

@@ -415,6 +415,7 @@ async function readCurrentCatalogMemo(
         currentCatalogResolutionMemo.delete(memoKey);
         throw error;
       }
+      currentCatalogResolutionMemo.delete(memoKey);
       return {
         resolution: resolved,
       };
