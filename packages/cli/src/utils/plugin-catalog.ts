@@ -20,6 +20,7 @@ import type {
 import {
   buildCurrentCatalogCacheKey,
   type CurrentCatalogCacheEntry,
+  type CurrentCatalogCacheIdentity,
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
   serializeCatalogSelectorForCache,
@@ -967,6 +968,28 @@ function buildCatalogResolutionFromCache(options: {
   };
 }
 
+async function readValidatedCurrentCatalogCacheEntry(
+  identity: CurrentCatalogCacheIdentity,
+  target: ResolvedCatalogTarget,
+  env: NodeJS.ProcessEnv,
+): Promise<CurrentCatalogCacheEntry | null> {
+  const cacheEntry = await readCurrentCatalogCacheEntry(identity, env);
+  if (!cacheEntry) {
+    return null;
+  }
+
+  try {
+    await validateMaterializedCatalog({
+      manifest: target.manifest,
+      sidecarManifestText: target.manifestText,
+      rootDir: cacheEntry.rootDir,
+    });
+    return cacheEntry;
+  } catch {
+    return null;
+  }
+}
+
 async function materializeRetainedCatalogRoot(
   archive: CatalogPackageArchive,
   env: NodeJS.ProcessEnv,
@@ -1036,7 +1059,7 @@ async function resolveValidatedCatalogRoot(
   let cacheEntry = null as Awaited<ReturnType<typeof readCurrentCatalogCacheEntry>> | null;
   try {
     if (options.forceRefresh !== true) {
-      cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
       if (cacheEntry) {
         return buildCatalogResolutionFromCache({
           selector,
@@ -1049,7 +1072,7 @@ async function resolveValidatedCatalogRoot(
     try {
       fullArchive = await resolveArchiveByIdentity(fullIdentity, env);
     } catch (error) {
-      cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
       if (cacheEntry) {
         const remoteFailure = createRemoteFailure(
           'fullTarball',
@@ -1119,7 +1142,7 @@ async function resolveValidatedCatalogRoot(
         rootDir: fullArchive.packageRoot,
       });
     } catch (error) {
-      cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
       if (cacheEntry) {
         const remoteFailure = createRemoteFailure(
           error instanceof Error && error.message.includes('artifactDigest mismatch')

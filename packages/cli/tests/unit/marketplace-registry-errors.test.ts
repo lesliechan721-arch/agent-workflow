@@ -76,6 +76,7 @@ async function writeWorkspaceProjectNpmrc(
 }
 
 async function writeNestedWorkspaceProjectNpmrc(): Promise<{
+  innerRoot: string;
   childDir: string;
 }> {
   const outerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-nested-workspace-'));
@@ -102,6 +103,7 @@ async function writeNestedWorkspaceProjectNpmrc(): Promise<{
   await fs.ensureDir(childDir);
 
   return {
+    innerRoot,
     childDir,
   };
 }
@@ -270,6 +272,35 @@ describe('registry catalog package identity errors', () => {
     const homeDir = await writeUserNpmrc('');
     const { childDir } = await writeNestedWorkspaceProjectNpmrc();
     process.chdir(childDir);
+    stubRegistryMetadata({
+      versions: {
+        '2.0.0': {
+          dist: {
+            integrity: 'sha512-catalog',
+            tarball: 'https://registry.example.test/catalog.tgz',
+          },
+        },
+      },
+    });
+
+    await expect(resolveCatalogPackageIdentityByVersion(
+      '@yiliang/aw-plugins',
+      '2.0.0',
+      {
+        ...registryEnv,
+        HOME: homeDir,
+      },
+    )).resolves.toMatchObject({
+      version: '2.0.0',
+    });
+
+    expect(getFetchAuthorizationHeader()).toBe('Bearer inner-workspace-token');
+  });
+
+  it('prefers the nested workspace root npmrc when running at that root', async () => {
+    const homeDir = await writeUserNpmrc('');
+    const { innerRoot } = await writeNestedWorkspaceProjectNpmrc();
+    process.chdir(innerRoot);
     stubRegistryMetadata({
       versions: {
         '2.0.0': {

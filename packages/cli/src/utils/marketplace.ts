@@ -279,7 +279,11 @@ async function resolveNpmLocalPrefix(
     const packageJsonPath = path.join(currentDir, npmPackageJsonMarker);
     if (await fs.pathExists(packageJsonPath)) {
       if (localPrefix === null) {
+        const workspacePatterns = await resolveNpmWorkspacePatterns(packageJsonPath);
         localPrefix = currentDir;
+        if (workspacePatterns.length > 0) {
+          return currentDir;
+        }
       } else {
         const workspacePatterns = await resolveNpmWorkspacePatterns(packageJsonPath);
         if (matchesNpmWorkspacePackagePath(currentDir, localPrefix, workspacePatterns)) {
