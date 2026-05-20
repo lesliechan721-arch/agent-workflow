@@ -58,6 +58,7 @@ async function updateFixturePluginManifest(
 
 async function makeWorkspace(
   manifestUpdater?: (manifest: Record<string, any>) => void,
+  afterCopy?: (repoRoot: string) => Promise<void>,
 ): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-local-marketplace-'));
   tempDirs.push(root);
@@ -67,6 +68,7 @@ async function makeWorkspace(
   if (manifestUpdater) {
     await updateFixturePluginManifest(repoRoot, manifestUpdater);
   }
+  await afterCopy?.(repoRoot);
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
   const awHome = path.join(root, 'aw-home');
@@ -197,6 +199,39 @@ describe('local marketplace', () => {
       rootDir: awHome,
       source: 'local',
     });
+  });
+
+  it('reuses a healthy local marketplace before resolving current catalog when plugins-dist is missing', async () => {
+    const { awHome, embeddedRoot, repoRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(
+      new CatalogResolutionError({
+        selector: {
+          kind: 'default',
+          cliVersion: '0.1.0',
+          defaultChannel: 'latest',
+        },
+        cacheFallback: {
+          used: false,
+        },
+        reason: 'current catalog is temporarily unavailable',
+        reasonCode: 'catalogUnavailable',
+      }),
+    );
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+
+    await expect(ensureLocalMarketplace(env)).resolves.toEqual({
+      rootDir: awHome,
+      changed: false,
+      warnings: [],
+    });
+    expect(resolveCurrentCatalog).not.toHaveBeenCalled();
   });
 
   it('does not mask fail-closed current catalog failures with the local marketplace', async () => {
@@ -1048,6 +1083,104 @@ describe('local marketplace', () => {
     ))).resolves.toBe(false);
     expect(await listSkillBackupDirs(awHome)).toEqual([]);
     expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
+  });
+
+  it('replays retained Codex user dynamic skills without adding a static skills root to the platform manifest', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace(
+      (manifest) => {
+        delete manifest.skills;
+        manifest.skillTriggers = {
+          'generated-commit': {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        };
+        manifest.artifacts = {
+          targets: [{
+            id: 'commit-skill',
+            platform: 'codex',
+            scopes: ['user'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'generated-commit',
+          }],
+        };
+      },
+      async (repoRoot) => {
+        await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+      },
+    );
+    const codexHome = path.join(path.dirname(awHome), 'codex-home');
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const dynamicSkillRoot = path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+    );
+    await fs.outputFile(path.join(dynamicSkillRoot, 'SKILL.md'), '# Generated\n', 'utf8');
+    await fs.outputFile(
+      path.join(dynamicSkillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    const location: PluginLocation = {
+      plugin: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+    };
+    const recordId = createRecordId(location);
+    const recordFile: InstallRecordFile = {
+      version: 2,
+      recordId,
+      record: {
+        pluginName: location.plugin,
+        platform: location.platform,
+        scope: location.scope,
+        installedAt: '2026-04-28T00:00:00.000Z',
+        updatedAt: '2026-04-28T00:00:00.000Z',
+        source: {
+          pluginVersion: '0.1.0',
+          manifestDigest: 'sha256:generated-manifest',
+          bundleFingerprint: 'sha256:generated-bundle',
+        },
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        artifacts: [{
+          kind: 'skill',
+          platform: 'codex',
+          path: dynamicSkillRoot,
+          artifactKey: 'generated-commit',
+          id: 'commit-skill',
+          target: 'codex.skill',
+          state: 'present',
+        }],
+        dependencyEdges: [],
+      },
+    };
+    await fs.outputJson(
+      path.join(codexHome, '.agent-workflows', 'records', `${recordId}.json`),
+      recordFile,
+      { spaces: 2 },
+    );
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await expect(fs.pathExists(path.join(dynamicSkillRoot, 'SKILL.md'))).resolves.toBe(true);
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.not.toHaveProperty('skills');
   });
 
   it('skips retained Codex user dynamic skill records for plugins missing from the current catalog', async () => {

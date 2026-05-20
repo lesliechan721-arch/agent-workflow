@@ -972,6 +972,35 @@ async function inspectLocalMarketplaceState(
   };
 }
 
+async function tryReuseExistingLocalMarketplace(
+  env: NodeJS.ProcessEnv,
+): Promise<EnsureLocalMarketplaceResult | null> {
+  const awHome = resolveAwHome(env);
+  const [packageInfo, config] = await Promise.all([
+    readCliPackageInfo(),
+    readLocalMarketplaceConfig(awHome),
+  ]);
+
+  if (
+    !config ||
+    config.sourcePackage !== packageInfo.name ||
+    config.sourceVersion !== packageInfo.version
+  ) {
+    return null;
+  }
+
+  try {
+    await validateLocalMarketplaceLayout(awHome);
+    return {
+      rootDir: awHome,
+      changed: false,
+      warnings: [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
@@ -1146,10 +1175,6 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
         overwrite: true,
         errorOnExist: false,
       });
-      await ensureLocalMarketplaceCodexSkillsManifest(
-        options.marketplaceRoot,
-        recordFile.record.pluginName,
-      );
     }
   }
 
@@ -1248,6 +1273,13 @@ export async function initializeLocalMarketplace(
   try {
     bundleRootOverride = await resolveEmbeddedPluginsRoot();
   } catch {
+    if (!options.force) {
+      const reusableMarketplace = await tryReuseExistingLocalMarketplace(env);
+      if (reusableMarketplace) {
+        return reusableMarketplace;
+      }
+    }
+
     const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
     bundleRootOverride = (await resolveCurrentCatalog(env)).rootDir;
     await validateBundleLayout(bundleRootOverride);

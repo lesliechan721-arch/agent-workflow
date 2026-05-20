@@ -171,6 +171,7 @@ import {
   CODEX_REPO_MANAGED_ITEM_KIND_ORDER,
   codexCapabilitySnapshotsEqual,
   collectDeclaredCodexProjectSkillKeys,
+  getCodexDynamicArtifactTargets,
   getCodexProjectManagedKinds,
   hasCodexProjectManagedArtifacts,
   needsCodexProjectConfigAccess,
@@ -353,6 +354,42 @@ function createCodexMarketplaceSuggestion(
   }
 
   return `请确认可以运行 \`codex plugin marketplace add ${awHome}\`。${nativeCliFailureHint(error)}`;
+}
+
+function shouldStageCodexUserDynamicSkillMarketplace(plugin: PluginMeta, scope: Scope): boolean {
+  return (
+    scope === 'user' &&
+    !plugin.manifest.skills &&
+    getCodexDynamicArtifactTargets(plugin, { scope: 'user' }).some((target) =>
+      target.target === 'codex.skill'
+    )
+  );
+}
+
+async function stageCodexUserDynamicSkillMarketplace(options: {
+  awHome: string;
+  plugin: PluginMeta;
+  scope: Scope;
+}): Promise<{ rootDir: string; marketplacePath: string } | null> {
+  if (!shouldStageCodexUserDynamicSkillMarketplace(options.plugin, options.scope)) {
+    return null;
+  }
+
+  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-native-marketplace-'));
+  try {
+    await fs.copy(options.awHome, stagingRoot, {
+      overwrite: true,
+      errorOnExist: false,
+    });
+    await ensureLocalMarketplaceCodexSkillsManifest(stagingRoot, options.plugin.manifest.name);
+    return {
+      rootDir: stagingRoot,
+      marketplacePath: path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json'),
+    };
+  } catch (error) {
+    await fs.remove(stagingRoot).catch(() => undefined);
+    throw error;
+  }
 }
 
 function createCodexNativePostCheckSuggestion(
@@ -3348,7 +3385,24 @@ export class CodexAdapter implements PlatformAdapter {
       phase: 'success',
     });
 
-    const marketplacePath = options.marketplacePath ?? path.join(awHome, '.agents', 'plugins', 'marketplace.json');
+    let stagedMarketplace = options.marketplacePath
+      ? null
+      : await stageCodexUserDynamicSkillMarketplace({
+          awHome,
+          plugin,
+          scope,
+        });
+    const cleanupStagedMarketplace = async () => {
+      if (!stagedMarketplace) {
+        return;
+      }
+      const { rootDir } = stagedMarketplace;
+      stagedMarketplace = null;
+      await fs.remove(rootDir).catch(() => undefined);
+    };
+    const marketplacePath = options.marketplacePath ??
+      stagedMarketplace?.marketplacePath ??
+      path.join(awHome, '.agents', 'plugins', 'marketplace.json');
     const pluginId = normalizeCodexUserPluginId(plugin.manifest.name);
     const installStartedAt = Date.now();
     await this.emitNativeRpcEvent({
@@ -3379,6 +3433,7 @@ export class CodexAdapter implements PlatformAdapter {
         errorCategory: error instanceof CodexAppServerError ? error.category : 'request_rejected',
         suggestion: error instanceof CodexAppServerError ? error.suggestion : undefined,
       });
+      await cleanupStagedMarketplace();
       throw error;
     }
     await this.emitNativeRpcEvent({
@@ -3401,6 +3456,7 @@ export class CodexAdapter implements PlatformAdapter {
         pluginVersion: plugin.manifest.version,
       });
     } catch (error) {
+      await cleanupStagedMarketplace();
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请先运行 \`aw status --verbose\` 检查 breadcrumb、config 和 cache 诊断，再决定后续修复或清理。`,
@@ -3442,6 +3498,7 @@ export class CodexAdapter implements PlatformAdapter {
         activeCachePath: postCheck.state.activeCachePath ?? null,
         lastError: detail,
       });
+      await cleanupStagedMarketplace();
       throw new Error(
         `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但安装后校验失败：${detail}。AW 不会回退到只写 enabled config；请先运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断。`,
       );
@@ -3457,6 +3514,7 @@ export class CodexAdapter implements PlatformAdapter {
       pluginInstalled: postCheck.state.pluginInstalled,
       activeCachePath: postCheck.state.activeCachePath ?? null,
     });
+    await cleanupStagedMarketplace();
   }
 
   async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
@@ -3806,12 +3864,6 @@ export class CodexAdapter implements PlatformAdapter {
           const writtenPaths = artifact.state === 'disabled'
             ? (await fs.remove(skillPath), [] as string[])
             : await writeCodexSkillTree(skillPath, expectedTree);
-          if (artifact.state === 'present') {
-            await ensureLocalMarketplaceCodexSkillsManifest(
-              resolveAwHome(this.env),
-              plugin.manifest.name,
-            );
-          }
 
           artifacts.push({
             path: skillPath,

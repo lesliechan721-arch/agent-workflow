@@ -1382,7 +1382,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
     await expect(
       fs.readJson(path.join(awHome, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({ skills: './codex/skills' });
+    ).resolves.not.toHaveProperty('skills');
     await expect(
       fs.readJson(
         path.join(
