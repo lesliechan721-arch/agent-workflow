@@ -30,9 +30,9 @@ import type {
 } from '../types.js';
 import { mergeGeneratedArtifacts } from './generated-artifacts.js';
 import {
-  ensureLocalMarketplaceCodexSkillsManifest,
   getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
+  stageLocalMarketplaceCodexDynamicSkills,
 } from './local-marketplace.js';
 import {
   commitMaterializedSkillTriggerPreference,
@@ -405,8 +405,15 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
         overwrite: true,
         errorOnExist: false,
       });
-      await ensureLocalMarketplaceCodexSkillsManifest(stagingRoot, pluginName);
     }
+    await stageLocalMarketplaceCodexDynamicSkills({
+      rootDir: stagingRoot,
+      pluginName,
+      skillKeys: options.refreshedArtifacts
+        .filter((artifact) => artifact.target === 'codex.skill')
+        .map((artifact) => artifact.artifactKey?.trim())
+        .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
+    });
 
     const marketplacePath = path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json');
     await fs.outputJson(marketplacePath, createSinglePluginCodexMarketplace(options.plugin), {

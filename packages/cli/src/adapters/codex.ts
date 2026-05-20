@@ -94,11 +94,11 @@ import {
 } from '../utils/codex-native-recovery.js';
 import {
   ensureLocalMarketplace,
-  ensureLocalMarketplaceCodexSkillsManifest,
   getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
   resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
+  stageLocalMarketplaceCodexDynamicSkills,
 } from '../utils/local-marketplace.js';
 import {
   resolveArtifactRenderConfig,
@@ -359,7 +359,6 @@ function createCodexMarketplaceSuggestion(
 function shouldStageCodexUserDynamicSkillMarketplace(plugin: PluginMeta, scope: Scope): boolean {
   return (
     scope === 'user' &&
-    !plugin.manifest.skills &&
     getCodexDynamicArtifactTargets(plugin, { scope: 'user' }).some((target) =>
       target.target === 'codex.skill'
     )
@@ -381,7 +380,14 @@ async function stageCodexUserDynamicSkillMarketplace(options: {
       overwrite: true,
       errorOnExist: false,
     });
-    await ensureLocalMarketplaceCodexSkillsManifest(stagingRoot, options.plugin.manifest.name);
+    await stageLocalMarketplaceCodexDynamicSkills({
+      rootDir: stagingRoot,
+      pluginName: options.plugin.manifest.name,
+      skillKeys: getCodexDynamicArtifactTargets(options.plugin, { scope: 'user' })
+        .filter((target) => target.target === 'codex.skill')
+        .map((target) => target.skillKey?.trim())
+        .filter((skillKey): skillKey is string => Boolean(skillKey)),
+    });
     return {
       rootDir: stagingRoot,
       marketplacePath: path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json'),

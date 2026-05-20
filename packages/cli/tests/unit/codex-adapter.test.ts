@@ -2158,6 +2158,118 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('stages user dynamic Codex skills under the manifest skills root for native install', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    plugin.manifest.skills = './custom-skills';
+    plugin.manifest.skillTriggers = {
+      ...(plugin.manifest.skillTriggers ?? {}),
+      'generated-commit': {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+    };
+    plugin.manifest.artifacts = {
+      targets: [{
+        id: 'generated-commit-skill',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'generated-commit',
+      }],
+    };
+
+    const awPluginRoot = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name);
+    const codexManifestPath = path.join(awPluginRoot, '.codex-plugin', 'plugin.json');
+    const codexManifest = await fs.readJson(codexManifestPath);
+    await fs.writeJson(codexManifestPath, {
+      ...codexManifest,
+      skills: './codex/custom-skills',
+    }, { spaces: 2 });
+    await fs.outputFile(
+      path.join(awPluginRoot, 'codex', 'custom-skills', 'static-commit', 'SKILL.md'),
+      '# Static Commit\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(awPluginRoot, 'codex', 'custom-skills', 'static-commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(awPluginRoot, 'codex', 'skills', 'generated-commit', 'SKILL.md'),
+      '# Dynamic Commit\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(awPluginRoot, 'codex', 'skills', 'generated-commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    let stagedMarketplacePath: string | undefined;
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: (input) => {
+          if (input.json?.method !== 'plugin/install') {
+            return false;
+          }
+          const params = input.json.params as { marketplacePath?: string } | undefined;
+          stagedMarketplacePath = params?.marketplacePath;
+          expect(stagedMarketplacePath).toBeDefined();
+          expect(stagedMarketplacePath).not.toBe(path.join(env.AW_HOME!, '.agents', 'plugins', 'marketplace.json'));
+
+          const stagedRoot = path.dirname(path.dirname(path.dirname(stagedMarketplacePath!)));
+          const stagedPluginRoot = path.join(stagedRoot, 'plugins', plugin.manifest.name);
+          expect(fs.readJsonSync(path.join(stagedPluginRoot, '.codex-plugin', 'plugin.json'))).toMatchObject({
+            skills: './codex/custom-skills',
+          });
+          expect(
+            fs.readFileSync(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'static-commit', 'SKILL.md'), 'utf8'),
+          ).toBe('# Static Commit\n');
+          expect(
+            fs.readFileSync(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
+          ).toBe('# Dynamic Commit\n');
+
+          fs.appendFileSync(configPath, '\n[plugins."git-commit@aw"]\nenabled = true\n', 'utf8');
+          fs.copySync(stagedPluginRoot, cacheVersionPath, {
+            overwrite: true,
+            errorOnExist: false,
+          });
+          fs.outputFileSync(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
+          return true;
+        },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
+      },
+    ]);
+    const adapter = new CodexAdapter(
+      cwd,
+      createCodexMarketplaceAddRunner(cwd, env),
+      env,
+      appServerHarness.createRunner(),
+    );
+
+    await adapter.installPluginFromMarketplace(plugin, 'user');
+    expect(stagedMarketplacePath).toBeDefined();
+
+    await expect(
+      fs.readFile(path.join(cacheVersionPath, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
+    ).resolves.toBe('# Dynamic Commit\n');
+  });
+
   it('fails install when app-server reports unknown method and does not fall back to config-only', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });
