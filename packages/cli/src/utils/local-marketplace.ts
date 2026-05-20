@@ -68,12 +68,39 @@ function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
 
+function hasCatalogSelectorOverride(env: NodeJS.ProcessEnv): boolean {
+  return env.AW_CATALOG_VERSION !== undefined ||
+    env.AW_CATALOG_CHANNEL === 'latest' ||
+    env.AW_CATALOG_CHANNEL === 'beta' ||
+    env.AW_CLI_VERSION !== undefined;
+}
+
+function resolveCodexManifestSkillsDeclaration(manifest: Record<string, unknown>): string {
+  return typeof manifest.skills === 'string' && manifest.skills.trim() !== ''
+    ? manifest.skills
+    : CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT;
+}
+
 function getCodexPlatformPluginManifestPath(pluginRoot: string): string {
   return path.join(pluginRoot, '.codex-plugin', 'plugin.json');
 }
 
 function resolveCodexManifestSkillsRoot(pluginRoot: string, manifestSkills: string): string {
   return path.join(pluginRoot, stripDotSlash(manifestSkills));
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of paths) {
+    const key = path.resolve(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(candidate);
+  }
+  return result;
 }
 
 export async function stageLocalMarketplaceCodexDynamicSkills(
@@ -87,9 +114,7 @@ export async function stageLocalMarketplaceCodexDynamicSkills(
     getLocalMarketplacePluginRoot(options.rootDir, options.pluginName),
   );
   const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
-  const manifestSkills = typeof manifest.skills === 'string' && manifest.skills.trim() !== ''
-    ? manifest.skills
-    : CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT;
+  const manifestSkills = resolveCodexManifestSkillsDeclaration(manifest);
 
   if (manifest.skills !== manifestSkills) {
     await writeJsonFile(manifestPath, {
@@ -1042,17 +1067,14 @@ async function tryReuseExistingLocalMarketplace(
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
-  const hasCatalogSelectorOverride = env.AW_CATALOG_VERSION !== undefined ||
-    env.AW_CATALOG_CHANNEL === 'latest' ||
-    env.AW_CATALOG_CHANNEL === 'beta' ||
-    env.AW_CLI_VERSION !== undefined;
+  const hasSelectorOverride = hasCatalogSelectorOverride(env);
   const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
   let currentCatalogError: unknown;
   try {
     return await resolveCurrentCatalog(env);
   } catch (error) {
     if (
-      hasCatalogSelectorOverride ||
+      hasSelectorOverride ||
       !isCatalogResolutionError(error) ||
       error.resolution.reasonCode !== 'catalogUnavailable'
     ) {
@@ -1067,7 +1089,7 @@ export async function resolveReadOnlyCatalogResolution(
     readLocalMarketplaceConfig(awHome),
   ]);
   if (
-    !hasCatalogSelectorOverride &&
+    !hasSelectorOverride &&
     config &&
     config.sourcePackage === packageInfo.name &&
     config.sourceVersion === packageInfo.version
@@ -1180,15 +1202,29 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
       continue;
     }
 
+    const targetPluginRoot = getLocalMarketplacePluginRoot(
+      options.marketplaceRoot,
+      recordFile.record.pluginName,
+    );
+    const targetCodexManifest = await readJsonFile<Record<string, unknown>>(targetPluginManifestPath);
+    const targetManifestSkillsRoot = resolveCodexManifestSkillsRoot(
+      targetPluginRoot,
+      resolveCodexManifestSkillsDeclaration(targetCodexManifest),
+    );
+
     for (const artifact of dynamicSkillArtifacts) {
-      const targetSkillRoot = getLocalMarketplaceCodexSkillRoot(
+      const targetRuntimeSkillRoot = getLocalMarketplaceCodexSkillRoot(
         options.marketplaceRoot,
         recordFile.record.pluginName,
         artifact.artifactKey,
       );
+      const targetSkillRoots = uniquePaths([
+        targetRuntimeSkillRoot,
+        path.join(targetManifestSkillsRoot, artifact.artifactKey),
+      ]);
 
       if (artifact.state === 'disabled') {
-        await fs.remove(targetSkillRoot);
+        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
         continue;
       }
 
@@ -1203,16 +1239,18 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
         warnings.push(
           `跳过 user dynamic skill replay：缺少 runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey}（${sourceSkillRoot}）。`,
         );
-        await fs.remove(targetSkillRoot);
+        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
         continue;
       }
 
-      await fs.remove(targetSkillRoot);
-      await fs.ensureDir(path.dirname(targetSkillRoot));
-      await fs.copy(sourceSkillRoot, targetSkillRoot, {
-        overwrite: true,
-        errorOnExist: false,
-      });
+      for (const targetSkillRoot of targetSkillRoots) {
+        await fs.remove(targetSkillRoot);
+        await fs.ensureDir(path.dirname(targetSkillRoot));
+        await fs.copy(sourceSkillRoot, targetSkillRoot, {
+          overwrite: true,
+          errorOnExist: false,
+        });
+      }
     }
   }
 
@@ -1311,16 +1349,24 @@ export async function initializeLocalMarketplace(
   try {
     bundleRootOverride = await resolveEmbeddedPluginsRoot();
   } catch {
-    if (!options.force) {
-      const reusableMarketplace = await tryReuseExistingLocalMarketplace(env);
-      if (reusableMarketplace) {
-        return reusableMarketplace;
+    const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
+    try {
+      bundleRootOverride = (await resolveCurrentCatalog(env)).rootDir;
+      await validateBundleLayout(bundleRootOverride);
+    } catch (error) {
+      if (
+        !options.force &&
+        !hasCatalogSelectorOverride(env) &&
+        isCatalogResolutionError(error) &&
+        error.resolution.reasonCode === 'catalogUnavailable'
+      ) {
+        const reusableMarketplace = await tryReuseExistingLocalMarketplace(env);
+        if (reusableMarketplace) {
+          return reusableMarketplace;
+        }
       }
+      throw error;
     }
-
-    const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
-    bundleRootOverride = (await resolveCurrentCatalog(env)).rootDir;
-    await validateBundleLayout(bundleRootOverride);
   }
   const inspection = await inspectLocalMarketplaceState(env, bundleRootOverride);
   const validConfig = inspection.configInspection.state === 'valid'
