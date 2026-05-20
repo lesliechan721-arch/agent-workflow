@@ -13,6 +13,7 @@ export async function initCommand(
   const result = await resolveCurrentCatalog(options.env, {
     ...(options.catalogChannel === undefined ? {} : { channel: options.catalogChannel }),
     ...(options.catalogVersion === undefined ? {} : { catalogVersion: options.catalogVersion }),
+    forceRefresh: options.force === true,
   });
   if (options.selectorOverrideSource && result.selector) {
     result.selector.overrideSource = options.selectorOverrideSource;

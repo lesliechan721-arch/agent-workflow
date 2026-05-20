@@ -28,22 +28,22 @@ aw status
 
 ### `aw init`
 
-预热远程 catalog 和 artifact cache。`aw init` 会先获取轻量 sidecar 包 `@yiliang/aw-plugins-manifest`，确认 catalog 与当前 CLI 兼容后，再获取同版本 full catalog 包 `@yiliang/aw-plugins` 并校验 manifest、integrity 和 artifact digest。它不安装插件、不升级插件、不写 install record，也不写活 active local marketplace/runtime view；需要 user-scope native runtime 的写命令会在真正调用平台 native 能力前 materialize active view。
+预热远程 catalog 和 artifact cache。`aw init` 会先获取轻量 sidecar 包 `@yiliang/aw-plugins-manifest`，确认 catalog 与当前 CLI 兼容后，再解析同版本 full catalog 包 `@yiliang/aw-plugins` 的 identity；如果本机已有完全匹配的 cache，就直接复用，否则下载 full catalog 并校验 manifest、integrity 和 artifact digest。它不安装插件、不升级插件、不写 install record，也不写活 active local marketplace/runtime view；需要 user-scope native runtime 的写命令会在真正调用平台 native 能力前 materialize active view。
 
 ```bash
 aw init [-f|--force] [--catalog-channel <dist-tag>|--catalog-version <semver>]
 ```
 
-- `-f, --force`：强制重新拉取和重建匹配 selector 的 catalog/cache，但不会删除仍被安装位置或恢复证据引用的 historical runtime
+- `-f, --force`：绕过已匹配的 cache 快路径，强制重新拉取和重建匹配 selector 的 catalog/cache，但不会删除仍被安装位置或恢复证据引用的 historical runtime
 - `--catalog-channel <dist-tag>`：本次预热使用显式 dist-tag；`aw init --channel <dist-tag>` 是兼容别名
 - `--catalog-version <semver>`：本次预热使用显式 exact catalog version；与 `--catalog-channel` 互斥
 - selector 只影响本次命令，不修改持久默认 channel，也不会污染其它 channel 或 exact version 的离线 fallback
 
 稳定版 CLI 默认解析 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认解析 `@yiliang/aw-plugins-manifest@beta`。`latest` catalog 只接受 stable catalog version 和 stable 插件 version；`beta` catalog version 必须是 prerelease，且可包含 stable 或 prerelease 插件 version。
 
-如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`；远程不可用或校验失败且没有与本次 selector 匹配的有效 cache 时返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 会作为快路径使用；如果强制刷新或远程校验失败，匹配 cache 仍可作为 fallback。远程不可用且没有匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
 
-同一组 catalog selector 也用于 `aw install`、`aw upgrade`、`aw reinstall`、`aw status`、发现类入口，以及未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。直接命令的 JSON / verbose 输出会展示请求 selector、实际 catalog identity、latest blocked 状态和 cache fallback 证据。
+同一组 catalog selector 也用于 `aw install`、`aw upgrade`、`aw reinstall`、`aw status`、发现类入口，以及未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。直接命令的 JSON / verbose 输出会展示请求 selector、实际 catalog identity、latest blocked 状态，以及 cache source 或 fallback 证据。
 
 ---
 
@@ -128,7 +128,7 @@ aw status [插件名...] [-s project|user] [-p codex|claude|both] [--verbose] [-
 
 - dependency index 不可信时，下一步会指向 `aw repair --dependency-index`；遇到 stale project reference 时会给出 token，并要求用户显式运行 `aw cleanup --dependency-index --prune-stale <token> --yes`。
 - project shared/local config、路径型配置和 ignore 规则问题会在这里汇总，方便在写命令前修正。
-- verbose / JSON 会展示 catalog selector、实际 catalog identity、catalog 最低 CLI 版本、latest 是否被当前 CLI 阻止、history schema、cache fallback 命中的 selector / catalog identity，以及 manifest mismatch、integrity failure 等原始远程错误。
+- verbose / JSON 会展示 catalog selector、实际 catalog identity、catalog 最低 CLI 版本、latest 是否被当前 CLI 阻止、history schema、cache source 或 fallback 命中的 selector / catalog identity，以及 manifest mismatch、integrity failure 等原始远程错误。
 
 ---
 

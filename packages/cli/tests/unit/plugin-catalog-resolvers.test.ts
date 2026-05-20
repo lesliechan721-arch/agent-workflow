@@ -433,7 +433,102 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
-  it('falls back to a matching cache entry only after the catalog identity is resolved', async () => {
+  it('updates the ordinary process memo after a successful force refresh', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogV1 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const catalogV2 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '2.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogV1.sidecarRoot,
+          manifest: catalogV1.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogV1.fullRoot,
+          manifest: catalogV1.manifest,
+        },
+      },
+    }));
+    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+      catalogVersion: '1.0.0',
+    });
+
+    const operations: string[] = [];
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '2.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '2.0.0',
+            integrity: 'sha512-sidecar-2',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogV2.sidecarRoot,
+          manifest: catalogV2.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '2.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '2.0.0',
+            integrity: 'sha512-full-2',
+          },
+          rootDir: catalogV2.fullRoot,
+          manifest: catalogV2.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const refreshed = await resolveCurrentCatalog(env, { forceRefresh: true });
+    expect(refreshed).toMatchObject({
+      source: 'remote',
+      catalogVersion: '2.0.0',
+    });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:2.0.0',
+      'identity:@yiliang/aw-plugins:2.0.0',
+      'download:@yiliang/aw-plugins:2.0.0',
+    ]);
+
+    operations.length = 0;
+    await expect(resolveCurrentCatalog(env)).resolves.toBe(refreshed);
+    expect(operations).toEqual([]);
+  });
+
+  it('uses a matching cache entry after resolving catalog identity and before downloading full catalog', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogPackage = await createValidCatalogPackage({
       repoRoot,
@@ -442,6 +537,7 @@ describe('plugin catalog resolvers', () => {
       minAwVersion: '1.0.0',
     });
 
+    const operations: string[] = [];
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: {
         latest: '1.0.0',
@@ -502,9 +598,28 @@ describe('plugin catalog resolvers', () => {
           failDownload: 'simulated full tarball failure',
         },
       },
+      operations,
     }));
 
-    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
+    const cached = await resolveCurrentCatalog(env);
+    expect(cached).toMatchObject({
+      source: 'cache',
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      cacheFallback: {
+        used: false,
+      },
+    });
+    expect(cached.remoteFailure).toBeUndefined();
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+    ]);
+
+    operations.length = 0;
+    clearCurrentCatalogResolutionMemoForTests();
+    await expect(resolveCurrentCatalog(env, { forceRefresh: true })).resolves.toMatchObject({
       source: 'cache',
       channel: 'latest',
       catalogVersion: '1.0.0',
@@ -515,6 +630,12 @@ describe('plugin catalog resolvers', () => {
         stage: 'fullTarball',
       },
     });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
   });
 
   it('returns a readable validated remote root when cache persistence fails', async () => {

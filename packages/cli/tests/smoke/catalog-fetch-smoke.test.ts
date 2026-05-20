@@ -194,7 +194,7 @@ afterEach(async () => {
 });
 
 describe('catalog fetch smoke', () => {
-  it('resolves sidecar before full and falls back to current catalog cache on later full download failure', async () => {
+  it('resolves sidecar before full and reuses current catalog cache before a later full download', async () => {
     const root = repoRoot();
     await execFileAsync('pnpm', ['build'], {
       cwd: root,
@@ -280,19 +280,14 @@ describe('catalog fetch smoke', () => {
       channel: stagedManifest.channel,
       catalogVersion: stagedManifest.catalogVersion,
       cacheFallback: {
-        used: true,
-        source: 'currentCatalogCache',
-        blockingCode: 'catalogUnavailable',
-      },
-      remoteFailure: {
-        stage: 'fullTarball',
+        used: false,
       },
     });
+    expect(cachedResolution.remoteFailure).toBeUndefined();
     expect(operations).toEqual([
       `identity:@yiliang/aw-plugins-manifest:${stagedManifest.channel}`,
       `download:@yiliang/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
       `identity:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
-      `download:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
     ]);
   });
 

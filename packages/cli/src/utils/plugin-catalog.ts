@@ -19,6 +19,7 @@ import type {
 } from '../types.js';
 import {
   buildCurrentCatalogCacheKey,
+  type CurrentCatalogCacheEntry,
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
   serializeCatalogSelectorForCache,
@@ -55,6 +56,7 @@ export interface ResolveCurrentCatalogOptions {
   cliVersion?: CliVersion;
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
+  forceRefresh?: boolean;
 }
 
 interface PartialCatalogSummary {
@@ -279,6 +281,7 @@ async function resolveEffectiveCatalogSelector(
 function buildCurrentCatalogMemoKey(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
+  options: ResolveCurrentCatalogOptions,
 ): string {
   const payload = {
     selector: serializeCatalogSelectorForCache(selector),
@@ -289,6 +292,7 @@ function buildCurrentCatalogMemoKey(
     home: env.HOME || null,
     userprofile: env.USERPROFILE || null,
     embeddedOverrideRoot: getEmbeddedPluginsRootOverrideForTests(),
+    forceRefresh: Boolean(options.forceRefresh),
   };
   return crypto
     .createHash('sha256')
@@ -299,6 +303,7 @@ function buildCurrentCatalogMemoKey(
 function resolveCurrentCatalogUncached(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
+  options: ResolveCurrentCatalogOptions,
 ): Promise<CatalogResolution> {
   return (async () => {
     if (!hasCatalogPackageSourceOverrideForTests()) {
@@ -309,7 +314,7 @@ function resolveCurrentCatalogUncached(
     }
 
     const target = await resolveCatalogTarget(selector, env);
-    return await resolveValidatedCatalogRoot(selector, target, env);
+    return await resolveValidatedCatalogRoot(selector, target, env, options);
   })();
 }
 
@@ -903,6 +908,43 @@ function buildFullCatalogEvidence(
   };
 }
 
+function buildCatalogResolutionFromCache(options: {
+  selector: CatalogSelector;
+  target: ResolvedCatalogTarget;
+  cacheEntry: CurrentCatalogCacheEntry;
+  cacheFallback?: CatalogResolution['cacheFallback'];
+  remoteFailure?: CatalogResolution['remoteFailure'];
+  reason?: string;
+}): CatalogResolution {
+  const matchedCatalog = buildFullCatalogEvidence(
+    { source: 'cache' },
+    options.target.manifest,
+    options.cacheEntry.metadata.manifestDigest,
+    options.target.resolutionSource,
+  );
+
+  return {
+    rootDir: options.cacheEntry.rootDir,
+    source: 'cache',
+    selector: options.selector,
+    sidecarManifestPackage: options.target.sidecarManifestPackage,
+    fullCatalog: matchedCatalog,
+    channel: options.target.manifest.channel,
+    catalogVersion: options.target.manifest.catalogVersion,
+    minAwVersion: options.target.manifest.compatibility.aw.minVersion,
+    latestCatalog: options.target.latestCatalog,
+    latestCatalogBlocked: options.target.latestCatalogBlocked,
+    historySchemaVersion: options.target.historySchemaVersion,
+    cacheFallback: options.cacheFallback ?? {
+      used: false,
+      cacheKey: options.cacheEntry.cacheKey,
+      selectorKey: options.cacheEntry.selectorKey,
+    },
+    ...(options.remoteFailure ? { remoteFailure: options.remoteFailure } : {}),
+    ...(options.reason ? { reason: options.reason } : {}),
+  };
+}
+
 async function materializeRetainedCatalogRoot(
   archive: CatalogPackageArchive,
   env: NodeJS.ProcessEnv,
@@ -924,6 +966,7 @@ async function resolveValidatedCatalogRoot(
   selector: CatalogSelector,
   target: ResolvedCatalogTarget,
   env: NodeJS.ProcessEnv,
+  options: ResolveCurrentCatalogOptions,
 ): Promise<CatalogResolution> {
   let fullIdentity: CatalogPackageArchiveIdentity;
   try {
@@ -970,28 +1013,35 @@ async function resolveValidatedCatalogRoot(
   let fullArchive: CatalogPackageArchive | null = null;
   let cacheEntry = null as Awaited<ReturnType<typeof readCurrentCatalogCacheEntry>> | null;
   try {
+    if (options.forceRefresh !== true) {
+      cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
+      if (cacheEntry) {
+        return buildCatalogResolutionFromCache({
+          selector,
+          target,
+          cacheEntry,
+        });
+      }
+    }
+
     try {
       fullArchive = await resolveArchiveByIdentity(fullIdentity, env);
     } catch (error) {
       cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
       if (cacheEntry) {
-        return {
-          rootDir: cacheEntry.rootDir,
-          source: 'cache',
+        const remoteFailure = createRemoteFailure(
+          'fullTarball',
+          normalizeErrorMessage(error),
+          {
+            packageName: fullIdentity.packageName,
+            packageVersion: fullIdentity.version,
+            integrity: fullIdentity.integrity,
+          },
+        );
+        return buildCatalogResolutionFromCache({
           selector,
-          sidecarManifestPackage: target.sidecarManifestPackage,
-          fullCatalog: buildFullCatalogEvidence(
-            { source: 'cache' },
-            target.manifest,
-            cacheEntry.metadata.manifestDigest,
-            target.resolutionSource,
-          ),
-          channel: target.manifest.channel,
-          catalogVersion: target.manifest.catalogVersion,
-          minAwVersion: target.manifest.compatibility.aw.minVersion,
-          latestCatalog: target.latestCatalog,
-          latestCatalogBlocked: target.latestCatalogBlocked,
-          historySchemaVersion: target.historySchemaVersion,
+          target,
+          cacheEntry,
           cacheFallback: {
             used: true,
             source: 'currentCatalogCache',
@@ -1006,17 +1056,9 @@ async function resolveValidatedCatalogRoot(
               target.resolutionSource,
             ),
           },
-          remoteFailure: createRemoteFailure(
-            'fullTarball',
-            normalizeErrorMessage(error),
-            {
-              packageName: fullIdentity.packageName,
-              packageVersion: fullIdentity.version,
-              integrity: fullIdentity.integrity,
-            },
-          ),
+          remoteFailure,
           reason: normalizeErrorMessage(error),
-        };
+        });
       }
 
       throwCatalogResolutionFailure({
@@ -1057,23 +1099,21 @@ async function resolveValidatedCatalogRoot(
     } catch (error) {
       cacheEntry = await readCurrentCatalogCacheEntry(cacheIdentity, env);
       if (cacheEntry) {
-        return {
-          rootDir: cacheEntry.rootDir,
-          source: 'cache',
+        const remoteFailure = createRemoteFailure(
+          error instanceof Error && error.message.includes('artifactDigest mismatch')
+            ? 'artifactDigest'
+            : 'fullManifest',
+          normalizeErrorMessage(error),
+          {
+            packageName: fullIdentity.packageName,
+            packageVersion: fullIdentity.version,
+            integrity: fullIdentity.integrity,
+          },
+        );
+        return buildCatalogResolutionFromCache({
           selector,
-          sidecarManifestPackage: target.sidecarManifestPackage,
-          fullCatalog: buildFullCatalogEvidence(
-            { source: 'cache' },
-            target.manifest,
-            cacheEntry.metadata.manifestDigest,
-            target.resolutionSource,
-          ),
-          channel: target.manifest.channel,
-          catalogVersion: target.manifest.catalogVersion,
-          minAwVersion: target.manifest.compatibility.aw.minVersion,
-          latestCatalog: target.latestCatalog,
-          latestCatalogBlocked: target.latestCatalogBlocked,
-          historySchemaVersion: target.historySchemaVersion,
+          target,
+          cacheEntry,
           cacheFallback: {
             used: true,
             source: 'currentCatalogCache',
@@ -1088,19 +1128,9 @@ async function resolveValidatedCatalogRoot(
               target.resolutionSource,
             ),
           },
-          remoteFailure: createRemoteFailure(
-            error instanceof Error && error.message.includes('artifactDigest mismatch')
-              ? 'artifactDigest'
-              : 'fullManifest',
-            normalizeErrorMessage(error),
-            {
-              packageName: fullIdentity.packageName,
-              packageVersion: fullIdentity.version,
-              integrity: fullIdentity.integrity,
-            },
-          ),
+          remoteFailure,
           reason: normalizeErrorMessage(error),
-        };
+        });
       }
 
       throwCatalogResolutionFailure({
@@ -1267,16 +1297,23 @@ export async function resolveCurrentCatalog(
   options: ResolveCurrentCatalogOptions = {},
 ): Promise<CatalogResolution> {
   const selector = await resolveEffectiveCatalogSelector(env, options);
-  const memoKey = buildCurrentCatalogMemoKey(selector, env);
+  const memoKey = buildCurrentCatalogMemoKey(selector, env, options);
   const memoized = currentCatalogResolutionMemo.get(memoKey);
   if (memoized) {
     return memoized;
   }
 
-  const resolution = resolveCurrentCatalogUncached(selector, env);
+  const resolution = resolveCurrentCatalogUncached(selector, env, options);
   currentCatalogResolutionMemo.set(memoKey, resolution);
   try {
-    return await resolution;
+    const resolved = await resolution;
+    if (options.forceRefresh === true && resolved.source !== 'cache') {
+      currentCatalogResolutionMemo.set(
+        buildCurrentCatalogMemoKey(selector, env, { ...options, forceRefresh: false }),
+        Promise.resolve(resolved),
+      );
+    }
+    return resolved;
   } catch (error) {
     currentCatalogResolutionMemo.delete(memoKey);
     throw error;

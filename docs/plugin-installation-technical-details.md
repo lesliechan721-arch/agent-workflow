@@ -49,7 +49,7 @@
 | sidecar catalog manifest | `@yiliang/aw-plugins-manifest` 中的 `catalog-manifest.json` | CLI 先用它判断 channel、catalog version、最低 CLI 版本、history 和 digest |
 | full catalog package | `@yiliang/aw-plugins` 的完整 artifact 包 | 兼容性通过后，CLI 从这里取得当前 catalog 快照的插件 artifact |
 | current catalog | 当前 CLI 能看到的插件清单和 manifest 视图 | `install`、`status`、`repair` 都先用它判断插件当前定义 |
-| catalog cache | 按 selector / channel / catalog version 隔离的本地 catalog 和 artifact 缓存 | 远程不可用或校验失败且已解析出允许使用的 catalog identity 后，作为合法 fallback |
+| catalog cache | 按 selector / channel / catalog version 隔离的本地 catalog 和 artifact 缓存 | 已解析出允许使用的 catalog identity 后，作为快路径；远程不可用或校验失败时作为合法 fallback |
 | active local marketplace/runtime view | `~/.aw` 中给 native 平台消费的当前 runtime 视图 | user-scope native 写命令调用平台前必须 materialize 并校验它和本次 current catalog 一致 |
 | `~/.aw` / AW_HOME | 本机 AW runtime、catalog cache、active view 和跨 scope 状态目录 | 给 native runtime 提供可注册的 marketplace，也保存依赖索引、historical runtime 等 AW 状态 |
 | install record | 某个 plugin + platform + scope + location 在本机的安装真值 | 后续判断“这里是否安装过”“卸载时应该清什么”主要看它 |
@@ -121,7 +121,7 @@ flowchart TD
 | 源码层 | 插件作者 | AW manifest、skills、MCP、slash commands、脚本 | 作为 build 输入，不直接写入平台目录 |
 | catalog staging | `pnpm build` / catalog 发布脚本 | AW 源码 manifest、Claude manifest、Codex manifest、artifact digest 输入 | catalog 包生成输入，不作为 CLI tarball 兜底 |
 | sidecar / full catalog | catalog 发布脚本 | sidecar manifest、history、完整 artifact 快照和 digest 元数据 | current catalog 解析和远程插件 artifact 来源 |
-| 本机 runtime | `aw init` / `aw install` / `aw upgrade` | `~/.aw/` 下的 catalog cache、active runtime view 和跨 scope runtime 状态 | 供 native marketplace、cache fallback 和 shared runtime 使用 |
+| 本机 runtime | `aw init` / `aw install` / `aw upgrade` | `~/.aw/` 下的 catalog cache、active runtime view 和跨 scope runtime 状态 | 供 native marketplace、cache 快路径 / fallback 和 shared runtime 使用 |
 | 平台 scope | `aw install` / `aw repair` / `aw reinstall` | Claude 或 Codex 的原生状态、repo-visible artifacts、install-state 记录 | 形成当前机器和当前项目真正可用的安装结果 |
 
 这里有两个容易混淆的真值：
@@ -154,11 +154,11 @@ scope 本地 install record 才是安装真值。record 按 plugin + platform + 
 
 current catalog 是每条命令本次使用的插件索引视图。它由 catalog selector 决定，selector 只有三类：默认 channel、显式 `--catalog-channel <dist-tag>` 和显式 `--catalog-version <semver>`；显式 channel 与 exact version 互斥，并且只影响当前命令或本次 `aw init` 预热，不修改持久默认 channel。
 
-解析顺序固定为先读 sidecar manifest，再取 full catalog。稳定版 CLI 默认读取 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认读取 `@yiliang/aw-plugins-manifest@beta`。sidecar manifest 说明目标 catalog 兼容当前 CLI 后，CLI 才能下载或使用同版本 `@yiliang/aw-plugins`，并校验 sidecar/full manifest 一致性、npm integrity 和 artifact digest。
+解析顺序固定为先读 sidecar manifest，再解析 full catalog identity。稳定版 CLI 默认读取 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认读取 `@yiliang/aw-plugins-manifest@beta`。sidecar manifest 说明目标 catalog 兼容当前 CLI 后，CLI 会确认同版本 `@yiliang/aw-plugins` 的 identity；如果本地已有 selector、channel / exact catalog version、schema、integrity 和最低 CLI 版本都匹配的 cache，就直接使用该 cache，否则才下载 full catalog，并校验 sidecar/full manifest 一致性、npm integrity 和 artifact digest。
 
 latest catalog 被当前 CLI 版本阻止时，CLI 不会写入这个不兼容 catalog，也不会用 full catalog 或 npm metadata 猜测历史版本。它只能使用 sidecar history 在同一轨道内查找仍支持当前 CLI 的最新历史 catalog；history 缺失、schema 不支持、非法或不可获取时固定失败为 `catalogHistoryUnavailable`，有效 history 确认没有兼容 catalog 时固定失败为 `awVersionTooLow`。
 
-cache fallback 只在“已经解析出允许使用的 catalog identity”之后生效。远程下载、完整包校验或 artifact digest 失败时，如果本地有与本次 selector、channel / exact catalog version、schema、integrity 和 `minAwVersion <= current CLI` 都匹配的缓存，CLI 可以使用该 cache，并在 verbose / JSON 中同时暴露 `cacheFallback` 和原始远程错误。稳定版默认 `latest` 不能借用 beta cache，显式 exact version 也不能退到任意旧缓存。远程不可用且没有匹配 cache 时，需要 current catalog 的命令失败为 `catalogUnavailable`。
+cache 快路径和 fallback 都只在“已经解析出允许使用的 catalog identity”之后生效。普通解析会先尝试复用匹配 cache，跳过 full catalog 下载和逐插件 digest 校验；`aw init --force` 会绕过这条快路径。远程下载、完整包校验或 artifact digest 失败时，如果本地有与本次 selector、channel / exact catalog version、schema、integrity 和 `minAwVersion <= current CLI` 都匹配的缓存，CLI 可以继续使用该 cache，并在 verbose / JSON 中同时暴露 `cacheFallback` 和原始远程错误。稳定版默认 `latest` 不能借用 beta cache，显式 exact version 也不能退到任意旧缓存。远程不可用且没有匹配 cache 时，需要 current catalog 的命令失败为 `catalogUnavailable`。
 
 `aw init` 只是预热这套 catalog/cache。它不安装插件、不升级插件、不提交 install record，也不 materialize active local marketplace/runtime view。只有安装、升级、重装或 native repair 这类需要 user-scope native runtime 的写命令，才会在平台 native 调用前把本次 current catalog materialize 成 active view，并校验 active view 元数据和本次 selector / catalog identity 一致。
 
