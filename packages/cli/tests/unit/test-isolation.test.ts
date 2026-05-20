@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   assertIsolatedTestEnv,
+  assertPathWithinWritableRoots,
   assertPathWithinReadableRoots,
   assertSafeTestCwd,
   createIsolatedTestEnv,
@@ -47,6 +48,10 @@ describe('test isolation helpers', () => {
       isolated.layout.rootDir,
       '.aw-local-marketplace-staging',
     ));
+    expect(isolated.layout.localMarketplaceBackupRoot).toBe(path.join(
+      isolated.layout.rootDir,
+      '.aw-local-marketplace-backups',
+    ));
     expect(isolated.layout.codexHomeDir).toBe(path.join(isolated.layout.rootDir, 'codex-home'));
     expect(isolated.layout.claudeHomeDir).toBe(path.join(isolated.layout.rootDir, 'claude-home'));
     expect(isolated.layout.xdgConfigHomeDir).toBe(path.join(isolated.layout.rootDir, 'xdg-config'));
@@ -74,10 +79,15 @@ describe('test isolation helpers', () => {
 
     await expect(fs.pathExists(isolated.layout.npmUserConfigPath)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.localMarketplaceStagingRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(isolated.layout.localMarketplaceBackupRoot)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.debugLogsDir)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.fixtureCwd)).resolves.toBe(true);
 
     expect(() => assertIsolatedTestEnv(isolated.env, isolated.rootRegistry)).not.toThrow();
+    expect(() => assertPathWithinWritableRoots(isolated.rootRegistry, {
+      path: isolated.layout.localMarketplaceBackupRoot,
+      source: 'local marketplace backup root',
+    })).not.toThrow();
     expect(() => assertSafeTestCwd(isolated.layout.fixtureCwd, isolated.rootRegistry)).not.toThrow();
   });
 

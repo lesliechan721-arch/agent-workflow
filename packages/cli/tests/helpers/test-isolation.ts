@@ -21,6 +21,7 @@ export interface TestIsolationLayout {
   homeDir: string;
   awHomeDir: string;
   localMarketplaceStagingRoot: string;
+  localMarketplaceBackupRoot: string;
   codexHomeDir: string;
   claudeHomeDir: string;
   xdgConfigHomeDir: string;
@@ -65,6 +66,7 @@ function buildIsolationLayout(rootDir: string): TestIsolationLayout {
     homeDir: path.join(rootDir, 'home'),
     awHomeDir: path.join(rootDir, 'aw-home'),
     localMarketplaceStagingRoot: path.join(rootDir, '.aw-local-marketplace-staging'),
+    localMarketplaceBackupRoot: path.join(rootDir, '.aw-local-marketplace-backups'),
     codexHomeDir: path.join(rootDir, 'codex-home'),
     claudeHomeDir: path.join(rootDir, 'claude-home'),
     xdgConfigHomeDir: path.join(rootDir, 'xdg-config'),
@@ -105,6 +107,7 @@ async function ensureIsolationLayout(layout: TestIsolationLayout): Promise<void>
     fs.ensureDir(layout.homeDir),
     fs.ensureDir(layout.awHomeDir),
     fs.ensureDir(layout.localMarketplaceStagingRoot),
+    fs.ensureDir(layout.localMarketplaceBackupRoot),
     fs.ensureDir(layout.codexHomeDir),
     fs.ensureDir(layout.claudeHomeDir),
     fs.ensureDir(layout.xdgConfigHomeDir),
@@ -125,6 +128,7 @@ function registerDefaultWritableRoots(
   registerWritableStateRoot(registry, layout.homeDir, 'HOME/USERPROFILE');
   registerWritableStateRoot(registry, layout.awHomeDir, 'AW_HOME');
   registerWritableStateRoot(registry, layout.localMarketplaceStagingRoot, 'local marketplace staging');
+  registerWritableStateRoot(registry, layout.localMarketplaceBackupRoot, 'local marketplace backup');
   registerWritableStateRoot(registry, layout.codexHomeDir, 'AW_CODEX_HOME');
   registerWritableStateRoot(registry, layout.claudeHomeDir, 'AW_CLAUDE_HOME');
   registerWritableStateRoot(registry, layout.xdgConfigHomeDir, 'XDG_CONFIG_HOME');
