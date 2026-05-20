@@ -31,6 +31,7 @@ export async function installCurrentSmokeDistIsolationBridge(): Promise<void> {
 
 beforeEach(async () => {
   registerSmokeReadonlyFixtureRoots();
+  await installCurrentSmokeDistIsolationBridge();
 });
 
 afterEach(async () => {

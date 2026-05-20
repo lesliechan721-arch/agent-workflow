@@ -31,6 +31,7 @@ import {
   resolveCurrentCatalogCacheEntryDir,
   resolveCurrentCatalogCacheStagingDir,
   resolveAwHome,
+  resolveCliTempRoot,
   resolveCliPackageRoot,
   resolveEmbeddedPluginsRoot,
 } from './paths.js';
@@ -41,6 +42,7 @@ import {
   tryParseStrictSemVer,
 } from './manifest.js';
 import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -1152,10 +1154,34 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
   return { warnings };
 }
 
-async function replaceDirectoryAtomically(targetDir: string, stagingDir: string): Promise<void> {
-  const parentDir = path.dirname(targetDir);
-  const backupDir = path.join(parentDir, `.aw-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+function resolveLocalMarketplaceTempRoot(env: NodeJS.ProcessEnv): string {
+  return assertTestWritablePath(
+    path.join(resolveCliTempRoot(env), 'local-marketplace'),
+    'local marketplace temporary root',
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记本地 marketplace 临时目录根。',
+  );
+}
+
+function createLocalMarketplaceBackupDirPath(env: NodeJS.ProcessEnv): string {
+  return assertTestWritablePath(
+    path.join(
+      resolveLocalMarketplaceTempRoot(env),
+      'backups',
+      `.aw-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    ),
+    'local marketplace backup dir',
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记本地 marketplace backup 临时目录根。',
+  );
+}
+
+async function replaceDirectoryAtomically(
+  targetDir: string,
+  stagingDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const backupDir = createLocalMarketplaceBackupDirPath(env);
   const targetExists = await fs.pathExists(targetDir);
+  await fs.ensureDir(path.dirname(backupDir));
 
   try {
     if (targetExists) {
@@ -1274,9 +1300,13 @@ export async function initializeLocalMarketplace(
     });
   }
 
-  const parentDir = path.dirname(inspection.awHome);
-  await fs.ensureDir(parentDir);
-  const stagingDir = await fs.mkdtemp(path.join(parentDir, '.aw-staging-'));
+  const stagingParent = assertTestWritablePath(
+    path.join(resolveLocalMarketplaceTempRoot(env), 'staging'),
+    'local marketplace staging root',
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记本地 marketplace staging 临时目录根。',
+  );
+  await fs.ensureDir(stagingParent);
+  const stagingDir = await fs.mkdtemp(path.join(stagingParent, '.aw-staging-'));
   const warnings: string[] = [];
 
   try {
@@ -1306,7 +1336,7 @@ export async function initializeLocalMarketplace(
       bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);
-    await replaceDirectoryAtomically(inspection.awHome, stagingDir);
+    await replaceDirectoryAtomically(inspection.awHome, stagingDir, env);
   } catch (error) {
     await fs.remove(stagingDir);
     throw error;

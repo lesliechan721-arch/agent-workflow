@@ -34,6 +34,17 @@ function assertWritableCatalogCachePathForTests(
   );
 }
 
+function assertWritableTempPathForTests(
+  targetPath: string,
+  source: string,
+): string {
+  return assertTestWritablePath(
+    targetPath,
+    source,
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记显式覆盖的临时目录根。',
+  );
+}
+
 export function resolveCliPackageRoot(): string {
   let currentDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -151,6 +162,23 @@ export function resolveCurrentCatalogCacheStagingDir(
   return assertWritableCatalogCachePathForTests(
     path.join(resolveCurrentCatalogCacheRoot(env), 'staging'),
     'current catalog cache staging',
+  );
+}
+
+export function resolveCliTempRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const tempDir = env.TMPDIR || env.TEMP || env.TMP || os.tmpdir();
+  const source = env.TMPDIR
+    ? 'TMPDIR'
+    : env.TEMP
+      ? 'TEMP'
+      : env.TMP
+        ? 'TMP'
+        : 'TMPDIR fallback (os.tmpdir())';
+  return assertWritableTempPathForTests(
+    path.join(assertWritableTempPathForTests(tempDir, source), 'aw-cli'),
+    'CLI temporary state root',
   );
 }
 

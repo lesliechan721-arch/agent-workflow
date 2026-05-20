@@ -186,9 +186,8 @@ afterEach(async () => {
 });
 
 describe('catalog fetch smoke', () => {
-  it('keeps smoke fetch/native/app-server guards active for repo dist imports', async () => {
+  it('keeps smoke dist guards active for repo dist imports without manual bridge setup', async () => {
     const root = repoRoot();
-    await installCurrentSmokeDistIsolationBridge();
 
     const distMarketplace = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
@@ -199,6 +198,7 @@ describe('catalog fetch smoke', () => {
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'paths.js')).href,
     ) as {
       getEmbeddedPluginsRootOverrideForTests: () => string | null;
+      resolveAwHome: (env?: NodeJS.ProcessEnv) => string;
     };
     const distNativeCli = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'native-cli.js')).href,
@@ -223,6 +223,10 @@ describe('catalog fetch smoke', () => {
 
     expect(distMarketplace.hasCatalogPackageSourceOverrideForTests()).toBe(false);
     expect(distPaths.getEmbeddedPluginsRootOverrideForTests()).toBeNull();
+    expect(() => distPaths.resolveAwHome({
+      ...process.env,
+      AW_HOME: path.join(root, 'packages', 'cli', 'dist', '.aw-smoke-readonly'),
+    })).toThrow('Unsafe test write path');
     expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
     const guardedFetch = globalThis.fetch as typeof fetch;
     await expect(guardedFetch('https://example.com')).rejects.toThrow('Network access is disabled in tests.');

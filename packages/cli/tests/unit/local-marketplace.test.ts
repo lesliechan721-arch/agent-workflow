@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import YAML from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getCodexNativeRecoveryBreadcrumbPath,
@@ -34,6 +34,8 @@ import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { TestPathFenceError } from '../helpers/test-isolation.js';
 import {
   getSourceTestRepositoryCwd,
+  registerCurrentTestReadonlyFixtureRoot,
+  registerCurrentTestWritableStateRoot,
   runWithCurrentRepositoryCwdAsReadOnly,
 } from '../setup/test-isolation.js';
 
@@ -192,6 +194,54 @@ describe('local marketplace', () => {
         },
       });
     }, { repositoryCwd });
+  });
+
+  it('uses TMPDIR-backed staging and backup roots when rebuilding a custom AW_HOME', async () => {
+    const { embeddedRoot } = await makeWorkspace();
+    const guardedRoot = await fs.mkdtemp(path.join(
+      getSourceTestRepositoryCwd(),
+      '.aw-local-marketplace-guarded-',
+    ));
+    tempDirs.push(guardedRoot);
+    registerCurrentTestReadonlyFixtureRoot(guardedRoot, 'guarded local marketplace parent');
+    const awHome = registerCurrentTestWritableStateRoot(
+      path.join(guardedRoot, 'aw-home'),
+      'guarded local marketplace AW_HOME',
+    );
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const observedMkdtempPrefixes: string[] = [];
+    const observedMoveTargets: string[] = [];
+    const realMkdtemp: typeof fs.mkdtemp = fs.mkdtemp.bind(fs);
+    const realMove: typeof fs.move = fs.move.bind(fs);
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtemp').mockImplementation(async (...args) => {
+      observedMkdtempPrefixes.push(String(args[0]));
+      return realMkdtemp(...args);
+    });
+    const moveSpy = vi.spyOn(fs, 'move').mockImplementation(async (...args) => {
+      observedMoveTargets.push(String(args[1]));
+      return realMove(...args);
+    });
+
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    try {
+      await initializeLocalMarketplace({ force: true, env });
+      await initializeLocalMarketplace({ force: true, env });
+    } finally {
+      mkdtempSpy.mockRestore();
+      moveSpy.mockRestore();
+    }
+
+    const tempRoot = path.join(String(env.TMPDIR), 'aw-cli', 'local-marketplace');
+    expect(observedMkdtempPrefixes).toEqual(expect.arrayContaining([
+      expect.stringContaining(path.join(tempRoot, 'staging', '.aw-staging-')),
+    ]));
+    expect(observedMoveTargets).toEqual(expect.arrayContaining([
+      expect.stringContaining(path.join(tempRoot, 'backups', '.aw-backup-')),
+    ]));
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
   it('writes and reads isolated current catalog cache entries', async () => {

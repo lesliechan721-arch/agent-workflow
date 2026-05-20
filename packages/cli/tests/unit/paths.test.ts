@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getClaudeHome,
   getCodexHome,
+  resolveCliTempRoot,
   resolveClaudeProjectKey,
   resolveAwHome,
   resolveCurrentCatalogCacheEntriesDir,
@@ -41,6 +42,7 @@ describe('project key paths', () => {
     expect(resolveCurrentCatalogCacheEntriesDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries'));
     expect(resolveCurrentCatalogCacheEntryDir('cache-key', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries', 'cache-key'));
     expect(resolveCurrentCatalogCacheStagingDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'staging'));
+    expect(resolveCliTempRoot(process.env)).toBe(path.join(isolation.layout.tmpDir, 'aw-cli'));
   });
 
   it('blocks real-home fallbacks and read-only home overrides while the test fence is installed', () => {
