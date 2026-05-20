@@ -81,12 +81,21 @@ function resolveCodexManifestSkillsDeclaration(manifest: Record<string, unknown>
     : CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT;
 }
 
+function hasCodexManifestSkillsDeclaration(manifest: Record<string, unknown>): boolean {
+  return typeof manifest.skills === 'string' && manifest.skills.trim() !== '';
+}
+
 function getCodexPlatformPluginManifestPath(pluginRoot: string): string {
   return path.join(pluginRoot, '.codex-plugin', 'plugin.json');
 }
 
 function resolveCodexManifestSkillsRoot(pluginRoot: string, manifestSkills: string): string {
   return path.join(pluginRoot, stripDotSlash(manifestSkills));
+}
+
+async function pathIsDirectory(filePath: string): Promise<boolean> {
+  const stats = await fs.stat(filePath).catch(() => null);
+  return stats?.isDirectory() === true;
 }
 
 function uniquePaths(paths: string[]): string[] {
@@ -114,37 +123,37 @@ export async function stageLocalMarketplaceCodexDynamicSkills(
     getLocalMarketplacePluginRoot(options.rootDir, options.pluginName),
   );
   const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
+  const hasDeclaredSkills = hasCodexManifestSkillsDeclaration(manifest);
   const manifestSkills = resolveCodexManifestSkillsDeclaration(manifest);
-
-  if (manifest.skills !== manifestSkills) {
-    await writeJsonFile(manifestPath, {
-      ...manifest,
-      skills: manifestSkills,
-    });
-  }
 
   const runtimeSkillsRoot = getLocalMarketplaceCodexSkillsRoot(options.rootDir, options.pluginName);
   const manifestSkillsRoot = resolveCodexManifestSkillsRoot(
     getLocalMarketplacePluginRoot(options.rootDir, options.pluginName),
     manifestSkills,
   );
-  if (path.resolve(runtimeSkillsRoot) === path.resolve(manifestSkillsRoot)) {
-    return;
+
+  if (path.resolve(runtimeSkillsRoot) !== path.resolve(manifestSkillsRoot)) {
+    for (const skillKey of [...new Set(options.skillKeys)].sort()) {
+      const sourceSkillRoot = path.join(runtimeSkillsRoot, skillKey);
+      const targetSkillRoot = path.join(manifestSkillsRoot, skillKey);
+      if (!(await fs.pathExists(sourceSkillRoot))) {
+        await fs.remove(targetSkillRoot);
+        continue;
+      }
+
+      await fs.remove(targetSkillRoot);
+      await fs.ensureDir(path.dirname(targetSkillRoot));
+      await fs.copy(sourceSkillRoot, targetSkillRoot, {
+        overwrite: true,
+        errorOnExist: false,
+      });
+    }
   }
 
-  for (const skillKey of [...new Set(options.skillKeys)].sort()) {
-    const sourceSkillRoot = path.join(runtimeSkillsRoot, skillKey);
-    const targetSkillRoot = path.join(manifestSkillsRoot, skillKey);
-    if (!(await fs.pathExists(sourceSkillRoot))) {
-      await fs.remove(targetSkillRoot);
-      continue;
-    }
-
-    await fs.remove(targetSkillRoot);
-    await fs.ensureDir(path.dirname(targetSkillRoot));
-    await fs.copy(sourceSkillRoot, targetSkillRoot, {
-      overwrite: true,
-      errorOnExist: false,
+  if (!hasDeclaredSkills && await pathIsDirectory(manifestSkillsRoot)) {
+    await writeJsonFile(manifestPath, {
+      ...manifest,
+      skills: manifestSkills,
     });
   }
 }

@@ -23,6 +23,7 @@ import {
   readCurrentCatalogCacheEntry,
   readInstalledLedger,
   resolveReadOnlyCatalogResolution,
+  stageLocalMarketplaceCodexDynamicSkills,
   validateLocalMarketplaceLayout,
   writeCurrentCatalogCacheEntry,
   writeInstalledLedger,
@@ -1134,6 +1135,57 @@ describe('local marketplace', () => {
     ))).resolves.toBe(false);
     expect(await listSkillBackupDirs(awHome)).toEqual([]);
     expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
+  });
+
+  it('does not add a Codex skills declaration when staging dynamic-only plugins without runtime skills', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace(
+      (manifest) => {
+        delete manifest.skills;
+        manifest.skillTriggers = {
+          'generated-commit': {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        };
+        manifest.artifacts = {
+          targets: [{
+            id: 'commit-skill',
+            platform: 'codex',
+            scopes: ['user'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'generated-commit',
+          }],
+        };
+      },
+      async (repoRoot) => {
+        await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    await stageLocalMarketplaceCodexDynamicSkills({
+      rootDir: awHome,
+      pluginName: 'git-commit',
+      skillKeys: ['generated-commit'],
+    });
+
+    await expect(fs.pathExists(path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+    ))).resolves.toBe(false);
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.not.toHaveProperty('skills');
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
   it('replays retained Codex user dynamic skills without adding a static skills root to the platform manifest', async () => {
