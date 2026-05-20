@@ -319,6 +319,27 @@ function resolveCurrentCatalogUncached(
   })();
 }
 
+async function readCurrentCatalogMemo(
+  memoKey: string,
+): Promise<CatalogResolution | null> {
+  const memoized = currentCatalogResolutionMemo.get(memoKey);
+  if (!memoized) {
+    return null;
+  }
+
+  try {
+    const resolved = await memoized;
+    if (await fs.pathExists(resolved.rootDir)) {
+      return resolved;
+    }
+    currentCatalogResolutionMemo.delete(memoKey);
+    return null;
+  } catch (error) {
+    currentCatalogResolutionMemo.delete(memoKey);
+    throw error;
+  }
+}
+
 export function clearCurrentCatalogResolutionMemoForTests(): void {
   currentCatalogResolutionMemo.clear();
 }
@@ -1298,8 +1319,19 @@ export async function resolveCurrentCatalog(
   options: ResolveCurrentCatalogOptions = {},
 ): Promise<CatalogResolution> {
   const selector = await resolveEffectiveCatalogSelector(env, options);
+  if (options.forceRefresh === true) {
+    const resolved = await resolveCurrentCatalogUncached(selector, env, options);
+    if (resolved.source !== 'cache') {
+      currentCatalogResolutionMemo.set(
+        buildCurrentCatalogMemoKey(selector, env, { ...options, forceRefresh: false }),
+        Promise.resolve(resolved),
+      );
+    }
+    return resolved;
+  }
+
   const memoKey = buildCurrentCatalogMemoKey(selector, env, options);
-  const memoized = currentCatalogResolutionMemo.get(memoKey);
+  const memoized = await readCurrentCatalogMemo(memoKey);
   if (memoized) {
     return memoized;
   }
@@ -1307,14 +1339,7 @@ export async function resolveCurrentCatalog(
   const resolution = resolveCurrentCatalogUncached(selector, env, options);
   currentCatalogResolutionMemo.set(memoKey, resolution);
   try {
-    const resolved = await resolution;
-    if (options.forceRefresh === true && resolved.source !== 'cache') {
-      currentCatalogResolutionMemo.set(
-        buildCurrentCatalogMemoKey(selector, env, { ...options, forceRefresh: false }),
-        Promise.resolve(resolved),
-      );
-    }
-    return resolved;
+    return await resolution;
   } catch (error) {
     currentCatalogResolutionMemo.delete(memoKey);
     throw error;

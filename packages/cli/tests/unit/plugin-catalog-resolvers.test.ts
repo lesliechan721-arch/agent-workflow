@@ -22,6 +22,9 @@ import {
   type CatalogPackageArchiveIdentity,
   type CatalogPackageSource,
 } from '../../src/utils/marketplace.js';
+import {
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -265,6 +268,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
+  setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_CLI_VERSION;
   delete process.env.AW_CATALOG_CHANNEL;
   delete process.env.AW_CATALOG_VERSION;
@@ -427,6 +431,66 @@ describe('plugin catalog resolvers', () => {
     const second = await resolveCurrentCatalog(env);
 
     expect(second).toBe(first);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+  });
+
+  it('drops current catalog process memo when the cached root is removed', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const operations: string[] = [];
+
+    setEmbeddedPluginsRootOverrideForTests(catalogPackage.fullRoot);
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const first = await resolveCurrentCatalog(env);
+    await expect(fs.pathExists(first.rootDir)).resolves.toBe(true);
+
+    await localMarketplaceModule.initializeLocalMarketplace({ force: true, env });
+    await expect(fs.pathExists(first.rootDir)).resolves.toBe(false);
+
+    operations.length = 0;
+    const second = await resolveCurrentCatalog(env);
+
+    expect(second).not.toBe(first);
+    await expect(fs.pathExists(second.rootDir)).resolves.toBe(true);
     expect(operations).toEqual([
       'identity:@yiliang/aw-plugins-manifest:latest',
       'download:@yiliang/aw-plugins-manifest:1.0.0',
@@ -687,6 +751,52 @@ describe('plugin catalog resolvers', () => {
       },
       remoteFailure: {
         stage: 'fullTarball',
+      },
+    });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+
+    operations.length = 0;
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    await expect(resolveCurrentCatalog(env, { forceRefresh: true })).resolves.toMatchObject({
+      source: 'remote',
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+      cacheFallback: {
+        used: false,
       },
     });
     expect(operations).toEqual([
