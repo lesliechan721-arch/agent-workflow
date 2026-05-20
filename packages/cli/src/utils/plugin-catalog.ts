@@ -377,6 +377,64 @@ function memoizedResolutionMatchesTarget(
   );
 }
 
+async function validateMemoizedCatalogResolutionRoot(
+  resolved: CatalogResolution,
+  target?: ResolvedCatalogTarget,
+): Promise<boolean> {
+  const sidecarManifestPackage = resolved.sidecarManifestPackage;
+  if (!sidecarManifestPackage) {
+    return false;
+  }
+
+  try {
+    if (target) {
+      await validateMaterializedCatalog({
+        manifest: target.manifest,
+        sidecarManifestText: target.manifestText,
+        rootDir: resolved.rootDir,
+      });
+      return true;
+    }
+
+    if (
+      resolved.channel === undefined ||
+      resolved.catalogVersion === undefined ||
+      resolved.minAwVersion === undefined
+    ) {
+      return false;
+    }
+
+    const manifestPath = path.join(resolved.rootDir, CURRENT_CATALOG_MANIFEST_FILE);
+    const manifestText = await fs.readFile(manifestPath, 'utf8');
+    if (calculateManifestTextDigest(manifestText) !== sidecarManifestPackage.manifestDigest) {
+      return false;
+    }
+
+    const manifest = validateCatalogManifest(JSON.parse(manifestText) as unknown);
+    if (
+      manifest.channel !== resolved.channel ||
+      manifest.catalogVersion !== resolved.catalogVersion ||
+      manifest.compatibility.aw.minVersion !== resolved.minAwVersion ||
+      (
+        resolved.historySchemaVersion !== undefined &&
+        resolved.historySchemaVersion !== null &&
+        manifest.history.schemaVersion !== resolved.historySchemaVersion
+      )
+    ) {
+      return false;
+    }
+
+    await validateMaterializedCatalog({
+      manifest,
+      sidecarManifestText: manifestText,
+      rootDir: resolved.rootDir,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readCurrentCatalogMemo(
   memoKey: string,
   selector: CatalogSelector,
@@ -402,6 +460,12 @@ async function readCurrentCatalogMemo(
     }
 
     if (resolved.source === 'local' || selector.kind === 'exactVersion') {
+      if (!(await validateMemoizedCatalogResolutionRoot(resolved))) {
+        currentCatalogResolutionMemo.delete(memoKey);
+        return {
+          resolution: null,
+        };
+      }
       return {
         resolution: resolved,
       };
@@ -415,6 +479,12 @@ async function readCurrentCatalogMemo(
         currentCatalogResolutionMemo.delete(memoKey);
         throw error;
       }
+      if (!(await validateMemoizedCatalogResolutionRoot(resolved))) {
+        currentCatalogResolutionMemo.delete(memoKey);
+        return {
+          resolution: null,
+        };
+      }
       currentCatalogResolutionMemo.delete(memoKey);
       return {
         resolution: resolved,
@@ -422,6 +492,13 @@ async function readCurrentCatalogMemo(
     }
 
     if (memoizedResolutionMatchesTarget(resolved, target)) {
+      if (!(await validateMemoizedCatalogResolutionRoot(resolved, target))) {
+        currentCatalogResolutionMemo.delete(memoKey);
+        return {
+          resolution: null,
+          target,
+        };
+      }
       return {
         resolution: resolved,
       };

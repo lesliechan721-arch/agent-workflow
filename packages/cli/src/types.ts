@@ -1170,6 +1170,12 @@ export interface LocalMarketplaceConfig {
   sourcePackage: string;
   sourceVersion: CliVersion;
   catalogSelector: CatalogSelector;
+  resolvedCatalog?: {
+    channel: CatalogChannel;
+    catalogVersion: CatalogVersion;
+    minAwVersion: CliVersion;
+    historySchemaVersion: number | null;
+  };
   bundleFingerprint: string;
 }
 

@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import type {
   CatalogChannel,
   CatalogResolution,
+  CatalogResolutionFailure,
   CatalogSelector,
   CatalogVersion,
   CliVersion,
@@ -468,6 +469,40 @@ function isCatalogSelector(value: unknown): value is CatalogSelector {
   return false;
 }
 
+function isLocalMarketplaceResolvedCatalog(
+  value: unknown,
+): value is NonNullable<LocalMarketplaceConfig['resolvedCatalog']> {
+  return (
+    isRecord(value) &&
+    isCatalogChannel(value.channel) &&
+    isStrictSemVerString(value.catalogVersion) &&
+    isStrictSemVerString(value.minAwVersion) &&
+    (value.historySchemaVersion === null || Number.isInteger(value.historySchemaVersion))
+  );
+}
+
+function resolveLocalMarketplaceResolvedCatalog(
+  value: Pick<
+    CatalogResolution | CatalogResolutionFailure,
+    'channel' | 'catalogVersion' | 'minAwVersion' | 'historySchemaVersion'
+  >,
+): NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null {
+  if (
+    value.channel === undefined ||
+    value.catalogVersion === undefined ||
+    value.minAwVersion === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    channel: value.channel,
+    catalogVersion: value.catalogVersion,
+    minAwVersion: value.minAwVersion,
+    historySchemaVersion: value.historySchemaVersion ?? null,
+  };
+}
+
 function resolveDefaultLocalMarketplaceCatalogSelector(cliVersion: CliVersion): CatalogSelector {
   return {
     kind: 'default',
@@ -481,9 +516,29 @@ function resolveDefaultLocalMarketplaceCatalogSelector(cliVersion: CliVersion): 
 function localMarketplaceCatalogSelectorMatches(
   config: LocalMarketplaceConfig,
   expectedSelector: CatalogSelector,
+  expectedResolvedCatalog?: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null,
 ): boolean {
-  return serializeCatalogSelectorForReuse(config.catalogSelector) ===
-    serializeCatalogSelectorForReuse(expectedSelector);
+  if (
+    serializeCatalogSelectorForReuse(config.catalogSelector) !==
+    serializeCatalogSelectorForReuse(expectedSelector)
+  ) {
+    return false;
+  }
+
+  if (
+    expectedSelector.kind === 'exactVersion' ||
+    expectedResolvedCatalog === undefined ||
+    expectedResolvedCatalog === null
+  ) {
+    return true;
+  }
+
+  return (
+    config.resolvedCatalog?.channel === expectedResolvedCatalog.channel &&
+    config.resolvedCatalog.catalogVersion === expectedResolvedCatalog.catalogVersion &&
+    config.resolvedCatalog.minAwVersion === expectedResolvedCatalog.minAwVersion &&
+    config.resolvedCatalog.historySchemaVersion === expectedResolvedCatalog.historySchemaVersion
+  );
 }
 
 function serializeCatalogSelectorForReuse(selector: CatalogSelector): string {
@@ -1022,6 +1077,7 @@ function isLocalMarketplaceConfig(value: unknown): value is LocalMarketplaceConf
     typeof value.sourcePackage === 'string' &&
     typeof value.sourceVersion === 'string' &&
     isCatalogSelector(value.catalogSelector) &&
+    (value.resolvedCatalog === undefined || isLocalMarketplaceResolvedCatalog(value.resolvedCatalog)) &&
     typeof value.bundleFingerprint === 'string'
   );
 }
@@ -1147,19 +1203,25 @@ async function inspectLocalMarketplaceState(
 
 async function resolveCurrentCatalogBundleRoot(
   env: NodeJS.ProcessEnv,
-): Promise<{ rootDir: string; selector: CatalogSelector | undefined }> {
+): Promise<{
+  rootDir: string;
+  selector: CatalogSelector | undefined;
+  resolvedCatalog: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null;
+}> {
   const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
   const catalog = await resolveCurrentCatalog(env);
   await validateBundleLayout(catalog.rootDir);
   return {
     rootDir: catalog.rootDir,
     selector: catalog.selector,
+    resolvedCatalog: resolveLocalMarketplaceResolvedCatalog(catalog),
   };
 }
 
 async function tryReuseExistingLocalMarketplace(
   env: NodeJS.ProcessEnv,
   expectedSelector: CatalogSelector,
+  expectedResolvedCatalog?: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null,
 ): Promise<EnsureLocalMarketplaceResult | null> {
   const awHome = resolveAwHome(env);
   const [packageInfo, config] = await Promise.all([
@@ -1171,7 +1233,7 @@ async function tryReuseExistingLocalMarketplace(
     !config ||
     config.sourcePackage !== packageInfo.name ||
     config.sourceVersion !== packageInfo.version ||
-    !localMarketplaceCatalogSelectorMatches(config, expectedSelector)
+    !localMarketplaceCatalogSelectorMatches(config, expectedSelector, expectedResolvedCatalog)
   ) {
     return null;
   }
@@ -1195,6 +1257,7 @@ export async function resolveReadOnlyCatalogResolution(
   const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
   let currentCatalogError: unknown = null;
   let fallbackSelector: CatalogSelector | null = null;
+  let fallbackResolvedCatalog: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null = null;
   try {
     return await resolveCurrentCatalog(env);
   } catch (error) {
@@ -1203,10 +1266,15 @@ export async function resolveReadOnlyCatalogResolution(
     }
     currentCatalogError = error;
     fallbackSelector = error.resolution.selector;
+    fallbackResolvedCatalog = resolveLocalMarketplaceResolvedCatalog(error.resolution);
   }
 
   if (fallbackSelector) {
-    const reusableMarketplace = await tryReuseExistingLocalMarketplace(env, fallbackSelector);
+    const reusableMarketplace = await tryReuseExistingLocalMarketplace(
+      env,
+      fallbackSelector,
+      fallbackResolvedCatalog,
+    );
     if (reusableMarketplace) {
       return {
         rootDir: reusableMarketplace.rootDir,
@@ -1508,12 +1576,14 @@ export async function initializeLocalMarketplace(
   const env = options.env ?? process.env;
   let bundleRootOverride: string | undefined;
   let resolvedCatalogSelector: CatalogSelector | undefined;
+  let resolvedCatalog: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null = null;
   const resolveCurrentCatalogWithLocalFallback = async (): Promise<EnsureLocalMarketplaceResult | null> => {
     const { isCatalogResolutionError } = await import('./plugin-catalog.js');
     try {
       const resolved = await resolveCurrentCatalogBundleRoot(env);
       bundleRootOverride = resolved.rootDir;
       resolvedCatalogSelector = resolved.selector;
+      resolvedCatalog = resolved.resolvedCatalog;
       return null;
     } catch (error) {
       if (
@@ -1524,6 +1594,7 @@ export async function initializeLocalMarketplace(
         const reusableMarketplace = await tryReuseExistingLocalMarketplace(
           env,
           error.resolution.selector,
+          resolveLocalMarketplaceResolvedCatalog(error.resolution),
         );
         if (reusableMarketplace) {
           return reusableMarketplace;
@@ -1571,7 +1642,11 @@ export async function initializeLocalMarketplace(
     validConfig &&
     inspection.sourceVersionStatus === 'equal' &&
     validConfig.bundleFingerprint === inspection.bundleFingerprint &&
-    localMarketplaceCatalogSelectorMatches(validConfig, expectedCatalogSelector) &&
+    localMarketplaceCatalogSelectorMatches(
+      validConfig,
+      expectedCatalogSelector,
+      resolvedCatalog,
+    ) &&
     inspection.layoutHealthy
   ) {
     return {
@@ -1618,6 +1693,7 @@ export async function initializeLocalMarketplace(
       sourcePackage: inspection.packageInfo.name,
       sourceVersion: inspection.packageInfo.version,
       catalogSelector: expectedCatalogSelector,
+      ...(resolvedCatalog ? { resolvedCatalog } : {}),
       bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);

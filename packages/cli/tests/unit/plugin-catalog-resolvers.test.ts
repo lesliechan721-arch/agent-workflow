@@ -814,6 +814,86 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
+  it('revalidates a memoized current catalog root before reusing it', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const operations: string[] = [];
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const first = await resolveCurrentCatalog(env);
+    expect(first).toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    await fs.remove(path.join(
+      first.rootDir,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'commit',
+      'SKILL.md',
+    ));
+    operations.length = 0;
+
+    const second = await resolveCurrentCatalog(env);
+
+    expect(second).not.toBe(first);
+    expect(second).toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+    await expect(fs.pathExists(path.join(
+      second.rootDir,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'commit',
+      'SKILL.md',
+    ))).resolves.toBe(true);
+  });
+
   it('partitions current catalog process memo by cwd', async () => {
     const firstWorkspace = await makeRepoWorkspace();
     const secondWorkspace = await makeRepoWorkspace();

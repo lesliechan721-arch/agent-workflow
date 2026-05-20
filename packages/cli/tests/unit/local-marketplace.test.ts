@@ -190,6 +190,21 @@ function createCatalogUnavailableError(selector: CatalogSelector): CatalogResolu
   });
 }
 
+async function writeLocalMarketplaceResolvedCatalog(
+  awHome: string,
+  resolvedCatalog: {
+    channel: 'latest' | 'beta';
+    catalogVersion: string;
+    minAwVersion: string;
+    historySchemaVersion: number | null;
+  },
+): Promise<void> {
+  const configPath = path.join(awHome, 'config.json');
+  const config = await fs.readJson(configPath) as Record<string, unknown>;
+  config.resolvedCatalog = resolvedCatalog;
+  await fs.writeJson(configPath, config, { spaces: 2 });
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   setCatalogPackageSourceForTests(null);
@@ -447,6 +462,120 @@ describe('local marketplace', () => {
       changed: false,
       warnings: [],
     });
+  });
+
+  it('does not reuse a channel-matched local marketplace for read-only resolution after the dist-tag moves', async () => {
+    const { awHome, repoRoot, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const currentManifest = await fs.readJson(
+      path.join(embeddedRoot, '.catalog', 'sidecar', 'catalog-manifest.json'),
+    ) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+      compatibility: {
+        aw: {
+          minVersion: string;
+        };
+      };
+      history: {
+        schemaVersion: number;
+      };
+    };
+    await writeLocalMarketplaceResolvedCatalog(awHome, {
+      channel: currentManifest.channel,
+      catalogVersion: currentManifest.catalogVersion,
+      minAwVersion: currentManifest.compatibility.aw.minVersion,
+      historySchemaVersion: currentManifest.history.schemaVersion,
+    });
+
+    const explicitSelector: CatalogSelector = {
+      kind: 'distTag',
+      cliVersion: selector.cliVersion,
+      defaultChannel: selector.defaultChannel,
+      requestedChannel: selector.defaultChannel,
+    };
+    const failure = new CatalogResolutionError({
+      selector: explicitSelector,
+      channel: currentManifest.channel,
+      catalogVersion: '9.9.9',
+      minAwVersion: currentManifest.compatibility.aw.minVersion,
+      historySchemaVersion: currentManifest.history.schemaVersion,
+      cacheFallback: {
+        used: false,
+      },
+      reason: 'current catalog is temporarily unavailable',
+      reasonCode: 'catalogUnavailable',
+    });
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(failure);
+
+    await expect(resolveReadOnlyCatalogResolution({
+      ...env,
+      AW_CATALOG_CHANNEL: selector.defaultChannel,
+    })).rejects.toBe(failure);
+  });
+
+  it('does not reuse a channel-matched local marketplace during ensureLocalMarketplace after the dist-tag moves', async () => {
+    const { awHome, repoRoot, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const currentManifest = await fs.readJson(
+      path.join(embeddedRoot, '.catalog', 'sidecar', 'catalog-manifest.json'),
+    ) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+      compatibility: {
+        aw: {
+          minVersion: string;
+        };
+      };
+      history: {
+        schemaVersion: number;
+      };
+    };
+    await writeLocalMarketplaceResolvedCatalog(awHome, {
+      channel: currentManifest.channel,
+      catalogVersion: currentManifest.catalogVersion,
+      minAwVersion: currentManifest.compatibility.aw.minVersion,
+      historySchemaVersion: currentManifest.history.schemaVersion,
+    });
+
+    const explicitSelector: CatalogSelector = {
+      kind: 'distTag',
+      cliVersion: selector.cliVersion,
+      defaultChannel: selector.defaultChannel,
+      requestedChannel: selector.defaultChannel,
+    };
+    const failure = new CatalogResolutionError({
+      selector: explicitSelector,
+      channel: currentManifest.channel,
+      catalogVersion: '9.9.9',
+      minAwVersion: currentManifest.compatibility.aw.minVersion,
+      historySchemaVersion: currentManifest.history.schemaVersion,
+      cacheFallback: {
+        used: false,
+      },
+      reason: 'current catalog is temporarily unavailable',
+      reasonCode: 'catalogUnavailable',
+    });
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(failure);
+
+    await expect(ensureLocalMarketplace({
+      ...env,
+      AW_CATALOG_CHANNEL: selector.defaultChannel,
+    })).rejects.toBe(failure);
   });
 
   it('rebuilds from resolved current catalog instead of reusing a same-version stale local marketplace', async () => {
