@@ -3,6 +3,35 @@ import {
 } from '../utils/plugin-catalog.js';
 import type { CatalogResolution, CatalogSelectionOptions, CatalogSelector } from '../types.js';
 
+function withSelectorOverrideSource(
+  catalog: CatalogResolution,
+  overrideSource: CatalogSelector['overrideSource'] | undefined,
+): CatalogResolution {
+  if (!overrideSource || !catalog.selector) {
+    return catalog;
+  }
+
+  const selector = {
+    ...catalog.selector,
+    overrideSource,
+  };
+  return {
+    ...catalog,
+    selector,
+    ...(catalog.cacheFallback?.matchedSelector
+      ? {
+          cacheFallback: {
+            ...catalog.cacheFallback,
+            matchedSelector: {
+              ...catalog.cacheFallback.matchedSelector,
+              overrideSource,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
 export async function initCommand(
   options: {
     force?: boolean;
@@ -15,21 +44,19 @@ export async function initCommand(
     ...(options.catalogVersion === undefined ? {} : { catalogVersion: options.catalogVersion }),
     forceRefresh: options.force === true,
   });
-  if (options.selectorOverrideSource && result.selector) {
-    result.selector.overrideSource = options.selectorOverrideSource;
-  }
+  const catalog = withSelectorOverrideSource(result, options.selectorOverrideSource);
 
-  if (options.force === true && result.source === 'cache') {
-    const detail = result.reason?.trim()
-      ? `远程 current catalog 不可用：${result.reason}`
+  if (options.force === true && catalog.source === 'cache') {
+    const detail = catalog.reason?.trim()
+      ? `远程 current catalog 不可用：${catalog.reason}`
       : '远程 current catalog 不可用。';
     throw new Error(`\`aw init --force\` 需要重新拉取并重建 current catalog cache；${detail}`);
   }
 
   return {
-    rootDir: result.rootDir,
-    changed: options.force === true || result.source !== 'cache',
+    rootDir: catalog.rootDir,
+    changed: options.force === true || catalog.source !== 'cache',
     warnings: [],
-    catalog: result,
+    catalog,
   };
 }

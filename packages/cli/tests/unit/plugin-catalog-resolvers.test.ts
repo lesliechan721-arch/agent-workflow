@@ -25,6 +25,7 @@ import {
 import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { initCommand } from '../../src/commands/init.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -387,7 +388,7 @@ describe('plugin catalog resolvers', () => {
     });
   });
 
-  it('memoizes current catalog resolution for the same process inputs', async () => {
+  it('rechecks the current catalog target before reusing a process memo', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogPackage = await createValidCatalogPackage({
       repoRoot,
@@ -428,14 +429,117 @@ describe('plugin catalog resolvers', () => {
     }));
 
     const first = await resolveCurrentCatalog(env);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:1.0.0',
+      'identity:@yiliang/aw-plugins:1.0.0',
+      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+
+    operations.length = 0;
     const second = await resolveCurrentCatalog(env);
 
     expect(second).toBe(first);
     expect(operations).toEqual([
       'identity:@yiliang/aw-plugins-manifest:latest',
       'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+    ]);
+  });
+
+  it('refreshes a process memo when the current catalog dist-tag moves', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogV1 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const catalogV2 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '2.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogV1.sidecarRoot,
+          manifest: catalogV1.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogV1.fullRoot,
+          manifest: catalogV1.manifest,
+        },
+      },
+    }));
+
+    const first = await resolveCurrentCatalog(env);
+    expect(first).toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    await expect(fs.pathExists(first.rootDir)).resolves.toBe(true);
+
+    const operations: string[] = [];
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '2.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '2.0.0',
+            integrity: 'sha512-sidecar-2',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogV2.sidecarRoot,
+          manifest: catalogV2.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '2.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '2.0.0',
+            integrity: 'sha512-full-2',
+          },
+          rootDir: catalogV2.fullRoot,
+          manifest: catalogV2.manifest,
+        },
+      },
+      operations,
+    }));
+
+    const second = await resolveCurrentCatalog(env);
+
+    expect(second).not.toBe(first);
+    expect(second).toMatchObject({
+      source: 'remote',
+      catalogVersion: '2.0.0',
+    });
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:2.0.0',
+      'identity:@yiliang/aw-plugins:2.0.0',
+      'download:@yiliang/aw-plugins:2.0.0',
     ]);
   });
 
@@ -648,7 +752,59 @@ describe('plugin catalog resolvers', () => {
 
     operations.length = 0;
     await expect(resolveCurrentCatalog(env)).resolves.toBe(refreshed);
-    expect(operations).toEqual([]);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+      'download:@yiliang/aw-plugins-manifest:2.0.0',
+    ]);
+  });
+
+  it('does not let init selector display metadata mutate the process memo', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      distTags: {
+        latest: '1.0.0',
+      },
+      manifestPackages: {
+        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins-manifest',
+            version: '1.0.0',
+            integrity: 'sha512-sidecar-1',
+            requestedDistTag: 'latest',
+          },
+          rootDir: catalogPackage.sidecarRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+      fullPackages: {
+        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          identity: {
+            packageName: '@yiliang/aw-plugins',
+            version: '1.0.0',
+            integrity: 'sha512-full-1',
+          },
+          rootDir: catalogPackage.fullRoot,
+          manifest: catalogPackage.manifest,
+        },
+      },
+    }));
+
+    const aliasResult = await initCommand({
+      env,
+      catalogChannel: 'latest',
+      selectorOverrideSource: 'option:channel-alias',
+    });
+    expect(aliasResult.catalog.selector?.overrideSource).toBe('option:channel-alias');
+
+    const directResolution = await resolveCurrentCatalog(env, { channel: 'latest' });
+    expect(directResolution.selector?.overrideSource).toBe('option:catalog-channel');
   });
 
   it('uses a matching cache entry after resolving catalog identity and before downloading full catalog', async () => {

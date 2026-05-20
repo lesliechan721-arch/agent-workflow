@@ -302,39 +302,127 @@ function buildCurrentCatalogMemoKey(
     .digest('hex');
 }
 
-function resolveCurrentCatalogUncached(
+async function resolveCurrentCatalogUncached(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
   options: ResolveCurrentCatalogOptions,
 ): Promise<CatalogResolution> {
-  return (async () => {
-    if (!hasCatalogPackageSourceOverrideForTests()) {
-      const fixtureCatalog = await tryResolveFixtureCatalogOverride(selector);
-      if (fixtureCatalog) {
-        return fixtureCatalog;
-      }
+  if (!hasCatalogPackageSourceOverrideForTests()) {
+    const fixtureCatalog = await tryResolveFixtureCatalogOverride(selector);
+    if (fixtureCatalog) {
+      return fixtureCatalog;
     }
+  }
 
-    const target = await resolveCatalogTarget(selector, env);
-    return await resolveValidatedCatalogRoot(selector, target, env, options);
-  })();
+  const target = await resolveCatalogTarget(selector, env);
+  return await resolveValidatedCatalogRoot(selector, target, env, options);
+}
+
+function catalogLatestEvidenceMatches(
+  left: CatalogResolution['latestCatalog'],
+  right: CatalogResolution['latestCatalog'],
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return (
+    left.channel === right.channel &&
+    left.catalogVersion === right.catalogVersion &&
+    left.minAwVersion === right.minAwVersion &&
+    left.blocked === right.blocked
+  );
+}
+
+function catalogLatestBlockedEvidenceMatches(
+  left: CatalogResolution['latestCatalogBlocked'],
+  right: CatalogResolution['latestCatalogBlocked'],
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return (
+    left.channel === right.channel &&
+    left.catalogVersion === right.catalogVersion &&
+    left.minAwVersion === right.minAwVersion
+  );
+}
+
+function memoizedResolutionMatchesTarget(
+  resolved: CatalogResolution,
+  target: ResolvedCatalogTarget,
+): boolean {
+  const sidecarManifestPackage = resolved.sidecarManifestPackage;
+  if (!sidecarManifestPackage) {
+    return false;
+  }
+
+  return (
+    resolved.channel === target.manifest.channel &&
+    resolved.catalogVersion === target.manifest.catalogVersion &&
+    resolved.minAwVersion === target.manifest.compatibility.aw.minVersion &&
+    resolved.historySchemaVersion === target.historySchemaVersion &&
+    sidecarManifestPackage.source === target.sidecarManifestPackage.source &&
+    sidecarManifestPackage.version === target.sidecarManifestPackage.version &&
+    sidecarManifestPackage.channel === target.sidecarManifestPackage.channel &&
+    sidecarManifestPackage.npmIntegrity === target.sidecarManifestPackage.npmIntegrity &&
+    sidecarManifestPackage.manifestDigest === target.sidecarManifestPackage.manifestDigest &&
+    catalogLatestEvidenceMatches(resolved.latestCatalog, target.latestCatalog) &&
+    catalogLatestBlockedEvidenceMatches(resolved.latestCatalogBlocked, target.latestCatalogBlocked)
+  );
 }
 
 async function readCurrentCatalogMemo(
   memoKey: string,
-): Promise<CatalogResolution | null> {
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+): Promise<{
+  resolution: CatalogResolution | null;
+  target?: ResolvedCatalogTarget;
+}> {
   const memoized = currentCatalogResolutionMemo.get(memoKey);
   if (!memoized) {
-    return null;
+    return {
+      resolution: null,
+    };
   }
 
   try {
     const resolved = await memoized;
-    if (await fs.pathExists(resolved.rootDir)) {
-      return resolved;
+    if (!(await fs.pathExists(resolved.rootDir))) {
+      currentCatalogResolutionMemo.delete(memoKey);
+      return {
+        resolution: null,
+      };
     }
+
+    if (resolved.source === 'local' || selector.kind === 'exactVersion') {
+      return {
+        resolution: resolved,
+      };
+    }
+
+    let target: ResolvedCatalogTarget;
+    try {
+      target = await resolveCatalogTarget(selector, env);
+    } catch {
+      return {
+        resolution: resolved,
+      };
+    }
+
+    if (memoizedResolutionMatchesTarget(resolved, target)) {
+      return {
+        resolution: resolved,
+      };
+    }
+
     currentCatalogResolutionMemo.delete(memoKey);
-    return null;
+    return {
+      resolution: null,
+      target,
+    };
   } catch (error) {
     currentCatalogResolutionMemo.delete(memoKey);
     throw error;
@@ -1354,12 +1442,14 @@ export async function resolveCurrentCatalog(
   }
 
   const memoKey = buildCurrentCatalogMemoKey(selector, env, options);
-  const memoized = await readCurrentCatalogMemo(memoKey);
-  if (memoized) {
-    return memoized;
+  const memoized = await readCurrentCatalogMemo(memoKey, selector, env);
+  if (memoized.resolution) {
+    return memoized.resolution;
   }
 
-  const resolution = resolveCurrentCatalogUncached(selector, env, options);
+  const resolution = memoized.target
+    ? resolveValidatedCatalogRoot(selector, memoized.target, env, options)
+    : resolveCurrentCatalogUncached(selector, env, options);
   currentCatalogResolutionMemo.set(memoKey, resolution);
   try {
     return await resolution;
