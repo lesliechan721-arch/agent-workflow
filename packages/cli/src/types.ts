@@ -1165,10 +1165,11 @@ export interface PlatformAdapter {
 }
 
 export interface LocalMarketplaceConfig {
-  version: 1;
+  version: 2;
   initializedAt: string;
   sourcePackage: string;
   sourceVersion: CliVersion;
+  catalogSelector: CatalogSelector;
   bundleFingerprint: string;
 }
 

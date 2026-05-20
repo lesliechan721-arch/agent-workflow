@@ -402,6 +402,67 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isCatalogChannel(value: unknown): value is CatalogChannel {
+  return value === 'latest' || value === 'beta';
+}
+
+function isStrictSemVerString(value: unknown): value is CliVersion {
+  return typeof value === 'string' && tryParseStrictSemVer(value) !== null;
+}
+
+function isCatalogSelectorOverrideSource(
+  value: unknown,
+): value is NonNullable<CatalogSelector['overrideSource']> {
+  return value === 'option:catalog-channel' ||
+    value === 'option:channel-alias' ||
+    value === 'option:catalog-version' ||
+    value === 'env:AW_CATALOG_CHANNEL' ||
+    value === 'env:AW_CATALOG_VERSION';
+}
+
+function isCatalogSelector(value: unknown): value is CatalogSelector {
+  if (
+    !isRecord(value) ||
+    !isStrictSemVerString(value.cliVersion) ||
+    !isCatalogChannel(value.defaultChannel) ||
+    (value.overrideSource !== undefined && !isCatalogSelectorOverrideSource(value.overrideSource))
+  ) {
+    return false;
+  }
+
+  if (value.kind === 'default') {
+    return value.requestedChannel === undefined && value.requestedCatalogVersion === undefined;
+  }
+
+  if (value.kind === 'distTag') {
+    return isCatalogChannel(value.requestedChannel) && value.requestedCatalogVersion === undefined;
+  }
+
+  if (value.kind === 'exactVersion') {
+    return isStrictSemVerString(value.requestedCatalogVersion) && value.requestedChannel === undefined;
+  }
+
+  return false;
+}
+
+function resolveDefaultLocalMarketplaceCatalogSelector(cliVersion: CliVersion): CatalogSelector {
+  return {
+    kind: 'default',
+    cliVersion,
+    defaultChannel: (tryParseStrictSemVer(cliVersion)?.prerelease.length ?? 0) > 0
+      ? 'beta'
+      : 'latest',
+  };
+}
+
+function localMarketplaceCatalogSelectorMatches(
+  config: LocalMarketplaceConfig,
+  expectedSelector: CatalogSelector,
+): boolean {
+  return serializeCatalogSelectorForCache(config.catalogSelector) ===
+    serializeCatalogSelectorForCache(expectedSelector);
+}
+
 function isSkillTriggerPreference(value: unknown): boolean {
   return value === 'default' || value === 'manual' || value === 'auto';
 }
@@ -917,10 +978,11 @@ async function copyBundleToStaging(embeddedRoot: string, stagingRoot: string): P
 function isLocalMarketplaceConfig(value: unknown): value is LocalMarketplaceConfig {
   return (
     isRecord(value) &&
-    value.version === 1 &&
+    value.version === 2 &&
     typeof value.initializedAt === 'string' &&
     typeof value.sourcePackage === 'string' &&
     typeof value.sourceVersion === 'string' &&
+    isCatalogSelector(value.catalogSelector) &&
     typeof value.bundleFingerprint === 'string'
   );
 }
@@ -1046,6 +1108,7 @@ async function inspectLocalMarketplaceState(
 
 async function tryReuseExistingLocalMarketplace(
   env: NodeJS.ProcessEnv,
+  expectedSelector: CatalogSelector,
 ): Promise<EnsureLocalMarketplaceResult | null> {
   const awHome = resolveAwHome(env);
   const [packageInfo, config] = await Promise.all([
@@ -1056,7 +1119,8 @@ async function tryReuseExistingLocalMarketplace(
   if (
     !config ||
     config.sourcePackage !== packageInfo.name ||
-    config.sourceVersion !== packageInfo.version
+    config.sourceVersion !== packageInfo.version ||
+    !localMarketplaceCatalogSelectorMatches(config, expectedSelector)
   ) {
     return null;
   }
@@ -1078,7 +1142,8 @@ export async function resolveReadOnlyCatalogResolution(
 ): Promise<CatalogResolution> {
   const hasSelectorOverride = hasCatalogSelectorOverride(env);
   const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
-  let currentCatalogError: unknown;
+  let currentCatalogError: unknown = null;
+  let fallbackSelector: CatalogSelector | null = null;
   try {
     return await resolveCurrentCatalog(env);
   } catch (error) {
@@ -1090,6 +1155,7 @@ export async function resolveReadOnlyCatalogResolution(
       throw error;
     }
     currentCatalogError = error;
+    fallbackSelector = error.resolution.selector;
   }
 
   const awHome = resolveAwHome(env);
@@ -1101,13 +1167,16 @@ export async function resolveReadOnlyCatalogResolution(
     !hasSelectorOverride &&
     config &&
     config.sourcePackage === packageInfo.name &&
-    config.sourceVersion === packageInfo.version
+    config.sourceVersion === packageInfo.version &&
+    fallbackSelector &&
+    localMarketplaceCatalogSelectorMatches(config, fallbackSelector)
   ) {
     try {
       await validateLocalMarketplaceLayout(awHome);
       return {
         rootDir: awHome,
         source: 'local',
+        selector: fallbackSelector,
       };
     } catch {
       // Fall through to current catalog resolution when the local marketplace
@@ -1355,12 +1424,15 @@ export async function initializeLocalMarketplace(
 ): Promise<EnsureLocalMarketplaceResult> {
   const env = options.env ?? process.env;
   let bundleRootOverride: string | undefined;
+  let resolvedCatalogSelector: CatalogSelector | undefined;
   try {
     bundleRootOverride = await resolveEmbeddedPluginsRoot();
   } catch {
     const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
     try {
-      bundleRootOverride = (await resolveCurrentCatalog(env)).rootDir;
+      const catalog = await resolveCurrentCatalog(env);
+      bundleRootOverride = catalog.rootDir;
+      resolvedCatalogSelector = catalog.selector;
       await validateBundleLayout(bundleRootOverride);
     } catch (error) {
       if (
@@ -1369,7 +1441,10 @@ export async function initializeLocalMarketplace(
         isCatalogResolutionError(error) &&
         error.resolution.reasonCode === 'catalogUnavailable'
       ) {
-        const reusableMarketplace = await tryReuseExistingLocalMarketplace(env);
+        const reusableMarketplace = await tryReuseExistingLocalMarketplace(
+          env,
+          error.resolution.selector,
+        );
         if (reusableMarketplace) {
           return reusableMarketplace;
         }
@@ -1381,12 +1456,15 @@ export async function initializeLocalMarketplace(
   const validConfig = inspection.configInspection.state === 'valid'
     ? inspection.configInspection.config
     : null;
+  const expectedCatalogSelector = resolvedCatalogSelector ??
+    resolveDefaultLocalMarketplaceCatalogSelector(inspection.packageInfo.version);
 
   if (
     !options.force &&
     validConfig &&
     inspection.sourceVersionStatus === 'equal' &&
     validConfig.bundleFingerprint === inspection.bundleFingerprint &&
+    localMarketplaceCatalogSelectorMatches(validConfig, expectedCatalogSelector) &&
     inspection.layoutHealthy
   ) {
     return {
@@ -1428,10 +1506,11 @@ export async function initializeLocalMarketplace(
     warnings.push(...dynamicSkillReplay.warnings);
     await writeJsonFile(path.join(stagingDir, 'installed.json'), ledger);
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
-      version: 1,
+      version: 2,
       initializedAt: new Date().toISOString(),
       sourcePackage: inspection.packageInfo.name,
       sourceVersion: inspection.packageInfo.version,
+      catalogSelector: expectedCatalogSelector,
       bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);

@@ -164,6 +164,24 @@ async function listSkillBackupDirs(
     .sort();
 }
 
+async function readLocalMarketplaceCatalogSelector(awHome: string): Promise<CatalogSelector> {
+  const config = await readJsonFile<{ catalogSelector: CatalogSelector }>(
+    path.join(awHome, 'config.json'),
+  );
+  return config.catalogSelector;
+}
+
+function createCatalogUnavailableError(selector: CatalogSelector): CatalogResolutionError {
+  return new CatalogResolutionError({
+    selector,
+    cacheFallback: {
+      used: false,
+    },
+    reason: 'current catalog is temporarily unavailable',
+    reasonCode: 'catalogUnavailable',
+  });
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   setCatalogPackageSourceForTests(null);
@@ -182,24 +200,36 @@ describe('local marketplace', () => {
     };
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
     await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
 
-    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(new CatalogResolutionError({
-      selector: {
-        kind: 'default',
-        cliVersion: '0.1.0',
-        defaultChannel: 'latest',
-      },
-      cacheFallback: {
-        used: false,
-      },
-      reason: 'current catalog is temporarily unavailable',
-      reasonCode: 'catalogUnavailable',
-    }));
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(
+      createCatalogUnavailableError(selector),
+    );
 
     await expect(resolveReadOnlyCatalogResolution(env)).resolves.toMatchObject({
       rootDir: awHome,
       source: 'local',
+      selector,
     });
+  });
+
+  it('does not fall back to a local marketplace when selector metadata is missing', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    delete config.catalogSelector;
+    await fs.writeJson(configPath, config, { spaces: 2 });
+    const failure = createCatalogUnavailableError(selector);
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(failure);
+
+    await expect(resolveReadOnlyCatalogResolution(env)).rejects.toBe(failure);
   });
 
   it('tries current catalog before falling back to a healthy local marketplace when plugins-dist is missing', async () => {
@@ -210,20 +240,10 @@ describe('local marketplace', () => {
     };
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
     await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
 
     const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(
-      new CatalogResolutionError({
-        selector: {
-          kind: 'default',
-          cliVersion: '0.1.0',
-          defaultChannel: 'latest',
-        },
-        cacheFallback: {
-          used: false,
-        },
-        reason: 'current catalog is temporarily unavailable',
-        reasonCode: 'catalogUnavailable',
-      }),
+      createCatalogUnavailableError(selector),
     );
     setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
 
@@ -233,6 +253,31 @@ describe('local marketplace', () => {
       warnings: [],
     });
     expect(resolveCurrentCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reuse a local marketplace for a different selector when plugins-dist is missing', async () => {
+    const { awHome, embeddedRoot, repoRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const configPath = path.join(awHome, 'config.json');
+    const config = await fs.readJson(configPath);
+    config.catalogSelector = {
+      kind: 'distTag',
+      cliVersion: selector.cliVersion,
+      defaultChannel: selector.defaultChannel,
+      requestedChannel: selector.defaultChannel === 'latest' ? 'beta' : 'latest',
+    };
+    await fs.writeJson(configPath, config, { spaces: 2 });
+    const failure = createCatalogUnavailableError(selector);
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(failure);
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+
+    await expect(ensureLocalMarketplace(env)).rejects.toBe(failure);
   });
 
   it('rebuilds from resolved current catalog instead of reusing a same-version stale local marketplace', async () => {
@@ -842,7 +887,7 @@ describe('local marketplace', () => {
     await initializeLocalMarketplace({ force: true, env: process.env });
     const configPath = path.join(awHome, 'config.json');
     const config = await fs.readJson(configPath);
-    config.version = 2;
+    config.version = 3;
     await fs.writeJson(configPath, config, { spaces: 2 });
 
     await expect(initializeLocalMarketplace({ force: false, env: process.env })).resolves.toMatchObject({
