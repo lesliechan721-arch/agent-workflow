@@ -226,7 +226,7 @@ describe('local marketplace', () => {
     }, { repositoryCwd });
   });
 
-  it('uses AW_HOME-backed staging and TMPDIR-backed backups when rebuilding a custom AW_HOME', async () => {
+  it('uses AW_HOME-backed staging and same-device backups when rebuilding a custom AW_HOME', async () => {
     const { embeddedRoot } = await makeWorkspace();
     const guardedRoot = await fs.mkdtemp(path.join(
       getSourceTestRepositoryCwd(),
@@ -264,12 +264,11 @@ describe('local marketplace', () => {
       moveSpy.mockRestore();
     }
 
-    const tempRoot = path.join(String(env.TMPDIR), 'aw-cli', 'local-marketplace');
     expect(observedMkdtempPrefixes).toEqual(expect.arrayContaining([
       expect.stringContaining(path.join(guardedRoot, '.aw-local-marketplace-staging', '.aw-staging-')),
     ]));
     expect(observedMoveTargets).toEqual(expect.arrayContaining([
-      expect.stringContaining(path.join(tempRoot, 'backups', '.aw-backup-')),
+      expect.stringContaining(path.join(guardedRoot, '.aw-local-marketplace-backups', '.aw-backup-')),
     ]));
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
@@ -388,6 +387,66 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
 
     await expect(ensureLocalMarketplace(env)).rejects.toBe(failure);
+  });
+
+  it('reuses a default-selector local marketplace for read-only resolution when the same channel is requested explicitly', async () => {
+    const { awHome, repoRoot, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const explicitSelector: CatalogSelector = {
+      kind: 'distTag',
+      cliVersion: selector.cliVersion,
+      defaultChannel: selector.defaultChannel,
+      requestedChannel: selector.defaultChannel,
+    };
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(
+      createCatalogUnavailableError(explicitSelector),
+    );
+
+    await expect(resolveReadOnlyCatalogResolution({
+      ...env,
+      AW_CATALOG_CHANNEL: selector.defaultChannel,
+    })).resolves.toMatchObject({
+      rootDir: awHome,
+      source: 'local',
+      selector: explicitSelector,
+    });
+  });
+
+  it('reuses a default-selector local marketplace during ensureLocalMarketplace when the same channel is requested explicitly', async () => {
+    const { awHome, repoRoot, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const selector = await readLocalMarketplaceCatalogSelector(awHome);
+    const explicitSelector: CatalogSelector = {
+      kind: 'distTag',
+      cliVersion: selector.cliVersion,
+      defaultChannel: selector.defaultChannel,
+      requestedChannel: selector.defaultChannel,
+    };
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(
+      createCatalogUnavailableError(explicitSelector),
+    );
+
+    await expect(ensureLocalMarketplace({
+      ...env,
+      AW_CATALOG_CHANNEL: selector.defaultChannel,
+    })).resolves.toEqual({
+      rootDir: awHome,
+      changed: false,
+      warnings: [],
+    });
   });
 
   it('rebuilds from resolved current catalog instead of reusing a same-version stale local marketplace', async () => {
