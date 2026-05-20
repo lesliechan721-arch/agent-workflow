@@ -441,6 +441,54 @@ describe('local marketplace', () => {
     )).resolves.toContain('current-catalog-marker');
   });
 
+  it('prefers the default current catalog over plugins-dist when rebuilding the local marketplace', async () => {
+    const { awHome, embeddedRoot, repoRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+
+    await fs.appendFile(
+      path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md'),
+      '\ndefault-current-catalog-marker\n',
+      'utf8',
+    );
+    const currentEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(currentEmbeddedRoot);
+    const sidecarRoot = path.join(currentEmbeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(currentEmbeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    const result = await initializeLocalMarketplace({ force: true, env });
+
+    expect(result).toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+    expect(resolveCurrentCatalog).toHaveBeenCalledTimes(1);
+    await expect(fs.readFile(
+      path.join(awHome, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      'utf8',
+    )).resolves.toContain('default-current-catalog-marker');
+    const currentConfig = await readJsonFile<{ bundleFingerprint: string }>(
+      path.join(awHome, 'config.json'),
+    );
+    expect(currentConfig.bundleFingerprint).toBe(await calculateBundleFingerprint(fullRoot));
+    expect(currentConfig.bundleFingerprint).not.toBe(await calculateBundleFingerprint(embeddedRoot));
+  });
+
   it('rebuilds from the requested current catalog when a selector override is provided', async () => {
     const { awHome, embeddedRoot, repoRoot } = await makeWorkspace();
     const env = {
@@ -754,9 +802,10 @@ describe('local marketplace', () => {
     const beforeFingerprint = await readJsonFile<{ bundleFingerprint: string }>(
       path.join(awHome, 'config.json'),
     );
+    const currentCatalogRoot = path.join(embeddedRoot, '.catalog', 'full');
 
     await fs.writeFile(
-      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      path.join(currentCatalogRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
       '# changed\n',
       'utf8',
     );
@@ -1604,15 +1653,21 @@ describe('local marketplace', () => {
         }],
       };
     });
-    const embeddedPluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const currentCatalogPluginRoot = path.join(
+      embeddedRoot,
+      '.catalog',
+      'full',
+      'plugins',
+      'git-commit',
+    );
     await fs.copy(
-      path.join(embeddedPluginRoot, 'codex', 'skills'),
-      path.join(embeddedPluginRoot, 'codex', 'custom-skills'),
+      path.join(currentCatalogPluginRoot, 'codex', 'skills'),
+      path.join(currentCatalogPluginRoot, 'codex', 'custom-skills'),
     );
     await fs.writeJson(
-      path.join(embeddedPluginRoot, '.codex-plugin', 'plugin.json'),
+      path.join(currentCatalogPluginRoot, '.codex-plugin', 'plugin.json'),
       {
-        ...(await fs.readJson(path.join(embeddedPluginRoot, '.codex-plugin', 'plugin.json'))),
+        ...(await fs.readJson(path.join(currentCatalogPluginRoot, '.codex-plugin', 'plugin.json'))),
         skills: './codex/custom-skills',
       },
       { spaces: 2 },
@@ -2150,7 +2205,17 @@ describe('local marketplace', () => {
 
     await writeCodexAllowImplicitInvocation(awHome, true);
     await fs.writeFile(
-      path.join(embeddedRoot, 'plugins', 'git-commit', 'claude', 'skills', 'commit', 'README.md'),
+      path.join(
+        embeddedRoot,
+        '.catalog',
+        'full',
+        'plugins',
+        'git-commit',
+        'claude',
+        'skills',
+        'commit',
+        'README.md',
+      ),
       'fingerprint changed\n',
       'utf8',
     );
@@ -2236,7 +2301,11 @@ describe('local marketplace', () => {
       },
     };
     await writeInstalledLedger(ledger, process.env);
-    await fs.writeFile(codexOpenAiYamlPath(embeddedRoot), 'policy: [', 'utf8');
+    await fs.writeFile(
+      codexOpenAiYamlPath(path.join(embeddedRoot, '.catalog', 'full')),
+      'policy: [',
+      'utf8',
+    );
 
     const result = await initializeLocalMarketplace({ force: true, env: process.env });
 

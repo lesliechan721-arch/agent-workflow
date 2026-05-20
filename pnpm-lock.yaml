@@ -26,6 +26,9 @@ importers:
       fs-extra:
         specifier: ^11.3.0
         version: 11.3.4
+      minimatch:
+        specifier: ^10.2.5
+        version: 10.2.5
       toml-eslint-parser:
         specifier: ^1.0.3
         version: 1.0.3

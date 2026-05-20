@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { minimatch } from 'minimatch';
 
 import {
   CURRENT_CATALOG_MANIFEST_FILE,
@@ -13,7 +14,6 @@ import type {
   MarketplaceManifest,
   PlatformName,
 } from '../types.js';
-import { matchesGlob as matchesFileGlob } from './file-rules.js';
 import { readJsonFile } from './json.js';
 import { validateCatalogManifest } from './manifest.js';
 import { resolveCliPackageRoot, resolveCurrentCatalogCacheStagingDir, getMarketplaceManifestPath } from './paths.js';
@@ -246,6 +246,17 @@ function normalizeNpmWorkspacePattern(
   return normalizedPattern === '.' ? '' : normalizedPattern;
 }
 
+function matchesNpmWorkspaceGlob(
+  filePath: string,
+  pattern: string,
+): boolean {
+  if (typeof path.posix.matchesGlob === 'function') {
+    return path.posix.matchesGlob(filePath, pattern);
+  }
+
+  return minimatch(filePath, pattern);
+}
+
 function matchesNpmWorkspacePackagePath(
   workspaceRoot: string,
   packageDir: string,
@@ -277,7 +288,7 @@ function matchesNpmWorkspacePackagePath(
       continue;
     }
 
-    if (matchesFileGlob(normalizedPackagePath, pattern)) {
+    if (matchesNpmWorkspaceGlob(normalizedPackagePath, pattern)) {
       matched = !negated;
     }
   }

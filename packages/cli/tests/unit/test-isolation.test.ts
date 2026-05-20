@@ -43,6 +43,10 @@ describe('test isolation helpers', () => {
     expect(isolated.layout.rootDir).toContain('aw-test-isolation-');
     expect(isolated.layout.homeDir).toBe(path.join(isolated.layout.rootDir, 'home'));
     expect(isolated.layout.awHomeDir).toBe(path.join(isolated.layout.rootDir, 'aw-home'));
+    expect(isolated.layout.localMarketplaceStagingRoot).toBe(path.join(
+      isolated.layout.rootDir,
+      '.aw-local-marketplace-staging',
+    ));
     expect(isolated.layout.codexHomeDir).toBe(path.join(isolated.layout.rootDir, 'codex-home'));
     expect(isolated.layout.claudeHomeDir).toBe(path.join(isolated.layout.rootDir, 'claude-home'));
     expect(isolated.layout.xdgConfigHomeDir).toBe(path.join(isolated.layout.rootDir, 'xdg-config'));
@@ -69,6 +73,7 @@ describe('test isolation helpers', () => {
     expect(isolated.env.TMP).toBe(isolated.layout.tmpDir);
 
     await expect(fs.pathExists(isolated.layout.npmUserConfigPath)).resolves.toBe(true);
+    await expect(fs.pathExists(isolated.layout.localMarketplaceStagingRoot)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.debugLogsDir)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.fixtureCwd)).resolves.toBe(true);
 

@@ -1530,11 +1530,23 @@ export async function initializeLocalMarketplace(
     }
   } else {
     try {
-      bundleRootOverride = await resolveEmbeddedPluginsRoot();
-    } catch {
       const reusableMarketplace = await resolveCurrentCatalogWithLocalFallback();
       if (reusableMarketplace) {
         return reusableMarketplace;
+      }
+    } catch (error) {
+      const { isCatalogResolutionError } = await import('./plugin-catalog.js');
+      if (
+        !isCatalogResolutionError(error) ||
+        error.resolution.reasonCode !== 'catalogUnavailable'
+      ) {
+        throw error;
+      }
+
+      try {
+        bundleRootOverride = await resolveEmbeddedPluginsRoot();
+      } catch {
+        throw error;
       }
     }
   }
