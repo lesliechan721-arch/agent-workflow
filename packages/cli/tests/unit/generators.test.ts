@@ -221,7 +221,7 @@ describe('local-plugin generator', () => {
     });
   });
 
-  it('declares the Codex skills root for user dynamic codex.skill targets', async () => {
+  it('does not declare a static Codex skills root for user-only dynamic codex.skill targets', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
@@ -260,15 +260,11 @@ describe('local-plugin generator', () => {
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
     const result = await bundleLocalPlugin(plugin, outputRoot);
 
-    expect(result.platformManifests.codex).toMatchObject({
-      skills: './codex/skills',
-    });
+    expect(result.platformManifests.codex?.skills).toBeUndefined();
     await expect(
       fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      skills: './codex/skills',
-    });
-    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(true);
+    ).resolves.not.toHaveProperty('skills');
+    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(false);
   });
 
   it('generates only Codex bundle outputs for Codex-only plugins and removes stale Claude outputs', async () => {

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import YAML from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getCodexNativeRecoveryBreadcrumbPath,
@@ -22,10 +22,13 @@ import {
   initializeLocalMarketplace,
   readCurrentCatalogCacheEntry,
   readInstalledLedger,
+  resolveReadOnlyCatalogResolution,
   validateLocalMarketplaceLayout,
   writeCurrentCatalogCacheEntry,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
+import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import { readJsonFile } from '../../src/utils/json.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
@@ -159,6 +162,7 @@ async function listSkillBackupDirs(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
@@ -167,6 +171,62 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('falls back to a matching local marketplace only for catalogUnavailable current catalog failures', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(new CatalogResolutionError({
+      selector: {
+        kind: 'default',
+        cliVersion: '0.1.0',
+        defaultChannel: 'latest',
+      },
+      cacheFallback: {
+        used: false,
+      },
+      reason: 'current catalog is temporarily unavailable',
+      reasonCode: 'catalogUnavailable',
+    }));
+
+    await expect(resolveReadOnlyCatalogResolution(env)).resolves.toMatchObject({
+      rootDir: awHome,
+      source: 'local',
+    });
+  });
+
+  it('does not mask fail-closed current catalog failures with the local marketplace', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env });
+    const failure = new CatalogResolutionError({
+      selector: {
+        kind: 'default',
+        cliVersion: '0.1.0',
+        defaultChannel: 'latest',
+      },
+      channel: 'latest',
+      catalogVersion: '2.0.0',
+      minAwVersion: '2.0.0',
+      cacheFallback: {
+        used: false,
+      },
+      reason: '当前 CLI 版本过低。',
+      reasonCode: 'awVersionTooLow',
+    });
+    vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog').mockRejectedValue(failure);
+
+    await expect(resolveReadOnlyCatalogResolution(env)).rejects.toBe(failure);
+  });
+
   it('writes and reads isolated current catalog cache entries', async () => {
     const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-'));
     tempDirs.push(cacheRoot);

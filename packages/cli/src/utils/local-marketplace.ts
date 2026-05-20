@@ -979,12 +979,16 @@ export async function resolveReadOnlyCatalogResolution(
     env.AW_CATALOG_CHANNEL === 'latest' ||
     env.AW_CATALOG_CHANNEL === 'beta' ||
     env.AW_CLI_VERSION !== undefined;
-  const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
+  const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
   let currentCatalogError: unknown;
   try {
     return await resolveCurrentCatalog(env);
   } catch (error) {
-    if (hasCatalogSelectorOverride) {
+    if (
+      hasCatalogSelectorOverride ||
+      !isCatalogResolutionError(error) ||
+      error.resolution.reasonCode !== 'catalogUnavailable'
+    ) {
       throw error;
     }
     currentCatalogError = error;
