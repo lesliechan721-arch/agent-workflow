@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
 import {
   applyClaudeInstallLedger,
   applyClaudeUninstallLedger,
@@ -51,7 +52,7 @@ import {
   getGeneratedArtifactsFromError,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
-import { SOURCE_MANIFEST_PATH } from '../utils/manifest.js';
+import { readPluginManifest, SOURCE_MANIFEST_PATH } from '../utils/manifest.js';
 import {
   getCodexProjectManagedKinds,
   requiresCodexNativePlugin,
@@ -307,6 +308,97 @@ function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
 
 function resolveCatalogRootFromPlugin(plugin: PluginMeta): string {
   return path.dirname(path.dirname(plugin.rootDir));
+}
+
+function shouldRetargetCatalogRootToLocalMarketplace(
+  sourceCatalogRoot: string,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return isPathInsideRoot(resolveAwHome(env), sourceCatalogRoot);
+}
+
+async function retargetCurrentCatalogTargetToCatalogRoot(
+  target: ResolvedPluginTarget,
+  catalogRoot: string,
+): Promise<void> {
+  const plugin = await readPluginManifest(
+    path.join(catalogRoot, 'plugins', target.pluginName),
+    { mode: 'bundle' },
+  );
+  target.plugin = plugin;
+  target.currentPlugin = plugin;
+}
+
+async function pinCatalogRootForLocalMarketplaceRebuild(
+  sourceCatalogRoot: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const parentDir = path.dirname(resolveAwHome(env));
+  await fs.ensureDir(parentDir);
+  const pinnedRoot = await fs.mkdtemp(path.join(parentDir, '.aw-current-catalog-source-'));
+  try {
+    await fs.copy(path.join(sourceCatalogRoot, '.claude-plugin'), path.join(pinnedRoot, '.claude-plugin'));
+    await fs.copy(path.join(sourceCatalogRoot, '.agents'), path.join(pinnedRoot, '.agents'));
+    await fs.copy(path.join(sourceCatalogRoot, 'plugins'), path.join(pinnedRoot, 'plugins'));
+    const manifestPath = path.join(sourceCatalogRoot, CURRENT_CATALOG_MANIFEST_FILE);
+    if (await fs.pathExists(manifestPath)) {
+      await fs.copy(manifestPath, path.join(pinnedRoot, CURRENT_CATALOG_MANIFEST_FILE));
+    }
+  } catch (error) {
+    await fs.remove(pinnedRoot).catch(() => undefined);
+    throw error;
+  }
+
+  return pinnedRoot;
+}
+
+async function pinCurrentCatalogTargetForLocalMarketplaceRebuild(
+  target: ResolvedPluginTarget,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  if (target.source !== 'currentCatalog' || !target.currentPlugin) {
+    return undefined;
+  }
+  const sourceCatalogRoot = resolveCatalogRootFromPlugin(target.currentPlugin);
+  if (!shouldRetargetCatalogRootToLocalMarketplace(sourceCatalogRoot, env)) {
+    return undefined;
+  }
+
+  const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(sourceCatalogRoot, env);
+  await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+  return pinnedRoot;
+}
+
+async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options: {
+  targets: Iterable<ResolvedPluginTarget>;
+  env: NodeJS.ProcessEnv;
+}): Promise<string[]> {
+  const pinnedRoots: string[] = [];
+  const pinnedRootBySourceRoot = new Map<string, string>();
+  for (const target of options.targets) {
+    if (target.source !== 'currentCatalog' || !target.currentPlugin) {
+      continue;
+    }
+    const sourceCatalogRoot = resolveCatalogRootFromPlugin(target.currentPlugin);
+    if (!shouldRetargetCatalogRootToLocalMarketplace(sourceCatalogRoot, options.env)) {
+      continue;
+    }
+    let pinnedRoot = pinnedRootBySourceRoot.get(sourceCatalogRoot);
+    if (!pinnedRoot) {
+      pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(sourceCatalogRoot, options.env);
+      pinnedRootBySourceRoot.set(sourceCatalogRoot, pinnedRoot);
+      pinnedRoots.push(pinnedRoot);
+    }
+    await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+  }
+  return pinnedRoots;
+}
+
+async function disposePinnedCatalogRoot(rootDir: string | undefined): Promise<void> {
+  if (!rootDir) {
+    return;
+  }
+  await fs.remove(rootDir).catch(() => undefined);
 }
 
 function toInstallRecordInstallSource(
@@ -1374,6 +1466,15 @@ async function installTargetOnPlatform(
   );
   const materializationPreference = options.requestedSkillTrigger
     ?? resolveMaterializationPreference(resolvedInstallOptions);
+  let materializationSourceCatalogRoot = materializeSkillTriggers
+    ? resolveCatalogRootFromPlugin(target.currentPlugin)
+    : undefined;
+  const pinnedSourceCatalogRoot = usesCodexUserDynamicSkillFlow
+    ? await pinCurrentCatalogTargetForLocalMarketplaceRebuild(target, env)
+    : undefined;
+  if (pinnedSourceCatalogRoot) {
+    materializationSourceCatalogRoot = pinnedSourceCatalogRoot;
+  }
   let nativeWritten = false;
   let artifactsWritten = false;
   let trackingWritten = false;
@@ -1482,7 +1583,8 @@ async function installTargetOnPlatform(
     }
 
     if (materializeSkillTriggers) {
-      const sourceCatalogRoot = resolveCatalogRootFromPlugin(target.currentPlugin!);
+      const sourceCatalogRoot = materializationSourceCatalogRoot
+        ?? resolveCatalogRootFromPlugin(target.currentPlugin!);
       const writtenScope = await resolveScopeIdentityForTarget(platform, options);
       const marketplaceRoot = resolveAwHome(env);
       const materializationTarget = platform === 'codex' && options.scope === 'project'
@@ -1950,6 +2052,7 @@ async function installTargetOnPlatform(
     });
   } catch (error) {
     if (error instanceof PostInstallCleanupError && error.skipRollback) {
+      await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
       throw error;
     }
 
@@ -2155,6 +2258,7 @@ async function installTargetOnPlatform(
       }
 
       if (baselineRestored) {
+        await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
         throw new Error(`${normalizeErrorMessage(error)}；upgrade 未完成，已恢复旧安装。`);
       }
     } else if (upgradeRollbackBaseline?.artifactRollbackState) {
@@ -2221,6 +2325,7 @@ async function installTargetOnPlatform(
     nativeRollbackBaseline = undefined;
 
     const rollbackFailure = createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
+    await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
     if (isCodexUserNativeInstall(platform, target, options.scope) && nativeWritten) {
       throw wrapCodexNativeInstallFailure(
         target.currentPlugin.manifest.name,
@@ -2267,6 +2372,7 @@ async function installTargetOnPlatform(
     await disposeArtifactRollbackState(dynamicSkillArtifactRollbackState).catch(() => undefined);
   }
   await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
+  await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
 
   return {
     warnings,
@@ -3474,6 +3580,7 @@ export async function installCommand(
   let installPlan: PluginDependencyWritePlan | undefined;
   let installPlanTargetByPlugin: Map<string, ResolvedPluginTarget> | undefined;
   let installAdapters: Record<PlatformName, PlatformAdapter> | undefined;
+  const pinnedCatalogRoots: string[] = [];
   try {
     const adapters = createAdapters(options.cwd, context);
     installAdapters = adapters;
@@ -3578,6 +3685,14 @@ export async function installCommand(
       graphPlan.writeOrder,
       targetByPlugin,
     );
+    if (runtimeWritableMarketplace) {
+      pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+        targets: graphPlan.writeOrder
+          .map((location) => targetByPlugin.get(location.plugin))
+          .filter((target): target is ResolvedPluginTarget => Boolean(target)),
+        env,
+      }));
+    }
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: runtimeWritableMarketplace ? 'runtimeWritable' : 'readOnly',
       env,
@@ -3735,5 +3850,7 @@ export async function installCommand(
       error,
       withEarlyDegradedLedgerWarning(commandWarnings, prepared.ledger),
     );
+  } finally {
+    await Promise.all(pinnedCatalogRoots.map((rootDir) => disposePinnedCatalogRoot(rootDir)));
   }
 }

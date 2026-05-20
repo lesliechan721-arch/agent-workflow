@@ -975,6 +975,33 @@ async function inspectLocalMarketplaceState(
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CatalogResolution> {
+  const awHome = resolveAwHome(env);
+  const hasCatalogSelectorOverride = env.AW_CATALOG_VERSION !== undefined ||
+    env.AW_CATALOG_CHANNEL === 'latest' ||
+    env.AW_CATALOG_CHANNEL === 'beta' ||
+    env.AW_CLI_VERSION !== undefined;
+  const [packageInfo, config] = await Promise.all([
+    readCliPackageInfo(),
+    readLocalMarketplaceConfig(awHome),
+  ]);
+  if (
+    !hasCatalogSelectorOverride &&
+    config &&
+    config.sourcePackage === packageInfo.name &&
+    config.sourceVersion === packageInfo.version
+  ) {
+    try {
+      await validateLocalMarketplaceLayout(awHome);
+      return {
+        rootDir: awHome,
+        source: 'local',
+      };
+    } catch {
+      // Fall through to current catalog resolution when the local marketplace
+      // is stale or damaged; read-only callers must not repair it here.
+    }
+  }
+
   const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
   return resolveCurrentCatalog(env);
 }

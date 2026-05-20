@@ -44,6 +44,7 @@ import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import {
   ensureLocalMarketplace,
   readInstalledLedger,
+  resolveReadOnlyCatalogResolution,
   type LocalMarketplaceGateOptions,
 } from '../utils/local-marketplace.js';
 import { generatedArtifactKindRequiresArtifactKey } from '../utils/generated-artifacts.js';
@@ -773,7 +774,7 @@ async function prepareCatalogState(
     };
   }
 
-  const catalog = await resolveCurrentCatalog(env);
+  const catalog = await resolveReadOnlyCatalogResolution(env);
 
   return {
     catalog,

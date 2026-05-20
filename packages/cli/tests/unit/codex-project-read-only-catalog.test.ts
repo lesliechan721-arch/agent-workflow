@@ -12,7 +12,11 @@ import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
-import { resolveCurrentCatalog } from '../../src/utils/plugin-catalog.js';
+import {
+  clearCurrentCatalogResolutionMemoForTests,
+  resolveCurrentCatalog,
+} from '../../src/utils/plugin-catalog.js';
+import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { getCodexProjectManagedKinds } from '../../src/utils/codex-project-surface.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
@@ -78,6 +82,64 @@ async function makeWorkspace(pluginDirs: string[] = ['mcp-only']): Promise<{
   };
 }
 
+function createStaticCatalogPackageSource(options: {
+  manifest: Record<string, unknown>;
+  sidecarRoot: string;
+  fullRoot: string;
+  channel: 'latest' | 'beta';
+  version: string;
+}) {
+  return {
+    resolveIdentityByDistTag: async (packageName: string) => ({
+      packageName,
+      version: options.version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${options.version}`
+        : `sha512-full-${options.version}`,
+      requestedDistTag: options.channel,
+    }),
+    resolveIdentityByVersion: async (packageName: string, version: string) => ({
+      packageName,
+      version,
+      integrity: packageName === '@yiliang/aw-plugins-manifest'
+        ? `sha512-sidecar-${version}`
+        : `sha512-full-${version}`,
+    }),
+    downloadArchive: async (identity: { packageName: string }) => ({
+      identity,
+      manifestText: await fs.readFile(
+        path.join(
+          identity.packageName === '@yiliang/aw-plugins-manifest'
+            ? options.sidecarRoot
+            : options.fullRoot,
+          'catalog-manifest.json',
+        ),
+        'utf8',
+      ),
+      rawManifest: options.manifest,
+      packageRoot: identity.packageName === '@yiliang/aw-plugins-manifest'
+        ? options.sidecarRoot
+        : options.fullRoot,
+      materialize: async () => {},
+      dispose: async () => {},
+    }),
+  };
+}
+
+function createUnavailableCatalogPackageSource() {
+  return {
+    resolveIdentityByDistTag: async () => {
+      throw new Error('registry offline');
+    },
+    resolveIdentityByVersion: async () => {
+      throw new Error('registry offline');
+    },
+    downloadArchive: async () => {
+      throw new Error('registry offline');
+    },
+  };
+}
+
 async function writeStaleLocalMarketplaceConfig(awHome: string): Promise<void> {
   await fs.ensureDir(awHome);
   await fs.writeJson(
@@ -113,8 +175,55 @@ async function breakLocalMarketplaceLayout(
 }
 
 afterEach(async () => {
+  clearCurrentCatalogResolutionMemoForTests();
+  setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+it('reuses a healthy rebuilt local marketplace for read-only target preparation when the registry is offline', async () => {
+  const workspace = await makeWorkspace(['mcp-only']);
+  const missingEmbeddedRoot = path.join(workspace.root, 'missing-plugins-dist');
+  const sidecarRoot = path.join(workspace.embeddedRoot, '.catalog', 'sidecar');
+  const fullRoot = getCatalogFullPackageRoot(workspace.embeddedRoot);
+  const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+    channel: 'latest' | 'beta';
+    catalogVersion: string;
+  };
+  setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+    manifest,
+    sidecarRoot,
+    fullRoot,
+    channel: manifest.channel,
+    version: manifest.catalogVersion,
+  }));
+  setEmbeddedPluginsRootOverrideForTests(missingEmbeddedRoot);
+
+  await initializeLocalMarketplace({ force: true, env: workspace.env });
+  clearCurrentCatalogResolutionMemoForTests();
+  setCatalogPackageSourceForTests(createUnavailableCatalogPackageSource());
+
+  const prepared = await preparePluginTargetsForCommand(
+    workspace.repoRoot,
+    'project',
+    ['mcp-only'],
+    {
+      ensureLocalMarketplace: false,
+      env: workspace.env,
+    },
+  );
+
+  expect(prepared.marketplace).toMatchObject({
+    rootDir: workspace.awHome,
+    source: 'local',
+    changed: false,
+    mode: 'readOnly',
+  });
+  expect(prepared.targets).toMatchObject([{
+    pluginName: 'mcp-only',
+    source: 'currentCatalog',
+  }]);
+  expect(prepared.targets[0]?.currentPlugin?.rootDir).toBe(path.join(workspace.awHome, 'plugins', 'mcp-only'));
 });
 
 describe.each([

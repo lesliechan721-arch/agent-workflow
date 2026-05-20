@@ -31,6 +31,7 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
+import { clearCurrentCatalogResolutionMemoForTests } from '../../src/utils/plugin-catalog.js';
 import {
   inspectGlobalDependencyIndex,
   readDynamicArtifactDiagnosticCacheAt,
@@ -72,7 +73,9 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
-async function makeWorkspace(): Promise<{
+async function makeWorkspace(
+  manifestUpdater?: (manifest: Record<string, any>) => void,
+): Promise<{
   repoRoot: string;
   env: NodeJS.ProcessEnv;
   embeddedRoot: string;
@@ -82,6 +85,12 @@ async function makeWorkspace(): Promise<{
 
   const repoRoot = path.join(root, 'repo');
   await fs.copy(fixturePath('repo-template'), repoRoot);
+  if (manifestUpdater) {
+    const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifestUpdater(manifest);
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  }
   await execFileAsync('git', ['init', '-q'], { cwd: repoRoot });
   const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
   tempDirs.push(embeddedRoot);
@@ -551,6 +560,7 @@ function resolvedInstallOptions(): ResolvedInstallOptions {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  clearCurrentCatalogResolutionMemoForTests();
   setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -888,6 +898,77 @@ describe('install command P6 install-state semantics', () => {
       changed: true,
     });
     await expect(validateLocalMarketplaceLayout(String(env.AW_HOME))).resolves.toBeUndefined();
+  });
+
+  it('keeps Codex user dynamic skill installs on the rebuilt local marketplace when plugins-dist is unavailable', async () => {
+    const { repoRoot, env, embeddedRoot } = await makeWorkspace((pluginManifest) => {
+      pluginManifest.skillTriggers = {
+        ...pluginManifest.skillTriggers,
+        'generated-commit': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      };
+      pluginManifest.artifacts = {
+        targets: [{
+          id: 'generated-commit-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'generated-commit',
+        }],
+      };
+    });
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const result = await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex: new FakeCodexAdapter(env),
+          claude: new FakeClaudeAdapter(),
+        },
+      },
+    );
+
+    expect(result.marketplace).toMatchObject({
+      source: 'local',
+      changed: true,
+    });
+    await expect(validateLocalMarketplaceLayout(String(env.AW_HOME))).resolves.toBeUndefined();
+    await expect(fs.pathExists(path.join(
+      String(env.AW_HOME),
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'commit',
+      'agents',
+      'openai.yaml',
+    ))).resolves.toBe(true);
   });
 
   it('auto-installs missing dependencies, writes parent edges after success, and exposes receipt metadata', async () => {
