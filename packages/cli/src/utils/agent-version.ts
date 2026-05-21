@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import {
   AGENT_VERSION_DISPLAY_NAMES,
   AGENT_VERSION_PROBE_COMMANDS,
@@ -11,6 +13,7 @@ import type {
 } from '../types.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
 import {
+  getDefaultNativeCliRunner,
   isNativeCliExecutableMissingError,
   runNativeCli,
   summarizeNativeCliFailure,
@@ -25,6 +28,8 @@ export interface ProbeAgentVersionOptions {
 }
 
 const VERSION_ARGUMENTS = ['--version'];
+
+let probeCacheByRunner = new WeakMap<NativeCliRunner, Map<string, Promise<AgentVersionProbeResult>>>();
 
 export function getMinimumAgentVersion(platform: PlatformName): string {
   return MINIMUM_AGENT_VERSIONS[platform];
@@ -53,6 +58,37 @@ function combineProbeOutput(stdout: string, stderr: string): string {
   return [stdout, stderr]
     .filter((value) => value.length > 0)
     .join('\n');
+}
+
+function createEnvFingerprint(env: NodeJS.ProcessEnv): string {
+  const entries = Object.keys(env)
+    .sort()
+    .map((key) => [key, env[key] ?? '']);
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(entries))
+    .digest('hex');
+}
+
+function buildProbeCacheKey(
+  platform: PlatformName,
+  requirement: AgentVersionRequirement,
+  options: ProbeAgentVersionOptions,
+): string {
+  const env = options.env ?? process.env;
+  return JSON.stringify({
+    platform,
+    command: requirement.command,
+    args: VERSION_ARGUMENTS,
+    cwd: options.cwd ?? process.cwd(),
+    timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
+    minVersion: requirement.minVersion,
+    envFingerprint: createEnvFingerprint(env),
+  });
+}
+
+function cloneProbeResult(result: AgentVersionProbeResult): AgentVersionProbeResult {
+  return { ...result };
 }
 
 function createFailureProbeResult(
@@ -94,7 +130,33 @@ export async function probeAgentVersion(
   options: ProbeAgentVersionOptions = {},
 ): Promise<AgentVersionProbeResult> {
   const requirement = getAgentVersionRequirement(platform);
+  const runner = options.runner ?? getDefaultNativeCliRunner();
+  const cacheKey = buildProbeCacheKey(platform, requirement, options);
+  let runnerCache = probeCacheByRunner.get(runner);
+  if (!runnerCache) {
+    runnerCache = new Map();
+    probeCacheByRunner.set(runner, runnerCache);
+  }
 
+  const cached = runnerCache.get(cacheKey);
+  if (cached) {
+    return cloneProbeResult(await cached);
+  }
+
+  const probe = probeAgentVersionUncached(requirement, runner, options)
+    .catch((error: unknown) => {
+      runnerCache.delete(cacheKey);
+      throw error;
+    });
+  runnerCache.set(cacheKey, probe);
+  return cloneProbeResult(await probe);
+}
+
+async function probeAgentVersionUncached(
+  requirement: AgentVersionRequirement,
+  runner: NativeCliRunner,
+  options: ProbeAgentVersionOptions,
+): Promise<AgentVersionProbeResult> {
   try {
     const result = await runNativeCli(
       {
@@ -104,7 +166,7 @@ export async function probeAgentVersion(
         env: options.env,
         timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
       },
-      options.runner,
+      runner,
     );
 
     const rawOutput = combineProbeOutput(result.stdout, result.stderr);
@@ -177,4 +239,8 @@ export async function probeAgentVersion(
       details: summarizeNativeCliFailure(error),
     });
   }
+}
+
+export function clearAgentVersionProbeCacheForTests(): void {
+  probeCacheByRunner = new WeakMap();
 }

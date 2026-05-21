@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  clearAgentVersionProbeCacheForTests,
   extractStrictSemVerTokenFromVersionOutput,
   getAgentVersionRequirement,
   getMinimumAgentVersion,
@@ -32,6 +33,10 @@ function createNativeCliError(options: {
 }
 
 describe('agent-version', () => {
+  afterEach(() => {
+    clearAgentVersionProbeCacheForTests();
+  });
+
   it('reads built-in minimum versions by platform', () => {
     expect(getMinimumAgentVersion('codex')).toBe('0.131.0');
     expect(getMinimumAgentVersion('claude')).toBe('2.1.88');
@@ -79,6 +84,33 @@ describe('agent-version', () => {
     });
     expect(result.rawOutput).toContain('codex-cli');
     expect(result.rawOutput).toContain('0.131.0');
+  });
+
+  it('caches matching probes within the current process', async () => {
+    let calls = 0;
+    const runner = async () => {
+      calls += 1;
+      return {
+        exitCode: 0,
+        stdout: 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    };
+    const first = await probeAgentVersion('codex', {
+      cwd: '/repo',
+      env: { PATH: '/bin' },
+      runner,
+    });
+    const second = await probeAgentVersion('codex', {
+      cwd: '/repo',
+      env: { PATH: '/bin' },
+      runner,
+    });
+
+    expect(calls).toBe(1);
+    expect(first).toMatchObject({ status: 'supported', detectedVersion: '0.131.0' });
+    expect(second).toMatchObject({ status: 'supported', detectedVersion: '0.131.0' });
+    expect(second).not.toBe(first);
   });
 
   it('compares prerelease precedence with strict SemVer rules', async () => {
