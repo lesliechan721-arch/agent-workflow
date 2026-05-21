@@ -13,3 +13,4 @@ packages/cli/plugins-dist
 .claude/.agent-workflows/
 .codex/.agent-workflows/
 .agent-workflows/plugin-config.local/
+.worktrees
