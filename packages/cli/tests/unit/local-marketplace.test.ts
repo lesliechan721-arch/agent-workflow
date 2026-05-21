@@ -1721,6 +1721,64 @@ describe('local marketplace', () => {
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
+  it('preserves migrated static Codex skills in custom roots when historical dynamic sync keys are replayed', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+
+    const pluginRoot = path.join(awHome, 'plugins', 'git-commit');
+    const sourceManifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const codexManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    const sourceManifest = await fs.readJson(sourceManifestPath);
+    await fs.writeJson(sourceManifestPath, {
+      ...sourceManifest,
+      skills: './custom-skills',
+      skillTriggers: {
+        'generated-commit': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+    }, { spaces: 2 });
+
+    const staticSourceSkillRoot = path.join(pluginRoot, 'custom-skills', 'generated-commit');
+    await fs.outputFile(path.join(staticSourceSkillRoot, 'SKILL.md'), '# Static Commit\n', 'utf8');
+    await fs.outputFile(
+      path.join(staticSourceSkillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    const codexManifest = await fs.readJson(codexManifestPath);
+    await fs.writeJson(codexManifestPath, {
+      ...codexManifest,
+      skills: './codex/custom-skills',
+    }, { spaces: 2 });
+
+    const mirroredSkillRoot = path.join(pluginRoot, 'codex', 'custom-skills', 'generated-commit');
+    await fs.outputFile(path.join(mirroredSkillRoot, 'SKILL.md'), '# Stale Dynamic Commit\n', 'utf8');
+    await fs.outputFile(
+      path.join(mirroredSkillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+    await fs.remove(path.join(pluginRoot, 'codex', 'skills', 'generated-commit'));
+
+    await stageLocalMarketplaceCodexDynamicSkills({
+      rootDir: awHome,
+      pluginName: 'git-commit',
+      skillKeys: ['generated-commit'],
+    });
+
+    await expect(fs.readFile(path.join(mirroredSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('# Static Commit\n');
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({ skills: './codex/custom-skills' });
+  });
+
   it('replays retained Codex user dynamic skills without adding a static skills root to the platform manifest', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace(
       (manifest) => {

@@ -117,6 +117,27 @@ function getDeclaredCodexDynamicSkillKeys(sourceManifest: Record<string, unknown
   );
 }
 
+function getDeclaredSkillTriggerKeys(sourceManifest: Record<string, unknown>): Set<string> {
+  if (!isRecord(sourceManifest.skillTriggers)) {
+    return new Set<string>();
+  }
+
+  return new Set(
+    Object.keys(sourceManifest.skillTriggers)
+      .map((skillKey) => skillKey.trim())
+      .filter((skillKey) => skillKey !== ''),
+  );
+}
+
+function resolveSourceManifestSkillsRoot(
+  pluginRoot: string,
+  sourceManifest: Record<string, unknown>,
+): string | null {
+  return typeof sourceManifest.skills === 'string' && sourceManifest.skills.trim() !== ''
+    ? path.join(pluginRoot, stripDotSlash(sourceManifest.skills))
+    : null;
+}
+
 async function pathIsDirectory(filePath: string): Promise<boolean> {
   const stats = await fs.stat(filePath).catch(() => null);
   return stats?.isDirectory() === true;
@@ -160,16 +181,21 @@ export async function stageLocalMarketplaceCodexDynamicSkills(
     skillKeys: readonly string[];
   },
 ): Promise<void> {
-  const manifestPath = getCodexPlatformPluginManifestPath(
-    getLocalMarketplacePluginRoot(options.rootDir, options.pluginName),
-  );
+  const pluginRoot = getLocalMarketplacePluginRoot(options.rootDir, options.pluginName);
+  const manifestPath = getCodexPlatformPluginManifestPath(pluginRoot);
   const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
   const hasDeclaredSkills = hasCodexManifestSkillsDeclaration(manifest);
   const manifestSkills = resolveCodexManifestSkillsDeclaration(manifest);
+  const sourceManifest = await readJsonFile<Record<string, unknown>>(
+    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+  );
+  const declaredDynamicSkillKeys = getDeclaredCodexDynamicSkillKeys(sourceManifest);
+  const declaredSkillTriggerKeys = getDeclaredSkillTriggerKeys(sourceManifest);
+  const sourceManifestSkillsRoot = resolveSourceManifestSkillsRoot(pluginRoot, sourceManifest);
 
   const runtimeSkillsRoot = getLocalMarketplaceCodexSkillsRoot(options.rootDir, options.pluginName);
   const manifestSkillsRoot = resolveCodexManifestSkillsRoot(
-    getLocalMarketplacePluginRoot(options.rootDir, options.pluginName),
+    pluginRoot,
     manifestSkills,
   );
 
@@ -177,7 +203,29 @@ export async function stageLocalMarketplaceCodexDynamicSkills(
     for (const skillKey of [...new Set(options.skillKeys)].sort()) {
       const sourceSkillRoot = path.join(runtimeSkillsRoot, skillKey);
       const targetSkillRoot = path.join(manifestSkillsRoot, skillKey);
+      const bundledStaticSkillRoot = sourceManifestSkillsRoot === null
+        ? null
+        : path.join(sourceManifestSkillsRoot, skillKey);
       if (!(await fs.pathExists(sourceSkillRoot))) {
+        // Historical user dynamic skills can migrate to bundled static skills with the same key.
+        const currentStaticSkillDeclared = declaredSkillTriggerKeys.has(skillKey) &&
+          !declaredDynamicSkillKeys.has(skillKey);
+        if (currentStaticSkillDeclared) {
+          if (
+            bundledStaticSkillRoot !== null &&
+            await pathIsDirectory(bundledStaticSkillRoot) &&
+            path.resolve(bundledStaticSkillRoot) !== path.resolve(targetSkillRoot)
+          ) {
+            await fs.remove(targetSkillRoot);
+            await fs.ensureDir(path.dirname(targetSkillRoot));
+            await fs.copy(bundledStaticSkillRoot, targetSkillRoot, {
+              overwrite: true,
+              errorOnExist: false,
+            });
+          }
+          continue;
+        }
+
         await fs.remove(targetSkillRoot);
         continue;
       }
