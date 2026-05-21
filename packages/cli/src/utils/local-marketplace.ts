@@ -174,11 +174,12 @@ export function collectCodexDynamicSkillSyncKeys(options: {
   ])].sort();
 }
 
-export async function stageLocalMarketplaceCodexDynamicSkills(
+async function syncLocalMarketplaceCodexDynamicSkillsInternal(
   options: {
     rootDir: string;
     pluginName: string;
     skillKeys: readonly string[];
+    manifestSkillsMode: 'preserve' | 'declareIfMissing';
   },
 ): Promise<void> {
   const pluginRoot = getLocalMarketplacePluginRoot(options.rootDir, options.pluginName);
@@ -239,12 +240,42 @@ export async function stageLocalMarketplaceCodexDynamicSkills(
     }
   }
 
-  if (!hasDeclaredSkills && await pathIsDirectory(manifestSkillsRoot)) {
+  if (
+    options.manifestSkillsMode === 'declareIfMissing' &&
+    !hasDeclaredSkills &&
+    await pathIsDirectory(manifestSkillsRoot)
+  ) {
     await writeJsonFile(manifestPath, {
       ...manifest,
       skills: manifestSkills,
     });
   }
+}
+
+export async function syncLocalMarketplaceCodexDynamicSkills(
+  options: {
+    rootDir: string;
+    pluginName: string;
+    skillKeys: readonly string[];
+  },
+): Promise<void> {
+  await syncLocalMarketplaceCodexDynamicSkillsInternal({
+    ...options,
+    manifestSkillsMode: 'preserve',
+  });
+}
+
+export async function materializeStagedMarketplaceCodexDynamicSkills(
+  options: {
+    rootDir: string;
+    pluginName: string;
+    skillKeys: readonly string[];
+  },
+): Promise<void> {
+  await syncLocalMarketplaceCodexDynamicSkillsInternal({
+    ...options,
+    manifestSkillsMode: 'declareIfMissing',
+  });
 }
 
 export interface LocalMarketplaceGateOptions {

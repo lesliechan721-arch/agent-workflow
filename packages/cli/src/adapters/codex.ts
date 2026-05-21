@@ -96,10 +96,11 @@ import {
   collectCodexDynamicSkillSyncKeys,
   ensureLocalMarketplace,
   getLocalMarketplaceCodexSkillRoot,
+  materializeStagedMarketplaceCodexDynamicSkills,
   readInstalledLedger,
   resolveCodexProjectScopeInitialized,
   resolveScopeInitialized,
-  stageLocalMarketplaceCodexDynamicSkills,
+  syncLocalMarketplaceCodexDynamicSkills,
 } from '../utils/local-marketplace.js';
 import {
   resolveArtifactRenderConfig,
@@ -382,7 +383,7 @@ async function stageCodexUserDynamicSkillMarketplace(options: {
       overwrite: true,
       errorOnExist: false,
     });
-    await stageLocalMarketplaceCodexDynamicSkills({
+    await materializeStagedMarketplaceCodexDynamicSkills({
       rootDir: stagingRoot,
       pluginName: options.plugin.manifest.name,
       skillKeys: options.skillKeys,
@@ -3424,7 +3425,7 @@ export class CodexAdapter implements PlatformAdapter {
         })
       : [];
     if (scope === 'user') {
-      await stageLocalMarketplaceCodexDynamicSkills({
+      await syncLocalMarketplaceCodexDynamicSkills({
         rootDir: awHome,
         pluginName: plugin.manifest.name,
         skillKeys: codexDynamicSkillSyncKeys,

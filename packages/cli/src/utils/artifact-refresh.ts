@@ -32,8 +32,8 @@ import { mergeGeneratedArtifacts } from './generated-artifacts.js';
 import {
   collectCodexDynamicSkillSyncKeys,
   getLocalMarketplaceCodexSkillRoot,
+  materializeStagedMarketplaceCodexDynamicSkills,
   readInstalledLedger,
-  stageLocalMarketplaceCodexDynamicSkills,
 } from './local-marketplace.js';
 import {
   commitMaterializedSkillTriggerPreference,
@@ -432,7 +432,7 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
         errorOnExist: false,
       });
     }
-    await stageLocalMarketplaceCodexDynamicSkills({
+    await materializeStagedMarketplaceCodexDynamicSkills({
       rootDir: stagingRoot,
       pluginName,
       skillKeys: collectCodexDynamicSkillSyncKeys({

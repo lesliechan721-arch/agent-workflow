@@ -20,11 +20,12 @@ import {
   ensureLocalMarketplace,
   hasInstalledLedgerDependencyMetadata,
   initializeLocalMarketplace,
+  materializeStagedMarketplaceCodexDynamicSkills,
   readCurrentCatalogCacheEntry,
   readCliPackageInfo,
   readInstalledLedger,
   resolveReadOnlyCatalogResolution,
-  stageLocalMarketplaceCodexDynamicSkills,
+  syncLocalMarketplaceCodexDynamicSkills,
   validateLocalMarketplaceLayout,
   writeCurrentCatalogCacheEntry,
   writeInstalledLedger,
@@ -1702,7 +1703,7 @@ describe('local marketplace', () => {
 
     await initializeLocalMarketplace({ force: true, env: process.env });
 
-    await stageLocalMarketplaceCodexDynamicSkills({
+    await syncLocalMarketplaceCodexDynamicSkills({
       rootDir: awHome,
       pluginName: 'git-commit',
       skillKeys: ['generated-commit'],
@@ -1718,6 +1719,69 @@ describe('local marketplace', () => {
     await expect(
       fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.not.toHaveProperty('skills');
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
+  it('adds a Codex skills declaration only for staged native marketplaces that materialize runtime dynamic skills', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace(
+      (manifest) => {
+        delete manifest.skills;
+        manifest.skillTriggers = {
+          'generated-commit': {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        };
+        manifest.artifacts = {
+          targets: [{
+            id: 'commit-skill',
+            platform: 'codex',
+            scopes: ['user'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'generated-commit',
+          }],
+        };
+      },
+      async (repoRoot) => {
+        await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+      },
+    );
+    process.env.AW_HOME = awHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    await fs.outputFile(path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+      'SKILL.md',
+    ), '# Generated\n', 'utf8');
+    await fs.outputFile(path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+      'agents',
+      'openai.yaml',
+    ), 'policy:\n  allow_implicit_invocation: true\n', 'utf8');
+
+    await materializeStagedMarketplaceCodexDynamicSkills({
+      rootDir: awHome,
+      pluginName: 'git-commit',
+      skillKeys: ['generated-commit'],
+    });
+
+    await expect(
+      fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({ skills: './codex/skills' });
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
@@ -1766,7 +1830,7 @@ describe('local marketplace', () => {
     );
     await fs.remove(path.join(pluginRoot, 'codex', 'skills', 'generated-commit'));
 
-    await stageLocalMarketplaceCodexDynamicSkills({
+    await syncLocalMarketplaceCodexDynamicSkills({
       rootDir: awHome,
       pluginName: 'git-commit',
       skillKeys: ['generated-commit'],
