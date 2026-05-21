@@ -31,6 +31,7 @@ Claude Code 的最低开发基线确定为 2.1.88。该版本源码确认支持�
 
 - Codex 0.131 的 `.codex-plugin/plugin.json` 原生识别 `skills`、`mcp_servers`、`apps`、`hooks` 和 `interface`。
 - Codex CLI 已有 `codex plugin add/list/remove` 和 `codex plugin marketplace add/list/upgrade/remove`。其中 `add` 从 configured marketplace snapshot 安装插件，`remove` 从 local config/cache 卸载插件，适合作为 AW user-scope 本地写入主链路。
+- `codex plugin marketplace add` 支持本地 path 和 Git marketplace；`codex plugin marketplace upgrade` 只刷新已配置的 Git marketplace snapshot，不负责本地 path marketplace 的首次注册、重新指向或内容刷新。
 - Codex app-server protocol 已有 `plugin/list`、`plugin/installed`、`plugin/read`、`plugin/install`、`plugin/uninstall`、`marketplace/add`、`marketplace/remove` 和 `marketplace/upgrade` 等 RPC；其中 `plugin/list`、`plugin/installed` 和 `plugin/read` 目前没有等价的结构化 CLI 输出，仍适合作为 verbose native view 诊断入口。
 - AW 当前 `packages/cli/src/utils/codex-app-server-client.ts` 只封装 `plugin/install` 和 `plugin/uninstall`，这会让普通安装/卸载依赖 app-server 进程管理；本期应改为 Codex CLI 写入主链路，RPC 只保留为可选诊断和未来确需运行中 app-server 语义的路径。
 - AW 当前 `packages/cli/src/generators/local-plugin.ts` 只为 Claude native manifest 生成 hooks；`packages/cli/src/utils/bundle-layout.ts` 的 Codex manifest 校验也尚未允许 `hooks`。
@@ -52,7 +53,7 @@ Claude Code 的最低开发基线确定为 2.1.88。该版本源码确认支持�
 
 1. 最低宿主 agent 版本门禁覆盖所有会写入或删除平台 native/runtime 状态、repo-visible artifacts、install record、recovery marker 或 project artifact identity 的目标。只要命令目标包含 Claude 或 Codex，对应 agent 必须存在、可执行、版本可解析且不低于最低版本。Codex project scope 也不再保留“缺少 codex 仍可写 repo-managed artifacts”的例外。
 2. 最低宿主 agent 版本由 AW CLI 内置为全局门槛：Codex `>= 0.131.0`，Claude Code `>= 2.1.88`。本期不在插件 manifest、catalog manifest 或依赖声明里增加 per-plugin agent 版本字段。
-3. Codex 0.131 对齐本期按全面原生化处理：补齐 Codex native hooks manifest 生成/校验，Codex user-scope 本地写入优先使用 `codex plugin` / `codex plugin marketplace` CLI，引入 `plugin/list`、`plugin/installed`、`plugin/read` 做可选 native 状态诊断，并用 Codex CLI 收口 marketplace 生命周期。
+3. Codex 0.131 对齐本期按全面原生化处理：补齐 Codex native hooks manifest 生成/校验，Codex user-scope 本地写入优先使用 `codex plugin` / `codex plugin marketplace` CLI，引入 `plugin/list`、`plugin/installed`、`plugin/read` 做可选 native 状态诊断，并用 Codex CLI 收口 marketplace 生命周期。本期不把 AW 的 Codex marketplace source model 改成 Git marketplace；它仍是 `aw-version-management` 基线定义的本地 path source，指向当前 `AW_HOME` / `~/.aw` 下已物化的 active local marketplace/runtime view。
 
 ## 目标、范围与非目标
 
@@ -69,8 +70,8 @@ Claude Code 的最低开发基线确定为 2.1.88。该版本源码确认支持�
 9. Codex user-scope native plugin hooks 进入 `.codex-plugin/plugin.json`，由 Codex 0.131 原生插件生命周期加载。AW 后续不应在 user-scope 新写会重复触发的 `.codex/hooks.json` hook groups。
 10. Codex project scope 继续使用 repo-managed `.codex/hooks.json`，因为 Codex 0.131 仍没有 project-scope native install state。
 11. Codex app-server client 能读取 `plugin/list`、`plugin/installed`、`plugin/read` 结果，并把它们用于 Codex user-scope native 状态诊断、mention/native view 校验和外部来源说明；这些 RPC 是 verbose 诊断能力，不作为普通写命令 hard gate，Codex project-scope 也不以这些 RPC 作为 hard gate。
-12. Codex marketplace 生命周期收口应优先使用 `codex plugin marketplace upgrade/remove` 等 Codex CLI 管理入口，不能回退到手写或手删 Codex config/cache 来伪装 native 成功。
-13. Codex user-scope 写命令应通过 Codex CLI 完成本地 native 写入；CLI 不可用、命令失败或输出无法证明写入完成时必须 fail closed。app-server RPC 不可用、method unavailable 或返回协议错误只影响 verbose native view 诊断，不能阻断 CLI 写入主链路；只读状态可以降级为诊断 unknown，但不能把 unknown 当成 healthy。
+12. Codex marketplace 生命周期收口应使用 Codex CLI 管理入口：本地 path source 的首次注册、重新指向和校验走 `codex plugin marketplace add/list`，删除走 `codex plugin marketplace remove`；`codex plugin marketplace upgrade` 只适用于 Git marketplace，不作为 AW 本地 path source 的通用刷新入口。AW 不能回退到手写或手删 Codex config/cache 来伪装 native 成功。
+13. Codex user-scope 写命令应通过 Codex CLI 完成本地 native 写入；CLI 不可用、命令失败或输出无法证明写入完成时必须 fail closed。app-server RPC 不可用、method unavailable 或返回协议错误只影响 verbose native view 诊断，不能阻断 CLI 写入主链路；只读 native view 状态可以降级为 `nativeViewUnknown`，但不能把它当成 healthy。
 14. Claude Code 2.1.88 保持为 Claude native 插件能力开发基线；AW 生成的 Claude plugin manifest、hooks、agents、commands、MCP 等能力必须继续兼容该版本。
 15. 公开文档、插件作者参考、安装文档、架构文档和相关测试夹具要同步更新，避免作者继续以“只需要可执行文件存在”或“Codex user hooks 只写 `.codex/hooks.json`”理解新合同。
 
@@ -80,7 +81,7 @@ Claude Code 的最低开发基线确定为 2.1.88。该版本源码确认支持�
 - config-triggered artifact refresh、SkillTrigger built-in apply 和主控制台“重新应用配置”的版本门禁边界。
 - Codex user-scope native hooks manifest 生成、校验、安装、升级，以及旧 AW-managed user hooks 本期不迁移的边界。
 - Codex native app-server 可选只读诊断接口：`plugin/list`、`plugin/installed`、`plugin/read`。
-- Codex native CLI 写入接口：`codex plugin add/remove`、`codex plugin marketplace upgrade/remove`，以及必要的 lifecycle 诊断。
+- Codex native CLI 写入接口：`codex plugin add/remove`、`codex plugin marketplace add/list/remove`，以及必要的 lifecycle 诊断。`codex plugin marketplace upgrade` 只作为 Git marketplace 能力记录，不进入 AW 本地 path source 主链路。
 - Codex project scope 在新门禁下的用户体验变化。
 - Claude Code 2.1.88 作为最低支持版本的文档和验收要求。
 
@@ -109,20 +110,28 @@ Claude Code 的最低开发基线确定为 2.1.88。该版本源码确认支持�
 
 ### Agent 版本状态
 
-每个平台的版本状态至少包含：
+Agent 版本状态只描述宿主 CLI 版本预检结果，参与写命令门禁；它不复用 Codex app-server 只读 native view 的诊断状态。每个平台的版本状态至少包含：
 
 - `supported`：可执行文件存在，版本可解析，且当前版本大于等于最低版本。
 - `missing`：需要该平台写入，但找不到可执行文件。
 - `probeFailed`：版本命令执行失败或超时。
 - `unparseable`：版本输出中找不到合法 SemVer。
 - `tooOld`：版本可解析，但低于最低版本。
-- `unknown`：只读诊断中无法确认版本；写命令不能把它当成可用。
 
-写命令只接受 `supported`。其它状态都必须在写入前失败。普通 `status` 的默认视图只提示 `missing`、`unparseable` 和 `tooOld` 这三类明确可行动的版本问题；`probeFailed` 和 `unknown` 只进入 `status --verbose`、`--json`、主控制台诊断详情或具体写命令错误。
+写命令只接受 `supported`。`missing`、`probeFailed`、`unparseable` 和 `tooOld` 都必须在写入前失败。普通 `status` 的默认视图只提示 `missing`、`unparseable` 和 `tooOld` 这三类明确可行动的版本问题；`probeFailed` 只进入 `status --verbose`、`--json`、主控制台诊断详情或具体写命令错误。
+
+### Codex Native View 诊断状态
+
+Codex native view 诊断状态只描述 app-server 只读 RPC 是否能解释 Codex user-scope native view，不参与宿主 agent 版本门禁，也不能阻断 Codex CLI 写入主链路。该诊断至少区分：
+
+- `nativeViewAvailable`：app-server RPC 返回了可解释的 native view 证据。
+- `nativeViewUnknown`：app-server 不可用、超时、method unavailable、协议错误或返回值无法解释；reason 使用 `codexNativeDiagnosticUnavailable`，只能出现在 verbose 诊断、主控制台诊断详情或发现页诊断中。
+
+`nativeViewUnknown` 不能提升为 healthy，不能覆盖 AW 本地 ownership 证据，也不能授权 cleanup、takeover 或 marketplace removal。
 
 ### Codex Native 与 Repo-managed Surface
 
-Codex user scope 是 native plugin surface：AW 注册本地 marketplace，调用 `codex plugin` 和 `codex plugin marketplace` 完成 plugin install/uninstall、materialized cache 和 user config 写入。本轮后，user-scope hooks 也应属于 native plugin manifest lifecycle；app-server RPC 只用于可选 native view 诊断或未来确需运行中 app-server 刷新的场景。
+Codex user scope 是 native plugin surface：AW 先物化当前 catalog 对应的本地 active marketplace/runtime view，把 Codex marketplace 注册为指向当前 `AW_HOME` / `~/.aw` 的本地 path source，再调用 `codex plugin` 完成 plugin install/uninstall、materialized cache 和 user config 写入。本轮后，user-scope hooks 也应属于 native plugin manifest lifecycle；app-server RPC 只用于可选 native view 诊断或未来确需运行中 app-server 刷新的场景。
 
 Codex project scope 是 repo-managed surface：AW 写 `.agents/skills/`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。它不调用 Codex native install CLI 或 RPC，但写入前仍必须通过 Codex 版本门禁。
 
@@ -168,6 +177,8 @@ Claude Code 版本过低：当前 2.1.87，AW 插件安装至少需要 2.1.88。
 - `agentVersionTooLow`
 - `codexNativeCliUnavailable`
 - `codexNativeDiagnosticUnavailable`
+- `codexNativeMarketplaceMissing`
+- `codexNativeMarketplaceDrift`
 
 可读字段应包含：
 
@@ -205,25 +216,28 @@ Codex user-scope 状态应把 AW 本地证据和 Codex native 证据分开展示
 - AW install record、project artifact identity、managed config/cache evidence、recovery marker 和 shared owner 仍是 AW ownership、cleanup 授权和 project-scope 健康判断的主要证据。
 - Codex app-server RPC 证据只作为 Codex user-scope native view 的补充真相，用于说明 Codex 当前是否认为插件已安装、启用、可注入、可被 mention，或是否来自非 AW marketplace/source。
 - 写命令不为了 ownership 判断启动或依赖 app-server RPC；AW ownership、cleanup 授权和 external conflict 的 hard decision 必须来自 AW 本地证据、Codex config/cache 静态证据或 Codex CLI 写入结果。没有 AW ownership 证据时，RPC 结果不能授权 cleanup、takeover 或 `codex plugin marketplace remove`。
-- RPC 不可用、超时、method unavailable 或协议错误时，verbose 诊断显示 native view unknown；unknown 不能提升为 healthy，也不能覆盖已有 AW 本地 ownership 证据，更不能阻断 Codex CLI 写入主链路。
+- RPC 不可用、超时、method unavailable 或协议错误时，verbose 诊断显示 `nativeViewUnknown`；该状态不能提升为 healthy，也不能覆盖已有 AW 本地 ownership 证据，更不能阻断 Codex CLI 写入主链路。
 
 ### Codex Marketplace 生命周期
 
-AW 不再把 Codex marketplace 生命周期收口理解为“改一段 TOML 或删一个 cache 目录”。当需要安装、卸载、移除、刷新或核验 Codex user-scope AW marketplace 时：
+AW 不再把 Codex marketplace 生命周期收口理解为“改一段 TOML 或删一个 cache 目录”。本期 Codex user-scope AW marketplace 仍是本地 path source，不改成 Git marketplace；内容刷新由 AW 重建 active local marketplace/runtime view 完成，Codex 侧只负责登记这个本地 source 和执行 plugin add/remove。
+
+当需要安装、卸载、移除、刷新或核验 Codex user-scope AW marketplace 时：
 
 - 本地安装必须走 `codex plugin add <plugin>@<marketplace>` 或等价 Codex CLI 入口。
 - 本地卸载必须走 `codex plugin remove <plugin>@<marketplace>` 或等价 Codex CLI 入口。
-- 能走 `codex plugin marketplace upgrade` 的刷新路径必须走 Codex CLI。
+- AW marketplace 的首次注册、缺失修复和 source 重新指向必须走 `codex plugin marketplace add <canonical ~/.aw>` 或等价 Codex CLI 入口，并在写入前后用 `codex plugin marketplace list`、Codex 静态 config 读证据或等价 CLI 证据确认 marketplace 名称存在且 source 指向当前 canonical `AW_HOME`。
+- 本地 path source 的内容刷新不能依赖 `codex plugin marketplace upgrade`；该命令只用于 Git marketplace snapshot。AW 必须先物化并校验 active local marketplace/runtime view，再确保 Codex 已注册到当前 canonical path。
 - 能走 `codex plugin marketplace remove` 的移除路径必须走 Codex CLI。
 - Codex CLI 成功后，AW 再更新自己的 install record、recovery marker、active runtime view 或诊断缓存。
 - Codex CLI 失败时，AW 不能自行手改 Codex config/cache 来制造成功状态，只能给出修复或升级 Codex 的建议。
 
 具体命令边界如下：
 
-- `aw install`、`aw upgrade`、`aw upgrade --all`、`aw reinstall` 和会重写 Codex user-scope native 状态的 `aw repair`，如果需要刷新或校验 AW 本地 marketplace，必须在 user-scope native 写入前使用 `codex plugin marketplace upgrade` 或等价的 Codex CLI 刷新入口。
+- `aw install`、`aw upgrade`、`aw upgrade --all`、`aw reinstall` 和会重写 Codex user-scope native 状态的 `aw repair`，必须先解析 current catalog，物化并校验 active local marketplace/runtime view；随后在 user-scope native 写入前确认 Codex 已配置 AW marketplace 且指向当前 canonical `AW_HOME`。如果 marketplace 缺失、名称不存在或仍指向旧 `AW_HOME`，AW 必须尝试通过 `codex plugin marketplace add <canonical ~/.aw>` 重新注册或重新指向，并再次校验；仍无法证明正确指向时，本次写命令 fail closed，reason 使用 `codexNativeMarketplaceMissing` 或 `codexNativeMarketplaceDrift`。
 - “需要移除 Codex user-scope AW marketplace 注册”指本次 `aw uninstall` 或执行删除计划的 `aw cleanup` 完成目标插件 native 卸载或残留清理后，AW 能证明 Codex user-scope 下已没有任何仍需该 marketplace 的受管 `@aw` 插件、install record、native recovery breadcrumb、shared native ref、native transaction marker 或 AW-owned native cache/config evidence。无法证明归属的 config-only / cache-only 残留不能授权删除 marketplace；单纯 disabled-only config entry 不阻止移除。
 - `aw uninstall` 和执行删除计划的 `aw cleanup` 只有满足上述条件时才调用 `codex plugin marketplace remove`；仍有任一受管 Codex user-scope native 使用者时必须保留 marketplace。普通单插件卸载仍以 `codex plugin remove` 和 AW-owned 状态清理为主，只有它同时移除了最后一个受管 native 使用者时才进入 marketplace removal。
-- `aw init` 只预热 AW catalog/cache，不写活 Codex user-scope marketplace；它不调用 `codex plugin marketplace upgrade/remove`。
+- `aw init` 只预热 AW catalog/cache，不写活 Codex user-scope marketplace；它不调用 `codex plugin marketplace add/upgrade/remove`。
 - `status`、`cleanup --plan`、发现类页面和主控制台只读首页只做诊断，不刷新或移除 marketplace。
 - Codex project-scope 的安装、升级、卸载、repair 和 cleanup 不调用 `codex plugin` / `codex plugin marketplace`。
 
@@ -243,17 +257,17 @@ SemVer token 前后必须是字符串边界或空白，不能从紧贴其它字�
 
 版本门禁是写命令 preflight，不是 adapter 内部的 best-effort 检查。命令层在解析出目标平台和目标插件后、任何外部写入前，必须统一确认所需平台的 agent version 均为 `supported`。这里的写命令包括 direct CLI 和主控制台触发的等价写动作；`status`、`cleanup --plan`、发现类页面、主控制台只读首页和只读安全预检不写状态，只展示版本诊断。
 
-`--platform both` 的门禁按整体事务处理：任一平台出现 `missing`、`probeFailed`、`unparseable`、`tooOld` 或 `unknown`，本次命令不写任一平台，不创建 native cache、active view、install record、recovery marker 或 repo-visible artifacts。
+`--platform both` 的门禁按整体事务处理：任一平台出现 `missing`、`probeFailed`、`unparseable` 或 `tooOld`，本次命令不写任一平台，不创建 native cache、active view、install record、recovery marker 或 repo-visible artifacts。
 
 `aw config set/unset/reset` 的门禁不是按用户传入平台计算，而是先用 historical runtime、install record、dynamic diagnostic cache 和本次 key 变更推导会被 refresh/apply 的已安装 target。只要推导出的任一 target 需要 Codex 或 Claude 写入，命令就必须在写 config store 前完成对应 agent 版本预检；预检失败时不写 config store、不更新 runtime artifact、不写 dynamic diagnostic cache，也不执行部分平台刷新。没有已安装 consumer、只有 orphan store raw delete，或本次变更不会触发 artifact refresh / SkillTrigger apply 时，`aw config` 只写 AW config store，不触发宿主 agent 版本门禁。可认领但本机尚未认领的 project artifacts 只允许 config-only 预写入：未触发 project artifact refresh 时 receipt 标记 `adoptExistingRequired` 或 `noRefreshTarget`；触发 refresh 时先要求 `aw repair --adopt-existing`，不得进入 agent 版本门禁或平台写入阶段。
 
-Codex native CLI hard gate 只覆盖 Codex user-scope native 写入链路：`codex plugin add/remove`、写后本地证据校验，以及需要刷新或移除 AW marketplace 注册的 `codex plugin marketplace upgrade/remove`。这些命令失败、超时或输出无法证明写入完成时，本次 AW 写命令必须 fail closed。Codex app-server RPC 不是写入 hard gate；RPC 不可用只影响 verbose native view 诊断。Codex project-scope 命令不调用这些 CLI/RPC；它们通过宿主 Codex 版本门禁后，只按 repo-managed artifact 的安全检查决定是否继续。
+Codex native CLI hard gate 只覆盖 Codex user-scope native 写入链路：`codex plugin add/remove`、写后本地证据校验，以及需要首次注册、重新指向、校验或移除 AW marketplace 注册的 `codex plugin marketplace add/list/remove`。这些命令失败、超时或输出无法证明写入完成时，本次 AW 写命令必须 fail closed。`codex plugin marketplace upgrade` 不作为 AW 本地 path marketplace 的 hard gate；Codex app-server RPC 也不是写入 hard gate，RPC 不可用只影响 verbose native view 诊断。Codex project-scope 命令不调用这些 CLI/RPC；它们通过宿主 Codex 版本门禁后，只按 repo-managed artifact 的安全检查决定是否继续。
 
 ### 只读命令边界
 
 `status`、发现类页面和主控制台首页可以读取版本与 native 状态，但不能因为发现 agent 版本过低而修改本地状态，也不能自动运行 upgrade/repair。它们只能按普通视图或 verbose 诊断层级展示阻断原因和下一步命令。
 
-普通 `status`、不带 verbose 的 `status --json`、`cleanup --plan` 和主控制台只读首页不启动 `codex app-server`。需要 Codex user-scope native view 的 `status --verbose`、`status --verbose --json`、主控制台诊断详情和发现页可以启动 `codex app-server` 读取 `plugin/list`、`plugin/installed` 和 `plugin/read`；失败时只降级为 native view unknown，不写状态，也不把 unknown 当成 healthy。
+普通 `status`、不带 verbose 的 `status --json`、`cleanup --plan` 和主控制台只读首页不启动 `codex app-server`。需要 Codex user-scope native view 的 `status --verbose`、`status --verbose --json`、主控制台诊断详情和发现页可以启动 `codex app-server` 读取 `plugin/list`、`plugin/installed` 和 `plugin/read`；失败时只降级为 `nativeViewUnknown`，不写状态，也不把该状态当成 healthy。
 
 ### 文档和作者工具边界
 
@@ -271,16 +285,18 @@ Codex native CLI hard gate 只覆盖 Codex user-scope native 写入链路：`cod
 2. 当 `codex --version` 返回 `codex-cli 0.131.0` 时，Codex 目标通过版本门禁，后续失败只来自其它 preflight 或写入逻辑。
 3. 当 `claude --version` 返回 `2.1.87 (Claude Code)` 时，Claude 安装、升级、卸载、执行删除计划的 cleanup 和等价写动作都在写入前失败，并提示需要 Claude Code `>= 2.1.88`。
 4. 当 `claude --version` 返回 `2.1.88 (Claude Code)` 或更高版本时，Claude 目标通过版本门禁。
-5. `--platform both` 中任一平台缺失、`probeFailed`、不可解析或版本过低时，本次命令没有任何平台写入、没有新增 native cache、active view、install record、native marker，也没有写 repo-visible artifacts。
-6. 设置 `AW_FORCE_CODEX_AVAILABLE=1` 或 `AW_FORCE_CLAUDE_AVAILABLE=1` 不能绕过版本过低、不可解析或 `probeFailed` 的结论。
-7. `status --verbose --json` 能稳定输出每个平台的 agent version 状态、检测版本、最低要求和阻断 reason code；普通 `status` 只在 `missing`、`unparseable` 或 `tooOld` 时给出简短提示，不展示 `probeFailed`。
-8. 已安装 target 的 `aw config set/unset/reset` 或主控制台配置保存命中 dynamic artifact refresh / SkillTrigger apply 时，若受影响 Codex 或 Claude 版本不达标，本次配置命令在写 config store 前失败，不写 runtime artifact、dynamic diagnostic cache 或部分平台刷新；未安装插件预配置、orphan store raw reset、可认领但尚未认领位置的 config-only 预写入，以及未触发 refresh/apply 的纯 config store 更新不做宿主 agent 版本门禁。可认领 project target 的配置写入如果触发 project artifact refresh，必须先失败并提示认领；未触发时 receipt 以 `adoptExistingRequired` 或 `noRefreshTarget` 标明没有刷新 target。
-9. 主控制台诊断、主控制台触发的等价写动作和发现类页面有可追踪验收：主控制台首屏和发现页列表读取与 `status --json.consoleItems`、current catalog discovery 同源的 agent version/native 摘要；需要 Codex user-scope native view 的诊断详情走 verbose 读路径；只读页面不写状态、不刷新或移除 marketplace；主控制台触发的写动作、配置保存和“重新应用配置”复用 direct CLI 的版本门禁、`--platform both` 整体失败语义和 Codex user-scope native CLI hard gate，并展示同样的阻断原因与下一步动作。
-10. 支持 Codex 且声明 hooks 的插件，在 user-scope native bundle 中生成 Codex 0.131 可识别的 `.codex-plugin/plugin.json` 的 `hooks` 字段；bundle layout 校验接受并校验该字段。
-11. 同一插件安装到 Codex project scope 时，hooks 仍写入 repo `.codex/hooks.json`，不会尝试创建 project-scope native plugin install state。
-12. 本期不验收旧版 AW-managed Codex user hooks 自动迁移；AW 不再为 Codex user scope 新写 `.codex/hooks.json` hook groups，且无 ownership evidence 的用户/外部 hook groups 保留。
-13. 普通 `status` 和不带 verbose 的 `status --json` 不启动 `codex app-server`；Codex user-scope `status --verbose`、`status --verbose --json`、主控制台诊断详情和发现页能使用 `plugin/installed`、`plugin/read` 和 `plugin/list` 辅助诊断 native view。RPC 不可用时显示 native view unknown，不把它误判为 healthy，也不影响 Codex project-scope repo-managed 状态判断。
-14. RPC 证据只能作为 Codex user-scope native view 和外部来源诊断证据；写命令不为了 ownership 判断启动或依赖 RPC。没有 AW ownership、install record、recovery marker 或受管 cache/config evidence 时，RPC 结果不能授权 cleanup、takeover 或 `codex plugin marketplace remove`；RPC 不可用也不能阻断 Codex CLI 写入主链路。
-15. Codex user-scope 安装、升级、重装和 native repair 路径使用 `codex plugin add` 与 `codex plugin marketplace upgrade` 或等价 Codex CLI 入口；只有删除后已无任何受管 `@aw` Codex user-scope native 使用者或恢复证据时，user-scope cleanup/uninstall 才使用 `codex plugin remove` 和必要的 `codex plugin marketplace remove`。Codex CLI 失败时不手改 Codex config/cache 伪装成功；`aw init`、普通 `status`、`cleanup --plan`、主控制台只读首页和 Codex project-scope 路径不调用这些写入入口。
-16. Claude Code 2.1.88 源码支持的插件能力仍通过 AW bundle/layout 校验：skills、hooks、commands、agents、MCP、LSP、user config 和 marketplace install/uninstall 不被本轮改动破坏。
-17. `docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/architecture.md`、`.agents/skills/create-agent-workflows-plugin/` 参考文档和相关 fixtures 同步描述新的 agent 版本门禁、Codex native hooks、Codex CLI 写入和 RPC 诊断边界。
+5. Codex 或 Claude 单平台写命令遇到 executable 缺失、版本命令失败或超时、版本输出不可解析时，都在写入前失败；reason code 分别为 `agentVersionMissing`、`agentVersionProbeFailed`、`agentVersionUnparseable`，错误信息包含平台、原始失败原因、最低版本和升级建议。
+6. SemVer 解析验收至少覆盖：接受 `codex-cli 0.131.0` 和 `2.1.119 (Claude Code)`；拒绝 `latest`、`v0.131.0`、`agent-0.131.0`、`0.131`、`0.131.0beta` 和 `0.131.0.1`，不能从紧贴其它字符的 token 中截取合法子串；预发布版本按 SemVer precedence 比较，例如 `0.131.0-beta.1` 低于 `0.131.0`，`0.131.1-alpha.1` 高于 `0.131.0`，`2.1.88-alpha.1` 低于 `2.1.88`。
+7. `--platform both` 中任一平台缺失、`probeFailed`、不可解析或版本过低时，本次命令没有任何平台写入、没有新增 native cache、active view、install record、native marker，也没有写 repo-visible artifacts。
+8. 设置 `AW_FORCE_CODEX_AVAILABLE=1` 或 `AW_FORCE_CLAUDE_AVAILABLE=1` 不能绕过版本过低、不可解析或 `probeFailed` 的结论。
+9. `status --verbose --json` 能稳定输出每个平台的 agent version 状态、检测版本、最低要求和阻断 reason code；普通 `status` 只在 `missing`、`unparseable` 或 `tooOld` 时给出简短提示，不展示 `probeFailed`。
+10. 已安装 target 的 `aw config set/unset/reset` 或主控制台配置保存命中 dynamic artifact refresh / SkillTrigger apply 时，若受影响 Codex 或 Claude 版本不达标，本次配置命令在写 config store 前失败，不写 runtime artifact、dynamic diagnostic cache 或部分平台刷新；未安装插件预配置、orphan store raw reset、可认领但尚未认领位置的 config-only 预写入，以及未触发 refresh/apply 的纯 config store 更新不做宿主 agent 版本门禁。可认领 project target 的配置写入如果触发 project artifact refresh，必须先失败并提示认领；未触发时 receipt 以 `adoptExistingRequired` 或 `noRefreshTarget` 标明没有刷新 target。
+11. 主控制台诊断、主控制台触发的等价写动作和发现类页面有可追踪验收：主控制台首屏和发现页列表读取与 `status --json.consoleItems`、current catalog discovery 同源的 agent version/native 摘要；需要 Codex user-scope native view 的诊断详情走 verbose 读路径；只读页面不写状态、不刷新或移除 marketplace；主控制台触发的写动作、配置保存和“重新应用配置”复用 direct CLI 的版本门禁、`--platform both` 整体失败语义和 Codex user-scope native CLI hard gate，并展示同样的阻断原因与下一步动作。
+12. 支持 Codex 且声明 hooks 的插件，在 user-scope native bundle 中生成 Codex 0.131 可识别的 `.codex-plugin/plugin.json` 的 `hooks` 字段；bundle layout 校验接受并校验该字段。
+13. 同一插件安装到 Codex project scope 时，hooks 仍写入 repo `.codex/hooks.json`，不会尝试创建 project-scope native plugin install state。
+14. 本期不验收旧版 AW-managed Codex user hooks 自动迁移；AW 不再为 Codex user scope 新写 `.codex/hooks.json` hook groups，且无 ownership evidence 的用户/外部 hook groups 保留。
+15. 普通 `status` 和不带 verbose 的 `status --json` 不启动 `codex app-server`；Codex user-scope `status --verbose`、`status --verbose --json`、主控制台诊断详情和发现页能使用 `plugin/installed`、`plugin/read` 和 `plugin/list` 辅助诊断 native view。RPC 不可用时显示 `nativeViewUnknown`，不把它误判为 healthy，也不影响 Codex project-scope repo-managed 状态判断。
+16. RPC 证据只能作为 Codex user-scope native view 和外部来源诊断证据；写命令不为了 ownership 判断启动或依赖 RPC。没有 AW ownership、install record、recovery marker 或受管 cache/config evidence 时，RPC 结果不能授权 cleanup、takeover 或 `codex plugin marketplace remove`；RPC 不可用也不能阻断 Codex CLI 写入主链路。
+17. Codex user-scope 安装、升级、重装和 native repair 路径先物化并校验 AW 本地 path active view，再用 `codex plugin marketplace add/list` 首次注册、重新指向或确认 Codex 侧 AW marketplace 指向当前 canonical `AW_HOME`，最后用 `codex plugin add` 执行插件写入；本地 path source 不用 `codex plugin marketplace upgrade` 刷新。只有删除后已无任何受管 `@aw` Codex user-scope native 使用者或恢复证据时，user-scope cleanup/uninstall 才使用 `codex plugin remove` 和必要的 `codex plugin marketplace remove`。Codex CLI 失败时不手改 Codex config/cache 伪装成功；`aw init`、普通 `status`、`cleanup --plan`、主控制台只读首页和 Codex project-scope 路径不调用这些写入入口。
+18. Claude Code 2.1.88 源码支持的插件能力仍通过 AW bundle/layout 校验：skills、hooks、commands、agents、MCP、LSP、user config 和 marketplace install/uninstall 不被本轮改动破坏。
+19. `docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/architecture.md`、`.agents/skills/create-agent-workflows-plugin/` 参考文档和相关 fixtures 同步描述新的 agent 版本门禁、Codex native hooks、Codex CLI 写入和 RPC 诊断边界。

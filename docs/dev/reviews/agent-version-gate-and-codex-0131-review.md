@@ -3,16 +3,16 @@
 审查对象：`docs/dev/specs/agent-version-gate-and-codex-0131.md`  
 复审时间：2026-05-21
 
-本轮复审确认：上一版报告里的阻断问题已经修复。按照完整性、一致性、清晰度和 YAGNI 四个维度重新检查后，当前没有发现还会导致错误计划、错误实现、返工或用户误判的 blocking finding。
+本轮复审先核对了上一轮报告指出的两个阻断问题是否已经修复，再按完整性、一致性、清晰度和 YAGNI 重新通读全文。当前版本已经把“宿主 agent 版本状态”和“Codex native view 诊断状态”明确拆开，也把 `missing` / `probeFailed` / `unparseable` / 严格 SemVer 边界纳入了验收矩阵。按“是否会误导需求确认、计划拆分、实现边界或验收判断”的标准，本轮未发现新的阻断问题。
 
 ## Findings
 
-本轮无 blocking findings。
+本轮未发现会导致错误计划、错误实现、返工或用户误判的 blocking finding。
 
 ## 非阻塞建议
 
-1. `aw config` 门禁段可以顺手把“可认领但未认领位置的 config-only 预写入”再点明一点，例如直接挂到 `adoptExistingRequired` / `noRefreshTarget` 这类既有 receipt 语义上。当前 `docs/dev/specs/agent-version-gate-and-codex-0131.md:141-145`、`242` 已经能推导出这条边界，所以这不是阻断问题；只是补上后，后续 Plan 承接现有配置写入分支会更省解释成本。
+本轮无非阻塞建议。
 
 ## 结论
 
-这版 Spec 现在已经具备继续做计划拆分和验收追踪的稳定性。宿主 agent 版本门禁覆盖范围、`aw config`/主控制台配置写入边界、Codex 只读 RPC 的消费边界、native hooks 与 marketplace 生命周期、以及文档和夹具同步要求，都已经落成可执行合同；继续推进实现不会因为 Spec 本身缺口而明显偏航。
+上一轮报告提出的关键缺口已经补齐。当前 Spec 的范围、决策、非目标、状态模型、命令边界和验收标准已经能支撑后续计划拆分、实现落地和验收追踪；在本轮审查范围内，没有发现需要继续阻断推进的问题。
