@@ -174,6 +174,30 @@ async function materializePlugin(root: string, plugin: PluginMeta): Promise<Plug
   };
 }
 
+async function materializeSkillTriggerPluginForConfigTest(root: string, pluginName: string): Promise<PluginMeta> {
+  const basePlugin = createPlugin(pluginName);
+  const plugin = await materializePlugin(root, {
+    ...basePlugin,
+    manifest: {
+      ...basePlugin.manifest,
+      skills: './skills',
+      skillTriggers: {
+        commit: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+      config: undefined,
+    },
+  } as PluginMeta);
+  await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+  await fs.outputFile(
+    path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+    'policy:\n  allow_implicit_invocation: true\n',
+  );
+  return plugin;
+}
+
 function createAgentVersionRunner(options: {
   codex?: string;
   claude?: string;
@@ -1023,6 +1047,121 @@ describe('plugin config write helper', () => {
         },
       },
     } as never);
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+
+    await expect(applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {},
+    });
+    expect(materializeSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses user install record evidence when gating built-in SkillTrigger writes', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-record-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializeSkillTriggerPluginForConfigTest(root, 'record-backed-skill-plugin');
+    await writeUserInstallRecordForConfigTest({ root, cwd, env, plugin });
+
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+
+    await expect(applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {},
+    });
+    expect(materializeSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses user dynamic diagnostic cache evidence when gating built-in SkillTrigger writes', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-cache-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializeSkillTriggerPluginForConfigTest(root, 'cache-backed-skill-plugin');
+    const location = {
+      plugin: plugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    const cachePath = getDiagnosticCachePath(cwd, location, env);
+    await writeDynamicArtifactDiagnosticCacheAt(cachePath, {
+      version: 1,
+      recordId: path.basename(cachePath, '.json'),
+      location,
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      artifacts: [{
+        id: 'user-instructions',
+        target: 'codex.developerInstructionsBlock',
+        state: 'present',
+        refreshKeys: ['mode'],
+        configDigest: 'sha256:old-config',
+        contentDigest: 'sha256:old-content',
+      }],
+    });
+
     const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
       committed: false,
       warnings: [],

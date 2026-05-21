@@ -204,28 +204,45 @@ function sameReceiptTarget(
     && (left.projectKey ?? null) === (right.projectKey ?? null);
 }
 
-async function hasProjectInstallRecordTarget(options: {
+async function hasConfigApplyTargetEvidence(options: {
   pluginName: string;
   platform: PlatformName;
+  scope: Scope;
   projectKey?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<boolean> {
-  if (!options.projectKey) {
+  if (options.scope === 'project' && !options.projectKey) {
     return false;
   }
 
+  const location: PluginLocation = options.scope === 'project'
+    ? {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'project',
+        projectKey: options.projectKey,
+      }
+    : {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'user',
+      };
   const recordRead = await readInstallRecordForLocation({
     cwd: options.cwd,
     env: options.env,
-    location: {
-      plugin: options.pluginName,
-      platform: options.platform,
-      scope: 'project',
-      projectKey: options.projectKey,
-    },
+    location,
   });
-  return recordRead.status === 'ok';
+  if (recordRead.status === 'ok') {
+    return true;
+  }
+
+  const diagnosticCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  return diagnosticCacheRead.status === 'ok';
 }
 
 async function resolveDefaultConfigApplyTargets(options: {
@@ -256,10 +273,10 @@ async function resolveDefaultConfigApplyTargets(options: {
         continue;
       }
       if (
-        scope === 'project' &&
-        await hasProjectInstallRecordTarget({
+        await hasConfigApplyTargetEvidence({
           pluginName: options.plugin.manifest.name,
           platform,
+          scope,
           projectKey,
           cwd: options.cwd,
           env: options.env,
