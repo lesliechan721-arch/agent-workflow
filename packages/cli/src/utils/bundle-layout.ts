@@ -20,7 +20,10 @@ import {
 import { readJsonFile } from './json.js';
 import { readMarketplaceManifestAtPath } from './marketplace.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
-import { validateRenderedClaudeHooksContent } from './rendered-contract.js';
+import {
+  validateRenderedClaudeHooksContent,
+  validateRenderedCodexHooksContent,
+} from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
@@ -316,6 +319,7 @@ async function validateCodexManifest(
       'mcpServers',
       'apps',
       'interface',
+      'hooks',
     ].includes(key)) {
       throw new Error(`Invalid codex manifest: unknown field "${key}".`);
     }
@@ -332,6 +336,12 @@ async function validateCodexManifest(
   }
   if (manifest.apps) {
     await assertAppsArtifact(pluginRoot, manifest.apps, 'codex.apps', './codex/');
+  }
+  if (manifest.hooks) {
+    if (typeof manifest.hooks === 'string') {
+      throw new Error('Invalid codex.hooks: expected an inline hooks object.');
+    }
+    validateRenderedCodexHooksContent(manifest.hooks, 'codex.hooks');
   }
 }
 

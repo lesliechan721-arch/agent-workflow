@@ -2,12 +2,27 @@ export type PlatformName = 'codex' | 'claude';
 export type SupportedPlatformSet = ReadonlySet<PlatformName>;
 export type PlatformSelection = PlatformName | 'both';
 export type Scope = 'project' | 'user';
-export type CommandAction = 'install' | 'uninstall' | 'upgrade' | 'status';
+export type CommandAction =
+  | 'install'
+  | 'uninstall'
+  | 'upgrade'
+  | 'upgradeAll'
+  | 'repair'
+  | 'reinstall'
+  | 'cleanup'
+  | 'config'
+  | 'status';
 export type StrictSemVerString = string;
 export type CliVersion = StrictSemVerString;
 export type CatalogVersion = StrictSemVerString;
 export type PluginVersion = StrictSemVerString;
 export type DependencyVersion = StrictSemVerString;
+export type AgentVersionStatus = 'supported' | 'missing' | 'probeFailed' | 'unparseable' | 'tooOld';
+export type AgentVersionReasonCode =
+  | 'agentVersionMissing'
+  | 'agentVersionProbeFailed'
+  | 'agentVersionUnparseable'
+  | 'agentVersionTooLow';
 export type InstalledVersion = string;
 export type CatalogChannel = 'latest' | 'beta';
 export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
@@ -577,7 +592,7 @@ export interface PlatformPluginManifest {
   apps?: string;
   interface?: PluginInterfaceMeta;
   agents?: string[];
-  hooks?: string | Record<string, unknown>;
+  hooks?: string | RenderedHooksManifest;
   commands?: string;
   outputStyles?: string;
   lspServers?: string | Array<string | Record<string, unknown>> | Record<string, unknown>;
@@ -588,6 +603,13 @@ export interface PlatformPluginManifest {
 export interface CodexHookHandler {
   type: 'command';
   command: string;
+}
+
+export interface RenderedHooksManifest {
+  hooks: Record<string, Array<{
+    matcher?: string;
+    hooks: CodexHookHandler[];
+  }>>;
 }
 
 export interface RenderedHookGroup {
@@ -659,11 +681,51 @@ export interface TrackingManifest {
   plugins: Record<string, TrackingPluginRecord>;
 }
 
+export interface AgentVersionRequirement {
+  platform: PlatformName;
+  command: string;
+  displayName: string;
+  minVersion: StrictSemVerString;
+}
+
+export interface AgentVersionProbeResult {
+  platform: PlatformName;
+  command: string;
+  status: AgentVersionStatus;
+  requiredMinVersion: StrictSemVerString;
+  detectedVersion?: StrictSemVerString;
+  reasonCode?: AgentVersionReasonCode;
+  stdout: string;
+  stderr: string;
+  rawOutput: string;
+  exitCode?: number;
+  details?: string;
+}
+
+export interface AgentVersionGateFailure {
+  platform: PlatformName;
+  command: CommandAction | string;
+  probeCommand: string;
+  status: Exclude<AgentVersionStatus, 'supported'>;
+  reasonCode: AgentVersionReasonCode;
+  detectedVersion?: StrictSemVerString;
+  requiredMinVersion: StrictSemVerString;
+  failureReason: string;
+  suggestedAction: string;
+  rawVersionOutput?: string;
+}
+
+export interface AgentVersionGateErrorPayload {
+  command: CommandAction | string;
+  failures: AgentVersionGateFailure[];
+}
+
 export interface PlatformDetection {
   available: boolean;
   scopes: Scope[];
   preferredScope?: Scope;
   reason?: string;
+  agentVersion?: AgentVersionProbeResult;
 }
 
 export interface EnvironmentDetection {
@@ -1137,6 +1199,30 @@ export function isCommandWarningError(error: unknown): error is CommandWarningEr
     error.name === 'CommandWarningError' &&
     Array.isArray((error as CommandWarningError).warnings) &&
     typeof (error as CommandWarningError).exitCode === 'number'
+  );
+}
+
+export class AgentVersionGateError extends Error {
+  readonly code = 'AGENT_VERSION_GATE_FAILED';
+  readonly payload: AgentVersionGateErrorPayload;
+
+  constructor(
+    message: string,
+    payload: AgentVersionGateErrorPayload,
+  ) {
+    super(message);
+    this.name = 'AgentVersionGateError';
+    this.payload = payload;
+  }
+}
+
+export function isAgentVersionGateError(error: unknown): error is AgentVersionGateError {
+  return (
+    error instanceof Error &&
+    error.name === 'AgentVersionGateError' &&
+    typeof (error as AgentVersionGateError).code === 'string' &&
+    typeof (error as AgentVersionGateError).payload === 'object' &&
+    Array.isArray((error as AgentVersionGateError).payload.failures)
   );
 }
 

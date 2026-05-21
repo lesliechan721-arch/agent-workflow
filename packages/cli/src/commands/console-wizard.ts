@@ -37,7 +37,6 @@ import {
   CodexProjectWriteSafetyError,
   preflightCodexProjectWriteSafety,
 } from './codex-project-safety.js';
-import { canExecuteCodexProjectWithoutNative } from './platform-resolution.js';
 import {
   planPluginDependencyWrites,
   type PluginDependencyNodePlan,
@@ -45,6 +44,7 @@ import {
 } from '../utils/plugin-dependency-planner.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import { resolveSkillTriggerConfigEntries } from '../utils/skill-trigger-preferences.js';
+import { getAgentVersionRequirement } from '../utils/agent-version.js';
 
 export type ConsoleWriteWizardOperation = 'install' | 'upgrade';
 export type ConsoleWriteIntent = ConsoleWriteWizardOperation | 'repairInstall' | 'cleanupRecovery';
@@ -59,6 +59,7 @@ export type ConsoleWriteBlockedReasonCode =
   | 'unmanagedArtifactConflict'
   | 'catalogUnavailable'
   | 'cleanupRecoveryUnmatched'
+  | 'agentVersionBlocked'
   | 'custom';
 
 export interface ConsoleWriteBlockedReason {
@@ -395,31 +396,31 @@ function mapWriteSafetyErrorToBlockedReason(
   }
 }
 
-function createCodexProjectNativeOptionalNote(options: {
+function createAgentVersionBlockedReason(options: {
   detection?: EnvironmentDetection;
-  scope: Scope;
   platforms: PlatformName[];
-  targets: ResolvedPluginTarget[];
   operation: ConsoleWriteWizardOperation;
-}): string | null {
-  if (options.scope !== 'project' || !options.platforms.includes('codex')) {
-    return null;
+}): ConsoleWriteBlockedReason | null {
+  for (const platform of options.platforms) {
+    const detected = options.detection?.[platform];
+    const requirement = getAgentVersionRequirement(platform);
+    const agentVersion = detected?.agentVersion;
+    if (agentVersion?.status === 'supported') {
+      continue;
+    }
+    if (agentVersion || detected?.available === false) {
+      const status = agentVersion?.status ?? 'missing';
+      const detectedVersion = agentVersion?.detectedVersion ? `当前 ${agentVersion.detectedVersion}` : '当前未找到可执行文件';
+      return {
+        code: 'agentVersionBlocked',
+        message: `${requirement.displayName} 写入被版本门禁阻断：执行 ${options.operation} 需要 ${requirement.displayName} >= ${requirement.minVersion}，${detectedVersion}。`,
+        nextSteps: [
+          `请升级或安装 ${requirement.displayName} 到 ${requirement.minVersion} 或更高版本后重试。`,
+        ],
+      };
+    }
   }
-
-  if (options.detection?.codex.available !== false) {
-    return null;
-  }
-
-  const plugins = options.targets.map((target) => target.currentPlugin ?? target.plugin);
-  if (!canExecuteCodexProjectWithoutNative({
-    action: options.operation,
-    scope: options.scope,
-    plugins,
-  })) {
-    return null;
-  }
-
-  return '当前环境没有可用的 Codex native runner，但这个目标只会写当前项目文件，所以仍然可以继续。';
+  return null;
 }
 
 export async function prepareConsoleWritePreflight(
@@ -469,15 +470,22 @@ export async function prepareConsoleWritePreflight(
     };
   }
 
-  const notes = uniqueStrings([
-    createCodexProjectNativeOptionalNote({
-      detection: options.detection,
-      scope: options.scope,
-      platforms: options.platforms,
-      targets: options.targets,
+  const blockedByAgentVersion = createAgentVersionBlockedReason({
+    detection: options.detection,
+    platforms: options.platforms,
+    operation: actionPlan.operation,
+  });
+  if (blockedByAgentVersion) {
+    return {
+      ok: false,
       operation: actionPlan.operation,
-    }) ?? '',
-  ]);
+      blockedReason: blockedByAgentVersion,
+      nextSteps: [...blockedByAgentVersion.nextSteps],
+      notes: [],
+    };
+  }
+
+  const notes = uniqueStrings([]);
 
   try {
     await preflightCodexProjectWriteSafety({

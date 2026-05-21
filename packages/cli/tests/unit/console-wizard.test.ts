@@ -498,7 +498,7 @@ describe('console write decision model', () => {
     expect(configResolver).not.toHaveBeenCalled();
   });
 
-  it('keeps Codex project targets available without native and explains that the write stays project-local', async () => {
+  it('blocks Codex project writes when the agent version gate cannot pass', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
       forceCodex: false,
@@ -526,8 +526,12 @@ describe('console write decision model', () => {
       detection,
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.notes).toContain('当前环境没有可用的 Codex native runner，但这个目标只会写当前项目文件，所以仍然可以继续。');
+    expect(result.ok).toBe(false);
+    expect(result.blockedReason).toMatchObject({
+      code: 'agentVersionBlocked',
+      message: expect.stringContaining('Codex 写入被版本门禁阻断'),
+    });
+    expect(result.nextSteps.join('\n')).toContain('0.131.0');
   });
 
   it('maps unreadable user Codex config to a structured blocked reason', async () => {

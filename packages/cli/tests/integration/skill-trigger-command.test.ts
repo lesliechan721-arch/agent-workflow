@@ -1046,7 +1046,7 @@ describe('skill trigger command integration', () => {
     }
     expect(upgradeAllError).toBeInstanceOf(Error);
     expect((upgradeAllError as Error).message).toContain(
-      'config.json 无法读取或 schema 不受支持',
+      'installed.json 处于 degraded 状态',
     );
   });
 

@@ -2,7 +2,11 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { createAdapters, loadPluginTargetsForCommand } from './common.js';
+import {
+  assertAgentVersionsForWriteTargets,
+  createAdapters,
+  loadPluginTargetsForCommand,
+} from './common.js';
 import {
   collectP7Locations,
   type CollectedLocationState,
@@ -2160,6 +2164,13 @@ export async function repairCommand(
         }))
       .map((state) => toCommandPluginLocation(state.location)),
     env,
+  });
+  await assertAgentVersionsForWriteTargets({
+    command: 'repair',
+    platforms: [...new Set(repairStates.map((state) => state.location.platform))],
+    cwd: options.cwd,
+    env,
+    nativeCliRunner: context.nativeCliRunner,
   });
 
   const locations: RepairLocationPayload[] = [];

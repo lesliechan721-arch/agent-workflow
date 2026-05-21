@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
+  AgentVersionProbeResult,
   CatalogResolution,
   ClaudeCapabilitySnapshot,
   CodexCapabilitySnapshot,
@@ -17,6 +18,11 @@ import type {
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
+import {
+  projectAgentVersionDiagnostic,
+  type AgentVersionDiagnosticProjection,
+} from '../output/model.js';
+import type { NativeCliRunner } from '../utils/native-cli.js';
 import { listCodexNativeRecoveryBreadcrumbs } from '../utils/codex-native-recovery.js';
 import {
   hasCodexNativeCacheEvidence,
@@ -159,6 +165,7 @@ export interface CommandCandidate {
     dependencyProtected: boolean;
     ownerConflict: boolean;
   };
+  agentVersion?: AgentVersionDiagnosticProjection;
 }
 
 export interface DiscoveryOptions {
@@ -169,6 +176,7 @@ export interface DiscoveryOptions {
   pluginNames?: string[];
   env?: NodeJS.ProcessEnv;
   includeCurrentCatalog?: boolean;
+  nativeCliRunner?: NativeCliRunner;
 }
 
 export interface ResolveDiscoveredPluginTargetsOptions extends DiscoveryOptions {
@@ -1214,6 +1222,10 @@ export async function buildCommandCandidates(
     includeCurrentCatalog: options.includeCurrentCatalog ?? true,
   });
   const ledger = await readInstalledLedger(options.env ?? process.env);
+  const detection = await detectEnvironment(options.cwd, options.env ?? process.env, {
+    includeAgentVersions: true,
+    nativeCliRunner: options.nativeCliRunner,
+  });
   const candidates: CommandCandidate[] = [];
   const requestedNames = options.pluginNames ?? options.names;
 
@@ -1274,6 +1286,9 @@ export async function buildCommandCandidates(
       disabledReason,
       ...(dependencyStatus ? { dependencyStatus } : {}),
       ...(installState ? { installState } : {}),
+      ...(detection[discovered.platform].agentVersion
+        ? { agentVersion: projectAgentVersionDiagnostic(detection[discovered.platform].agentVersion as AgentVersionProbeResult) }
+        : {}),
       evidence: discovered.evidence,
       evidenceByPlatformScope: discovered.evidenceByPlatformScope,
     };

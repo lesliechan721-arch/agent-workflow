@@ -644,6 +644,26 @@ describe('authoring tools', () => {
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('target catalog minimum "0.8.0"'),
     });
+
+    const perAgentVersionDir = path.join(pluginsRoot, 'per-agent-version');
+    await writeAuthoringPluginManifest(
+      perAgentVersionDir,
+      {
+        ...createBaseManifest('per-agent-version'),
+        compatibility: {
+          aw: {
+            minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
+          },
+          codex: {
+            minVersion: '0.131.0',
+          },
+        },
+      },
+      { preserveCompatibility: true },
+    );
+    await expect(runValidatePlugin(perAgentVersionDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('compatibility has unknown field "codex"'),
+    });
   });
 
   it('scaffolds skill metadata from the skill name and description when they differ from plugin metadata', async () => {
@@ -1223,6 +1243,10 @@ describe('authoring tools', () => {
     );
     expect(skillDoc).toContain('`references/slash-commands.md`');
     expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
+    expect(skillDoc).toContain('不要在 manifest 中声明最低 Codex 或 Claude Code 版本字段');
+    expect(skillDoc).toContain('codex plugin add/remove');
+    expect(skillDoc).not.toContain('`plugin/install`');
+    expect(skillDoc).not.toContain('`plugin/uninstall`');
 
     expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
     expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
@@ -1234,6 +1258,8 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).not.toContain('allowInstallOverride');
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
+    expect(manifestSpecDoc).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
+    expect(manifestSpecDoc).toContain('Codex `>= 0.131.0`、Claude Code `>= 2.1.88`');
     expect(() =>
       validatePluginManifest(
         '/tmp/coding-standards',
@@ -1264,6 +1290,8 @@ describe('authoring tools', () => {
     expect(extensionsSpecDoc).toContain('matcherless 事件不要写 `matcher`');
     expect(extensionsSpecDoc).toContain('`agentOverrides` 不用于 `nativeHooks`');
     expect(extensionsSpecDoc).toContain('`session_stop` 已从公共 hook 中移除');
+    expect(extensionsSpecDoc).toContain('`.codex-plugin/plugin.json` 的 `hooks` 字段');
+    expect(extensionsSpecDoc).toContain('| Codex project scope | `.codex/hooks.json` |');
     expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
 
     expect(slashCommandsDoc).toMatch(/公共 `slashCommands` 是源码层唯一的(?:跨平台)?手动命令作者入口/);
@@ -1283,6 +1311,7 @@ describe('authoring tools', () => {
     expect(authoringDoc).toContain(
       '`skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`',
     );
+    expect(authoringDoc).toContain('作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本');
     expect(authoringDoc).not.toContain('--skill-trigger');
     expect(authoringDoc).not.toContain('references/project-plugin-contract.md');
     expect(authoringDoc).not.toContain('references/skill-trigger-rules.md');
@@ -1293,9 +1322,12 @@ describe('authoring tools', () => {
     );
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
+    expect(exampleDoc).toContain('codex plugin marketplace add/list');
+    expect(exampleDoc).toContain('写入前仍要求本机 Codex `>= 0.131.0`');
     expect(exampleDoc).toContain(
       '`skillTriggers.review-workflow.{defaultTrigger, allowDynamicTrigger}`',
     );
+    expect(exampleDoc).not.toContain('`plugin/install`');
     expect(exampleDoc).not.toContain('allowInstallOverride');
     expect(exampleDoc).toContain('`slash-commands/`');
     expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');

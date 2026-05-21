@@ -31,6 +31,7 @@ import { removeCodexPluginEnabledFile } from '../../src/utils/codex-config.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type {
+  AgentVersionGateErrorPayload,
   GeneratedArtifact,
   PlatformAdapter,
   PlatformName,
@@ -38,6 +39,7 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
@@ -177,6 +179,35 @@ class FakeCodexNativeCleanupAdapter extends FakeAdapter {
   }
 }
 
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in cleanup-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      return {
+        exitCode: 0,
+        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: options.claude ?? '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -298,6 +329,68 @@ describe('cleanup command (P9)', () => {
     expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
     await expect(fs.readFile(path.join(builder.paths.awHome, 'cleanup-ran.txt'), 'utf8')).resolves.toBe('ran');
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
+  });
+
+  it('fails Claude cleanup writes on low agent version before uninstall-equivalent work starts', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'claude', scope: 'user' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = await builder.writeInstallRecord(target, lifecycle);
+    const recordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${target.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(recordPath);
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit', 'cleanup-low-version-claude.txt');
+
+    const claude = new FakeAdapter();
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'claude',
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          nativeCliRunner: createAgentVersionRunner({
+            claude: '2.1.87 (Claude Code)',
+          }),
+          adapters: {
+            codex: new FakeAdapter(),
+            claude,
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'cleanup',
+      failures: [{
+        platform: 'claude',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '2.1.87',
+        requiredMinVersion: '2.1.88',
+      }],
+    });
+    expect(claude.uninstallPluginCalls).toEqual([]);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-low-version-claude.txt'))).resolves.toBe(false);
   });
 
   it('downgrades healthy installed cleanup to recovery cleanup when --force is set and standard uninstall target resolution fails', async () => {
@@ -641,6 +734,64 @@ describe('cleanup command (P9)', () => {
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
   });
 
+  it('keeps cleanup --plan read-only even when the target agent version is too old', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'cache-only', platform: 'codex', scope: 'user' });
+    const cacheRootPath = path.join(
+      builder.paths.codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      target.location.plugin,
+    );
+    await fs.outputJson(
+      path.join(cacheRootPath, '0.1.0', 'plugin.json'),
+      { id: `${target.location.plugin}@aw`, version: '0.1.0' },
+      { spaces: 2 },
+    );
+
+    const result = await cleanupCommand(
+      ['cache-only'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+        plan: true,
+        force: true,
+        removeConfig: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        nativeCliRunner: createAgentVersionRunner({
+          codex: 'codex-cli 0.130.0',
+        }),
+        adapters: {
+          codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(result.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      dryRun: true,
+      target: {
+        plugin: 'cache-only',
+        platform: 'codex',
+        scope: 'user',
+        targetType: 'cache-only',
+      },
+      blockingReasons: [],
+    });
+    await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
+  });
+
   it('builds a real blocking cleanup plan and renders blocking reasons plus config handling', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'empty-plugin', platform: 'codex', scope: 'user' });
@@ -789,6 +940,69 @@ describe('cleanup command (P9)', () => {
     expect(result.payload.actualBackups?.[0]?.path).toContain(
       path.join(builder.paths.awHome, 'cleanup-backups'),
     );
+  });
+
+  it('fails Codex project cleanup on low agent version before touching repo-managed artifacts', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'project' });
+    const projectIdentityPath = path.join(
+      builder.paths.repoRoot,
+      '.agent-workflows',
+      'project-artifacts',
+      'codex',
+      `${target.sharedIdentityId}.json`,
+    );
+    await builder.writeRepoArtifact(target);
+    await builder.writeProjectIdentity(target);
+    await builder.writeNativeMarker(target, 'install');
+
+    const codex = new FakeAdapter();
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+          force: true,
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          nativeCliRunner: createAgentVersionRunner({
+            codex: 'codex-cli 0.130.0',
+          }),
+          p9TargetResolver: async () => {
+            throw new Error('synthetic target resolution failure');
+          },
+          adapters: {
+            codex,
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'cleanup',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '0.130.0',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    await expect(fs.pathExists(target.repoArtifactPath)).resolves.toBe(true);
+    await expect(fs.pathExists(projectIdentityPath)).resolves.toBe(true);
   });
 
   it('fails closed for unreadable dependency-index references instead of pruning them as stale', async () => {
@@ -1282,6 +1496,89 @@ describe('cleanup command (P9)', () => {
       ]);
       expect(result.payload.targetResults.some((entry) => entry.target.platform === 'both')).toBe(false);
     }
+  });
+
+  it('fails cleanup --platform both before writing any platform when one agent version is blocked', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'git-commit';
+    const codexTarget = builder.createTarget({ pluginName, platform: 'codex', scope: 'user' });
+    const claudeTarget = builder.createTarget({ pluginName, platform: 'claude', scope: 'user' });
+    await builder.writeRepoArtifact(codexTarget);
+    const codexLifecycle = await builder.writeHistoricalLifecycleRuntime(codexTarget);
+    const codexRecord = await builder.writeInstallRecord(codexTarget, codexLifecycle);
+    const codexRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${codexTarget.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(codexRecordPath);
+
+    await builder.writeRepoArtifact(claudeTarget);
+    const claudeLifecycle = await builder.writeHistoricalLifecycleRuntime(claudeTarget);
+    const claudeRecord = await builder.writeInstallRecord(claudeTarget, claudeLifecycle);
+    const claudeRecordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${claudeTarget.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(claudeRecordPath);
+
+    await builder.writeDependencyIndex([
+      { target: codexTarget, record: codexRecord },
+      { target: claudeTarget, record: claudeRecord },
+    ]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, pluginName, 'cleanup-both-should-not-run.txt');
+
+    const codex = new FakeAdapter();
+    const claude = new FakeAdapter();
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await cleanupCommand(
+        [pluginName],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'both',
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          nativeCliRunner: createAgentVersionRunner({
+            codex: 'codex-cli 0.131.0',
+            claude: '2.1.87 (Claude Code)',
+          }),
+          adapters: {
+            codex,
+            claude,
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'cleanup',
+      failures: [{
+        platform: 'claude',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '2.1.87',
+        requiredMinVersion: '2.1.88',
+      }],
+    });
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(claude.uninstallPluginCalls).toEqual([]);
+    await expect(fs.pathExists(codexRecordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(claudeRecordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-both-should-not-run.txt'))).resolves.toBe(false);
   });
 
   it('allows cleanup --force to remove the target while keeping verified dependents and surfacing follow-up guidance', async () => {

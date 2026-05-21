@@ -67,14 +67,10 @@ import {
   composeManagedDeveloperInstructionsBlock,
   readCodexConfigFile,
   readRenderedCodexMcpServersFile,
-  removeCodexMarketplaceFile,
   resolveCodexMcpServerStatusSignal,
 } from '../utils/codex-config.js';
 import {
-  CodexAppServerError,
   type CodexAppServerProcessRunner,
-  installCodexPluginViaAppServer,
-  uninstallCodexPluginViaAppServer,
 } from '../utils/codex-app-server-client.js';
 import {
   checkCodexNativeInstallPostCheck,
@@ -181,10 +177,15 @@ import {
   requiresCodexNativePlugin,
 } from '../utils/codex-project-surface.js';
 import {
+  buildCodexMarketplaceAddInvocation,
+  buildCodexMarketplaceListInvocation,
+  buildCodexMarketplaceRemoveInvocation,
+  buildCodexPluginAddInvocation,
+  buildCodexPluginListInvocation,
+  buildCodexPluginRemoveInvocation,
   NativeCliError,
-  runNativeCli,
-  type NativeCliInvocation,
   type NativeCliRunner,
+  runNativeCliChecked,
 } from '../utils/native-cli.js';
 import {
   calculateFileDigest,
@@ -204,6 +205,8 @@ import {
   preflightCodexProjectStatusProjectConfig,
 } from '../commands/codex-project-safety.js';
 
+export { buildCodexMarketplaceAddInvocation };
+
 export {
   getCodexProjectManagedKinds,
   hasCodexProjectManagedArtifacts,
@@ -219,19 +222,6 @@ type NativeMarketplaceOperation = NativeMarketplaceEventData['operation'];
 type NativeRpcMethod = NativeRpcEventData['method'];
 type NativeRecoveryOperation = NativeRecoveryEventData['operation'];
 type NativePostCheckOperation = NativePostCheckEventData['operation'];
-
-export function buildCodexMarketplaceAddInvocation(
-  awHome: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'marketplace', 'add', awHome],
-    cwd,
-    env,
-  };
-}
 
 function normalizeCodexMarketplaceSource(value: string | undefined): string | undefined {
   return value ? path.normalize(value) : undefined;
@@ -332,21 +322,6 @@ function summarizeNativeCliOutput(error: NativeCliError): string {
   return detail || `exit code ${error.exitCode}`;
 }
 
-function classifyCodexMarketplaceError(error: unknown): string {
-  if (error instanceof NativeCliError) {
-    const cause = error.cause as { code?: string } | undefined;
-    if (cause?.code === 'ENOENT') {
-      return 'spawn_failure';
-    }
-    if (error.exitCode === 124) {
-      return 'timeout';
-    }
-    return 'native_cli_failed';
-  }
-
-  return 'native_cli_failed';
-}
-
 function createCodexMarketplaceSuggestion(
   awHome: string,
   error?: unknown,
@@ -356,46 +331,6 @@ function createCodexMarketplaceSuggestion(
   }
 
   return `请确认可以运行 \`codex plugin marketplace add ${awHome}\`。${nativeCliFailureHint(error)}`;
-}
-
-function shouldStageCodexUserDynamicSkillMarketplace(plugin: PluginMeta, scope: Scope): boolean {
-  return (
-    scope === 'user' &&
-    getCodexDynamicArtifactTargets(plugin, { scope: 'user' }).some((target) =>
-      target.target === 'codex.skill'
-    )
-  );
-}
-
-async function stageCodexUserDynamicSkillMarketplace(options: {
-  awHome: string;
-  plugin: PluginMeta;
-  scope: Scope;
-  skillKeys: readonly string[];
-}): Promise<{ rootDir: string; marketplacePath: string } | null> {
-  if (!shouldStageCodexUserDynamicSkillMarketplace(options.plugin, options.scope)) {
-    return null;
-  }
-
-  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-native-marketplace-'));
-  try {
-    await fs.copy(options.awHome, stagingRoot, {
-      overwrite: true,
-      errorOnExist: false,
-    });
-    await materializeStagedMarketplaceCodexDynamicSkills({
-      rootDir: stagingRoot,
-      pluginName: options.plugin.manifest.name,
-      skillKeys: options.skillKeys,
-    });
-    return {
-      rootDir: stagingRoot,
-      marketplacePath: path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json'),
-    };
-  } catch (error) {
-    await fs.remove(stagingRoot).catch(() => undefined);
-    throw error;
-  }
 }
 
 async function resolveCodexUserDynamicSkillSyncKeys(options: {
@@ -469,21 +404,71 @@ function nativeCliFailureHint(error: unknown): string {
   return summarizeNativeCliOutput(error);
 }
 
-function createCodexMarketplaceAddError(
-  awHome: string,
-  error: unknown,
-): Error {
-  return new Error(
-    `无法通过 Codex 原生命令注册 AW 本地 marketplace：请确认可以运行 \`codex plugin marketplace add ${awHome}\`。${nativeCliFailureHint(error)}`,
-  );
-}
-
 function createCodexMarketplaceVerificationError(
   awHome: string,
   configPath: string,
 ): Error {
   return new Error(
     `Codex 原生命令已执行，但 ${configPath} 中的 [marketplaces.aw] 没有指向 ${awHome}（source_type 应为 "local"）。请手动运行 \`codex plugin marketplace add ${awHome}\` 后重试。`,
+  );
+}
+
+type CodexNativeCliReasonCode =
+  | 'codexNativeCliUnavailable'
+  | 'codexNativeMarketplaceMissing'
+  | 'codexNativeMarketplaceDrift';
+
+class CodexNativeCliLifecycleError extends Error {
+  readonly reasonCode: CodexNativeCliReasonCode;
+
+  constructor(reasonCode: CodexNativeCliReasonCode, message: string) {
+    super(message);
+    this.name = 'CodexNativeCliLifecycleError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+function getCodexMarketplaceVerificationReason(
+  marketplace: CodexConfigSnapshot['marketplaces'][string] | undefined,
+  awHome: string,
+): CodexNativeCliReasonCode {
+  if (!marketplace?.source) {
+    return 'codexNativeMarketplaceMissing';
+  }
+  return isCodexMarketplaceRegistered(marketplace, awHome)
+    ? 'codexNativeMarketplaceMissing'
+    : 'codexNativeMarketplaceDrift';
+}
+
+function createCodexPluginCliError(
+  operation: 'install' | 'uninstall' | 'list',
+  pluginId: string,
+  error: unknown,
+): CodexNativeCliLifecycleError {
+  const command = operation === 'install'
+    ? `codex plugin add ${pluginId}`
+    : operation === 'uninstall'
+      ? `codex plugin remove ${pluginId}`
+      : 'codex plugin list';
+  return new CodexNativeCliLifecycleError(
+    'codexNativeCliUnavailable',
+    `无法通过 Codex CLI 执行 \`${command}\`：${nativeCliFailureHint(error)}`,
+  );
+}
+
+function createCodexMarketplaceCliError(
+  operation: 'add' | 'list' | 'remove',
+  marketplacePath: string,
+  error: unknown,
+): CodexNativeCliLifecycleError {
+  const command = operation === 'add'
+    ? `codex plugin marketplace add ${marketplacePath}`
+    : operation === 'remove'
+      ? `codex plugin marketplace remove ${MARKETPLACE_NAME}`
+      : 'codex plugin marketplace list';
+  return new CodexNativeCliLifecycleError(
+    'codexNativeCliUnavailable',
+    `无法通过 Codex CLI 执行 \`${command}\`：${nativeCliFailureHint(error)}`,
   );
 }
 
@@ -2961,7 +2946,6 @@ export class CodexAdapter implements PlatformAdapter {
 
   private readonly cwd: string;
   private readonly nativeCliRunner?: NativeCliRunner;
-  private readonly codexAppServerRunner?: CodexAppServerProcessRunner;
   private readonly env: NodeJS.ProcessEnv;
   private commandEventSink: CommandEventSink = NOOP_COMMAND_EVENT_SINK;
 
@@ -2981,21 +2965,15 @@ export class CodexAdapter implements PlatformAdapter {
     cwd: string,
     nativeCliRunnerOrEnv?: NativeCliRunner | NodeJS.ProcessEnv,
     envOrAppServerRunner: NodeJS.ProcessEnv | CodexAppServerProcessRunner = process.env,
-    codexAppServerRunner?: CodexAppServerProcessRunner,
+    _codexAppServerRunner?: CodexAppServerProcessRunner,
   ) {
     this.cwd = cwd;
     if (typeof nativeCliRunnerOrEnv === 'function') {
       this.nativeCliRunner = nativeCliRunnerOrEnv;
       this.env =
         typeof envOrAppServerRunner === 'function' ? process.env : envOrAppServerRunner;
-      this.codexAppServerRunner =
-        typeof envOrAppServerRunner === 'function'
-          ? envOrAppServerRunner
-          : codexAppServerRunner;
     } else {
       this.env = nativeCliRunnerOrEnv ?? process.env;
-      this.codexAppServerRunner =
-        typeof envOrAppServerRunner === 'function' ? envOrAppServerRunner : codexAppServerRunner;
     }
   }
 
@@ -3364,7 +3342,7 @@ export class CodexAdapter implements PlatformAdapter {
         phase: 'start',
       });
       try {
-        await runNativeCli(
+        await runNativeCliChecked(
           buildCodexMarketplaceAddInvocation(awHome, this.cwd, this.env),
           this.nativeCliRunner,
         );
@@ -3382,11 +3360,43 @@ export class CodexAdapter implements PlatformAdapter {
           marketplacePath: awHome,
           operation: 'add',
           phase: 'error',
-          errorCategory: classifyCodexMarketplaceError(error),
+          errorCategory: 'codexNativeCliUnavailable',
           suggestion: createCodexMarketplaceSuggestion(awHome, error),
         });
-        throw createCodexMarketplaceAddError(awHome, error);
+        throw createCodexMarketplaceCliError('add', awHome, error);
       }
+    }
+
+    await this.emitNativeMarketplaceEvent({
+      plugin: plugin.manifest.name,
+      scope,
+      marketplacePath: awHome,
+      operation: 'list',
+      phase: 'start',
+    });
+    try {
+      await runNativeCliChecked(
+        buildCodexMarketplaceListInvocation(this.cwd, this.env),
+        this.nativeCliRunner,
+      );
+      await this.emitNativeMarketplaceEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        marketplacePath: awHome,
+        operation: 'list',
+        phase: 'success',
+      });
+    } catch (error) {
+      await this.emitNativeMarketplaceEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        marketplacePath: awHome,
+        operation: 'list',
+        phase: 'error',
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexMarketplaceSuggestion(awHome, error),
+      });
+      throw createCodexMarketplaceCliError('list', awHome, error);
     }
 
     await this.emitNativeMarketplaceEvent({
@@ -3397,17 +3407,22 @@ export class CodexAdapter implements PlatformAdapter {
       phase: 'start',
     });
     const refreshedConfig = await readCodexConfigFile(userPaths.configTomlPath);
-    if (!isCodexMarketplaceRegistered(refreshedConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
+    const refreshedMarketplace = refreshedConfig.snapshot.marketplaces[MARKETPLACE_NAME];
+    if (!isCodexMarketplaceRegistered(refreshedMarketplace, awHome)) {
+      const reasonCode = getCodexMarketplaceVerificationReason(refreshedMarketplace, awHome);
       await this.emitNativeMarketplaceEvent({
         plugin: plugin.manifest.name,
         scope,
         marketplacePath: awHome,
         operation: 'verify',
         phase: 'error',
-        errorCategory: 'verification_failed',
+        errorCategory: reasonCode,
         suggestion: createCodexMarketplaceSuggestion(awHome),
       });
-      throw createCodexMarketplaceVerificationError(awHome, userPaths.configTomlPath);
+      throw new CodexNativeCliLifecycleError(
+        reasonCode,
+        createCodexMarketplaceVerificationError(awHome, userPaths.configTomlPath).message,
+      );
     }
     await this.emitNativeMarketplaceEvent({
       plugin: plugin.manifest.name,
@@ -3425,70 +3440,67 @@ export class CodexAdapter implements PlatformAdapter {
         })
       : [];
     if (scope === 'user') {
-      await syncLocalMarketplaceCodexDynamicSkills({
+      await materializeStagedMarketplaceCodexDynamicSkills({
         rootDir: awHome,
         pluginName: plugin.manifest.name,
         skillKeys: codexDynamicSkillSyncKeys,
       });
+      if (options.marketplacePath && await fs.pathExists(options.marketplacePath)) {
+        const marketplaceRoot = path.dirname(path.dirname(path.dirname(options.marketplacePath)));
+        const stagedPluginRoot = path.join(marketplaceRoot, 'plugins', plugin.manifest.name);
+        if (await fs.pathExists(stagedPluginRoot)) {
+          const activePluginRoot = path.join(awHome, 'plugins', plugin.manifest.name);
+          for (const relativePath of ['.codex-plugin', 'codex']) {
+            const stagedPath = path.join(stagedPluginRoot, relativePath);
+            if (!(await fs.pathExists(stagedPath))) {
+              continue;
+            }
+            const activePath = path.join(activePluginRoot, relativePath);
+            await fs.remove(activePath);
+            await fs.copy(stagedPath, activePath, {
+              overwrite: true,
+              errorOnExist: false,
+            });
+          }
+        }
+      }
     }
 
-    let stagedMarketplace = options.marketplacePath
-      ? null
-      : await stageCodexUserDynamicSkillMarketplace({
-          awHome,
-          plugin,
-          scope,
-          skillKeys: codexDynamicSkillSyncKeys,
-        });
-    const cleanupStagedMarketplace = async () => {
-      if (!stagedMarketplace) {
-        return;
-      }
-      const { rootDir } = stagedMarketplace;
-      stagedMarketplace = null;
-      await fs.remove(rootDir).catch(() => undefined);
-    };
-    const marketplacePath = options.marketplacePath ??
-      stagedMarketplace?.marketplacePath ??
-      path.join(awHome, '.agents', 'plugins', 'marketplace.json');
+    const marketplacePath = awHome;
     const pluginId = normalizeCodexUserPluginId(plugin.manifest.name);
     const installStartedAt = Date.now();
     await this.emitNativeRpcEvent({
       plugin: plugin.manifest.name,
       scope,
       pluginId,
-      method: 'plugin/install',
+      method: 'codex plugin add',
       phase: 'start',
       durationMs: 0,
     });
     try {
-      await installCodexPluginViaAppServer({
-        cwd: this.cwd,
-        env: this.env,
-        marketplacePath,
-        pluginName: plugin.manifest.name,
-        runner: this.codexAppServerRunner,
-      });
+      await runNativeCliChecked(
+        buildCodexPluginAddInvocation(pluginId, this.cwd, this.env),
+        this.nativeCliRunner,
+      );
     } catch (error) {
       await this.emitNativeRpcEvent({
         plugin: plugin.manifest.name,
         scope,
         pluginId,
-        method: 'plugin/install',
+        method: 'codex plugin add',
         phase: 'error',
         durationMs: Date.now() - installStartedAt,
         nativeWriteSucceeded: false,
-        errorCategory: error instanceof CodexAppServerError ? error.category : 'request_rejected',
-        suggestion: error instanceof CodexAppServerError ? error.suggestion : undefined,
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexMarketplaceSuggestion(awHome, error),
       });
-      await cleanupStagedMarketplace();
-      throw error;
+      throw createCodexPluginCliError('install', pluginId, error);
     }
     await this.emitNativeRpcEvent({
       plugin: plugin.manifest.name,
       scope,
       pluginId,
-      method: 'plugin/install',
+      method: 'codex plugin add',
       phase: 'success',
       durationMs: Date.now() - installStartedAt,
       nativeWriteSucceeded: true,
@@ -3504,7 +3516,6 @@ export class CodexAdapter implements PlatformAdapter {
         pluginVersion: plugin.manifest.version,
       });
     } catch (error) {
-      await cleanupStagedMarketplace();
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请先运行 \`aw status --verbose\` 检查 breadcrumb、config 和 cache 诊断，再决定后续修复或清理。`,
@@ -3522,6 +3533,34 @@ export class CodexAdapter implements PlatformAdapter {
       pluginInstalled: null,
       activeCachePath: null,
     });
+    try {
+      await runNativeCliChecked(
+        buildCodexPluginListInvocation(this.cwd, this.env),
+        this.nativeCliRunner,
+      );
+    } catch (error) {
+      await this.emitNativePostCheckEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        pluginId,
+        operation: 'install',
+        phase: 'error',
+        pluginEnabled: null,
+        configEntryPresent: null,
+        pluginInstalled: null,
+        activeCachePath: null,
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexNativePostCheckSuggestion('install'),
+      });
+      await this.updateRecoveryBreadcrumbWithEvent({
+        plugin: plugin.manifest.name,
+        scope,
+        state: 'post_check_failed',
+        reason: 'native_install_post_check_cli_list_failed',
+        lastError: nativeCliFailureHint(error),
+      });
+      throw createCodexPluginCliError('list', pluginId, error);
+    }
     const postCheck = await checkCodexNativeInstallPostCheck(plugin.manifest.name, this.env);
     if (!postCheck.ok) {
       const detail = describeCodexNativeInstallPostCheckFailure(postCheck.state);
@@ -3546,7 +3585,6 @@ export class CodexAdapter implements PlatformAdapter {
         activeCachePath: postCheck.state.activeCachePath ?? null,
         lastError: detail,
       });
-      await cleanupStagedMarketplace();
       throw new Error(
         `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但安装后校验失败：${detail}。AW 不会回退到只写 enabled config；请先运行 \`aw status --verbose\` 查看 breadcrumb、config 和 cache 诊断。`,
       );
@@ -3562,7 +3600,6 @@ export class CodexAdapter implements PlatformAdapter {
       pluginInstalled: postCheck.state.pluginInstalled,
       activeCachePath: postCheck.state.activeCachePath ?? null,
     });
-    await cleanupStagedMarketplace();
   }
 
   async uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
@@ -3622,7 +3659,7 @@ export class CodexAdapter implements PlatformAdapter {
       nextRefs,
     });
     if (cleanup.marketplaceConfigPresent && cleanup.canCleanup) {
-      await removeCodexMarketplaceFile(userPaths.configTomlPath, MARKETPLACE_NAME);
+      await this.removeCodexMarketplaceRegistration(plugin.manifest.name, scope);
     }
   }
 
@@ -3635,8 +3672,69 @@ export class CodexAdapter implements PlatformAdapter {
       ledger: await readInstalledLedger(this.env),
     });
     if (cleanup.marketplaceConfigPresent && cleanup.canCleanup) {
-      await removeCodexMarketplaceFile(resolveCodexPaths(this.cwd, 'user', this.env).configTomlPath, MARKETPLACE_NAME);
+      await this.removeCodexMarketplaceRegistration(codexPluginNameFromId(normalizeCodexUserPluginId(pluginNameOrId)), 'user');
     }
+  }
+
+  private async removeCodexMarketplaceRegistration(
+    pluginName: string,
+    scope: Scope,
+  ): Promise<void> {
+    const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
+    const configBefore = await readCodexConfigFile(userPaths.configTomlPath);
+    if (configBefore.snapshot.marketplaces[MARKETPLACE_NAME] === undefined) {
+      return;
+    }
+
+    await this.emitNativeMarketplaceEvent({
+      plugin: pluginName,
+      scope,
+      marketplacePath: MARKETPLACE_NAME,
+      operation: 'remove',
+      phase: 'start',
+    });
+    try {
+      await runNativeCliChecked(
+        buildCodexMarketplaceRemoveInvocation(MARKETPLACE_NAME, this.cwd, this.env),
+        this.nativeCliRunner,
+      );
+    } catch (error) {
+      await this.emitNativeMarketplaceEvent({
+        plugin: pluginName,
+        scope,
+        marketplacePath: MARKETPLACE_NAME,
+        operation: 'remove',
+        phase: 'error',
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexMarketplaceSuggestion(MARKETPLACE_NAME, error),
+      });
+      throw createCodexMarketplaceCliError('remove', MARKETPLACE_NAME, error);
+    }
+
+    const configAfter = await readCodexConfigFile(userPaths.configTomlPath);
+    if (configAfter.snapshot.marketplaces[MARKETPLACE_NAME] !== undefined) {
+      await this.emitNativeMarketplaceEvent({
+        plugin: pluginName,
+        scope,
+        marketplacePath: MARKETPLACE_NAME,
+        operation: 'remove',
+        phase: 'error',
+        errorCategory: 'codexNativeMarketplaceDrift',
+        suggestion: 'Codex CLI 已返回成功，但 [marketplaces.aw] 仍存在；请运行 `aw status --verbose` 查看 native marketplace 诊断。',
+      });
+      throw new CodexNativeCliLifecycleError(
+        'codexNativeMarketplaceDrift',
+        'Codex CLI 已返回成功，但 [marketplaces.aw] 仍存在，AW 不会手动删除 Codex config 来伪装 marketplace 移除成功。',
+      );
+    }
+
+    await this.emitNativeMarketplaceEvent({
+      plugin: pluginName,
+      scope,
+      marketplacePath: MARKETPLACE_NAME,
+      operation: 'remove',
+      phase: 'success',
+    });
   }
 
   private async uninstallCodexUserNativePlugin(
@@ -3653,54 +3751,47 @@ export class CodexAdapter implements PlatformAdapter {
       plugin: pluginName,
       scope,
       pluginId,
-      method: 'plugin/uninstall',
+      method: 'codex plugin remove',
       phase: 'start',
       durationMs: 0,
     });
     try {
-      await uninstallCodexPluginViaAppServer({
-        cwd: this.cwd,
-        env: this.env,
-        pluginId,
-        runner: this.codexAppServerRunner,
-      });
+      await runNativeCliChecked(
+        buildCodexPluginRemoveInvocation(pluginId, this.cwd, this.env),
+        this.nativeCliRunner,
+      );
     } catch (error) {
       await this.emitNativeRpcEvent({
         plugin: pluginName,
         scope,
         pluginId,
-        method: 'plugin/uninstall',
+        method: 'codex plugin remove',
         phase: 'error',
         durationMs: Date.now() - uninstallStartedAt,
         nativeWriteSucceeded: false,
-        errorCategory: error instanceof CodexAppServerError ? error.category : 'request_rejected',
-        suggestion: error instanceof CodexAppServerError ? error.suggestion : undefined,
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexNativePostCheckSuggestion('uninstall'),
       });
       if (existingBreadcrumb) {
         await this.updateRecoveryBreadcrumbWithEvent({
           plugin: pluginName,
           scope,
           state: 'cleanup_failed',
-          reason: 'native_uninstall_rpc_failed',
+          reason: 'native_uninstall_cli_failed',
           lastError: error instanceof Error ? error.message : String(error),
         }).catch(() => undefined);
       }
-      throw error;
+      throw createCodexPluginCliError('uninstall', pluginId, error);
     }
     await this.emitNativeRpcEvent({
       plugin: pluginName,
       scope,
       pluginId,
-      method: 'plugin/uninstall',
+      method: 'codex plugin remove',
       phase: 'success',
       durationMs: Date.now() - uninstallStartedAt,
       nativeWriteSucceeded: true,
     });
-
-    // Codex app-server may leave the AW-owned install root behind even after a
-    // successful uninstall RPC. Remove that root here so cleanup/status share
-    // the same native residue baseline.
-    await fs.remove(getCodexNativePluginInstallRootPath(pluginId, this.env)).catch(() => undefined);
 
     await this.emitNativePostCheckEvent({
       plugin: pluginName,
@@ -3713,6 +3804,36 @@ export class CodexAdapter implements PlatformAdapter {
       pluginInstalled: null,
       activeCachePath: null,
     });
+    try {
+      await runNativeCliChecked(
+        buildCodexPluginListInvocation(this.cwd, this.env),
+        this.nativeCliRunner,
+      );
+    } catch (error) {
+      await this.emitNativePostCheckEvent({
+        plugin: pluginName,
+        scope,
+        pluginId,
+        operation: 'uninstall',
+        phase: 'error',
+        pluginEnabled: null,
+        configEntryPresent: null,
+        pluginInstalled: null,
+        activeCachePath: null,
+        errorCategory: 'codexNativeCliUnavailable',
+        suggestion: createCodexNativePostCheckSuggestion('uninstall'),
+      });
+      if (existingBreadcrumb) {
+        await this.updateRecoveryBreadcrumbWithEvent({
+          plugin: pluginName,
+          scope,
+          state: 'cleanup_failed',
+          reason: 'native_uninstall_post_check_cli_list_failed',
+          lastError: nativeCliFailureHint(error),
+        }).catch(() => undefined);
+      }
+      throw createCodexPluginCliError('list', pluginId, error);
+    }
     const postCheck = await checkCodexNativeUninstallPostCheck(pluginName, this.env);
     if (!postCheck.ok) {
       const detail = describeCodexNativeUninstallPostCheckFailure(postCheck.state);
@@ -4260,20 +4381,22 @@ export class CodexAdapter implements PlatformAdapter {
         artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
       }
 
-      const hooks = resolvePlatformHookDefinitions(plugin.manifest, 'codex');
-      const hooksPath = await syncCodexHooks(
-        paths.hooksPath,
-        plugin,
-        trackingManifest,
-        this.env,
-      );
-      if (hooks.length > 0 && hooksPath) {
-        artifacts.push({
-          path: hooksPath,
-          kind: 'hook',
-          platform: 'codex',
-          hookGroups: extractCodexHookGroups(hooks),
-        });
+      if (scope === 'project') {
+        const hooks = resolvePlatformHookDefinitions(plugin.manifest, 'codex');
+        const hooksPath = await syncCodexHooks(
+          paths.hooksPath,
+          plugin,
+          trackingManifest,
+          this.env,
+        );
+        if (hooks.length > 0 && hooksPath) {
+          artifacts.push({
+            path: hooksPath,
+            kind: 'hook',
+            platform: 'codex',
+            hookGroups: extractCodexHookGroups(hooks),
+          });
+        }
       }
 
       for (const artifact of generateAgentArtifacts(
@@ -4588,6 +4711,9 @@ export class CodexAdapter implements PlatformAdapter {
         }),
       );
 
+    const repoManagedHookDeclared = scope === 'project'
+      ? codexHookExpectation.declared
+      : Boolean(trackingRecord?.artifacts.some((artifact) => artifact.kind === 'hook'));
     const managedArtifacts = await buildCodexManagedArtifactStatuses({
       plugin,
       scope,
@@ -4699,7 +4825,7 @@ export class CodexAdapter implements PlatformAdapter {
           declaredDynamicInstructionTargets.length > 0 ||
           trackedDynamicInstructionArtifacts.length > 0,
         permissions: codexPermissions.length > 0,
-        hooks: codexHookExpectation.declared,
+        hooks: repoManagedHookDeclared,
         agents:
           codexAgents.length > 0 ||
           declaredDynamicRoleTargets.length > 0 ||

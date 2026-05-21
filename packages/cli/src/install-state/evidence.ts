@@ -15,6 +15,11 @@ import {
   resolveCodexPaths,
 } from '../utils/paths.js';
 import {
+  inspectCodexNativeViewDiagnostic,
+  type CodexNativeViewDiagnostic,
+} from '../utils/codex-native-state.js';
+import type { CodexAppServerProcessRunner } from '../utils/codex-app-server-client.js';
+import {
   getTrackingArtifactIntegrityErrors,
   getTrackingRecord,
   readTrackingManifest,
@@ -95,6 +100,13 @@ export interface CollectInstallEvidenceOptions {
   env?: NodeJS.ProcessEnv;
   currentCatalog?: CurrentCatalogEvidenceInput | null;
   projectSharedRenderConfigDigest?: string | null;
+  codexNativeViewDiagnostic?: {
+    enabled: boolean;
+    timeoutMs?: number;
+    runner?: CodexAppServerProcessRunner;
+    clientName?: string;
+    clientVersion?: string;
+  };
 }
 
 async function readTrackingRecordSafely(options: {
@@ -272,6 +284,7 @@ export interface InstallEvidence {
   nativeTransaction: NativeTransactionEvidence;
   platform: {
     codexNative: CodexNativeEvidence | null;
+    codexNativeView: CodexNativeViewDiagnostic | null;
   };
   adoptable: {
     possible: boolean;
@@ -1005,6 +1018,20 @@ export async function collectInstallEvidence(
       env,
     )
     : null;
+  const codexNativeView = options.location.platform === 'codex' &&
+    options.location.scope === 'user' &&
+    options.codexNativeViewDiagnostic?.enabled === true
+    ? await inspectCodexNativeViewDiagnostic({
+      cwd: options.cwd,
+      env,
+      pluginName: options.location.plugin,
+      pluginId: installRecord?.record.native?.pluginId,
+      timeoutMs: options.codexNativeViewDiagnostic.timeoutMs,
+      runner: options.codexNativeViewDiagnostic.runner,
+      clientName: options.codexNativeViewDiagnostic.clientName,
+      clientVersion: options.codexNativeViewDiagnostic.clientVersion,
+    })
+    : null;
 
   const installRecordPresent = installRecord !== null;
   const trackingDir = options.location.platform === 'claude'
@@ -1129,6 +1156,7 @@ export async function collectInstallEvidence(
     nativeTransaction,
     platform: {
       codexNative,
+      codexNativeView,
     },
     adoptable: {
       possible: adoptablePossible,

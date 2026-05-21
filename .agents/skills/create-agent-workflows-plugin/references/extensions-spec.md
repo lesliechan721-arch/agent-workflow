@@ -6,7 +6,7 @@
 
 `extensions.*` 适合简单静态产物：内容固定，或只需要通过 `buildConfig.templates` 做平台差异渲染。需要根据 AW config 动态开启/关闭、刷新 Codex skill 内容、诊断 stale / failed refresh，或管理 Codex role registration 时，不要把逻辑塞进 lifecycle；改用 `artifacts.targets` + `scripts.artifacts.render`。配置驱动 skill 使用 `codex.skill`，由 AW apply 负责写 runtime，并按 SkillTrigger 内建配置 patch 触发策略；详见 `references/plugin-manifest-spec.md` 和 `references/aw-scripts-config-lifecycle.md`。
 
-对 Codex 来说，extensions 是 project scope 的 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/`，并同步维护本机 install record 和可提交的 project artifact shared identity，不会调用 Codex native marketplace 或 app-server RPC。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
+对 Codex 来说，extensions 在 project scope 是 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/`，并同步维护本机 install record 和可提交的 project artifact shared identity，不会调用 Codex native CLI 或 app-server RPC，但写入前仍要求本机 Codex `>= 0.131.0`。在 user scope，公共 hooks 和 `extensions.nativeHooks.codex` 会进入 native bundle 的 `.codex-plugin/plugin.json` `hooks` 字段，由 Codex `>= 0.131.0` 原生插件生命周期加载。只包含 extensions 的插件可以作为 Codex project 安装候选；包含 `apps` 或纯 native-only 的插件不能 project 安装。
 
 `marketplace.policy.products` 会限制 extensions 能生成的平台。公共 `instructions`、`permissions`、`hooks` 和 `agents` 会复制到所有支持平台；不支持的平台不能声明 `nativeHooks.<platform>`，也不能在公共 extension 条目中提供非空 `agentOverrides.<platform>`。如果只是想明确排除 unsupported platform，`agentOverrides.<unsupportedPlatform> = null` 是合法的。
 
@@ -143,7 +143,8 @@
 | 平台 | 输出 | 说明 |
 |------|------|------|
 | Claude | `hooks/hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
-| Codex | `hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
+| Codex user scope | `.codex-plugin/plugin.json` 的 `hooks` 字段 | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
+| Codex project scope | `.codex/hooks.json` | `{ hooks: { PreToolUse/PostToolUse/SessionStart: [...] } }` |
 
 ### 示例
 

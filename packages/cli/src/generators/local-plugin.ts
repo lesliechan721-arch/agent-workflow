@@ -807,6 +807,13 @@ export async function bundleLocalPlugin(
     const codexFiles = platformFiles.codex;
     if (codexManifest && codexFiles) {
       codexManifest.apps = await addDeclaredPathFiles(plugin, 'codex', plugin.manifest.apps, codexFiles);
+      const hooksArtifact = renderResolvedHooksArtifact(
+        resolvePlatformHookDefinitions(plugin.manifest, 'codex'),
+        'codex',
+      );
+      if (hooksArtifact) {
+        codexManifest.hooks = hooksArtifact.content;
+      }
     }
 
     const claudeManifest = platformManifests.claude;

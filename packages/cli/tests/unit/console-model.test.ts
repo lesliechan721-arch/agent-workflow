@@ -742,6 +742,43 @@ describe('console-model', () => {
     });
   });
 
+  it('adds read-only agent version summaries to console items', () => {
+    const base = matrix([cell({ platform: 'codex' })]);
+    const items = createConsoleControllerItems({
+      ...base,
+      detection: {
+        ...base.detection,
+        codex: {
+          ...base.detection.codex,
+          agentVersion: {
+            platform: 'codex',
+            command: 'codex',
+            status: 'tooOld',
+            detectedVersion: '0.130.0',
+            requiredMinVersion: '0.131.0',
+            reasonCode: 'agentVersionTooLow',
+            stdout: 'codex-cli 0.130.0',
+            stderr: '',
+            rawOutput: 'codex-cli 0.130.0',
+            exitCode: 0,
+          },
+        },
+      },
+    });
+
+    expect(items[0]?.summary.agentVersionSummary).toEqual([
+      expect.objectContaining({
+        platform: 'codex',
+        status: 'tooOld',
+        detectedVersion: '0.130.0',
+        requiredMinVersion: '0.131.0',
+        reasonCode: 'agentVersionTooLow',
+        suggestedAction: expect.stringContaining('升级到 >= 0.131.0'),
+      }),
+    ]);
+    expect(JSON.stringify(items[0]?.summary.agentVersionSummary)).not.toContain('rawVersionOutput');
+  });
+
   it('sorts home items by friendly status then display title and keeps catalog-only cells neutral', () => {
     const items = createConsoleControllerItems(matrix([
       cell({

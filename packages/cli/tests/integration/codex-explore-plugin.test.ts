@@ -26,7 +26,11 @@ import {
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
 import { getTrackingManifestPath, readTrackingManifest } from '../../src/utils/tracking.js';
-import type { NativeCliInvocation, NativeCliRunner } from '../../src/utils/native-cli.js';
+import {
+  setNativeCliRunnerOverrideForTests,
+  type NativeCliInvocation,
+  type NativeCliRunner,
+} from '../../src/utils/native-cli.js';
 import type { PluginMeta, Scope } from '../../src/types.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
@@ -695,15 +699,73 @@ function createCodexMarketplaceAddRunner(
 ): NativeCliRunner {
   return async (invocation) => {
     calls.push(invocation);
-    const awHome = invocation.args[3] ?? '';
-    await upsertCodexMarketplaceFile(
-      resolveCodexPaths(cwd, 'user', env).configTomlPath,
-      'aw',
-      {
-        source: awHome,
-        sourceType: 'local',
-      },
-    );
+    const invocationEnv = invocation.env ?? env;
+    const invocationCwd = invocation.cwd ?? cwd;
+    if (invocation.args.length === 1 && invocation.args[0] === '--version') {
+      if (invocation.command === 'codex') {
+        return {
+          exitCode: 0,
+          stdout: 'codex-cli 0.131.0',
+          stderr: '',
+        };
+      }
+      if (invocation.command === 'claude') {
+        return {
+          exitCode: 0,
+          stdout: '2.1.88 (Claude Code)',
+          stderr: '',
+        };
+      }
+    }
+    if (
+      invocation.command === 'codex' &&
+      invocation.args[0] === 'plugin' &&
+      invocation.args[1] === 'marketplace' &&
+      invocation.args[2] === 'add'
+    ) {
+      const awHome = invocation.args[invocation.args.length - 1] ?? '';
+      await upsertCodexMarketplaceFile(
+        resolveCodexPaths(invocationCwd, 'user', invocationEnv).configTomlPath,
+        'aw',
+        {
+          source: awHome,
+          sourceType: 'local',
+        },
+      );
+    }
+    if (
+      invocation.command === 'codex' &&
+      invocation.args[0] === 'plugin' &&
+      invocation.args[1] === 'marketplace' &&
+      invocation.args[2] === 'remove'
+    ) {
+      const configPath = resolveCodexPaths(invocationCwd, 'user', invocationEnv).configTomlPath;
+      const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+      fs.ensureDirSync(path.dirname(configPath));
+      fs.writeFileSync(
+        configPath,
+        current.replace(/\n?\[marketplaces\.aw\]\n[\s\S]*?(?=\n\[|$)/m, '').trimEnd() + '\n',
+        'utf8',
+      );
+    }
+    if (
+      invocation.command === 'codex' &&
+      invocation.args[0] === 'plugin' &&
+      invocation.args[1] === 'add'
+    ) {
+      const pluginId = invocation.args[invocation.args.length - 1] ?? 'codex-explore@aw';
+      materializeCodexExploreNativePluginSync(invocationCwd, invocationEnv, pluginId.split('@')[0] ?? 'codex-explore');
+      fs.outputFileSync(path.join(invocationEnv.AW_CODEX_HOME!, 'plugins', pluginId, 'manifest.json'), '{}\n', 'utf8');
+    }
+    if (
+      invocation.command === 'codex' &&
+      invocation.args[0] === 'plugin' &&
+      invocation.args[1] === 'remove'
+    ) {
+      const pluginId = invocation.args[invocation.args.length - 1] ?? 'codex-explore@aw';
+      removeCodexExploreNativePluginSync(invocationCwd, invocationEnv, pluginId);
+      fs.removeSync(path.join(invocationEnv.AW_CODEX_HOME!, 'plugins', pluginId));
+    }
     return {
       exitCode: 0,
       stdout: '',
@@ -882,6 +944,7 @@ function installCodexExploreRefreshAppServerOverride(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): void {
+  setNativeCliRunnerOverrideForTests(createCodexMarketplaceAddRunner(cwd, env));
   setCodexAppServerProcessRunnerOverrideForTests(
     createCodexExploreAppServerRunner(cwd, env),
   );
@@ -1189,7 +1252,14 @@ describe('codex-explore integration acceptance', () => {
     const roleContent = await fs.readFile(rolePath, 'utf8');
     const trackedArtifacts = (await readTrackingManifest(userPaths.trackingDir)).plugins['codex-explore']?.artifacts ?? [];
 
-    expect(nativeCalls).toHaveLength(1);
+    expect(nativeCalls.map((call) => call.args)).toEqual(
+      expect.arrayContaining([
+        ['plugin', 'marketplace', 'add', awHome],
+        ['plugin', 'marketplace', 'list'],
+        ['plugin', 'add', 'codex-explore@aw'],
+        ['plugin', 'list'],
+      ]),
+    );
     expect(rawConfig).toContain('[plugins."codex-explore@aw"]');
     expect(rawConfig).toContain('enabled = true');
     expect(rawConfig).toContain('[agents.codex-explorer]');
@@ -1429,7 +1499,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
     await expect(
       fs.readJson(path.join(awHome, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
-    ).resolves.not.toHaveProperty('skills');
+    ).resolves.toMatchObject({ skills: './codex/skills' });
     await expect(
       fs.readJson(
         path.join(
@@ -2681,7 +2751,12 @@ describe('codex-explore integration acceptance', () => {
     const roleContent = await fs.readFile(rolePath, 'utf8');
     const trackedArtifacts = (await readTrackingManifest(projectPaths.trackingDir)).plugins['codex-explore']?.artifacts ?? [];
 
-    expect(nativeCalls).toHaveLength(0);
+    expect(nativeCalls).toEqual([
+      expect.objectContaining({
+        command: 'codex',
+        args: ['--version'],
+      }),
+    ]);
     expect(projectConfig.snapshot.agents['codex-explore-agent']).toEqual({
       key: 'codex-explore-agent',
       description: '只读探索代码、文档、网页和长上下文，并整理关键证据。',
@@ -2953,7 +3028,7 @@ describe('codex-explore integration acceptance', () => {
     ).rejects.toThrow('最终 role 名为 "codex-explorer"');
 
     expect(configureCalls).toBe(0);
-    expect(nativeCalls).toHaveLength(0);
+    expect(nativeCalls.filter((call) => call.args[0] === 'plugin')).toHaveLength(0);
     await expect(fs.pathExists(path.join(awHome, 'artifact-render.log'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(awHome, 'lifecycle.log'))).resolves.toBe(false);
   });
@@ -3347,7 +3422,7 @@ describe('codex-explore integration acceptance', () => {
     ).rejects.toThrow('最终 role 名为 "codex-explorer"');
 
     expect(configureCalls).toBe(0);
-    expect(nativeCalls).toHaveLength(0);
+    expect(nativeCalls.filter((call) => call.args[0] === 'plugin')).toHaveLength(0);
     await expect(fs.pathExists(path.join(awHome, 'artifact-render.log'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(awHome, 'lifecycle.log'))).resolves.toBe(false);
   });

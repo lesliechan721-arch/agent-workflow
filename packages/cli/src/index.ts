@@ -1470,6 +1470,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             projectLayer,
             cwd: context.cwd,
             env: context.env,
+            nativeCliRunner: context.nativeCliRunner,
             key,
             action: 'set',
             value: inputValue,
@@ -1489,6 +1490,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           projectLayer,
           cwd: context.cwd,
           env: context.env,
+          nativeCliRunner: context.nativeCliRunner,
           request: {
             updates: { [key]: inputValue },
           },
@@ -1547,6 +1549,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             projectLayer,
             cwd: context.cwd,
             env: context.env,
+            nativeCliRunner: context.nativeCliRunner,
             key,
             action: 'unset',
           });
@@ -1578,6 +1581,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           projectLayer,
           cwd: context.cwd,
           env: context.env,
+          nativeCliRunner: context.nativeCliRunner,
           request: {
             removeKeys: [key],
           },
@@ -1657,6 +1661,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           projectLayer,
           cwd: context.cwd,
           env: context.env,
+          nativeCliRunner: context.nativeCliRunner,
           ...(error ? { pluginError: error } : {}),
           ...(plugin ? { plugin } : {}),
         });

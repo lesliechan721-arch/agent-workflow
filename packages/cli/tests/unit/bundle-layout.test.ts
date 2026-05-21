@@ -530,6 +530,104 @@ describe('bundle layout validation', () => {
     );
   });
 
+  it('accepts Codex inline hooks and Claude bundle-local hooks in platform manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const codexManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    const codexManifest = await fs.readJson(codexManifestPath);
+    codexManifest.hooks = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo codex ok' }],
+          },
+        ],
+        UserPromptSubmit: [
+          {
+            hooks: [{ type: 'command', command: 'echo prompt ok' }],
+          },
+        ],
+      },
+    };
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+
+    const claudeManifest = await fs.readJson(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+    );
+    expect(claudeManifest.hooks).toBe('./claude/hooks/hooks.json');
+
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      name: 'string hooks field',
+      hooks: './codex/hooks/hooks.json',
+      message: 'Invalid codex.hooks: expected an inline hooks object.',
+    },
+    {
+      name: 'unsupported event',
+      hooks: {
+        hooks: {
+          SessionEnd: [
+            {
+              matcher: '*',
+              hooks: [{ type: 'command', command: 'echo done' }],
+            },
+          ],
+        },
+      },
+      message: 'codex.hooks.hooks.SessionEnd',
+    },
+    {
+      name: 'matcher on matcherless event',
+      hooks: {
+        hooks: {
+          UserPromptSubmit: [
+            {
+              matcher: 'ignored',
+              hooks: [{ type: 'command', command: 'echo prompt' }],
+            },
+          ],
+        },
+      },
+      message: 'does not allow matcher',
+    },
+    {
+      name: 'unsupported handler schema',
+      hooks: {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [{ type: 'command', command: 'echo slow', timeout: 1000 }],
+            },
+          ],
+        },
+      },
+      message: 'unsupported fields "timeout"',
+    },
+  ])('rejects invalid Codex inline hooks: $name', async ({ hooks, message }) => {
+    const repoRoot = await makeTempRepo();
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const codexManifestPath = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const codexManifest = await fs.readJson(codexManifestPath);
+    codexManifest.hooks = hooks;
+    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(message);
+  });
+
   it('rejects bundles missing lifecycle, helper, or runtime sibling files', async () => {
     const repoRoot = await makeTempRepo();
     await writeRuntimeScriptFixture(repoRoot);

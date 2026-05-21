@@ -297,7 +297,56 @@ describe('build smoke', () => {
         },
       ],
     };
+    manifest.slashCommands = './slash-commands';
+    manifest.buildConfig = {
+      ...(manifest.buildConfig ?? {}),
+      manifestOverrides: {
+        ...(manifest.buildConfig?.manifestOverrides ?? {}),
+        claude: {
+          ...(manifest.buildConfig?.manifestOverrides?.claude ?? {}),
+          outputStyles: './output-styles',
+          lspServers: './config/lsp.json',
+          userConfig: {
+            awSmokeMode: {
+              type: 'string',
+              default: 'standard',
+            },
+          },
+          channels: {
+            stable: {
+              description: 'Smoke stable channel',
+            },
+          },
+        },
+      },
+    };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.outputFile(
+      path.join(tempRepo, 'plugins', 'git-commit', 'slash-commands', 'review.md'),
+      [
+        '---',
+        'description: Smoke review command',
+        '---',
+        '',
+        'Run smoke review.',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(tempRepo, 'plugins', 'git-commit', 'output-styles', 'smoke.md'),
+      '# Smoke Style\n',
+      'utf8',
+    );
+    await fs.outputJson(
+      path.join(tempRepo, 'plugins', 'git-commit', 'config', 'lsp.json'),
+      {
+        smokeLsp: {
+          command: 'node',
+          args: ['server.mjs'],
+        },
+      },
+      { spaces: 2 },
+    );
 
     const { bundlePlugins } = (await import(
       '../../dist/scripts/bundle-plugins.js'
@@ -343,6 +392,45 @@ describe('build smoke', () => {
         ],
       },
     });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      hooks: {
+        hooks: {
+          Stop: [
+            {
+              hooks: [{ type: 'command', command: 'echo smoke codex stop' }],
+            },
+          ],
+        },
+      },
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      hooks: './claude/hooks/hooks.json',
+      commands: './claude/commands',
+      agents: expect.arrayContaining(['./claude/agents/aw-git-commit-commit-reviewer.md']),
+      outputStyles: './claude/output-styles',
+      lspServers: './claude/config/lsp.json',
+      userConfig: {
+        awSmokeMode: {
+          type: 'string',
+          default: 'standard',
+        },
+      },
+      channels: {
+        stable: {
+          description: 'Smoke stable channel',
+        },
+      },
+    });
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'commands', 'review.md')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'output-styles', 'smoke.md')),
+    ).resolves.toBe(true);
 
     const { validateBundleLayout } = (await import(
       '../../src/utils/bundle-layout.js'

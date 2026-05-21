@@ -9,7 +9,7 @@
 | `name` | string | 是 | 小写短横线格式，必须与目录名一致 |
 | `version` | string | 是 | 严格 SemVer，例如 `0.1.0`；插件内容身份变化时必须递增 |
 | `description` | string | 是 | 非空字符串 |
-| `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本 |
+| `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
 | `skillTriggers` | object | 否 | 按 skill 声明是否允许安装时覆盖触发策略 |
@@ -53,6 +53,7 @@ AW 版本管理里有三套身份，不能混用：
 规则：
 
 - `version` 和 `compatibility.aw.minVersion` 都必须是严格 SemVer，不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
+- 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.131.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
 - 发布到 `latest` catalog 的插件 `version` 必须是 stable SemVer；prerelease 插件只能通过 `beta` catalog 分发。
 - `beta` catalog 的 catalog version 必须是 prerelease；同一快照内可以混合 stable 和 prerelease 插件 version。
 - 同一个 catalog version 只能属于一个发布轨道，不能把已发布到 `beta` 的 catalog version 后续改挂到 `latest`。
@@ -407,8 +408,8 @@ codex:
 
 Codex scope 对作者的影响：
 
-- `--scope user` 走 Codex native plugin 平面。AW 会注册本地 marketplace，并通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache、native transaction 状态和 AW per-plugin record 都健康时才显示为已安装；enabled-only、cache-only 或 native transaction marker 残留不算已安装，并会给出 repair / cleanup 动作。
-- `--scope project` 只写 repo-managed artifacts，不调用 native marketplace add / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`。缺少 `codex` 可执行文件时，repo-managed project 安装仍可进行。
+- `--scope user` 走 Codex native plugin 平面。AW 会用 `codex plugin marketplace add/list/remove` 管理本地 marketplace，并通过 `codex plugin add/remove` 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache、native transaction 状态和 AW per-plugin record 都健康时才显示为已安装；enabled-only、cache-only 或 native transaction marker 残留不算已安装，并会给出 repair / cleanup 动作。
+- `--scope project` 只写 repo-managed artifacts，不调用 Codex native CLI / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`；写入前仍要求本机 Codex `>= 0.131.0`。
 - `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时报错。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
 

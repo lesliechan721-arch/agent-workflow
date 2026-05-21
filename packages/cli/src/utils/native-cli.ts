@@ -60,6 +60,45 @@ export function getDefaultNativeCliRunner(): NativeCliRunner {
   return nativeCliRunnerOverrideForTests ?? execFileNativeCliRunner;
 }
 
+function readNativeCliErrorCode(error: unknown): number | string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+
+  if ('code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'number' || typeof code === 'string') {
+      return code;
+    }
+  }
+
+  if ('cause' in error) {
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause && typeof cause === 'object' && 'code' in cause) {
+      const code = (cause as { code?: unknown }).code;
+      if (typeof code === 'number' || typeof code === 'string') {
+        return code;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export function isNativeCliExecutableMissingError(error: unknown): boolean {
+  return readNativeCliErrorCode(error) === 'ENOENT';
+}
+
+export function summarizeNativeCliFailure(error: unknown): string {
+  if (error instanceof NativeCliError) {
+    return error.stderr.trim() || error.stdout.trim() || error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 function isAbortLikeError(error: unknown): boolean {
   return Boolean(
     error &&
@@ -132,4 +171,96 @@ export async function runNativeCli(
   runner?: NativeCliRunner,
 ): Promise<NativeCliResult> {
   return (runner ?? getDefaultNativeCliRunner())(invocation);
+}
+
+export function buildCodexPluginAddInvocation(
+  pluginId: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'add', pluginId],
+    cwd,
+    env,
+  };
+}
+
+export function buildCodexPluginListInvocation(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'list'],
+    cwd,
+    env,
+  };
+}
+
+export function buildCodexPluginRemoveInvocation(
+  pluginId: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'remove', pluginId],
+    cwd,
+    env,
+  };
+}
+
+export function buildCodexMarketplaceAddInvocation(
+  awHome: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'marketplace', 'add', awHome],
+    cwd,
+    env,
+  };
+}
+
+export function buildCodexMarketplaceListInvocation(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'marketplace', 'list'],
+    cwd,
+    env,
+  };
+}
+
+export function buildCodexMarketplaceRemoveInvocation(
+  marketplaceName: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return {
+    command: 'codex',
+    args: ['plugin', 'marketplace', 'remove', marketplaceName],
+    cwd,
+    env,
+  };
+}
+
+export async function runNativeCliChecked(
+  invocation: NativeCliInvocation,
+  runner?: NativeCliRunner,
+): Promise<NativeCliResult> {
+  const result = await runNativeCli(invocation, runner);
+  if (result.exitCode !== 0) {
+    throw new NativeCliError({
+      invocation,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+  return result;
 }

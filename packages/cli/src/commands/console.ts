@@ -2,6 +2,7 @@ import type {
   ConfigFieldEntryV2,
   ConfigStoreRemovalResult,
   LegacyConfigStoreEntryV2,
+  PlatformSelection,
   PlatformName,
   PluginMeta,
   ReceiptTargetResult,
@@ -73,7 +74,6 @@ import {
   replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
-import { reapplyConfigRefresh } from '../utils/artifact-refresh.js';
 
 type ConsoleNavigation = 'back' | 'reload' | 'exit' | 'stay';
 
@@ -143,12 +143,25 @@ interface ConfigStoreExecutionGroup {
   selections: ExecutableTargetSelection[];
 }
 
+interface ScopedExecutionGroup {
+  scope: Scope;
+  selections: ExecutableTargetSelection[];
+  platform: PlatformSelection;
+}
+
 interface CleanupPlanOutcome {
   selection: ExecutableTargetSelection;
   status: 'planned' | 'failed';
   removeConfig: boolean;
   needsForce?: boolean;
   lines: string[];
+}
+
+interface ExecutableCleanupPlanGroup {
+  scope: Scope;
+  selections: Array<CleanupPlanOutcome & { status: 'planned'; needsForce: boolean }>;
+  platform: PlatformSelection;
+  force: boolean;
 }
 
 interface RunCleanupActionOptions {
@@ -394,9 +407,23 @@ function buildHomeLines(state: ConsoleHomeState): string[] {
           item.pageItem.platformSummary,
           item.pageItem.primaryActionLabel ? `主操作：${item.pageItem.primaryActionLabel}` : undefined,
         ]).join(' · ')}`,
+        ...formatHomeAgentVersionLines(item),
       ]),
     ]),
   ]);
+}
+
+function formatHomeAgentVersionLines(item: ConsoleControllerItem): string[] {
+  return (item.summary.agentVersionSummary ?? [])
+    .filter((diagnostic) =>
+      diagnostic.status === 'missing' ||
+      diagnostic.status === 'unparseable' ||
+      diagnostic.status === 'tooOld')
+    .map((diagnostic) => {
+      const platform = platformLabel(diagnostic.platform);
+      const detected = diagnostic.detectedVersion ? `当前 ${diagnostic.detectedVersion}` : diagnostic.reasonCode ?? diagnostic.status;
+      return `  ${platform} 写入会被版本门禁阻断：${detected}，需要 >= ${diagnostic.requiredMinVersion}。${diagnostic.suggestedAction}`;
+    });
 }
 
 function inheritedCatalogSelectorOptions(
@@ -411,10 +438,14 @@ function inheritedCatalogSelectorOptions(
   };
 }
 
-async function loadConsoleHomeState(context: CliExecutionContext): Promise<ConsoleHomeState> {
+async function loadConsoleHomeState(
+  context: CliExecutionContext,
+  options: { verbose?: boolean } = {},
+): Promise<ConsoleHomeState> {
   const result = await loadConsoleItemsResult({
     cwd: context.cwd,
     includeCatalogOnly: true,
+    ...(options.verbose ? { verbose: true } : {}),
     ...inheritedCatalogSelectorOptions(context),
   }, context);
   return {
@@ -423,6 +454,15 @@ async function loadConsoleHomeState(context: CliExecutionContext): Promise<Conso
       ? { banner: '插件目录不可用，仅显示已发现安装；恢复后可安装或升级。' }
       : {}),
   };
+}
+
+async function loadConsoleDetailItem(
+  context: CliExecutionContext,
+  pluginName: string,
+  fallback: ConsoleControllerItem,
+): Promise<ConsoleControllerItem> {
+  const homeState = await loadConsoleHomeState(context, { verbose: true });
+  return homeState.items.find((entry) => entry.summary.pluginName === pluginName) ?? fallback;
 }
 
 function filterResultDiagnoseTargets(
@@ -722,6 +762,78 @@ function createRecentResult(
     targetResults: dedupeTargetResults(outcomes.flatMap((outcome) => outcome.targetResults ?? [])),
     configStoreRemovals: outcomes.flatMap((outcome) => outcome.configStoreRemovals ?? []),
   };
+}
+
+function platformSelectionForSelections(selections: ExecutableTargetSelection[]): PlatformSelection {
+  const platforms = [...new Set(selections.map((selection) => selection.location.platform))];
+  return platforms.length > 1 ? 'both' : platforms[0]!;
+}
+
+function groupSelectionsByScope(selections: ExecutableTargetSelection[]): ScopedExecutionGroup[] {
+  const groups = new Map<Scope, ExecutableTargetSelection[]>();
+  for (const selection of selections) {
+    const bucket = groups.get(selection.location.scope) ?? [];
+    bucket.push(selection);
+    groups.set(selection.location.scope, bucket);
+  }
+
+  return [...groups.entries()].map(([scope, groupedSelections]) => ({
+    scope,
+    selections: groupedSelections,
+    platform: platformSelectionForSelections(groupedSelections),
+  }));
+}
+
+function groupExecutableCleanupPlans(
+  plans: Array<CleanupPlanOutcome & { status: 'planned'; needsForce: boolean }>,
+): ExecutableCleanupPlanGroup[] {
+  const groups = new Map<Scope, Array<CleanupPlanOutcome & { status: 'planned'; needsForce: boolean }>>();
+  for (const plan of plans) {
+    const bucket = groups.get(plan.selection.location.scope) ?? [];
+    bucket.push(plan);
+    groups.set(plan.selection.location.scope, bucket);
+  }
+
+  return [...groups.entries()].map(([scope, groupedPlans]) => {
+    const selections = groupedPlans.map((plan) => plan.selection);
+    return {
+      scope,
+      selections: groupedPlans,
+      platform: platformSelectionForSelections(selections),
+      force: groupedPlans.some((plan) => plan.needsForce),
+    };
+  });
+}
+
+function createFailedExecutionOutcomes(
+  pluginName: string,
+  selections: ExecutableTargetSelection[],
+  error: unknown,
+  action: string,
+  command?: string[],
+): ConsoleExecutionOutcome[] {
+  return selections.map((selection) =>
+    createFailedExecutionOutcome(pluginName, selection, error, action, command));
+}
+
+function createGroupedExecutionOutcomes(options: {
+  selections: ExecutableTargetSelection[];
+  status: ConsoleExecutionOutcome['status'];
+  lines: string[];
+  targetResults?: ReceiptTargetResult[];
+  configStoreRemovals?: ConfigStoreRemovalResult[];
+  diagnoseDescription?: string;
+  diagnoseCommand?: string[];
+}): ConsoleExecutionOutcome[] {
+  return options.selections.map((selection) => ({
+    selection,
+    status: options.status,
+    lines: options.lines,
+    ...(options.targetResults ? { targetResults: options.targetResults } : {}),
+    ...(options.configStoreRemovals ? { configStoreRemovals: options.configStoreRemovals } : {}),
+    ...(options.diagnoseDescription ? { diagnoseDescription: options.diagnoseDescription } : {}),
+    ...(options.diagnoseCommand ? { diagnoseCommand: options.diagnoseCommand } : {}),
+  }));
 }
 
 function createCommandTargetResults(options: {
@@ -2858,6 +2970,7 @@ async function runConfigFieldWriteAction(options: {
           projectLayer: options.viewTarget.projectLayer,
           cwd: options.context.cwd,
           env: options.context.env,
+          nativeCliRunner: options.context.nativeCliRunner,
           applyTargets: group.applyTargets,
           key: options.field.key,
           action: options.mode,
@@ -2885,6 +2998,7 @@ async function runConfigFieldWriteAction(options: {
         projectLayer: options.viewTarget.projectLayer,
         cwd: options.context.cwd,
         env: options.context.env,
+        nativeCliRunner: options.context.nativeCliRunner,
         applyTargets: group.applyTargets,
         request: options.mode === 'set'
           ? {
@@ -2976,6 +3090,7 @@ async function runConfigResetAction(options: {
         projectLayer: options.viewTarget.projectLayer,
         cwd: options.context.cwd,
         env: options.context.env,
+        nativeCliRunner: options.context.nativeCliRunner,
         applyTargets: group.applyTargets,
       });
       resultSections.push(...groupResultLines(group, [
@@ -3063,6 +3178,7 @@ async function runConfigReapplyAction(options: {
       scope: configTargetScope(options.target),
       cwd: options.context.cwd,
       env: options.context.env,
+      nativeCliRunner: options.context.nativeCliRunner,
       applyTargets: group.applyTargets,
       includeBuiltIn: true,
       includeDynamicArtifacts: true,
@@ -3412,56 +3528,54 @@ async function runInstallLikeAction(options: {
     }
   }
 
-  const commandOptions = {
-    cwd: context.cwd,
-    scope: firstLocation.scope,
-  };
   const { result: outcomes, exitRequested } = await executeWithDeferredExit(
     context,
     `${item.summary.title} ${decision.commandAction === 'upgrade' ? '升级' : '安装'}中`,
     decision.commandAction === 'upgrade' ? '升级' : '安装',
     async () => {
       const collected: ConsoleExecutionOutcome[] = [];
-      for (const selection of selections) {
+      for (const group of groupSelectionsByScope(selections)) {
         try {
           if (decision.commandAction === 'upgrade') {
             const result = await upgradeCommand([item.summary.pluginName], {
-              ...commandOptions,
-              platform: selection.location.platform,
+              cwd: context.cwd,
+              scope: group.scope,
+              platform: group.platform,
             }, context);
-            collected.push({
-              selection,
+            collected.push(...createGroupedExecutionOutcomes({
+              selections: group.selections,
               status: 'succeeded',
-              lines: stripTuiCommandSuggestionLines(commandResultLines('upgrade', selection.location.scope, result)),
+              lines: stripTuiCommandSuggestionLines(commandResultLines('upgrade', group.scope, result)),
               targetResults: createCommandTargetResults({
                 command: 'upgrade',
-                scope: selection.location.scope,
+                scope: group.scope,
                 result,
               }),
-            });
+            }));
             continue;
           }
 
           const result = await installCommand([item.summary.pluginName], {
-            ...commandOptions,
-            platform: selection.location.platform,
+            cwd: context.cwd,
+            scope: group.scope,
+            platform: group.platform,
           }, context);
-          collected.push({
-            selection,
+          collected.push(...createGroupedExecutionOutcomes({
+            selections: group.selections,
             status: 'succeeded',
-            lines: stripTuiCommandSuggestionLines(commandResultLines('install', selection.location.scope, result, {
+            lines: stripTuiCommandSuggestionLines(commandResultLines('install', group.scope, result, {
               headlineVariant: intent === 'repairInstall' ? 'reinstall' : 'install',
             })),
             targetResults: createCommandTargetResults({
               command: 'install',
-              scope: selection.location.scope,
+              scope: group.scope,
               result,
             }),
-          });
+          }));
         } catch (error) {
-          collected.push(createFailedExecutionOutcome(
+          collected.push(...createFailedExecutionOutcomes(
             item.summary.pluginName,
-            selection,
+            group.selections,
             error,
             decision.commandAction === 'upgrade' ? 'upgrade' : 'install',
           ));
@@ -3539,28 +3653,28 @@ async function runUninstallAction(
     async () => {
       const collected: ConsoleExecutionOutcome[] = [];
       for (const group of configGroups) {
-        for (const selection of group.selections) {
+        for (const executionGroup of groupSelectionsByScope(group.selections)) {
           try {
             const result = await uninstallCommand([item.summary.pluginName], {
               cwd: context.cwd,
-              scope: selection.location.scope,
-              platform: selection.location.platform,
+              scope: executionGroup.scope,
+              platform: executionGroup.platform,
               removeConfig: false,
             }, context);
-            collected.push({
-              selection,
+            collected.push(...createGroupedExecutionOutcomes({
+              selections: executionGroup.selections,
               status: 'succeeded',
-              lines: stripTuiCommandSuggestionLines(commandResultLines('uninstall', selection.location.scope, result)),
+              lines: stripTuiCommandSuggestionLines(commandResultLines('uninstall', executionGroup.scope, result)),
               targetResults: createCommandTargetResults({
                 command: 'uninstall',
-                scope: selection.location.scope,
+                scope: executionGroup.scope,
                 result,
               }),
-            });
+            }));
           } catch (error) {
-            collected.push(createFailedExecutionOutcome(
+            collected.push(...createFailedExecutionOutcomes(
               item.summary.pluginName,
-              selection,
+              executionGroup.selections,
               error,
               'uninstall',
             ));
@@ -3717,13 +3831,13 @@ async function runCleanupActionInternal(
           diagnoseDescription: outcome.lines[0],
         }));
 
-      for (const planned of executablePlans) {
+      for (const group of groupExecutableCleanupPlans(executablePlans)) {
         try {
           const result = await cleanupCommand([item.summary.pluginName], {
             cwd: context.cwd,
-            scope: planned.selection.location.scope,
-            platform: planned.selection.location.platform,
-            force: planned.needsForce,
+            scope: group.scope,
+            platform: group.platform,
+            force: group.force,
             removeConfig: false,
           }, context);
           const payload = buildCleanupReceiptJson({
@@ -3735,18 +3849,18 @@ async function runCleanupActionInternal(
             warnings: result.warnings,
           }));
           const failed = isCleanupExecutionFailure(result.payload);
-          collected.push({
-            selection: planned.selection,
+          collected.push(...createGroupedExecutionOutcomes({
+            selections: group.selections.map((plan) => plan.selection),
             status: failed ? 'failed' : 'succeeded',
             lines,
             targetResults: payload.targetResults,
             ...('configStoreRemovals' in payload ? { configStoreRemovals: payload.configStoreRemovals } : {}),
             ...(failed ? { diagnoseDescription: lines[0] ?? 'cleanup 执行失败。' } : {}),
-          });
+          }));
         } catch (error) {
-          collected.push(createFailedExecutionOutcome(
+          collected.push(...createFailedExecutionOutcomes(
             item.summary.pluginName,
-            planned.selection,
+            group.selections.map((plan) => plan.selection),
             error,
             'cleanup',
           ));
@@ -3807,28 +3921,29 @@ async function runRepairAction(
     '修复安装',
     async () => {
       const collected: ConsoleExecutionOutcome[] = [];
-      for (const selection of selections) {
+      for (const group of groupSelectionsByScope(selections)) {
         try {
           const result = await repairCommand([item.summary.pluginName], {
             cwd: context.cwd,
-            scope: selection.location.scope,
-            platform: selection.location.platform,
+            scope: group.scope,
+            platform: group.platform,
           }, context);
-          collected.push({
-            selection,
+          collected.push(...createGroupedExecutionOutcomes({
+            selections: group.selections,
             status: 'succeeded',
             lines: [result.output.trim() || '修复完成。'],
-            targetResults: [createSyntheticTargetResult(
-              item.summary.pluginName,
-              selection,
-              'repair',
-              'completed',
-            )],
-          });
+            targetResults: group.selections.map((selection) =>
+              createSyntheticTargetResult(
+                item.summary.pluginName,
+                selection,
+                'repair',
+                'completed',
+              )),
+          }));
         } catch (error) {
-          collected.push(createFailedExecutionOutcome(
+          collected.push(...createFailedExecutionOutcomes(
             item.summary.pluginName,
-            selection,
+            group.selections,
             error,
             'repair',
           ));
@@ -3856,29 +3971,29 @@ async function runReinstallAction(
     '重新安装',
     async () => {
       const collected: ConsoleExecutionOutcome[] = [];
-      for (const selection of selections) {
+      for (const group of groupSelectionsByScope(selections)) {
         try {
           const result = await reinstallCommand([item.summary.pluginName], {
             cwd: context.cwd,
-            scope: selection.location.scope,
-            platform: selection.location.platform,
+            scope: group.scope,
+            platform: group.platform,
           }, context);
-          collected.push({
-            selection,
+          collected.push(...createGroupedExecutionOutcomes({
+            selections: group.selections,
             status: 'succeeded',
-            lines: stripTuiCommandSuggestionLines(commandResultLines('install', selection.location.scope, result, {
+            lines: stripTuiCommandSuggestionLines(commandResultLines('install', group.scope, result, {
               headlineVariant: 'reinstall',
             })),
             targetResults: createCommandTargetResults({
               command: 'install',
-              scope: selection.location.scope,
+              scope: group.scope,
               result,
             }),
-          });
+          }));
         } catch (error) {
-          collected.push(createFailedExecutionOutcome(
+          collected.push(...createFailedExecutionOutcomes(
             item.summary.pluginName,
-            selection,
+            group.selections,
             error,
             'reinstall',
           ));
@@ -4006,15 +4121,24 @@ async function runReapplyAction(
   if (!target) {
     throw new Error(`无法加载 ${item.summary.pluginName}。`);
   }
-  const receipt = await reapplyConfigRefresh({
+  const replay = await replayConfigRuntimeWrites({
     plugin: target.currentPlugin ?? target.plugin,
-    commandScope: location.scope,
+    scope: location.scope,
     cwd: context.cwd,
     env: context.env,
+    nativeCliRunner: context.nativeCliRunner,
+    applyTargets: [{
+      pluginName: item.summary.pluginName,
+      platform: location.platform,
+      scope: location.scope,
+      ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+    }],
+    includeBuiltIn: false,
+    includeDynamicArtifacts: true,
   });
-  const lines = receipt.status === 'succeeded'
+  const lines = replay.artifactRefresh.status === 'succeeded'
     ? ['相关项目文件已更新。']
-    : receipt.status === 'skipped'
+    : replay.artifactRefresh.status === 'skipped'
       ? ['没有需要重新应用的项目文件。']
       : ['重新应用配置失败。你可以进入状态页查看原因。'];
   return showResultPage(context, {
@@ -4031,16 +4155,24 @@ async function runStatusAction(
   item: ConsoleControllerItem,
   location?: PluginConsoleLocation,
 ): Promise<ConsoleNavigation> {
+  const detailItem = await loadConsoleDetailItem(context, item.summary.pluginName, item);
+  const detailLocation = location
+    ? detailItem.locations.find((entry) =>
+        entry.platform === location.platform &&
+        entry.scope === location.scope &&
+        (entry.projectKey ?? null) === (location.projectKey ?? null),
+      ) ?? location
+    : undefined;
   if (location) {
-    const detailKey = item.statusPage.locations.find((entry) =>
-      entry.platform === location.platform &&
-      entry.scope === location.scope &&
-      (entry.projectKey ?? null) === (location.projectKey ?? null),
+    const detailKey = detailItem.statusPage.locations.find((entry) =>
+      entry.platform === detailLocation!.platform &&
+      entry.scope === detailLocation!.scope &&
+      (entry.projectKey ?? null) === (detailLocation!.projectKey ?? null),
     )?.key;
     await renderView(
       context,
-      `${item.summary.title} 状态`,
-      detailKey ? renderStatusDetailLines(item, detailKey) : ['当前没有可展示的状态详情。'],
+      `${detailItem.summary.title} 状态`,
+      detailKey ? renderStatusDetailLines(detailItem, detailKey) : ['当前没有可展示的状态详情。'],
     );
     const detailSelection = await selectValue(context, {
       message: '状态详情',
@@ -4054,11 +4186,11 @@ async function runStatusAction(
   }
 
   while (true) {
-    const summaryLocations = item.statusPage.locations.filter((entry) => entry.hasEvidence);
+    const summaryLocations = detailItem.statusPage.locations.filter((entry) => entry.hasEvidence);
     await renderView(
       context,
-      `${item.summary.title} 状态`,
-      renderStatusSummaryLines(item),
+      `${detailItem.summary.title} 状态`,
+      renderStatusSummaryLines(detailItem),
     );
     const selection = await selectValue(context, {
       message: '查看详情',
@@ -4085,8 +4217,8 @@ async function runStatusAction(
     }
     await renderView(
       context,
-      `${item.summary.title} 状态`,
-      renderStatusDetailLines(item, key),
+      `${detailItem.summary.title} 状态`,
+      renderStatusDetailLines(detailItem, key),
     );
     const detailSelection = await selectValue(context, {
       message: '状态详情',

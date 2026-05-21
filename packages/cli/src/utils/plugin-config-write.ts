@@ -8,6 +8,7 @@ import {
   reapplyConfigRefresh,
   type ArtifactRefreshReceipt,
 } from './artifact-refresh.js';
+import { assertAgentVersionsForWriteTargets } from '../commands/common.js';
 import { createArtifactConfigDigest } from './artifact-plan.js';
 import {
   findConfigFieldEntry,
@@ -83,7 +84,9 @@ import type {
   ReceiptTargetIdentity,
   ReceiptTargetResult,
   Scope,
+  PlatformName,
 } from '../types.js';
+import type { NativeCliRunner } from './native-cli.js';
 import { readInstalledLedger } from './local-marketplace.js';
 import { resolveCodexPaths, resolveCodexProjectKey } from './paths.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -117,7 +120,7 @@ export interface ResetPluginConfigWriteReceipt {
   removedKeys: string[];
   artifactRefresh: ArtifactRefreshReceipt;
   targetResults: ReceiptTargetResult[];
-  configRefreshSkippedReason?: 'projectLocalOverride' | 'noRefreshTarget';
+  configRefreshSkippedReason?: 'projectLocalOverride' | 'adoptExistingRequired' | 'noRefreshTarget';
   warnings: ProjectBoundaryWarning[];
 }
 
@@ -136,6 +139,14 @@ export interface BuiltInConfigWriteReceipt {
 interface ConfigRuntimeReplayReceipt {
   artifactRefresh: ArtifactRefreshReceipt;
   targetResults: ReceiptTargetResult[];
+}
+
+interface ConfigRuntimeImpact {
+  applyTargets: ReceiptTargetIdentity[];
+  gateTargets: ReceiptTargetIdentity[];
+  dynamicRefreshTargets: ReceiptTargetIdentity[];
+  builtInApplyTargets: ReceiptTargetIdentity[];
+  configRefreshSkippedReason?: 'projectLocalOverride' | 'adoptExistingRequired' | 'noRefreshTarget';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -193,6 +204,47 @@ function sameReceiptTarget(
     && (left.projectKey ?? null) === (right.projectKey ?? null);
 }
 
+async function hasConfigApplyTargetEvidence(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  projectKey?: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  if (options.scope === 'project' && !options.projectKey) {
+    return false;
+  }
+
+  const location: PluginLocation = options.scope === 'project'
+    ? {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'project',
+        projectKey: options.projectKey,
+      }
+    : {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'user',
+      };
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    env: options.env,
+    location,
+  });
+  if (recordRead.status === 'ok') {
+    return true;
+  }
+
+  const diagnosticCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  return diagnosticCacheRead.status === 'ok';
+}
+
 async function resolveDefaultConfigApplyTargets(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -202,39 +254,81 @@ async function resolveDefaultConfigApplyTargets(options: {
   const targets: ReceiptTargetIdentity[] = [];
   const ledger = await readInstalledLedger(options.env);
   const pluginRecord = ledger.plugins[options.plugin.manifest.name];
-  const projectKey = options.scope === 'project'
-    ? await resolveCodexProjectKey(options.cwd)
-    : undefined;
+  const projectKey = await resolveCodexProjectKey(options.cwd).catch(() => undefined);
+  const scopes: Scope[] = options.scope === 'user' ? ['user', 'project'] : ['project'];
 
   for (const platform of ['codex', 'claude'] as const) {
     const platformRecord = pluginRecord?.platforms[platform];
-    const scopeRecord = options.scope === 'user'
-      ? platformRecord?.userScope
-      : (projectKey ? platformRecord?.projectScopes?.[projectKey] : undefined);
-    if (!scopeRecord?.managed) {
-      continue;
-    }
-    targets.push({
-      pluginName: options.plugin.manifest.name,
-      platform,
-      scope: options.scope,
-      ...(projectKey ? { projectKey } : {}),
-    });
-  }
-
-  if (options.scope === 'project') {
-    const skillEntries = await resolveSkillTriggerConfigEntries(options.plugin);
-    if (skillEntries.some((entry) => entry.platforms.includes('codex'))) {
-      targets.push({
-        pluginName: options.plugin.manifest.name,
-        platform: 'codex',
-        scope: 'project',
-        ...(projectKey ? { projectKey } : {}),
-      });
+    for (const scope of scopes) {
+      const scopeRecord = scope === 'user'
+        ? platformRecord?.userScope
+        : (projectKey ? platformRecord?.projectScopes?.[projectKey] : undefined);
+      if (scopeRecord?.managed) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          scope,
+          ...(scope === 'project' && projectKey ? { projectKey } : {}),
+        });
+        continue;
+      }
+      if (
+        await hasConfigApplyTargetEvidence({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          scope,
+          projectKey,
+          cwd: options.cwd,
+          env: options.env,
+        })
+      ) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          scope,
+          ...(scope === 'project' && projectKey ? { projectKey } : {}),
+        });
+      }
     }
   }
 
   return dedupeReceiptTargets(targets);
+}
+
+function collectCodexRefreshKeysForScope(manifest: PluginManifestSource, scope: Scope): string[] {
+  return uniqueSorted(
+    (manifest.artifacts?.targets ?? [])
+      .filter((artifact) => artifact.platform === 'codex' && artifact.scopes.includes(scope))
+      .flatMap((artifact) => artifact.refreshKeys),
+  );
+}
+
+function configScopeCandidates(scope: Scope): Scope[] {
+  return scope === 'user' ? ['user', 'project'] : ['project'];
+}
+
+function targetKey(target: ReceiptTargetIdentity): string {
+  return `${target.platform}:${target.scope}:${target.projectKey ?? '-'}`;
+}
+
+async function assertConfigRuntimeImpactAgentVersions(options: {
+  impact: ConfigRuntimeImpact;
+  command: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+}): Promise<void> {
+  const platforms = uniqueSorted(options.impact.gateTargets.map((target) => target.platform)) as PlatformName[];
+  if (platforms.length === 0) {
+    return;
+  }
+  await assertAgentVersionsForWriteTargets({
+    command: options.command,
+    platforms,
+    cwd: options.cwd,
+    env: options.env,
+    nativeCliRunner: options.nativeCliRunner,
+  });
 }
 
 function artifactRefreshTargetMessage(receipt: ArtifactRefreshReceipt): string {
@@ -421,43 +515,23 @@ async function applyBuiltInSkillTriggerRuntime(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  applyTargets?: ReceiptTargetIdentity[];
 }): Promise<ReceiptTargetResult[]> {
-  const ledger = await readInstalledLedger(options.env);
-  const pluginRecord = ledger.plugins[options.plugin.manifest.name];
   const targetResults: ReceiptTargetResult[] = [];
-  const runtimeTargets = new Map<string, {
-    platform: 'codex' | 'claude';
-    scope: Scope;
-  }>();
-  const projectKey = options.scope === 'project'
-    ? await resolveCodexProjectKey(options.cwd)
-    : undefined;
-
-  const skillEntries = await resolveSkillTriggerConfigEntries(options.plugin);
-  for (const platform of ['codex', 'claude'] as const) {
-    const platformRecord = pluginRecord?.platforms[platform];
-    const scopeRecord = options.scope === 'user'
-      ? platformRecord?.userScope
-      : (projectKey ? platformRecord?.projectScopes?.[projectKey] : undefined);
-    if (scopeRecord?.managed) {
-      runtimeTargets.set(`${platform}:${options.scope}`, {
-        platform,
+  const applyTargets = options.applyTargets && options.applyTargets.length > 0
+    ? dedupeReceiptTargets(options.applyTargets)
+    : await resolveDefaultConfigApplyTargets({
+        plugin: options.plugin,
         scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
       });
-    }
-    if (
-      options.scope === 'project' &&
-      platform === 'codex' &&
-      skillEntries.some((entry) => entry.platforms.includes('codex'))
-    ) {
-      runtimeTargets.set('codex:project', {
-        platform: 'codex',
-        scope: 'project',
-      });
-    }
-  }
+  const runtimeTargets = await filterBuiltInApplyTargets({
+    plugin: options.plugin,
+    targets: applyTargets,
+  });
 
-  for (const { platform, scope } of runtimeTargets.values()) {
+  for (const { platform, scope, projectKey } of runtimeTargets) {
     try {
       const preference = await resolveUniformSkillTriggerPreference({
         plugin: options.plugin,
@@ -495,6 +569,7 @@ async function applyBuiltInSkillTriggerRuntime(options: {
           pluginName: options.plugin.manifest.name,
           platform,
           scope,
+          ...(projectKey ? { projectKey } : {}),
         },
         action: 'builtInApply',
         state: 'completed',
@@ -505,6 +580,7 @@ async function applyBuiltInSkillTriggerRuntime(options: {
           pluginName: options.plugin.manifest.name,
           platform,
           scope,
+          ...(projectKey ? { projectKey } : {}),
         },
         action: 'builtInApply',
         state: 'failed',
@@ -521,6 +597,7 @@ export async function replayBuiltInConfigRuntime(options: {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  applyTargets?: ReceiptTargetIdentity[];
 }): Promise<ReceiptTargetResult[]> {
   const entries = await resolveSkillTriggerConfigEntries(options.plugin);
   if (entries.length === 0) {
@@ -531,6 +608,7 @@ export async function replayBuiltInConfigRuntime(options: {
     scope: options.scope,
     cwd: options.cwd,
     env: options.env ?? process.env,
+    applyTargets: options.applyTargets,
   });
 }
 
@@ -542,16 +620,29 @@ export async function replayConfigRuntimeWrites(options: {
   applyTargets?: ReceiptTargetIdentity[];
   includeBuiltIn?: boolean;
   includeDynamicArtifacts?: boolean;
+  nativeCliRunner?: NativeCliRunner;
 }): Promise<ConfigRuntimeReplayReceipt> {
   const env = options.env ?? process.env;
-  const applyTargets = (options.applyTargets && options.applyTargets.length > 0)
-    ? dedupeReceiptTargets(options.applyTargets)
-    : await resolveDefaultConfigApplyTargets({
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-      });
+  const impact = await analyzeConfigRuntimeImpact({
+    plugin: options.plugin,
+    scope: options.scope,
+    projectLayer: 'shared',
+    cwd: options.cwd,
+    env,
+    changedKeys: [],
+    resetAllTrackedKeys: true,
+    includeBuiltIn: options.includeBuiltIn !== false,
+    includeDynamicArtifacts: options.includeDynamicArtifacts !== false,
+    applyTargets: options.applyTargets,
+  });
+  await assertConfigRuntimeImpactAgentVersions({
+    impact,
+    command: 'config',
+    cwd: options.cwd,
+    env,
+    nativeCliRunner: options.nativeCliRunner,
+  });
+  const applyTargets = impact.applyTargets;
 
   const builtInRawResults = options.includeBuiltIn === false
     ? []
@@ -560,6 +651,7 @@ export async function replayConfigRuntimeWrites(options: {
         scope: options.scope,
         cwd: options.cwd,
         env,
+        applyTargets,
       });
   const artifactRefresh = options.includeDynamicArtifacts === false
     ? createSkippedRefreshReceipt()
@@ -854,6 +946,79 @@ function hasIntersectingKeys(left: readonly string[], right: readonly string[]):
   return left.some((value) => rightSet.has(value));
 }
 
+function isCodexDynamicRefreshEntry(
+  artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'state' | 'refreshKeys'>
+    | (DynamicArtifactDiagnosticEntry & { platform?: PlatformName }),
+): boolean {
+  return (
+    (artifact.platform === undefined || artifact.platform === 'codex') &&
+    typeof artifact.id === 'string' &&
+    (
+      artifact.target === 'codex.developerInstructionsBlock' ||
+      artifact.target === 'codex.agentRole' ||
+      artifact.target === 'codex.skill'
+    ) &&
+    (artifact.state === 'present' || artifact.state === 'disabled') &&
+    (artifact.refreshKeys?.length ?? 0) > 0
+  );
+}
+
+function dynamicRefreshEntryTouchesKeys(options: {
+  artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'state' | 'refreshKeys'>
+    | (DynamicArtifactDiagnosticEntry & { platform?: PlatformName });
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): boolean {
+  if (!isCodexDynamicRefreshEntry(options.artifact)) {
+    return false;
+  }
+  if (options.resetAllTrackedKeys === true) {
+    return true;
+  }
+  return hasIntersectingKeys(options.changedKeys, options.artifact.refreshKeys ?? []);
+}
+
+async function hasUserCodexDynamicRefreshEvidence(options: {
+  pluginName: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): Promise<boolean> {
+  const location: PluginLocation = {
+    plugin: options.pluginName,
+    platform: 'codex',
+    scope: 'user',
+  };
+  const diagnosticCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  if (
+    diagnosticCacheRead.status === 'ok' &&
+    diagnosticCacheRead.value.artifacts.some((artifact) =>
+      dynamicRefreshEntryTouchesKeys({
+        artifact,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      }))
+  ) {
+    return true;
+  }
+
+  const trackingManifest = await readTrackingManifest(
+    resolveCodexPaths(options.cwd, 'user', options.env).trackingDir,
+  );
+  const trackingRecord = getTrackingRecord(trackingManifest, options.pluginName);
+  return (trackingRecord?.artifacts ?? []).some((artifact) =>
+    dynamicRefreshEntryTouchesKeys({
+      artifact,
+      changedKeys: options.changedKeys,
+      resetAllTrackedKeys: options.resetAllTrackedKeys,
+    }));
+}
+
 function isCleanProjectPrewriteCandidate(
   evidence: Awaited<ReturnType<typeof collectInstallEvidence>>,
 ): boolean {
@@ -865,6 +1030,258 @@ function isCleanProjectPrewriteCandidate(
     && !evidence.residualEvidence.historicalLifecyclePresent
     && !evidence.residualEvidence.nativeMarkerPresent
     && !evidence.residualEvidence.sharedOwnerPresent;
+}
+
+async function resolveCodexDynamicRefreshImpact(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): Promise<{
+  targets: ReceiptTargetIdentity[];
+  configRefreshSkippedReason?: ConfigRuntimeImpact['configRefreshSkippedReason'];
+}> {
+  if (options.projectLayer === 'local') {
+    return { targets: [], configRefreshSkippedReason: 'projectLocalOverride' };
+  }
+
+  const projectKey = await resolveCodexProjectKey(options.cwd).catch(() => undefined);
+  const targets: ReceiptTargetIdentity[] = [];
+  let sawCodexRefreshableSurface = false;
+  let adoptExistingRequired = false;
+  let cleanPrewrite = false;
+
+  for (const scope of configScopeCandidates(options.scope)) {
+    const refreshKeys = collectCodexRefreshKeysForScope(options.plugin.manifest, scope);
+    let touchesScope = refreshKeys.length > 0 && (
+      options.resetAllTrackedKeys === true ||
+      hasIntersectingKeys(options.changedKeys, refreshKeys)
+    );
+    let userFallbackEvidence = false;
+    if (!touchesScope && scope === 'user') {
+      userFallbackEvidence = await hasUserCodexDynamicRefreshEvidence({
+        pluginName: options.plugin.manifest.name,
+        cwd: options.cwd,
+        env: options.env,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      });
+      touchesScope = userFallbackEvidence;
+    }
+    if (!touchesScope) {
+      continue;
+    }
+    sawCodexRefreshableSurface = true;
+
+    const location: PluginLocation = scope === 'project'
+      ? {
+          plugin: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'project',
+          ...(projectKey ? { projectKey } : {}),
+        }
+      : {
+          plugin: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        };
+    const recordRead = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+    });
+    if (recordRead.status === 'ok') {
+      targets.push({
+        pluginName: options.plugin.manifest.name,
+        platform: 'codex',
+        scope,
+        ...(scope === 'project' && projectKey ? { projectKey } : {}),
+      });
+      continue;
+    }
+
+    if (scope !== 'project') {
+      const hasFallbackEvidence = userFallbackEvidence || await hasUserCodexDynamicRefreshEvidence({
+        pluginName: options.plugin.manifest.name,
+        cwd: options.cwd,
+        env: options.env,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      });
+      if (hasFallbackEvidence) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        });
+      }
+      continue;
+    }
+
+    const currentCatalog = await buildBaseCurrentCatalog({
+      plugin: options.plugin,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const evidence = await collectInstallEvidence({
+      cwd: options.cwd,
+      location: {
+        plugin: options.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'project',
+        ...(projectKey ? { projectKey } : {}),
+      },
+      env: options.env,
+      currentCatalog,
+    });
+
+    if (evidence.adoptable.possible) {
+      adoptExistingRequired = true;
+    } else if (isCleanProjectPrewriteCandidate(evidence)) {
+      cleanPrewrite = true;
+    } else {
+      throw new Error(
+        `当前项目里的 ${options.plugin.manifest.name} 存在未认领或无法验证的残留状态，不能直接刷新共享 artifacts。` +
+        '请先运行 `aw status --verbose` 查看状态，再选择 `aw repair --adopt-existing`、`aw cleanup` 或 `aw reinstall`。',
+      );
+    }
+  }
+
+  if (adoptExistingRequired) {
+    throw new Error(
+      `当前项目里的 ${options.plugin.manifest.name} 共享产物尚未被本机认领；这次写入会影响 repo-visible artifacts。` +
+      '请先运行 `aw repair --adopt-existing`，再重试 config write。',
+    );
+  }
+
+  if (targets.length > 0) {
+    return { targets: dedupeReceiptTargets(targets) };
+  }
+
+  if (
+    options.changedKeys.length > 0 &&
+    configScopeCandidates(options.scope).includes('project')
+  ) {
+    const currentCatalog = await buildBaseCurrentCatalog({
+      plugin: options.plugin,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const evidence = await collectInstallEvidence({
+      cwd: options.cwd,
+      location: {
+        plugin: options.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'project',
+        ...(projectKey ? { projectKey } : {}),
+      },
+      env: options.env,
+      currentCatalog,
+    });
+    if (!evidence.installRecord.present && evidence.adoptable.possible) {
+      return { targets: [], configRefreshSkippedReason: 'adoptExistingRequired' };
+    }
+  }
+
+  if (sawCodexRefreshableSurface || cleanPrewrite) {
+    return { targets: [], configRefreshSkippedReason: 'noRefreshTarget' };
+  }
+
+  return { targets: [] };
+}
+
+async function filterBuiltInApplyTargets(options: {
+  plugin: PluginMeta;
+  targets: ReceiptTargetIdentity[];
+}): Promise<ReceiptTargetIdentity[]> {
+  const skillEntries = await resolveSkillTriggerConfigEntries(options.plugin);
+  if (skillEntries.length === 0) {
+    return [];
+  }
+  return dedupeReceiptTargets(options.targets);
+}
+
+async function analyzeConfigRuntimeImpact(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+  includeBuiltIn: boolean;
+  includeDynamicArtifacts: boolean;
+  applyTargets?: ReceiptTargetIdentity[];
+}): Promise<ConfigRuntimeImpact> {
+  if (options.projectLayer === 'local') {
+    const applyTargets = options.applyTargets && options.applyTargets.length > 0
+      ? dedupeReceiptTargets(options.applyTargets)
+      : [];
+    return {
+      applyTargets,
+      gateTargets: [],
+      dynamicRefreshTargets: [],
+      builtInApplyTargets: [],
+      configRefreshSkippedReason: 'projectLocalOverride',
+    };
+  }
+
+  const defaultApplyTargets = options.applyTargets && options.applyTargets.length > 0
+    ? dedupeReceiptTargets(options.applyTargets)
+    : await resolveDefaultConfigApplyTargets({
+        plugin: options.plugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+  const dynamicRefresh = options.includeDynamicArtifacts
+    ? await resolveCodexDynamicRefreshImpact({
+        plugin: options.plugin,
+        scope: options.scope,
+        projectLayer: options.projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      })
+    : { targets: [] };
+  const applyTargets = dedupeReceiptTargets([
+    ...defaultApplyTargets,
+    ...dynamicRefresh.targets,
+  ]);
+  const builtInApplyTargets = options.includeBuiltIn
+    ? defaultApplyTargets
+    : [];
+  const actionableBuiltInTargets = options.includeBuiltIn
+    ? await filterBuiltInApplyTargets({
+        plugin: options.plugin,
+        targets: builtInApplyTargets,
+      })
+    : [];
+  const gateTargetMap = new Map<string, ReceiptTargetIdentity>();
+  for (const target of dynamicRefresh.targets) {
+    gateTargetMap.set(targetKey(target), target);
+  }
+  for (const target of actionableBuiltInTargets) {
+    gateTargetMap.set(targetKey(target), target);
+  }
+
+  return {
+    applyTargets,
+    gateTargets: [...gateTargetMap.values()],
+    dynamicRefreshTargets: dynamicRefresh.targets,
+    builtInApplyTargets: actionableBuiltInTargets,
+    ...(dynamicRefresh.configRefreshSkippedReason
+      ? { configRefreshSkippedReason: dynamicRefresh.configRefreshSkippedReason }
+      : options.includeDynamicArtifacts && options.changedKeys.length > 0 && dynamicRefresh.targets.length === 0
+        ? { configRefreshSkippedReason: 'noRefreshTarget' as const }
+      : {}),
+  };
 }
 
 async function syncCodexInstallStateAfterConfigRefresh(options: {
@@ -1010,6 +1427,7 @@ export async function applyPluginConfigWrite(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   applyTargets?: ReceiptTargetIdentity[];
+  nativeCliRunner?: NativeCliRunner;
   request: PluginConfigWriteRequest;
 }): Promise<PluginConfigWriteReceipt> {
   const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
@@ -1100,14 +1518,10 @@ export async function applyPluginConfigWrite(options: {
   let artifactRefresh = createSkippedRefreshReceipt(triggerKeys);
   let configRefreshSkippedReason: PluginConfigWriteReceipt['configRefreshSkippedReason'];
   let targetResults: ReceiptTargetResult[] = [];
-  let shouldAttemptRefresh = triggerKeys.length > 0;
+  let shouldAttemptRefresh = false;
+  let applyTargets: ReceiptTargetIdentity[] = [];
 
-  if (options.scope === 'project' && projectLayer === 'local') {
-    shouldAttemptRefresh = false;
-    configRefreshSkippedReason = 'projectLocalOverride';
-  }
-
-  if (options.scope === 'project' && projectLayer === 'shared' && triggerKeys.length > 0) {
+  if (triggerKeys.length > 0) {
     const nextValues = { ...store.values };
     for (const key of requestedRemoveKeys) {
       delete nextValues[key];
@@ -1117,56 +1531,38 @@ export async function applyPluginConfigWrite(options: {
     }
 
     const env = options.env ?? process.env;
-    const projectLocation: PluginLocation = {
-      plugin: pluginName,
-      platform: 'codex',
-      scope: 'project',
-      projectKey: await resolveCodexProjectKey(options.cwd),
-    };
-    const currentCatalog = await buildBaseCurrentCatalog({
+    const impact = await analyzeConfigRuntimeImpact({
       plugin: schemaPlugin,
-      scope: 'project',
+      scope: options.scope,
+      projectLayer,
       cwd: options.cwd,
       env,
+      changedKeys: triggerKeys,
+      includeBuiltIn: false,
+      includeDynamicArtifacts: true,
+      applyTargets: options.applyTargets,
     });
-    const evidence = await collectInstallEvidence({
+    await assertConfigRuntimeImpactAgentVersions({
+      impact,
+      command: 'config',
       cwd: options.cwd,
-      location: projectLocation,
       env,
-      currentCatalog,
+      nativeCliRunner: options.nativeCliRunner,
     });
-    const projectRefreshKeys = collectProjectRefreshKeys(schemaPlugin.manifest);
-    const refreshTouchesProjectArtifacts = hasIntersectingKeys(triggerKeys, projectRefreshKeys);
+    shouldAttemptRefresh = impact.dynamicRefreshTargets.length > 0;
+    applyTargets = impact.applyTargets;
+    configRefreshSkippedReason = impact.configRefreshSkippedReason;
 
-    if (!evidence.installRecord.present) {
-      shouldAttemptRefresh = false;
-      if (evidence.adoptable.possible) {
-        if (refreshTouchesProjectArtifacts) {
-          throw new Error(
-            `当前项目里的 ${pluginName} 共享产物尚未被本机认领；这次写入会影响 repo-visible artifacts。` +
-            '请先运行 `aw repair --adopt-existing`，再重试 config write。',
-          );
-        }
-        configRefreshSkippedReason = 'adoptExistingRequired';
-      } else if (isCleanProjectPrewriteCandidate(evidence)) {
-        configRefreshSkippedReason = 'noRefreshTarget';
-      } else if (refreshTouchesProjectArtifacts) {
-        throw new Error(
-          `当前项目里的 ${pluginName} 存在未认领或无法验证的残留状态，不能直接刷新共享 artifacts。` +
-          '请先运行 `aw status --verbose` 查看状态，再选择 `aw repair --adopt-existing`、`aw cleanup` 或 `aw reinstall`。',
-        );
+    if (options.scope === 'project' && projectLayer === 'shared') {
+      const projectRefreshKeys = collectProjectRefreshKeys(schemaPlugin.manifest);
+      const boundaryMessages = collectProjectArtifactConfigBoundaryIssues({
+        schema,
+        sharedEntries: nextValues,
+        refreshKeys: shouldAttemptRefresh ? projectRefreshKeys : undefined,
+      }).map((issue) => issue.message);
+      if (boundaryMessages.length > 0) {
+        throw new Error([...new Set(boundaryMessages)].join(' '));
       }
-    } else {
-      shouldAttemptRefresh = refreshTouchesProjectArtifacts;
-    }
-
-    const boundaryMessages = collectProjectArtifactConfigBoundaryIssues({
-      schema,
-      sharedEntries: nextValues,
-      refreshKeys: shouldAttemptRefresh ? projectRefreshKeys : undefined,
-    }).map((issue) => issue.message);
-    if (boundaryMessages.length > 0) {
-      throw new Error([...new Set(boundaryMessages)].join(' '));
     }
   }
 
@@ -1209,14 +1605,16 @@ export async function applyPluginConfigWrite(options: {
     }
   }
 
-  const applyTargets = (options.applyTargets && options.applyTargets.length > 0)
-    ? dedupeReceiptTargets(options.applyTargets)
-    : await resolveDefaultConfigApplyTargets({
-        plugin: schemaPlugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env: options.env ?? process.env,
-      });
+  if (applyTargets.length === 0) {
+    applyTargets = (options.applyTargets && options.applyTargets.length > 0)
+      ? dedupeReceiptTargets(options.applyTargets)
+      : await resolveDefaultConfigApplyTargets({
+          plugin: schemaPlugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+        });
+  }
   targetResults = collapseConfigApplyTargetResults({
     pluginName,
     applyTargets,
@@ -1251,6 +1649,7 @@ export async function resetPluginConfigWithHelper(options: {
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
   applyTargets?: ReceiptTargetIdentity[];
+  nativeCliRunner?: NativeCliRunner;
 }): Promise<ResetPluginConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
@@ -1297,6 +1696,41 @@ export async function resetPluginConfigWithHelper(options: {
       warnings.push(ignoreResult.warning);
     }
   }
+  let artifactRefresh = createSkippedRefreshReceipt();
+  let configRefreshSkippedReason: ResetPluginConfigWriteReceipt['configRefreshSkippedReason'];
+  let targetResults: ReceiptTargetResult[] = [];
+  let shouldAttemptRefresh = false;
+  let applyTargets: ReceiptTargetIdentity[] = [];
+
+  if (options.scope === 'project' && projectLayer === 'local') {
+    configRefreshSkippedReason = 'projectLocalOverride';
+  } else if (store.exists && schemaAccess.plugin && removedKeys.length > 0) {
+    const env = options.env ?? process.env;
+    const impact = await analyzeConfigRuntimeImpact({
+      plugin: schemaAccess.plugin,
+      scope: options.scope,
+      projectLayer,
+      cwd: options.cwd,
+      env,
+      changedKeys: removedKeys,
+      includeBuiltIn: true,
+      includeDynamicArtifacts: true,
+      applyTargets: options.applyTargets,
+    });
+    await assertConfigRuntimeImpactAgentVersions({
+      impact,
+      command: 'config',
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: options.nativeCliRunner,
+    });
+    shouldAttemptRefresh = impact.dynamicRefreshTargets.length > 0;
+    applyTargets = impact.applyTargets;
+    configRefreshSkippedReason = impact.configRefreshSkippedReason;
+  } else if (store.exists && removedKeys.length > 0) {
+    configRefreshSkippedReason = 'noRefreshTarget';
+  }
+
   const reset = await resetPluginConfigStore({
     pluginName,
     scope: options.scope,
@@ -1305,72 +1739,47 @@ export async function resetPluginConfigWithHelper(options: {
     ...(options.scope === 'project' ? { projectLayer } : {}),
   });
 
-  let artifactRefresh = createSkippedRefreshReceipt();
-  let configRefreshSkippedReason: ResetPluginConfigWriteReceipt['configRefreshSkippedReason'];
-  let targetResults: ReceiptTargetResult[] = [];
-
-  if (options.scope === 'project' && projectLayer === 'local') {
-    configRefreshSkippedReason = 'projectLocalOverride';
-  } else if (reset.deleted && schemaAccess.plugin && schemaAccess.installedConsumers.length > 0) {
+  if (shouldAttemptRefresh && schemaAccess.plugin) {
     const env = options.env ?? process.env;
-    const shouldCheckProjectRecord = options.scope === 'project';
-    let hasRefreshTarget = !shouldCheckProjectRecord;
-    if (shouldCheckProjectRecord) {
-      const location: PluginLocation = {
-        plugin: pluginName,
-        platform: 'codex',
-        scope: 'project',
-        projectKey: await resolveCodexProjectKey(options.cwd),
-      };
-      const recordRead = await readInstallRecordForLocation({
-        cwd: options.cwd,
-        location,
-        env,
-      });
-      hasRefreshTarget = recordRead.status === 'ok';
-    }
-    if (hasRefreshTarget) {
-      artifactRefresh = await refreshArtifactsAfterConfigWrite({
+    artifactRefresh = await refreshArtifactsAfterConfigWrite({
+      plugin: schemaAccess.plugin,
+      commandScope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+      changedKeys: removedKeys,
+    });
+    if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
+      await syncCodexInstallStateAfterConfigRefresh({
         plugin: schemaAccess.plugin,
         commandScope: options.scope,
         cwd: options.cwd,
-        env: options.env,
-        changedKeys: removedKeys,
+        env,
+        artifactRefresh,
       });
-      if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
-        await syncCodexInstallStateAfterConfigRefresh({
-          plugin: schemaAccess.plugin,
-          commandScope: options.scope,
-          cwd: options.cwd,
-          env,
-          artifactRefresh,
-        });
-      } else if (!artifactRefresh.attempted && options.scope === 'user') {
-        configRefreshSkippedReason = 'noRefreshTarget';
-      }
-    } else {
+    } else if (!artifactRefresh.attempted && options.scope === 'user') {
       configRefreshSkippedReason = 'noRefreshTarget';
     }
-  } else if (reset.deleted && removedKeys.length > 0) {
-    configRefreshSkippedReason = 'noRefreshTarget';
   }
 
-  if (schemaAccess.plugin && schemaAccess.installedConsumers.length > 0) {
-    const applyTargets = (options.applyTargets && options.applyTargets.length > 0)
-      ? dedupeReceiptTargets(options.applyTargets)
-      : await resolveDefaultConfigApplyTargets({
-          plugin: schemaAccess.plugin,
-          scope: options.scope,
-          cwd: options.cwd,
-          env: options.env ?? process.env,
-        });
-    const builtInRawResults = !reset.deleted || (options.scope === 'project' && projectLayer === 'local')
+  if (schemaAccess.plugin && reset.deleted) {
+    if (applyTargets.length === 0) {
+      applyTargets = (options.applyTargets && options.applyTargets.length > 0)
+        ? dedupeReceiptTargets(options.applyTargets)
+        : await resolveDefaultConfigApplyTargets({
+            plugin: schemaAccess.plugin,
+            scope: options.scope,
+            cwd: options.cwd,
+            env: options.env ?? process.env,
+          });
+    }
+    const builtInRawResults = options.scope === 'project' && projectLayer === 'local'
       ? []
       : await replayBuiltInConfigRuntime({
           plugin: schemaAccess.plugin,
           scope: options.scope,
           cwd: options.cwd,
           env: options.env,
+          applyTargets,
         });
     targetResults = collapseConfigApplyTargetResults({
       pluginName,
@@ -1411,6 +1820,7 @@ export async function applyBuiltInConfigWrite(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   applyTargets?: ReceiptTargetIdentity[];
+  nativeCliRunner?: NativeCliRunner;
   key: string;
   action: 'set' | 'unset';
   value?: 'manual' | 'auto';
@@ -1478,6 +1888,30 @@ export async function applyBuiltInConfigWrite(options: {
     }
   }
 
+  let applyTargets: ReceiptTargetIdentity[] = [];
+  if (schemaAccess.plugin) {
+    const env = options.env ?? process.env;
+    const impact = await analyzeConfigRuntimeImpact({
+      plugin: schemaAccess.plugin,
+      scope: options.scope,
+      projectLayer,
+      cwd: options.cwd,
+      env,
+      changedKeys: [options.key],
+      includeBuiltIn: true,
+      includeDynamicArtifacts: false,
+      applyTargets: options.applyTargets,
+    });
+    await assertConfigRuntimeImpactAgentVersions({
+      impact,
+      command: 'config',
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: options.nativeCliRunner,
+    });
+    applyTargets = impact.applyTargets;
+  }
+
   const existed = await upsertBuiltInSkillTriggerStoreValue({
     pluginName,
     scope: options.scope,
@@ -1516,9 +1950,10 @@ export async function applyBuiltInConfigWrite(options: {
         scope: options.scope,
         cwd: options.cwd,
         env,
-        applyTargets: options.applyTargets,
+        applyTargets,
         includeBuiltIn: true,
         includeDynamicArtifacts: false,
+        nativeCliRunner: options.nativeCliRunner,
       })).targetResults
     : [];
 

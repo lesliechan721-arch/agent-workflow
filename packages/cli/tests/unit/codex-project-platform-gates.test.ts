@@ -14,6 +14,7 @@ import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import type {
+  AgentVersionGateErrorPayload,
   GeneratedArtifact,
   PlatformAdapter,
   PlatformName,
@@ -31,6 +32,7 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import { NativeCliError, type NativeCliInvocation, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { runWithZeroWriteSnapshot } from '../helpers/repo-managed-state.js';
 
@@ -306,6 +308,34 @@ class GateAdapter implements PlatformAdapter {
   }
 }
 
+function createCodexMissingVersionRunner(): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in codex-project-platform-gates.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      throw new NativeCliError({
+        invocation: invocation as NativeCliInvocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+        cause: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }),
+      });
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
+}
+
 async function seedCodexProjectManagedEvidence(
   workspace: { repoRoot: string; env: NodeJS.ProcessEnv },
   pluginName: string,
@@ -370,9 +400,235 @@ afterEach(async () => {
 });
 
 describe('Codex project platform gates', () => {
-  it('allows repo-managed project uninstall without a Codex native executable', async () => {
+  it('fails repo-managed project uninstall when Codex agent version is missing', async () => {
     const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    await seedCodexProjectManagedEvidence(workspace, 'slash-commands-only', 'skill');
+
+    const codex = new GateAdapter('codex', workspace.repoRoot, {
+      'slash-commands-only': {
+        scopeInitialized: 'yes',
+      },
+    });
+    const claude = new GateAdapter('claude', workspace.repoRoot);
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        async () => {
+          try {
+            await uninstallCommand(
+              ['slash-commands-only'],
+              {
+                cwd: workspace.repoRoot,
+                scope: 'project',
+                platform: 'codex',
+              },
+              {
+                env: workspace.env,
+                nativeCliRunner: createCodexMissingVersionRunner(),
+                adapters: { codex, claude },
+              },
+            );
+          } catch (error) {
+            payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+            throw error;
+          }
+        },
+      ),
+    ).rejects.toThrow('Codex 不可用');
+
+    expect(payload).toMatchObject({
+      command: 'uninstall',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionMissing',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(codex.uninstallExtensionsCalls).toEqual([]);
+  });
+
+  it('fails repo-managed explicit upgrade when Codex agent version is missing', async () => {
+    const workspace = await makeCodexProjectWorkspace(['mcp-only']);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    await seedCodexProjectManagedEvidence(workspace, 'mcp-only', 'mcpServer');
+
+    const codex = new GateAdapter('codex', workspace.repoRoot, {
+      'mcp-only': {
+        scopeInitialized: 'yes',
+        currentCatalogAvailable: true,
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new GateAdapter('claude', workspace.repoRoot);
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        async () => {
+          try {
+            await upgradeCommand(
+              ['mcp-only'],
+              {
+                cwd: workspace.repoRoot,
+                scope: 'project',
+                platform: 'codex',
+              },
+              {
+                env: workspace.env,
+                nativeCliRunner: createCodexMissingVersionRunner(),
+                adapters: { codex, claude },
+              },
+            );
+          } catch (error) {
+            payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+            throw error;
+          }
+        },
+      ),
+    ).rejects.toThrow('Codex 不可用');
+
+    expect(payload).toMatchObject({
+      command: 'upgrade',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionMissing',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(codex.installPluginCalls).toEqual([]);
+    expect(codex.installExtensionsCalls).toEqual([]);
+  });
+
+  it('fails upgrade --all on explicit Codex project evidence when Codex agent version is missing', async () => {
+    const workspace = await makeCodexProjectWorkspace(['mcp-only']);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    await seedCodexProjectManagedEvidence(workspace, 'mcp-only', 'mcpServer');
+
+    const codex = new GateAdapter('codex', workspace.repoRoot, {
+      'mcp-only': {
+        scopeInitialized: 'yes',
+        currentCatalogAvailable: true,
+        catalogCompatibility: 'current',
+      },
+    });
+    const claude = new GateAdapter('claude', workspace.repoRoot);
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        async () => {
+          try {
+            await upgradeCommand(
+              [],
+              {
+                all: true,
+                cwd: workspace.repoRoot,
+                scope: 'project',
+                platform: 'codex',
+              },
+              {
+                env: workspace.env,
+                nativeCliRunner: createCodexMissingVersionRunner(),
+                adapters: { codex, claude },
+              },
+            );
+          } catch (error) {
+            payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+            throw error;
+          }
+        },
+      ),
+    ).rejects.toThrow('Codex 不可用');
+
+    expect(payload).toMatchObject({
+      command: 'upgradeAll',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionMissing',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(codex.installExtensionsCalls).toEqual([]);
+    expect(claude.installExtensionsCalls).toEqual([]);
+  });
+
+  it('fails explicit Codex project uninstall with full tracking and ledger evidence when Codex agent version is missing', async () => {
+    const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
+    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
+    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
+    await seedCodexProjectManagedEvidence(workspace, 'slash-commands-only', 'skill');
+
+    const codex = new GateAdapter('codex', workspace.repoRoot, {
+      'slash-commands-only': {
+        scopeInitialized: 'yes',
+      },
+    });
+    const claude = new GateAdapter('claude', workspace.repoRoot, {
+      'slash-commands-only': {
+        scopeInitialized: 'no',
+      },
+    });
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        async () => {
+          try {
+            await uninstallCommand(
+              ['slash-commands-only'],
+              {
+                cwd: workspace.repoRoot,
+                scope: 'project',
+                platform: 'codex',
+              },
+              {
+                env: workspace.env,
+                nativeCliRunner: createCodexMissingVersionRunner(),
+                adapters: { codex, claude },
+              },
+            );
+          } catch (error) {
+            payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+            throw error;
+          }
+        },
+      ),
+    ).rejects.toThrow('Codex 不可用');
+
+    expect(payload).toMatchObject({
+      command: 'uninstall',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionMissing',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(claude.uninstallPluginCalls).toEqual([]);
+  });
+
+  it('allows direct project writes when Codex agent version is supported', async () => {
+    const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
     await seedCodexProjectManagedEvidence(workspace, 'slash-commands-only', 'skill');
 
     const codex = new GateAdapter('codex', workspace.repoRoot, {
@@ -402,119 +658,6 @@ describe('Codex project platform gates', () => {
 
     expect(codex.uninstallPluginCalls).toEqual(['slash-commands-only']);
     expect(codex.uninstallExtensionsCalls).toEqual(['slash-commands-only']);
-  });
-
-  it('allows repo-managed explicit upgrade without a Codex native executable', async () => {
-    const workspace = await makeCodexProjectWorkspace(['mcp-only']);
-    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
-    await seedCodexProjectManagedEvidence(workspace, 'mcp-only', 'mcpServer');
-
-    const codex = new GateAdapter('codex', workspace.repoRoot, {
-      'mcp-only': {
-        scopeInitialized: 'yes',
-        currentCatalogAvailable: true,
-        catalogCompatibility: 'current',
-      },
-    });
-    const claude = new GateAdapter('claude', workspace.repoRoot);
-
-    await expect(
-      upgradeCommand(
-        ['mcp-only'],
-        {
-          cwd: workspace.repoRoot,
-          scope: 'project',
-          platform: 'codex',
-        },
-        {
-          env: workspace.env,
-          adapters: { codex, claude },
-        },
-      ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['mcp-only'],
-    });
-
-    expect(codex.installPluginCalls).toEqual([]);
-    expect(codex.installExtensionsCalls).toEqual(['mcp-only']);
-  });
-
-  it('keeps upgrade --all executable on explicit Codex when the current scope only has Codex project evidence', async () => {
-    const workspace = await makeCodexProjectWorkspace(['mcp-only']);
-    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
-    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    await seedCodexProjectManagedEvidence(workspace, 'mcp-only', 'mcpServer');
-
-    const codex = new GateAdapter('codex', workspace.repoRoot, {
-      'mcp-only': {
-        scopeInitialized: 'yes',
-        currentCatalogAvailable: true,
-        catalogCompatibility: 'current',
-      },
-    });
-    const claude = new GateAdapter('claude', workspace.repoRoot);
-
-    await expect(
-      upgradeCommand(
-        [],
-        {
-          all: true,
-          cwd: workspace.repoRoot,
-          scope: 'project',
-          platform: 'codex',
-        },
-        {
-          env: workspace.env,
-          adapters: { codex, claude },
-        },
-      ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['mcp-only'],
-    });
-
-    expect(codex.installExtensionsCalls).toEqual(['mcp-only']);
-    expect(claude.installExtensionsCalls).toEqual([]);
-  });
-
-  it('uses explicit Codex project uninstall with full tracking and ledger evidence without a Codex native executable', async () => {
-    const workspace = await makeCodexProjectWorkspace(['slashCommands-only']);
-    delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
-    workspace.env.AW_FORCE_CLAUDE_AVAILABLE = '1';
-    await seedCodexProjectManagedEvidence(workspace, 'slash-commands-only', 'skill');
-
-    const codex = new GateAdapter('codex', workspace.repoRoot, {
-      'slash-commands-only': {
-        scopeInitialized: 'yes',
-      },
-    });
-    const claude = new GateAdapter('claude', workspace.repoRoot, {
-      'slash-commands-only': {
-        scopeInitialized: 'no',
-      },
-    });
-
-    await expect(
-      uninstallCommand(
-        ['slash-commands-only'],
-        {
-          cwd: workspace.repoRoot,
-          scope: 'project',
-          platform: 'codex',
-        },
-        {
-          env: workspace.env,
-          adapters: { codex, claude },
-        },
-      ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['slash-commands-only'],
-    });
-
-    expect(codex.uninstallPluginCalls).toEqual(['slash-commands-only']);
-    expect(claude.uninstallPluginCalls).toEqual([]);
   });
 
   it('keeps interactive project uninstall candidates on explicit Codex evidence even without a Codex native executable', async () => {

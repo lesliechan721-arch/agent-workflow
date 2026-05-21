@@ -7,6 +7,8 @@ import { CommandWarningError, isCommandWarningError } from '../types.js';
 import { ClaudeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import type {
+  AgentVersionGateFailure,
+  AgentVersionProbeResult,
   AgentDefinition,
   ArtifactTarget,
   CatalogResolution,
@@ -33,6 +35,7 @@ import type {
   StatusReport,
   UpgradeCommandOptions,
 } from '../types.js';
+import { AgentVersionGateError } from '../types.js';
 import {
   createCommandExecutionContext,
   emitCommandEvent,
@@ -40,7 +43,11 @@ import {
   type CommandExecutionContext,
   type CommandExecutionContextInput,
 } from './runtime.js';
-import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
+import {
+  getAgentVersionRequirement,
+  probeAgentVersion,
+} from '../utils/agent-version.js';
+import { createAgentVersionSuggestedAction } from '../output/model.js';
 import {
   ensureLocalMarketplace,
   readInstalledLedger,
@@ -81,10 +88,7 @@ import {
   supportsPlatform,
   resolveSupportedPlatforms,
 } from '../utils/platform-support.js';
-import {
-  canExecuteCodexProjectWithoutNative,
-  listExecutablePlatformsForTargets,
-} from './platform-resolution.js';
+import type { NativeCliRunner } from '../utils/native-cli.js';
 
 export function createAdapters(
   cwd: string,
@@ -1386,65 +1390,18 @@ export function hasHistoricalEvidence(plugin: PluginStatusReport): boolean {
   );
 }
 
-function createCodexNativeRunnerRequiredError(
-  action: CommandAction,
-  scope: Scope,
-  plugins: PluginMeta[],
-): Error {
-  if (canExecuteCodexProjectWithoutNative({ action, scope, plugins })) {
-    return new Error('Codex project repo-managed target 不需要本机 Codex native runner，但平台解析未把它识别为可执行；请检查插件 manifest。');
-  }
-
-  const reason = scope === 'project'
-    ? '当前 Codex project target 不是纯 repo-managed 可执行目标（可能包含 native-only 或 apps 能力），需要本机 Codex native runner。'
-    : 'Codex user scope 需要本机 Codex native runner。';
-
-  return new Error(
-    `${reason} PATH 中没有检测到可用 \`codex\`；请安装 Codex CLI 或设置 AW_FORCE_CODEX_AVAILABLE=1 后重试。`,
-  );
-}
-
-function createBothPlatformsUnavailableError(
-  detection: EnvironmentDetection,
-  action: CommandAction,
-  scope: Scope,
-  plugins: PluginMeta[],
-): Error {
-  if (
-    !detection.codex.available &&
-    !canExecuteCodexProjectWithoutNative({ action, scope, plugins })
-  ) {
-    return createCodexNativeRunnerRequiredError(action, scope, plugins);
-  }
-
-  return new Error('`--platform both` 只在 Codex target 和 Claude Code 都可执行时可用。');
-}
-
 export async function resolveTargetPlatforms(
   action: CommandAction,
   requestedPlatform: PlatformSelection,
-  cwd: string,
-  scope: Scope,
+  _cwd: string,
+  _scope: Scope,
   plugins: PluginMeta[],
   _adapters: Record<PlatformName, PlatformAdapter>,
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
 ): Promise<PlatformName[]> {
-  const detection = await detectEnvironment(cwd, env);
-  const executablePlatforms = listExecutablePlatformsForTargets({
-    nativeAvailablePlatforms: listDetectedPlatforms(detection),
-    action,
-    scope,
-    plugins,
-  });
   const shouldEnforceProducts = action === 'install' || action === 'upgrade';
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
-    if (!executablePlatforms.includes(requestedPlatform)) {
-      if (requestedPlatform === 'codex') {
-        throw createCodexNativeRunnerRequiredError(action, scope, plugins);
-      }
-      throw new Error(`${requestedPlatform} 当前环境不可用。`);
-    }
     if (shouldEnforceProducts) {
       assertPluginsSupportPlatforms(plugins, [requestedPlatform]);
     }
@@ -1452,9 +1409,6 @@ export async function resolveTargetPlatforms(
   }
 
   if (requestedPlatform === 'both') {
-    if (executablePlatforms.length !== 2) {
-      throw createBothPlatformsUnavailableError(detection, action, scope, plugins);
-    }
     if (shouldEnforceProducts) {
       assertPluginsSupportPlatforms(plugins, ['codex', 'claude']);
     }
@@ -1466,30 +1420,17 @@ export async function resolveTargetPlatforms(
 }
 
 export async function resolveCurrentCatalogWriteTargetPairs(
-  action: 'install' | 'upgrade',
+  _action: 'install' | 'upgrade',
   requestedPlatform: PlatformSelection,
-  cwd: string,
-  scope: Scope,
+  _cwd: string,
+  _scope: Scope,
   targets: Pick<ResolvedPluginTarget, 'pluginName' | 'plugin' | 'currentPlugin'>[],
   _adapters: Record<PlatformName, PlatformAdapter>,
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
 ): Promise<RequestedPlatformTargetPair[]> {
   const plugins = targets.map((target) => target.currentPlugin ?? target.plugin);
-  const detection = await detectEnvironment(cwd, env);
-  const executablePlatforms = listExecutablePlatformsForTargets({
-    nativeAvailablePlatforms: listDetectedPlatforms(detection),
-    action,
-    scope,
-    plugins,
-  });
 
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
-    if (!executablePlatforms.includes(requestedPlatform)) {
-      if (requestedPlatform === 'codex') {
-        throw createCodexNativeRunnerRequiredError(action, scope, plugins);
-      }
-      throw new Error(`${requestedPlatform} 当前环境不可用。`);
-    }
     assertPluginsSupportPlatforms(plugins, [requestedPlatform]);
     return targets.map((target) => ({
       pluginName: target.pluginName,
@@ -1497,20 +1438,14 @@ export async function resolveCurrentCatalogWriteTargetPairs(
     }));
   }
 
-  if (executablePlatforms.length === 0) {
-    throw new Error(
-      '当前环境没有检测到可执行平台；Codex project repo-managed target 不需要本机 Codex，Codex user/native-only target 仍需要对应 native runner。',
-    );
-  }
-
   const pairs: RequestedPlatformTargetPair[] = [];
   for (const target of targets) {
     const plugin = target.currentPlugin ?? target.plugin;
-    const compatiblePlatforms = executablePlatforms.filter((platform) =>
+    const compatiblePlatforms = (['codex', 'claude'] as const).filter((platform) =>
       pluginSupportsPlatform(plugin, platform),
     );
     if (compatiblePlatforms.length === 0) {
-      assertPluginsSupportPlatforms([plugin], executablePlatforms);
+      assertPluginsSupportPlatforms([plugin], ['codex', 'claude']);
     }
     for (const platform of compatiblePlatforms) {
       pairs.push({
@@ -1521,6 +1456,116 @@ export async function resolveCurrentCatalogWriteTargetPairs(
   }
 
   return pairs;
+}
+
+function formatAgentVersionCommandLabel(action: CommandAction | string): string {
+  switch (action) {
+    case 'upgradeAll':
+      return 'upgrade --all';
+    case 'config':
+      return 'config apply';
+    default:
+      return String(action);
+  }
+}
+
+function createAgentVersionFailureReason(
+  result: AgentVersionProbeResult,
+): string {
+  switch (result.status) {
+    case 'missing':
+      return result.details ?? `未找到 \`${result.command}\` 可执行文件。`;
+    case 'probeFailed':
+      return result.details ?? `\`${result.command} --version\` 执行失败。`;
+    case 'unparseable':
+      return result.details ?? `无法从 \`${result.command} --version\` 输出解析严格 SemVer。`;
+    case 'tooOld':
+      return result.details ?? `检测到版本 ${result.detectedVersion ?? 'unknown'} 低于最低要求。`;
+    case 'supported':
+      return 'supported';
+  }
+}
+
+function createAgentVersionGateFailure(
+  command: CommandAction | string,
+  result: AgentVersionProbeResult,
+): AgentVersionGateFailure {
+  if (result.status === 'supported' || !result.reasonCode) {
+    throw new Error(`无法为 ${result.platform} supported 结果生成 version gate failure。`);
+  }
+
+  return {
+    platform: result.platform,
+    command,
+    probeCommand: result.command,
+    status: result.status,
+    reasonCode: result.reasonCode,
+    detectedVersion: result.detectedVersion,
+    requiredMinVersion: result.requiredMinVersion,
+    failureReason: createAgentVersionFailureReason(result),
+    suggestedAction: createAgentVersionSuggestedAction(result),
+    ...(result.rawOutput.trim().length > 0 ? { rawVersionOutput: result.rawOutput } : {}),
+  };
+}
+
+function formatAgentVersionGateFailureMessage(
+  failure: AgentVersionGateFailure,
+): string {
+  const requirement = getAgentVersionRequirement(failure.platform);
+  const actionLabel = formatAgentVersionCommandLabel(failure.command);
+  switch (failure.status) {
+    case 'tooOld':
+      return `${requirement.displayName} 版本过低：当前 ${failure.detectedVersion ?? 'unknown'}，执行 ${actionLabel} 至少需要 ${failure.requiredMinVersion}。${failure.suggestedAction}`;
+    case 'missing':
+      return `${requirement.displayName} 不可用：执行 ${actionLabel} 前需要 ${failure.requiredMinVersion} 或更高版本，当前未找到可执行文件。${failure.suggestedAction}`;
+    case 'unparseable':
+      return `${requirement.displayName} 版本不可识别：执行 ${actionLabel} 前至少需要 ${failure.requiredMinVersion}，但当前输出无法解析（${failure.failureReason}）。${failure.suggestedAction}`;
+    case 'probeFailed':
+      return `${requirement.displayName} 版本检测失败：执行 ${actionLabel} 前至少需要 ${failure.requiredMinVersion}，当前无法完成版本探测（${failure.failureReason}）。${failure.suggestedAction}`;
+  }
+}
+
+export async function assertAgentVersionsForWriteTargets(options: {
+  command: CommandAction | string;
+  platforms: Iterable<PlatformName>;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+}): Promise<Map<PlatformName, AgentVersionProbeResult>> {
+  const platforms = [...new Set(options.platforms)].sort((left, right) =>
+    left === right ? 0 : left === 'codex' ? -1 : 1,
+  );
+  if (platforms.length === 0) {
+    return new Map();
+  }
+
+  const results = await Promise.all(platforms.map(async (platform) => [
+    platform,
+    await probeAgentVersion(platform, {
+      cwd: options.cwd,
+      env: options.env,
+      runner: options.nativeCliRunner,
+    }),
+  ] as const));
+  const resultsByPlatform = new Map<PlatformName, AgentVersionProbeResult>(results);
+  const failures = results
+    .map(([, result]) => result)
+    .filter((result): result is AgentVersionProbeResult & { status: Exclude<AgentVersionProbeResult['status'], 'supported'> } =>
+      result.status !== 'supported',
+    )
+    .map((result) => createAgentVersionGateFailure(options.command, result));
+
+  if (failures.length > 0) {
+    throw new AgentVersionGateError(
+      failures.map((failure) => formatAgentVersionGateFailureMessage(failure)).join('\n'),
+      {
+        command: options.command,
+        failures,
+      },
+    );
+  }
+
+  return resultsByPlatform;
 }
 
 export function formatDetectedPlatforms(detection: EnvironmentDetection): string[] {

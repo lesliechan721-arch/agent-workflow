@@ -213,15 +213,22 @@ function createCodexMarketplaceAddRunner(
 ): NativeCliRunner {
   return async (invocation) => {
     calls.push(invocation);
-    const awHome = invocation.args[3] ?? '';
-    await upsertCodexMarketplaceFile(
-      resolveCodexPaths(cwd, 'user', env).configTomlPath,
-      'aw',
-      {
-        source: awHome,
+    const invocationEnv = invocation.env ?? env;
+    const invocationCwd = invocation.cwd ?? cwd;
+    if (invocation.args.length === 1 && invocation.args[0] === '--version') {
+      return {
+        exitCode: 0,
+        stdout: invocation.command === 'claude' ? '2.1.88 (Claude Code)' : 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+    const configPath = resolveCodexPaths(invocationCwd, 'user', invocationEnv).configTomlPath;
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+      await upsertCodexMarketplaceFile(configPath, 'aw', {
+        source: invocation.args[3] ?? '',
         sourceType: 'local',
-      },
-    );
+      });
+    }
     return {
       exitCode: 0,
       stdout: '',

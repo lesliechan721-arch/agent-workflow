@@ -11,6 +11,7 @@ import { upgradeCommand } from '../../src/commands/upgrade.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import type {
+  AgentVersionGateErrorPayload,
   GeneratedArtifact,
   NativeRecoveryState,
   PlatformAdapter,
@@ -18,6 +19,7 @@ import type {
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
@@ -69,6 +71,35 @@ function replaceProcessEnv(nextEnv: NodeJS.ProcessEnv): void {
       process.env[key] = value;
     }
   }
+}
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in upgrade-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      return {
+        exitCode: 0,
+        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: options.claude ?? '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
 }
 
 async function makeWorkspace(): Promise<{ repoRoot: string; awHome: string; embeddedRoot: string; codexHome: string }> {
@@ -1417,7 +1448,7 @@ describe('upgrade command coverage', () => {
     expect(claude.installCalls).toEqual([]);
   });
 
-  it('rejects upgrade --all with --platform both when only one platform is available', async () => {
+  it('rejects upgrade --all with --platform both when one agent version is blocked', async () => {
     const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
     activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
@@ -1432,8 +1463,10 @@ describe('upgrade command coverage', () => {
     };
     delete env.AW_FORCE_CLAUDE_AVAILABLE;
 
-    await expect(
-      upgradeCommand(
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await upgradeCommand(
         [],
         {
           all: true,
@@ -1447,9 +1480,26 @@ describe('upgrade command coverage', () => {
             claude: new FakeAdapter('claude', repoRoot, {}),
           },
           env,
+          nativeCliRunner: createAgentVersionRunner({
+            claude: '2.1.87 (Claude Code)',
+          }),
         },
-      ),
-    ).rejects.toThrow('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'upgradeAll',
+      failures: [{
+        platform: 'claude',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '2.1.87',
+        requiredMinVersion: '2.1.88',
+      }],
+    });
+    expect(ensureLocalMarketplaceSpy).not.toHaveBeenCalled();
   });
 
   it('keeps explicit single-platform upgrade scoped to the selected supported platform after products narrowing', async () => {

@@ -95,6 +95,12 @@ export function validateRenderedHooksContent(
   platform?: PlatformName,
 ): void {
   const root = assertRecord(content, fieldName);
+  const extraRootKeys = Object.keys(root).filter((key) => key !== 'hooks');
+  if (extraRootKeys.length > 0) {
+    throw new Error(
+      `Invalid ${fieldName}: unsupported fields ${extraRootKeys.map((key) => `"${key}"`).join(', ')}.`,
+    );
+  }
   const hooks = assertRecord(root.hooks, `${fieldName}.hooks`);
   const renderedPlatform = platform ?? inferRenderedHooksPlatform(fieldName);
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { diagnoseCommand } from '../../src/commands/diagnose.js';
 import type { PluginMeta } from '../../src/types.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { createArtifactConfigDigest } from '../../src/utils/artifact-plan.js';
 import { resolveArtifactRenderConfig, resolveArtifactRendererTarget } from '../../src/utils/artifact-renderer.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
@@ -22,6 +23,24 @@ import {
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
 
 const tempDirs: string[] = [];
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in diagnose-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+    if (invocation.command === 'codex') {
+      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.131.0', stderr: '' };
+    }
+    if (invocation.command === 'claude') {
+      return { exitCode: 0, stdout: options.claude ?? '2.1.88 (Claude Code)', stderr: '' };
+    }
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
+}
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -367,6 +386,67 @@ afterEach(async () => {
 });
 
 describe('diagnose P7', () => {
+  it('includes structured agent version diagnostics in diagnose JSON', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-diagnose-agent-version-'),
+      scenario: 'installed',
+    });
+    await maybePrepareP2RecordFiles(fixture);
+
+    const result = await diagnoseCommand(
+      [fixture.target.location.plugin],
+      {
+        cwd: fixture.paths.repoRoot,
+        scope: fixture.target.location.scope,
+        platform: fixture.target.location.platform,
+        json: true,
+      },
+      {
+        env: createInstallStateFixtureEnv(fixture.paths),
+        nativeCliRunner: createAgentVersionRunner({
+          codex: 'codex-cli 0.131.0',
+          claude: '2.1.87 (Claude Code)',
+        }),
+        p7Targets: [{
+          pluginName: fixture.target.location.plugin,
+          platform: fixture.target.location.platform,
+          scope: fixture.target.location.scope,
+          projectKey: fixture.target.location.projectKey ?? undefined,
+          executionCwd: fixture.paths.repoRoot,
+        }],
+      } as never,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      agentVersions: Array<{
+        platform: string;
+        status: string;
+        detectedVersion?: string;
+        requiredMinVersion: string;
+        reasonCode?: string;
+        suggestedAction: string;
+        rawVersionOutput?: string;
+      }>;
+    };
+    expect(payload.agentVersions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        platform: 'codex',
+        status: 'supported',
+        detectedVersion: '0.131.0',
+        requiredMinVersion: '0.131.0',
+      }),
+      expect.objectContaining({
+        platform: 'claude',
+        status: 'tooOld',
+        detectedVersion: '2.1.87',
+        requiredMinVersion: '2.1.88',
+        reasonCode: 'agentVersionTooLow',
+        suggestedAction: expect.stringContaining('升级到 >= 2.1.88'),
+      }),
+    ]));
+    expect(JSON.stringify(payload)).not.toContain('rawVersionOutput');
+  });
+
   it.each([
     {
       label: 'dynamic content drift',

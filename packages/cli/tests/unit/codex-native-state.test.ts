@@ -11,6 +11,7 @@ import {
   checkCodexNativeUninstallPostCheck,
   disposeCodexNativePluginRollbackBaseline,
   listCodexNativeEvidence,
+  inspectCodexNativeViewDiagnostic,
   readCodexNativePluginState,
 } from '../../src/utils/codex-native-state.js';
 import {
@@ -22,6 +23,7 @@ import {
   getCurrentSourceTestIsolation,
   registerCurrentTestWritableStateRoot,
 } from '../setup/test-isolation.js';
+import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
 
 const tempDirs: string[] = [];
 
@@ -142,6 +144,135 @@ describe('codex-native-state', () => {
         installedManifestPresent: true,
       },
     ]);
+  });
+
+  it('builds native view available diagnostics from read-only app-server RPC summaries', async () => {
+    const makeRunner = () => {
+      let callIndex = 0;
+      return () => {
+        callIndex += 1;
+        const method = callIndex === 1
+          ? 'plugin/installed'
+          : callIndex === 2
+            ? 'plugin/read'
+            : 'plugin/list';
+        const requestId = callIndex === 1
+          ? 'plugin-installed-1'
+          : callIndex === 2
+            ? 'plugin-read-1'
+            : 'plugin-list-1';
+        const result = callIndex === 1
+          ? { plugins: [{ id: 'git-commit@aw', enabled: true, injectable: true }] }
+          : callIndex === 2
+            ? { id: 'git-commit@aw', marketplace: 'aw', source: { path: '/tmp/aw' } }
+            : { plugins: [{ id: 'git-commit@aw', marketplace: 'aw', mentionable: true }] };
+        return createFakeCodexAppServerHarness([
+          {
+            when: 'stdin',
+            match: { method: 'initialize' },
+            actions: [
+              {
+                type: 'stdout-jsonl',
+                value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+              },
+            ],
+          },
+          {
+            when: 'stdin',
+            match: { method },
+            actions: [
+              {
+                type: 'stdout-jsonl',
+                value: { id: requestId, result },
+              },
+            ],
+          },
+        ]).spawn({
+          command: 'codex',
+          args: ['app-server'],
+          cwd: '/tmp/project',
+          env: { PATH: '/tmp/bin' },
+        });
+      };
+    };
+
+    await expect(inspectCodexNativeViewDiagnostic({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      pluginName: 'git-commit',
+      runner: makeRunner(),
+    })).resolves.toMatchObject({
+      status: 'nativeViewAvailable',
+      pluginId: 'git-commit@aw',
+      summaries: [
+        {
+          method: 'plugin/installed',
+          pluginId: 'git-commit@aw',
+          enabled: true,
+          injectable: true,
+        },
+        {
+          method: 'plugin/read',
+          pluginId: 'git-commit@aw',
+          marketplace: 'aw',
+          source: '/tmp/aw',
+        },
+        {
+          method: 'plugin/list',
+          pluginId: 'git-commit@aw',
+          marketplace: 'aw',
+          mentionable: true,
+        },
+      ],
+    });
+  });
+
+  it('maps app-server failures to nativeViewUnknown without throwing', async () => {
+    const harness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/installed' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: {
+              id: 'plugin-installed-1',
+              error: {
+                code: -32601,
+                message: 'unknown method plugin/installed',
+              },
+            },
+          },
+        ],
+      },
+    ]);
+
+    await expect(inspectCodexNativeViewDiagnostic({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      pluginName: 'git-commit',
+      runner: harness.createRunner(),
+    })).resolves.toMatchObject({
+      status: 'nativeViewUnknown',
+      reason: 'codexNativeDiagnosticUnavailable',
+      method: 'plugin/installed',
+      pluginId: 'git-commit@aw',
+      errorCategory: 'method_unavailable',
+      debugContext: {
+        rpcCode: -32601,
+        rpcMessage: 'unknown method plugin/installed',
+      },
+    });
   });
 
   it('treats multiple valid cache versions as ambiguous instead of installed', async () => {

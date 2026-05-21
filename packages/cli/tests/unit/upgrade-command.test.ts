@@ -9,6 +9,7 @@ import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
 import type {
+  AgentVersionGateErrorPayload,
   GeneratedArtifact,
   InstalledDependencyEdge,
   InstalledLedger,
@@ -30,6 +31,7 @@ import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 
 const tempDirs: string[] = [];
 
@@ -105,6 +107,7 @@ function mockCatalogTargets(options: {
   ledger: InstalledLedger;
   catalogRoot?: string;
 }): void {
+  const catalogRoot = options.catalogRoot ?? '/synthetic';
   vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockResolvedValue({
     ledger: options.ledger,
     warnings: [],
@@ -113,12 +116,28 @@ function mockCatalogTargets(options: {
   vi.spyOn(commonModule, 'loadPluginTargetsForCommand').mockResolvedValue(
     options.allTargets,
   );
-  if (options.catalogRoot) {
-    vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution').mockResolvedValue({
-      rootDir: options.catalogRoot,
-      source: 'embedded',
-    });
-  }
+  vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution').mockResolvedValue({
+    rootDir: catalogRoot,
+    source: 'embedded',
+  });
+  vi.spyOn(commonModule, 'prepareCommandEnvironment').mockImplementation(async (prepareOptions = {}) => {
+    const mode = prepareOptions.catalogMode ?? (prepareOptions.ensureLocalMarketplace ? 'runtimeWritable' : 'readOnly');
+    const source = mode === 'runtimeWritable' ? 'local' : 'embedded';
+    return {
+      ledger: options.ledger,
+      warnings: [],
+      marketplace: {
+        rootDir: catalogRoot,
+        source,
+        changed: mode === 'runtimeWritable',
+        mode,
+        catalog: {
+          rootDir: catalogRoot,
+          source,
+        },
+      },
+    };
+  });
 }
 
 function createInstallSource(kind: 'explicit' | 'dependency') {
@@ -151,6 +170,35 @@ function createManagedCodexUserRecord(options: {
     },
     installSource: createInstallSource(options.installSource ?? 'explicit'),
     dependencyEdges: options.dependencyEdges ?? [],
+  };
+}
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in upgrade-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      return {
+        exitCode: 0,
+        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: options.claude ?? '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
   };
 }
 
@@ -1116,6 +1164,76 @@ describe('upgrade command dependency graph', () => {
         },
       ),
     ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+  });
+
+  it('fails upgrade --all --platform both before any marketplace write when either platform version is blocked', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'upgrade-all-version-gated',
+      products: ['codex'],
+    }));
+    await writeInstalledLedger({
+      ...createAvailableLedger(),
+      plugins: {
+        [plugin.manifest.name]: {
+          lastResolvedVersion: plugin.manifest.version,
+          platforms: {
+            codex: {
+              userScope: createManagedCodexUserRecord({
+                version: plugin.manifest.version,
+              }),
+            },
+          },
+        },
+      },
+    }, env);
+    mockCatalogTargets({
+      explicitTargets: [createResolvedTarget(plugin)],
+      allTargets: [createResolvedTarget(plugin)],
+      ledger: await readInstalledLedger(env),
+      catalogRoot: repoRoot,
+    });
+
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
+    const codex = new UpgradeTestAdapter('codex', repoRoot, env);
+    const claude = new UpgradeTestAdapter('claude', repoRoot, env);
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await upgradeCommand(
+        [],
+        {
+          all: true,
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'both',
+        },
+        {
+          env,
+          nativeCliRunner: createAgentVersionRunner({
+            codex: 'codex-cli 0.131.0',
+            claude: '2.1.87 (Claude Code)',
+          }),
+          adapters: { codex, claude },
+        },
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'upgradeAll',
+      failures: [{
+        platform: 'claude',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '2.1.87',
+        requiredMinVersion: '2.1.88',
+      }],
+    });
+    expect(ensureLocalMarketplaceSpy).not.toHaveBeenCalled();
+    expect(codex.installOrder).toEqual([]);
+    expect(claude.installOrder).toEqual([]);
   });
 
   it('does not auto-upgrade legacy installed versions during upgrade --all', async () => {

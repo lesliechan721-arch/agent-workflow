@@ -153,6 +153,7 @@ import {
   type ArtifactRollbackState,
 } from './uninstall.js';
 import {
+  assertAgentVersionsForWriteTargets,
   collectCommandWarnings,
   createAdapters,
   assertPluginsSupportPlatforms,
@@ -3619,6 +3620,13 @@ export async function installCommand(
         platforms,
         scope: options.scope,
       },
+    });
+    await assertAgentVersionsForWriteTargets({
+      command: 'install',
+      platforms,
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: context.nativeCliRunner,
     });
     const allCatalogTargets = await loadPluginTargetsForCommand(
       options.cwd,

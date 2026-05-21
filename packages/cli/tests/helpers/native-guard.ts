@@ -18,6 +18,10 @@ import {
 import type { PlatformAdapter, PlatformName } from '../../src/types.js';
 
 const DEFAULT_GUARDED_NATIVE_COMMANDS = ['codex', 'claude'] as const;
+const DEFAULT_VERSION_OUTPUTS: Record<string, string> = {
+  codex: 'codex-cli 0.131.0',
+  claude: '2.1.88 (Claude Code)',
+};
 
 function normalizeCommandName(command: string): string {
   const baseName = path.basename(command).toLowerCase();
@@ -57,6 +61,10 @@ function isGuardedNativeCliInvocation(
 ): boolean {
   const commandName = normalizeCommandName(invocation.command);
   return guardedCommands.some((guardedCommand) => guardedCommand === commandName);
+}
+
+function isVersionProbeInvocation(invocation: NativeCliInvocation): boolean {
+  return invocation.args.length === 1 && invocation.args[0] === '--version';
 }
 
 function isCodexAppServerInvocation(invocation: CodexAppServerInvocation): boolean {
@@ -107,6 +115,14 @@ export function createTestNativeCliGuard(options: {
 
   return async (invocation) => {
     if (isGuardedNativeCliInvocation(invocation, guardedCommands)) {
+      if (isVersionProbeInvocation(invocation)) {
+        const commandName = normalizeCommandName(invocation.command);
+        return {
+          exitCode: 0,
+          stdout: DEFAULT_VERSION_OUTPUTS[commandName] ?? '0.0.0',
+          stderr: '',
+        };
+      }
       throw new TestNativeCliGuardError({
         invocation,
         cwdSource,
