@@ -46,6 +46,7 @@ import type {
   Scope,
   StatusReport,
 } from '../../src/types.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
 import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
@@ -210,6 +211,35 @@ function makeRuntime(
       codex: adapters?.codex ?? new FakeAdapter(),
       claude: adapters?.claude ?? new FakeAdapter(),
     } satisfies Record<PlatformName, PlatformAdapter>,
+  };
+}
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in uninstall-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      return {
+        exitCode: 0,
+        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: options.claude ?? '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
   };
 }
 

@@ -3,6 +3,15 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import {
+  CodexAppServerError,
+  listCodexPluginsViaAppServer,
+  listInstalledCodexPluginsViaAppServer,
+  readCodexPluginViaAppServer,
+  type CodexAppServerErrorContext,
+  type CodexAppServerProcessRunner,
+  type CodexAppServerPluginMethod,
+} from './codex-app-server-client.js';
 import { readCodexConfigFile } from './codex-config.js';
 import { getCodexHome } from './paths.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -65,6 +74,53 @@ export interface CodexNativePluginRollbackBaseline {
   cleanupRoot: string | null;
 }
 
+export interface CodexNativeViewSummary {
+  method: CodexAppServerPluginMethod;
+  pluginId?: string;
+  marketplace?: string;
+  source?: string;
+  installed?: boolean;
+  enabled?: boolean;
+  injectable?: boolean;
+  mentionable?: boolean;
+}
+
+export interface CodexNativeViewAvailableDiagnostic {
+  status: 'nativeViewAvailable';
+  reason: null;
+  pluginId: string;
+  summaries: CodexNativeViewSummary[];
+  raw: {
+    pluginList: unknown;
+    pluginInstalled: unknown;
+    pluginRead: unknown;
+  };
+}
+
+export interface CodexNativeViewUnknownDiagnostic {
+  status: 'nativeViewUnknown';
+  reason: 'codexNativeDiagnosticUnavailable';
+  method: string;
+  pluginId: string;
+  errorCategory?: string;
+  debugContext?: CodexAppServerErrorContext;
+}
+
+export type CodexNativeViewDiagnostic =
+  | CodexNativeViewAvailableDiagnostic
+  | CodexNativeViewUnknownDiagnostic;
+
+export interface InspectCodexNativeViewDiagnosticOptions {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  pluginName: string;
+  pluginId?: string;
+  timeoutMs?: number;
+  runner?: CodexAppServerProcessRunner;
+  clientName?: string;
+  clientVersion?: string;
+}
+
 function buildPluginId(pluginName: string): `${string}@aw` {
   return `${pluginName}@${MARKETPLACE_NAME}`;
 }
@@ -73,6 +129,106 @@ function normalizePluginId(pluginNameOrId: string): `${string}@aw` {
   return pluginNameOrId.endsWith(`@${MARKETPLACE_NAME}`)
     ? pluginNameOrId as `${string}@aw`
     : buildPluginId(pluginNameOrId);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function getStringField(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const entry = value[key];
+    if (typeof entry === 'string' && entry.trim() !== '') {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function getBooleanField(value: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const entry = value[key];
+    if (typeof entry === 'boolean') {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function extractPluginRecords(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  for (const key of ['plugins', 'installed', 'items', 'entries', 'results']) {
+    const entry = value[key];
+    if (Array.isArray(entry)) {
+      return entry.filter(isRecord);
+    }
+  }
+  return [value];
+}
+
+function summarizePluginRecord(
+  method: CodexAppServerPluginMethod,
+  record: Record<string, unknown>,
+): CodexNativeViewSummary {
+  const sourceValue = record.source;
+  const marketplaceValue = record.marketplace;
+  const marketplace = typeof marketplaceValue === 'string'
+    ? marketplaceValue
+    : isRecord(marketplaceValue)
+      ? getStringField(marketplaceValue, ['name', 'id', 'path'])
+      : undefined;
+  const source = typeof sourceValue === 'string'
+    ? sourceValue
+    : isRecord(sourceValue)
+      ? getStringField(sourceValue, ['path', 'url', 'name', 'id', 'kind'])
+      : undefined;
+
+  return {
+    method,
+    pluginId: getStringField(record, ['pluginId', 'id', 'name']),
+    marketplace,
+    source,
+    installed: getBooleanField(record, ['installed', 'isInstalled']),
+    enabled: getBooleanField(record, ['enabled', 'isEnabled']),
+    injectable: getBooleanField(record, ['injectable', 'canInject', 'injectionEnabled']),
+    mentionable: getBooleanField(record, ['mentionable', 'canMention', 'mentionEnabled']),
+  };
+}
+
+function summarizeNativeViewResult(
+  method: CodexAppServerPluginMethod,
+  result: unknown,
+): CodexNativeViewSummary[] {
+  return extractPluginRecords(result).map((record) => summarizePluginRecord(method, record));
+}
+
+function mapCodexNativeViewError(
+  error: unknown,
+  pluginId: string,
+): CodexNativeViewUnknownDiagnostic {
+  if (error instanceof CodexAppServerError) {
+    return {
+      status: 'nativeViewUnknown',
+      reason: 'codexNativeDiagnosticUnavailable',
+      method: error.debugContext.method,
+      pluginId,
+      errorCategory: error.category,
+      debugContext: error.debugContext,
+    };
+  }
+
+  return {
+    status: 'nativeViewUnknown',
+    reason: 'codexNativeDiagnosticUnavailable',
+    method: 'codex app-server',
+    pluginId,
+    errorCategory: 'protocol_error',
+  };
 }
 
 function getCodexConfigPath(env: NodeJS.ProcessEnv): string {
@@ -318,6 +474,59 @@ export async function listCodexNativeEvidence(
   );
 
   return states.filter((state) => hasCodexNativeStateEvidence(state));
+}
+
+export async function inspectCodexNativeViewDiagnostic(
+  options: InspectCodexNativeViewDiagnosticOptions,
+): Promise<CodexNativeViewDiagnostic> {
+  const env = options.env ?? process.env;
+  const pluginId = options.pluginId ?? buildPluginId(options.pluginName);
+  const baseOptions = {
+    cwd: options.cwd,
+    env,
+    timeoutMs: options.timeoutMs,
+    runner: options.runner,
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+  };
+
+  try {
+    const installedResult = await listInstalledCodexPluginsViaAppServer(baseOptions);
+    const readResult = await readCodexPluginViaAppServer({
+      ...baseOptions,
+      pluginId,
+    });
+    const listResult = await listCodexPluginsViaAppServer(baseOptions);
+    const summaries = [
+      ...summarizeNativeViewResult(installedResult.method, installedResult.result),
+      ...summarizeNativeViewResult(readResult.method, readResult.result),
+      ...summarizeNativeViewResult(listResult.method, listResult.result),
+    ];
+
+    if (summaries.length === 0) {
+      return {
+        status: 'nativeViewUnknown',
+        reason: 'codexNativeDiagnosticUnavailable',
+        method: 'codex app-server result',
+        pluginId,
+        errorCategory: 'protocol_error',
+      };
+    }
+
+    return {
+      status: 'nativeViewAvailable',
+      reason: null,
+      pluginId,
+      summaries,
+      raw: {
+        pluginList: listResult.result,
+        pluginInstalled: installedResult.result,
+        pluginRead: readResult.result,
+      },
+    };
+  } catch (error) {
+    return mapCodexNativeViewError(error, pluginId);
+  }
 }
 
 export async function checkCodexNativeInstallPostCheck(

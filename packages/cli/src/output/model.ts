@@ -1,4 +1,7 @@
 import type {
+  AgentVersionProbeResult,
+  AgentVersionReasonCode,
+  AgentVersionStatus,
   CatalogCacheFallbackEvidence,
   CatalogLatestBlockedEvidence,
   CatalogRemoteFailureEvidence,
@@ -11,6 +14,7 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
+import { getAgentVersionRequirement } from '../utils/agent-version.js';
 
 export type OutputLevel = 'success' | 'info' | 'notice' | 'warning' | 'debug';
 export type OutputTarget = 'stdout' | 'stderr' | 'debugLog';
@@ -22,7 +26,7 @@ export interface NativeMarketplaceEventData {
   plugin: string;
   marketplaceName: string;
   marketplacePath: string;
-  operation: 'add' | 'verify';
+  operation: 'add' | 'list' | 'remove' | 'verify';
   phase: NativeEventPhase;
   errorCategory?: string;
   suggestion?: string;
@@ -33,7 +37,11 @@ export interface NativeRpcEventData {
   scope: Scope;
   plugin: string;
   pluginId: string;
-  method: 'plugin/install' | 'plugin/uninstall';
+  method:
+    | 'plugin/install'
+    | 'plugin/uninstall'
+    | 'codex plugin add'
+    | 'codex plugin remove';
   phase: NativeEventPhase;
   durationMs: number;
   nativeWriteSucceeded?: boolean;
@@ -134,6 +142,18 @@ export interface CommandNotice {
   source?: CommandOutputSource;
 }
 
+export interface AgentVersionDiagnosticProjection {
+  platform: PlatformName;
+  command: string;
+  status: AgentVersionStatus;
+  detectedVersion?: string;
+  requiredMinVersion: string;
+  reasonCode?: AgentVersionReasonCode;
+  suggestedAction: string;
+  rawVersionOutput?: string;
+  details?: string;
+}
+
 export interface CommandReporter {
   event: (event: CommandEvent) => void | Promise<void>;
   notice: (notice: CommandNotice) => void | Promise<void>;
@@ -143,6 +163,41 @@ export interface DebugLogger {
   readonly logFile?: string;
   log: (event: CommandEvent) => void | Promise<void>;
   flush?: () => void | Promise<void>;
+}
+
+export function createAgentVersionSuggestedAction(
+  result: AgentVersionProbeResult,
+): string {
+  const requirement = getAgentVersionRequirement(result.platform);
+  if (result.status === 'missing') {
+    return `请安装 ${requirement.displayName}，并确认 \`${requirement.command} --version\` 可用后重试。`;
+  }
+  if (result.status === 'tooOld') {
+    return `请将 ${requirement.displayName} 升级到 >= ${requirement.minVersion} 后重试。`;
+  }
+  if (result.status === 'supported') {
+    return `${requirement.displayName} 已满足 AW 插件写入最低版本要求。`;
+  }
+  return `请检查 \`${requirement.command} --version\` 输出，必要时重新安装或升级 ${requirement.displayName} 后重试。`;
+}
+
+export function projectAgentVersionDiagnostic(
+  result: AgentVersionProbeResult,
+  options: { includeRawOutput?: boolean; includeDetails?: boolean } = {},
+): AgentVersionDiagnosticProjection {
+  return {
+    platform: result.platform,
+    command: result.command,
+    status: result.status,
+    ...(result.detectedVersion ? { detectedVersion: result.detectedVersion } : {}),
+    requiredMinVersion: result.requiredMinVersion,
+    ...(result.reasonCode ? { reasonCode: result.reasonCode } : {}),
+    suggestedAction: createAgentVersionSuggestedAction(result),
+    ...(options.includeRawOutput && result.rawOutput.trim().length > 0
+      ? { rawVersionOutput: result.rawOutput }
+      : {}),
+    ...(options.includeDetails && result.details ? { details: result.details } : {}),
+  };
 }
 
 function ensureSentence(text: string): string {

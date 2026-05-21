@@ -46,12 +46,11 @@ export function listExecutablePlatformsForTargets(options: {
   scope: Scope;
   plugins: PluginMeta[];
 }): PlatformName[] {
+  void options.action;
+  void options.scope;
+  void options.plugins;
   return listExecutablePlatformsForNativeAndCodexProject({
     nativeAvailablePlatforms: options.nativeAvailablePlatforms,
-    codexProjectExecutableWithoutNative: canExecuteCodexProjectWithoutNative({
-      action: options.action,
-      scope: options.scope,
-      plugins: options.plugins,
-    }),
+    codexProjectExecutableWithoutNative: false,
   });
 }

@@ -25,6 +25,11 @@ import type {
 } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
+  NativeCliError,
+  type NativeCliInvocation,
+  type NativeCliRunner,
+} from '../../src/utils/native-cli.js';
+import {
   getCodexProjectManagedKinds,
   needsCodexProjectConfigAccess,
 } from '../../src/utils/codex-project-surface.js';
@@ -234,6 +239,34 @@ class RecordingAdapter implements PlatformAdapter {
       }],
     };
   }
+}
+
+function createCodexMissingVersionRunner(): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in codex-project-installability.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      throw new NativeCliError({
+        invocation: invocation as NativeCliInvocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+        cause: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }),
+      });
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
 }
 
 afterEach(() => {
@@ -755,6 +788,7 @@ describe('Codex project installability', () => {
     const workspace = await makeWorkspace(['mcp-only', 'native-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.PATH = '';
+    const nativeCliRunner = createCodexMissingVersionRunner();
 
     await expect(
       installCommand(
@@ -766,9 +800,10 @@ describe('Codex project installability', () => {
         },
         {
           env: workspace.env,
+          nativeCliRunner,
         },
       ),
-    ).rejects.toThrow('Codex user scope 需要本机 Codex native runner');
+    ).rejects.toThrow('Codex 不可用');
 
     await expect(
       installCommand(
@@ -780,9 +815,10 @@ describe('Codex project installability', () => {
         },
         {
           env: workspace.env,
+          nativeCliRunner,
         },
       ),
-    ).rejects.toThrow('需要本机 Codex native runner');
+    ).rejects.toThrow('Codex 不可用');
   });
 
   it('rejects removed auto platform installs before any write work begins', async () => {

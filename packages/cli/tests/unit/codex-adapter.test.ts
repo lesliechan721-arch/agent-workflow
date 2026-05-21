@@ -275,15 +275,78 @@ function createCodexMarketplaceAddRunner(
 ): NativeCliRunner {
   return async (invocation) => {
     calls.push(invocation);
-    const awHome = invocation.args[3] ?? '';
-    await upsertCodexMarketplaceFile(
-      resolveCodexPaths(cwd, 'user', env).configTomlPath,
-      'aw',
-      {
-        source: awHome,
-        sourceType: 'local',
-      },
-    );
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    if (invocation.args.join(' ') === 'plugin marketplace list') {
+      return {
+        exitCode: 0,
+        stdout: 'aw\n',
+        stderr: '',
+      };
+    }
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+      const awHome = invocation.args[3] ?? '';
+      await upsertCodexMarketplaceFile(
+        configPath,
+        'aw',
+        {
+          source: awHome,
+          sourceType: 'local',
+        },
+      );
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      };
+    }
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
+      await codexConfigModule.removeCodexMarketplaceFile(configPath, invocation.args[3] ?? 'aw');
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      };
+    }
+    if (invocation.args.join(' ') === 'plugin list') {
+      return {
+        exitCode: 0,
+        stdout: 'git-commit@aw\n',
+        stderr: '',
+      };
+    }
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+      const pluginId = invocation.args[2] ?? '';
+      const pluginName = pluginId.endsWith('@aw') ? pluginId.slice(0, -3) : pluginId;
+      const awHome = (await readCodexConfigFile(configPath)).snapshot.marketplaces.aw?.source ?? env.AW_HOME!;
+      const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, pluginName);
+      await upsertCodexPluginEnabledFile(configPath, pluginId, { enabled: true });
+      await fs.remove(cacheVersionPath);
+      await fs.copy(path.join(awHome, 'plugins', pluginName), cacheVersionPath, {
+        overwrite: true,
+        errorOnExist: false,
+      }).catch(async () => {
+        await fs.ensureDir(cacheVersionPath);
+      });
+      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
+      await fs.outputFile(path.join(env.AW_CODEX_HOME!, 'plugins', pluginId, 'manifest.json'), '{}\n', 'utf8');
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      };
+    }
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'remove') {
+      const pluginId = invocation.args[2] ?? '';
+      const pluginName = pluginId.endsWith('@aw') ? pluginId.slice(0, -3) : pluginId;
+      await removeCodexPluginEnabledFile(configPath, pluginId);
+      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', pluginId));
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      };
+    }
     return {
       exitCode: 0,
       stdout: '',
@@ -292,16 +355,8 @@ function createCodexMarketplaceAddRunner(
   };
 }
 
-async function waitForHarnessMethod(
-  harness: ReturnType<typeof createFakeCodexAppServerHarness>,
-  method: string,
-): Promise<void> {
-  while (!harness.stdinMessages.some((message) => message.json?.method === method)) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
-
 afterEach(async () => {
+  vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
   delete process.env.AW_HOME;
   delete process.env.AW_CODEX_HOME;
@@ -499,6 +554,46 @@ describe('CodexAdapter', () => {
         ],
       },
     });
+  });
+
+  it('writes hooks for Codex project scope but leaves user-scope hooks.json untouched', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const projectPaths = resolveCodexPaths(cwd, 'project', env);
+    const userPaths = resolveCodexPaths(cwd, 'user', env);
+    const existingUserHooks = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Write',
+            hooks: [{ type: 'command', command: 'echo onsite hook' }],
+          },
+        ],
+      },
+    };
+    await fs.ensureDir(path.dirname(userPaths.hooksPath));
+    await fs.writeJson(userPaths.hooksPath, existingUserHooks, { spaces: 2 });
+
+    const projectArtifacts = await adapter.installExtensions(plugin, 'project');
+
+    const projectHookArtifact = projectArtifacts.find((artifact) => artifact.kind === 'hook');
+    expect(projectHookArtifact?.path).toBe(projectPaths.hooksPath);
+    await expect(fs.readJson(projectPaths.hooksPath)).resolves.toMatchObject({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ],
+      },
+    });
+
+    const userArtifacts = await adapter.installExtensions(plugin, 'user');
+
+    expect(userArtifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
+    await expect(fs.readJson(userPaths.hooksPath)).resolves.toEqual(existingUserHooks);
   });
 
   it('writes structured MCP servers with quoted keys and tracking artifacts', async () => {
@@ -1941,39 +2036,23 @@ describe('CodexAdapter', () => {
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const nativeCalls: NativeCliInvocation[] = [];
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
     const adapter = new CodexAdapter(
       cwd,
       createCodexMarketplaceAddRunner(cwd, env, nativeCalls),
       env,
-      appServerHarness.createRunner(),
     );
     const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
 
     await adapter.installPlugin(plugin, 'user');
-    await installSideEffect;
 
     const configSnapshot = await readCodexConfigFile(configPath);
     const canonicalAwHome = await fs.realpath(aliasAwHome);
 
     expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
       ['plugin', 'marketplace', 'add', canonicalAwHome],
+      ['plugin', 'marketplace', 'list'],
+      ['plugin', 'add', 'git-commit@aw'],
+      ['plugin', 'list'],
     ]);
     expect(nativeCalls[0]).toMatchObject({
       command: 'codex',
@@ -1984,14 +2063,6 @@ describe('CodexAdapter', () => {
       source: canonicalAwHome,
       sourceType: 'local',
     });
-    expect(appServerHarness.invocations).toEqual([
-      {
-        command: 'codex',
-        args: ['app-server'],
-        cwd,
-        env,
-      },
-    ]);
     await expect(
       fs.pathExists(path.join(env.AW_CODEX_HOME!, 'plugins', '.tmp', 'marketplaces', 'aw')),
     ).resolves.toBe(false);
@@ -2014,34 +2085,17 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const nativeCliRunner = vi.fn(async () => ({
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-    }));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, nativeCliRunner, env, appServerHarness.createRunner());
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
+    const nativeCliRunner = vi.fn(createCodexMarketplaceAddRunner(cwd, env));
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
 
     await adapter.installPlugin(plugin, 'user');
-    await installSideEffect;
 
-    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(nativeCliRunner).toHaveBeenCalledTimes(3);
+    expect(nativeCliRunner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+      ['plugin', 'marketplace', 'list'],
+      ['plugin', 'add', 'git-commit@aw'],
+      ['plugin', 'list'],
+    ]);
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {
@@ -2055,10 +2109,9 @@ describe('CodexAdapter', () => {
       pluginId: 'git-commit@aw',
       state: 'pending_after_native_write',
     });
-    expect(appServerHarness.invocations).toHaveLength(1);
   });
 
-  it('runs Codex user native install through app-server RPC and requires cache materialization', async () => {
+  it('runs Codex user native install through Codex CLI and requires cache materialization', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });
     const canonicalAwHome = await fs.realpath(env.AW_HOME!);
@@ -2069,27 +2122,9 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
     await adapter.installPlugin(plugin, 'user');
-    await installSideEffect;
 
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
@@ -2106,9 +2141,8 @@ describe('CodexAdapter', () => {
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toMatchObject({
       pluginId: 'git-commit@aw',
       state: 'pending_after_native_write',
-      marketplacePath: path.join(canonicalAwHome, '.agents', 'plugins', 'marketplace.json'),
+      marketplacePath: canonicalAwHome,
     });
-    expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/install');
   });
 
   it('can install Codex user native cache from an explicit marketplace path', async () => {
@@ -2123,39 +2157,14 @@ describe('CodexAdapter', () => {
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const historicalMarketplacePath = path.join(repoRoot, 'historical-aw', '.agents', 'plugins', 'marketplace.json');
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
     await adapter.installPluginFromMarketplace(plugin, 'user', {
       marketplacePath: historicalMarketplacePath,
     });
-    await installSideEffect;
 
-    const installMessage = appServerHarness.stdinMessages.find((message) =>
-      message.json?.method === 'plugin/install'
-    );
-    expect(installMessage?.json?.params).toMatchObject({
-      marketplacePath: historicalMarketplacePath,
-      pluginName: 'git-commit',
-    });
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toMatchObject({
-      marketplacePath: historicalMarketplacePath,
+      marketplacePath: canonicalAwHome,
     });
   });
 
@@ -2213,58 +2222,10 @@ describe('CodexAdapter', () => {
       'utf8',
     );
 
-    let stagedMarketplacePath: string | undefined;
-    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
     const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: (input) => {
-          if (input.json?.method !== 'plugin/install') {
-            return false;
-          }
-          const params = input.json.params as { marketplacePath?: string } | undefined;
-          stagedMarketplacePath = params?.marketplacePath;
-          expect(stagedMarketplacePath).toBeDefined();
-          expect(stagedMarketplacePath).not.toBe(path.join(env.AW_HOME!, '.agents', 'plugins', 'marketplace.json'));
-
-          const stagedRoot = path.dirname(path.dirname(path.dirname(stagedMarketplacePath!)));
-          const stagedPluginRoot = path.join(stagedRoot, 'plugins', plugin.manifest.name);
-          expect(fs.readJsonSync(path.join(stagedPluginRoot, '.codex-plugin', 'plugin.json'))).toMatchObject({
-            skills: './codex/custom-skills',
-          });
-          expect(
-            fs.readFileSync(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'static-commit', 'SKILL.md'), 'utf8'),
-          ).toBe('# Static Commit\n');
-          expect(
-            fs.readFileSync(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
-          ).toBe('# Dynamic Commit\n');
-
-          fs.appendFileSync(configPath, '\n[plugins."git-commit@aw"]\nenabled = true\n', 'utf8');
-          fs.copySync(stagedPluginRoot, cacheVersionPath, {
-            overwrite: true,
-            errorOnExist: false,
-          });
-          fs.outputFileSync(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-          return true;
-        },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
-      },
-    ]);
-    const adapter = new CodexAdapter(
-      cwd,
-      createCodexMarketplaceAddRunner(cwd, env),
-      env,
-      appServerHarness.createRunner(),
-    );
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
     await adapter.installPluginFromMarketplace(plugin, 'user');
-    expect(stagedMarketplacePath).toBeDefined();
 
     await expect(
       fs.readFile(path.join(cacheVersionPath, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
@@ -2351,37 +2312,7 @@ describe('CodexAdapter', () => {
       },
     }, { spaces: 2 });
 
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: (input) => {
-          if (input.json?.method !== 'plugin/install') {
-            return false;
-          }
-          const params = input.json.params as { marketplacePath?: string } | undefined;
-          expect(params?.marketplacePath).toBe(path.join(canonicalAwHome, '.agents', 'plugins', 'marketplace.json'));
-          expect(fs.existsSync(path.join(customSkillsRoot, 'static-commit', 'SKILL.md'))).toBe(true);
-          expect(fs.existsSync(path.join(customSkillsRoot, 'generated-commit', 'SKILL.md'))).toBe(false);
-
-          fs.appendFileSync(configPath, '\n[plugins."git-commit@aw"]\nenabled = true\n', 'utf8');
-          fs.outputFileSync(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-          return true;
-        },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
-      },
-    ]);
-    const adapter = new CodexAdapter(
-      cwd,
-      createCodexMarketplaceAddRunner(cwd, env),
-      env,
-      appServerHarness.createRunner(),
-    );
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
     await adapter.installPluginFromMarketplace(plugin, 'user');
 
@@ -2490,39 +2421,7 @@ describe('CodexAdapter', () => {
       },
     }, { spaces: 2 });
 
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: (input) => {
-          if (input.json?.method !== 'plugin/install') {
-            return false;
-          }
-          const params = input.json.params as { marketplacePath?: string } | undefined;
-          expect(params?.marketplacePath).toBe(path.join(canonicalAwHome, '.agents', 'plugins', 'marketplace.json'));
-          expect(fs.existsSync(path.join(customSkillsRoot, 'generated-commit', 'SKILL.md'))).toBe(true);
-          expect(
-            fs.readFileSync(path.join(customSkillsRoot, 'generated-commit', 'SKILL.md'), 'utf8'),
-          ).toBe('# Static Commit\n');
-
-          fs.appendFileSync(configPath, '\n[plugins."git-commit@aw"]\nenabled = true\n', 'utf8');
-          fs.outputFileSync(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-          return true;
-        },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
-      },
-    ]);
-    const adapter = new CodexAdapter(
-      cwd,
-      createCodexMarketplaceAddRunner(cwd, env),
-      env,
-      appServerHarness.createRunner(),
-    );
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
     await adapter.installPluginFromMarketplace(plugin, 'user');
 
@@ -2530,7 +2429,7 @@ describe('CodexAdapter', () => {
       .resolves.toBe('# Static Commit\n');
   });
 
-  it('fails install when app-server reports unknown method and does not fall back to config-only', async () => {
+  it('fails install when Codex CLI rejects plugin add and does not fall back to config-only', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });
     const canonicalAwHome = await fs.realpath(env.AW_HOME!);
@@ -2541,26 +2440,21 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [
-          {
-            type: 'stdout-jsonl',
-            value: { id: 'install-1', error: { code: -32601, message: 'unknown method plugin/install' } },
-          },
-        ],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const fallbackRunner = createCodexMarketplaceAddRunner(cwd, env);
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+        throw new NativeCliError({
+          invocation,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'unknown command: codex plugin add',
+        });
+      }
+      return fallbackRunner(invocation);
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
 
-    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('不支持 `plugin/install`');
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('codex plugin add');
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {},
@@ -2572,7 +2466,7 @@ describe('CodexAdapter', () => {
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toBeNull();
   });
 
-  it('fails install when app-server denies install policy and does not write config-only fallback', async () => {
+  it('fails install when Codex CLI denies install policy and does not write config-only fallback', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });
     const canonicalAwHome = await fs.realpath(env.AW_HOME!);
@@ -2583,29 +2477,21 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [
-          {
-            type: 'stdout-jsonl',
-            value: {
-              id: 'install-1',
-              error: { code: -32001, message: 'Installation denied by marketplace policy' },
-            },
-          },
-        ],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const fallbackRunner = createCodexMarketplaceAddRunner(cwd, env);
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+        throw new NativeCliError({
+          invocation,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'Installation denied by marketplace policy',
+        });
+      }
+      return fallbackRunner(invocation);
+    };
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
 
-    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('install policy');
+    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('Installation denied');
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {},
@@ -2625,29 +2511,21 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const postCheckFallbackRunner = createCodexMarketplaceAddRunner(cwd, env);
+    const postCheckNativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+        await upsertCodexPluginEnabledFile(configPath, invocation.args[2] ?? 'git-commit@aw', { enabled: true });
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return postCheckFallbackRunner(invocation);
+    };
+    const adapter = new CodexAdapter(cwd, postCheckNativeCliRunner, env);
     const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
     adapter.setCommandEventSink((event) => {
       events.push(event as { type: string; data?: Record<string, unknown> });
     });
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-    });
 
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('安装后校验失败');
-    await installSideEffect;
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toMatchObject({
       pluginId: 'git-commit@aw',
       state: 'post_check_failed',
@@ -2666,7 +2544,7 @@ describe('CodexAdapter', () => {
         expect.objectContaining({
           type: 'native:rpc',
           data: expect.objectContaining({
-            method: 'plugin/install',
+            method: 'codex plugin add',
             phase: 'success',
             pluginId: 'git-commit@aw',
             nativeWriteSucceeded: true,
@@ -2708,41 +2586,23 @@ describe('CodexAdapter', () => {
     });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
     const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
     adapter.setCommandEventSink((event) => {
       events.push(event as { type: string; data?: Record<string, unknown> });
-    });
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
     });
 
     vi.spyOn(codexNativeRecoveryModule, 'writeCodexNativeRecoveryBreadcrumb')
       .mockRejectedValueOnce(new Error('simulated breadcrumb write failure'));
 
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('AW 没有持久化恢复证据');
-    await installSideEffect;
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toBeNull();
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'native:rpc',
           data: expect.objectContaining({
-            method: 'plugin/install',
+            method: 'codex plugin add',
             phase: 'success',
             nativeWriteSucceeded: true,
           }),
@@ -2776,35 +2636,19 @@ describe('CodexAdapter', () => {
 
     const nativeCalls: NativeCliInvocation[] = [];
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
     const adapter = new CodexAdapter(
       cwd,
       createCodexMarketplaceAddRunner(cwd, env, nativeCalls),
       env,
-      appServerHarness.createRunner(),
     );
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
 
     await adapter.installPlugin(plugin, 'user');
-    await installSideEffect;
 
     expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
       ['plugin', 'marketplace', 'add', await fs.realpath(env.AW_HOME!)],
+      ['plugin', 'marketplace', 'list'],
+      ['plugin', 'add', 'git-commit@aw'],
+      ['plugin', 'list'],
     ]);
   });
 
@@ -2819,35 +2663,19 @@ describe('CodexAdapter', () => {
 
     const nativeCalls: NativeCliInvocation[] = [];
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/install' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      },
-    ]);
     const adapter = new CodexAdapter(
       cwd,
       createCodexMarketplaceAddRunner(cwd, env, nativeCalls),
       env,
-      appServerHarness.createRunner(),
     );
-    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
-    const installSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/install').then(async () => {
-      await upsertCodexPluginEnabledFile(configPath, 'git-commit@aw', { enabled: true });
-      await fs.outputFile(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
-    });
 
     await adapter.installPlugin(plugin, 'user');
-    await installSideEffect;
 
     expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
       ['plugin', 'marketplace', 'add', await fs.realpath(env.AW_HOME!)],
+      ['plugin', 'marketplace', 'list'],
+      ['plugin', 'add', 'git-commit@aw'],
+      ['plugin', 'list'],
     ]);
   });
 
@@ -2946,13 +2774,15 @@ describe('CodexAdapter', () => {
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('请显式注入 fake native runner');
   });
 
-  it('uses the default app-server guard when tests forget to inject a fake Codex app-server harness', async () => {
+  it('does not start Codex app-server for native CLI installs', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const appServerHarness = createFakeCodexAppServerHarness([]);
     const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
 
-    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('测试默认禁止启动真实 `codex app-server`');
-    await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('fake app-server harness');
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(appServerHarness.invocations).toEqual([]);
   });
 
   it('wraps native marketplace add failures with an actionable Codex error', async () => {
@@ -2970,7 +2800,7 @@ describe('CodexAdapter', () => {
     const adapter = new CodexAdapter(cwd, nativeCliRunner, env, appServerHarness.createRunner());
 
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
-      '无法通过 Codex 原生命令注册 AW 本地 marketplace',
+      'codex plugin marketplace add',
     );
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
       'marketplace root is invalid',
@@ -2992,7 +2822,7 @@ describe('CodexAdapter', () => {
     const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
 
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow(
-      '无法通过 Codex 原生命令注册 AW 本地 marketplace',
+      'codex plugin marketplace add',
     );
     await expect(adapter.installPlugin(plugin, 'user')).rejects.toThrow('exit code 1');
   });
@@ -3059,7 +2889,7 @@ describe('CodexAdapter', () => {
     });
   });
 
-  it('runs Codex user native uninstall through app-server RPC and removes cache/config/breadcrumb', async () => {
+  it('runs Codex user native uninstall through Codex CLI and removes cache/config/breadcrumb', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await fs.ensureDir(env.AW_HOME!);
     const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
@@ -3113,30 +2943,14 @@ describe('CodexAdapter', () => {
       reason: 'native_write_succeeded_post_steps_pending',
       env,
     });
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/uninstall' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const nativeCalls: NativeCliInvocation[] = [];
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env, nativeCalls), env);
     const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
     adapter.setCommandEventSink((event) => {
       events.push(event as { type: string; data?: Record<string, unknown> });
     });
-    const uninstallSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/uninstall').then(async () => {
-      await removeCodexPluginEnabledFile(configPath, 'git-commit@aw');
-      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'git-commit'));
-    });
 
     await adapter.uninstallPlugin(plugin, 'user');
-    await uninstallSideEffect;
 
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
@@ -3148,13 +2962,17 @@ describe('CodexAdapter', () => {
       fs.pathExists(resolveCodexNativeCacheVersionPath(env, plugin.manifest.name)),
     ).resolves.toBe(false);
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toBeNull();
-    expect(appServerHarness.stdinMessages.map((message) => message.json?.method)).toContain('plugin/uninstall');
+    expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
+      ['plugin', 'remove', 'git-commit@aw'],
+      ['plugin', 'list'],
+      ['plugin', 'marketplace', 'remove', 'aw'],
+    ]);
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'native:rpc',
           data: expect.objectContaining({
-            method: 'plugin/uninstall',
+            method: 'codex plugin remove',
             phase: 'success',
             pluginId: 'git-commit@aw',
             nativeWriteSucceeded: true,
@@ -3231,7 +3049,7 @@ describe('CodexAdapter', () => {
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const appServerHarness = createFakeCodexAppServerHarness([]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env, appServerHarness.createRunner());
 
     await adapter.uninstallPlugin(plugin, 'user');
 
@@ -3282,26 +3100,10 @@ describe('CodexAdapter', () => {
       env,
     });
 
-    const appServerHarness = createFakeCodexAppServerHarness([
-      {
-        when: 'stdin',
-        match: { method: 'initialize' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      },
-      {
-        when: 'stdin',
-        match: { method: 'plugin/uninstall' },
-        actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
-      },
-    ]);
-    const adapter = new CodexAdapter(cwd, env, appServerHarness.createRunner());
-    const uninstallSideEffect = waitForHarnessMethod(appServerHarness, 'plugin/uninstall').then(async () => {
-      await removeCodexPluginEnabledFile(configPath, 'git-commit@aw');
-      await fs.remove(path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'git-commit'));
-    });
+    const nativeCalls: NativeCliInvocation[] = [];
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env, nativeCalls), env);
 
     await adapter.uninstallUserNativePluginById('git-commit@aw');
-    await uninstallSideEffect;
 
     await expect(readCodexNativeRecoveryBreadcrumb('git-commit', env)).resolves.toBeNull();
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
@@ -3311,6 +3113,11 @@ describe('CodexAdapter', () => {
       },
     });
     await expect(fs.pathExists(installedManifestPath)).resolves.toBe(false);
+    expect(nativeCalls.map((invocation) => invocation.args)).toEqual([
+      ['plugin', 'remove', 'git-commit@aw'],
+      ['plugin', 'list'],
+      ['plugin', 'marketplace', 'remove', 'aw'],
+    ]);
   });
 
   it('does not call marketplace add or app-server for Codex project scope installs', async () => {
@@ -3448,14 +3255,14 @@ describe('CodexAdapter', () => {
       repoManagedSessionState: {
         instructions: 'unknownByExternalLayer',
         rules: 'visible',
-        hooks: 'visible',
+        hooks: 'not_applicable',
         agents: 'unknownByExternalLayer',
       },
     });
     expect(status.plugins[0].repoManagedSessionState?.diagnostics).toContain(
       'effective exec policy 还叠加了外部 layer 的 rules。',
     );
-    expect(status.plugins[0].repoManagedSessionState?.diagnostics).toContain(
+    expect(status.plugins[0].repoManagedSessionState?.diagnostics).not.toContain(
       'effective hooks registry 还叠加了外部 layer 的 hooks。',
     );
   });
@@ -3608,7 +3415,7 @@ describe('CodexAdapter', () => {
     expect(status.plugins[0]).toMatchObject({
       catalogCompatibility: 'missing',
       repoManagedSessionState: {
-        hooks: 'visible',
+        hooks: 'not_applicable',
       },
     });
     expect(status.plugins[0].driftWarnings).not.toContain(

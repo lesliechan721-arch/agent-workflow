@@ -186,9 +186,58 @@ describe('local-plugin generator', () => {
       },
       codex: {
         skills: './codex/skills',
+        hooks: {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: 'echo git hook' }],
+              },
+            ],
+            SessionStart: [
+              {
+                matcher: 'startup|resume|clear',
+                hooks: [{ type: 'command', command: 'echo shared session start' }],
+              },
+            ],
+            UserPromptSubmit: [
+              {
+                hooks: [{ type: 'command', command: 'echo codex prompt' }],
+              },
+            ],
+          },
+        },
       },
     });
 
+    await expect(
+      fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      hooks: {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [{ type: 'command', command: 'echo git hook' }],
+            },
+          ],
+          SessionStart: [
+            {
+              matcher: 'startup|resume|clear',
+              hooks: [{ type: 'command', command: 'echo shared session start' }],
+            },
+          ],
+          UserPromptSubmit: [
+            {
+              hooks: [{ type: 'command', command: 'echo codex prompt' }],
+            },
+          ],
+        },
+      },
+    });
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'codex', 'hooks', 'hooks.json')),
+    ).resolves.toBe(false);
     await expect(
       fs.readFile(path.join(outputRoot, 'claude', 'agents', 'aw-git-commit-commit-reviewer.md'), 'utf8'),
     ).resolves.toContain('name: "commit-reviewer"');

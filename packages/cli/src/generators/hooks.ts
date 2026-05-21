@@ -1,6 +1,7 @@
 import type {
   HookDefinition,
   PlatformName,
+  RenderedHooksManifest,
   RenderedHookGroup,
   TrackedHookGroupIdentity,
 } from '../types.js';
@@ -15,7 +16,7 @@ import {
 
 export interface RenderedHooksArtifact {
   relativePath: string;
-  content: Record<string, unknown>;
+  content: RenderedHooksManifest;
 }
 
 export interface CodexHookBundle {
@@ -50,8 +51,8 @@ function sortRenderedHookGroups(
 function renderGroupedHooks(
   groups: RenderedHookGroup[],
   platform: PlatformName,
-): Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> {
-  const hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>> = {};
+): RenderedHooksManifest['hooks'] {
+  const hooks: RenderedHooksManifest['hooks'] = {};
 
   for (const group of sortRenderedHookGroups(groups, platform)) {
     hooks[group.event] ??= [];

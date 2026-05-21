@@ -11,6 +11,7 @@ import type {
   LifecycleConfigSnapshotMetadata,
   ManagedArtifactStatus,
   NextStepInstruction,
+  AgentVersionProbeResult,
   PlatformName,
   PluginLocation,
   PluginStatusReport,
@@ -86,6 +87,7 @@ import {
   type PluginConsoleConfigProjection,
   type PluginConsoleSummary,
   type PluginConsoleLocationDiagnostics,
+  type PluginConsoleTone,
   type PluginConsoleStatus,
   type StatusPageModel,
 } from './console-model.js';
@@ -114,6 +116,8 @@ import {
   createUiActionNextStep,
   dedupeNextSteps,
   formatNextStepForHuman,
+  projectAgentVersionDiagnostic,
+  type AgentVersionDiagnosticProjection,
 } from '../output/model.js';
 
 type StatusCommandRuntime = CommandExecutionContextInput;
@@ -231,6 +235,7 @@ export interface StatusJsonPayload extends StatusMatrixReport {
   statusSchemaVersion: 2;
   consoleItemsSchemaVersion: 3;
   catalog: CatalogResolution;
+  agentVersions: AgentVersionDiagnosticProjection[];
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }
@@ -1804,6 +1809,89 @@ function formatStatusJsonPayload(
   );
 }
 
+function getAgentVersionResults(
+  detection: EnvironmentDetection,
+): AgentVersionProbeResult[] {
+  return (['codex', 'claude'] as const)
+    .map((platform) => detection[platform].agentVersion)
+    .filter((result): result is AgentVersionProbeResult => result !== undefined);
+}
+
+function projectAgentVersionsForJson(
+  detection: EnvironmentDetection,
+  options: { verbose?: boolean },
+): AgentVersionDiagnosticProjection[] {
+  return getAgentVersionResults(detection).map((result) =>
+    projectAgentVersionDiagnostic(result, {
+      includeRawOutput: options.verbose === true,
+      includeDetails: options.verbose === true,
+    }),
+  );
+}
+
+function sanitizeAgentVersionForDetectionJson(
+  result: AgentVersionProbeResult | undefined,
+  options: { verbose?: boolean },
+): AgentVersionDiagnosticProjection | undefined {
+  return result
+    ? projectAgentVersionDiagnostic(result, {
+        includeRawOutput: options.verbose === true,
+        includeDetails: options.verbose === true,
+      })
+    : undefined;
+}
+
+function sanitizeDetectionForStatusJson(
+  detection: EnvironmentDetection,
+  options: { verbose?: boolean },
+): EnvironmentDetection {
+  return {
+    codex: {
+      ...detection.codex,
+      ...(detection.codex.agentVersion
+        ? { agentVersion: sanitizeAgentVersionForDetectionJson(detection.codex.agentVersion, options) }
+        : {}),
+    },
+    claude: {
+      ...detection.claude,
+      ...(detection.claude.agentVersion
+        ? { agentVersion: sanitizeAgentVersionForDetectionJson(detection.claude.agentVersion, options) }
+        : {}),
+    },
+  } as unknown as EnvironmentDetection;
+}
+
+function renderAgentVersionHumanOutput(
+  detection: EnvironmentDetection,
+  options: { verbose?: boolean },
+): string {
+  const projected = projectAgentVersionsForJson(detection, { verbose: options.verbose });
+  const visible = options.verbose
+    ? projected
+    : projected.filter((entry) =>
+        entry.status === 'missing' ||
+        entry.status === 'unparseable' ||
+        entry.status === 'tooOld',
+      );
+
+  if (visible.length === 0) {
+    return '';
+  }
+
+  const lines = options.verbose ? ['Agent 版本诊断'] : ['Agent 版本提示'];
+  for (const entry of visible) {
+    const detected = entry.detectedVersion ?? '-';
+    const reason = entry.reasonCode ? ` reason=${entry.reasonCode}` : '';
+    lines.push(
+      `- ${entry.platform}: ${entry.status} detected=${detected} required>=${entry.requiredMinVersion}${reason}`,
+    );
+    if (entry.status !== 'supported') {
+      lines.push(`  建议：${entry.suggestedAction}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function createReportsByKey(): Map<string, StatusReport> {
   return new Map<string, StatusReport>();
 }
@@ -2086,6 +2174,7 @@ async function createInstallStateForCell(options: {
 function createStatusJsonPayload(options: {
   matrix: StatusMatrixReport;
   catalog: CatalogResolution;
+  agentVersions: AgentVersionDiagnosticProjection[];
   friendlySummaries: FriendlyStatusSummary[];
   consoleItems: PluginConsoleSummary[];
 }): StatusJsonPayload {
@@ -2095,6 +2184,7 @@ function createStatusJsonPayload(options: {
     statusSchemaVersion: 2,
     consoleItemsSchemaVersion: 3,
     catalog: options.catalog,
+    agentVersions: options.agentVersions,
     ...options.matrix,
     friendlySummaries: options.friendlySummaries,
     consoleItems: options.consoleItems,
@@ -2717,6 +2807,35 @@ function toCommandPluginLocation(location: InstallStatePluginLocation): PluginLo
   };
 }
 
+function describeCodexNativeViewForConsole(
+  diagnostic: NonNullable<CollectedLocationState['evidence']['platform']['codexNativeView']>,
+): { value: string; tone: PluginConsoleTone } {
+  if (diagnostic.status === 'nativeViewAvailable') {
+    const summaries = diagnostic.summaries
+      .map((summary) => {
+        const parts = [
+          summary.pluginId,
+          summary.marketplace ? `marketplace=${summary.marketplace}` : undefined,
+          summary.source ? `source=${summary.source}` : undefined,
+          summary.installed !== undefined ? `installed=${summary.installed}` : undefined,
+          summary.enabled !== undefined ? `enabled=${summary.enabled}` : undefined,
+          summary.injectable !== undefined ? `injectable=${summary.injectable}` : undefined,
+          summary.mentionable !== undefined ? `mentionable=${summary.mentionable}` : undefined,
+        ].filter((part): part is string => Boolean(part));
+        return `${summary.method}: ${parts.join(', ') || 'no summary'}`;
+      });
+    return {
+      value: summaries.length > 0 ? summaries.join('；') : `${diagnostic.pluginId}: native view available`,
+      tone: 'info',
+    };
+  }
+
+  return {
+    value: `${diagnostic.reason} via ${diagnostic.method}${diagnostic.errorCategory ? ` (${diagnostic.errorCategory})` : ''}`,
+    tone: 'info',
+  };
+}
+
 function buildConsoleLocationReadModelByKey(options: {
   locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
   catalog: CatalogResolution;
@@ -2890,6 +3009,15 @@ function buildConsoleLocationReadModelByKey(options: {
             ? '覆盖仍不完整；请回到可能相关的仓库重新运行 status --verbose 或 repair。'
             : `覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}`,
         tone: 'info',
+      });
+    }
+
+    if (state.evidence.platform.codexNativeView) {
+      const nativeView = describeCodexNativeViewForConsole(state.evidence.platform.codexNativeView);
+      diagnostics.push({
+        label: 'Codex native view',
+        value: nativeView.value,
+        tone: nativeView.tone,
       });
     }
 
@@ -3254,10 +3382,19 @@ export async function statusCommand(
   const consoleItems = consoleControllerItems.map((item) => item.summary);
   const statusPageModels = consoleControllerItems.map((item) => createStatusPageModel(item));
   const friendlySummaries = buildFriendlySummaries(matrix, consoleItems);
+  const jsonMatrix: StatusMatrixReport = {
+    ...matrix,
+    detection: sanitizeDetectionForStatusJson(matrix.detection, {
+      verbose: normalizedOptions.verbose === true,
+    }),
+  };
   const jsonPayload: P7StatusJsonPayload & StatusJsonPayload = {
     ...createStatusJsonPayload({
-      matrix,
+      matrix: jsonMatrix,
       catalog,
+      agentVersions: projectAgentVersionsForJson(matrix.detection, {
+        verbose: normalizedOptions.verbose === true,
+      }),
       friendlySummaries,
       consoleItems,
     }),
@@ -3396,6 +3533,7 @@ export async function statusCommand(
         transactionPresent: state.projection.nativeTransactionPresent,
         transactionKind: state.projection.nativeTransactionKind,
         codexNative: state.evidence.platform.codexNative,
+        codexNativeView: state.evidence.platform.codexNativeView,
       },
       nativeTransactionMarker: {
         present: state.projection.nativeTransactionPresent,
@@ -3436,11 +3574,15 @@ export async function statusCommand(
     : options.verbose
       ? [
           renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins }),
+          renderAgentVersionHumanOutput(matrix.detection, { verbose: true }),
           '',
           '状态详情',
           renderDiagnoseHumanOutput(collected.locations),
-        ].join('\n')
-      : renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins });
+        ].filter((part) => part.trim().length > 0).join('\n')
+      : [
+          renderCollectedStatusHumanOutput(collected.locations, { requestedPlugins }),
+          renderAgentVersionHumanOutput(matrix.detection, { verbose: false }),
+        ].filter((part) => part.trim().length > 0).join('\n');
   return {
     catalog,
     reports: compatibilityReports,
@@ -3499,6 +3641,7 @@ async function buildConsoleItemsFromStatusResult(options: {
         platformFilter: normalizedOptions.platform,
         env: context.env,
         includeCatalogOnly: true,
+        nativeCliRunner: context.nativeCliRunner,
       });
   const discoveredNames = new Set(base.consoleItems.map((item) => item.pluginName));
   const baseCellKeys = new Set(base.matrix.cells.map((cell) => createPluginConsoleLocationKey(cell)));

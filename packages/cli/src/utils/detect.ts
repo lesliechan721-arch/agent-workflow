@@ -12,11 +12,19 @@ import type {
   RepoManagedSessionVisibility,
   Scope,
 } from '../types.js';
+import type { NativeCliRunner } from './native-cli.js';
+import { probeAgentVersion } from './agent-version.js';
 import { readCodexConfigFile } from './codex-config.js';
 import {
   resolveClaudePaths,
   resolveCodexPaths,
 } from './paths.js';
+
+export interface DetectEnvironmentOptions {
+  includeAgentVersions?: boolean;
+  nativeCliRunner?: NativeCliRunner;
+  agentVersionProbeTimeoutMs?: number;
+}
 
 async function detectScopes(
   pathsByScope: Record<Scope, string[]>,
@@ -129,6 +137,7 @@ async function detectInstalledPlatform(
 export async function detectEnvironment(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: DetectEnvironmentOptions = {},
 ): Promise<EnvironmentDetection> {
   const claudeProjectPaths = resolveClaudePaths(cwd, 'project', env);
   const claudeUserPaths = resolveClaudePaths(cwd, 'user', env);
@@ -166,6 +175,26 @@ export async function detectEnvironment(
       env,
     ),
   ]);
+
+  if (options.includeAgentVersions === true) {
+    const [claudeAgentVersion, codexAgentVersion] = await Promise.all([
+      probeAgentVersion('claude', {
+        cwd,
+        env,
+        runner: options.nativeCliRunner,
+        timeoutMs: options.agentVersionProbeTimeoutMs,
+      }),
+      probeAgentVersion('codex', {
+        cwd,
+        env,
+        runner: options.nativeCliRunner,
+        timeoutMs: options.agentVersionProbeTimeoutMs,
+      }),
+    ]);
+
+    claude.agentVersion = claudeAgentVersion;
+    codex.agentVersion = codexAgentVersion;
+  }
 
   return { claude, codex };
 }

@@ -2,6 +2,7 @@ import { installCommand } from './install.js';
 import { uninstallCommand } from './uninstall.js';
 import { cleanupCommand } from './cleanup.js';
 import {
+  assertAgentVersionsForWriteTargets,
   createAdapters,
   loadPluginTargetsForCommand,
   resolveCurrentCatalogWriteTargetPairs,
@@ -165,6 +166,13 @@ export async function reinstallCommand(
         env,
       }),
     })));
+    await assertAgentVersionsForWriteTargets({
+      command: 'reinstall',
+      platforms: supportedPlatforms,
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: runtime.nativeCliRunner,
+    });
 
     for (const { location, projectionState } of preflightStates) {
       const singlePlatformOptions = {
@@ -207,6 +215,13 @@ export async function reinstallCommand(
     cwd: options.cwd,
     location,
     env,
+  });
+  await assertAgentVersionsForWriteTargets({
+    command: 'reinstall',
+    platforms: [location.platform],
+    cwd: options.cwd,
+    env,
+    nativeCliRunner: runtime.nativeCliRunner,
   });
 
   if (projectionState.projection.kind === 'adoptable') {

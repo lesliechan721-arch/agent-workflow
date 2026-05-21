@@ -45,6 +45,8 @@ import {
   createNextStepsBoundary,
   createUiActionNextStep,
   formatNextStepForHuman,
+  projectAgentVersionDiagnostic,
+  type AgentVersionDiagnosticProjection,
 } from '../output/model.js';
 import type { PluginConsoleReasonCode } from '../install-state/types.js';
 import type {
@@ -78,6 +80,7 @@ import {
   createCodexSkillExpectedTree,
   createCodexSkillStagingTreeContentDigest,
 } from '../utils/codex-skill-staging.js';
+import type { CodexAppServerProcessRunner } from '../utils/codex-app-server-client.js';
 
 export interface RawDiagnoseCommandOptions extends RawStatusCommandOptions {
   deep?: boolean;
@@ -109,6 +112,7 @@ interface P7RuntimeOverrides {
     deep: boolean;
   }) => Promise<CollectedLocationState>;
   p7ArtifactRendererRunner?: Parameters<typeof runArtifactRenderer>[0]['runner'];
+  codexAppServerRunner?: CodexAppServerProcessRunner;
 }
 
 export interface DependencyIndexReferenceAction {
@@ -260,6 +264,7 @@ export interface StatusJsonLocation {
     transactionPresent: boolean;
     transactionKind: ProjectInstallStateProjection['nativeTransactionKind'];
     codexNative: InstallEvidence['platform']['codexNative'];
+    codexNativeView: InstallEvidence['platform']['codexNativeView'];
   };
   nativeTransactionMarker: {
     present: boolean;
@@ -299,6 +304,7 @@ export interface StatusJsonPayload {
   ok: true;
   command: 'status';
   generatedAt: string;
+  agentVersions: AgentVersionDiagnosticProjection[];
   locations: StatusJsonLocation[];
 }
 
@@ -307,6 +313,7 @@ export interface DiagnoseJsonPayload {
   command: 'diagnose';
   generatedAt: string;
   deep: boolean;
+  agentVersions: AgentVersionDiagnosticProjection[];
   locations: StatusJsonLocation[];
   pageModels: DiagnosePageModel[];
 }
@@ -705,6 +712,7 @@ async function discoverTargets(
     pluginNames: pluginNames.length > 0 ? pluginNames : undefined,
     env,
     includeCurrentCatalog: runtime.p7Catalog?.reasonCode === undefined,
+    nativeCliRunner: (runtime as CommandExecutionContextInput).nativeCliRunner,
   });
   const seen = new Set<string>();
   const targets: InstallStateTarget[] = [];
@@ -1118,6 +1126,12 @@ async function collectWithDefaultEvidence(options: {
     location,
     env: options.env,
     currentCatalog,
+    codexNativeViewDiagnostic: options.deep && location.platform === 'codex' && location.scope === 'user'
+      ? {
+          enabled: true,
+          runner: options.runtime.codexAppServerRunner,
+        }
+      : undefined,
   });
   if (
     currentCatalog
@@ -1135,6 +1149,12 @@ async function collectWithDefaultEvidence(options: {
       location,
       env: options.env,
       currentCatalog,
+      codexNativeViewDiagnostic: options.deep && location.platform === 'codex' && location.scope === 'user'
+        ? {
+            enabled: true,
+            runner: options.runtime.codexAppServerRunner,
+          }
+        : undefined,
     });
   }
 
@@ -1959,6 +1979,7 @@ function toStatusJsonLocation(
       transactionPresent: state.projection.nativeTransactionPresent,
       transactionKind: state.projection.nativeTransactionKind,
       codexNative: state.evidence.platform.codexNative,
+      codexNativeView: state.evidence.platform.codexNativeView,
     },
     nativeTransactionMarker: buildNativeTransactionMarkerSummary(
       state.location,
@@ -2019,7 +2040,10 @@ export async function collectP7Locations(
       })
   ));
   return {
-    detection: await detectEnvironment(options.cwd, env),
+    detection: await detectEnvironment(options.cwd, env, {
+      includeAgentVersions: true,
+      nativeCliRunner: context.nativeCliRunner,
+    }),
     options,
     locations,
   };
@@ -2082,11 +2106,67 @@ export function renderDiagnoseHumanOutput(
         lines.push(`  - ${item.path}：${item.reason}`);
       }
     }
+    if (state.evidence.platform.codexNativeView) {
+      const nativeView = state.evidence.platform.codexNativeView;
+      lines.push('  Codex native view：');
+      if (nativeView.status === 'nativeViewAvailable') {
+        const summaries = nativeView.summaries.map((summary) => {
+          const parts = [
+            summary.pluginId,
+            summary.marketplace ? `marketplace=${summary.marketplace}` : undefined,
+            summary.source ? `source=${summary.source}` : undefined,
+            summary.installed !== undefined ? `installed=${summary.installed}` : undefined,
+            summary.enabled !== undefined ? `enabled=${summary.enabled}` : undefined,
+            summary.injectable !== undefined ? `injectable=${summary.injectable}` : undefined,
+            summary.mentionable !== undefined ? `mentionable=${summary.mentionable}` : undefined,
+          ].filter((part): part is string => Boolean(part));
+          return `${summary.method}: ${parts.join(', ') || 'no summary'}`;
+        });
+        lines.push(`  - nativeViewAvailable：${summaries.join('；') || nativeView.pluginId}`);
+      } else {
+        lines.push(`  - nativeViewUnknown：${nativeView.reason} via ${nativeView.method}${nativeView.errorCategory ? ` (${nativeView.errorCategory})` : ''}`);
+      }
+    }
     if (state.nextSteps.length > 0) {
       lines.push(`  下一步：${state.nextSteps.join('；')}`);
     }
   }
   return sanitizeDefaultStdout(lines.join('\n'));
+}
+
+function projectCollectedAgentVersions(
+  detection: Awaited<ReturnType<typeof detectEnvironment>>,
+  options: { includeRawOutput?: boolean } = {},
+): AgentVersionDiagnosticProjection[] {
+  return (['codex', 'claude'] as const)
+    .map((platform) => detection[platform].agentVersion)
+    .filter((result): result is NonNullable<typeof result> => result !== undefined)
+    .map((result) =>
+      projectAgentVersionDiagnostic(result, {
+        includeDetails: true,
+        includeRawOutput: options.includeRawOutput === true,
+      }),
+    );
+}
+
+function renderAgentVersionDiagnoseHumanOutput(
+  detection: Awaited<ReturnType<typeof detectEnvironment>>,
+): string {
+  const diagnostics = projectCollectedAgentVersions(detection);
+  if (diagnostics.length === 0) {
+    return '';
+  }
+  const lines = ['Agent 版本诊断'];
+  for (const entry of diagnostics) {
+    const reason = entry.reasonCode ? `，reason=${entry.reasonCode}` : '';
+    lines.push(
+      `- ${entry.platform}: ${entry.status}，detected=${entry.detectedVersion ?? '-'}，required>=${entry.requiredMinVersion}${reason}`,
+    );
+    if (entry.status !== 'supported') {
+      lines.push(`  建议：${entry.suggestedAction}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function renderStateLabel(kind: ProjectInstallStateProjection['kind']): string {
@@ -2137,6 +2217,9 @@ export async function diagnoseCommand(
     command: 'diagnose',
     generatedAt: new Date().toISOString(),
     deep: collected.options.deep === true,
+    agentVersions: projectCollectedAgentVersions(collected.detection, {
+      includeRawOutput: collected.options.verbose === true,
+    }),
     locations: locationInputs.map((input) => toStatusJsonLocation(input.state, {
       supplementalCommands: input.supplementalCommands,
       cleanup: input.cleanup,
@@ -2146,8 +2229,15 @@ export async function diagnoseCommand(
   const output = collected.options.json
     ? JSON.stringify(payload, null, 2)
     : collected.options.verbose
-      ? `${renderDiagnoseHumanOutput(collected.locations)}\n\n${renderJsonDetails('详细信息', payload, '')}`
-      : renderDiagnoseHumanOutput(collected.locations);
+      ? [
+          renderDiagnoseHumanOutput(collected.locations),
+          renderAgentVersionDiagnoseHumanOutput(collected.detection),
+          renderJsonDetails('详细信息', payload, ''),
+        ].filter((part) => part.trim().length > 0).join('\n\n')
+      : [
+          renderDiagnoseHumanOutput(collected.locations),
+          renderAgentVersionDiagnoseHumanOutput(collected.detection),
+        ].filter((part) => part.trim().length > 0).join('\n\n');
   return {
     output,
     payload,

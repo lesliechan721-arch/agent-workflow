@@ -482,6 +482,39 @@ describe('console controller stage 5', () => {
     expect(statusCommand).not.toHaveBeenCalled();
   });
 
+  it('shows actionable agent version blockers on the read-only home page', async () => {
+    loadConsoleItemsResult.mockResolvedValue({
+      items: [item({
+        summary: {
+          agentVersionSummary: [{
+            platform: 'codex',
+            command: 'codex',
+            status: 'tooOld',
+            detectedVersion: '0.130.0',
+            requiredMinVersion: '0.131.0',
+            reasonCode: 'agentVersionTooLow',
+            suggestedAction: '请将 Codex 升级到 >= 0.131.0 后重试。',
+          }],
+        },
+      })],
+      catalogUnavailable: false,
+    });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(consoleDriver.views[0]?.lines).toContain(
+      '  Codex 写入会被版本门禁阻断：当前 0.130.0，需要 >= 0.131.0。请将 Codex 升级到 >= 0.131.0 后重试。',
+    );
+    expect(installCommand).not.toHaveBeenCalled();
+    expect(upgradeCommand).not.toHaveBeenCalled();
+    expect(uninstallCommand).not.toHaveBeenCalled();
+    expect(cleanupCommand).not.toHaveBeenCalled();
+  });
+
   it('renders legacy config placeholders on home without install-style primary actions', async () => {
     const legacyConfig = {
       configSchemaVersion: 2,
@@ -901,7 +934,7 @@ describe('console controller stage 5', () => {
     );
   });
 
-  it('expands all-platform install into concrete platforms and preserves the selected skill trigger', async () => {
+  it('runs all-platform install through the direct both-platform transaction', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -954,7 +987,7 @@ describe('console controller stage 5', () => {
       commandAction: 'install',
     });
     installCommand.mockResolvedValue({
-      platforms: ['codex'],
+      platforms: ['codex', 'claude'],
       plugins: ['git-commit'],
       warnings: [],
     });
@@ -973,17 +1006,11 @@ describe('console controller stage 5', () => {
       operation: 'install',
       platforms: ['codex', 'claude'],
     }));
-    expect(installCommand).toHaveBeenCalledTimes(2);
+    expect(installCommand).toHaveBeenCalledTimes(1);
     expect(installCommand).toHaveBeenNthCalledWith(
       1,
       ['git-commit'],
-      expect.objectContaining({ platform: 'codex' }),
-      context,
-    );
-    expect(installCommand).toHaveBeenNthCalledWith(
-      2,
-      ['git-commit'],
-      expect.objectContaining({ platform: 'claude' }),
+      expect.objectContaining({ platform: 'both', scope: 'user' }),
       context,
     );
     expect(prompt.calls.some((call) =>
@@ -1971,14 +1998,9 @@ describe('console controller stage 5', () => {
     const actualCleanupCalls = cleanupCommand.mock.calls.filter(([, options]) =>
       (options as { plan?: boolean }).plan !== true,
     );
-    expect(actualCleanupCalls).toHaveLength(2);
+    expect(actualCleanupCalls).toHaveLength(1);
     expect(actualCleanupCalls[0]![1]).toMatchObject({
-      platform: 'codex',
-      force: true,
-      removeConfig: false,
-    });
-    expect(actualCleanupCalls[1]![1]).toMatchObject({
-      platform: 'claude',
+      platform: 'both',
       force: true,
       removeConfig: false,
     });
@@ -1995,7 +2017,7 @@ describe('console controller stage 5', () => {
     expect(detailView?.lines).toContain('- 个人 AW 自管配置 · 已删除 · 主体：Codex（个人）、Claude Code（个人）');
   });
 
-  it('keeps grouped config when a later all-platform uninstall target fails in the same store', async () => {
+  it('keeps grouped config when all-platform uninstall fails before partial writes', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -2033,11 +2055,11 @@ describe('console controller stage 5', () => {
       ],
     })]);
     uninstallCommand.mockImplementation(async (_plugins: string[], options: { platform?: string }) => {
-      if (options.platform === 'claude') {
-        throw new Error('claude uninstall failed');
+      if (options.platform === 'both') {
+        throw new Error('claude version too low');
       }
       return {
-        platforms: ['codex'],
+        platforms: [options.platform ?? 'codex'],
         plugins: ['git-commit'],
         warnings: [],
       };
@@ -2070,17 +2092,11 @@ describe('console controller stage 5', () => {
     context.env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    expect(uninstallCommand).toHaveBeenCalledTimes(2);
+    expect(uninstallCommand).toHaveBeenCalledTimes(1);
     expect(uninstallCommand).toHaveBeenNthCalledWith(
       1,
       ['git-commit'],
-      expect.objectContaining({ platform: 'codex', removeConfig: false }),
-      context,
-    );
-    expect(uninstallCommand).toHaveBeenNthCalledWith(
-      2,
-      ['git-commit'],
-      expect.objectContaining({ platform: 'claude', removeConfig: false }),
+      expect.objectContaining({ platform: 'both', removeConfig: false }),
       context,
     );
     await expect(fs.pathExists(configStorePath)).resolves.toBe(true);
@@ -2203,7 +2219,7 @@ describe('console controller stage 5', () => {
     expect(detailView?.lines).toContain('- Codex（当前项目） · 已完成');
   });
 
-  it('continues all-platform installs after one target fails and still exposes status for the failed non-abnormal target', async () => {
+  it('fails all-platform installs as one direct transaction and keeps status available for failed targets', async () => {
     statusCommand
       .mockResolvedValueOnce(createBaseStatusResult())
       .mockResolvedValueOnce(createBaseStatusResult());
@@ -2264,11 +2280,11 @@ describe('console controller stage 5', () => {
       commandAction: 'install',
     });
     installCommand.mockImplementation(async (_plugins: string[], options: { platform?: string }) => {
-      if (options.platform === 'codex') {
+      if (options.platform === 'both') {
         throw new Error('codex install failed');
       }
       return {
-        platforms: ['claude'],
+        platforms: [options.platform ?? 'codex'],
         plugins: ['git-commit'],
         warnings: [],
       };
@@ -2283,23 +2299,17 @@ describe('console controller stage 5', () => {
     ]);
 
     await expect(runConsoleController(context)).resolves.toBe(0);
-    expect(installCommand).toHaveBeenCalledTimes(2);
+    expect(installCommand).toHaveBeenCalledTimes(1);
     expect(installCommand).toHaveBeenNthCalledWith(
       1,
       ['git-commit'],
-      expect.objectContaining({ platform: 'codex' }),
-      context,
-    );
-    expect(installCommand).toHaveBeenNthCalledWith(
-      2,
-      ['git-commit'],
-      expect.objectContaining({ platform: 'claude' }),
+      expect.objectContaining({ platform: 'both', scope: 'user' }),
       context,
     );
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
     expect(detailView?.lines).toContain('最近结果 · 安装');
     expect(detailView?.lines).toContain('- Codex（个人） · 失败：codex install failed');
-    expect(detailView?.lines).toContain('- Claude Code（个人） · 已完成');
+    expect(detailView?.lines).toContain('- Claude Code（个人） · 失败：codex install failed');
   });
 
   it('renders cleanup failure when actual cleanup still has skipped items and remaining items', async () => {
@@ -2822,6 +2832,47 @@ describe('console controller stage 5', () => {
     expect(consoleDriver.views.some((view) => view.title === 'Git Commit 状态')).toBe(true);
   });
 
+  it('loads verbose read details before showing Codex native view diagnostics', async () => {
+    const homeItem = item({
+      summary: {
+        features: [feature('status'), feature('diagnose')],
+      },
+    });
+    const detailItem = item({
+      summary: {
+        features: [feature('status'), feature('diagnose')],
+      },
+    });
+    detailItem.statusPage.locations[0]!.diagnostics = [{
+      label: 'Codex native view',
+      value: 'nativeViewUnknown via plugin/read',
+      tone: 'info',
+    }];
+    loadConsoleItemsResult
+      .mockResolvedValueOnce({ items: [homeItem], catalogUnavailable: false })
+      .mockResolvedValueOnce({ items: [detailItem], catalogUnavailable: false });
+
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'git-commit' },
+      { method: 'select', value: 'status' },
+      { method: 'select', value: 'codex:user:-' },
+      { method: 'select', value: '__back' },
+      { method: 'select', value: '__exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(loadConsoleItemsResult).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ verbose: true, includeCatalogOnly: true }),
+      context,
+    );
+    expect(consoleDriver.views.some((view) =>
+      view.title === 'Git Commit 状态' &&
+      view.lines.includes('Codex native view：nativeViewUnknown via plugin/read'),
+    )).toBe(true);
+  });
+
   it('hides the legacy diagnose entry from the feature menu', async () => {
     statusCommand.mockResolvedValue(createBaseStatusResult());
     loadConsoleItems.mockResolvedValue([item({
@@ -3058,7 +3109,15 @@ describe('console controller stage 5', () => {
     preparePluginTargetsForCommand.mockResolvedValue({
       targets: [{ pluginName: 'git-commit', plugin: plugin() }],
     });
-    reapplyConfigRefresh.mockResolvedValue({ status });
+    replayConfigRuntimeWrites.mockResolvedValue({
+      artifactRefresh: {
+        attempted: status !== 'skipped',
+        status,
+        triggerKeys: [],
+        artifacts: [],
+      },
+      targetResults: [],
+    });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
     const { context, consoleDriver } = createContext([
@@ -3069,6 +3128,11 @@ describe('console controller stage 5', () => {
 
     await expect(runConsoleController(context)).resolves.toBe(0);
     expect(applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(replayConfigRuntimeWrites).toHaveBeenCalledWith(expect.objectContaining({
+      includeBuiltIn: false,
+      includeDynamicArtifacts: true,
+      nativeCliRunner: context.nativeCliRunner,
+    }));
     expect(consoleDriver.views.some((view) =>
       view.title === 'Git Commit 重新应用配置' &&
       view.lines.includes(expectedLine),

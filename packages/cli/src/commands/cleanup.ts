@@ -15,6 +15,7 @@ import {
   type RawCleanupCommandOptions,
 } from './options.js';
 import {
+  assertAgentVersionsForWriteTargets,
   createHistoricalPluginTarget,
   loadPluginTargetsForRemovalCommand,
   type ResolvedPluginTarget,
@@ -1305,6 +1306,14 @@ export async function cleanupCommand(
       throw renderCleanupBothBlockingError(blocking);
     }
 
+    await assertAgentVersionsForWriteTargets({
+      command: 'cleanup',
+      platforms: evaluations.map((entry) => entry.location.platform),
+      cwd: options.cwd,
+      env: context.env,
+      nativeCliRunner: context.nativeCliRunner,
+    });
+
     const executed = [];
     let repoManagedArtifacts: GeneratedArtifact[] = [];
     let warnings: string[] = [];
@@ -1379,6 +1388,13 @@ export async function cleanupCommand(
   if (evaluation.payload.blockingReasons.length > 0) {
     throw renderBlockingError(evaluation.payload);
   }
+  await assertAgentVersionsForWriteTargets({
+    command: 'cleanup',
+    platforms: [location.platform],
+    cwd: options.cwd,
+    env: context.env,
+    nativeCliRunner: context.nativeCliRunner,
+  });
   const execution = await executeCleanupLocation({
     pluginName: pluginNames[0]!,
     location,

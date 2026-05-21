@@ -22,6 +22,7 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import {
+  removeCodexMarketplaceFile,
   removeCodexPluginEnabledFile,
   upsertCodexMarketplaceFile,
   upsertCodexPluginEnabledFile,
@@ -51,7 +52,6 @@ import {
   createCliTestWorkspace,
   registerCliTempRoot,
 } from '../helpers/workspace.js';
-import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
 import { withCurrentTestSafeCwd } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
@@ -233,16 +233,39 @@ function createCodexMarketplaceAddRunner(
   calls: NativeCliInvocation[] = [],
 ): NativeCliRunner {
   return async (invocation) => {
+    if (invocation.command === 'codex' && invocation.args.length === 1 && invocation.args[0] === '--version') {
+      return {
+        exitCode: 0,
+        stdout: 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
     calls.push(invocation);
-    const awHome = invocation.args[3] ?? '';
-    await upsertCodexMarketplaceFile(
-      resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath,
-      'aw',
-      {
-        source: awHome,
-        sourceType: 'local',
-      },
-    );
+    const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
+    if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+      const awHome = invocation.args[3] ?? '';
+      await upsertCodexMarketplaceFile(
+        configPath,
+        'aw',
+        {
+          source: awHome,
+          sourceType: 'local',
+        },
+      );
+    } else if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
+      await removeCodexMarketplaceFile(configPath, invocation.args[3] ?? 'aw');
+    } else if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+      const pluginId = invocation.args[2] ?? '';
+      const pluginName = pluginId.endsWith('@aw') ? pluginId.slice(0, -3) : pluginId;
+      await upsertCodexPluginEnabledFile(configPath, pluginId, { enabled: true });
+      await writeCodexActiveCache(workspace.env, pluginName);
+    } else if (invocation.args[0] === 'plugin' && invocation.args[1] === 'remove') {
+      const pluginId = invocation.args[2] ?? '';
+      const pluginName = pluginId.endsWith('@aw') ? pluginId.slice(0, -3) : pluginId;
+      await removeCodexPluginEnabledFile(configPath, pluginId);
+      await fs.remove(path.join(workspace.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    }
     return {
       exitCode: 0,
       stdout: '',
@@ -309,15 +332,6 @@ async function writeCodexActiveCache(
   );
 }
 
-async function waitForHarnessMethod(
-  harness: ReturnType<typeof createFakeCodexAppServerHarness>,
-  method: string,
-): Promise<void> {
-  while (!harness.stdinMessages.some((message) => message.json?.method === method)) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
-
 function createCodexNativeCliRuntime(
   workspace: Awaited<ReturnType<typeof makeWorkspace>>,
   nativeCalls: NativeCliInvocation[] = [],
@@ -330,49 +344,23 @@ function createCodexNativeCliRuntime(
   scheduleUninstallSideEffect: (pluginName?: string) => Promise<void>;
 } {
   const nativeCliRunner = createCodexMarketplaceAddRunner(workspace, nativeCalls);
-  const appServerHarness = createFakeCodexAppServerHarness([
-    {
-      when: 'stdin',
-      match: { method: 'initialize' },
-      actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
-      repeat: true,
-    },
-    {
-      when: 'stdin',
-      match: { method: 'plugin/install' },
-      actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } }, delayMs: 50 }],
-      repeat: true,
-    },
-    {
-      when: 'stdin',
-      match: { method: 'plugin/uninstall' },
-      actions: [{ type: 'stdout-jsonl', value: { id: 'uninstall-1', result: { removed: true } }, delayMs: 50 }],
-      repeat: true,
-    },
-  ]);
 
   return {
     runtime: {
       nativeCliRunner,
       adaptersFactory: (cwd, context) => ({
-        codex: new CodexAdapter(cwd, context.nativeCliRunner, context.env, appServerHarness.createRunner()),
+        codex: new CodexAdapter(cwd, context.nativeCliRunner, context.env),
         claude: new ClaudeAdapter(cwd, context.nativeCliRunner, context.env),
       }),
     },
     scheduleInstallSideEffect: async (
-      pluginName = 'git-commit',
-      version = '0.1.0',
+      _pluginName = 'git-commit',
+      _version = '0.1.0',
     ) => {
-      await waitForHarnessMethod(appServerHarness, 'plugin/install');
-      const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
-      await upsertCodexPluginEnabledFile(configPath, `${pluginName}@aw`, { enabled: true });
-      await writeCodexActiveCache(workspace.env, pluginName, version);
+      await Promise.resolve();
     },
-    scheduleUninstallSideEffect: async (pluginName = 'git-commit') => {
-      await waitForHarnessMethod(appServerHarness, 'plugin/uninstall');
-      const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
-      await removeCodexPluginEnabledFile(configPath, `${pluginName}@aw`);
-      await fs.remove(path.join(workspace.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', pluginName));
+    scheduleUninstallSideEffect: async (_pluginName = 'git-commit') => {
+      await Promise.resolve();
     },
   };
 }
@@ -1348,6 +1336,13 @@ describe('cli entry integration', () => {
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args.length === 1 && invocation.args[0] === '--version') {
+        return {
+          exitCode: 0,
+          stdout: 'codex-cli 0.131.0',
+          stderr: '',
+        };
+      }
       throw new NativeCliError({
         invocation,
         exitCode: 1,
@@ -1367,7 +1362,7 @@ describe('cli entry integration', () => {
     );
 
     expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('无法通过 Codex 原生命令注册 AW 本地 marketplace');
+    expect(readStderr()).toContain('无法通过 Codex CLI 执行 `codex plugin marketplace add');
     expect(readStderr()).toContain('invalid marketplace root');
   });
 
@@ -1377,6 +1372,13 @@ describe('cli entry integration', () => {
     const { io, readStderr } = createCapturedIo();
     const logFile = path.join(workspace.awHome, 'native-debug.log');
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args.length === 1 && invocation.args[0] === '--version') {
+        return {
+          exitCode: 0,
+          stdout: 'codex-cli 0.131.0',
+          stderr: '',
+        };
+      }
       const cause = Object.assign(new Error('permission denied'), { code: 'EACCES' });
       throw new NativeCliError({
         invocation,
@@ -1406,7 +1408,7 @@ describe('cli entry integration', () => {
     );
 
     expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('无法通过 Codex 原生命令注册 AW 本地 marketplace');
+    expect(readStderr()).toContain('无法通过 Codex CLI 执行 `codex plugin marketplace add');
     const logLines = (await fs.readFile(logFile, 'utf8')).trim().split('\n');
     const logEntries = logLines
       .map((line) => JSON.parse(line) as { event: { type: string; data?: Record<string, unknown> } });
@@ -1444,7 +1446,7 @@ describe('cli entry integration', () => {
           data: expect.objectContaining({
             operation: 'add',
             phase: 'error',
-            errorCategory: 'native_cli_failed',
+            errorCategory: 'codexNativeCliUnavailable',
             marketplaceName: 'aw',
           }),
         }),
@@ -1457,6 +1459,13 @@ describe('cli entry integration', () => {
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
     const { io, readStderr } = createCapturedIo();
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args.length === 1 && invocation.args[0] === '--version') {
+        return {
+          exitCode: 0,
+          stdout: 'codex-cli 0.131.0',
+          stderr: '',
+        };
+      }
       throw new NativeCliError({
         invocation,
         exitCode: 1,
@@ -1476,7 +1485,7 @@ describe('cli entry integration', () => {
     );
 
     expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('无法通过 Codex 原生命令注册 AW 本地 marketplace');
+    expect(readStderr()).toContain('无法通过 Codex CLI 执行 `codex plugin marketplace add');
     expect(readStderr()).toContain('exit code 1');
   });
 
@@ -1498,7 +1507,7 @@ describe('cli entry integration', () => {
     expect(result.stderr).toContain('createSafeCliRuntimeOptions().env');
   });
 
-  it('runCliEntry 默认阻止真实 codex app-server，并提示注入 fake harness', async () => {
+  it('runCliEntry does not start codex app-server for native CLI installs', async () => {
     const workspace = await makeWorkspace();
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
@@ -1511,9 +1520,9 @@ describe('cli entry integration', () => {
       },
     );
 
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain('测试默认禁止启动真实 `codex app-server`');
-    expect(result.stderr).toContain('fake app-server harness');
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).not.toContain('测试默认禁止启动真实 `codex app-server`');
+    expect(result.stderr).not.toContain('fake app-server harness');
   });
 
   it('prints verbose command decisions during install', async () => {
@@ -1646,7 +1655,7 @@ describe('cli entry integration', () => {
           event: expect.objectContaining({
             type: 'native:rpc',
             data: expect.objectContaining({
-              method: 'plugin/install',
+              method: 'codex plugin add',
               phase: 'success',
               pluginId: 'git-commit@aw',
               nativeWriteSucceeded: true,
@@ -1703,7 +1712,7 @@ describe('cli entry integration', () => {
           event: expect.objectContaining({
             type: 'native:rpc',
             data: expect.objectContaining({
-              method: 'plugin/uninstall',
+              method: 'codex plugin remove',
               phase: 'success',
               pluginId: 'git-commit@aw',
               nativeWriteSucceeded: true,
@@ -1783,7 +1792,7 @@ describe('cli entry integration', () => {
     expect(readStderr()).toContain('`upgrade` 不再接受 `--skill-trigger` / `-t`');
   });
 
-  it('fails upgrade --all at the local catalog gate before degraded replay warnings', async () => {
+  it('fails upgrade --all on degraded ledger before local catalog repair warnings', async () => {
     const workspace = await makeWorkspace();
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
 
@@ -1808,11 +1817,10 @@ describe('cli entry integration', () => {
 
     const stderr = capture.readStderr();
     expect(exitCode).toBe(1);
-    expect(stderr).toContain('本地插件目录');
-    expect(stderr).toContain('config.json 无法读取或 schema 不受支持');
-    expect(stderr).toContain('非交互环境不会自动覆盖');
-    expect(stderr).not.toContain('跳过 skill 触发偏好回放');
-    expect(stderr).not.toContain('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行');
+    expect(stderr).toContain('跳过 skill 触发偏好回放');
+    expect(stderr).toContain('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行');
+    expect(stderr).not.toContain('本地插件目录');
+    expect(stderr).not.toContain('config.json 无法读取或 schema 不受支持');
   });
 
   it('prints degraded replay warnings before explicit upgrade inheritance errors', async () => {

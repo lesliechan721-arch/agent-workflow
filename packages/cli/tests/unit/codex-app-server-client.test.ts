@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   installCodexPluginViaAppServer,
+  listCodexPluginsViaAppServer,
+  listInstalledCodexPluginsViaAppServer,
+  readCodexPluginViaAppServer,
   type CodexAppServerProcess,
   uninstallCodexPluginViaAppServer,
   type CodexAppServerProcessRunner,
@@ -293,6 +296,113 @@ describe('codex-app-server-client', () => {
     expect(result.result).toEqual({ removed: true });
   });
 
+  it('reads plugin/list, plugin/installed, and plugin/read as read-only RPC calls', async () => {
+    const makeHarness = () => createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/list' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 'plugin-list-1', result: { plugins: [{ id: 'git-commit@aw' }] } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/installed' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 'plugin-installed-1', result: { plugins: [{ id: 'git-commit@aw', enabled: true }] } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/read' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 'plugin-read-1', result: { id: 'git-commit@aw', marketplace: 'aw' } },
+          },
+        ],
+      },
+    ]);
+    const listHarness = makeHarness();
+    const installedHarness = makeHarness();
+    const readHarness = makeHarness();
+
+    await expect(listCodexPluginsViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      marketplace: 'aw',
+      runner: listHarness.createRunner(),
+    })).resolves.toMatchObject({
+      method: 'plugin/list',
+      requestId: 'plugin-list-1',
+      result: { plugins: [{ id: 'git-commit@aw' }] },
+    });
+    await expect(listInstalledCodexPluginsViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      runner: installedHarness.createRunner(),
+    })).resolves.toMatchObject({
+      method: 'plugin/installed',
+      requestId: 'plugin-installed-1',
+      result: { plugins: [{ id: 'git-commit@aw', enabled: true }] },
+    });
+    await expect(readCodexPluginViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      pluginId: 'git-commit@aw',
+      runner: readHarness.createRunner(),
+    })).resolves.toMatchObject({
+      method: 'plugin/read',
+      requestId: 'plugin-read-1',
+      result: { id: 'git-commit@aw', marketplace: 'aw' },
+    });
+
+    const stdinMessages = [
+      ...listHarness.stdinMessages,
+      ...installedHarness.stdinMessages,
+      ...readHarness.stdinMessages,
+    ];
+    expect(stdinMessages.map((message) => message.json).filter((message) =>
+      message?.method !== 'initialize' && message?.method !== 'initialized',
+    )).toEqual([
+      {
+        id: 'plugin-list-1',
+        method: 'plugin/list',
+        params: {
+          marketplace: 'aw',
+        },
+      },
+      {
+        id: 'plugin-installed-1',
+        method: 'plugin/installed',
+        params: {},
+      },
+      {
+        id: 'plugin-read-1',
+        method: 'plugin/read',
+        params: {
+          pluginId: 'git-commit@aw',
+        },
+      },
+    ]);
+  });
+
   it('restores the default guard after a previous test injected a fake harness', async () => {
     const message = await captureErrorMessage(
       uninstallCodexPluginViaAppServer({
@@ -356,6 +466,117 @@ describe('codex-app-server-client', () => {
     expect(message).toContain('响应 `initialize` 超时');
     expect(message).toContain('still booting');
     expect(harness.killedSignals).toContain('SIGTERM');
+  });
+
+  it('maps read-only RPC timeout, unknown method, protocol error, spawn failure, and early exit with debug context', async () => {
+    await expect(captureErrorMessage(listInstalledCodexPluginsViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      timeoutMs: 10,
+      runner: createFakeCodexAppServerHarness([
+        {
+          when: 'stdin',
+          match: { method: 'initialize' },
+          actions: [
+            {
+              type: 'stdout-jsonl',
+              value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+            },
+          ],
+        },
+      ]).createRunner(),
+    }))).resolves.toContain('响应 `plugin/installed` 超时');
+
+    await expect(captureErrorMessage(readCodexPluginViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      pluginId: 'git-commit@aw',
+      runner: createFakeCodexAppServerHarness([
+        {
+          when: 'stdin',
+          match: { method: 'initialize' },
+          actions: [
+            {
+              type: 'stdout-jsonl',
+              value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+            },
+          ],
+        },
+        {
+          when: 'stdin',
+          match: { method: 'plugin/read' },
+          actions: [
+            {
+              type: 'stdout-jsonl',
+              value: {
+                id: 'plugin-read-1',
+                error: {
+                  code: -32601,
+                  message: 'unknown method plugin/read',
+                },
+              },
+            },
+          ],
+        },
+      ]).createRunner(),
+    }))).resolves.toContain('不支持 `plugin/read`');
+
+    await expect(captureErrorMessage(listCodexPluginsViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      runner: createFakeCodexAppServerHarness([
+        {
+          when: 'stdin',
+          match: { method: 'initialize' },
+          actions: [
+            {
+              type: 'stdout-raw',
+              value: 'not-json\n',
+            },
+          ],
+        },
+      ]).createRunner(),
+    }))).resolves.toContain('rawLine="not-json"');
+
+    await expect(captureErrorMessage(listCodexPluginsViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      runner: () => {
+        throw new Error('spawn codex ENOENT');
+      },
+    }))).resolves.toContain('无法启动 `codex app-server`');
+
+    await expect(captureErrorMessage(readCodexPluginViaAppServer({
+      cwd: '/tmp/project',
+      env: { PATH: '/tmp/bin' },
+      pluginId: 'git-commit@aw',
+      runner: createFakeCodexAppServerHarness([
+        {
+          when: 'stdin',
+          match: { method: 'initialize' },
+          actions: [
+            {
+              type: 'stdout-jsonl',
+              value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } },
+            },
+          ],
+        },
+        {
+          when: 'stdin',
+          match: { method: 'plugin/read' },
+          actions: [
+            {
+              type: 'stderr',
+              value: 'fatal before read\n',
+            },
+            {
+              type: 'exit',
+              code: 17,
+            },
+          ],
+        },
+      ]).createRunner(),
+    }))).resolves.toContain('提前退出');
   });
 
   it('maps unknown method errors to upgrade guidance', async () => {

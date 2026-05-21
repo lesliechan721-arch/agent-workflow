@@ -19,8 +19,8 @@ import type {
   UpgradeCommandOptions,
   UpgradeCommandResult,
 } from '../types.js';
-import { detectEnvironment, listDetectedPlatforms } from '../utils/detect.js';
 import {
+  assertAgentVersionsForWriteTargets,
   collectCommandWarnings,
   createAdapters,
   formatPolicyProducts,
@@ -64,9 +64,6 @@ import {
   normalizeUpgradeCommandOptions,
   type RawUpgradeCommandOptions,
 } from './options.js';
-import {
-  listExecutablePlatformsForNativeAndCodexProject,
-} from './platform-resolution.js';
 import {
   createPluginConfigSchemaIdentity,
   preflightRequiredPluginConfigs,
@@ -947,21 +944,6 @@ async function listCodexProjectUpgradeAllNativeRunnerRequiredNames(
     .sort();
 }
 
-function createCodexUpgradeAllNativeRunnerRequiredError(
-  scope: UpgradeCommandOptions['scope'],
-  pluginNames: string[],
-): Error {
-  const suffix = pluginNames.length > 0
-    ? ` native-only managed targets: ${pluginNames.join(', ')}。`
-    : '';
-  const reason = scope === 'project'
-    ? 'Codex project upgrade --all 当前包含需要本机 Codex native runner 的目标'
-    : 'Codex user upgrade --all 需要本机 Codex native runner';
-  return new Error(
-    `${reason}，但 PATH 中没有检测到可用 \`codex\`。${suffix}请安装 Codex CLI 或设置 AW_FORCE_CODEX_AVAILABLE=1 后重试。`,
-  );
-}
-
 async function preflightUpgradeConfigs(
   targets: ResolvedPluginTarget[],
   options: UpgradeCommandOptions,
@@ -985,40 +967,16 @@ async function preflightUpgradeConfigs(
 
 async function resolveUpgradeAllPlatforms(
   requestedPlatform: UpgradeCommandOptions['platform'],
-  cwd: string,
-  scope: UpgradeCommandOptions['scope'],
-  preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
-  env: NodeJS.ProcessEnv,
+  _cwd: string,
+  _scope: UpgradeCommandOptions['scope'],
+  _preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
+  _env: NodeJS.ProcessEnv,
 ): Promise<PlatformName[]> {
-  const detection = await detectEnvironment(cwd, env);
-  const nativeAvailablePlatforms = listDetectedPlatforms(detection);
-  const codexNativeRunnerRequiredNames =
-    scope === 'project'
-      ? await listCodexProjectUpgradeAllNativeRunnerRequiredNames(cwd, preparedLedger)
-      : [];
-  const availablePlatforms = listExecutablePlatformsForNativeAndCodexProject({
-    nativeAvailablePlatforms,
-    codexProjectExecutableWithoutNative:
-      scope === 'project' && codexNativeRunnerRequiredNames.length === 0,
-  });
-
   if (requestedPlatform === 'codex' || requestedPlatform === 'claude') {
-    if (!availablePlatforms.includes(requestedPlatform)) {
-      if (requestedPlatform === 'codex') {
-        throw createCodexUpgradeAllNativeRunnerRequiredError(scope, codexNativeRunnerRequiredNames);
-      }
-      throw new Error(`${requestedPlatform} 当前环境不可用。`);
-    }
     return [requestedPlatform];
   }
 
   if (requestedPlatform === 'both') {
-    if (availablePlatforms.length !== 2) {
-      if (!availablePlatforms.includes('codex') && !detection.codex.available) {
-        throw createCodexUpgradeAllNativeRunnerRequiredError(scope, codexNativeRunnerRequiredNames);
-      }
-      throw new Error('`--platform both` 只在同时检测到 Codex 和 Claude 时可用。');
-    }
     return ['codex', 'claude'];
   }
 
@@ -2140,7 +2098,7 @@ export async function upgradeCommand(
   const adapters = createAdapters(options.cwd, context);
   if (options.all) {
     const prepared = await prepareCommandEnvironment({
-      catalogMode: options.scope === 'project' ? 'readOnly' : 'runtimeWritable',
+      catalogMode: 'readOnly',
       env,
       context,
     });
@@ -2165,6 +2123,13 @@ export async function upgradeCommand(
           scope: options.scope,
           all: true,
         },
+      });
+      await assertAgentVersionsForWriteTargets({
+        command: 'upgradeAll',
+        platforms,
+        cwd: options.cwd,
+        env,
+        nativeCliRunner: context.nativeCliRunner,
       });
       const preparedForExecution = await prepareCommandEnvironment({
         catalogMode: 'runtimeWritable',
@@ -2268,6 +2233,13 @@ export async function upgradeCommand(
         platforms,
         scope: options.scope,
       },
+    });
+    await assertAgentVersionsForWriteTargets({
+      command: 'upgrade',
+      platforms,
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: context.nativeCliRunner,
     });
     assertCodexProjectInstallableTargets(prepared.targets, platforms, options.scope);
     await preflightCodexProjectWriteSafety({

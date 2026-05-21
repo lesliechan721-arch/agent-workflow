@@ -14,6 +14,7 @@
 - `marketplace.policy.products` 是插件最终支持平台的来源；它不仅控制安装和升级门禁，也会参与 build 裁剪、platform manifest/runtime 生成、平台 marketplace 过滤和 `pnpm plugin:test` 平台选择
 - `dependencies.plugins` 声明 AW 插件之间的直接依赖；安装、升级、卸载和 status 都会用同一套 location-aware planner 解释它
 - `version`、`compatibility.aw.minVersion` 和 `dependencies.plugins[].minVersion` 都使用严格 SemVer；旧式依赖 `version` / `range` 字段会被拒绝
+- 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本；AW CLI 内置宿主门槛，当前为 Codex `>= 0.131.0`、Claude Code `>= 2.1.88`
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -323,11 +324,11 @@ pnpm plugin:test --all
 ## Scope Semantics
 
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
-- **Codex user scope**：使用 native plugin / marketplace 平面。AW 先注册 `~/.codex/config.toml [marketplaces.aw]`，再通过 `codex app-server` 的 `plugin/install` / `plugin/uninstall` RPC 让 Codex 写入用户级 `[plugins."<plugin>@aw"]` 和 materialized cache；安装后必须同时看到 enabled config 与 active cache。作者不能依赖“只写 config”的旧行为。
-- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 native marketplace add / app-server RPC；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。缺少 `codex` 可执行文件时，project 安装仍应可工作并且不能产生用户级 native 副作用。
+- **Codex user scope**：使用 native plugin / marketplace 平面。AW 通过 `codex plugin marketplace add/list/remove` 管理本地 marketplace，通过 `codex plugin add/remove` 完成安装或卸载，并在写后校验 enabled config 与 active cache。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断。作者不能依赖“只写 config”或 app-server 写入主链路的旧行为。
+- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。写入前仍要求本机 Codex `>= 0.131.0`，通过门禁后不能产生用户级 native 副作用。
 - **Apps 与 Codex project installability**：`apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时失败。包含 `apps` 的 Codex 插件在 project scope 会 fail fast；纯 native-only 插件也不能以 project scope 安装。面向项目安装的插件至少要提供 repo-visible surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
 - **共享 runtime owner**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 的同一 plugin/platform 同时只有一个 owner 可以控制 shared skill trigger runtime；非 owner 写命令需要用户显式 `--takeover-shared-runtime`。Codex project scope 不参与 shared runtime owner 合同，只改当前仓库 repo skill。
 - **Project artifact identity**：project scope 会维护 `.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json`。它是可提交的共享身份线索，不能保存本机绝对路径、`projectKey` 或 record id；fresh clone 后通过它和 repo-visible artifacts 进入“可认领”状态。`kind: "skill"` 和 `kind: "mcpServer"` 必须写 `artifactKey`。MCP `artifactKey` 使用 rendered `.mcp.json` 的原始 server key，包含点号、空格或 Unicode 时仍按 TOML quoted key 写入 `.codex/config.toml`，例如 `[mcp_servers."acme.tools v1"]`。
 
-Codex user native 安装失败时，作者和用户会在 `aw status --json` 里看到更细的诊断：`native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，native transaction marker 表示 native 写入已发生但 AW record 尚未提交。插件 lifecycle 应保持幂等，因为 native RPC 成功后如果 lifecycle、artifact apply、diagnostic cache 或 record commit 失败，用户可能通过 `aw repair` 或重新 `aw install` 补齐；marker-only cleanup 不会运行 uninstall lifecycle。
+Codex user native 安装失败时，作者和用户会在 `aw status --json` 里看到更细的诊断：`native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，native transaction marker 表示 native 写入已发生但 AW record 尚未提交。插件 lifecycle 应保持幂等，因为 Codex CLI 写入成功后如果 lifecycle、artifact apply、diagnostic cache 或 record commit 失败，用户可能通过 `aw repair` 或重新 `aw install` 补齐；marker-only cleanup 不会运行 uninstall lifecycle。

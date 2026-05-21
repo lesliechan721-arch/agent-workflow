@@ -23,6 +23,7 @@ import {
 import { projectInstallState } from '../../src/install-state/status-projection.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
 
 const tempDirs: string[] = [];
 
@@ -267,6 +268,69 @@ describe('collectInstallEvidence', () => {
     });
     expect(recordAndMarkerEvidence.installRecord.present).toBe(true);
     expect(recordAndMarkerEvidence.nativeTransaction.classification).toBe('recordInstallResidual');
+  });
+
+  it('does not start codex app-server unless native view diagnostics are explicitly requested', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-evidence-native-view-default-'),
+      scenario: 'installed',
+    });
+    const env = createInstallStateFixtureEnv(fixture.paths);
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    const harness = createFakeCodexAppServerHarness([]);
+
+    const defaultEvidence = await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    });
+
+    expect(defaultEvidence.platform.codexNativeView).toBeNull();
+    expect(harness.invocations).toHaveLength(0);
+  });
+
+  it('collects native view diagnostics as unavailable evidence without changing ownership decisions', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-evidence-native-view-opt-in-'),
+    );
+    const target = builder.createTarget({ platform: 'codex', scope: 'user' });
+    const env = createInstallStateFixtureEnv(builder.paths);
+    const harness = createFakeCodexAppServerHarness([
+      {
+        when: 'start',
+        actions: [
+          {
+            type: 'stderr',
+            value: 'app-server not ready\n',
+          },
+        ],
+      },
+    ]);
+
+    const evidence = await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(target),
+      codexNativeViewDiagnostic: {
+        enabled: true,
+        timeoutMs: 10,
+        runner: harness.createRunner(),
+      },
+    });
+
+    expect(evidence.platform.codexNativeView).toMatchObject({
+      status: 'nativeViewUnknown',
+      reason: 'codexNativeDiagnosticUnavailable',
+      method: 'initialize',
+      pluginId: `${target.location.plugin}@aw`,
+      errorCategory: 'timeout',
+    });
+    expect(evidence.adoptable.possible).toBe(false);
+    expect(evidence.adoptable.source).toBe('none');
+    expect(evidence.residualEvidence.privateStatePresent).toBe(false);
+    expect(harness.invocations).toHaveLength(1);
   });
 
   it('treats fresh clone project artifacts as adoptable through identity even when the current catalog has drifted', async () => {

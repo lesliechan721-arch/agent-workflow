@@ -17,6 +17,7 @@ import {
 } from '../../src/commands/install.js';
 import { buildCommandReceiptJson, renderCommandReceipt } from '../../src/output/command-receipt.js';
 import type {
+  AgentVersionGateErrorPayload,
   GeneratedArtifact,
   InstalledLedger,
   PlatformAdapter,
@@ -64,6 +65,7 @@ import {
   createDependencyPluginManifest,
   createPluginDependencyScenarioFixtures,
 } from '../support/plugin-dependency-fixtures.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -215,6 +217,35 @@ function makeNativeInstallMarker(pluginName: string): NativeTransactionMarker {
     nativeWriteSucceeded: true,
     createdAt: '2026-05-04T00:00:00.000Z',
     updatedAt: '2026-05-04T00:00:00.000Z',
+  };
+}
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in install-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+
+    if (invocation.command === 'codex') {
+      return {
+        exitCode: 0,
+        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stderr: '',
+      };
+    }
+
+    if (invocation.command === 'claude') {
+      return {
+        exitCode: 0,
+        stdout: options.claude ?? '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    }
+
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
   };
 }
 
@@ -1553,6 +1584,66 @@ describe('install command P6 install-state semantics', () => {
       repoRoot,
       env,
       plugin: claudeOnly.manifest.name,
+      platform: 'codex',
+    })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
+
+  it('fails Codex install before any write when the detected version is too old', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({
+      name: 'codex-version-gated',
+      products: ['codex'],
+    }));
+    await writeInstalledLedger(createAvailableLedger(), env);
+    mockCatalogTargets({
+      explicitTargets: [createResolvedTarget(plugin)],
+      allTargets: [createResolvedTarget(plugin)],
+      ledger: await readInstalledLedger(env),
+    });
+
+    const codex = new GraphTestAdapter('codex', repoRoot, env);
+    const claude = new GraphTestAdapter('claude', repoRoot, env);
+
+    let payload: AgentVersionGateErrorPayload | null = null;
+    try {
+      await installCommand(
+        [plugin.manifest.name],
+        {
+          cwd: repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        {
+          env,
+          nativeCliRunner: createAgentVersionRunner({
+            codex: 'codex-cli 0.130.0',
+          }),
+          adapters: { codex, claude },
+        },
+      );
+    } catch (error) {
+      payload = (error as { payload?: AgentVersionGateErrorPayload }).payload ?? null;
+      expect(error).toBeInstanceOf(Error);
+    }
+
+    expect(payload).toMatchObject({
+      command: 'install',
+      failures: [{
+        platform: 'codex',
+        reasonCode: 'agentVersionTooLow',
+        detectedVersion: '0.130.0',
+        requiredMinVersion: '0.131.0',
+      }],
+    });
+    expect(payload?.failures[0]?.suggestedAction).toContain('升级到 >= 0.131.0');
+    expect(codex.installOrder).toEqual([]);
+    expect(claude.installOrder).toEqual([]);
+    await expect(readInstallRecord({
+      repoRoot,
+      env,
+      plugin: plugin.manifest.name,
       platform: 'codex',
     })).resolves.toMatchObject({
       status: 'missing',

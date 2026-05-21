@@ -21,7 +21,9 @@ import {
   createManualNextStep,
   createNextStepsBoundary,
   dedupeNextSteps,
+  projectAgentVersionDiagnostic,
   stripCommandFromNextStep,
+  type AgentVersionDiagnosticProjection,
 } from '../output/model.js';
 export type {
   PluginConsoleReasonCode,
@@ -124,6 +126,7 @@ export interface PluginConsoleSummary {
   reasonCodes: PluginConsoleReasonCode[];
   issueSummary?: string;
   detailHints?: string[];
+  agentVersionSummary?: AgentVersionDiagnosticProjection[];
   config?: PluginConsoleConfigProjection;
   nextStepsSchemaVersion: 1;
   nextSteps: NextStepInstruction[];
@@ -2382,6 +2385,18 @@ function sortControllerItems(left: ConsoleControllerItem, right: ConsoleControll
     left.summary.title.localeCompare(right.summary.title);
 }
 
+function agentVersionSummaryForLocations(
+  matrix: StatusMatrixReport,
+  locations: PluginConsoleLocation[],
+): AgentVersionDiagnosticProjection[] {
+  const platforms = new Set(locations.map((location) => location.platform));
+  return (['codex', 'claude'] as const)
+    .filter((platform) => platforms.has(platform))
+    .map((platform) => matrix.detection[platform].agentVersion)
+    .filter((result): result is NonNullable<typeof result> => result !== undefined)
+    .map((result) => projectAgentVersionDiagnostic(result));
+}
+
 export function resolvePluginConsoleMeta(plugin: PluginMeta | undefined): PluginConsolePluginMeta | undefined {
   if (!plugin) {
     return undefined;
@@ -2464,6 +2479,7 @@ export function createConsoleControllerItems(
           options.configProjectionByPluginName?.[pluginName],
         ),
         reasonCodes,
+        agentVersionSummary: agentVersionSummaryForLocations(matrix, locations),
         ...(itemCopy.issueSummary ? { issueSummary: itemCopy.issueSummary } : {}),
         ...(itemCopy.detailHints && itemCopy.detailHints.length > 0 ? { detailHints: itemCopy.detailHints } : {}),
         ...(options.configProjectionByPluginName?.[pluginName]

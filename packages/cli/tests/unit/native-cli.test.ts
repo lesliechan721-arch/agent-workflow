@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   NativeCliError,
   execFileNativeCliRunner,
+  isNativeCliExecutableMissingError,
   runNativeCli,
+  summarizeNativeCliFailure,
 } from '../../src/utils/native-cli.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
 
@@ -94,5 +96,46 @@ describe('native-cli', () => {
     ).rejects.toMatchObject<Partial<NativeCliError>>({
       exitCode: 124,
     });
+  });
+
+  it('detects ENOENT spawn failures as missing executables', () => {
+    const error = new NativeCliError({
+      invocation: {
+        command: 'codex',
+        args: ['--version'],
+      },
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      cause: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }),
+    });
+
+    expect(isNativeCliExecutableMissingError(error)).toBe(true);
+  });
+
+  it('summarizes native CLI failures from stderr, stdout, or the fallback message', () => {
+    expect(
+      summarizeNativeCliFailure(new NativeCliError({
+        invocation: {
+          command: 'codex',
+          args: ['--version'],
+        },
+        exitCode: 1,
+        stdout: 'partial output',
+        stderr: 'boom',
+      })),
+    ).toBe('boom');
+
+    expect(
+      summarizeNativeCliFailure(new NativeCliError({
+        invocation: {
+          command: 'claude',
+          args: ['--version'],
+        },
+        exitCode: 1,
+        stdout: 'partial output',
+        stderr: '',
+      })),
+    ).toBe('partial output');
   });
 });

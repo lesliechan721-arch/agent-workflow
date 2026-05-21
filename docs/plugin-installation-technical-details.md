@@ -85,7 +85,7 @@ aw install git-commit -p codex -s project
 aw install git-commit -p codex -s user
 ```
 
-只要插件声明了 Codex native runtime 能力，CLI 就会先按本次 current catalog materialize 并校验 active local marketplace/runtime view，再通过 Codex 的 native marketplace 和 `codex app-server` RPC 完成用户级安装。也就是说，project scope 主要写当前仓库，user scope 主要写用户目录和平台 native 状态。
+只要插件声明了 Codex native runtime 能力，CLI 就会先按本次 current catalog materialize 并校验 active local marketplace/runtime view，再通过 Codex native plugin CLI 完成用户级安装。也就是说，project scope 主要写当前仓库，user scope 主要写用户目录和平台 native 状态。
 
 ## 安装模型总览
 
@@ -267,7 +267,7 @@ flowchart TD
 
 失败时，CLI 尽量回滚当前命令写入；无法回滚的外部 side effect 会留下局部可诊断证据。AW 不写全局降级状态，也不让单个 location 的损坏影响同 scope 其它插件。
 
-举例来说，如果 Codex user native RPC 已经成功，但 lifecycle 失败，用户级 Codex 可能已经有 enabled config 和 cache。此时 AW 不会假装安装成功，因为 install record 尚未提交；它会依赖 native marker 和现场证据提示用户运行 `aw repair` 或 `aw cleanup`。
+举例来说，如果 Codex user native CLI 写入已经成功，但 lifecycle 失败，用户级 Codex 可能已经有 enabled config 和 cache。此时 AW 不会假装安装成功，因为 install record 尚未提交；它会依赖 native marker 和现场证据提示用户运行 `aw repair` 或 `aw cleanup`。
 
 ## 平台与 scope 分流
 
@@ -275,7 +275,7 @@ flowchart TD
 
 `scope=user` 和 `scope=project` 的含义不是简单地把路径从 `~` 换成当前目录：
 
-- `user` 面向当前用户，适合跨项目都要使用的插件。它通常会碰到平台 native plugin runtime，例如 Codex user scope 的 marketplace / app-server，或 Claude Code 的原生 plugin runtime。
+- `user` 面向当前用户，适合跨项目都要使用的插件。它通常会碰到平台 native plugin runtime，例如 Codex user scope 的 marketplace / plugin CLI，或 Claude Code 的原生 plugin runtime。
 - `project` 面向当前项目，适合团队共享配置。Codex project scope 特别强调 repo-visible artifacts，也就是把 Codex 能读取的 skill、config、rules、hooks、agents 写进仓库，让 fresh clone 后仍能被识别。
 
 ```mermaid
@@ -285,7 +285,7 @@ flowchart TD
   claude["Claude Code<br/>user/project 都走 Claude native plugin runtime"]
   codexScope{"Codex --scope"}
   codexUserNeed{"user scope<br/>声明 skills / slashCommands / mcpServers / apps?"}
-  codexUserNative["Codex user<br/>native marketplace + app-server RPC"]
+  codexUserNative["Codex user<br/>native marketplace + plugin CLI"]
   codexUserArtifacts["Codex user<br/>只写 ~/.codex AW-managed artifacts"]
   codexProject["Codex project<br/>只写 repo-visible artifacts"]
 
@@ -377,7 +377,7 @@ flowchart TD
   need{"需要 native plugin runtime?"}
   local["ensureLocalMarketplace()<br/>同步 ~/.aw/"]
   config["检查 ~/.codex/config.toml<br/>marketplace 和外部同名插件"]
-  rpc["启动 codex app-server<br/>调用 plugin/install"]
+  rpc["调用 codex plugin add/remove"]
   cache["Codex 写 enabled config<br/>materialize cache"]
   direct["跳过 native install"]
   post["AW post-check<br/>artifact apply / lifecycle"]
@@ -395,13 +395,13 @@ flowchart TD
 1. 调用 `ensureLocalMarketplace()`，解析 canonical `AW_HOME`，并确认 active view 的 selector、channel、catalog version、minAwVersion、sidecar manifest identity、digest 和写入 CLI version 都与本次 current catalog 一致。
 2. 读取 `~/.codex/config.toml`，检查 `[plugins."<plugin>@..."]` 是否显示同名插件由外部 marketplace 管理。
 3. 确保 `[marketplaces.aw]` 指向 canonical `AW_HOME`，必要时执行 `codex plugin marketplace add <canonical AW_HOME>`。
-4. 启动私有 `codex app-server`，通过 stdio JSONL 调用 `plugin/install`。
-5. `plugin/install` 成功后，Codex 自己负责写用户级 `[plugins."<plugin>@aw"].enabled = true`，并 materialize cache 到 `~/.codex/plugins/cache/aw/<plugin>/<version>/`。AW 不回退到只写 enabled config。
+4. 调用 `codex plugin add <plugin>@aw` 或 `codex plugin remove <plugin>@aw`。
+5. Codex CLI 成功后，Codex 自己负责写用户级 `[plugins."<plugin>@aw"].enabled = true`，并 materialize cache 到 `~/.codex/plugins/cache/aw/<plugin>/<version>/`。AW 不回退到只写 enabled config。
 6. AW 写入 native transaction marker，再做 post-check、artifact apply、lifecycle、record commit 和 dependency index refresh。所有步骤成功后删除 marker。
 
-Codex user scope 的 AW-managed artifacts 写在用户级 `~/.codex/`，包括 managed developer instructions block、`mcp_servers`、动态 role registration、rules、hooks 和 agents。所有共享文件都必须通过 AW 的 target apply 写入；renderer 和 lifecycle 不能直接改这些文件。
+Codex user scope 的 AW-managed artifacts 主要写在用户级 `~/.codex/`，包括 managed developer instructions block、`mcp_servers`、动态 role registration、rules 和 agents；hooks 随 user-scope native bundle 写入 `.codex-plugin/plugin.json`，不再新写 user `.codex/hooks.json` hook groups。所有共享文件都必须通过 AW 的 target apply 写入；renderer 和 lifecycle 不能直接改这些文件。
 
-这里的 post-check 很重要。Codex RPC 返回成功还不够，AW 还要确认 enabled config 和 materialized cache 都存在。只有 native 状态、AW artifacts、lifecycle 和 install record 都收口后，状态才会被解释为完整安装。
+这里的 post-check 很重要。Codex CLI 返回成功还不够，AW 还要确认 enabled config 和 materialized cache 都存在。只有 native 状态、AW artifacts、lifecycle 和 install record 都收口后，状态才会被解释为完整安装。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断，不参与这条写入主链路。
 
 ## Codex Project Scope 安装
 
@@ -413,7 +413,7 @@ Codex project scope 完全走 repo-visible artifacts，不走 native plugin 平�
 - 不写 `~/.codex/config.toml [plugins]`
 - 不写 `~/.codex/plugins/cache/...`
 
-这是为了让项目级安装具有清晰边界：命令只改变当前仓库，不改变用户全局 Codex 环境。即使这台机器没有可用的 `codex` CLI，只要要写的 repo-visible artifacts 能被安全生成和校验，Codex project 安装也不应该产生用户级 native side effect。
+这是为了让项目级安装具有清晰边界：命令只改变当前仓库，不改变用户全局 Codex 环境。写入前仍必须通过 Codex `>= 0.131.0` 的宿主版本门禁；缺少 `codex`、版本不可解析或版本过低时，本次 project 写命令在修改 repo-visible artifacts、install record 或 project artifact identity 前失败。通过门禁后，Codex project 安装也不应该产生用户级 native side effect。
 
 ```mermaid
 flowchart TD
@@ -527,6 +527,6 @@ aw cleanup --dependency-index --prune-stale <token> --yes
 ## 维护边界
 
 - 改 install-state facade、schema、adapter 行为、scope 语义或安装/分发流程时，也要同步检查公开文档、测试 fixture 和插件作者工具。
-- 改 Codex user native 流程时，必须同时考虑 app-server RPC、post-check、native transaction marker 和 `[marketplaces.aw]` cleanup，不能只改 `config.toml`。
+- 改 Codex user native 流程时，必须同时考虑 `codex plugin` CLI、post-check、native transaction marker、verbose native view 诊断和 marketplace cleanup，不能只改 `config.toml`。
 - 改 Codex project 能力时，必须更新 project installability、write safety preflight、project artifact identity、ignore preflight 和文档中的 repo-visible surface。
 - 改动态 artifact、config refresh 或 project config 语义时，必须同时检查 dynamic diagnostic cache、project shared/local config 边界和路径型配置限制。

@@ -10,6 +10,7 @@ import {
   detectEnvironment,
   resolveCodexProjectTrust,
 } from '../../src/utils/detect.js';
+import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 
 const tempDirs: string[] = [];
 
@@ -47,6 +48,22 @@ async function createExecutable(binDir: string, commandName: string): Promise<vo
   if (process.platform !== 'win32') {
     await fs.chmod(executablePath, 0o755);
   }
+}
+
+function createNativeCliError(options: {
+  invocation: NativeCliInvocation;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  cause?: unknown;
+}): NativeCliError {
+  return new NativeCliError({
+    invocation: options.invocation,
+    exitCode: options.exitCode ?? 1,
+    stdout: options.stdout ?? '',
+    stderr: options.stderr ?? '',
+    cause: options.cause,
+  });
 }
 
 afterEach(async () => {
@@ -95,6 +112,117 @@ describe('detect utils', () => {
     expect(detection.codex.available).toBe(false);
     expect(detection.codex.scopes).toEqual(['project', 'user']);
     expect(detection.codex.reason).toContain('executable');
+  });
+
+  it('keeps availability overrides separate from agent version probing', async () => {
+    const { repoRoot, claudeHome, codexHome } = await makeWorkspace();
+
+    const tooLow = await detectEnvironment(
+      repoRoot,
+      {
+        ...process.env,
+        AW_CLAUDE_HOME: claudeHome,
+        AW_CODEX_HOME: codexHome,
+        AW_FORCE_CODEX_AVAILABLE: '1',
+        PATH: '',
+      },
+      {
+        includeAgentVersions: true,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.command === 'codex') {
+            return {
+              exitCode: 0,
+              stdout: 'codex-cli 0.130.0',
+              stderr: '',
+            };
+          }
+          return {
+            exitCode: 0,
+            stdout: '2.1.119 (Claude Code)',
+            stderr: '',
+          };
+        },
+      },
+    );
+
+    expect(tooLow.codex.available).toBe(true);
+    expect(tooLow.codex.agentVersion).toMatchObject({
+      platform: 'codex',
+      status: 'tooOld',
+      reasonCode: 'agentVersionTooLow',
+      detectedVersion: '0.130.0',
+    });
+
+    const unparseable = await detectEnvironment(
+      repoRoot,
+      {
+        ...process.env,
+        AW_CLAUDE_HOME: claudeHome,
+        AW_CODEX_HOME: codexHome,
+        AW_FORCE_CLAUDE_AVAILABLE: '1',
+        PATH: '',
+      },
+      {
+        includeAgentVersions: true,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.command === 'claude') {
+            return {
+              exitCode: 0,
+              stdout: 'latest',
+              stderr: '',
+            };
+          }
+          return {
+            exitCode: 0,
+            stdout: 'codex-cli 0.131.0',
+            stderr: '',
+          };
+        },
+      },
+    );
+
+    expect(unparseable.claude.available).toBe(true);
+    expect(unparseable.claude.agentVersion).toMatchObject({
+      platform: 'claude',
+      status: 'unparseable',
+      reasonCode: 'agentVersionUnparseable',
+    });
+
+    const probeFailed = await detectEnvironment(
+      repoRoot,
+      {
+        ...process.env,
+        AW_CLAUDE_HOME: claudeHome,
+        AW_CODEX_HOME: codexHome,
+        AW_FORCE_CLAUDE_AVAILABLE: '1',
+        PATH: '',
+      },
+      {
+        includeAgentVersions: true,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.command === 'claude') {
+            throw createNativeCliError({
+              invocation,
+              exitCode: 124,
+              stderr: 'timed out',
+            });
+          }
+          return {
+            exitCode: 0,
+            stdout: 'codex-cli 0.131.0',
+            stderr: '',
+          };
+        },
+      },
+    );
+
+    expect(probeFailed.claude.available).toBe(true);
+    expect(probeFailed.claude.agentVersion).toMatchObject({
+      platform: 'claude',
+      status: 'probeFailed',
+      reasonCode: 'agentVersionProbeFailed',
+      exitCode: 124,
+    });
   });
 
   it('derives Codex project trust from lookup keys and project-layer presence', () => {

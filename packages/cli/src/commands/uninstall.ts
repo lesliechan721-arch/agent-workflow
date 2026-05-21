@@ -77,6 +77,7 @@ import {
   writeTrackingManifest,
 } from '../utils/tracking.js';
 import {
+  assertAgentVersionsForWriteTargets,
   collectCommandWarnings,
   createAdapters,
   filterPostCommandDriftWarnings,
@@ -1557,6 +1558,13 @@ export async function uninstallCommand(
       platforms,
       scope: options.scope,
     },
+  });
+  await assertAgentVersionsForWriteTargets({
+    command: 'uninstall',
+    platforms,
+    cwd: options.cwd,
+    env,
+    nativeCliRunner: context.nativeCliRunner,
   });
   const currentProjectKeysByPlatform = await resolveCurrentProjectKeysByPlatform(
     options.cwd,

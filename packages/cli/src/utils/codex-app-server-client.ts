@@ -52,8 +52,27 @@ export interface UninstallCodexPluginViaAppServerOptions
   pluginId: string;
 }
 
+export interface ListCodexPluginsViaAppServerOptions
+  extends CodexAppServerBaseOptions {
+  marketplace?: string;
+}
+
+export type ListInstalledCodexPluginsViaAppServerOptions = CodexAppServerBaseOptions;
+
+export interface ReadCodexPluginViaAppServerOptions
+  extends CodexAppServerBaseOptions {
+  pluginId: string;
+}
+
+export type CodexAppServerPluginMethod =
+  | 'plugin/install'
+  | 'plugin/uninstall'
+  | 'plugin/list'
+  | 'plugin/installed'
+  | 'plugin/read';
+
 export interface CodexAppServerCallResult<TResult = unknown> {
-  method: 'plugin/install' | 'plugin/uninstall';
+  method: CodexAppServerPluginMethod;
   requestId: string;
   result: TResult;
   stderr: string;
@@ -152,14 +171,29 @@ export function getDefaultCodexAppServerProcessRunner(): CodexAppServerProcessRu
   return codexAppServerProcessRunnerOverrideForTests ?? defaultCodexAppServerProcessRunner;
 }
 
-function describeOperation(method: string): '安装' | '卸载' {
-  return method === 'plugin/uninstall' ? '卸载' : '安装';
+function describeOperation(method: string): '安装' | '卸载' | '读取诊断' {
+  if (method === 'plugin/uninstall') {
+    return '卸载';
+  }
+  if (isCodexAppServerReadOnlyMethod(method)) {
+    return '读取诊断';
+  }
+  return '安装';
 }
 
 function describeFallbackGuard(method: string): string {
+  if (isCodexAppServerReadOnlyMethod(method)) {
+    return '该 RPC 只用于 verbose native view 诊断，不参与 Codex CLI 写入 hard gate。';
+  }
   return method === 'plugin/uninstall'
     ? 'AW 不会回退到只删 `config.toml`。'
     : 'AW 不会回退到只写 `config.toml`。';
+}
+
+function isCodexAppServerReadOnlyMethod(method: string): boolean {
+  return method === 'plugin/list' ||
+    method === 'plugin/installed' ||
+    method === 'plugin/read';
 }
 
 function sanitizeDebugValue(value: unknown): string {
@@ -712,7 +746,7 @@ class CodexAppServerSession {
 }
 
 async function runCodexAppServerOperation<TParams>(options: {
-  method: 'plugin/install' | 'plugin/uninstall';
+  method: CodexAppServerPluginMethod;
   requestId: string;
   params: TParams;
   cwd: string;
@@ -783,6 +817,59 @@ export async function uninstallCodexPluginViaAppServer(
   return runCodexAppServerOperation({
     method: 'plugin/uninstall',
     requestId: 'uninstall-1',
+    params: {
+      pluginId: options.pluginId,
+    },
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    runner: options.runner,
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+    pluginId: options.pluginId,
+  });
+}
+
+export async function listCodexPluginsViaAppServer(
+  options: ListCodexPluginsViaAppServerOptions,
+): Promise<CodexAppServerCallResult> {
+  return runCodexAppServerOperation({
+    method: 'plugin/list',
+    requestId: 'plugin-list-1',
+    params: options.marketplace === undefined
+      ? {}
+      : { marketplace: options.marketplace },
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    runner: options.runner,
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+  });
+}
+
+export async function listInstalledCodexPluginsViaAppServer(
+  options: ListInstalledCodexPluginsViaAppServerOptions,
+): Promise<CodexAppServerCallResult> {
+  return runCodexAppServerOperation({
+    method: 'plugin/installed',
+    requestId: 'plugin-installed-1',
+    params: {},
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    runner: options.runner,
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+  });
+}
+
+export async function readCodexPluginViaAppServer(
+  options: ReadCodexPluginViaAppServerOptions,
+): Promise<CodexAppServerCallResult> {
+  return runCodexAppServerOperation({
+    method: 'plugin/read',
+    requestId: 'plugin-read-1',
     params: {
       pluginId: options.pluginId,
     },

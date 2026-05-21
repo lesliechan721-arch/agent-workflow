@@ -17,6 +17,7 @@ vi.mock('../../src/utils/artifact-refresh.js', () => ({
 
 import { refreshArtifactsAfterConfigWrite } from '../../src/utils/artifact-refresh.js';
 import type { PluginMeta } from '../../src/types.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
   applyBuiltInConfigWrite,
   applyPluginConfigWrite,
@@ -84,8 +85,31 @@ async function initRepo(repoRoot: string): Promise<void> {
 
 function createPlugin(
   pluginName = 'configurable-plugin',
-  options: { withProjectDynamicTarget?: boolean } = {},
+  options: { withProjectDynamicTarget?: boolean; withUserDynamicTarget?: boolean } = {},
 ): PluginMeta {
+  const artifactTargets = [
+    ...(options.withProjectDynamicTarget
+      ? [{
+          id: 'project-instructions',
+          platform: 'codex' as const,
+          target: 'codex.developerInstructionsBlock' as const,
+          scopes: ['project' as const],
+          states: ['present' as const],
+          refreshKeys: ['mode'],
+          requiresCodexProjectConfig: true,
+        }]
+      : []),
+    ...(options.withUserDynamicTarget
+      ? [{
+          id: 'user-instructions',
+          platform: 'codex' as const,
+          target: 'codex.developerInstructionsBlock' as const,
+          scopes: ['user' as const],
+          states: ['present' as const],
+          refreshKeys: ['mode'],
+        }]
+      : []),
+  ];
   return {
     rootDir: '/tmp/plugin',
     manifestPath: '/tmp/plugin/.agents-plugin/plugin.json',
@@ -126,18 +150,10 @@ function createPlugin(
           },
         },
       },
-      ...(options.withProjectDynamicTarget
+      ...(artifactTargets.length > 0
         ? {
             artifacts: {
-              targets: [{
-                id: 'project-instructions',
-                platform: 'codex' as const,
-                target: 'codex.developerInstructionsBlock' as const,
-                scopes: ['project'],
-                states: ['present'],
-                refreshKeys: ['mode'],
-                requiresCodexProjectConfig: true,
-              }],
+              targets: artifactTargets,
             },
           }
         : {}),
@@ -156,6 +172,123 @@ async function materializePlugin(root: string, plugin: PluginMeta): Promise<Plug
     rootDir: pluginRoot,
     manifestPath,
   };
+}
+
+function createAgentVersionRunner(options: {
+  codex?: string;
+  claude?: string;
+} = {}): NativeCliRunner {
+  return async (invocation) => {
+    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+      throw new Error(`Unexpected native CLI invocation in config-write.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
+    }
+    if (invocation.command === 'codex') {
+      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.131.0', stderr: '' };
+    }
+    if (invocation.command === 'claude') {
+      return { exitCode: 0, stdout: options.claude ?? '2.1.88 (Claude Code)', stderr: '' };
+    }
+    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
+  };
+}
+
+async function writeUserInstallRecordForConfigTest(options: {
+  root: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+}): Promise<void> {
+  const location = {
+    plugin: options.plugin.manifest.name,
+    platform: 'codex' as const,
+    scope: 'user' as const,
+  };
+  const recordPath = getInstallRecordPath(options.cwd, location, options.env);
+  const recordId = path.basename(recordPath, '.json');
+  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
+  const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+    cwd: options.cwd,
+    location,
+    recordId,
+    manifestDigest: sourceManifestDigest,
+    bundleFingerprint: sourceBundleFingerprint,
+    nonce: `test-${options.plugin.manifest.name}`,
+    env: options.env,
+    manifestRelativePath: '.agents-plugin/plugin.json',
+  });
+  await fs.copy(options.plugin.rootDir, lifecyclePaths.bundleRoot);
+  const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+  const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
+  await writeInstallRecordFileAt(recordPath, {
+    version: 2,
+    recordId,
+    record: {
+      pluginName: options.plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+      installedAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      source: {
+        pluginVersion: options.plugin.manifest.version,
+        manifestDigest,
+        bundleFingerprint,
+      },
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+      },
+      lifecycle: {
+        runtimeRoot: lifecyclePaths.runtimeRoot,
+        bundleRoot: lifecyclePaths.bundleRoot,
+        manifestPath: lifecyclePaths.manifestPath,
+        pluginVersion: options.plugin.manifest.version,
+        sourceManifestDigest: manifestDigest,
+        bundleFingerprint,
+        events: ['install'],
+        createdAt: '2026-05-18T00:00:00.000Z',
+      },
+      artifacts: [],
+      dependencyEdges: [],
+    },
+  }, { env: options.env });
+}
+
+async function writeAdoptableProjectIdentityForConfigTest(options: {
+  cwd: string;
+  repoRoot: string;
+  plugin: PluginMeta;
+}): Promise<void> {
+  const repoArtifactPath = path.join(options.repoRoot, '.codex', 'config.toml');
+  await fs.outputFile(repoArtifactPath, '# existing\n');
+  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
+  const locator = createProjectArtifactSharedLocator({
+    plugin: options.plugin.manifest.name,
+    platform: 'codex',
+    repoRoot: options.repoRoot,
+    projectRoot: options.repoRoot,
+  });
+  const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot: options.repoRoot, locator });
+  await writeProjectArtifactIdentityFileAt(identityPath, {
+    version: 1,
+    sharedIdentityId: path.basename(identityPath, '.json'),
+    locator,
+    source: {
+      pluginVersion: options.plugin.manifest.version,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+    },
+    generatedAt: '2026-05-18T00:00:00.000Z',
+    artifacts: [{
+      kind: 'instruction',
+      platform: 'codex',
+      path: '.codex/config.toml',
+      id: 'project-instructions',
+      target: 'codex.developerInstructionsBlock',
+      state: 'present',
+    }],
+  });
 }
 
 async function expectAsyncPathFenceViolation(
@@ -640,6 +773,248 @@ describe('plugin config write helper', () => {
         token: 'user-secret',
       },
     });
+  });
+
+  it('fails config writes before touching the store when an installed refresh target fails agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-write-version-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('version-gated-config-plugin', {
+      withUserDynamicTarget: true,
+    }));
+    await writeUserInstallRecordForConfigTest({ root, cwd, env, plugin });
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'safe',
+      },
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        mode: 'safe',
+      },
+    });
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('fails built-in SkillTrigger writes before touching the store when apply target fails agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const basePlugin = createPlugin('version-gated-skill-plugin');
+    const plugin = await materializePlugin(root, {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: './skills',
+        skillTriggers: {
+          commit: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        config: undefined,
+      },
+    } as PluginMeta);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    vi.spyOn(localMarketplaceModule, 'readInstalledLedger').mockResolvedValue({
+      ledgerState: { status: 'available' },
+      plugins: {
+        [plugin.manifest.name]: {
+          platforms: {
+            codex: {
+              userScope: {
+                managed: true,
+              },
+            },
+          },
+        },
+      },
+    } as never);
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+
+    await expect(applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {},
+    });
+    expect(materializeSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails config reset before deleting the store when an installed refresh target fails agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-reset-version-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('version-gated-reset-plugin', {
+      withUserDynamicTarget: true,
+    }));
+    await writeUserInstallRecordForConfigTest({ root, cwd, env, plugin });
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'safe',
+      },
+    });
+
+    await expect(resetPluginConfigWithHelper({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        mode: 'safe',
+      },
+    });
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('allows config-only prewrites for adoptable project artifacts without entering the agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-write-adoptable-prewrite-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('adoptable-prewrite-plugin', {
+      withProjectDynamicTarget: true,
+    }));
+    await writeAdoptableProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
+    const nativeCliRunner = vi.fn(createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }));
+
+    const receipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      nativeCliRunner,
+      request: {
+        updates: {
+          retries: '2',
+        },
+      },
+    });
+
+    expect(receipt.configRefreshSkippedReason).toBe('adoptExistingRequired');
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        retries: 2,
+      },
+    });
+  });
+
+  it('blocks adoptable project artifact refresh before agent version probing or store writes', async () => {
+    const root = await makeTempRoot('aw-config-write-adoptable-refresh-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('adoptable-refresh-plugin', {
+      withProjectDynamicTarget: true,
+    }));
+    await writeAdoptableProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
+    const nativeCliRunner = vi.fn(createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }));
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      nativeCliRunner,
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow('aw repair --adopt-existing');
+
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    }))).resolves.toBe(false);
   });
 
   it('refreshes current project artifacts and同步写回 install-state when project shared config changes affect a local record', async () => {
@@ -1260,7 +1635,9 @@ describe('plugin config write helper', () => {
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     await fs.ensureDir(cwd);
 
-    const historicalPlugin = await materializePlugin(root, createPlugin('resettable-plugin'));
+    const historicalPlugin = await materializePlugin(root, createPlugin('resettable-plugin', {
+      withUserDynamicTarget: true,
+    }));
     const currentPlugin = {
       ...historicalPlugin,
       manifest: {

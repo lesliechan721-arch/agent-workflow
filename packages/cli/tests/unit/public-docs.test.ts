@@ -168,4 +168,36 @@ describe('public docs', () => {
     expect(manifestSpec).toContain('不支持旧式 `version`、`range`');
     expect(manifestSpec).toContain('catalog history 记录历史 catalog version、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`');
   });
+
+  it('documents the Codex 0.131 and Claude 2.1.88 host contracts without old write paths', async () => {
+    const docs = [
+      'docs/plugin-authoring.md',
+      'docs/plugin-installation.md',
+      'docs/plugin-installation-technical-details.md',
+      'docs/architecture.md',
+      'docs/testing.md',
+      '.agents/skills/create-agent-workflows-plugin/SKILL.md',
+      '.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md',
+      '.agents/skills/create-agent-workflows-plugin/references/extensions-spec.md',
+      '.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md',
+    ];
+    const combined = (await Promise.all(docs.map((file) => readRepoFile(file)))).join('\n');
+
+    expect(combined).toContain('Codex `>= 0.131.0`');
+    expect(combined).toContain('Claude Code `>= 2.1.88`');
+    expect(combined).toContain('codex plugin add/remove');
+    expect(combined).toContain('codex plugin marketplace add/list/remove');
+    expect(combined).toContain('`plugin/list`、`plugin/installed`、`plugin/read` 只用于');
+    expect(combined).toContain('`.codex-plugin/plugin.json` 的 `hooks` 字段');
+    expect(combined).toContain('`.codex/hooks.json`');
+    expect(combined).toContain('写入前仍要求本机 Codex `>= 0.131.0`');
+    expect(combined).toContain('不声明 per-plugin 宿主 agent 版本');
+
+    expect(combined).not.toContain('`plugin/install`');
+    expect(combined).not.toContain('`plugin/uninstall`');
+    expect(combined).not.toContain('缺少 `codex` 可执行文件时，project 安装仍应可工作');
+    expect(combined).not.toContain('缺少 `codex` 可执行文件时，repo-managed project 安装仍可进行');
+    expect(combined).not.toContain('即使 PATH 缺少 `codex` 可执行文件');
+    expect(combined).not.toContain('Codex user native install/uninstall 用 `createFakeCodexAppServerHarness()`');
+  });
 });

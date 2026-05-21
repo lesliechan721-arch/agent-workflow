@@ -113,6 +113,61 @@ describe('fake Codex app-server harness', () => {
     expect(harness.readStdout()).toBe('not-json\n');
   });
 
+  it('matches read-only plugin RPC methods used by native view diagnostics', async () => {
+    const harness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'plugin/installed' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 1, result: { plugins: [{ id: 'git-commit@aw' }] } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/read' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 2, result: { id: 'git-commit@aw', marketplace: 'aw' } },
+          },
+        ],
+      },
+      {
+        when: 'stdin',
+        match: { method: 'plugin/list' },
+        actions: [
+          {
+            type: 'stdout-jsonl',
+            value: { id: 3, result: { plugins: [{ id: 'git-commit@aw', mentionable: true }] } },
+          },
+        ],
+      },
+    ]);
+    const process = harness.spawn({
+      command: 'codex',
+      args: ['app-server'],
+    });
+
+    process.stdin.write('{"id":1,"method":"plugin/installed"}\n');
+    process.stdin.write('{"id":2,"method":"plugin/read","params":{"pluginId":"git-commit@aw"}}\n');
+    process.stdin.write('{"id":3,"method":"plugin/list","params":{"marketplace":"aw"}}\n');
+    await harness.waitForIdle();
+
+    expect(harness.stdinMessages.map((message) => message.json?.method)).toEqual([
+      'plugin/installed',
+      'plugin/read',
+      'plugin/list',
+    ]);
+    expect(harness.readStdout().trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+      { id: 1, result: { plugins: [{ id: 'git-commit@aw' }] } },
+      { id: 2, result: { id: 'git-commit@aw', marketplace: 'aw' } },
+      { id: 3, result: { plugins: [{ id: 'git-commit@aw', mentionable: true }] } },
+    ]);
+  });
+
   it('can exit early and records kill signals for cleanup assertions', async () => {
     const harness = createFakeCodexAppServerHarness([
       {
