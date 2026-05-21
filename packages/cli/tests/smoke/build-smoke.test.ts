@@ -17,6 +17,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+let cliBuildPromise: Promise<void> | null = null;
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -47,6 +48,11 @@ async function buildCli(root: string): Promise<void> {
     env: process.env,
     maxBuffer: 10 * 1024 * 1024,
   });
+}
+
+async function ensureBuiltCli(root: string): Promise<void> {
+  cliBuildPromise ??= buildCli(root);
+  await cliBuildPromise;
   await installCurrentSmokeDistIsolationBridge();
 }
 
@@ -60,9 +66,8 @@ describe('build smoke', () => {
 
   it('runs pnpm build and produces plugins-dist through the compiled bundle script', async () => {
     const outputRoot = builtPluginsDistRoot;
-    await fs.remove(outputRoot);
 
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
@@ -213,7 +218,7 @@ describe('build smoke', () => {
     const packageJson = await fs.readJson(path.join(root, 'packages', 'cli', 'package.json')) as {
       version: string;
     };
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     await expect(
       execFileAsync('node', ['packages/cli/dist/index.js', '--help'], {
@@ -267,7 +272,7 @@ describe('build smoke', () => {
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     const tempRoot = await createSmokeTempRoot('aw-smoke-assets-', 'build smoke assets temp root');
     const tempRepo = path.join(tempRoot, 'repo');
@@ -346,7 +351,7 @@ describe('build smoke', () => {
   });
 
   it('bundles public slashCommands through the compiled bundler without shipping raw source directories', async () => {
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     const tempRoot = await createSmokeTempRoot(
       'aw-smoke-slash-commands-',
@@ -399,7 +404,7 @@ describe('build smoke', () => {
   });
 
   it('bundles scripts.node plugins through the compiled staging bundle path', async () => {
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     const tempRoot = await createSmokeTempRoot(
       'aw-smoke-scripts-node-',
