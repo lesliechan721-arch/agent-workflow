@@ -242,6 +242,16 @@ describe('catalog fetch smoke', () => {
       args: ['--version'],
       cwd: process.cwd(),
       env: process.env,
+    })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: 'codex-cli 0.131.0',
+      stderr: '',
+    });
+    await expect(distNativeCli.runNativeCli({
+      command: 'codex',
+      args: ['plugin', 'list'],
+      cwd: process.cwd(),
+      env: process.env,
     })).rejects.toThrow('测试默认禁止真实 native CLI 调用');
     await expect(distCodexAppServer.installCodexPluginViaAppServer({
       cwd: process.cwd(),
