@@ -12,6 +12,7 @@ import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+let cliBuildPromise: Promise<void> | null = null;
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -178,6 +179,11 @@ async function buildCli(root: string): Promise<void> {
     env: process.env,
     maxBuffer: 20 * 1024 * 1024,
   });
+}
+
+async function ensureBuiltCli(root: string): Promise<void> {
+  cliBuildPromise ??= buildCli(root);
+  await cliBuildPromise;
   await installCurrentSmokeDistIsolationBridge();
 }
 
@@ -186,8 +192,9 @@ afterEach(async () => {
 });
 
 describe('catalog fetch smoke', () => {
-  it('keeps smoke dist guards active for repo dist imports without manual bridge setup', async () => {
+  it('keeps smoke dist guards active for repo dist imports after rebuilding dist', async () => {
     const root = repoRoot();
+    await ensureBuiltCli(root);
 
     const distMarketplace = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
@@ -246,7 +253,7 @@ describe('catalog fetch smoke', () => {
 
   it('resolves sidecar before full and reuses current catalog cache before a later full download', async () => {
     const root = repoRoot();
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     const distPluginCatalog = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
@@ -342,7 +349,7 @@ describe('catalog fetch smoke', () => {
 
   it('uses sidecar history to fall back from incompatible latest to a compatible historical catalog', async () => {
     const root = repoRoot();
-    await buildCli(root);
+    await ensureBuiltCli(root);
 
     const distPluginCatalog = await import(
       pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,

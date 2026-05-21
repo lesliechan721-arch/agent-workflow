@@ -157,6 +157,16 @@ function uniquePaths(paths: string[]): string[] {
   return result;
 }
 
+function isCodexDynamicSkillArtifact(
+  artifact: Pick<InstallRecordArtifact, 'target' | 'artifactKey'>,
+): artifact is Pick<InstallRecordArtifact, 'target'> & { artifactKey: string } {
+  return (
+    artifact.target === 'codex.skill' &&
+    typeof artifact.artifactKey === 'string' &&
+    artifact.artifactKey.trim() !== ''
+  );
+}
+
 export function collectCodexDynamicSkillSyncKeys(options: {
   skillKeys: readonly string[];
   installedArtifacts?: readonly Pick<InstallRecordArtifact, 'target' | 'artifactKey'>[];
@@ -166,10 +176,7 @@ export function collectCodexDynamicSkillSyncKeys(options: {
       .map((skillKey) => skillKey.trim())
       .filter((skillKey) => skillKey !== ''),
     ...(options.installedArtifacts ?? [])
-      .filter((artifact) =>
-        artifact.target === 'codex.skill' &&
-        typeof artifact.artifactKey === 'string' &&
-        artifact.artifactKey.trim() !== '')
+      .filter(isCodexDynamicSkillArtifact)
       .map((artifact) => artifact.artifactKey.trim()),
   ])].sort();
 }

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
+import { vi } from 'vitest';
 
 import {
   assertPathWithinReadableRoots,
@@ -52,12 +53,26 @@ interface DistStateModules {
   testPathFence: DistTestPathFenceModule | null;
 }
 
+interface CachedDistStateModules {
+  cacheKey: string;
+  modules: DistStateModules;
+}
+
+const distStateModulePaths = {
+  paths: 'src/utils/paths.js',
+  marketplace: 'src/utils/marketplace.js',
+  pluginCatalog: 'src/utils/plugin-catalog.js',
+  nativeCli: 'src/utils/native-cli.js',
+  codexAppServer: 'src/utils/codex-app-server-client.js',
+  testPathFence: 'src/utils/test-path-fence.js',
+} as const;
+
 const cliPackageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
 );
-let cachedDistStateModules: DistStateModules | null = null;
+let cachedDistStateModules: CachedDistStateModules | null = null;
 
 async function importDistModule<T>(
   relativePath: string,
@@ -70,29 +85,66 @@ async function importDistModule<T>(
   return import(pathToFileURL(modulePath).href) as Promise<T>;
 }
 
-async function loadDistStateModules(): Promise<DistStateModules> {
-  if (cachedDistStateModules) {
-    return cachedDistStateModules;
+async function resolveDistModuleCacheToken(relativePath: string): Promise<string> {
+  const modulePath = path.join(cliPackageRoot, 'dist', relativePath);
+  if (!await fs.pathExists(modulePath)) {
+    return `${relativePath}:missing`;
   }
 
-  const paths = await importDistModule<DistPathsModule>('src/utils/paths.js');
-  const marketplace = await importDistModule<DistMarketplaceModule>('src/utils/marketplace.js');
-  const pluginCatalog = await importDistModule<DistPluginCatalogModule>('src/utils/plugin-catalog.js');
-  const nativeCli = await importDistModule<DistNativeCliModule>('src/utils/native-cli.js');
-  const codexAppServer = await importDistModule<DistCodexAppServerModule>('src/utils/codex-app-server-client.js');
-  const testPathFence = await importDistModule<DistTestPathFenceModule>('src/utils/test-path-fence.js');
+  const stats = await fs.stat(modulePath);
+  return `${relativePath}:${stats.size}:${stats.mtimeMs}`;
+}
+
+function hasFunctionExport(
+  moduleValue: object | null,
+  exportName: string,
+): boolean {
+  return Boolean(
+    moduleValue &&
+    typeof (moduleValue as Record<string, unknown>)[exportName] === 'function',
+  );
+}
+
+async function loadDistStateModules(): Promise<DistStateModules> {
+  const moduleEntries = Object.entries(distStateModulePaths) as Array<
+    [keyof typeof distStateModulePaths, string]
+  >;
+  const cacheTokens = await Promise.all(
+    moduleEntries.map(([, relativePath]) => resolveDistModuleCacheToken(relativePath)),
+  );
+  const cacheKey = cacheTokens.join('|');
+
+  if (cachedDistStateModules?.cacheKey === cacheKey) {
+    return cachedDistStateModules.modules;
+  }
+
+  if (cachedDistStateModules) {
+    vi.resetModules();
+  }
+
+  const rawPaths = await importDistModule<DistPathsModule>(distStateModulePaths.paths);
+  const rawMarketplace = await importDistModule<DistMarketplaceModule>(distStateModulePaths.marketplace);
+  const rawPluginCatalog = await importDistModule<DistPluginCatalogModule>(distStateModulePaths.pluginCatalog);
+  const rawNativeCli = await importDistModule<DistNativeCliModule>(distStateModulePaths.nativeCli);
+  const rawCodexAppServer = await importDistModule<DistCodexAppServerModule>(distStateModulePaths.codexAppServer);
+  const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(distStateModulePaths.testPathFence);
 
   const modules = {
-    paths,
-    marketplace,
-    pluginCatalog,
-    nativeCli,
-    codexAppServer,
-    testPathFence,
+    paths: hasFunctionExport(rawPaths, 'setEmbeddedPluginsRootOverrideForTests') ? rawPaths : null,
+    marketplace: hasFunctionExport(rawMarketplace, 'setCatalogPackageSourceForTests') ? rawMarketplace : null,
+    pluginCatalog: hasFunctionExport(rawPluginCatalog, 'clearCurrentCatalogResolutionMemoForTests') ? rawPluginCatalog : null,
+    nativeCli: hasFunctionExport(rawNativeCli, 'setNativeCliRunnerOverrideForTests') ? rawNativeCli : null,
+    codexAppServer: hasFunctionExport(rawCodexAppServer, 'setCodexAppServerProcessRunnerOverrideForTests') ? rawCodexAppServer : null,
+    testPathFence: hasFunctionExport(rawTestPathFence, 'setTestPathFenceHookForTests') ? rawTestPathFence : null,
   };
 
   if (Object.values(modules).some((entry) => entry !== null)) {
-    cachedDistStateModules = modules;
+    cachedDistStateModules = {
+      cacheKey,
+      modules,
+    };
+  } else {
+    cachedDistStateModules = null;
   }
 
   return modules;
@@ -139,7 +191,7 @@ export async function installDistStateForTests(
 }
 
 export async function resetDistStateForTests(): Promise<void> {
-  const modules = cachedDistStateModules;
+  const modules = cachedDistStateModules?.modules;
   if (!modules) {
     return;
   }
