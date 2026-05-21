@@ -30,6 +30,7 @@ import type {
 } from '../types.js';
 import { mergeGeneratedArtifacts } from './generated-artifacts.js';
 import {
+  collectCodexDynamicSkillSyncKeys,
   getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
   stageLocalMarketplaceCodexDynamicSkills,
@@ -354,6 +355,7 @@ function createSinglePluginCodexMarketplace(plugin: PluginMeta): MarketplaceMani
 async function stageCodexUserNativeHistoricalMarketplace(options: {
   plugin: PluginMeta;
   refreshedArtifacts: readonly GeneratedArtifact[];
+  previousArtifacts?: readonly InstallRecordArtifact[];
   skillTriggerPreference?: SkillTriggerPreference;
   env: NodeJS.ProcessEnv;
 }): Promise<{ rootDir: string; marketplacePath: string }> {
@@ -433,10 +435,13 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
     await stageLocalMarketplaceCodexDynamicSkills({
       rootDir: stagingRoot,
       pluginName,
-      skillKeys: options.refreshedArtifacts
-        .filter((artifact) => artifact.target === 'codex.skill')
-        .map((artifact) => artifact.artifactKey?.trim())
-        .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
+      skillKeys: collectCodexDynamicSkillSyncKeys({
+        skillKeys: options.refreshedArtifacts
+          .filter((artifact) => artifact.target === 'codex.skill')
+          .map((artifact) => artifact.artifactKey?.trim())
+          .filter((artifactKey): artifactKey is string => Boolean(artifactKey)),
+        installedArtifacts: options.previousArtifacts,
+      }),
     });
 
     const marketplacePath = assertArtifactRefreshStagingPathForTests(
@@ -707,6 +712,9 @@ async function executeRefreshUnit(options: {
       const stagedMarketplace = await stageCodexUserNativeHistoricalMarketplace({
         plugin: refreshPlugin,
         refreshedArtifacts,
+        previousArtifacts: installRecordRead.status === 'ok'
+          ? installRecordRead.value.record.artifacts
+          : [],
         ...(skillTriggerPreference ? { skillTriggerPreference } : {}),
         env: options.env,
       });

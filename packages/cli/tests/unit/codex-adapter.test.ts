@@ -50,6 +50,7 @@ import {
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
+import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import {
   removeTrackingRecordFromManifest,
@@ -2268,6 +2269,125 @@ describe('CodexAdapter', () => {
     await expect(
       fs.readFile(path.join(cacheVersionPath, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
     ).resolves.toBe('# Dynamic Commit\n');
+  });
+
+  it('cleans stale mirrored dynamic Codex skills from custom roots before direct native install', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const canonicalAwHome = await fs.realpath(env.AW_HOME!);
+    const configPath = resolveCodexPaths(cwd, 'user', env).configTomlPath;
+    await upsertCodexMarketplaceFile(configPath, 'aw', {
+      source: canonicalAwHome,
+      sourceType: 'local',
+    });
+
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    plugin.manifest.skills = './custom-skills';
+
+    const awPluginRoot = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name);
+    const customSkillsRoot = path.join(awPluginRoot, 'codex', 'custom-skills');
+    const staleSkillRoot = path.join(customSkillsRoot, 'generated-commit');
+    const codexManifestPath = path.join(awPluginRoot, '.codex-plugin', 'plugin.json');
+    const codexManifest = await fs.readJson(codexManifestPath);
+    await fs.writeJson(codexManifestPath, {
+      ...codexManifest,
+      skills: './codex/custom-skills',
+    }, { spaces: 2 });
+    await fs.outputFile(
+      path.join(customSkillsRoot, 'static-commit', 'SKILL.md'),
+      '# Static Commit\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(customSkillsRoot, 'static-commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(staleSkillRoot, 'SKILL.md'),
+      '# Stale Dynamic Commit\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(staleSkillRoot, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+      'utf8',
+    );
+
+    const location = {
+      plugin: plugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    const recordPath = getInstallRecordPath(cwd, location, env);
+    await fs.outputJson(recordPath, {
+      version: 2,
+      recordId: path.basename(recordPath, '.json'),
+      record: {
+        pluginName: plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+        installedAt: '2026-05-05T00:00:00.000Z',
+        updatedAt: '2026-05-05T00:00:00.000Z',
+        source: {
+          pluginVersion: plugin.manifest.version,
+          manifestDigest: 'sha256:stale-manifest',
+          bundleFingerprint: 'sha256:stale-bundle',
+        },
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        artifacts: [{
+          kind: 'skill',
+          platform: 'codex',
+          path: path.join(awPluginRoot, 'codex', 'skills', 'generated-commit'),
+          artifactKey: 'generated-commit',
+          id: 'generated-commit-skill',
+          target: 'codex.skill',
+          state: 'present',
+        }],
+        dependencyEdges: [],
+      },
+    }, { spaces: 2 });
+
+    const cacheVersionPath = resolveCodexNativeCacheVersionPath(env, plugin.manifest.name);
+    const appServerHarness = createFakeCodexAppServerHarness([
+      {
+        when: 'stdin',
+        match: { method: 'initialize' },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'init-1', result: { protocolVersion: '2026-05-04' } } }],
+      },
+      {
+        when: 'stdin',
+        match: (input) => {
+          if (input.json?.method !== 'plugin/install') {
+            return false;
+          }
+          const params = input.json.params as { marketplacePath?: string } | undefined;
+          expect(params?.marketplacePath).toBe(path.join(canonicalAwHome, '.agents', 'plugins', 'marketplace.json'));
+          expect(fs.existsSync(path.join(customSkillsRoot, 'static-commit', 'SKILL.md'))).toBe(true);
+          expect(fs.existsSync(path.join(customSkillsRoot, 'generated-commit', 'SKILL.md'))).toBe(false);
+
+          fs.appendFileSync(configPath, '\n[plugins."git-commit@aw"]\nenabled = true\n', 'utf8');
+          fs.outputFileSync(path.join(cacheVersionPath, 'plugin.json'), '{}\n', 'utf8');
+          return true;
+        },
+        actions: [{ type: 'stdout-jsonl', value: { id: 'install-1', result: { installed: true } } }],
+      },
+    ]);
+    const adapter = new CodexAdapter(
+      cwd,
+      createCodexMarketplaceAddRunner(cwd, env),
+      env,
+      appServerHarness.createRunner(),
+    );
+
+    await adapter.installPluginFromMarketplace(plugin, 'user');
+
+    await expect(fs.pathExists(path.join(customSkillsRoot, 'generated-commit'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(customSkillsRoot, 'static-commit', 'SKILL.md'), 'utf8'))
+      .resolves.toBe('# Static Commit\n');
   });
 
   it('fails install when app-server reports unknown method and does not fall back to config-only', async () => {

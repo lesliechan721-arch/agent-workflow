@@ -93,6 +93,7 @@ import {
   writeCodexNativeRecoveryBreadcrumb,
 } from '../utils/codex-native-recovery.js';
 import {
+  collectCodexDynamicSkillSyncKeys,
   ensureLocalMarketplace,
   getLocalMarketplaceCodexSkillRoot,
   readInstalledLedger,
@@ -369,6 +370,7 @@ async function stageCodexUserDynamicSkillMarketplace(options: {
   awHome: string;
   plugin: PluginMeta;
   scope: Scope;
+  skillKeys: readonly string[];
 }): Promise<{ rootDir: string; marketplacePath: string } | null> {
   if (!shouldStageCodexUserDynamicSkillMarketplace(options.plugin, options.scope)) {
     return null;
@@ -383,10 +385,7 @@ async function stageCodexUserDynamicSkillMarketplace(options: {
     await stageLocalMarketplaceCodexDynamicSkills({
       rootDir: stagingRoot,
       pluginName: options.plugin.manifest.name,
-      skillKeys: getCodexDynamicArtifactTargets(options.plugin, { scope: 'user' })
-        .filter((target) => target.target === 'codex.skill')
-        .map((target) => target.skillKey?.trim())
-        .filter((skillKey): skillKey is string => Boolean(skillKey)),
+      skillKeys: options.skillKeys,
     });
     return {
       rootDir: stagingRoot,
@@ -396,6 +395,32 @@ async function stageCodexUserDynamicSkillMarketplace(options: {
     await fs.remove(stagingRoot).catch(() => undefined);
     throw error;
   }
+}
+
+async function resolveCodexUserDynamicSkillSyncKeys(options: {
+  cwd: string;
+  plugin: PluginMeta;
+  env: NodeJS.ProcessEnv;
+}): Promise<string[]> {
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: {
+      plugin: options.plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+    },
+    env: options.env,
+  });
+
+  return collectCodexDynamicSkillSyncKeys({
+    skillKeys: getCodexDynamicArtifactTargets(options.plugin, { scope: 'user' })
+      .filter((target) => target.target === 'codex.skill')
+      .map((target) => target.skillKey?.trim())
+      .filter((skillKey): skillKey is string => Boolean(skillKey)),
+    installedArtifacts: recordRead.status === 'ok'
+      ? recordRead.value.record.artifacts
+      : [],
+  });
 }
 
 function createCodexNativePostCheckSuggestion(
@@ -3391,12 +3416,28 @@ export class CodexAdapter implements PlatformAdapter {
       phase: 'success',
     });
 
+    const codexDynamicSkillSyncKeys = scope === 'user'
+      ? await resolveCodexUserDynamicSkillSyncKeys({
+          cwd: this.cwd,
+          plugin,
+          env: this.env,
+        })
+      : [];
+    if (scope === 'user') {
+      await stageLocalMarketplaceCodexDynamicSkills({
+        rootDir: awHome,
+        pluginName: plugin.manifest.name,
+        skillKeys: codexDynamicSkillSyncKeys,
+      });
+    }
+
     let stagedMarketplace = options.marketplacePath
       ? null
       : await stageCodexUserDynamicSkillMarketplace({
           awHome,
           plugin,
           scope,
+          skillKeys: codexDynamicSkillSyncKeys,
         });
     const cleanupStagedMarketplace = async () => {
       if (!stagedMarketplace) {

@@ -136,6 +136,23 @@ function uniquePaths(paths: string[]): string[] {
   return result;
 }
 
+export function collectCodexDynamicSkillSyncKeys(options: {
+  skillKeys: readonly string[];
+  installedArtifacts?: readonly Pick<InstallRecordArtifact, 'target' | 'artifactKey'>[];
+}): string[] {
+  return [...new Set([
+    ...options.skillKeys
+      .map((skillKey) => skillKey.trim())
+      .filter((skillKey) => skillKey !== ''),
+    ...(options.installedArtifacts ?? [])
+      .filter((artifact) =>
+        artifact.target === 'codex.skill' &&
+        typeof artifact.artifactKey === 'string' &&
+        artifact.artifactKey.trim() !== '')
+      .map((artifact) => artifact.artifactKey.trim()),
+  ])].sort();
+}
+
 export async function stageLocalMarketplaceCodexDynamicSkills(
   options: {
     rootDir: string;

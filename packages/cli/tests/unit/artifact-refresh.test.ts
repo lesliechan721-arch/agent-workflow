@@ -101,14 +101,16 @@ function createTrackedDynamicArtifact(options: {
 function createTrackedDynamicSkillArtifact(options: {
   artifactPath: string;
   refreshKeys: string[];
+  artifactKey?: string;
+  id?: string;
   lastRefresh?: GeneratedArtifact['lastRefresh'];
 }): GeneratedArtifact {
   return {
     path: options.artifactPath,
     kind: 'skill',
     platform: 'codex',
-    artifactKey: 'codex-explore',
-    id: 'codex-explore-skill',
+    artifactKey: options.artifactKey ?? 'codex-explore',
+    id: options.id ?? 'codex-explore-skill',
     target: 'codex.skill',
     state: 'present',
     refreshKeys: [...options.refreshKeys],
@@ -551,6 +553,173 @@ describe('artifact refresh reapply helper', () => {
       await expect(
         fs.readFile(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'codex-explore', 'SKILL.md'), 'utf8'),
       ).resolves.toBe('custom refreshed skill\n');
+    });
+
+    const receipt = await reapplyConfigRefresh({
+      plugin,
+      commandScope: 'user',
+      cwd: repoRoot,
+      env,
+    });
+
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['explorerModel'],
+    });
+    expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes stale mirrored dynamic Codex skills from custom roots when rebuilding the historical marketplace', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-user-custom-cleanup-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin('mixed-skills');
+    plugin.manifest.skills = './custom-skills';
+    plugin.manifest.config = {
+      schema: {
+        explorerModel: {
+          type: 'string',
+        },
+      },
+    };
+    plugin.manifest.skillTriggers = {
+      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
+      'refreshed-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
+    };
+    plugin.manifest.artifacts = {
+      targets: [{
+        id: 'refreshed-skill-artifact',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: ['explorerModel'],
+        skillKey: 'refreshed-skill',
+      }],
+    };
+    const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
+    const refreshedArtifactPath = path.join(
+      env.AW_HOME!,
+      'plugins',
+      plugin.manifest.name,
+      'codex',
+      'skills',
+      'refreshed-skill',
+    );
+    const trackedArtifact = createTrackedDynamicSkillArtifact({
+      artifactPath: refreshedArtifactPath,
+      artifactKey: 'refreshed-skill',
+      id: 'refreshed-skill-artifact',
+      refreshKeys: ['explorerModel'],
+      lastRefresh: {
+        status: 'failed',
+        updatedAt: '2026-05-04T00:00:00.000Z',
+        event: 'refresh',
+        triggerKeys: ['explorerModel'],
+        error: 'old failure',
+      },
+    });
+    const staleRecordArtifact = createTrackedDynamicSkillArtifact({
+      artifactPath: path.join(
+        env.AW_HOME!,
+        'plugins',
+        plugin.manifest.name,
+        'codex',
+        'skills',
+        'legacy-skill',
+      ),
+      artifactKey: 'legacy-skill',
+      id: 'legacy-skill-artifact',
+      refreshKeys: ['explorerModel'],
+    });
+    const historicalBundleRoot = await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'user',
+      artifacts: [trackedArtifact, staleRecordArtifact],
+      historicalVersion: '0.0.7',
+      prepareBundle: async (bundleRoot) => {
+        const manifestPath = path.join(bundleRoot, '.codex-plugin', 'plugin.json');
+        const manifest = await fs.readJson(manifestPath);
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          skills: './codex/custom-skills',
+        }, { spaces: 2 });
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'custom-skills', 'static-skill', 'SKILL.md'),
+          'static historical skill\n',
+        );
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'custom-skills', 'static-skill', 'agents', 'openai.yaml'),
+          'policy:\n  allow_implicit_invocation: true\n',
+        );
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'custom-skills', 'legacy-skill', 'SKILL.md'),
+          'stale historical skill\n',
+        );
+        await fs.outputFile(
+          path.join(bundleRoot, 'codex', 'custom-skills', 'legacy-skill', 'agents', 'openai.yaml'),
+          'policy:\n  allow_implicit_invocation: true\n',
+        );
+      },
+    });
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-05T00:00:00.000Z',
+          artifacts: [trackedArtifact],
+        },
+      },
+    });
+
+    codexAdapterInstallExtensions.mockImplementation(async (refreshPlugin: PluginMeta) => {
+      expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
+      await fs.outputFile(path.join(refreshedArtifactPath, 'SKILL.md'), 'refreshed runtime skill\n');
+      await fs.outputFile(
+        path.join(refreshedArtifactPath, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      );
+      return [
+        createTrackedDynamicSkillArtifact({
+          artifactPath: refreshedArtifactPath,
+          artifactKey: 'refreshed-skill',
+          id: 'refreshed-skill-artifact',
+          refreshKeys: ['explorerModel'],
+        }),
+      ];
+    });
+    codexAdapterInstallPluginFromMarketplace.mockImplementation(async (
+      _refreshPlugin: PluginMeta,
+      _scope: string,
+      options: { marketplacePath?: string },
+    ) => {
+      const marketplacePath = options.marketplacePath!;
+      const stagedRoot = path.dirname(path.dirname(path.dirname(marketplacePath)));
+      const stagedPluginRoot = path.join(stagedRoot, 'plugins', plugin.manifest.name);
+      await expect(
+        fs.readJson(path.join(stagedPluginRoot, '.codex-plugin', 'plugin.json')),
+      ).resolves.toMatchObject({
+        skills: './codex/custom-skills',
+      });
+      await expect(
+        fs.readFile(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'static-skill', 'SKILL.md'), 'utf8'),
+      ).resolves.toBe('static historical skill\n');
+      await expect(
+        fs.readFile(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'refreshed-skill', 'SKILL.md'), 'utf8'),
+      ).resolves.toBe('refreshed runtime skill\n');
+      await expect(
+        fs.pathExists(path.join(stagedPluginRoot, 'codex', 'custom-skills', 'legacy-skill')),
+      ).resolves.toBe(false);
     });
 
     const receipt = await reapplyConfigRefresh({
