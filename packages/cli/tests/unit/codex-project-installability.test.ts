@@ -527,33 +527,38 @@ describe('Codex project installability', () => {
     expect(result.nativePlugins.codex).toBeUndefined();
   });
 
-  it('allows explicit Codex project repo-managed install without a Codex native executable', async () => {
+  it('rejects explicit Codex project repo-managed install without a Codex native executable before writing state', async () => {
     const workspace = await makeWorkspace(['mcp-only']);
     delete workspace.env.AW_FORCE_CODEX_AVAILABLE;
     workspace.env.PATH = '';
+    const nativeCliRunner = createCodexMissingVersionRunner();
     const codex = new RecordingAdapter('codex', workspace.repoRoot);
     const claude = new RecordingAdapter('claude', workspace.repoRoot);
 
     await expect(
-      installCommand(
-        ['mcp-only'],
+      runWithZeroWriteSnapshot(
         {
-          cwd: workspace.repoRoot,
-          platform: 'codex',
-          scope: 'project',
-        },
-        {
+          repoRoot: workspace.repoRoot,
           env: workspace.env,
-          adapters: { codex, claude },
         },
+        () => installCommand(
+          ['mcp-only'],
+          {
+            cwd: workspace.repoRoot,
+            platform: 'codex',
+            scope: 'project',
+          },
+          {
+            env: workspace.env,
+            adapters: { codex, claude },
+            nativeCliRunner,
+          },
+        ),
       ),
-    ).resolves.toMatchObject({
-      platforms: ['codex'],
-      plugins: ['mcp-only'],
-    });
+    ).rejects.toThrow('Codex 不可用');
 
     expect(codex.nativeInstallCalls).toEqual([]);
-    expect(codex.extensionInstallCalls).toEqual(['mcp-only:project']);
+    expect(codex.extensionInstallCalls).toEqual([]);
   });
 
   it('stores project install truth in install-state and tracking files instead of installed.json snapshots', async () => {

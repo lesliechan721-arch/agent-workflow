@@ -254,6 +254,71 @@ async function writeUserInstallRecordForConfigTest(options: {
   }, { env: options.env });
 }
 
+async function writeProjectInstallRecordForConfigTest(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+}): Promise<{ projectKey: string }> {
+  const projectKey = await resolveCodexProjectKey(options.cwd);
+  const location = {
+    plugin: options.plugin.manifest.name,
+    platform: 'codex' as const,
+    scope: 'project' as const,
+    projectKey,
+  };
+  const recordPath = getInstallRecordPath(options.cwd, location, options.env);
+  const recordId = path.basename(recordPath, '.json');
+  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
+  const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
+    cwd: options.cwd,
+    location,
+    recordId,
+    manifestDigest: sourceManifestDigest,
+    bundleFingerprint: sourceBundleFingerprint,
+    nonce: `test-project-${options.plugin.manifest.name}`,
+    env: options.env,
+    manifestRelativePath: '.agents-plugin/plugin.json',
+  });
+  await fs.copy(options.plugin.rootDir, lifecyclePaths.bundleRoot);
+  const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
+  const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
+  await writeInstallRecordFileAt(recordPath, {
+    version: 2,
+    recordId,
+    record: {
+      pluginName: options.plugin.manifest.name,
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+      installedAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
+      source: {
+        pluginVersion: options.plugin.manifest.version,
+        manifestDigest,
+        bundleFingerprint,
+      },
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+      },
+      lifecycle: {
+        runtimeRoot: lifecyclePaths.runtimeRoot,
+        bundleRoot: lifecyclePaths.bundleRoot,
+        manifestPath: lifecyclePaths.manifestPath,
+        pluginVersion: options.plugin.manifest.version,
+        sourceManifestDigest: manifestDigest,
+        bundleFingerprint,
+        events: ['install'],
+        createdAt: '2026-05-18T00:00:00.000Z',
+      },
+      artifacts: [],
+      dependencyEdges: [],
+    },
+  }, { env: options.env });
+  return { projectKey };
+}
+
 async function writeAdoptableProjectIdentityForConfigTest(options: {
   cwd: string;
   repoRoot: string;
@@ -478,7 +543,7 @@ describe('plugin config write helper', () => {
     });
   });
 
-  it('replays project-scope Codex SkillTrigger runtime into .agents/skills', async () => {
+  it('keeps project-scope built-in SkillTrigger writes config-only when the project target is not installed', async () => {
     const root = await makeTempRoot('aw-config-write-project-built-in-');
     const repoRoot = path.join(root, 'repo');
     const cwd = path.join(repoRoot, 'packages', 'app');
@@ -536,13 +601,94 @@ describe('plugin config write helper', () => {
       value: 'manual',
     });
 
+    expect(receipt.targetResults).toEqual([]);
+    expect(materializeSpy).not.toHaveBeenCalled();
+    await expect(fs.pathExists(path.join(repoRoot, '.agents', 'skills'))).resolves.toBe(false);
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: {
+              trigger: 'manual',
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('replays project-scope Codex SkillTrigger runtime for an installed project target', async () => {
+    const root = await makeTempRoot('aw-config-write-project-built-in-installed-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+
+    const basePlugin = createPlugin('installed-project-skill-plugin');
+    const plugin = await materializePlugin(root, {
+      ...basePlugin,
+      manifest: {
+        ...basePlugin.manifest,
+        skills: './skills',
+        skillTriggers: {
+          commit: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        config: undefined,
+      },
+    } as PluginMeta);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    const { projectKey } = await writeProjectInstallRecordForConfigTest({ cwd, env, plugin });
+
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+    vi.spyOn(skillTriggerModule, 'commitMaterializedSkillTriggerPreference').mockResolvedValue(undefined);
+
+    const receipt = await applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    });
+
     expect(receipt.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        target: {
+        target: expect.objectContaining({
           pluginName: plugin.manifest.name,
           platform: 'codex',
           scope: 'project',
-        },
+          projectKey,
+        }),
         action: 'configApply',
         state: 'completed',
       }),
@@ -646,10 +792,27 @@ describe('plugin config write helper', () => {
     await runWithCurrentRepositoryCwdAsReadOnly(async () => {
       const repositoryCwd = process.cwd();
       const projectRoot = pluginConfigModule.resolveAwProjectRoot(repositoryCwd);
+      const projectKey = await resolveCodexProjectKey(repositoryCwd);
       registerCurrentTestWritableStateRoot(
         path.join(projectRoot, '.agent-workflows'),
         'project config store',
       );
+      vi.spyOn(localMarketplaceModule, 'readInstalledLedger').mockResolvedValue({
+        ledgerState: { status: 'available' },
+        plugins: {
+          [plugin.manifest.name]: {
+            platforms: {
+              codex: {
+                projectScopes: {
+                  [projectKey]: {
+                    managed: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as never);
 
       vi.mocked(pluginConfigModule.writePluginConfigStore).mockResolvedValue({
         pluginName: plugin.manifest.name,
@@ -676,11 +839,12 @@ describe('plugin config write helper', () => {
 
       expect(receipt.targetResults).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          target: {
+          target: expect.objectContaining({
             pluginName: plugin.manifest.name,
             platform: 'codex',
             scope: 'project',
-          },
+            projectKey,
+          }),
           action: 'configApply',
           state: 'failed',
           message: expect.stringContaining(path.join(projectRoot, '.agents', 'skills')),

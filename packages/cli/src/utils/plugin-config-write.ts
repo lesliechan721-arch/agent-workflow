@@ -204,6 +204,30 @@ function sameReceiptTarget(
     && (left.projectKey ?? null) === (right.projectKey ?? null);
 }
 
+async function hasProjectInstallRecordTarget(options: {
+  pluginName: string;
+  platform: PlatformName;
+  projectKey?: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  if (!options.projectKey) {
+    return false;
+  }
+
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    env: options.env,
+    location: {
+      plugin: options.pluginName,
+      platform: options.platform,
+      scope: 'project',
+      projectKey: options.projectKey,
+    },
+  });
+  return recordRead.status === 'ok';
+}
+
 async function resolveDefaultConfigApplyTargets(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -222,26 +246,32 @@ async function resolveDefaultConfigApplyTargets(options: {
       const scopeRecord = scope === 'user'
         ? platformRecord?.userScope
         : (projectKey ? platformRecord?.projectScopes?.[projectKey] : undefined);
-      if (!scopeRecord?.managed) {
+      if (scopeRecord?.managed) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          scope,
+          ...(scope === 'project' && projectKey ? { projectKey } : {}),
+        });
         continue;
       }
-      targets.push({
-        pluginName: options.plugin.manifest.name,
-        platform,
-        scope,
-        ...(scope === 'project' && projectKey ? { projectKey } : {}),
-      });
-    }
-  }
-
-  if (options.scope === 'project') {
-    const skillEntries = await resolveSkillTriggerConfigEntries(options.plugin);
-    if (skillEntries.some((entry) => entry.platforms.includes('codex'))) {
-      targets.push({
-        pluginName: options.plugin.manifest.name,
-        platform: 'codex',
-        scope: 'project',
-      });
+      if (
+        scope === 'project' &&
+        await hasProjectInstallRecordTarget({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          projectKey,
+          cwd: options.cwd,
+          env: options.env,
+        })
+      ) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform,
+          scope: 'project',
+          ...(projectKey ? { projectKey } : {}),
+        });
+      }
     }
   }
 
