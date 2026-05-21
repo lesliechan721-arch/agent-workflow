@@ -15,7 +15,6 @@ import {
   getCurrentSourceTestIsolation,
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
-import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
 const tempDirs: string[] = [];
 
@@ -64,6 +63,43 @@ async function addClaudeOnlyFixture(repoRoot: string): Promise<void> {
   }
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
   await fs.remove(path.join(pluginRoot, '.app.json'));
+}
+
+async function addStagedManifestBuildFixture(repoRoot: string): Promise<void> {
+  const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+  const scriptsRoot = path.join(pluginRoot, 'scripts');
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath);
+
+  manifest.description = 'Source description';
+  manifest.marketplace.policy.products = ['CLAUDE'];
+  delete manifest.apps;
+  manifest.scripts = {
+    node: {
+      build: {
+        runner: 'node',
+        path: './scripts/build.mjs',
+      },
+    },
+  };
+
+  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+  await fs.remove(path.join(pluginRoot, '.app.json'));
+  await fs.ensureDir(scriptsRoot);
+  await fs.writeFile(
+    path.join(scriptsRoot, 'build.mjs'),
+    [
+      'import { readFile, writeFile } from "node:fs/promises";',
+      '',
+      'const manifestUrl = new URL("../.agents-plugin/plugin.json", import.meta.url);',
+      'const manifest = JSON.parse(await readFile(manifestUrl, "utf8"));',
+      'manifest.description = "Built smoke description";',
+      'manifest.marketplace.policy.products = ["CODEX"];',
+      'await writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\\n`, "utf8");',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
 }
 
 describe('marketplace npm userconfig fencing', () => {
@@ -221,7 +257,7 @@ describe('marketplace bundle', () => {
 
   it('uses the staged final manifest to filter platform marketplaces', async () => {
     const repoRoot = await makeTempRepo();
-    await writeNodeScriptFixture(repoRoot);
+    await addStagedManifestBuildFixture(repoRoot);
 
     const outputRoot = path.join(repoRoot, 'out');
     await bundlePlugins({
