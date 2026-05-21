@@ -285,8 +285,8 @@ async function resolveDefaultConfigApplyTargets(options: {
         targets.push({
           pluginName: options.plugin.manifest.name,
           platform,
-          scope: 'project',
-          ...(projectKey ? { projectKey } : {}),
+          scope,
+          ...(scope === 'project' && projectKey ? { projectKey } : {}),
         });
       }
     }
@@ -946,6 +946,79 @@ function hasIntersectingKeys(left: readonly string[], right: readonly string[]):
   return left.some((value) => rightSet.has(value));
 }
 
+function isCodexDynamicRefreshEntry(
+  artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'state' | 'refreshKeys'>
+    | (DynamicArtifactDiagnosticEntry & { platform?: PlatformName }),
+): boolean {
+  return (
+    (artifact.platform === undefined || artifact.platform === 'codex') &&
+    typeof artifact.id === 'string' &&
+    (
+      artifact.target === 'codex.developerInstructionsBlock' ||
+      artifact.target === 'codex.agentRole' ||
+      artifact.target === 'codex.skill'
+    ) &&
+    (artifact.state === 'present' || artifact.state === 'disabled') &&
+    (artifact.refreshKeys?.length ?? 0) > 0
+  );
+}
+
+function dynamicRefreshEntryTouchesKeys(options: {
+  artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'state' | 'refreshKeys'>
+    | (DynamicArtifactDiagnosticEntry & { platform?: PlatformName });
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): boolean {
+  if (!isCodexDynamicRefreshEntry(options.artifact)) {
+    return false;
+  }
+  if (options.resetAllTrackedKeys === true) {
+    return true;
+  }
+  return hasIntersectingKeys(options.changedKeys, options.artifact.refreshKeys ?? []);
+}
+
+async function hasUserCodexDynamicRefreshEvidence(options: {
+  pluginName: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): Promise<boolean> {
+  const location: PluginLocation = {
+    plugin: options.pluginName,
+    platform: 'codex',
+    scope: 'user',
+  };
+  const diagnosticCacheRead = await readDynamicArtifactDiagnosticCacheForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  if (
+    diagnosticCacheRead.status === 'ok' &&
+    diagnosticCacheRead.value.artifacts.some((artifact) =>
+      dynamicRefreshEntryTouchesKeys({
+        artifact,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      }))
+  ) {
+    return true;
+  }
+
+  const trackingManifest = await readTrackingManifest(
+    resolveCodexPaths(options.cwd, 'user', options.env).trackingDir,
+  );
+  const trackingRecord = getTrackingRecord(trackingManifest, options.pluginName);
+  return (trackingRecord?.artifacts ?? []).some((artifact) =>
+    dynamicRefreshEntryTouchesKeys({
+      artifact,
+      changedKeys: options.changedKeys,
+      resetAllTrackedKeys: options.resetAllTrackedKeys,
+    }));
+}
+
 function isCleanProjectPrewriteCandidate(
   evidence: Awaited<ReturnType<typeof collectInstallEvidence>>,
 ): boolean {
@@ -983,10 +1056,21 @@ async function resolveCodexDynamicRefreshImpact(options: {
 
   for (const scope of configScopeCandidates(options.scope)) {
     const refreshKeys = collectCodexRefreshKeysForScope(options.plugin.manifest, scope);
-    const touchesScope = refreshKeys.length > 0 && (
+    let touchesScope = refreshKeys.length > 0 && (
       options.resetAllTrackedKeys === true ||
       hasIntersectingKeys(options.changedKeys, refreshKeys)
     );
+    let userFallbackEvidence = false;
+    if (!touchesScope && scope === 'user') {
+      userFallbackEvidence = await hasUserCodexDynamicRefreshEvidence({
+        pluginName: options.plugin.manifest.name,
+        cwd: options.cwd,
+        env: options.env,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      });
+      touchesScope = userFallbackEvidence;
+    }
     if (!touchesScope) {
       continue;
     }
@@ -1020,6 +1104,20 @@ async function resolveCodexDynamicRefreshImpact(options: {
     }
 
     if (scope !== 'project') {
+      const hasFallbackEvidence = userFallbackEvidence || await hasUserCodexDynamicRefreshEvidence({
+        pluginName: options.plugin.manifest.name,
+        cwd: options.cwd,
+        env: options.env,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      });
+      if (hasFallbackEvidence) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        });
+      }
       continue;
     }
 
@@ -1152,6 +1250,10 @@ async function analyzeConfigRuntimeImpact(options: {
         resetAllTrackedKeys: options.resetAllTrackedKeys,
       })
     : { targets: [] };
+  const applyTargets = dedupeReceiptTargets([
+    ...defaultApplyTargets,
+    ...dynamicRefresh.targets,
+  ]);
   const builtInApplyTargets = options.includeBuiltIn
     ? defaultApplyTargets
     : [];
@@ -1170,7 +1272,7 @@ async function analyzeConfigRuntimeImpact(options: {
   }
 
   return {
-    applyTargets: defaultApplyTargets,
+    applyTargets,
     gateTargets: [...gateTargetMap.values()],
     dynamicRefreshTargets: dynamicRefresh.targets,
     builtInApplyTargets: actionableBuiltInTargets,

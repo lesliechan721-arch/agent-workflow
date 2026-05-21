@@ -343,6 +343,60 @@ async function writeProjectInstallRecordForConfigTest(options: {
   return { projectKey };
 }
 
+async function writeUserDynamicTrackingForConfigTest(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+}): Promise<void> {
+  await writeTrackingManifest(resolveCodexPaths(options.cwd, 'user', options.env).trackingDir, {
+    version: 1,
+    plugins: {
+      [options.plugin.manifest.name]: {
+        name: options.plugin.manifest.name,
+        generatedAt: '2026-05-18T00:00:00.000Z',
+        artifacts: [{
+          path: path.join(options.env.AW_HOME!, 'runtime', options.plugin.manifest.name, 'instructions.md'),
+          kind: 'instruction',
+          platform: 'codex',
+          id: 'user-instructions',
+          target: 'codex.developerInstructionsBlock',
+          state: 'present',
+          refreshKeys: ['mode'],
+          configDigest: 'sha256:old-config',
+          contentDigest: 'sha256:old-content',
+        }],
+      },
+    },
+  });
+}
+
+async function writeUserDynamicDiagnosticCacheForConfigTest(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+}): Promise<void> {
+  const location = {
+    plugin: options.plugin.manifest.name,
+    platform: 'codex' as const,
+    scope: 'user' as const,
+  };
+  const cachePath = getDiagnosticCachePath(options.cwd, location, options.env);
+  await writeDynamicArtifactDiagnosticCacheAt(cachePath, {
+    version: 1,
+    recordId: path.basename(cachePath, '.json'),
+    location,
+    updatedAt: '2026-05-18T00:00:00.000Z',
+    artifacts: [{
+      id: 'user-instructions',
+      target: 'codex.developerInstructionsBlock',
+      state: 'present',
+      refreshKeys: ['mode'],
+      configDigest: 'sha256:old-config',
+      contentDigest: 'sha256:old-content',
+    }],
+  });
+}
+
 async function writeAdoptableProjectIdentityForConfigTest(options: {
   cwd: string;
   repoRoot: string;
@@ -1141,26 +1195,7 @@ describe('plugin config write helper', () => {
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     await fs.ensureDir(cwd);
     const plugin = await materializeSkillTriggerPluginForConfigTest(root, 'cache-backed-skill-plugin');
-    const location = {
-      plugin: plugin.manifest.name,
-      platform: 'codex' as const,
-      scope: 'user' as const,
-    };
-    const cachePath = getDiagnosticCachePath(cwd, location, env);
-    await writeDynamicArtifactDiagnosticCacheAt(cachePath, {
-      version: 1,
-      recordId: path.basename(cachePath, '.json'),
-      location,
-      updatedAt: '2026-05-18T00:00:00.000Z',
-      artifacts: [{
-        id: 'user-instructions',
-        target: 'codex.developerInstructionsBlock',
-        state: 'present',
-        refreshKeys: ['mode'],
-        configDigest: 'sha256:old-config',
-        contentDigest: 'sha256:old-content',
-      }],
-    });
+    await writeUserDynamicDiagnosticCacheForConfigTest({ cwd, env, plugin });
 
     const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
       committed: false,
@@ -1200,6 +1235,202 @@ describe('plugin config write helper', () => {
       values: {},
     });
     expect(materializeSpy).not.toHaveBeenCalled();
+  });
+
+  it('replays user built-in SkillTrigger runtime as user scope when fallback evidence is user diagnostic cache', async () => {
+    const root = await makeTempRoot('aw-config-write-built-in-user-cache-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializeSkillTriggerPluginForConfigTest(root, 'user-cache-backed-skill-plugin');
+    await writeUserDynamicDiagnosticCacheForConfigTest({ cwd, env, plugin });
+
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+      committed: false,
+      warnings: [],
+      summary: {
+        status: 'patched',
+        preference: 'manual',
+        patchedSkills: [],
+        skippedSkills: [],
+        generatedArtifacts: [],
+      },
+      rollbackHandle: {
+        committed: false,
+        backupSkillsRoot: null,
+        operations: [],
+      },
+    } as never);
+    vi.spyOn(skillTriggerModule, 'commitMaterializedSkillTriggerPreference').mockResolvedValue(undefined);
+
+    const receipt = await applyBuiltInConfigWrite({
+      pluginName: plugin.manifest.name,
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.131.0' }),
+      key: 'aw.skillTriggers.commit.trigger',
+      action: 'set',
+      value: 'manual',
+    });
+
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+    ]));
+    expect(materializeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      marketplaceRootOrStagingRoot: env.AW_HOME,
+    }));
+    expect(materializeSpy.mock.calls[0]?.[0]).not.toHaveProperty('target');
+  });
+
+  it('fails config writes before touching the store when user tracking-only dynamic refresh target fails agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-write-user-tracking-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('tracking-backed-config-plugin', {
+      withUserDynamicTarget: true,
+    }));
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'safe',
+      },
+    });
+    await writeUserDynamicTrackingForConfigTest({ cwd, env, plugin });
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        mode: 'safe',
+      },
+    });
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+  });
+
+  it('refreshes user dynamic artifacts when only tracking evidence remains and agent version is supported', async () => {
+    const root = await makeTempRoot('aw-config-write-user-tracking-refresh-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('tracking-refresh-config-plugin', {
+      withUserDynamicTarget: true,
+    }));
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'safe',
+      },
+    });
+    await writeUserDynamicTrackingForConfigTest({ cwd, env, plugin });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.131.0' }),
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    });
+
+    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
+      plugin,
+      commandScope: 'user',
+      changedKeys: ['mode'],
+    }));
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: {
+          pluginName: plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        },
+        action: 'configApply',
+        state: 'completed',
+      }),
+    ]));
+    expect(receipt.configRefreshSkippedReason).toBeUndefined();
+  });
+
+  it('fails config writes before touching the store when user diagnostic cache dynamic refresh target fails agent version gate', async () => {
+    const root = await makeTempRoot('aw-config-write-user-cache-gate-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('cache-backed-config-plugin', {
+      withUserDynamicTarget: true,
+    }));
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: {
+        mode: 'safe',
+      },
+    });
+    await writeUserDynamicDiagnosticCacheForConfigTest({ cwd, env, plugin });
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'user',
+      cwd,
+      env,
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow('Codex 版本过低');
+
+    await expect(readPluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+    })).resolves.toMatchObject({
+      values: {
+        mode: 'safe',
+      },
+    });
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
   });
 
   it('fails config reset before deleting the store when an installed refresh target fails agent version gate', async () => {
