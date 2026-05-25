@@ -1485,6 +1485,102 @@ describe('cleanup command (P9)', () => {
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-both-should-not-run.txt'))).resolves.toBe(false);
   });
 
+  it('fails cleanup --platform both before writing any platform when one target has verified dependents', async () => {
+    const builder = await makeBuilder();
+    const pluginName = 'git-commit';
+    const codexTarget = builder.createTarget({ pluginName, platform: 'codex', scope: 'user' });
+    const claudeTarget = builder.createTarget({ pluginName, platform: 'claude', scope: 'user' });
+    const dependentTarget = builder.createTarget({
+      pluginName: 'helper-local-dependent',
+      platform: 'claude',
+      scope: 'user',
+    });
+
+    await builder.writeRepoArtifact(codexTarget);
+    const codexLifecycle = await builder.writeHistoricalLifecycleRuntime(codexTarget);
+    const codexRecord = await builder.writeInstallRecord(codexTarget, codexLifecycle);
+    const codexRecordPath = path.join(
+      builder.paths.codexHome,
+      '.agent-workflows',
+      'records',
+      `${codexTarget.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(codexRecordPath);
+
+    await builder.writeRepoArtifact(claudeTarget);
+    const claudeLifecycle = await builder.writeHistoricalLifecycleRuntime(claudeTarget);
+    const claudeRecord = await builder.writeInstallRecord(claudeTarget, claudeLifecycle);
+    const claudeRecordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${claudeTarget.recordId}.json`,
+    );
+    await rewriteSanitizedInstallRecordForP2(claudeRecordPath);
+
+    const dependentRecord = await builder.writeInstallRecord(dependentTarget);
+    const dependentRecordPath = path.join(
+      builder.paths.claudeHome,
+      '.agent-workflows',
+      'records',
+      `${dependentTarget.recordId}.json`,
+    );
+    const dependentRecordWithEdge = {
+      ...dependentRecord,
+      record: {
+        ...dependentRecord.record,
+        dependencyEdges: [{
+          dependency: claudeTarget.location,
+          declaration: {
+            name: claudeTarget.location.plugin,
+          },
+        }],
+      },
+    };
+    await fs.writeJson(dependentRecordPath, dependentRecordWithEdge, { spaces: 2 });
+
+    await builder.writeDependencyIndex([
+      { target: codexTarget, record: codexRecord },
+      { target: claudeTarget, record: claudeRecord },
+      { target: dependentTarget, record: dependentRecordWithEdge },
+    ]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    await ensureRepoPlugin(builder.paths.repoRoot, pluginName, 'cleanup-both-dependent-should-not-run.txt');
+
+    const codex = new FakeAdapter();
+    const claude = new FakeAdapter();
+    await expect(
+      cleanupCommand(
+        [pluginName],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'both',
+          force: true,
+        },
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          adapters: {
+            codex,
+            claude,
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow(/verified dependents/);
+
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(claude.uninstallPluginCalls).toEqual([]);
+    await expect(fs.pathExists(codexRecordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(claudeRecordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(dependentRecordPath)).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-both-dependent-should-not-run.txt'))).resolves.toBe(false);
+  });
+
   it('blocks cleanup when verified dependents still reference the target', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });

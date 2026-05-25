@@ -7,7 +7,7 @@ import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
-import { runRepairWorkflow } from '../../src/commands/repair.js';
+import { reinstallCommand } from '../../src/commands/reinstall.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
@@ -914,7 +914,7 @@ describe('Codex project safety preflight', () => {
     });
   });
 
-  it('repairs project-scoped codex.skill from renderer output instead of copying the bundled static skill', async () => {
+  it('reinstalls project-scoped codex.skill from renderer output instead of copying the bundled static skill', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['dynamic-artifacts'],
       mutateRepo: async (repoRoot) => configureProjectDynamicSkillPlugin(repoRoot, 'dynamic-artifacts'),
@@ -947,7 +947,7 @@ describe('Codex project safety preflight', () => {
       'utf8',
     );
 
-    await runRepairWorkflow(
+    await reinstallCommand(
       ['dynamic-artifacts'],
       {
         cwd: workspace.repoRoot,
@@ -956,6 +956,12 @@ describe('Codex project safety preflight', () => {
       },
       {
         env: workspace.env,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.command === 'codex' && invocation.args.length === 1 && invocation.args[0] === '--version') {
+            return { exitCode: 0, stdout: 'codex-cli 0.131.0', stderr: '' };
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
       },
     );
 

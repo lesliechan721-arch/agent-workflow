@@ -215,7 +215,7 @@ import {
 import {
   runInstallAdoptExistingMigration,
   type InstallAdoptExistingMigrationResult,
-} from './repair.js';
+} from './install-adopt-existing.js';
 
 type InstallCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (

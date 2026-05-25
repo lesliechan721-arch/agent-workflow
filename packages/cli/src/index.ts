@@ -1106,7 +1106,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
     .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
-    .option('--dependency-index', 'prune or repair stale dependency index entries', false)
+    .option('--dependency-index', 'prune stale dependency index entries', false)
     .option('--prune-stale <token>', 'retire a single stale dependency index reference')
     .option('-y, --yes', 'confirm dependency-index prune actions', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')

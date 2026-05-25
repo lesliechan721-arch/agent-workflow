@@ -12,7 +12,7 @@ import { installCommand } from '../../src/commands/install.js';
 import { cleanupCommand } from '../../src/commands/cleanup.js';
 import { diagnoseCommand } from '../../src/commands/diagnose.js';
 import type { CommandExecutionContextInput } from '../../src/commands/runtime.js';
-import { runRepairWorkflow } from '../../src/commands/repair.js';
+import { reinstallCommand } from '../../src/commands/reinstall.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -2092,7 +2092,7 @@ describe('codex-explore integration acceptance', () => {
     });
   }, 15_000);
 
-  it('repair re-renders codex.skill from current config and current built-in trigger resolution, and prunes stale native cache runtime files', async () => {
+  it('reinstall re-renders codex.skill from current config and current built-in trigger resolution, and prunes stale native cache runtime files', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2133,74 +2133,15 @@ describe('codex-explore integration acceptance', () => {
     });
     await fs.writeFile(userDynamicSkillPath(awHome), '# stale runtime\n', 'utf8');
 
-    const statusBeforeRepair = await statusCommand(
+    await reinstallCommand(
       ['codex-explore'],
       {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        json: true,
       },
-      {
-        env: process.env,
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     );
-    const repairLocation = findStatusLocation(parseStatusPayload(statusBeforeRepair.output), {
-      plugin: 'codex-explore',
-      platform: 'codex',
-      scope: 'user',
-    });
-    await alignUserRecordSourceToWorkspacePlugin(repoRoot, repairLocation.record!.path!);
-
-    const currentPlugin: PluginMeta = {
-      rootDir: path.join(repoRoot, 'plugins', 'codex-explore'),
-      manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
-      manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
-    };
-
-    const result = await runRepairWorkflow(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        json: true,
-      },
-      {
-        ...createCodexExploreRuntime(repoRoot, process.env),
-        p7Targets: [{
-          pluginName: 'codex-explore',
-          platform: 'codex',
-          scope: 'user',
-          executionCwd: repoRoot,
-          currentPlugin,
-        }],
-        p8CurrentPluginsByName: {
-          'codex-explore': currentPlugin,
-        },
-      },
-    );
-
-    const payload = JSON.parse(result.output) as {
-      locations: Array<{
-        triggerPreferenceApplied?: string | null;
-        dynamicArtifacts?: Array<{
-          id: string;
-          target: string;
-          artifactKey?: string;
-          configDigest?: string;
-          contentDigest?: string;
-        }>;
-      }>;
-    };
-    const repairedSkill = payload.locations[0]?.dynamicArtifacts?.find((artifact) => artifact.id === 'codex-explore-skill');
-    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
-    expect(repairedSkill).toMatchObject({
-      target: 'codex.skill',
-      artifactKey: 'codex-explore',
-      configDigest: expect.stringMatching(/^sha256:/),
-      contentDigest: expect.stringMatching(/^sha256:/),
-    });
 
     const [runtimeSkill, runtimeAllowsImplicitInvocation, statusResult] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
@@ -2231,12 +2172,12 @@ describe('codex-explore integration acceptance', () => {
     await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
     expect(runtimeAllowsImplicitInvocation).toBe(true);
     expect(statusSkill).toMatchObject({
-      configDigest: repairedSkill?.configDigest,
-      contentDigest: repairedSkill?.contentDigest,
+      configDigest: expect.stringMatching(/^sha256:/),
+      contentDigest: expect.stringMatching(/^sha256:/),
     });
   });
 
-  it('repair preserves explicit auto trigger preference for Codex user dynamic skill', async () => {
+  it('reinstall applies built-in auto trigger policy for Codex user dynamic skill', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2257,7 +2198,17 @@ describe('codex-explore integration acceptance', () => {
 
     await fs.writeFile(userDynamicSkillPath(awHome), '# stale runtime\n', 'utf8');
 
-    const statusBeforeRepair = await statusCommand(
+    await reinstallCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const statusAfterReinstall = await statusCommand(
       ['codex-explore'],
       {
         cwd: repoRoot,
@@ -2269,72 +2220,19 @@ describe('codex-explore integration acceptance', () => {
         env: process.env,
       },
     );
-    const repairLocation = findStatusLocation(parseStatusPayload(statusBeforeRepair.output), {
-      plugin: 'codex-explore',
-      platform: 'codex',
-      scope: 'user',
-    });
-    await alignUserRecordSourceToWorkspacePlugin(repoRoot, repairLocation.record!.path!);
-
-    const currentPlugin: PluginMeta = {
-      rootDir: path.join(repoRoot, 'plugins', 'codex-explore'),
-      manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
-      manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
-    };
-    const result = await runRepairWorkflow(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        json: true,
-      },
-      {
-        ...createCodexExploreRuntime(repoRoot, process.env),
-        p7Targets: [{
-          pluginName: 'codex-explore',
-          platform: 'codex',
-          scope: 'user',
-          executionCwd: repoRoot,
-          currentPlugin,
-        }],
-        p8CurrentPluginsByName: {
-          'codex-explore': currentPlugin,
-        },
-      },
-    );
-    const payload = JSON.parse(result.output) as {
-      locations: Array<{
-        triggerPreferenceApplied?: string | null;
-      }>;
-    };
-
-    const statusAfterRepair = await statusCommand(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        json: true,
-      },
-      {
-        env: process.env,
-      },
-    );
-    const location = findStatusLocation(parseStatusPayload(statusAfterRepair.output), {
+    const location = findStatusLocation(parseStatusPayload(statusAfterReinstall.output), {
       plugin: 'codex-explore',
       platform: 'codex',
       scope: 'user',
     });
     const recordOptions = await readInstallRecordOptionsFromLocation(location);
 
-    expect(payload.locations[0]?.triggerPreferenceApplied).toBe('auto');
-    expect(recordOptions.skillTriggerPreference).toBe('auto');
+    expect(recordOptions.skillTriggerPreference).toBe('default');
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
     await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
   });
 
-  it('project repair fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
+  it('project reinstall fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2363,56 +2261,17 @@ describe('codex-explore integration acceptance', () => {
     expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
 
-    const statusBeforeRepair = await statusCommand(
+    await expect(reinstallCommand(
       ['codex-explore'],
       {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        json: true,
       },
-      {
-        env: process.env,
-      },
-    );
-    const repairLocation = findStatusLocation(parseStatusPayload(statusBeforeRepair.output), {
-      plugin: 'codex-explore',
-      platform: 'codex',
-      scope: 'project',
-    });
-    await alignUserRecordSourceToWorkspacePlugin(repoRoot, repairLocation.record!.path!);
-
-    const currentPlugin: PluginMeta = {
-      rootDir: path.join(repoRoot, 'plugins', 'codex-explore'),
-      manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
-      manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
-    };
-    const projectKey = await resolveCodexProjectKey(repoRoot);
-    await expect(runRepairWorkflow(
-      ['codex-explore'],
-      {
-        cwd: repoRoot,
-        scope: 'project',
-        platform: 'codex',
-        json: true,
-      },
-      {
-        env: process.env,
-        p7Targets: [{
-          pluginName: 'codex-explore',
-          platform: 'codex',
-          scope: 'project',
-          projectKey,
-          executionCwd: repoRoot,
-          currentPlugin,
-        }],
-        p8CurrentPluginsByName: {
-          'codex-explore': currentPlugin,
-        },
-      },
+      createCodexExploreRuntime(repoRoot, process.env),
     )).rejects.toThrow(/duplicateInstall/);
 
-    const statusAfterRepair = await statusCommand(
+    const statusAfterReinstall = await statusCommand(
       ['codex-explore'],
       {
         cwd: repoRoot,
@@ -2424,7 +2283,7 @@ describe('codex-explore integration acceptance', () => {
         env: process.env,
       },
     );
-    const location = findStatusLocation(parseStatusPayload(statusAfterRepair.output), {
+    const location = findStatusLocation(parseStatusPayload(statusAfterReinstall.output), {
       plugin: 'codex-explore',
       platform: 'codex',
       scope: 'project',

@@ -855,6 +855,21 @@ describe('cli entry', () => {
     expect(readStderr()).toBe('');
   });
 
+  it('does not use repair wording in cleanup help output', async () => {
+    const { io, readStdout, readStderr } = createCapturedIo();
+    const { runCli } = await import('../../src/index.js');
+
+    const exitCode = await runCli(
+      ['cleanup', '--help'],
+      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(readStdout()).toContain('--dependency-index');
+    expect(readStdout()).not.toContain('repair');
+    expect(readStderr()).toBe('');
+  });
+
   it.each([
     ['install'],
     ['upgrade'],

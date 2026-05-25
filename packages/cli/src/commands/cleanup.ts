@@ -1000,6 +1000,11 @@ export async function cleanupCommand(
       throw new Error('cleanup --platform both 没有找到可由 AW 安全处理的受管 target；它不会包含纯未安装格子。');
     }
 
+    const blockedEvaluation = evaluations.find((entry) => !entry.evaluation.execute);
+    if (blockedEvaluation) {
+      throw renderBlockingError(blockedEvaluation.payload);
+    }
+
     await assertAgentVersionsForWriteTargets({
       command: 'cleanup',
       platforms: evaluations.map((entry) => entry.location.platform),

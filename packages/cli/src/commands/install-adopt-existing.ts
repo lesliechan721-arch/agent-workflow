@@ -74,7 +74,6 @@ import type {
 import type {
   CommandOptions,
   PluginLocation as CommandPluginLocation,
-  ReceiptOverallState,
   ReceiptTargetResult,
   GeneratedArtifact,
   PlatformName,
@@ -89,7 +88,7 @@ import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScri
 import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
 import { resolveAwHome, resolveEmbeddedPluginsRoot } from '../utils/paths.js';
 
-export interface RawRepairCommandOptions extends RawCommandOptions {
+interface RawRepairCommandOptions extends RawCommandOptions {
   adoptExisting?: boolean;
   dependencyIndex?: boolean;
   json?: boolean;
@@ -98,7 +97,7 @@ export interface RawRepairCommandOptions extends RawCommandOptions {
   takeoverSharedRuntime?: boolean;
 }
 
-export interface RepairCommandOptions extends CommandOptions {
+interface RepairCommandOptions extends CommandOptions {
   adoptExisting: boolean;
   dependencyIndex: boolean;
   json?: boolean;
@@ -106,7 +105,7 @@ export interface RepairCommandOptions extends CommandOptions {
   takeoverSharedRuntime?: boolean;
 }
 
-export interface RepairDependencyIndexCoverage {
+interface RepairDependencyIndexCoverage {
   coverageTrusted: boolean;
   reasons: string[];
   verifiedLocations: PluginLocation[];
@@ -114,7 +113,7 @@ export interface RepairDependencyIndexCoverage {
   recoverySuggestion: string | null;
 }
 
-export interface RepairLocationPayload {
+interface RepairLocationPayload {
   plugin: string;
   platform: PlatformName;
   scope: Scope;
@@ -171,7 +170,7 @@ export interface RepairLocationPayload {
   warnings: InstallStateReceiptWarning[];
 }
 
-export interface RepairDependencyIndexPayload {
+interface RepairDependencyIndexPayload {
   action: 'dependencyIndexRepair';
   changed: {
     dependencyIndex: true;
@@ -197,23 +196,6 @@ export interface RepairDependencyIndexPayload {
   dependencyIndexVerifiedLocations: PluginLocation[];
   dependencyIndexRevisitLocations: PluginLocation[];
   dependencyIndexRecoveryMessage: string | null;
-}
-
-export interface RepairJsonPayload {
-  ok: true;
-  command: 'repair';
-  receiptSchemaVersion: 2;
-  overallState: ReceiptOverallState;
-  generatedAt: string;
-  dependencyIndexMode: boolean;
-  targetResults: ReceiptTargetResult[];
-  locations: RepairLocationPayload[];
-  dependencyIndex?: RepairDependencyIndexPayload;
-}
-
-export interface RepairWorkflowResult {
-  output: string;
-  payload: RepairJsonPayload;
 }
 
 export interface InstallAdoptExistingMigrationOptions extends Pick<
@@ -1390,7 +1372,7 @@ async function maybeCreateSharedRuntimeOwnerStage(options: {
       options.env,
     ),
     preference: options.preference,
-    command: 'repair',
+    command: 'install',
     targetCount: 1,
     env: options.env,
   });
@@ -1423,7 +1405,7 @@ async function preflightRepairSharedRuntimeOwner(options: {
       options.env,
     ),
     preference: options.preference,
-    command: 'repair',
+    command: 'install',
     targetCount: 1,
     env: options.env,
   });
@@ -2035,122 +2017,46 @@ async function adoptExistingLocation(options: {
   };
 }
 
-function renderHumanOutput(payload: RepairJsonPayload): string {
-  if (payload.dependencyIndexMode && payload.dependencyIndex) {
-    const coverage = payload.dependencyIndex.coverage;
-    const lines = ['修复完成'];
-    lines.push(`- 依赖关系索引：已重建 ${payload.dependencyIndex.rebuiltEntries.length} 条可验证记录`);
-    if (payload.dependencyIndex.rebuiltEntries.length > 0) {
-      lines.push(`- 已重建位置：${payload.dependencyIndex.rebuiltEntries
-        .map((entry) => `${entry.plugin}(${entry.platform}/${entry.scope})`)
-        .join('，')}`);
-    }
-    if (payload.dependencyIndex.preservedEntries.length > 0) {
-      lines.push(`- 仍保留 ${payload.dependencyIndex.preservedEntries.length} 条需要你显式处理的项目引用`);
-    }
-    if (!coverage.coverageTrusted) {
-      lines.push(`- 覆盖范围仍不完整：${coverage.reasons.join('、') || 'unknown'}`);
-      if (coverage.revisitProjectLocations.length > 0) {
-        lines.push(`- 需要回访的位置：${coverage.revisitProjectLocations.map((location) => `${location.plugin}:${location.projectKey ?? '.'}`).join('，')}`);
-      } else if (coverage.recoverySuggestion === 'revisitRelatedProjects') {
-        lines.push('- 还需要回到可能相关的仓库重新运行 status --verbose 或 repair。');
-      }
-    }
-    return lines.join('\n');
-  }
+function normalizeInstallAdoptExistingMigrationOptions(
+  raw: InstallAdoptExistingMigrationOptions = {},
+): RepairCommandOptions {
+  const base = normalizeCommandOptions(raw, {
+    defaultScope: 'user',
+    requirePlatform: true,
+    missingPlatformMessage: 'install --adopt-existing 需要显式指定 `--platform codex|claude|both`。',
+  });
+  const requestedSkillTrigger = raw.requestedSkillTrigger ?? raw.skillTrigger;
+  return {
+    ...base,
+    adoptExisting: true,
+    dependencyIndex: false,
+    json: false,
+    ...(requestedSkillTrigger === undefined
+      ? {}
+      : { requestedSkillTrigger: parseSkillTriggerPreference(requestedSkillTrigger) }),
+  };
+}
 
-  const lines = ['修复结果'];
-  for (const location of payload.locations) {
-    lines.push(`- ${location.plugin}`);
-    lines.push(`  位置：${renderLocationLabel(location)}`);
-    if (location.action === 'recordMarkerClosure') {
-      lines.push('  处理：已收口上次未完成的原生安装状态。');
-    } else if (location.action === 'markerOnlyRepair') {
-      lines.push('  处理：已按当前目录重新补齐安装状态。');
-    } else if (location.action === 'adoptExisting') {
-      lines.push('  处理：已认领并重写当前仓库里的共享产物。');
-    } else {
-      lines.push('  处理：已按当前目录重新应用受管内容。');
-    }
-    const changes: string[] = [];
-    if (location.changed.artifactsReapplied) {
-      changes.push('当前仓库文件');
-    }
-    if (location.changed.record) {
-      changes.push('安装记录');
-    }
-    if (location.changed.dynamicDiagnosticCache) {
-      changes.push('诊断缓存');
-    }
-    if (location.changed.projectIdentity) {
-      changes.push('共享身份文件');
-    }
-    if (location.changed.historicalLifecycleRuntime) {
-      changes.push('历史 lifecycle 运行面');
-    }
-    if (location.changed.dependencyIndex) {
-      changes.push('依赖关系索引');
-    }
-    if (location.changed.nativeMarkerDeleted) {
-      changes.push('原生事务标记');
-    }
-    lines.push(`  更新：${changes.length > 0 ? changes.join('、') : '没有额外状态变更'}`);
-    if (location.adoptExistingLifecycleReason) {
-      lines.push('  说明：这是当前机器第一次为这个 project location 建立本机记录，所以补跑了 install lifecycle。');
-    }
-    if (location.adoptExistingLifecycleSkippedReason) {
-      lines.push('  说明：当前插件没有声明 install lifecycle，因此这一步没有执行。');
-    }
-    if (location.nativeTransactionMarker.needsAttention) {
-      lines.push(`  下一步：${location.nativeTransactionMarker.cleanupCommand}`);
-    }
-    if (!location.dependencyIndexTrusted && location.dependencyIndexRecoveryMessage) {
-      lines.push(`  提醒：${location.dependencyIndexRecoveryMessage}`);
-    }
-    if (location.warnings.length > 0) {
-      lines.push(`  警告：${location.warnings.map((warning) => warning.message).join('；')}`);
-    }
+function renderInstallAdoptExistingMigrationOutput(locations: RepairLocationPayload[]): string {
+  const lines = ['认领完成'];
+  for (const location of locations) {
+    lines.push(`- ${location.plugin} ${renderLocationLabel(location)}：已认领现有 project artifacts`);
   }
   return lines.join('\n');
 }
 
-export async function runRepairWorkflow(
+export async function runInstallAdoptExistingMigration(
   pluginNames: string[],
-  rawOptions: RawRepairCommandOptions = {},
+  rawOptions: InstallAdoptExistingMigrationOptions = {},
   runtime: CommandExecutionContextInput = {},
-): Promise<RepairWorkflowResult> {
-  const options = normalizeRepairCommandOptions(rawOptions);
+): Promise<InstallAdoptExistingMigrationResult> {
+  const options = normalizeInstallAdoptExistingMigrationOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const overrides = runtime as RepairRuntimeOverrides;
 
-  if (options.dependencyIndex) {
-    if (options.adoptExisting) {
-      throw new Error('--dependency-index 不能与 --adopt-existing 一起使用。');
-    }
-    const dependencyIndex = await runDependencyIndexRepair({
-      cwd: options.cwd,
-      env,
-    });
-    const payload: RepairJsonPayload = {
-      ok: true,
-      command: 'repair',
-      receiptSchemaVersion: 2,
-      overallState: 'succeeded',
-      generatedAt: new Date().toISOString(),
-      dependencyIndexMode: true,
-      targetResults: [],
-      locations: [],
-      dependencyIndex,
-    };
-    return {
-      output: options.json ? JSON.stringify(payload, null, 2) : renderHumanOutput(payload),
-      payload,
-    };
-  }
-
   if (pluginNames.length === 0) {
-    throw new Error('repair 命令至少需要一个插件名，或显式传入 --dependency-index。');
+    throw new Error('install --adopt-existing 至少需要一个插件名。');
   }
 
   const collected = await collectP7Locations(pluginNames, {
@@ -2159,26 +2065,20 @@ export async function runRepairWorkflow(
     platform: options.platform,
   }, runtime);
   if (collected.locations.length === 0) {
-    throw new Error('没有找到可修复的插件位置。');
+    throw new Error('没有找到可认领的 project artifacts。');
   }
 
-  const writableStates = options.adoptExisting
-    ? collected.locations.filter((state) =>
-      state.location.scope === 'project' && hasClaimableProjectArtifacts(state)
-    )
-    : collected.locations.filter((state) =>
-      state.evidence.installRecord.present ||
-      state.evidence.nativeTransaction.classification === 'markerOnlyInstall'
-    );
-  const repairStates = options.platform === 'both'
-    ? writableStates
-    : collected.locations;
-  if (repairStates.length === 0) {
-    throw new Error('没有找到可修复的插件位置。');
+  const adoptableStates = collected.locations.filter((state) =>
+    state.location.scope === 'project' && hasClaimableProjectArtifacts(state)
+  );
+  const targetStates = options.platform === 'both' ? adoptableStates : collected.locations;
+  if (targetStates.length === 0) {
+    throw new Error('没有找到可认领的 project artifacts。');
   }
+
   await assertNoDuplicateInstalls({
     cwd: options.cwd,
-    locations: repairStates
+    locations: targetStates
       .filter((state) =>
         shouldEnforceDuplicateInstallPreflight({
           location: toCommandPluginLocation(state.location),
@@ -2188,83 +2088,25 @@ export async function runRepairWorkflow(
     env,
   });
   await assertAgentVersionsForWriteTargets({
-    command: 'repair',
-    platforms: [...new Set(repairStates.map((state) => state.location.platform))],
+    command: 'install',
+    platforms: [...new Set(targetStates.map((state) => state.location.platform))],
     cwd: options.cwd,
     env,
     nativeCliRunner: context.nativeCliRunner,
   });
 
   const locations: RepairLocationPayload[] = [];
-  for (const state of repairStates) {
-    if (options.adoptExisting) {
-      locations.push(await adoptExistingLocation({
-        state,
-        repairOptions: options,
-        runtime: overrides,
-        env,
-      }));
-      continue;
-    }
-
-    if (state.evidence.installRecord.present) {
-      locations.push(await repairInstalledLocation({
-        state,
-        repairOptions: options,
-        runtime: overrides,
-        env,
-      }));
-      continue;
-    }
-
-    if (state.evidence.nativeTransaction.classification === 'markerOnlyInstall') {
-      locations.push(await repairMarkerOnlyLocation({
-        state,
-        repairOptions: options,
-        runtime: overrides,
-        env,
-      }));
-      continue;
-    }
-
-    if (state.location.scope === 'project' && hasClaimableProjectArtifacts(state)) {
-      throw new Error(
-        `${state.location.plugin} 在 ${renderLocationLabel(state.location)} 处于可认领状态；普通 repair 不会自动接管。请改用 aw install ${state.location.plugin} --platform ${state.location.platform} --scope ${state.location.scope} --adopt-existing。`,
-      );
-    }
-
-    throw new Error(
-      `${state.location.plugin} 当前没有可信 install record，也不是 marker-only repair 场景。请先运行 aw cleanup 或重新安装。`,
-    );
+  for (const state of targetStates) {
+    locations.push(await adoptExistingLocation({
+      state,
+      repairOptions: options,
+      runtime: overrides,
+      env,
+    }));
   }
 
-  const payload: RepairJsonPayload = {
-    ok: true,
-    command: 'repair',
-    receiptSchemaVersion: 2,
-    overallState: 'succeeded',
-    generatedAt: new Date().toISOString(),
-    dependencyIndexMode: false,
-    targetResults: buildRepairTargetResults(locations),
+  return {
+    output: renderInstallAdoptExistingMigrationOutput(locations),
     locations,
-  };
-  return {
-    output: options.json ? JSON.stringify(payload, null, 2) : renderHumanOutput(payload),
-    payload,
-  };
-}
-
-export async function runInstallAdoptExistingMigration(
-  pluginNames: string[],
-  rawOptions: InstallAdoptExistingMigrationOptions = {},
-  runtime: CommandExecutionContextInput = {},
-): Promise<InstallAdoptExistingMigrationResult> {
-  const result = await runRepairWorkflow(pluginNames, {
-    ...rawOptions,
-    adoptExisting: true,
-  }, runtime);
-  return {
-    output: result.output,
-    locations: result.payload.locations,
   };
 }
