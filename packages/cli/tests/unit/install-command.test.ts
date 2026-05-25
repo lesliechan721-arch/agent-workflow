@@ -1378,7 +1378,7 @@ describe('install command P6 install-state semantics', () => {
             coverageReason: ['indexMissing'],
             verifiedLocations: [],
             revisitLocations: [],
-            recoveryMessage: '请回到可能相关的仓库重新运行 diagnose 或 repair。',
+            recoveryMessage: '请回到可能相关的仓库重新运行 status --verbose。',
           },
           staleProjectReferences: [{
             location: {
@@ -1430,7 +1430,7 @@ describe('install command P6 install-state semantics', () => {
       dependencyIndex: {
         trusted: false,
         coverageReason: ['indexMissing'],
-        recoveryMessage: '请回到可能相关的仓库重新运行 diagnose 或 repair。',
+        recoveryMessage: '请回到可能相关的仓库重新运行 status --verbose。',
       },
       staleProjectReferences: [{
         recordPath: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json',
@@ -1442,6 +1442,7 @@ describe('install command P6 install-state semantics', () => {
     });
     expect(receipt).not.toHaveProperty('legacyNextSteps');
     expect(receipt.nativeTransactionMarker).not.toHaveProperty('recoveryCommand');
+    expect(JSON.stringify(receipt)).not.toContain('repair');
 
     const human = renderCommandReceipt('install', rawReceipt).join('\n');
     expect(human).toContain('主要安装已经完成，但还需要收口本机原生状态');
@@ -1453,6 +1454,7 @@ describe('install command P6 install-state semantics', () => {
     expect(human).not.toContain('takeoverRequired');
     expect(human).not.toContain('ownerConflict');
     expect(human).not.toContain('aw repair');
+    expect(human).not.toContain('repair');
     expect(human).not.toContain('--takeover-shared-runtime');
   });
 

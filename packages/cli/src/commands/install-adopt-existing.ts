@@ -358,11 +358,11 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
     dependencyIndexRecoveryMessage: state.projection.dependencyIndexCoverageTrusted
       ? null
       : state.projection.dependencyIndexRevisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose：${state.projection.dependencyIndexRevisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`,
     triggerPreferenceApplied: state.evidence.installRecord.read.status === 'ok'
       ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
@@ -1116,11 +1116,11 @@ async function runDependencyIndexRepair(options: {
     dependencyIndexRecoveryMessage: repaired.coverage.coverageTrusted
       ? null
       : repaired.coverage.revisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 status --verbose 或 repair：${repaired.coverage.revisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose：${repaired.coverage.revisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : repaired.coverage.recoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose。'
           : `依赖索引覆盖仍不完整：${repaired.coverage.reasons.join('、') || 'unknown'}。`,
   };
 }

@@ -665,10 +665,10 @@ function buildDependencyIndexRecoveryMessage(
     const revisit = projection.dependencyIndexRevisitProjectLocations
       .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
       .join('，');
-    return `请回到这些位置重新运行 status --verbose 或 repair：${revisit}。`;
+    return `请回到这些位置重新运行 status --verbose：${revisit}。`;
   }
   if (projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects') {
-    return '请回到可能相关的仓库重新运行 status --verbose 或 repair。';
+    return '请回到可能相关的仓库重新运行 status --verbose。';
   }
   return `依赖索引覆盖仍不完整：${projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`;
 }
@@ -1353,10 +1353,10 @@ function createDependencyCoverageFinding(projection: ProjectInstallStateProjecti
     const revisit = projection.dependencyIndexRevisitProjectLocations
       .map((location) => `${location.plugin}@${location.projectKey ?? scopeLabel(location.scope)}`)
       .join('、');
-    return `依赖索引当前不可信（${reasons}）；请回到这些项目重新运行 status --verbose 或 repair：${revisit}。`;
+    return `依赖索引当前不可信（${reasons}）；请回到这些项目重新运行 status --verbose：${revisit}。`;
   }
   if (projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects') {
-    return '依赖索引当前不可信，且还没有足够的已知项目位置可回访；请回到可能相关的仓库重新运行 status --verbose 或 repair。';
+    return '依赖索引当前不可信，且还没有足够的已知项目位置可回访；请回到可能相关的仓库重新运行 status --verbose。';
   }
   return `依赖索引当前不可信（${reasons}）。`;
 }
@@ -1470,7 +1470,7 @@ function createFindings(options: {
     findings.push(
       `检测到当前 manifest 已移除的历史 dynamic tracking：${legacyDynamicTracking
         .map((entry) => `${entry.id}(${entry.target})`)
-        .join('、')}。本轮不会在 status --verbose / repair / cleanup 中隐式迁移这些旧入口。`,
+        .join('、')}。本轮不会在 status --verbose / cleanup 中隐式迁移这些旧入口。`,
     );
   }
   if (deepDiagnose.attempted && deepDiagnose.rendered) {

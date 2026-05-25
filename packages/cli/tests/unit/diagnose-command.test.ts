@@ -580,7 +580,8 @@ describe('diagnose P7', () => {
     };
     expect(rendererRunner.run).not.toHaveBeenCalled();
     expect(payload.locations[0]?.summary).toContain('历史 dynamic tracking');
-    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status --verbose / repair / cleanup 中隐式迁移');
+    expect(payload.locations[0]?.findings.join('\n')).toContain('不会在 status --verbose / cleanup 中隐式迁移');
+    expect(payload.locations[0]?.findings.join('\n')).not.toContain('repair');
     expect(payload.locations[0]?.legacyDynamicTracking).toEqual([
       expect.objectContaining({
         id: 'lightweight-instruction',
@@ -911,7 +912,8 @@ describe('diagnose P7', () => {
     );
 
     expect(result.output).toContain('依赖索引当前不可信');
-    expect(result.output).toContain('回到可能相关的仓库重新运行 status --verbose 或 repair');
+    expect(result.output).toContain('回到可能相关的仓库重新运行 status --verbose');
+    expect(result.output).not.toContain('repair');
     expect(result.output).not.toContain('这个目标是自动装上的依赖');
   });
 

@@ -878,8 +878,10 @@ describe('status P7', () => {
           coverageTrusted: boolean;
           reasons: string[];
           recoverySuggestion: string | null;
+          dependencyIndexRecoveryMessage: string | null;
           verifiedLocations: Array<{ plugin: string }>;
         };
+        findings: string[];
         unusedDependencyHint: boolean;
       }>;
     };
@@ -891,6 +893,11 @@ describe('status P7', () => {
       unusedDependencyHint: false,
     });
     expect(payload.locations[0].dependencyIndex.reasons).toContain('indexMissing');
+    expect(payload.locations[0].dependencyIndex.dependencyIndexRecoveryMessage).toBe(
+      '请回到可能相关的仓库重新运行 status --verbose。',
+    );
+    expect(payload.locations[0].findings.join('\n')).toContain('回到可能相关的仓库重新运行 status --verbose');
+    expect(JSON.stringify(payload.locations[0])).not.toContain('repair');
     expect(payload.locations[0].dependencyIndex.verifiedLocations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ plugin: 'coverage-gap' }),
@@ -912,7 +919,8 @@ describe('status P7', () => {
       } as never,
     );
     expect(verboseResult.output).toContain('依赖索引当前不可信');
-    expect(verboseResult.output).toContain('请回到可能相关的仓库重新运行 status --verbose 或 repair');
+    expect(verboseResult.output).toContain('请回到可能相关的仓库重新运行 status --verbose');
+    expect(verboseResult.output).not.toContain('repair');
     expect(verboseResult.output).not.toContain('"unusedDependencyHint": false');
   });
 });
