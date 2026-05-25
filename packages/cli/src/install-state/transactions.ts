@@ -608,10 +608,18 @@ export async function createDynamicArtifactDiagnosticCacheWriteStage(options: {
     next: options.value,
     current: currentCache,
   });
+  const validated = validateDynamicArtifactDiagnosticCache(value, {
+    expectedRecordId: options.currentRecord?.recordId,
+    expectedLocation: options.location,
+    currentRecord: options.currentRecord,
+  });
+  if (!validated.ok) {
+    throw new Error(validated.error);
+  }
   return createAtomicJsonWriteStage({
     label: 'dynamic diagnostic cache',
     filePath,
-    value,
+    value: validated.value,
     validate: (cacheValue, cachePath) => validateDiagnosticCacheOrThrow(cacheValue, cachePath, options.currentRecord),
     rollbackWarningCode: 'diagnosticCacheRollbackFailed',
     finalizeWarningCode: 'diagnosticCacheFinalizeFailed',

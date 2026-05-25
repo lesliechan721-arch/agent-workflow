@@ -568,7 +568,7 @@ function toDynamicDiagnosticEntry(
     return null;
   }
   const state = artifact.state ?? 'present';
-  const mappedRefreshEvent: 'install' | 'upgrade' | 'config' | 'repair' | undefined =
+  const mappedRefreshEvent: 'install' | 'upgrade' | 'config' | undefined =
     artifact.lastRefresh?.event === 'refresh'
       ? 'config'
       : artifact.lastRefresh?.event;

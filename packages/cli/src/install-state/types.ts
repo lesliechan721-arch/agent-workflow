@@ -131,7 +131,7 @@ export interface DynamicArtifactDiagnosticEntry {
   lastRefresh?: {
     status: 'success' | 'failed';
     at: string;
-    event: 'install' | 'upgrade' | 'repair' | 'config';
+    event: 'install' | 'upgrade' | 'config';
     error?: string;
   };
   refreshReach?: {

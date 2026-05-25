@@ -13,6 +13,7 @@ import {
 import {
   createDependencyIndexRefreshPostCommitAction,
   createDiagnosticCacheDeletePostCommitAction,
+  createDynamicArtifactDiagnosticCacheWriteStage,
   createInstallRecordDeleteStage,
   createInstallRecordWriteStage,
   createNativeTransactionMarkerDeletePostCommitAction,
@@ -391,6 +392,43 @@ describe('install-state transactions', () => {
         event: 'config',
       },
     });
+  });
+
+  it('normalizes legacy repair refresh events when staging diagnostic cache writes', async () => {
+    const root = await makeTempDir('aw-install-state-cache-write-');
+    const record = makeRecord();
+    const cachePath = path.join(root, 'diagnostics', `${record.recordId}.json`);
+    const current = makeDiagnosticCache(record);
+    const legacyCache = {
+      ...current,
+      artifacts: [{
+        ...current.artifacts[0]!,
+        lastRefresh: {
+          status: 'failed',
+          at: '2026-05-07T00:00:03.000Z',
+          event: 'repair',
+          error: 'legacy refresh failed',
+        },
+      }],
+    } as unknown as DynamicArtifactDiagnosticCache;
+
+    await runInstallStateTransaction({
+      stages: [
+        await createDynamicArtifactDiagnosticCacheWriteStage({
+          filePath: cachePath,
+          value: legacyCache,
+          currentRecord: record,
+        }),
+      ],
+    });
+
+    const written = await fs.readJson(cachePath) as DynamicArtifactDiagnosticCache;
+    expect(written.artifacts[0]?.lastRefresh).toMatchObject({
+      status: 'failed',
+      event: 'config',
+      error: 'legacy refresh failed',
+    });
+    expect(JSON.stringify(written)).not.toContain('"repair"');
   });
 
   it('does not roll back an already written record when dependency index refresh fails', async () => {

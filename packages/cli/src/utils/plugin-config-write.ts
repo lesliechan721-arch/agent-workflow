@@ -753,7 +753,7 @@ function toDynamicDiagnosticEntry(
     return null;
   }
   const state = artifact.state ?? 'present';
-  const event: 'install' | 'upgrade' | 'config' | 'repair' | undefined = artifact.lastRefresh?.event === 'refresh'
+  const event: 'install' | 'upgrade' | 'config' | undefined = artifact.lastRefresh?.event === 'refresh'
     ? 'config'
     : artifact.lastRefresh?.event;
   const lastRefresh = artifact.lastRefresh === undefined || event === undefined

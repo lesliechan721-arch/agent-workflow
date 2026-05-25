@@ -328,6 +328,44 @@ describe('status P7', () => {
     expect(typeof payload.locations[0]?.historicalLifecycle.healthy).toBe('boolean');
   });
 
+  it('normalizes legacy repair refresh events before exposing status JSON diagnostics', async () => {
+    const { fixture, runtime } = await createAlignedInstalledStatusFixture('aw-status-json-legacy-refresh-');
+    await updateDiagnosticCache(fixture.files.diagnosticCachePath, (cache) => {
+      cache.artifacts[0]!.lastRefresh = {
+        status: 'failed',
+        at: '2026-05-08T00:00:00.000Z',
+        event: 'repair',
+        error: 'legacy refresh failed',
+      };
+    });
+
+    const result = await statusCommand(
+      [fixture.target.location.plugin],
+      { cwd: fixture.paths.repoRoot, json: true },
+      runtime,
+    );
+
+    const payload = JSON.parse(result.output) as {
+      locations: Array<{
+        dynamicDiagnostic: {
+          entries: Array<{
+            lastRefresh?: {
+              status: string;
+              event: string;
+              error?: string;
+            };
+          }>;
+        };
+      }>;
+    };
+    expect(payload.locations[0]?.dynamicDiagnostic.entries[0]?.lastRefresh).toMatchObject({
+      status: 'failed',
+      event: 'config',
+      error: 'legacy refresh failed',
+    });
+    expect(result.output).not.toContain('"repair"');
+  });
+
   it.each([
     {
       label: 'dynamic content drift',

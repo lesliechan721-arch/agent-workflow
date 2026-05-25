@@ -1071,7 +1071,7 @@ interface StatusDynamicEntry {
   };
   lastRefresh?: {
     status?: 'success' | 'failed';
-    event?: 'install' | 'upgrade' | 'config' | 'repair';
+    event?: 'install' | 'upgrade' | 'config';
     error?: string;
   };
 }

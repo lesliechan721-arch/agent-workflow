@@ -134,6 +134,45 @@ describe('install-state facade', () => {
     }
   });
 
+  it('normalizes legacy repair refresh events when reading dynamic caches', async () => {
+    const root = await makeTempDir('aw-install-state-cache-legacy-refresh-');
+    const cachePath = path.join(root, 'cache.json');
+    const record = makeRecord();
+    await fs.writeJson(cachePath, {
+      version: 1,
+      recordId: record.recordId,
+      location: {
+        plugin: record.record.pluginName,
+        platform: record.record.platform,
+        scope: record.record.scope,
+      },
+      updatedAt: '2026-05-07T00:00:01.000Z',
+      artifacts: [{
+        id: 'instruction-a',
+        target: 'codex.developerInstructionsBlock',
+        state: 'present',
+        lastRefresh: {
+          status: 'failed',
+          at: '2026-05-07T00:00:01.000Z',
+          event: 'repair',
+          error: 'legacy refresh failed',
+        },
+      }],
+    }, { spaces: 2 });
+
+    const result = await readDynamicArtifactDiagnosticCacheAt(cachePath, { currentRecord: record });
+
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') {
+      expect(result.value.artifacts[0]?.lastRefresh).toMatchObject({
+        status: 'failed',
+        event: 'config',
+        error: 'legacy refresh failed',
+      });
+      expect(JSON.stringify(result.value)).not.toContain('"repair"');
+    }
+  });
+
   it('reads native markers independently from install records and rejects legacy breadcrumbs as unsupported', async () => {
     const awHome = await makeTempDir('aw-install-state-marker-');
     const markerDir = path.join(awHome, 'native-recovery', 'codex', 'user');

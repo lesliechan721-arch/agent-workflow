@@ -64,6 +64,10 @@ const VALID_REPO_MANAGED_ARTIFACT_KINDS = new Set<RepoManagedArtifactKind>([
   'skill',
   'mcpServer',
 ]);
+const VALID_DYNAMIC_DIAGNOSTIC_REFRESH_EVENTS = new Set(['install', 'upgrade', 'config']);
+const LEGACY_DYNAMIC_DIAGNOSTIC_REFRESH_EVENT_ALIASES = new Map([
+  ['repair', 'config'],
+]);
 const BANNED_RECORD_FIELDS = new Set([
   'ledgerState',
   'degradedAt',
@@ -900,6 +904,7 @@ function validateDiagnosticEntry(
   if (value.contentDigest !== undefined && !isNonEmptyString(value.contentDigest)) {
     return fail('invalidDiagnosticEntry', `Invalid ${context}.contentDigest: expected a non-empty string.`);
   }
+  let normalizedValue: Record<string, unknown> = value;
   if (value.lastRefresh !== undefined) {
     if (!isRecord(value.lastRefresh)) {
       return fail('invalidDiagnosticEntry', `Invalid ${context}.lastRefresh: expected an object.`);
@@ -908,13 +913,26 @@ function validateDiagnosticEntry(
     if (!refreshKeys.ok) {
       return refreshKeys;
     }
+    const refreshEvent = String(value.lastRefresh.event);
+    const normalizedRefreshEvent = VALID_DYNAMIC_DIAGNOSTIC_REFRESH_EVENTS.has(refreshEvent)
+      ? refreshEvent
+      : LEGACY_DYNAMIC_DIAGNOSTIC_REFRESH_EVENT_ALIASES.get(refreshEvent);
     if (
       (value.lastRefresh.status !== 'success' && value.lastRefresh.status !== 'failed') ||
       !isNonEmptyString(value.lastRefresh.at) ||
-      !['install', 'upgrade', 'repair', 'config'].includes(String(value.lastRefresh.event)) ||
+      normalizedRefreshEvent === undefined ||
       (value.lastRefresh.error !== undefined && !isNonEmptyString(value.lastRefresh.error))
     ) {
       return fail('invalidDiagnosticEntry', `Invalid ${context}.lastRefresh: unsupported refresh summary.`);
+    }
+    if (normalizedRefreshEvent !== refreshEvent) {
+      normalizedValue = {
+        ...normalizedValue,
+        lastRefresh: {
+          ...value.lastRefresh,
+          event: normalizedRefreshEvent,
+        },
+      };
     }
   }
   if (value.refreshReach !== undefined) {
@@ -940,7 +958,7 @@ function validateDiagnosticEntry(
       return fail('invalidDiagnosticEntry', `Invalid ${context}.refreshReach: unsupported reach metadata.`);
     }
   }
-  return ok(value as unknown as DynamicArtifactDiagnosticEntry);
+  return ok(normalizedValue as unknown as DynamicArtifactDiagnosticEntry);
 }
 
 export function validateDynamicArtifactDiagnosticCache(
@@ -975,11 +993,13 @@ export function validateDynamicArtifactDiagnosticCache(
   if (!Array.isArray(value.artifacts)) {
     return fail('invalidDiagnosticCache', 'Invalid dynamic artifact diagnostic cache.artifacts: expected an array.');
   }
+  const artifacts: DynamicArtifactDiagnosticEntry[] = [];
   for (const [index, artifact] of value.artifacts.entries()) {
     const validatedArtifact = validateDiagnosticEntry(artifact, `dynamic artifact diagnostic cache.artifacts[${index}]`);
     if (!validatedArtifact.ok) {
       return validatedArtifact;
     }
+    artifacts.push(validatedArtifact.value);
   }
   if (options.expectedRecordId && value.recordId !== options.expectedRecordId) {
     return fail('recordIdMismatch', 'Dynamic diagnostic cache recordId does not match the current install record.');
@@ -1000,7 +1020,7 @@ export function validateDynamicArtifactDiagnosticCache(
     const dynamicArtifacts = options.currentRecord.record.artifacts.filter((artifact) =>
       artifact.id !== undefined && artifact.target !== undefined,
     );
-    for (const entry of value.artifacts as DynamicArtifactDiagnosticEntry[]) {
+    for (const entry of artifacts) {
       const match = dynamicArtifacts.find((artifact) =>
         artifact.id === entry.id &&
         artifact.target === entry.target &&
@@ -1015,7 +1035,11 @@ export function validateDynamicArtifactDiagnosticCache(
       }
     }
   }
-  return ok(value as unknown as DynamicArtifactDiagnosticCache);
+  return ok({
+    ...value,
+    location: location.value,
+    artifacts,
+  } as unknown as DynamicArtifactDiagnosticCache);
 }
 
 export function validateProjectArtifactIdentityFile(
