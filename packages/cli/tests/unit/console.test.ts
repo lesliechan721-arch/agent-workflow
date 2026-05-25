@@ -327,6 +327,66 @@ function createContext(
   return { context, prompt, consoleDriver };
 }
 
+const FORBIDDEN_TUI_VISIBLE_TEXT: RegExp[] = [
+  /诊断/,
+  /查看诊断/,
+  /\bdiagnose\b/i,
+  /\bopenDiagnose\b/,
+  /\brepair\b/i,
+  /\bopenRepair\b/,
+  /修复/,
+  /\baw\s+(install|upgrade|uninstall|cleanup|reinstall|status|config|repair)\b/i,
+  /cleanup\s+--plan/i,
+  /--takeover-shared-runtime/,
+  /下一步/,
+  /\bnextSteps\b/,
+  /current catalog/i,
+  /schema identity/i,
+  /install record/i,
+];
+
+function collectVisibleTuiText(
+  consoleDriver: ReturnType<typeof createFakeConsoleDriver>,
+  prompt: ReturnType<typeof createFakePrompt>,
+): string {
+  const promptText = prompt.calls.flatMap((call) => {
+    const options = call.options as {
+      message?: string;
+      choices?: Array<{
+        label?: string;
+        description?: string;
+        short?: string;
+        disabled?: boolean | string;
+      }>;
+    };
+    return [
+      options.message,
+      ...(options.choices ?? []).flatMap((choice) => [
+        choice.label,
+        choice.description,
+        choice.short,
+        typeof choice.disabled === 'string' ? choice.disabled : undefined,
+      ]),
+    ];
+  });
+  return [
+    ...consoleDriver.views.flatMap((view) => [view.title, ...view.lines]),
+    ...promptText,
+  ]
+    .filter((line): line is string => typeof line === 'string' && line.length > 0)
+    .join('\n');
+}
+
+function expectNoForbiddenTuiText(
+  consoleDriver: ReturnType<typeof createFakeConsoleDriver>,
+  prompt: ReturnType<typeof createFakePrompt>,
+) {
+  const visibleText = collectVisibleTuiText(consoleDriver, prompt);
+  for (const forbidden of FORBIDDEN_TUI_VISIBLE_TEXT) {
+    expect(visibleText).not.toMatch(forbidden);
+  }
+}
+
 function mockHomeStates(...states: Array<{ items: ConsoleControllerItem[]; catalogUnavailable: boolean }>) {
   let index = 0;
   loadConsoleItemsResult.mockImplementation(async () => states[Math.min(index++, states.length - 1)]!);
@@ -412,6 +472,7 @@ describe('console controller stage 8', () => {
       (call.options as { message?: string }).message === '选择插件');
     expect((homePrompt!.options as { choices: Array<{ label: string }> }).choices.map((choice) => choice.label))
       .toEqual(expect.arrayContaining(['Broken Plugin', 'Upgrade Plugin', 'Installed Plugin', 'Catalog Plugin', '刷新', '退出']));
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('uses the detail page as the action center and hides internal metadata lines', async () => {
@@ -464,6 +525,7 @@ describe('console controller stage 8', () => {
       (call.options as { message?: string }).message === '选择功能');
     expect((featurePrompt!.options as { choices: Array<{ label: string }> }).choices.map((choice) => choice.label))
       .toEqual(expect.arrayContaining(['清理（推荐）', '状态', '返回', '退出']));
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('renders status from the structured page model without showing nextSteps or pure catalog-only locations', async () => {
@@ -525,7 +587,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, consoleDriver } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'status' },
       { method: 'select', value: 'codex:user:-' },
@@ -543,6 +605,7 @@ describe('console controller stage 8', () => {
     expect(detailView?.lines).toContain('说明：有一条 detail line');
     expect(detailView?.lines.join('\n')).not.toContain('aw cleanup');
     expect(detailView?.lines.join('\n')).not.toContain('下一步');
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('recommends claimable external adoption and calls install --adopt-existing', async () => {
@@ -587,7 +650,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, consoleDriver } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'adoptExisting' },
       { method: 'select', value: 'confirm-continue' },
@@ -606,6 +669,7 @@ describe('console controller stage 8', () => {
     );
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
     expect(detailView?.lines).toContain('最近结果 · 认领现有安装');
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('returns to the refreshed detail page with the latest result after install and does not show a standalone result page', async () => {
@@ -645,7 +709,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, consoleDriver } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'install' },
       { method: 'select', action: 'exit' },
@@ -657,6 +721,7 @@ describe('console controller stage 8', () => {
     expect(consoleDriver.views.some((view) => view.title.includes('结果'))).toBe(false);
     expect(consoleDriver.views.some((view) => view.lines.includes('返回首页'))).toBe(false);
     expect(consoleDriver.views.some((view) => view.lines.some((line) => line.startsWith('状态 · ')))).toBe(false);
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('returns to detail with a cancel notice after a destructive action is cancelled', async () => {
@@ -714,7 +779,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, consoleDriver } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'cleanup' },
       { method: 'select', value: 'keep' },
@@ -736,6 +801,7 @@ describe('console controller stage 8', () => {
     );
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
     expect(detailView?.lines).toContain('提示：已取消，本次没有写入任何状态。');
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('keeps the effective config view read-only and hides schema/catalog/install record metadata', async () => {
@@ -788,6 +854,7 @@ describe('console controller stage 8', () => {
       .toEqual(expect.arrayContaining(['switch-view', 'config-back', 'config-exit']));
     expect((configPrompt!.options as { choices: Array<{ value: string }> }).choices.map((choice) => choice.value))
       .not.toEqual(expect.arrayContaining(['update-field', 'clear-field', 'reset-layer', 'apply-config', 'reapply-config']));
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('uses a structured dangerous confirmation page with cancel selected by default', async () => {
@@ -837,6 +904,7 @@ describe('console controller stage 8', () => {
       call.method === 'select' &&
       (call.options as { message?: string }).message === '确认操作');
     expect((confirmPrompt!.options as { defaultValue?: string }).defaultValue).toBe('confirm-back');
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('selects install targets in platform-then-scope order and never shows skill-trigger steps', async () => {
@@ -867,7 +935,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, prompt } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'install' },
       { method: 'select', value: 'codex' },
@@ -881,6 +949,7 @@ describe('console controller stage 8', () => {
       .map((call) => (call.options as { message?: string }).message);
     expect(messages).toEqual(expect.arrayContaining(['选择平台', '选择位置']));
     expect(messages).not.toEqual(expect.arrayContaining(['选择 SkillTrigger', 'selectSkillTrigger']));
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
   it('renders reapply-config outcomes back on the detail page instead of a standalone result page', async () => {
@@ -905,7 +974,7 @@ describe('console controller stage 8', () => {
     });
 
     const { runConsoleController } = await import('../../src/commands/console.js');
-    const { context, consoleDriver } = createContext([
+    const { context, consoleDriver, prompt } = createContext([
       { method: 'select', value: 'git-commit' },
       { method: 'select', value: 'reapplyConfigRefresh' },
       { method: 'select', action: 'exit' },
@@ -916,5 +985,6 @@ describe('console controller stage 8', () => {
     expect(detailView?.lines).toContain('最近结果 · 重新应用配置');
     expect(detailView?.lines).toContain('- 没有需要重新应用的项目文件。');
     expect(consoleDriver.views.some((view) => view.title === 'Git Commit 重新应用配置')).toBe(false);
+    expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 });
