@@ -166,7 +166,6 @@ export interface RepairLocationPayload {
     recordCommitted: boolean;
     markerPending: boolean;
     needsAttention: boolean;
-    repairCommand?: string;
     cleanupCommand?: string;
   };
   warnings: InstallStateReceiptWarning[];
@@ -210,6 +209,21 @@ export interface RepairJsonPayload {
   targetResults: ReceiptTargetResult[];
   locations: RepairLocationPayload[];
   dependencyIndex?: RepairDependencyIndexPayload;
+}
+
+export interface RepairWorkflowResult {
+  output: string;
+  payload: RepairJsonPayload;
+}
+
+export interface InstallAdoptExistingMigrationOptions extends Pick<
+  RawRepairCommandOptions,
+  'cwd' | 'scope' | 'platform' | 'requestedSkillTrigger' | 'skillTrigger' | 'scriptTimeoutMs'
+> {}
+
+export interface InstallAdoptExistingMigrationResult {
+  output: string;
+  locations: RepairLocationPayload[];
 }
 
 interface MutableRepairState {
@@ -330,6 +344,14 @@ function shouldSuppressSharedOwnerConflict(location: PluginLocation): boolean {
   return location.platform === 'codex' && location.scope === 'project';
 }
 
+function hasClaimableProjectArtifacts(state: Pick<CollectedLocationState, 'projection' | 'evidence'>): boolean {
+  return state.projection.reasonCodes?.includes('claimableProjectArtifacts') === true
+    || (
+      state.evidence.projectSharedIdentity.read?.status === 'ok'
+      && !state.evidence.adoptable.blockers.includes('artifactIdentityUnverifiable')
+    );
+}
+
 function buildRepairLocationDetails(state: CollectedLocationState): Pick<
   RepairLocationPayload,
   | 'dependencyIndexTrusted'
@@ -385,7 +407,6 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
       recordCommitted: markerStatus === 'recordInstallResidual',
       markerPending: markerStatus !== 'none',
       needsAttention: markerStatus !== 'none',
-      ...(markerStatus !== 'none' ? { repairCommand: `aw repair ${args}` } : {}),
       ...(markerStatus !== 'none' ? { cleanupCommand: `aw cleanup ${args}` } : {}),
     },
   };
@@ -1370,7 +1391,6 @@ async function maybeCreateSharedRuntimeOwnerStage(options: {
     ),
     preference: options.preference,
     command: 'repair',
-    takeoverSharedRuntime: options.repairOptions.takeoverSharedRuntime,
     targetCount: 1,
     env: options.env,
   });
@@ -1404,7 +1424,6 @@ async function preflightRepairSharedRuntimeOwner(options: {
     ),
     preference: options.preference,
     command: 'repair',
-    takeoverSharedRuntime: options.repairOptions.takeoverSharedRuntime,
     targetCount: 1,
     env: options.env,
   });
@@ -1837,21 +1856,27 @@ async function adoptExistingLocation(options: {
   if (location.scope !== 'project') {
     throw new Error('--adopt-existing 只适用于 project scope。');
   }
-  if (!state.projection.adoptExistingAvailable) {
+  if (state.evidence.installRecord.present) {
+    throw new Error(
+      `${location.plugin} 当前已经有本机 install record，install --adopt-existing 不适用。`,
+    );
+  }
+  const claimableProjectArtifacts = hasClaimableProjectArtifacts(state);
+  if (!claimableProjectArtifacts) {
     const identityRead = state.evidence.projectSharedIdentity.read;
     if (identityRead && identityRead.status !== 'ok' && identityRead.status !== 'missing') {
       throw new Error(
-        `${location.plugin} 的 project artifact shared identity 已损坏，repair --adopt-existing 不会覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
+        `${location.plugin} 的 project artifact shared identity 已损坏，install --adopt-existing 不会覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
       );
     }
     if (state.evidence.adoptable.blockers.includes('artifactIdentityUnverifiable')) {
       throw new Error(
-        `${location.plugin} 的共享 artifacts 归属无法验证，或 shared file marker 无法安全定位，repair --adopt-existing 不会静默覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
+        `${location.plugin} 的共享 artifacts 归属无法验证，或 shared file marker 无法安全定位，install --adopt-existing 不会静默覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
       );
     }
     if (state.evidence.residualEvidence.repoVisibleArtifactPresent) {
       throw new Error(
-        `${location.plugin} 当前只有不可认领的残留 artifacts，repair --adopt-existing 不会覆盖共享文件。请先运行 aw cleanup 或 aw reinstall。`,
+        `${location.plugin} 当前只有不可认领的残留 artifacts，install --adopt-existing 不会覆盖共享文件。请先运行 aw cleanup 或 aw reinstall。`,
       );
     }
     throw new Error(`${location.plugin} 当前没有可认领的 project artifacts。`);
@@ -2077,7 +2102,7 @@ function renderHumanOutput(payload: RepairJsonPayload): string {
       lines.push('  说明：当前插件没有声明 install lifecycle，因此这一步没有执行。');
     }
     if (location.nativeTransactionMarker.needsAttention) {
-      lines.push(`  下一步：${location.nativeTransactionMarker.repairCommand}；${location.nativeTransactionMarker.cleanupCommand}`);
+      lines.push(`  下一步：${location.nativeTransactionMarker.cleanupCommand}`);
     }
     if (!location.dependencyIndexTrusted && location.dependencyIndexRecoveryMessage) {
       lines.push(`  提醒：${location.dependencyIndexRecoveryMessage}`);
@@ -2089,14 +2114,11 @@ function renderHumanOutput(payload: RepairJsonPayload): string {
   return lines.join('\n');
 }
 
-export async function repairCommand(
+export async function runRepairWorkflow(
   pluginNames: string[],
   rawOptions: RawRepairCommandOptions = {},
   runtime: CommandExecutionContextInput = {},
-): Promise<{
-  output: string;
-  payload: RepairJsonPayload;
-}> {
+): Promise<RepairWorkflowResult> {
   const options = normalizeRepairCommandOptions(rawOptions);
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
@@ -2142,7 +2164,7 @@ export async function repairCommand(
 
   const writableStates = options.adoptExisting
     ? collected.locations.filter((state) =>
-      state.location.scope === 'project' && state.projection.adoptExistingAvailable
+      state.location.scope === 'project' && hasClaimableProjectArtifacts(state)
     )
     : collected.locations.filter((state) =>
       state.evidence.installRecord.present ||
@@ -2205,9 +2227,9 @@ export async function repairCommand(
       continue;
     }
 
-    if (state.location.scope === 'project' && state.projection.adoptExistingAvailable) {
+    if (state.location.scope === 'project' && hasClaimableProjectArtifacts(state)) {
       throw new Error(
-        `${state.location.plugin} 在 ${renderLocationLabel(state.location)} 处于可认领状态；普通 repair 不会自动接管。请改用 aw repair ${state.location.plugin} --platform ${state.location.platform} --scope ${state.location.scope} --adopt-existing。`,
+        `${state.location.plugin} 在 ${renderLocationLabel(state.location)} 处于可认领状态；普通 repair 不会自动接管。请改用 aw install ${state.location.plugin} --platform ${state.location.platform} --scope ${state.location.scope} --adopt-existing。`,
       );
     }
 
@@ -2229,5 +2251,20 @@ export async function repairCommand(
   return {
     output: options.json ? JSON.stringify(payload, null, 2) : renderHumanOutput(payload),
     payload,
+  };
+}
+
+export async function runInstallAdoptExistingMigration(
+  pluginNames: string[],
+  rawOptions: InstallAdoptExistingMigrationOptions = {},
+  runtime: CommandExecutionContextInput = {},
+): Promise<InstallAdoptExistingMigrationResult> {
+  const result = await runRepairWorkflow(pluginNames, {
+    ...rawOptions,
+    adoptExisting: true,
+  }, runtime);
+  return {
+    output: result.output,
+    locations: result.payload.locations,
   };
 }

@@ -27,6 +27,13 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import {
+  createInstallRecordInstallSource,
+  writeInstallRecordFileAt,
+} from '../../src/install-state/facade.js';
+import { createRecordId } from '../../src/install-state/ids.js';
+import { getInstallRecordPath } from '../../src/install-state/paths.js';
+import type { InstallRecordArtifact, PluginLocation } from '../../src/install-state/types.js';
+import {
   resolveCodexPaths,
   resolveCodexProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
@@ -342,6 +349,25 @@ async function seedCodexProjectManagedEvidence(
   managedKind: 'skill' | 'mcpServer',
 ): Promise<void> {
   const projectKey = await resolveCodexProjectKey(workspace.repoRoot);
+  const location: PluginLocation = {
+    plugin: pluginName,
+    platform: 'codex',
+    scope: 'project',
+    projectKey,
+  };
+  const installArtifact: InstallRecordArtifact = managedKind === 'skill'
+    ? {
+        path: path.join(workspace.repoRoot, '.agents', 'skills', 'commit'),
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'commit',
+      }
+    : {
+        path: path.join(workspace.repoRoot, '.codex', 'config.toml'),
+        kind: 'mcpServer',
+        platform: 'codex',
+        artifactKey: 'acme.tools v1',
+      };
   const ledger = createAvailableLedger();
   ledger.plugins[pluginName] = {
     lastResolvedVersion: '0.1.0',
@@ -375,22 +401,37 @@ async function seedCodexProjectManagedEvidence(
     },
   };
   await writeInstalledLedger(ledger, workspace.env);
+  await writeInstallRecordFileAt(
+    getInstallRecordPath(workspace.repoRoot, location, workspace.env),
+    {
+      version: 2,
+      recordId: createRecordId(location),
+      record: {
+        pluginName,
+        platform: 'codex',
+        scope: 'project',
+        projectKey,
+        installedAt: '2026-04-30T00:00:00.000Z',
+        updatedAt: '2026-04-30T00:00:00.000Z',
+        source: {
+          pluginVersion: '0.1.0',
+          manifestDigest: 'seeded-manifest-digest',
+          bundleFingerprint: 'seeded-bundle-fingerprint',
+        },
+        installSource: createInstallRecordInstallSource('explicit'),
+        options: {
+          skillTriggerPreference: 'manual',
+        },
+        artifacts: [installArtifact],
+        dependencyEdges: [],
+      },
+    },
+    { env: workspace.env },
+  );
 
   const codexPaths = resolveCodexPaths(workspace.repoRoot, 'project', workspace.env);
   await upsertTrackingRecord(codexPaths.trackingDir, pluginName, [
-    managedKind === 'skill'
-      ? {
-          path: path.join(workspace.repoRoot, '.agents', 'skills', 'commit'),
-          kind: 'skill',
-          platform: 'codex',
-          artifactKey: 'commit',
-        }
-      : {
-          path: path.join(workspace.repoRoot, '.codex', 'config.toml'),
-          kind: 'mcpServer',
-          platform: 'codex',
-          artifactKey: 'acme.tools v1',
-        },
+    installArtifact,
   ]);
 }
 

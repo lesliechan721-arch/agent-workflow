@@ -329,8 +329,8 @@ describe('console duplicate resolution integration', () => {
     await expect(readScopedInstallRecords(workspace.repoRoot, 'codex', 'user', env)).resolves.toHaveLength(1);
     const detailView = [...consoleDriver.views].reverse().find((view) => view.title === 'Git Commit');
     expect(detailView?.lines).toContain('✓ 已安装');
-    expect(detailView?.lines).toContain('✓ Codex（个人）');
-    expect(detailView?.lines).toContain('✓ Codex（当前项目）');
+    expect(detailView?.lines).toContain('✓ Codex（个人） · 已安装');
+    expect(detailView?.lines).toContain('✓ Codex（当前项目） · 已安装');
     const featurePrompt = prompt.calls.find((call) =>
       call.method === 'select' &&
       (call.options as { message?: string }).message === '选择功能',

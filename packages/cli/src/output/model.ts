@@ -8,6 +8,7 @@ import type {
   CatalogSelector,
   CodexProjectManagedKind,
   CommandAction,
+  ManualNextStepKind,
   NextStepInstruction,
   NextStepsPayloadBoundary,
   NativeRecoveryState,
@@ -211,11 +212,13 @@ function ensureSentence(text: string): string {
 export function createManualNextStep(
   label: string,
   description: string,
+  options: { manualKind?: ManualNextStepKind } = {},
 ): NextStepInstruction {
   return {
     kind: 'manual',
     label,
     description,
+    ...(options.manualKind ? { manualKind: options.manualKind } : {}),
   };
 }
 
@@ -279,11 +282,20 @@ export function createNextStepsBoundary(
   legacyNextSteps?: string[],
 ): NextStepsPayloadBoundary {
   const nextSteps = dedupeNextSteps(steps);
-  const legacy = legacyNextSteps ?? nextSteps.map(createLegacyNextStepText);
+  const legacy = legacyNextSteps ?? [];
   return {
     nextStepsSchemaVersion: 1,
     nextSteps,
     ...(legacy.length > 0 ? { legacyNextSteps: [...new Set(legacy)] } : {}),
+  };
+}
+
+export function createStructuredNextStepsBoundary(
+  steps: NextStepInstruction[],
+): Pick<NextStepsPayloadBoundary, 'nextStepsSchemaVersion' | 'nextSteps'> {
+  return {
+    nextStepsSchemaVersion: 1,
+    nextSteps: dedupeNextSteps(steps),
   };
 }
 

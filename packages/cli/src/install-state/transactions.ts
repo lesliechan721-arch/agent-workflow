@@ -633,6 +633,18 @@ export function createNativeTransactionMarkerWriteStage(options: {
   });
 }
 
+export function createNativeTransactionMarkerDeleteStage(options: {
+  pluginNameOrId: string;
+  env?: NodeJS.ProcessEnv;
+}): InstallStateTransactionStage {
+  return createAtomicDeleteStage({
+    label: 'native transaction marker',
+    filePath: getNativeTransactionMarkerPath(options.pluginNameOrId, options.env),
+    rollbackWarningCode: 'nativeMarkerRollbackFailed',
+    finalizeWarningCode: 'nativeMarkerFinalizeFailed',
+  });
+}
+
 export function createSharedRuntimeOwnerWriteStage(options: {
   recordFile: InstallRecordFile;
   recordPath: string;

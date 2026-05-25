@@ -849,7 +849,7 @@ describe('cli entry', () => {
 
     expect(exitCode).toBe(0);
     expect(readStdout()).not.toContain('diagnose');
-    expect(readStdout()).toContain('repair');
+    expect(readStdout()).not.toContain('repair');
     expect(readStdout()).toContain('cleanup');
     expect(readStdout()).toContain('reinstall');
     expect(readStderr()).toBe('');
@@ -858,7 +858,6 @@ describe('cli entry', () => {
   it.each([
     ['install'],
     ['upgrade'],
-    ['repair'],
     ['reinstall'],
   ])('does not list --skill-trigger in %s help output', async (commandName) => {
     const { io, readStdout, readStderr } = createCapturedIo();
@@ -941,10 +940,22 @@ describe('cli entry', () => {
     expect(cleanupCommand).not.toHaveBeenCalled();
   });
 
-  it('routes repair, cleanup, and reinstall through the CLI entry with parseable JSON stdout', async () => {
-    const repairCommand = vi.fn(async () => ({
-      output: JSON.stringify({ ok: true, command: 'repair', locations: [] }),
-      payload: { ok: true, command: 'repair', locations: [] },
+  it('routes install, cleanup, and reinstall through the CLI entry with parseable JSON stdout', async () => {
+    const installCommand = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+      receiptTargets: [{
+        plugin: 'git-commit',
+        platform: 'codex',
+        scope: 'project',
+        requested: true,
+      }],
+      receiptDetails: {
+        adoptExistingLifecycleReason: 'adoptExistingFirstLocalRecord',
+      },
     }));
     const cleanupCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -993,7 +1004,7 @@ describe('cli entry', () => {
       nativePlugins: {},
       repoManagedArtifacts: [],
     }));
-    vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
+    vi.doMock('../../src/commands/install.js', () => ({ installCommand }));
     vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand, isCleanupExecutionFailure }));
     vi.doMock('../../src/commands/reinstall.js', () => ({ reinstallCommand }));
 
@@ -1001,22 +1012,21 @@ describe('cli entry', () => {
 
     let capture = createCapturedIo();
     expect(await runCli(
-      ['repair', 'git-commit', '--scope', 'project', '--platform', 'codex', '--adopt-existing', '--takeover-shared-runtime', '--json'],
+      ['install', 'git-commit', '--scope', 'project', '--platform', 'codex', '--adopt-existing', '--json'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
     expect(JSON.parse(capture.readStdout())).toMatchObject({
       ok: true,
-      command: 'repair',
+      command: 'install',
+      adoptExistingLifecycleReason: 'adoptExistingFirstLocalRecord',
     });
-    expect(repairCommand).toHaveBeenCalledWith(
+    expect(installCommand).toHaveBeenCalledWith(
       ['git-commit'],
       expect.objectContaining({
         cwd: '/tmp/workspace',
         scope: 'project',
         platform: 'codex',
         adoptExisting: true,
-        takeoverSharedRuntime: true,
-        json: true,
       }),
       expect.anything(),
     );
@@ -1043,7 +1053,7 @@ describe('cli entry', () => {
 
     capture = createCapturedIo();
     expect(await runCli(
-      ['reinstall', 'git-commit', '--scope', 'user', '--platform', 'codex', '--takeover-shared-runtime', '--json'],
+      ['reinstall', 'git-commit', '--scope', 'user', '--platform', 'codex', '--json'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(0);
     expect(JSON.parse(capture.readStdout())).toMatchObject({
@@ -1060,21 +1070,18 @@ describe('cli entry', () => {
         cwd: '/tmp/workspace',
         scope: 'user',
         platform: 'codex',
-        takeoverSharedRuntime: true,
         json: true,
       }),
       expect.anything(),
     );
   });
 
-  it('fails P11 illegal combinations before invoking write commands', async () => {
+  it('fails removed or illegal legacy combinations before invoking write commands', async () => {
     const upgradeCommand = vi.fn();
     const cleanupCommand = vi.fn();
     const isCleanupExecutionFailure = vi.fn(() => false);
-    const repairCommand = vi.fn();
     vi.doMock('../../src/commands/upgrade.js', () => ({ upgradeCommand }));
     vi.doMock('../../src/commands/cleanup.js', () => ({ cleanupCommand, isCleanupExecutionFailure }));
-    vi.doMock('../../src/commands/repair.js', () => ({ repairCommand }));
 
     const { runCli } = await import('../../src/index.js');
 
@@ -1083,7 +1090,8 @@ describe('cli entry', () => {
       ['upgrade', '--all', '--takeover-shared-runtime'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(1);
-    expect(capture.readStderr()).toContain('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+    expect(capture.readStderr()).toContain('unknown option');
+    expect(capture.readStderr()).toContain('--takeover-shared-runtime');
     expect(upgradeCommand).not.toHaveBeenCalled();
 
     capture = createCapturedIo();
@@ -1099,8 +1107,8 @@ describe('cli entry', () => {
       ['repair', '--dependency-index', '--adopt-existing'],
       { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io: capture.io },
     )).toBe(1);
-    expect(capture.readStderr()).toContain('--dependency-index 不能与 --adopt-existing 一起使用。');
-    expect(repairCommand).not.toHaveBeenCalled();
+    expect(capture.readStderr()).toContain('unknown command');
+    expect(capture.readStderr()).toContain('repair');
   });
 
   it('fails missing install and uninstall plugin names at the entry layer with guidance', async () => {

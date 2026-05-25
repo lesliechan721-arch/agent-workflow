@@ -7,6 +7,7 @@ import {
   resolveCodexPaths,
   resolveRepoRootSync,
 } from '../utils/paths.js';
+import { getCodexNativeRecoveryBreadcrumbPath } from '../utils/codex-native-recovery.js';
 import {
   assertTestReadablePath,
   assertTestWritablePath,
@@ -172,17 +173,8 @@ export function getNativeTransactionMarkerPath(
   pluginNameOrId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const pluginId = pluginNameOrId.endsWith('@aw')
-    ? pluginNameOrId
-    : `${pluginNameOrId}@aw`;
   return assertAwHomeStatePathForTests(
-    path.join(
-      resolveAwHome(env),
-      'native-recovery',
-      'codex',
-      'user',
-      `${pluginId}.json`,
-    ),
+    getCodexNativeRecoveryBreadcrumbPath(pluginNameOrId, env),
     'native transaction marker',
   );
 }

@@ -16,6 +16,22 @@ async function readRepoFile(relativePath: string): Promise<string> {
   return fs.readFile(path.join(repoRoot, relativePath), 'utf8');
 }
 
+async function readCombinedFiles(relativePaths: string[]): Promise<string> {
+  return (await Promise.all(relativePaths.map((file) => readRepoFile(file)))).join('\n');
+}
+
+async function readUserFacingDocs(): Promise<string> {
+  return readCombinedFiles([
+    'README.md',
+    'docs/architecture.md',
+    'docs/plugin-installation.md',
+    'docs/plugin-installation-technical-details.md',
+    'docs/plugin-authoring.md',
+    'docs/coding-conventions.md',
+    'docs/testing.md',
+  ]);
+}
+
 describe('public docs', () => {
   it('keeps the README codex-explore description aligned with the public contract', async () => {
     const readme = await readRepoFile('README.md');
@@ -56,21 +72,26 @@ describe('public docs', () => {
     }
   });
 
-  it('documents cleanup planning and remove-config without reintroducing uninstall --force', async () => {
-    const publicDocs = [
-      await readRepoFile('README.md'),
-      await readRepoFile('docs/plugin-installation.md'),
-    ].join('\n');
+  it('documents cleanup, reinstall, and config removal without reintroducing legacy recovery entries', async () => {
+    const publicDocs = await readCombinedFiles([
+      'README.md',
+      'docs/plugin-installation.md',
+      'docs/plugin-installation-technical-details.md',
+    ]);
 
     expect(publicDocs).not.toContain('uninstall --force');
-    expect(publicDocs).not.toContain('force` | `uninstall');
-    expect(publicDocs).toContain('aw cleanup git-commit -p codex -s project --plan');
-    expect(publicDocs).toContain('cleanupPlanSchemaVersion: 1');
+    expect(publicDocs).not.toContain('cleanup --plan');
+    expect(publicDocs).not.toContain('cleanupPlanSchemaVersion');
+    expect(publicDocs).not.toContain('aw repair');
+    expect(publicDocs).not.toContain('repair --dependency-index');
+    expect(publicDocs).toContain('aw cleanup git-commit -p codex -s project');
+    expect(publicDocs).toContain('aw cleanup --dependency-index --prune-stale <token> --yes');
+    expect(publicDocs).toContain('aw reinstall git-commit -p codex -s user');
     expect(publicDocs).toContain('--remove-config');
     expect(publicDocs).toContain('`reset` 是单纯的 config store 级删除');
   });
 
-  it('documents consoleItems V3 migration mappings for statuses, actions, and reason codes', async () => {
+  it('documents consoleItems V3 grouping and schema boundaries', async () => {
     const installation = await readRepoFile('docs/plugin-installation.md');
 
     expect(installation).toContain('`statusSchemaVersion` | `2`');
@@ -78,59 +99,33 @@ describe('public docs', () => {
     expect(installation).toContain('`configSchemaVersion` | `2`');
     expect(installation).toContain('`receiptSchemaVersion` | `2`');
     expect(installation).toContain('`nextStepsSchemaVersion` | `1`');
-    expect(installation).toContain('| `needsAction`、`partial`、`repoManaged`');
-    expect(installation).toContain('| `openInstallWizard`、安装入口 | `install` | `runInstall` |');
-    expect(installation).toContain('| 状态详情入口 | `status` | 状态页 supplemental action，不属于公开写动作 |');
-
-    const reasonMappings = [
-      ['`missingRecord`', '`recordCorrupted`'],
-      ['`adoptExisting`', '`adoptableInstall`'],
-      ['`ownerConflict`', '`foreignOwnershipConflict`'],
-      ['`dependencyProtected`', '`dependencyBlocked`'],
-      ['`requiredConfigMissing`', '`missingRequiredConfig`'],
-      ['`invalidConfig`', '`missingRequiredConfig`'],
-      ['`unreadableConfig`', '`missingRequiredConfig`'],
-      ['`nativeResidue`', '`residueDetected`'],
-      ['`artifactDrift`', '`artifactRefreshFailed`'],
-      ['`externalOwnership`', '`foreignOwnershipConflict`'],
-      ['`trackingIdentityBroken`', '`recordCorrupted`'],
-      ['`roleOrMcpConflict`', '`foreignOwnershipConflict`'],
-      ['`unmanagedArtifactConflict`', '`foreignOwnershipConflict`'],
-      ['`catalogCapabilityChanged`', '`recordCorrupted`'],
-    ];
-    for (const [legacyCode, v2Code] of reasonMappings) {
-      expect(installation).toContain(`| ${legacyCode} | ${v2Code} |`);
-    }
-    expect(installation).toContain('`consoleItemsSchemaVersion: 3` 下不会再输出旧 id');
+    expect(installation).toContain('| `异常` | `cleanupRequired`、普通 `external`');
+    expect(installation).toContain('| `可升级` | 顶层仍为 `installed`');
+    expect(installation).toContain('| `已安装` | 顶层为 `installed`');
+    expect(installation).toContain('| `未安装` | 顶层为 `notInstalled`');
+    expect(installation).toContain('功能入口放在 `features`');
+    expect(installation).toContain('不输出旧 `locations[].actions[]`、命令数组、确认文案或 TUI 页面字段');
+    expect(installation).toContain('详情页承载 install、upgrade、uninstall、cleanup、reinstall、adopt existing 和 reapply config 等动作');
+    expect(installation).toContain('暴露 `nextSteps` 的对象必须同时带 `nextStepsSchemaVersion: 1`');
   });
 
-  it('keeps removed public CLI entry points out of public docs', async () => {
-    const diagnoseMigrationDocs = [
-      'README.md',
-      'docs/plugin-authoring.md',
-      'docs/plugin-installation.md',
-      'docs/plugin-installation-technical-details.md',
-    ];
-    const cliFlagDocs = [
-      'README.md',
-      'docs/plugin-installation.md',
-      'docs/plugin-installation-technical-details.md',
-    ];
+  it('keeps removed public CLI entry points out of README and public docs', async () => {
+    const publicDocs = await readUserFacingDocs();
 
-    const combined = (await Promise.all(diagnoseMigrationDocs.map((file) => readRepoFile(file)))).join('\n');
-    const cliFlagsCombined = (await Promise.all(cliFlagDocs.map((file) => readRepoFile(file)))).join('\n');
-
-    expect(combined).not.toContain('aw diagnose');
-    expect(combined).not.toContain('diagnose --deep');
-    expect(combined).not.toContain('status/diagnose/repair');
-    expect(combined).not.toContain('status / diagnose / repair');
-    expect(combined).not.toContain('`status` / `diagnose`');
-    expect(combined).not.toContain('重新运行 diagnose');
-    expect(combined).toContain('aw status --verbose');
-    expect(combined).toContain('aw repair --dependency-index');
-    expect(combined).toContain('aw cleanup --dependency-index --prune-stale <token> --yes');
-    expect(cliFlagsCombined).not.toContain('--platform auto');
-    expect(cliFlagsCombined).not.toContain('--skill-trigger');
+    expect(publicDocs).not.toContain('aw diagnose');
+    expect(publicDocs).not.toContain('diagnose --deep');
+    expect(publicDocs).not.toContain('aw repair');
+    expect(publicDocs).not.toContain('repair --dependency-index');
+    expect(publicDocs).not.toContain('cleanup --plan');
+    expect(publicDocs).not.toContain('--takeover-shared-runtime');
+    expect(publicDocs).not.toContain('status/diagnose/repair');
+    expect(publicDocs).not.toContain('status / diagnose / repair');
+    expect(publicDocs).not.toContain('`status` / `diagnose`');
+    expect(publicDocs).not.toContain('重新运行 diagnose');
+    expect(publicDocs).toContain('aw status --verbose');
+    expect(publicDocs).toContain('aw install --adopt-existing');
+    expect(publicDocs).toContain('aw cleanup --dependency-index --prune-stale <token> --yes');
+    expect(publicDocs).toContain('aw reinstall');
   });
 
   it('documents the SkillTrigger author contract without install-time override fields', async () => {

@@ -8,14 +8,17 @@ export type Scope = 'user' | 'project';
 
 export type MinimalInstallStateKind =
   | 'installed'
+  | 'cleanupRequired'
+  | 'external'
+  | 'notInstalled';
+
+export type MinimalInstallFixtureScenario =
+  | 'installed'
   | 'needsRepair'
   | 'adoptable'
   | 'residual'
   | 'externallyManaged'
-  | 'notInstalled';
-
-export type MinimalInstallFixtureScenario =
-  | MinimalInstallStateKind
+  | 'notInstalled'
   | 'freshCloneProject'
   | 'corruptedRecord'
   | 'corruptedDiagnosticCache'
@@ -1107,6 +1110,30 @@ async function writeInstalledScenario(
   };
 }
 
+function projectFixtureState(scenario: MinimalInstallFixtureScenario): MinimalInstallStateKind {
+  switch (scenario) {
+    case 'installed':
+    case 'needsRepair':
+    case 'corruptedDiagnosticCache':
+    case 'corruptedIdentityMetadata':
+    case 'missingHistoricalLifecycle':
+    case 'recordAndInstallMarkerResidual':
+      return 'installed';
+    case 'adoptable':
+    case 'freshCloneProject':
+    case 'externallyManaged':
+      return 'external';
+    case 'residual':
+    case 'corruptedRecord':
+    case 'staleDependencyIndex':
+    case 'unreadableDependencyIndex':
+    case 'nativeMarkerOnly':
+      return 'cleanupRequired';
+    case 'notInstalled':
+      return 'notInstalled';
+  }
+}
+
 export async function writeMinimalPluginInstallStateFixture(options: {
   rootDir: string;
   scenario: MinimalInstallFixtureScenario;
@@ -1124,7 +1151,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'needsRepair',
-        state: 'needsRepair',
+        state: projectFixtureState('needsRepair'),
       };
     }
     case 'adoptable':
@@ -1133,7 +1160,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       await builder.writeProjectIdentity(projectTarget);
       return {
         scenario: options.scenario,
-        state: 'adoptable',
+        state: projectFixtureState(options.scenario),
         paths: builder.paths,
         target: projectTarget,
         files: fixtureFiles(builder.paths, projectTarget),
@@ -1144,7 +1171,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       await builder.writeDiagnosticCache(projectTarget);
       return {
         scenario: 'residual',
-        state: 'residual',
+        state: projectFixtureState('residual'),
         paths: builder.paths,
         target: projectTarget,
         files: fixtureFiles(builder.paths, projectTarget),
@@ -1154,7 +1181,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       await builder.writeExternalNativeEvidence(userTarget);
       return {
         scenario: 'externallyManaged',
-        state: 'externallyManaged',
+        state: projectFixtureState('externallyManaged'),
         paths: builder.paths,
         target: userTarget,
         files: fixtureFiles(builder.paths, userTarget),
@@ -1174,7 +1201,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'corruptedRecord',
-        state: 'needsRepair',
+        state: projectFixtureState('corruptedRecord'),
       };
     }
     case 'corruptedDiagnosticCache': {
@@ -1183,7 +1210,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'corruptedDiagnosticCache',
-        state: 'needsRepair',
+        state: projectFixtureState('corruptedDiagnosticCache'),
       };
     }
     case 'corruptedIdentityMetadata': {
@@ -1199,7 +1226,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'corruptedIdentityMetadata',
-        state: 'needsRepair',
+        state: projectFixtureState('corruptedIdentityMetadata'),
       };
     }
     case 'staleDependencyIndex': {
@@ -1221,7 +1248,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'staleDependencyIndex',
-        state: 'needsRepair',
+        state: projectFixtureState('staleDependencyIndex'),
       };
     }
     case 'unreadableDependencyIndex': {
@@ -1243,7 +1270,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'unreadableDependencyIndex',
-        state: 'needsRepair',
+        state: projectFixtureState('unreadableDependencyIndex'),
       };
     }
     case 'missingHistoricalLifecycle': {
@@ -1252,14 +1279,14 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       return {
         ...result,
         scenario: 'missingHistoricalLifecycle',
-        state: 'needsRepair',
+        state: projectFixtureState('missingHistoricalLifecycle'),
       };
     }
     case 'nativeMarkerOnly': {
       await builder.writeNativeMarker(userTarget, 'install');
       return {
         scenario: 'nativeMarkerOnly',
-        state: 'residual',
+        state: projectFixtureState('nativeMarkerOnly'),
         paths: builder.paths,
         target: userTarget,
         files: fixtureFiles(builder.paths, userTarget),
@@ -1275,7 +1302,7 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       await builder.writeSharedRuntimeOwner(userTarget, getRecordPath(builder.paths, userTarget));
       return {
         scenario: 'recordAndInstallMarkerResidual',
-        state: 'needsRepair',
+        state: projectFixtureState('recordAndInstallMarkerResidual'),
         paths: builder.paths,
         target: userTarget,
         files: fixtureFiles(builder.paths, userTarget),

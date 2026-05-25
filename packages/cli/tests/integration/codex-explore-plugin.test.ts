@@ -12,7 +12,7 @@ import { installCommand } from '../../src/commands/install.js';
 import { cleanupCommand } from '../../src/commands/cleanup.js';
 import { diagnoseCommand } from '../../src/commands/diagnose.js';
 import type { CommandExecutionContextInput } from '../../src/commands/runtime.js';
-import { repairCommand } from '../../src/commands/repair.js';
+import { runRepairWorkflow } from '../../src/commands/repair.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { uninstallCommand } from '../../src/commands/uninstall.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -2158,7 +2158,7 @@ describe('codex-explore integration acceptance', () => {
       manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
     };
 
-    const result = await repairCommand(
+    const result = await runRepairWorkflow(
       ['codex-explore'],
       {
         cwd: repoRoot,
@@ -2281,7 +2281,7 @@ describe('codex-explore integration acceptance', () => {
       manifestPath: path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json'),
       manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
     };
-    const result = await repairCommand(
+    const result = await runRepairWorkflow(
       ['codex-explore'],
       {
         cwd: repoRoot,
@@ -2388,7 +2388,7 @@ describe('codex-explore integration acceptance', () => {
       manifest: await fs.readJson(path.join(repoRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
     };
     const projectKey = await resolveCodexProjectKey(repoRoot);
-    await expect(repairCommand(
+    await expect(runRepairWorkflow(
       ['codex-explore'],
       {
         cwd: repoRoot,

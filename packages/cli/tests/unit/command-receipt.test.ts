@@ -81,7 +81,6 @@ describe('command receipt output', () => {
           command: expect.stringContaining('aw status workflow-parent-a'),
         }),
       ],
-      legacyNextSteps: expect.any(Array),
       targets: [
         {
           plugin: 'workflow-parent-a',
@@ -140,6 +139,7 @@ describe('command receipt output', () => {
         },
       ]),
     });
+    expect(buildCommandReceiptJson('install', receipt)).not.toHaveProperty('legacyNextSteps');
     expect(buildCommandReceiptJson('install', receipt).targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: {
@@ -566,15 +566,14 @@ describe('command receipt output', () => {
     });
   });
 
-  it('renders cleanup plan receipts with stable schema fields and empty collections', () => {
+  it('renders cleanup receipts with stable schema fields and empty collections', () => {
     const payload = buildCleanupReceiptJson({
       payload: {
         ok: true,
         command: 'cleanup',
         generatedAt: '2026-05-13T00:00:00.000Z',
         dependencyIndex: false,
-        cleanupPlanSchemaVersion: 1,
-        dryRun: true,
+        receiptSchemaVersion: 2,
         force: true,
         removeConfig: true,
         target: {
@@ -583,23 +582,18 @@ describe('command receipt output', () => {
           scope: 'user' as const,
           targetType: 'cache-only' as const,
         },
-        forceReason: null,
-        plannedRemovals: [{
+        cleanupScope: [{
           kind: 'native-cache',
           label: 'Codex active cache',
           path: '/tmp/cache',
         }],
-        wouldBackups: [],
-        wouldRemoveConfig: [{
-          plugin: 'cache-only',
-          scope: 'user' as const,
-          path: '/tmp/config.json',
-          status: 'planned' as const,
-        }],
-        skippedForeignItems: [],
+        deletedItems: [],
+        skippedItems: [],
+        failedItems: [],
+        residueItems: [],
+        configActions: [],
         affectedDependents: [],
         blockingReasons: [],
-        recommendedCommand: 'aw cleanup cache-only --platform codex --scope user --force --remove-config',
       },
       warnings: ['synthetic warning'],
     });
@@ -607,28 +601,25 @@ describe('command receipt output', () => {
     expect(payload).toMatchObject({
       receiptSchemaVersion: 2,
       overallState: 'succeeded',
-      cleanupPlanSchemaVersion: 1,
-      dryRun: true,
       force: true,
       removeConfig: true,
       warnings: ['synthetic warning'],
       targetResults: [{
         action: 'cleanup',
-        state: 'notRun',
+        state: 'completed',
       }],
       nextStepsSchemaVersion: 1,
       nextSteps: [expect.objectContaining({ label: expect.any(String), description: expect.any(String) })],
-      plannedRemovals: [{
+      cleanupScope: [{
         kind: 'native-cache',
       }],
     });
-
     const output = renderCleanupReceipt({
       payload,
       warnings: [],
     }).join('\n');
-    expect(output).toContain('cleanup 评估完成');
-    expect(output).toContain('计划删除项');
+    expect(output).toContain('cleanup 已完成');
+    expect(output).toContain('cleanup 范围：');
     expect(output).toContain('受影响依赖');
     expect(output).toContain('- 无');
     expect(output).not.toContain('下一步：aw ');
@@ -641,7 +632,7 @@ describe('command receipt output', () => {
         command: 'cleanup',
         generatedAt: '2026-05-13T00:00:00.000Z',
         dependencyIndex: false,
-        cleanupPlanSchemaVersion: 1,
+        receiptSchemaVersion: 2,
         dryRun: false,
         force: true,
         removeConfig: false,
@@ -651,47 +642,43 @@ describe('command receipt output', () => {
           scope: 'user' as const,
           targetType: 'config-only' as const,
         },
-        forceReason: null,
-        plannedRemovals: [{
+        cleanupScope: [{
           kind: 'native-config',
           label: 'Codex enabled config',
           path: '/tmp/config.toml',
         }],
-        wouldBackups: [],
-        wouldRemoveConfig: [],
-        skippedForeignItems: [],
-        affectedDependents: [],
-        blockingReasons: [],
-        recommendedCommand: 'aw diagnose git-commit --platform codex --scope user',
-        actualRemovals: [],
-        actualBackups: [],
+        deletedItems: [],
         skippedItems: [{
           kind: 'native-config',
           label: 'Codex enabled config',
           path: '/tmp/config.toml',
         }],
-        remainingItems: [{
+        failedItems: [],
+        residueItems: [{
           kind: 'native-config',
           label: 'Codex enabled config',
           path: '/tmp/config.toml',
         }],
+        configActions: [],
+        affectedDependents: [],
+        blockingReasons: [],
       },
       warnings: [],
     }).join('\n');
 
     expect(output).toContain('cleanup 失败');
-    expect(output).toContain('执行跳过项');
-    expect(output).toContain('未清项');
+    expect(output).toContain('已跳过：');
+    expect(output).toContain('残留项：');
   });
 
-  it('renders cleanup force receipts with affected dependents and follow-up guidance', () => {
+  it('renders cleanup receipts with affected dependents and structured blockers', () => {
     const output = renderCleanupReceipt({
       payload: {
         ok: true,
         command: 'cleanup',
         generatedAt: '2026-05-13T00:00:00.000Z',
         dependencyIndex: false,
-        cleanupPlanSchemaVersion: 1,
+        receiptSchemaVersion: 2,
         dryRun: false,
         force: true,
         removeConfig: false,
@@ -701,38 +688,44 @@ describe('command receipt output', () => {
           scope: 'user' as const,
           targetType: 'config-only' as const,
         },
-        forceReason: '目标仍被 verified dependents 引用，`--force` 会保留 dependent 本身，只清理当前目标；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。',
-        plannedRemovals: [{
+        cleanupScope: [{
           kind: 'native-config',
           label: 'Codex enabled config',
           path: '/tmp/config.toml',
         }],
-        wouldBackups: [],
-        wouldRemoveConfig: [],
-        skippedForeignItems: [],
+        deletedItems: [],
+        skippedItems: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        failedItems: [],
+        residueItems: [{
+          kind: 'native-config',
+          label: 'Codex enabled config',
+          path: '/tmp/config.toml',
+        }],
+        configActions: [],
         affectedDependents: [{
           plugin: 'helper-local-dependent',
           platform: 'codex',
           scope: 'user' as const,
         }],
-        blockingReasons: [],
-        recommendedCommand: 'aw diagnose git-commit --platform codex --scope user',
-        actualRemovals: [{
-          kind: 'native-config',
-          label: 'Codex enabled config',
-          path: '/tmp/config.toml',
+        blockingReasons: [{
+          code: 'verifiedDependents',
+          message: '目标仍被以下 verified dependents 引用：codex/user/helper-local-dependent。',
         }],
-        actualBackups: [],
-        skippedItems: [],
-        remainingItems: [],
       },
       warnings: [],
     }).join('\n');
 
-    expect(output).toContain('force 语义：已启用；目标仍被 verified dependents 引用');
-    expect(output).toContain('repair、reinstall 或 cleanup');
+    expect(output).toContain('cleanup 失败');
+    expect(output).toContain('force 语义：已启用。');
     expect(output).toContain('受影响依赖：');
     expect(output).toContain('- codex/user/helper-local-dependent');
+    expect(output).toContain('阻断原因：');
+    expect(output).toContain('verifiedDependents');
+    expect(output).not.toContain('repair');
   });
 
   it('renders uninstall receipts with config removal failure without losing the main result', () => {
@@ -789,7 +782,6 @@ describe('command receipt output', () => {
           nativeTransactionMarker: {
             status: 'markerOnlyInstall',
             needsAttention: true,
-            repairCommand: 'aw repair git-commit -p codex -s user',
             cleanupCommand: 'aw cleanup git-commit -p codex -s user',
           },
         },
@@ -805,5 +797,7 @@ describe('command receipt output', () => {
 
     expect(output).toContain('主要重新安装已经完成，但还需要收口本机原生状态：git-commit。');
     expect(output).not.toContain('主要安装已经完成');
+    expect(output).toContain('aw cleanup git-commit -p codex -s user');
+    expect(output).not.toContain('aw repair');
   });
 });

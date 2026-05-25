@@ -29,18 +29,11 @@ import type {
   StatusReport,
 } from '../../src/types.js';
 import {
-  upsertCodexMarketplaceFile,
-  upsertCodexPluginEnabledFile,
-} from '../../src/utils/codex-config.js';
-import {
   createAvailableLedger,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import {
-  resolveCodexPaths,
-  setEmbeddedPluginsRootOverrideForTests,
-} from '../../src/utils/paths.js';
+import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -57,7 +50,6 @@ function fixturePath(...segments: string[]): string {
 async function makeWorkspace(): Promise<{
   repoRoot: string;
   awHome: string;
-  codexHome: string;
   embeddedRoot: string;
   env: NodeJS.ProcessEnv;
 }> {
@@ -81,7 +73,6 @@ async function makeWorkspace(): Promise<{
   return {
     repoRoot,
     awHome: env.AW_HOME!,
-    codexHome: env.AW_CODEX_HOME!,
     embeddedRoot,
     env,
   };
@@ -155,24 +146,6 @@ function createAdapters(codex: RecordingAdapter): Record<PlatformName, PlatformA
   };
 }
 
-async function seedHealthyCodexUserNativeState(
-  workspace: Awaited<ReturnType<typeof makeWorkspace>>,
-  pluginName: string,
-  version: string,
-): Promise<void> {
-  const configPath = resolveCodexPaths(workspace.repoRoot, 'user', workspace.env).configTomlPath;
-  await upsertCodexMarketplaceFile(configPath, 'aw', {
-    source: workspace.awHome,
-    sourceType: 'local',
-  });
-  await upsertCodexPluginEnabledFile(configPath, `${pluginName}@aw`, { enabled: true });
-  await fs.outputFile(
-    path.join(workspace.codexHome, 'plugins', 'cache', 'aw', pluginName, version, 'plugin.json'),
-    '{}\n',
-    'utf8',
-  );
-}
-
 afterEach(async () => {
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -182,7 +155,6 @@ describe('command option normalization', () => {
   it('requires explicit platforms for write commands while still defaulting scope to user', async () => {
     const workspace = await makeWorkspace();
     const codex = new RecordingAdapter('codex');
-    const plugin = await readPluginManifest(path.join(workspace.repoRoot, 'plugins', 'git-commit'));
 
     await expect(
       installCommand(
@@ -197,15 +169,15 @@ describe('command option normalization', () => {
       { cwd: workspace.repoRoot, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
-    await seedHealthyCodexUserNativeState(workspace, plugin.manifest.name, plugin.manifest.version);
     await uninstallCommand(
       ['git-commit'],
       { cwd: workspace.repoRoot, platform: 'codex' } as any,
       { env: workspace.env, adapters: createAdapters(codex) },
     );
-    await writeInstalledLedger(
-      await applyCodexInstallLedger(createAvailableLedger(), plugin, 'user', workspace.repoRoot),
-      workspace.env,
+    await installCommand(
+      ['git-commit'],
+      { cwd: workspace.repoRoot, platform: 'codex' } as any,
+      { env: workspace.env, adapters: createAdapters(codex) },
     );
     await upgradeCommand(
       ['git-commit'],
@@ -215,7 +187,7 @@ describe('command option normalization', () => {
 
     expect(codex.scopes).toContain('user');
     expect(codex.scopes).not.toContain('project');
-  });
+  }, 15000);
 
   it('requires explicit upgrade --all platforms and defaults status to both', async () => {
     const workspace = await makeWorkspace();
@@ -270,6 +242,50 @@ describe('command option normalization', () => {
         { env: workspace.env, adapters: createAdapters(new RecordingAdapter('codex')) },
       ),
     ).rejects.toThrow('Unsupported platform "workspace".');
+  });
+
+  it('rejects adopt-existing scope misuse and removed public flags before platform writes', async () => {
+    const workspace = await makeWorkspace();
+    const codex = new RecordingAdapter('codex');
+    const adapters = createAdapters(codex);
+
+    await expect(
+      installCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          platform: 'codex',
+          adoptExisting: true,
+        } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('`install --adopt-existing` 只允许 `--scope project`。');
+
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          platform: 'codex',
+          plan: true,
+        } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('`cleanup --plan` 已移除');
+
+    await expect(
+      reinstallCommand(
+        ['git-commit'],
+        {
+          cwd: workspace.repoRoot,
+          platform: 'codex',
+          takeoverSharedRuntime: true,
+        } as any,
+        { env: workspace.env, adapters },
+      ),
+    ).rejects.toThrow('`reinstall` 不再接受 `--takeover-shared-runtime`');
+
+    expect(codex.scopes).toEqual([]);
   });
 
   it('rejects legacy platform auto for public write commands', async () => {

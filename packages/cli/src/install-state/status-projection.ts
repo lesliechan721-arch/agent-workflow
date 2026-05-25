@@ -8,13 +8,27 @@ import { compareStrictSemVerFields } from '../utils/manifest.js';
 
 export type ProjectInstallStateKind =
   | 'installed'
-  | 'needsRepair'
-  | 'adoptable'
-  | 'residual'
-  | 'externallyManaged'
+  | 'cleanupRequired'
+  | 'external'
   | 'notInstalled';
 
-export interface ProjectInstallIssue {
+export type ProjectInstallStateReasonCode =
+  | 'foreignExternalEvidence'
+  | 'claimableProjectArtifacts'
+  | 'invalidInstallRecord'
+  | 'nativeTransactionPresent'
+  | 'awOwnedResiduePresent'
+  | 'historicalRuntimeResidue'
+  | 'dependencyIndexReferenceResidue'
+  | 'sharedRuntimeOwnerResidue';
+
+export interface ProjectInstallStateReason {
+  code: ProjectInstallStateReasonCode;
+  detail?: string;
+  path?: string;
+}
+
+export interface ProjectInstallStateDiagnostic {
   code:
     | 'installRecordInvalid'
     | 'nativeTransactionPresent'
@@ -26,16 +40,27 @@ export interface ProjectInstallIssue {
     | 'historicalLifecycleUnavailable'
     | 'dependencyMissing'
     | 'projectSharedIdentityUnavailable'
+    | 'dynamicDiagnosticUnavailable'
+    | 'dependencyIndexCoverageUntrusted'
+    | 'sharedRuntimeOwnerResidue'
     | 'nativeEvidenceMissing'
     | 'catalogVersionMismatch'
-    | 'catalogVersionNonCompliant';
+    | 'catalogVersionNonCompliant'
+    | ProjectInstallStateReasonCode;
   artifactPath?: string;
   dependency?: PluginLocation;
   detail?: string;
+  path?: string;
 }
+
+// Transitional alias while phase 2+ callers migrate to diagnostics.
+export type ProjectInstallIssue = ProjectInstallStateDiagnostic;
 
 export interface ProjectInstallStateProjection {
   kind: ProjectInstallStateKind;
+  reasons: ProjectInstallStateReason[];
+  reasonCodes: ProjectInstallStateReasonCode[];
+  diagnostics: ProjectInstallStateDiagnostic[];
   issues: ProjectInstallIssue[];
   installRecordPresent: boolean;
   projectInstallState: ProjectInstallStateKind;
@@ -52,11 +77,7 @@ export interface ProjectInstallStateProjection {
   dependents: PluginLocation[];
   autoInstalled: boolean;
   unusedDependencyHint: boolean;
-  repairAvailable: boolean;
   cleanupAvailable: boolean;
-  adoptExistingAvailable: boolean;
-  sharedRuntimeOwnerPresent: boolean;
-  sharedRuntimeNeedsTakeover: boolean;
   nativeTransactionPresent: boolean;
   nativeTransactionKind: InstallEvidence['nativeTransaction']['classification'];
 }
@@ -110,8 +131,8 @@ function hasVerifiedDependents(evidence: InstallEvidence): boolean {
 }
 
 function addArtifactIssue(
-  issues: ProjectInstallIssue[],
-  code: ProjectInstallIssue['code'],
+  issues: ProjectInstallStateDiagnostic[],
+  code: ProjectInstallStateDiagnostic['code'],
   artifact: RecordArtifactEvidence,
   detail?: string,
 ): void {
@@ -395,6 +416,39 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   return issues;
 }
 
+function collectInstalledDiagnostics(evidence: InstallEvidence): ProjectInstallStateDiagnostic[] {
+  const diagnostics = collectRecordIssues(evidence);
+
+  if (!evidence.dynamicDiagnostic.available && evidence.dynamicDiagnostic.unavailableReason) {
+    diagnostics.push({
+      code: 'dynamicDiagnosticUnavailable',
+      detail: evidence.dynamicDiagnostic.unavailableReason,
+      path: evidence.dynamicDiagnostic.read?.path,
+    });
+  }
+
+  if (!evidence.dependencyIndex.projection.coverage.coverageTrusted) {
+    diagnostics.push({
+      code: 'dependencyIndexCoverageUntrusted',
+      detail: evidence.dependencyIndex.projection.coverage.reasons.join(','),
+      path: evidence.dependencyIndex.inspection.path,
+    });
+  }
+
+  if (
+    evidence.sharedRuntimeOwner.read.status === 'ok'
+    && !evidence.sharedRuntimeOwner.ownerMatchesTarget
+  ) {
+    diagnostics.push({
+      code: 'sharedRuntimeOwnerResidue',
+      detail: evidence.sharedRuntimeOwner.read.value.ownerRecordPath,
+      path: evidence.sharedRuntimeOwner.read.path,
+    });
+  }
+
+  return diagnostics;
+}
+
 function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
   const currentCatalogSource = evidence.currentCatalog.source;
   if (!evidence.installRecord.present || !currentCatalogSource) {
@@ -444,6 +498,32 @@ function collectCatalogVersionIssues(evidence: InstallEvidence): ProjectInstallI
   return [];
 }
 
+function pushReason(
+  reasons: ProjectInstallStateReason[],
+  code: ProjectInstallStateReasonCode,
+  detail?: string,
+  path?: string,
+): void {
+  reasons.push({
+    code,
+    ...(detail ? { detail } : {}),
+    ...(path ? { path } : {}),
+  });
+}
+
+function pushDiagnosticFromReason(
+  diagnostics: ProjectInstallStateDiagnostic[],
+  code: ProjectInstallStateReasonCode,
+  detail?: string,
+  path?: string,
+): void {
+  diagnostics.push({
+    code,
+    ...(detail ? { detail } : {}),
+    ...(path ? { path } : {}),
+  });
+}
+
 export function projectInstallState(
   evidence: InstallEvidence,
   options: {
@@ -451,39 +531,235 @@ export function projectInstallState(
   } = {},
 ): ProjectInstallStateProjection {
   const installRecordPresent = evidence.installRecord.present;
-  const issues: ProjectInstallIssue[] = [];
+  const diagnostics: ProjectInstallStateDiagnostic[] = [];
+  const reasons: ProjectInstallStateReason[] = [];
 
-  if (!installRecordPresent && evidence.installRecord.read.status !== 'missing') {
-    issues.push({
-      code: 'installRecordInvalid',
-      detail: 'code' in evidence.installRecord.read ? evidence.installRecord.read.code : evidence.installRecord.read.status,
-    });
-  }
+  let kind: ProjectInstallStateKind = 'notInstalled';
 
-  const recordIssues = installRecordPresent ? collectRecordIssues(evidence) : [];
-  issues.push(...recordIssues);
-  issues.push(...collectCatalogVersionIssues(evidence));
-
-  let kind: ProjectInstallStateKind;
   if (installRecordPresent) {
-    kind = issues.length > 0 ? 'needsRepair' : 'installed';
-  } else if (issues.length > 0) {
-    kind = 'needsRepair';
-  } else if (evidence.adoptable.possible) {
-    kind = 'adoptable';
-  } else if (
-    evidence.residualEvidence.privateStatePresent
-    || evidence.residualEvidence.repoVisibleArtifactPresent
-    || evidence.residualEvidence.sharedIdentityPresent
-    || evidence.residualEvidence.historicalLifecyclePresent
-    || evidence.residualEvidence.nativeMarkerPresent
-    || evidence.residualEvidence.sharedOwnerPresent
-  ) {
-    kind = 'residual';
-  } else if (evidence.platform.codexNative?.anyNativeEvidence) {
-    kind = 'externallyManaged';
+    kind = 'installed';
+    diagnostics.push(...collectInstalledDiagnostics(evidence));
+    diagnostics.push(...collectCatalogVersionIssues(evidence));
   } else {
-    kind = 'notInstalled';
+    if (evidence.platform.codexNative?.anyNativeEvidence) {
+      kind = 'external';
+      pushReason(
+        reasons,
+        'foreignExternalEvidence',
+        evidence.platform.codexNative.pluginId,
+        evidence.platform.codexNative.configPath,
+      );
+    }
+
+    if (evidence.installRecord.read.status !== 'missing') {
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(
+          reasons,
+          'invalidInstallRecord',
+          'code' in evidence.installRecord.read ? evidence.installRecord.read.code : evidence.installRecord.read.status,
+          evidence.installRecord.read.path,
+        );
+      } else {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'invalidInstallRecord',
+          'code' in evidence.installRecord.read ? evidence.installRecord.read.code : evidence.installRecord.read.status,
+          evidence.installRecord.read.path,
+        );
+      }
+    }
+
+    const nativeTransactionResidual =
+      evidence.nativeTransaction.present
+      || evidence.nativeTransaction.read.status !== 'missing';
+    if (nativeTransactionResidual) {
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(
+          reasons,
+          'nativeTransactionPresent',
+          evidence.nativeTransaction.read.status === 'ok'
+            ? evidence.nativeTransaction.classification
+            : evidence.nativeTransaction.read.code,
+          evidence.nativeTransaction.read.path,
+        );
+      } else {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'nativeTransactionPresent',
+          evidence.nativeTransaction.read.status === 'ok'
+            ? evidence.nativeTransaction.classification
+            : evidence.nativeTransaction.read.code,
+          evidence.nativeTransaction.read.path,
+        );
+      }
+    }
+
+    const awOwnedResiduePresent =
+      (
+        evidence.dynamicDiagnostic.read !== null
+        && evidence.dynamicDiagnostic.unavailableReason !== 'missing'
+      )
+      || (
+        evidence.projectSharedIdentity.read !== null
+        && evidence.projectSharedIdentity.read.status !== 'missing'
+        && !evidence.adoptable.possible
+      )
+      || (
+        evidence.residualEvidence.repoVisibleArtifactPresent
+        && !evidence.adoptable.possible
+      )
+      || evidence.residualEvidence.privateStatePresent;
+    if (awOwnedResiduePresent) {
+      const residuePath = evidence.dynamicDiagnostic.read?.path ?? evidence.projectSharedIdentity.read?.path ?? undefined;
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(reasons, 'awOwnedResiduePresent', undefined, residuePath);
+      } else {
+        pushDiagnosticFromReason(diagnostics, 'awOwnedResiduePresent', undefined, residuePath);
+      }
+    }
+
+    if (evidence.historicalLifecycle.residuePresent) {
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(
+          reasons,
+          'historicalRuntimeResidue',
+          evidence.historicalLifecycle.path ?? undefined,
+          evidence.historicalLifecycle.path ?? undefined,
+        );
+      } else {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'historicalRuntimeResidue',
+          evidence.historicalLifecycle.path ?? undefined,
+          evidence.historicalLifecycle.path ?? undefined,
+        );
+      }
+    }
+
+    if (evidence.dependencyIndex.projection.currentLocationReferenceResidue) {
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(
+          reasons,
+          'dependencyIndexReferenceResidue',
+          evidence.dependencyIndex.projection.currentLocationReferenceStatuses.join(','),
+          evidence.dependencyIndex.inspection.path,
+        );
+      } else {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'dependencyIndexReferenceResidue',
+          evidence.dependencyIndex.projection.currentLocationReferenceStatuses.join(','),
+          evidence.dependencyIndex.inspection.path,
+        );
+      }
+    }
+
+    const sharedOwnerResidual = evidence.sharedRuntimeOwner.read.status !== 'missing'
+      && (
+        evidence.residualEvidence.sharedOwnerPresent
+        || evidence.sharedRuntimeOwner.read.status !== 'ok'
+      );
+    if (sharedOwnerResidual) {
+      const detail = evidence.sharedRuntimeOwner.read.status === 'ok'
+        ? evidence.sharedRuntimeOwner.read.value.ownerRecordPath
+        : evidence.sharedRuntimeOwner.read.code;
+      if (kind !== 'external') {
+        kind = 'cleanupRequired';
+        pushReason(
+          reasons,
+          'sharedRuntimeOwnerResidue',
+          detail,
+          evidence.sharedRuntimeOwner.read.path,
+        );
+      } else {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'sharedRuntimeOwnerResidue',
+          detail,
+          evidence.sharedRuntimeOwner.read.path,
+        );
+      }
+    }
+
+    if (kind === 'notInstalled' && evidence.adoptable.possible) {
+      kind = 'external';
+      pushReason(
+        reasons,
+        'claimableProjectArtifacts',
+        evidence.adoptable.source,
+        evidence.projectSharedIdentity.read?.status === 'ok'
+          ? evidence.projectSharedIdentity.read.path
+          : undefined,
+      );
+    }
+
+    if (kind === 'external' && evidence.platform.codexNative?.anyNativeEvidence) {
+      if (evidence.installRecord.read.status !== 'missing') {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'invalidInstallRecord',
+          'code' in evidence.installRecord.read ? evidence.installRecord.read.code : evidence.installRecord.read.status,
+          evidence.installRecord.read.path,
+        );
+      }
+      if (evidence.nativeTransaction.present) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'nativeTransactionPresent',
+          evidence.nativeTransaction.classification,
+          evidence.nativeTransaction.read.path,
+        );
+      } else if (
+        evidence.nativeTransaction.read.status !== 'missing' &&
+        evidence.nativeTransaction.read.status !== 'ok'
+      ) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'nativeTransactionPresent',
+          evidence.nativeTransaction.read.code,
+          evidence.nativeTransaction.read.path,
+        );
+      }
+      if (awOwnedResiduePresent) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'awOwnedResiduePresent',
+          undefined,
+          evidence.dynamicDiagnostic.read?.path ?? evidence.projectSharedIdentity.read?.path ?? undefined,
+        );
+      }
+      if (evidence.historicalLifecycle.residuePresent) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'historicalRuntimeResidue',
+          evidence.historicalLifecycle.path ?? undefined,
+          evidence.historicalLifecycle.path ?? undefined,
+        );
+      }
+      if (evidence.dependencyIndex.projection.currentLocationReferenceResidue) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'dependencyIndexReferenceResidue',
+          evidence.dependencyIndex.projection.currentLocationReferenceStatuses.join(','),
+          evidence.dependencyIndex.inspection.path,
+        );
+      }
+      if (sharedOwnerResidual) {
+        pushDiagnosticFromReason(
+          diagnostics,
+          'sharedRuntimeOwnerResidue',
+          evidence.sharedRuntimeOwner.read.status === 'ok'
+            ? evidence.sharedRuntimeOwner.read.value.ownerRecordPath
+            : evidence.sharedRuntimeOwner.read.code,
+          evidence.sharedRuntimeOwner.read.path,
+        );
+      }
+    }
   }
 
   const currentCatalogSource = evidence.currentCatalog.source;
@@ -509,7 +785,10 @@ export function projectInstallState(
 
   return {
     kind,
-    issues,
+    reasons,
+    reasonCodes: [...new Set(reasons.map((reason) => reason.code))],
+    diagnostics,
+    issues: diagnostics,
     installRecordPresent,
     projectInstallState: kind,
     catalogDrift: evidence.installRecord.sourceDrift || evidence.projectSharedIdentity.sourceDrift,
@@ -528,16 +807,12 @@ export function projectInstallState(
     dependents: evidence.dependencyIndex.projection.dependents,
     autoInstalled: evidence.dependencyIndex.projection.autoInstalled,
     unusedDependencyHint: evidence.dependencyIndex.projection.unusedDependencyHint,
-    repairAvailable: installRecordPresent || evidence.nativeTransaction.present,
     cleanupAvailable:
       (
-        (kind === 'needsRepair' || kind === 'residual')
+        kind === 'cleanupRequired'
         && !hasVerifiedDependents(evidence)
       ) ||
       canExposeCodexUserNativeResidueCleanup(evidence),
-    adoptExistingAvailable: kind === 'adoptable',
-    sharedRuntimeOwnerPresent: evidence.sharedRuntimeOwner.read.status === 'ok',
-    sharedRuntimeNeedsTakeover: evidence.sharedRuntimeOwner.needsTakeover,
     nativeTransactionPresent: evidence.nativeTransaction.present,
     nativeTransactionKind: evidence.nativeTransaction.classification,
   };

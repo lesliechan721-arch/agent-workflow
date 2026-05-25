@@ -158,8 +158,8 @@ export interface CommandCandidate {
     }>;
   };
   installState?: {
-    kind: 'installed' | 'needsRepair' | 'adoptable' | 'residual' | 'externallyManaged' | 'notInstalled';
-    adoptExistingAvailable: boolean;
+    kind: 'installed' | 'cleanupRequired' | 'external' | 'notInstalled';
+    reasonCodes: string[];
     autoInstalled: boolean;
     unusedDependencyHint: boolean;
     dependencyProtected: boolean;
@@ -943,10 +943,10 @@ function resolveCandidateDisabledReason(
 
   if (!evidenceHasActionableSource(evidence)) {
     if (evidence.sources.includes('codexNativeManifest')) {
-      return '只发现了 Codex installed manifest 残留，AW 还没有足够的账本或 recovery breadcrumb 证明归属；当前先保留为诊断可见，不会直接清理。';
+      return '只发现了 Codex installed manifest 残留，AW 还没有足够的账本或 recovery breadcrumb 证明归属；当前先保留为状态详情可见，不会直接清理。';
     }
     if (evidence.sources.includes('codexNativeCache')) {
-      return '只发现了 Codex cache 残留，AW 没有成功账本或 recovery breadcrumb 证明归属；当前只能展示诊断，不能静默删除。';
+      return '只发现了 Codex cache 残留，AW 没有成功账本或 recovery breadcrumb 证明归属；当前只能展示状态详情，不能静默删除。';
     }
     if (evidence.readErrors.length > 0) {
       return '该 platform/scope 的受管状态读取失败，无法安全处理。';
@@ -986,7 +986,7 @@ function resolveCandidateDisabledReason(
     !evidence.sources.includes('ledger') &&
     !evidence.sources.includes('tracking')
   ) {
-    return '当前只有 Codex native recovery breadcrumb，安装尚未完整成功；请先运行 aw install <plugin> -p codex -s user 修复，或运行 aw uninstall <plugin> -p codex -s user 清理。';
+    return '当前只有 Codex native recovery breadcrumb，安装尚未完整成功；请先运行 aw cleanup <plugin> -p codex -s user 清理，或运行 aw reinstall <plugin> -p codex -s user 重新建立安装。';
   }
 
   if (
@@ -997,7 +997,7 @@ function resolveCandidateDisabledReason(
     !evidence.sources.includes('ledger') &&
     !evidence.sources.includes('tracking')
   ) {
-    return '当前只剩 Codex shared native ref，不能证明该 scope 安装已完整成功；请先运行 aw install <plugin> -p codex -s user 修复账本，或运行 aw uninstall <plugin> -p codex -s user 清理残留。';
+    return '当前只剩 Codex shared native ref，不能证明该 scope 安装已完整成功；请先运行 aw cleanup <plugin> -p codex -s user 清理残留，或运行 aw reinstall <plugin> -p codex -s user 重新建立安装。';
   }
 
   if (command === 'upgrade' && !target.currentPlugin) {
@@ -1033,11 +1033,11 @@ async function resolveCandidateInstallState(options: {
 
     return {
       kind: projection.kind,
-      adoptExistingAvailable: projection.adoptExistingAvailable,
+      reasonCodes: projection.reasonCodes,
       autoInstalled: projection.autoInstalled,
       unusedDependencyHint: projection.unusedDependencyHint,
       dependencyProtected: projection.dependents.length > 0,
-      ownerConflict: projection.sharedRuntimeNeedsTakeover
+      ownerConflict: projection.diagnostics.some((entry) => entry.code === 'sharedRuntimeOwnerResidue')
         && !(options.target.platform === 'codex' && options.target.scope === 'project'),
     };
   } catch {

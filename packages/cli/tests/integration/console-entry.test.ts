@@ -398,11 +398,11 @@ describe('console entry', () => {
     expect(exitCode, capture.readStderr()).toBe(0);
     const homeView = consoleDriver.views[0];
     expect(homeView).toBeDefined();
-    expect(homeView!.lines).toContain('异常');
-    const abnormalIndex = homeView!.lines.indexOf('异常');
+    const abnormalIndex = homeView!.lines.findIndex((line) => line.startsWith('异常（'));
+    expect(abnormalIndex).toBeGreaterThanOrEqual(0);
     const legacyIndex = homeView!.lines.findIndex((line) => line.includes('! missing-plugin'));
     expect(legacyIndex).toBeGreaterThan(abnormalIndex);
-    const notInstalledIndex = homeView!.lines.indexOf('未安装');
+    const notInstalledIndex = homeView!.lines.findIndex((line) => line.startsWith('未安装（'));
     if (notInstalledIndex >= 0) {
       expect(legacyIndex).toBeLessThan(notInstalledIndex);
     }
@@ -451,7 +451,7 @@ describe('console entry', () => {
     expect(exitCode, capture.readStderr()).toBe(0);
     const homeView = consoleDriver.views[0];
     expect(homeView).toBeDefined();
-    expect(homeView!.lines).toContain('异常');
+    expect(homeView!.lines.some((line) => line.startsWith('异常（'))).toBe(true);
     const legacyIndex = homeView!.lines.findIndex((line) => line.includes('! missing-plugin'));
     expect(legacyIndex).toBeGreaterThanOrEqual(0);
     const legacyBlock = homeView!.lines

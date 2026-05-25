@@ -677,38 +677,16 @@ describe('console write decision model', () => {
     expect(result.blockedReason?.code).toBe('unmanagedArtifactConflict');
   });
 
-  it('lets repairInstall reuse install or upgrade semantics and limits cleanupRecovery to matched evidence', () => {
+  it('only exposes install and upgrade write intents in the wizard action planner', () => {
     expect(resolveConsoleWriteActionPlan({
-      intent: 'repairInstall',
-      repairOperation: 'upgrade',
+      intent: 'upgrade',
     })).toEqual({
       kind: 'wizardWrite',
       operation: 'upgrade',
-      intent: 'repairInstall',
+      intent: 'upgrade',
     });
 
-    expect(resolveConsoleWriteActionPlan({
-      intent: 'repairInstall',
-      repairOperation: 'install',
-    })).toEqual({
-      kind: 'wizardWrite',
-      operation: 'install',
-      intent: 'repairInstall',
-    });
-
-    expect(resolveConsoleWriteActionPlan({
-      intent: 'cleanupRecovery',
-      cleanupRecoveryEvidenceMatches: true,
-    })).toEqual({
-      kind: 'directCommand',
-      operation: 'uninstall',
-      intent: 'cleanupRecovery',
-    });
-
-    const blocked = resolveConsoleWriteActionPlan({
-      intent: 'cleanupRecovery',
-      cleanupRecoveryEvidenceMatches: false,
-    });
-    expect('code' in blocked && blocked.code).toBe('cleanupRecoveryUnmatched');
+    const decision = resolveConsoleWriteActionPlan({ intent: 'install' });
+    expect('kind' in decision && decision.kind).toBe('wizardWrite');
   });
 });

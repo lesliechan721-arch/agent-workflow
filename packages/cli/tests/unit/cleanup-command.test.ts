@@ -317,8 +317,6 @@ describe('cleanup command (P9)', () => {
     expect(result.payload).toMatchObject({
       command: 'cleanup',
       dependencyIndex: false,
-      cleanupPlanSchemaVersion: 1,
-      dryRun: false,
       target: {
         plugin: 'git-commit',
         platform: 'claude',
@@ -327,7 +325,7 @@ describe('cleanup command (P9)', () => {
       },
     });
     expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
-    await expect(fs.readFile(path.join(builder.paths.awHome, 'cleanup-ran.txt'), 'utf8')).resolves.toBe('ran');
+    await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-ran.txt'))).resolves.toBe(false);
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
   });
 
@@ -439,7 +437,6 @@ describe('cleanup command (P9)', () => {
     expect(result.payload).toMatchObject({
       command: 'cleanup',
       dependencyIndex: false,
-      dryRun: false,
       force: true,
       target: {
         plugin: 'git-commit',
@@ -448,16 +445,13 @@ describe('cleanup command (P9)', () => {
         targetType: 'installed',
       },
       blockingReasons: [],
-      actualBackups: [],
-      actualRemovals: expect.arrayContaining([
+      deletedItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'install-record',
         }),
       ]),
     });
-    expect(result.payload.forceReason).toContain('标准 uninstall 等价路径不可用');
-    expect(result.warnings.join('\n')).toContain('已因 --force 降级为恢复清理');
-    expect(claude.uninstallPluginCalls).toEqual(['git-commit']);
+    expect(claude.uninstallPluginCalls).toEqual([]);
     await expect(fs.pathExists(recordPath)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'fallback-cleanup-should-not-run.txt'))).resolves.toBe(false);
   });
@@ -488,6 +482,7 @@ describe('cleanup command (P9)', () => {
         cwd: builder.paths.repoRoot,
         scope: 'user',
         platform: 'codex',
+        force: true,
       },
       {
         env: {
@@ -557,19 +552,23 @@ describe('cleanup command (P9)', () => {
       } satisfies Record<PlatformName, PlatformAdapter>,
     };
 
-    await expect(
-      cleanupCommand(
-        ['git-commit'],
-        {
-          cwd: builder.paths.repoRoot,
-          scope: 'user',
-          platform: 'codex',
-        },
-        runtime,
-      ),
-    ).rejects.toThrow(/如需跳过 runtime 重放并强制清理 owner，请加 --force/);
-    await expect(fs.pathExists(ownerPath)).resolves.toBe(true);
-    await expect(fs.pathExists(recordPath)).resolves.toBe(true);
+    const preview = await cleanupCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      runtime,
+    );
+    expect(preview.payload).toMatchObject({
+      command: 'cleanup',
+      dependencyIndex: false,
+      overallState: 'succeeded',
+      residueItems: [],
+    });
+    await expect(fs.pathExists(ownerPath)).resolves.toBe(false);
+    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
 
     const result = await cleanupCommand(
       ['git-commit'],
@@ -594,6 +593,7 @@ describe('cleanup command (P9)', () => {
     tempDirs.push(fixture.paths.rootDir);
     const indexPath = fixture.files.dependencyIndexPath;
     const before = await fs.readJson(indexPath);
+    const beforeRecordExists = await fs.pathExists(fixture.files.installRecordPath);
     const digest = await fs.readFile(indexPath).then((buffer) => import('../../src/install-state/internal.js').then((mod) => mod.sha256Hex(buffer)));
     const token = createDependencyIndexPruneToken({
       location: fixture.target.location,
@@ -628,6 +628,8 @@ describe('cleanup command (P9)', () => {
       dependencyIndex: true,
       receiptSchemaVersion: 2,
       overallState: 'succeeded',
+      pruneToken: token,
+      action: 'retired',
       retiredEntries: [{
         location: {
           plugin: fixture.target.location.plugin,
@@ -649,12 +651,13 @@ describe('cleanup command (P9)', () => {
       targetResults: [],
     });
     await expect(fs.pathExists(fixture.target.repoArtifactPath)).resolves.toBe(true);
+    await expect(fs.pathExists(fixture.files.installRecordPath)).resolves.toBe(beforeRecordExists);
     const after = await fs.readJson(indexPath);
     expect(before.records).toHaveLength(1);
     expect(after.records).toEqual([]);
   });
 
-  it('builds a cleanup --plan payload without writing state', async () => {
+  it('rejects cleanup --plan before writing state', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'cache-only', platform: 'codex', scope: 'user' });
     const cacheRootPath = path.join(
@@ -670,71 +673,35 @@ describe('cleanup command (P9)', () => {
       { spaces: 2 },
     );
 
-    const result = await cleanupCommand(
-      ['cache-only'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        plan: true,
-        force: true,
-        removeConfig: true,
-      },
-      {
-        env: {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
+    await expect(
+      cleanupCommand(
+        ['cache-only'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+          plan: true,
+          force: true,
+          removeConfig: true,
         },
-        adapters: {
-          codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
-          claude: new FakeAdapter(),
-        } satisfies Record<PlatformName, PlatformAdapter>,
-      },
-    );
-
-    expect(result.payload).toMatchObject({
-      command: 'cleanup',
-      dependencyIndex: false,
-      receiptSchemaVersion: 2,
-      overallState: 'succeeded',
-      cleanupPlanSchemaVersion: 1,
-      dryRun: true,
-      force: true,
-      removeConfig: true,
-      targetResults: [{
-        action: 'cleanup',
-        state: 'notRun',
-      }],
-      target: {
-        plugin: 'cache-only',
-        platform: 'codex',
-        scope: 'user',
-        targetType: 'cache-only',
-      },
-      plannedRemovals: expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'native-cache',
-        }),
-      ]),
-      wouldBackups: [],
-      wouldRemoveConfig: expect.arrayContaining([
-        expect.objectContaining({
-          status: 'planned',
-        }),
-      ]),
-      skippedForeignItems: [],
-      affectedDependents: [],
-      blockingReasons: [],
-      configStoreRemovals: [{
-        state: 'skipped',
-      }],
-    });
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          adapters: {
+            codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow('`cleanup --plan` 已移除');
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
   });
 
-  it('keeps cleanup --plan read-only even when the target agent version is too old', async () => {
+  it('rejects cleanup --plan before agent version gating', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'cache-only', platform: 'codex', scope: 'user' });
     const cacheRootPath = path.join(
@@ -750,119 +717,68 @@ describe('cleanup command (P9)', () => {
       { spaces: 2 },
     );
 
-    const result = await cleanupCommand(
-      ['cache-only'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        plan: true,
-        force: true,
-        removeConfig: true,
-      },
-      {
-        env: {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
+    await expect(
+      cleanupCommand(
+        ['cache-only'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+          plan: true,
+          force: true,
+          removeConfig: true,
         },
-        nativeCliRunner: createAgentVersionRunner({
-          codex: 'codex-cli 0.130.0',
-        }),
-        adapters: {
-          codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
-          claude: new FakeAdapter(),
-        } satisfies Record<PlatformName, PlatformAdapter>,
-      },
-    );
-
-    expect(result.payload).toMatchObject({
-      command: 'cleanup',
-      dependencyIndex: false,
-      dryRun: true,
-      target: {
-        plugin: 'cache-only',
-        platform: 'codex',
-        scope: 'user',
-        targetType: 'cache-only',
-      },
-      blockingReasons: [],
-    });
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          nativeCliRunner: createAgentVersionRunner({
+            codex: 'codex-cli 0.130.0',
+          }),
+          adapters: {
+            codex: new FakeCodexNativeCleanupAdapter(path.join(builder.paths.codexHome, 'config.toml'), cacheRootPath),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow('`cleanup --plan` 已移除');
     await expect(fs.pathExists(cacheRootPath)).resolves.toBe(true);
   });
 
-  it('builds a real blocking cleanup plan and renders blocking reasons plus config handling', async () => {
+  it('rejects cleanup --plan on blocking targets without writing state', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'empty-plugin', platform: 'codex', scope: 'user' });
 
-    const result = await cleanupCommand(
-      ['empty-plugin'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        plan: true,
-        removeConfig: true,
-      },
-      {
-        env: {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
+    await expect(
+      cleanupCommand(
+        ['empty-plugin'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+          plan: true,
+          removeConfig: true,
         },
-        p9TargetResolver: async () => {
-          throw new Error('synthetic target resolution failure');
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          p9TargetResolver: async () => {
+            throw new Error('synthetic target resolution failure');
+          },
+          adapters: {
+            codex: new FakeAdapter(),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
         },
-        adapters: {
-          codex: new FakeAdapter(),
-          claude: new FakeAdapter(),
-        } satisfies Record<PlatformName, PlatformAdapter>,
-      },
-    );
-
-    expect(result.payload).toMatchObject({
-      command: 'cleanup',
-      dependencyIndex: false,
-      receiptSchemaVersion: 2,
-      overallState: 'failed',
-      dryRun: true,
-      force: false,
-      removeConfig: true,
-      target: {
-        plugin: 'empty-plugin',
-        platform: 'codex',
-        scope: 'user',
-        targetType: 'not-installed',
-      },
-      wouldBackups: [],
-      wouldRemoveConfig: expect.arrayContaining([
-        expect.objectContaining({
-          status: 'blocked',
-        }),
-      ]),
-      blockingReasons: expect.arrayContaining([
-        expect.objectContaining({
-          code: 'nothingToClean',
-        }),
-      ]),
-      targetResults: [{
-        action: 'cleanup',
-        state: 'notRun',
-      }],
-      configStoreRemovals: [{
-        state: 'skipped',
-      }],
-    });
-
-    const output = renderCleanupReceipt({
-      payload: result.payload,
-      warnings: result.warnings,
-    }).join('\n');
-    expect(output).toContain('阻断原因：');
-    expect(output).toContain('[nothingToClean]');
-    expect(output).toContain('配置处理：');
+      ),
+    ).rejects.toThrow('`cleanup --plan` 已移除');
   });
 
   it('returns real execution cleanup payload fields and receipt labels for force cleanup', async () => {
@@ -900,25 +816,19 @@ describe('cleanup command (P9)', () => {
     expect(result.payload).toMatchObject({
       command: 'cleanup',
       dependencyIndex: false,
-      dryRun: false,
       force: true,
       target: {
         plugin: 'git-commit',
         platform: 'codex',
         scope: 'project',
-        targetType: 'marker-only',
+        targetType: 'marker-residue',
       },
-      actualBackups: expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'backup',
-        }),
-      ]),
       skippedItems: [],
-      remainingItems: [],
+      residueItems: [],
       blockingReasons: [],
     });
     expect(result.payload).toMatchObject({
-      actualRemovals: expect.arrayContaining([
+      deletedItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'native-transaction-marker',
         }),
@@ -930,16 +840,10 @@ describe('cleanup command (P9)', () => {
       warnings: result.warnings,
     }).join('\n');
     expect(output).toContain('cleanup 已完成');
-    expect(output).toContain('实际删除项：');
-    expect(output).toContain('实际备份项：');
-    expect(output).toContain('执行跳过项：');
-    expect(output).toContain('未清项：');
+    expect(output).toContain('已删除：');
+    expect(output).toContain('已跳过：');
+    expect(output).toContain('残留项：');
     expect(output).toContain('阻断原因：\n- 无');
-    expect(result.warnings.join('\n')).toContain('已备份');
-    expect(result.payload.actualBackups?.length ?? 0).toBeGreaterThan(0);
-    expect(result.payload.actualBackups?.[0]?.path).toContain(
-      path.join(builder.paths.awHome, 'cleanup-backups'),
-    );
   });
 
   it('fails Codex project cleanup on low agent version before touching repo-managed artifacts', async () => {
@@ -1201,7 +1105,6 @@ describe('cleanup command (P9)', () => {
     expect(result.payload).toMatchObject({
       command: 'cleanup',
       dependencyIndex: false,
-      dryRun: false,
       target: {
         plugin: pluginName,
         platform: 'codex',
@@ -1212,7 +1115,7 @@ describe('cleanup command (P9)', () => {
           kind: 'native-config',
         }),
       ]),
-      remainingItems: expect.arrayContaining([
+      residueItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'native-config',
         }),
@@ -1257,6 +1160,7 @@ describe('cleanup command (P9)', () => {
         cwd: builder.paths.repoRoot,
         scope: 'user',
         platform: 'codex',
+        force: true,
       },
       {
         env: {
@@ -1581,7 +1485,7 @@ describe('cleanup command (P9)', () => {
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'cleanup-both-should-not-run.txt'))).resolves.toBe(false);
   });
 
-  it('allows cleanup --force to remove the target while keeping verified dependents and surfacing follow-up guidance', async () => {
+  it('blocks cleanup when verified dependents still reference the target', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
     const configPath = path.join(builder.paths.codexHome, 'config.toml');
@@ -1620,60 +1524,30 @@ describe('cleanup command (P9)', () => {
       { spaces: 2 },
     );
 
-    const result = await cleanupCommand(
-      ['git-commit'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        force: true,
-      },
-      {
-        env: {
-          ...process.env,
-          AW_HOME: builder.paths.awHome,
-          AW_CODEX_HOME: builder.paths.codexHome,
-          AW_CLAUDE_HOME: builder.paths.claudeHome,
+    await expect(
+      cleanupCommand(
+        ['git-commit'],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+          force: true,
         },
-        adapters: {
-          codex: new FakeCodexNativeCleanupAdapter(configPath),
-          claude: new FakeAdapter(),
-        } satisfies Record<PlatformName, PlatformAdapter>,
-      },
-    );
-
-    expect(result.payload).toMatchObject({
-      command: 'cleanup',
-      dependencyIndex: false,
-      dryRun: false,
-      force: true,
-      target: {
-        plugin: 'git-commit',
-        platform: 'codex',
-        scope: 'user',
-        targetType: 'config-only',
-      },
-      affectedDependents: [{
-        plugin: 'helper-local-dependent',
-        platform: 'codex',
-        scope: 'user',
-      }],
-      blockingReasons: [],
-      actualRemovals: expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'native-config',
-        }),
-      ]),
-      remainingItems: [],
-    });
-    expect(result.payload.forceReason).toContain('repair、reinstall 或 cleanup');
-    expect(result.warnings.join('\n')).toContain('helper-local-dependent');
-    expect(result.warnings.join('\n')).toContain('repair、reinstall 或 cleanup');
-    expect(renderCleanupReceipt({
-      payload: result.payload,
-      warnings: result.warnings,
-    }).join('\n')).toContain('受影响依赖：\n- codex/user/helper-local-dependent');
-    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+        {
+          env: {
+            ...process.env,
+            AW_HOME: builder.paths.awHome,
+            AW_CODEX_HOME: builder.paths.codexHome,
+            AW_CLAUDE_HOME: builder.paths.claudeHome,
+          },
+          adapters: {
+            codex: new FakeCodexNativeCleanupAdapter(configPath),
+            claude: new FakeAdapter(),
+          } satisfies Record<PlatformName, PlatformAdapter>,
+        },
+      ),
+    ).rejects.toThrow(/verified dependents/);
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(target.pluginId);
     await expect(fs.pathExists(dependentRecordPath)).resolves.toBe(true);
   });
 
@@ -1717,6 +1591,7 @@ describe('cleanup command (P9)', () => {
         cwd: builder.paths.repoRoot,
         scope: 'user',
         platform: 'codex',
+        force: true,
       },
       {
         env: {
@@ -1737,8 +1612,7 @@ describe('cleanup command (P9)', () => {
       dependencyIndex: false,
       receiptSchemaVersion: 2,
       overallState: 'failed',
-      dryRun: false,
-      actualRemovals: expect.arrayContaining([
+      deletedItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'install-record',
         }),
@@ -1746,7 +1620,7 @@ describe('cleanup command (P9)', () => {
           kind: 'native-transaction-marker',
         }),
       ]),
-      remainingItems: expect.arrayContaining([
+      residueItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'diagnostic-cache',
           path: diagnosticCachePath,
@@ -1812,16 +1686,16 @@ describe('cleanup command (P9)', () => {
     expect(result.payload).toMatchObject({
       command: 'cleanup',
       dependencyIndex: false,
-      dryRun: false,
-      actualRemovals: expect.arrayContaining([
+      deletedItems: expect.arrayContaining([
         expect.objectContaining({
           kind: 'native-config',
         }),
       ]),
-      remainingItems: [],
-      wouldRemoveConfig: [{
+      residueItems: [],
+      configActions: [{
         plugin: 'git-commit',
         scope: 'user',
+        storeKind: 'user',
         path: configStorePath,
         status: 'failed',
         reason: 'synthetic config removal failure',
@@ -1840,7 +1714,7 @@ describe('cleanup command (P9)', () => {
         path: configStorePath,
       }],
     });
-    expect(result.warnings.join('\n')).toContain('主体清理已完成，但删除当前 target scope 的 AW 自管配置失败');
+    expect(result.warnings.join('\n')).toContain('主体清理已完成，但删除当前 target 的 AW 自管配置失败');
     await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
     await expect(fs.pathExists(configStorePath)).resolves.toBe(true);
   });

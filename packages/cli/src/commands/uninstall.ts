@@ -29,7 +29,11 @@ import {
   readInstalledLedger,
   writeInstalledLedger,
 } from '../utils/local-marketplace.js';
-import { readProjectArtifactIdentityForLocator } from '../install-state/facade.js';
+import {
+  readInstallRecordForLocation,
+  readProjectArtifactIdentityForLocator,
+} from '../install-state/facade.js';
+import type { InstallRecordFile } from '../install-state/types.js';
 import {
   createProjectArtifactSharedLocator,
   resolveProjectArtifactProjectRoot,
@@ -37,7 +41,10 @@ import {
 } from '../install-state/paths.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
-import { iterateInstalledScopeRecords } from '../utils/plugin-dependency-graph.js';
+import {
+  createInstalledDependencyEdge,
+  iterateInstalledScopeRecords,
+} from '../utils/plugin-dependency-graph.js';
 import {
   normalizePluginLocation,
   serializePluginLocation,
@@ -178,6 +185,31 @@ function resolveTrackingDir(
 
 function normalizeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toPlannerInstallSource(
+  source: InstallRecordFile['record']['installSource'] | undefined,
+): PluginDependencyPlannerInstalledRecord['installSource'] {
+  if (!source) {
+    return undefined;
+  }
+  return {
+    kind: source.kind,
+    explicitlyRequested: source.explicitlyRequested,
+    allowsUnusedCleanup: source.kind === 'dependency' && source.explicitlyRequested === false,
+  };
+}
+
+function toPlannerDependencyEdges(
+  edges: InstallRecordFile['record']['dependencyEdges'] | undefined,
+): PluginDependencyPlannerInstalledRecord['dependencyEdges'] {
+  return edges?.map((edge) => createInstalledDependencyEdge({
+    dependency: {
+      ...edge.dependency,
+      projectKey: edge.dependency.projectKey ?? null,
+    },
+    declaration: structuredClone(edge.declaration),
+  }));
 }
 
 async function hasProjectSharedIdentityForTrackedCodexSkills(options: {
@@ -573,8 +605,10 @@ async function collectUninstallPlannerState(options: {
     currentCatalogPlugins.map((plugin) => [plugin.manifest.name, plugin.manifest]),
   );
 
-  const installedRecords: PluginDependencyPlannerInstalledRecord[] = iterateInstalledScopeRecords(options.ledger)
-    .map(({ location, record }) => ({
+  const installedRecordsByLocation = new Map<string, PluginDependencyPlannerInstalledRecord>(
+    iterateInstalledScopeRecords(options.ledger).map(({ location, record }) => [
+      serializePluginLocation(location),
+      {
       location,
       resolvedVersion: record.resolvedVersion,
       installSource: record.installSource
@@ -586,7 +620,30 @@ async function collectUninstallPlannerState(options: {
       installOptions: record.installOptions
         ? structuredClone(record.installOptions)
         : undefined,
-    }));
+      },
+    ]),
+  );
+  for (const { location } of iterateInstalledScopeRecords(options.ledger)) {
+    const installRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+    });
+    if (installRecord.status !== 'ok') {
+      continue;
+    }
+
+    installedRecordsByLocation.set(serializePluginLocation(location), {
+      location,
+      resolvedVersion: installRecord.value.record.source.pluginVersion,
+      installSource: toPlannerInstallSource(installRecord.value.record.installSource),
+      dependencyEdges: toPlannerDependencyEdges(installRecord.value.record.dependencyEdges),
+      installOptions: installRecord.value.record.options
+        ? structuredClone(installRecord.value.record.options)
+        : undefined,
+    });
+  }
+  const installedRecords = [...installedRecordsByLocation.values()];
 
   const requestedKeys = new Set(options.requestedLocations.map((location) => serializePluginLocation(location)));
   const healthLocations = iterateInstalledScopeRecords(options.ledger)
@@ -1325,7 +1382,7 @@ function renderCleanupCommandForLocation(location: PluginLocation, force = false
 }
 
 function renderAdoptExistingCommand(location: PluginLocation): string {
-  return `aw repair ${renderUninstallLocationArgs(location)} --adopt-existing`;
+  return `aw install ${renderUninstallLocationArgs(location)} --adopt-existing`;
 }
 
 function hasManagedLedgerScopeRecord(
@@ -1367,27 +1424,12 @@ async function assertStandardUninstallableLocations(options: {
       location,
       env: options.env,
     });
-    const deferCodexProjectNotInstalledSafetyChecks =
-      location.platform === 'codex' &&
-      location.scope === 'project' &&
-      (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged');
-    const deferLedgerBackedPlannerChecks = hasManagedLedgerScopeRecord(options.ledger, location) &&
-      (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged');
-    if (deferCodexProjectNotInstalledSafetyChecks || deferLedgerBackedPlannerChecks) {
-      continue;
-    }
-    const reasonCode = state.projection.kind === 'adoptable'
-      ? 'duplicateInstall'
-      : state.projection.kind === 'installed'
-        ? null
-        : state.projection.kind === 'notInstalled'
-          ? 'notInstalled'
-          : state.projection.kind === 'externallyManaged'
-            ? 'foreignOwnershipConflict'
-            : state.projection.kind === 'residual'
-              ? 'residualState'
-              : 'unsafeStandardUninstall';
-    if (!reasonCode) {
+    const installRecord = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+    });
+    if (installRecord.status === 'ok' && state.projection.kind === 'installed') {
       continue;
     }
 
@@ -1395,18 +1437,27 @@ async function assertStandardUninstallableLocations(options: {
       location,
       state.forceCleanupRequired || state.removalProtection.blockedDependents.length > 0,
     );
-    if (state.projection.kind === 'adoptable') {
+    if (
+      state.projection.kind === 'external' &&
+      state.projection.reasonCodes.includes('claimableProjectArtifacts')
+    ) {
       throw new Error(
-        `[reason=${reasonCode}] ${renderUninstallLocationLabel(location)} 当前是可认领的重复安装处理场景，标准 uninstall 不会直接删除共享产物。请改用 ${renderAdoptExistingCommand(location)}；若要放弃这份状态，请先运行 ${cleanupCommand}。`,
+        `[reason=unsafeStandardUninstall] ${renderUninstallLocationLabel(location)} 当前是可认领的 project shared artifacts 场景，标准 uninstall 不会直接删除共享产物。请改用 ${renderAdoptExistingCommand(location)}；若要放弃这份状态，请先运行 ${cleanupCommand}。`,
       );
     }
 
-    const issueSummary = state.projection.issues
+    const issueSummary = [
+      ...state.projection.issues
       .map((issue) => issue.code)
-      .filter((code, index, all) => all.indexOf(code) === index)
-      .join('、');
+      .filter((code, index, all) => all.indexOf(code) === index),
+      ...(installRecord.status === 'missing'
+        ? ['missingInstallRecord']
+        : installRecord.status === 'ok'
+          ? []
+          : [`installRecord:${installRecord.code}`]),
+    ].join('、');
     throw new Error(
-      `[reason=${reasonCode}] ${renderUninstallLocationLabel(location)} 当前不满足标准 uninstall 前提`
+      `[reason=unsafeStandardUninstall] ${renderUninstallLocationLabel(location)} 当前不满足标准 uninstall 前提`
       + `${issueSummary ? `（${issueSummary}）` : ''}。请改用 ${cleanupCommand}。`,
     );
   }

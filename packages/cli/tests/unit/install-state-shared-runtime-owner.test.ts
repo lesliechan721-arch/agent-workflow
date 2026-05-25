@@ -269,7 +269,7 @@ describe('install-state shared runtime owner', () => {
     }
   });
 
-  it('requires takeover for non-owner shared runtime changes and rejects upgrade --all takeover', async () => {
+  it('blocks non-owner shared runtime changes without suggesting takeover', async () => {
     const embeddedRoot = await makeTempDir('aw-shared-owner-embedded-');
     const marketplaceRoot = await makeTempDir('aw-shared-owner-marketplace-');
     const root = await makeTempDir('aw-shared-owner-root-');
@@ -305,8 +305,10 @@ describe('install-state shared runtime owner', () => {
     });
     expect(required.status).toBe('takeoverRequired');
     if (required.status === 'takeoverRequired') {
-      expect(required.takeoverRequired.suggestedFlag).toBe('--takeover-shared-runtime');
       expect(required.takeoverRequired.currentOwner).toEqual(ownerLocation);
+      expect(required.takeoverRequired.message).toContain('请先卸载、cleanup');
+      expect(required.takeoverRequired.message).not.toContain('--takeover-shared-runtime');
+      expect(required.takeoverRequired.message).not.toContain('aw repair');
     }
 
     const blocked = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
@@ -320,8 +322,11 @@ describe('install-state shared runtime owner', () => {
       env,
     });
     expect(blocked.status).toBe('takeoverNotAllowed');
+    if (blocked.status === 'takeoverNotAllowed') {
+      expect(blocked.takeoverRequired.message).not.toContain('--takeover-shared-runtime');
+    }
 
-    const allowed = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
+    const legacyTakeoverAttempt = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
       location: contenderLocation,
       embeddedRoot,
       target: runtimeTarget,
@@ -331,17 +336,17 @@ describe('install-state shared runtime owner', () => {
       targetCount: 1,
       env,
     });
-    expect(allowed.status).toBe('ok');
-    if (allowed.status === 'ok') {
-      expect(allowed.ownerAction).toBe('takeover');
-      expect(allowed.shouldMaterializeRuntime).toBe(true);
+    expect(legacyTakeoverAttempt.status).not.toBe('ok');
+    if (legacyTakeoverAttempt.status !== 'ok') {
+      expect(legacyTakeoverAttempt.takeoverRequired.message).not.toContain('--takeover-shared-runtime');
+      expect(legacyTakeoverAttempt.takeoverRequired.message).not.toContain('aw repair');
     }
   });
 
-  it('restores the previous owner and runtime when takeover fails after commit', async () => {
-    const embeddedRoot = await makeTempDir('aw-shared-owner-failure-embedded-');
-    const marketplaceRoot = await makeTempDir('aw-shared-owner-failure-marketplace-');
-    const root = await makeTempDir('aw-shared-owner-failure-root-');
+  it('rebuilds a missing owner cache when the current location is the only valid owner', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-claim-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-claim-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-claim-root-');
     const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
     const runtimeTarget: SkillTriggerMaterializationTarget = {
       platform: 'claude',
@@ -350,15 +355,11 @@ describe('install-state shared runtime owner', () => {
       root: marketplaceRoot,
     };
     const ownerLocation = makeLocation({ platform: 'claude', scope: 'user' });
-    const contenderLocation = makeLocation({ platform: 'claude', scope: 'project', projectKey: 'repo:demo' });
     const ownerRecord = makeRecord(ownerLocation, 'manual');
-    const contenderRecord = makeRecord(contenderLocation, 'auto');
     const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
-    const contenderRecordPath = path.join(root, 'records', `${contenderRecord.recordId}.json`);
 
     await writeBundlePlugin({ rootDir: embeddedRoot });
     await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
-    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
     await setRuntimePreference({
       embeddedRoot,
       target: runtimeTarget,
@@ -367,48 +368,35 @@ describe('install-state shared runtime owner', () => {
     });
 
     const preflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-      location: contenderLocation,
+      location: ownerLocation,
       embeddedRoot,
       target: runtimeTarget,
-      preference: 'auto',
-      command: 'upgrade',
-      takeoverSharedRuntime: true,
+      preference: 'manual',
+      command: 'install',
       env,
     });
     expect(preflight.status).toBe('ok');
     if (preflight.status !== 'ok') {
       throw new Error('expected ok preflight');
     }
+    expect(preflight.ownerAction).toBe('claim');
+    expect(preflight.shouldWriteOwner).toBe(true);
 
     const bundle = await createSharedSkillTriggerRuntimeUpsertStages({
       plan: preflight,
-      recordFile: contenderRecord,
-      recordPath: contenderRecordPath,
+      recordFile: ownerRecord,
+      recordPath: ownerRecordPath,
       embeddedRoot,
       target: runtimeTarget,
       env,
     });
 
-    const result = await runInstallStateTransaction({
+    await runInstallStateTransaction({
       stages: [
-        await createInstallRecordWriteStage({ filePath: contenderRecordPath, value: contenderRecord }),
+        await createInstallRecordWriteStage({ filePath: ownerRecordPath, value: ownerRecord }),
         ...bundle.stages,
-        {
-          label: 'synthetic failure',
-          async commit() {
-            throw new Error('stop after takeover');
-          },
-          async rollback() {
-            return undefined;
-          },
-          async finalize() {
-            return undefined;
-          },
-        },
       ],
-    }).catch((error) => error);
-
-    expect(result).toBeInstanceOf(InstallStateTransactionError);
+    });
     await expectRuntimePreference({
       embeddedRoot,
       target: runtimeTarget,
@@ -425,87 +413,9 @@ describe('install-state shared runtime owner', () => {
       expect(owner.value.owner).toEqual(ownerLocation);
       expect(owner.value.preference).toBe('manual');
     }
-    await expect(fs.pathExists(contenderRecordPath)).resolves.toBe(false);
   });
 
-  it('replays the new owner preference after takeover and keeps the old record untouched', async () => {
-    const embeddedRoot = await makeTempDir('aw-shared-owner-success-embedded-');
-    const marketplaceRoot = await makeTempDir('aw-shared-owner-success-marketplace-');
-    const root = await makeTempDir('aw-shared-owner-success-root-');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    const runtimeTarget: SkillTriggerMaterializationTarget = {
-      platform: 'claude',
-      scope: 'user',
-      kind: 'localMarketplaceRuntime',
-      root: marketplaceRoot,
-    };
-    const ownerLocation = makeLocation({ platform: 'claude', scope: 'user' });
-    const contenderLocation = makeLocation({ platform: 'claude', scope: 'project', projectKey: 'repo:demo' });
-    const ownerRecord = makeRecord(ownerLocation, 'manual');
-    const contenderRecord = makeRecord(contenderLocation, 'auto');
-    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
-    const contenderRecordPath = path.join(root, 'records', `${contenderRecord.recordId}.json`);
-
-    await writeBundlePlugin({ rootDir: embeddedRoot });
-    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
-    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
-    await setRuntimePreference({
-      embeddedRoot,
-      target: runtimeTarget,
-      platform: 'claude',
-      preference: 'manual',
-    });
-
-    const preflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-      location: contenderLocation,
-      embeddedRoot,
-      target: runtimeTarget,
-      preference: 'auto',
-      command: 'upgrade',
-      takeoverSharedRuntime: true,
-      env,
-    });
-    if (preflight.status !== 'ok') {
-      throw new Error('expected ok preflight');
-    }
-
-    const bundle = await createSharedSkillTriggerRuntimeUpsertStages({
-      plan: preflight,
-      recordFile: contenderRecord,
-      recordPath: contenderRecordPath,
-      embeddedRoot,
-      target: runtimeTarget,
-      env,
-    });
-
-    await runInstallStateTransaction({
-      stages: [
-        await createInstallRecordWriteStage({ filePath: contenderRecordPath, value: contenderRecord }),
-        ...bundle.stages,
-      ],
-    });
-
-    await expectRuntimePreference({
-      embeddedRoot,
-      target: runtimeTarget,
-      platform: 'claude',
-      preference: 'auto',
-    });
-    const owner = await readSharedSkillTriggerRuntimeOwner({
-      pluginName: ownerLocation.plugin,
-      platform: ownerLocation.platform,
-      env,
-    });
-    expect(owner.status).toBe('ok');
-    if (owner.status === 'ok') {
-      expect(owner.value.owner).toEqual(contenderLocation);
-      expect(owner.value.preference).toBe('auto');
-    }
-    const oldOwnerRecord = await fs.readJson(ownerRecordPath);
-    expect(oldOwnerRecord.record.options.skillTriggerPreference).toBe('manual');
-  });
-
-  it('removes owner state and restores embedded default without auto-promoting another record', async () => {
+  it('reassigns the shared runtime to the next valid record on release', async () => {
     const embeddedRoot = await makeTempDir('aw-shared-owner-removal-embedded-');
     const marketplaceRoot = await makeTempDir('aw-shared-owner-removal-marketplace-');
     const root = await makeTempDir('aw-shared-owner-removal-root-');
@@ -519,6 +429,7 @@ describe('install-state shared runtime owner', () => {
     const ownerLocation = makeLocation({ platform: 'claude', scope: 'project', projectKey: 'repo:demo' });
     const siblingLocation = makeLocation({ platform: 'claude', scope: 'user' });
     const ownerRecord = makeRecord(ownerLocation, 'auto');
+    ownerRecord.record.updatedAt = '2026-05-07T00:00:05.000Z';
     const siblingRecord = makeRecord(siblingLocation, 'manual');
     const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
     const siblingRecordPath = path.join(root, 'records', `${siblingRecord.recordId}.json`);
@@ -540,7 +451,7 @@ describe('install-state shared runtime owner', () => {
       target: runtimeTarget,
       env,
     });
-    expect(plan.ownerAction).toBe('release');
+    expect(plan.ownerAction).toBe('reassign');
 
     const bundle = await createSharedSkillTriggerRuntimeRemovalStages({
       plan,
@@ -563,12 +474,16 @@ describe('install-state shared runtime owner', () => {
       platform: ownerLocation.platform,
       env,
     });
-    expect(owner.status).toBe('missing');
+    expect(owner.status).toBe('ok');
+    if (owner.status === 'ok') {
+      expect(owner.value.owner).toEqual(siblingLocation);
+      expect(owner.value.preference).toBe('manual');
+    }
     await expectRuntimePreference({
       embeddedRoot,
       target: runtimeTarget,
       platform: 'claude',
-      preference: 'default',
+      preference: 'manual',
     });
     await expect(fs.pathExists(siblingRecordPath)).resolves.toBe(true);
   });
@@ -617,8 +532,9 @@ describe('install-state shared runtime owner', () => {
       expect(replay.failClosedCode).toBe('ownerStateInvalid');
       expect(replay.failClosedReason).toContain('shared runtime owner 无法验证');
       expect(replay.failClosedReason).toContain('owner 状态不可读（missing）');
-      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
-      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.failClosedReason).toContain('请先卸载、cleanup');
+      expect(replay.failClosedReason).not.toContain('aw repair');
+      expect(replay.failClosedReason).not.toContain('--takeover-shared-runtime');
       expect(replay.warnings).toEqual([replay.failClosedReason]);
       expect(replay.ownerInspection.read.status).toBe('missing');
     }
@@ -678,8 +594,9 @@ describe('install-state shared runtime owner', () => {
       expect(replay.failClosedCode).toBe('ownerUnverified');
       expect(replay.failClosedReason).toContain('shared runtime owner 无法验证');
       expect(replay.failClosedReason).toContain('owner record digest 不匹配');
-      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
-      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.failClosedReason).toContain('请先卸载、cleanup');
+      expect(replay.failClosedReason).not.toContain('aw repair');
+      expect(replay.failClosedReason).not.toContain('--takeover-shared-runtime');
       expect(replay.warnings).toEqual([replay.failClosedReason]);
     }
     await expectRuntimePreference({
@@ -728,8 +645,9 @@ describe('install-state shared runtime owner', () => {
     if (replay.status === 'failClosed') {
       expect(replay.failClosedCode).toBe('ownerUnverified');
       expect(replay.failClosedReason).toContain('owner record location 与 owner 文件不一致');
-      expect(replay.failClosedReason).toContain('对应目标的 `aw repair`');
-      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.failClosedReason).toContain('请先卸载、cleanup');
+      expect(replay.failClosedReason).not.toContain('aw repair');
+      expect(replay.failClosedReason).not.toContain('--takeover-shared-runtime');
     }
     await expectRuntimePreference({
       embeddedRoot,
@@ -778,8 +696,9 @@ describe('install-state shared runtime owner', () => {
     if (replay.status === 'failClosed') {
       expect(replay.failClosedCode).toBe('ownerEffectiveConfigInvalid');
       expect(replay.failClosedReason).toContain('shared runtime owner 当前 effective SkillTrigger 配置不可解析');
-      expect(replay.failClosedReason).toContain(`aw repair ${ownerLocation.plugin} --platform ${ownerLocation.platform} --scope ${ownerLocation.scope}`);
-      expect(replay.failClosedReason).toContain('--takeover-shared-runtime');
+      expect(replay.failClosedReason).toContain(`调整 ${ownerLocation.platform}/${ownerLocation.plugin} user 对应的有效安装`);
+      expect(replay.failClosedReason).not.toContain('aw repair');
+      expect(replay.failClosedReason).not.toContain('--takeover-shared-runtime');
     }
     await expectRuntimePreference({
       embeddedRoot,

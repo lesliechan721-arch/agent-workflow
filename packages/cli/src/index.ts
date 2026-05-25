@@ -8,7 +8,6 @@ import { Command, CommanderError, Option } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
-import { repairCommand } from './commands/repair.js';
 import { cleanupCommand, isCleanupExecutionFailure } from './commands/cleanup.js';
 import { reinstallCommand } from './commands/reinstall.js';
 import {
@@ -37,7 +36,6 @@ import {
   applyCatalogSelectorEnv,
   normalizeCommandOptions,
   normalizeInstallCommandOptions,
-  normalizeRepairCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
@@ -97,7 +95,6 @@ function assertNoDeprecatedSkillTriggerArgv(argv: string[]): void {
   if (
     commandName !== 'install' &&
     commandName !== 'upgrade' &&
-    commandName !== 'repair' &&
     commandName !== 'reinstall'
   ) {
     return;
@@ -268,16 +265,6 @@ function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean
   throw new Error(
     'upgrade 命令至少需要一个插件名，或传入 `--all`。运行 `aw` 打开交互控制台，或运行 `aw upgrade <plugin>` / `aw upgrade --all`。',
   );
-}
-
-function assertRepairRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
-  if (dependencyIndex && pluginNames.length > 0) {
-    throw new Error('repair --dependency-index 不接受插件名。');
-  }
-  if (pluginNames.length > 0 || dependencyIndex) {
-    return;
-  }
-  throw new Error('repair 命令至少需要一个插件名，或显式传入 --dependency-index。');
 }
 
 function assertCleanupRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
@@ -925,7 +912,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .addOption(createDeprecatedSkillTriggerOption())
-    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
+    .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -940,7 +927,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           catalogChannel?: string;
           catalogVersion?: string;
           skillTrigger?: string;
-          takeoverSharedRuntime?: boolean;
+          adoptExisting?: boolean;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -1053,7 +1040,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .addOption(createDeprecatedSkillTriggerOption())
-    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -1069,7 +1055,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           catalogChannel?: string;
           catalogVersion?: string;
           skillTrigger?: string;
-          takeoverSharedRuntime?: boolean;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -1115,63 +1100,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     );
 
   program
-    .command('repair')
-    .argument('[plugins...]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .addOption(createDeprecatedSkillTriggerOption())
-    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
-    .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
-    .option('--dependency-index', 'repair the global dependency index only', false)
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('-j, --json', 'print repair result as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      plugins: string[],
-      rawOptions: {
-        scope?: string;
-        platform?: string;
-        skillTrigger?: string;
-        takeoverSharedRuntime?: boolean;
-        adoptExisting?: boolean;
-        dependencyIndex?: boolean;
-        scriptTimeout?: string;
-        json?: boolean;
-      } & RawDiagnosticsOptions,
-    ) => {
-      const context = createActionContext('repair', rawOptions);
-      const result = await runActionWithContext(
-        context,
-        async () => {
-          assertNoDeprecatedSkillTriggerOption(rawOptions, 'repair');
-          const commandOptions = normalizeRepairCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          assertRepairRequestProvided(plugins ?? [], commandOptions.dependencyIndex);
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          return repairCommand(plugins ?? [], commandOptions, context);
-        },
-      );
-      writeLine(io.stdout, result.output);
-      commandExitState.exitCode = 0;
-    });
-
-  program
     .command('cleanup')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
-    .option('--plan', 'preview the cleanup plan without writing state', false)
     .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
     .option('--dependency-index', 'prune or repair stale dependency index entries', false)
     .option('--prune-stale <token>', 'retire a single stale dependency index reference')
@@ -1187,7 +1120,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         force?: boolean;
-        plan?: boolean;
         removeConfig?: boolean;
         dependencyIndex?: boolean;
         pruneStale?: string;
@@ -1234,7 +1166,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .addOption(createDeprecatedSkillTriggerOption())
-    .option('--takeover-shared-runtime', 'take over shared runtime ownership when required', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -1248,7 +1179,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         catalogChannel?: string;
         catalogVersion?: string;
         skillTrigger?: string;
-        takeoverSharedRuntime?: boolean;
         scriptTimeout?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,

@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe('minimal plugin install state fixtures', () => {
-  it('builds the six default user-facing states in isolated temp roots', async () => {
+  it('maps legacy baseline scenarios onto the four public install states in isolated temp roots', async () => {
     const cases = [
       {
         scenario: 'installed' as const,
@@ -44,7 +44,7 @@ describe('minimal plugin install state fixtures', () => {
       },
       {
         scenario: 'needsRepair' as const,
-        state: 'needsRepair',
+        state: 'installed',
         hasRecord: true,
         hasDiagnostic: true,
         hasIdentity: true,
@@ -55,7 +55,7 @@ describe('minimal plugin install state fixtures', () => {
       },
       {
         scenario: 'adoptable' as const,
-        state: 'adoptable',
+        state: 'external',
         hasRecord: false,
         hasDiagnostic: false,
         hasIdentity: true,
@@ -66,7 +66,7 @@ describe('minimal plugin install state fixtures', () => {
       },
       {
         scenario: 'residual' as const,
-        state: 'residual',
+        state: 'cleanupRequired',
         hasRecord: false,
         hasDiagnostic: true,
         hasIdentity: false,
@@ -77,7 +77,7 @@ describe('minimal plugin install state fixtures', () => {
       },
       {
         scenario: 'externallyManaged' as const,
-        state: 'externallyManaged',
+        state: 'external',
         hasRecord: false,
         hasDiagnostic: false,
         hasIdentity: false,
@@ -167,13 +167,13 @@ describe('minimal plugin install state fixtures', () => {
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'shared-runtime-owners', 'codex', `${userTarget.pluginSlug}.${userTarget.pluginHash}.json`))).resolves.toBe(true);
   });
 
-  it('creates the fresh-clone project fixture as adoptable shared artifacts without a local record', async () => {
+  it('creates the fresh-clone project fixture as external claimable shared artifacts without a local record', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await makeRootDir(),
       scenario: 'freshCloneProject',
     });
 
-    expect(fixture.state).toBe('adoptable');
+    expect(fixture.state).toBe('external');
     expect(fixture.target.location.scope).toBe('project');
     await expect(fs.pathExists(fixture.target.repoArtifactPath)).resolves.toBe(true);
     await expect(fs.pathExists(fixture.files.projectIdentityPath)).resolves.toBe(true);
@@ -182,21 +182,23 @@ describe('minimal plugin install state fixtures', () => {
 
   it('creates damage fixtures for record, diagnostics, identity, dependency index, lifecycle, and marker edge cases', async () => {
     const cases = [
-      'corruptedRecord',
-      'corruptedDiagnosticCache',
-      'corruptedIdentityMetadata',
-      'staleDependencyIndex',
-      'unreadableDependencyIndex',
-      'missingHistoricalLifecycle',
-      'nativeMarkerOnly',
-      'recordAndInstallMarkerResidual',
+      { scenario: 'corruptedRecord' as const, state: 'cleanupRequired' },
+      { scenario: 'corruptedDiagnosticCache' as const, state: 'installed' },
+      { scenario: 'corruptedIdentityMetadata' as const, state: 'installed' },
+      { scenario: 'staleDependencyIndex' as const, state: 'cleanupRequired' },
+      { scenario: 'unreadableDependencyIndex' as const, state: 'cleanupRequired' },
+      { scenario: 'missingHistoricalLifecycle' as const, state: 'installed' },
+      { scenario: 'nativeMarkerOnly' as const, state: 'cleanupRequired' },
+      { scenario: 'recordAndInstallMarkerResidual' as const, state: 'installed' },
     ] as const;
 
-    for (const scenario of cases) {
+    for (const { scenario, state } of cases) {
       const fixture = await writeMinimalPluginInstallStateFixture({
         rootDir: await makeRootDir(),
         scenario,
       });
+
+      expect(fixture.state).toBe(state);
 
       switch (scenario) {
         case 'corruptedRecord': {

@@ -27,6 +27,8 @@ import type {
   PluginLocation,
   PluginMeta,
   PluginStatusReport,
+  ReceiptOverallState,
+  ReceiptTargetResult,
   ResolvedInstallOptions,
   Scope,
   TrackingManifest,
@@ -210,6 +212,10 @@ import {
   type PluginDependencyWriteExecutorNode,
   type PluginDependencyWriteExecutorRollbackFailure,
 } from './plugin-dependency-write-executor.js';
+import {
+  runInstallAdoptExistingMigration,
+  type InstallAdoptExistingMigrationResult,
+} from './repair.js';
 
 type InstallCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
@@ -261,6 +267,62 @@ interface InstallCommandResult {
   marketplace?: PreparedMarketplaceState;
   receiptTargets?: InstallCommandReceiptTarget[];
   receiptActions?: InstallCommandReceiptAction[];
+  targetResults?: ReceiptTargetResult[];
+  overallState?: ReceiptOverallState;
+  receiptDetails?: {
+    adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
+    reinstall?: {
+      configPreserved: boolean;
+      cleanupStage: {
+        overallState: ReceiptOverallState;
+        targets: Array<{
+          plugin: string;
+          platform: PlatformName;
+          scope: Scope;
+          projectKey?: string;
+          targetType: string;
+          state: 'completed' | 'notNeeded';
+          deletedItems: Array<{
+            kind: string;
+            label: string;
+            path?: string;
+            detail?: string;
+          }>;
+          skippedItems: Array<{
+            kind: string;
+            label: string;
+            path?: string;
+            detail?: string;
+          }>;
+          failedItems: Array<{
+            kind: string;
+            label: string;
+            path?: string;
+            detail?: string;
+          }>;
+          residueItems: Array<{
+            kind: string;
+            label: string;
+            path?: string;
+            detail?: string;
+          }>;
+          blockingReasons: Array<{
+            code: string;
+            message: string;
+            suggestedCommand?: string;
+          }>;
+        }>;
+      };
+      installStage: {
+        overallState: ReceiptOverallState;
+        targetResults: ReceiptTargetResult[];
+      };
+    };
+  };
+}
+
+function renderInstallAdoptExistingCommand(location: Pick<PluginLocation, 'plugin' | 'platform' | 'scope'>): string {
+  return `aw install ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing`;
 }
 
 export interface InstallLocationGraphContext {
@@ -1229,7 +1291,7 @@ function wrapCodexNativeInstallFailure(
   const detail = error.message;
   if (!recoveryBreadcrumbPersisted) {
     return new Error(
-      `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 没有持久化 native transaction marker：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请运行 \`aw status --verbose\` 查看 marker、config 和 cache 诊断。`,
+      `Codex 原生插件 ${pluginName}@aw 已写入，但 AW 没有持久化 native transaction marker：${detail}。当前不能承诺后续 cleanup / uninstall 一定具备自动授权；请运行 \`aw status --verbose\` 查看 marker、config 和 cache 诊断。`,
     );
   }
 
@@ -1398,7 +1460,7 @@ async function installTargetOnPlatform(
     });
     if (existingRecord.status !== 'ok' && projectStatusLooksAdoptable(pluginStatus)) {
       throw new Error(
-        `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+        `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动认领。请先运行 \`${renderInstallAdoptExistingCommand(location)}\`。`,
       );
     }
 
@@ -1417,7 +1479,7 @@ async function installTargetOnPlatform(
     });
     if (existingRecord.status !== 'ok' && sharedIdentity.status === 'ok') {
       throw new Error(
-        `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+        `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动认领。请先运行 \`${renderInstallAdoptExistingCommand(location)}\`。`,
       );
     }
   }
@@ -2007,10 +2069,12 @@ async function installTargetOnPlatform(
         target: createSkillTriggerMaterializationTarget(platform, options.scope, options.cwd, env),
         preference: materializationPreference,
         command: operation === 'upgrade' ? 'upgrade' : 'install',
-        takeoverSharedRuntime: options.takeoverSharedRuntime,
         targetCount: 1,
         env,
       });
+      if (sharedOwnerPreflight.status !== 'ok') {
+        throw new Error(normalizeSharedRuntimeOwnerBlockMessage(sharedOwnerPreflight.takeoverRequired.message));
+      }
       if (sharedOwnerPreflight.status === 'ok' && sharedOwnerPreflight.shouldWriteOwner) {
         transactionStages.push(await createSharedRuntimeOwnerWriteStage({
           recordFile,
@@ -2042,7 +2106,7 @@ async function installTargetOnPlatform(
     for (const warning of transactionResult.warnings) {
       if (warning.code === 'nativeMarkerDeleteFailed') {
         throw new PostInstallCleanupError(
-          `插件 ${target.currentPlugin.manifest.name} 已安装成功，但 native transaction marker 清理失败：${warning.error ?? warning.message}。请运行 \`aw repair ${target.currentPlugin.manifest.name} --platform ${platform} --scope ${options.scope}\` 或手动清理后重试。`,
+          `插件 ${target.currentPlugin.manifest.name} 已安装成功，但 native transaction marker 清理失败：${warning.error ?? warning.message}。请运行 \`aw status ${target.currentPlugin.manifest.name} --platform ${platform} --scope ${options.scope} --verbose\` 检查诊断，必要时再改用 \`aw cleanup\` 或 \`aw reinstall\`。`,
         );
       }
       warnings.push(
@@ -3397,7 +3461,7 @@ async function preflightInstallGraphWrites(options: {
 
       if (!installedRecord && projectStatusLooksAdoptable(status)) {
         throw new Error(
-          `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+          `${location.plugin} 在 ${location.platform} (${location.scope}) 检测到可认领的 project artifacts；install 不会自动认领。请先运行 \`${renderInstallAdoptExistingCommand(location)}\`。`,
         );
       }
 
@@ -3416,7 +3480,7 @@ async function preflightInstallGraphWrites(options: {
       });
       if (!installedRecord && sharedIdentity.status === 'ok') {
         throw new Error(
-          `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动接管。请先运行 \`aw repair ${location.plugin} --platform ${location.platform} --scope ${location.scope} --adopt-existing\`。`,
+          `${location.plugin} 在 ${location.platform} (${location.scope}) 已存在可认领的 project artifact shared identity；install 不会自动认领。请先运行 \`${renderInstallAdoptExistingCommand(location)}\`。`,
         );
       }
     }
@@ -3433,12 +3497,11 @@ async function preflightInstallGraphWrites(options: {
         ),
         preference: resolveMaterializationPreference(resolvedInstallOptions),
         command: 'install',
-        takeoverSharedRuntime: options.commandOptions.takeoverSharedRuntime,
         targetCount: options.plan.requestedRoots.length,
         env: options.env,
       });
       if (sharedOwnerPreflight.status !== 'ok') {
-        throw new Error(sharedOwnerPreflight.takeoverRequired.message);
+        throw new Error(normalizeSharedRuntimeOwnerBlockMessage(sharedOwnerPreflight.takeoverRequired.message));
       }
     }
   }
@@ -3542,6 +3605,100 @@ function withEarlyDegradedLedgerWarning(
   ];
 }
 
+function normalizeSharedRuntimeOwnerBlockMessage(message: string): string {
+  return message;
+}
+
+function toInstallAdoptWarnings(
+  locations: InstallAdoptExistingMigrationResult['locations'],
+): string[] {
+  return locations.flatMap((location) =>
+    location.warnings.map((warning) =>
+      `[${location.platform}/${location.plugin}] ${warning.message}${warning.error ? ` ${warning.error}` : ''}`),
+  );
+}
+
+async function runInstallAdoptExisting(
+  pluginNames: string[],
+  options: InstallCommandOptions,
+  runtime: InstallCommandRuntime,
+): Promise<InstallCommandResult> {
+  if (options.scope !== 'project') {
+    throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
+  }
+
+  let adoptResult: InstallAdoptExistingMigrationResult;
+  const repairRuntime: InstallCommandRuntime = {
+    ...runtime,
+    env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
+  };
+  try {
+    adoptResult = await runInstallAdoptExistingMigration(pluginNames, {
+      cwd: options.cwd,
+      scope: options.scope,
+      platform: options.platform,
+      ...(options.requestedSkillTrigger === undefined
+        ? {}
+        : { requestedSkillTrigger: options.requestedSkillTrigger }),
+      ...(options.scriptTimeoutMs === undefined
+        ? {}
+        : { scriptTimeoutMs: options.scriptTimeoutMs }),
+    }, repairRuntime);
+  } catch (error) {
+    const normalized = error instanceof Error
+      ? normalizeSharedRuntimeOwnerBlockMessage(error.message)
+      : String(error);
+    throw error instanceof Error && normalized === error.message
+      ? error
+      : new Error(normalized);
+  }
+
+  const locations = adoptResult.locations;
+  if (locations.length === 0) {
+    throw new Error('没有找到可认领的 project artifacts。');
+  }
+
+  return {
+    platforms: [...new Set(locations.map((location) => location.platform))],
+    plugins: [...new Set(locations.map((location) => location.plugin))],
+    warnings: [
+      ...collectCommandWarnings(
+        [...new Set(locations.map((location) => location.platform))],
+        options.scope,
+      ),
+      ...toInstallAdoptWarnings(locations),
+    ],
+    nativePlugins: {},
+    repoManagedArtifacts: [],
+    overallState: 'succeeded',
+    receiptTargets: locations.map((location) => ({
+      plugin: location.plugin,
+      platform: location.platform,
+      scope: location.scope,
+      requested: true,
+      ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+    })),
+    targetResults: locations.map((location) => ({
+      target: {
+        pluginName: location.plugin,
+        platform: location.platform,
+        scope: location.scope,
+        ...(location.projectKey ? { projectKey: location.projectKey } : {}),
+      },
+      action: 'install',
+      state: 'completed',
+      rollbackState: 'notNeeded',
+    })),
+    ...(locations.some((location) => location.adoptExistingLifecycleReason === 'adoptExistingFirstLocalRecord')
+      ? {
+          receiptDetails: {
+            adoptExistingLifecycleReason: 'adoptExistingFirstLocalRecord' as const,
+          },
+        }
+      : {}),
+  };
+}
+
 export async function installCommand(
   pluginNames: string[],
   rawOptions: RawInstallCommandOptions,
@@ -3550,6 +3707,9 @@ export async function installCommand(
   const options = normalizeInstallCommandOptions(rawOptions);
   if (pluginNames.length === 0) {
     throw new Error('install 命令至少需要一个插件名。非交互模式下请运行 `aw install <插件名>`。');
+  }
+  if (options.adoptExisting) {
+    return runInstallAdoptExisting(pluginNames, options, runtime);
   }
 
   const context = createCommandExecutionContext(runtime);
@@ -3577,7 +3737,7 @@ export async function installCommand(
           : await readCodexNativeRecoveryBreadcrumb(missingPluginName, env);
         if (breadcrumb) {
           throw new Error(
-            `${missingPluginName} 当前不在 current catalog 中，无法执行 repair install。请先恢复该插件到当前 catalog，或运行 \`aw uninstall ${missingPluginName} -p codex -s user\` 清理 Codex native 残留。`,
+            `${missingPluginName} 当前不在 current catalog 中，无法继续当前安装。请先恢复该插件到 current catalog，或运行 \`aw uninstall ${missingPluginName} -p codex -s user\` 清理 Codex native 残留。`,
           );
         }
       }

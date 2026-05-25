@@ -11,6 +11,7 @@ import {
 } from './common.js';
 import { runLifecycleScript, type LifecycleProcessRunner } from '../utils/plugin-scripts.js';
 import {
+  buildDerivedGlobalDependencyIndex,
   readInstallRecordFileAt,
   readInstallRecordForLocation,
   inspectGlobalDependencyIndex,
@@ -31,6 +32,7 @@ import {
 import {
   createDependencyIndexRefreshPostCommitAction,
   createInstallRecordDeleteStage,
+  createNativeTransactionMarkerDeleteStage,
   createPathDeleteStage,
   createProjectArtifactIdentityDeleteStage,
   createSharedRuntimeOwnerDeleteStage,
@@ -47,6 +49,7 @@ import {
   inspectSharedSkillTriggerRuntimeOwner,
   loadVerifiedHistoricalBundlePlugin,
   planSharedSkillTriggerRuntimeOwnerRemoval,
+  readDerivedSharedSkillTriggerRuntimeOwner,
   type SharedSkillTriggerRuntimeStageBundle,
 } from '../install-state/shared-runtime-owner.js';
 import {
@@ -59,9 +62,9 @@ import {
 } from '../install-state/ids.js';
 import {
   getDiagnosticCachePath,
+  getGlobalDependencyIndexPath,
   getInstallRecordPath,
   getInstallStatePrivateRoot,
-  getNativeTransactionMarkerPath,
   resolveProjectScopeRepoRoot,
 } from '../install-state/paths.js';
 import type {
@@ -69,6 +72,7 @@ import type {
   GeneratedArtifact,
   PlatformAdapter,
   PlatformName,
+  PluginLocation as LedgerPluginLocation,
   PluginMeta,
   Scope,
 } from '../types.js';
@@ -90,9 +94,9 @@ import {
   normalizeSharedNativeRefs,
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
+import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import { resolveSkillTriggerPolicies } from '../utils/skill-trigger-preferences.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import { sha256Hex } from '../install-state/internal.js';
 
 export interface InstallStateRemovalRuntime extends CommandExecutionContextInput {
@@ -114,12 +118,15 @@ export interface InstallStateCleanupExecutionItem {
 
 export interface InstallStateCleanupResult extends InstallStateRemovalResult {
   summary: string;
-  backups: string[];
   skippedItems: InstallStateCleanupExecutionItem[];
+  failedItems: InstallStateCleanupExecutionItem[];
 }
 
 export interface InstallStatePruneResult {
   warnings: string[];
+  pruneToken: string;
+  action: 'retired' | 'skipped';
+  skippedReason?: string;
   retiredEntries: Array<{
     location: PluginLocation;
     recordPath: string;
@@ -146,6 +153,13 @@ export interface InstallStateRemovalProtection {
     | 'dependencyIndexCoverageUntrusted';
 }
 
+export interface InstallStateCleanupSafety {
+  protectedCodexUserNativeCleanup: boolean;
+  skipExternalNativeItems: boolean;
+  skipClaimableProjectArtifacts: boolean;
+  sharedRuntimeOwnerConflict: boolean;
+}
+
 interface ProtectedRecordEntry {
   location: PluginLocation;
   dependencyEdges: InstallRecordFile['record']['dependencyEdges'];
@@ -160,6 +174,34 @@ function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
     && left.platform === right.platform
     && left.scope === right.scope
     && (left.projectKey ?? null) === (right.projectKey ?? null);
+}
+
+function toLedgerPluginLocation(location: PluginLocation): LedgerPluginLocation {
+  return {
+    plugin: location.plugin,
+    platform: location.platform,
+    scope: location.scope,
+    projectKey: location.scope === 'project' ? (location.projectKey ?? null) : null,
+  };
+}
+
+function serializeComparableLocation(location: PluginLocation): string {
+  return serializePluginLocation(toLedgerPluginLocation(location));
+}
+
+function isPureCodexUserNativeResidueForCleanup(evidence: InstallEvidence): boolean {
+  return evidence.location.platform === 'codex'
+    && evidence.location.scope === 'user'
+    && !evidence.installRecord.present
+    && !evidence.nativeTransaction.present
+    && evidence.platform.codexNative !== null
+    && evidence.platform.codexNative.anyNativeEvidence
+    && !evidence.residualEvidence.privateStatePresent
+    && !evidence.residualEvidence.repoVisibleArtifactPresent
+    && !evidence.residualEvidence.sharedIdentityPresent
+    && !evidence.residualEvidence.historicalLifecyclePresent
+    && !evidence.residualEvidence.nativeMarkerPresent
+    && !evidence.residualEvidence.sharedOwnerPresent;
 }
 
 function dedupeLocations(locations: PluginLocation[]): PluginLocation[] {
@@ -207,17 +249,6 @@ function createMaterializationTarget(
     kind: 'localMarketplaceRuntime',
     root: resolveAwHome(env),
   };
-}
-
-function assertCleanupBackupPathForTests(
-  targetPath: string,
-  source: string,
-): string {
-  return assertTestWritablePath(
-    targetPath,
-    source,
-    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 cleanup backup 路径。',
-  );
 }
 
 function resolveTrackingDir(
@@ -284,6 +315,91 @@ async function listReadableScopedRecords(options: {
   return output;
 }
 
+async function collectVisibleInstallRecordsForDependencyIndex(options: {
+  cwd: string;
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<Array<{ recordFile: InstallRecordFile; recordPath: string }>> {
+  const locations: PluginLocation[] = [
+    {
+      plugin: '__unused__',
+      platform: 'codex',
+      scope: 'user',
+    },
+    {
+      plugin: '__unused__',
+      platform: 'claude',
+      scope: 'user',
+    },
+  ];
+
+  if (options.location.scope === 'project') {
+    locations.push(
+      {
+        plugin: '__unused__',
+        platform: 'codex',
+        scope: 'project',
+        projectKey: options.cwd,
+      },
+      {
+        plugin: '__unused__',
+        platform: 'claude',
+        scope: 'project',
+        projectKey: options.cwd,
+      },
+    );
+  } else {
+    locations.push(
+      {
+        plugin: '__unused__',
+        platform: 'codex',
+        scope: 'project',
+        projectKey: await resolveProjectKeyForPlatform('codex', options.cwd),
+      },
+      {
+        plugin: '__unused__',
+        platform: 'claude',
+        scope: 'project',
+        projectKey: await resolveProjectKeyForPlatform('claude', options.cwd),
+      },
+    );
+  }
+
+  const output: Array<{ recordFile: InstallRecordFile; recordPath: string }> = [];
+  const seen = new Set<string>();
+
+  for (const pseudoLocation of locations) {
+    const recordsDir = path.join(
+      getInstallStatePrivateRoot(options.cwd, pseudoLocation, options.env),
+      'records',
+    );
+    if (!(await fs.pathExists(recordsDir))) {
+      continue;
+    }
+    const entries = (await fs.readdir(recordsDir))
+      .filter((entry) => entry.endsWith('.json'))
+      .sort();
+    for (const entry of entries) {
+      const recordPath = path.join(recordsDir, entry);
+      const read = await readInstallRecordFileAt(recordPath, { env: options.env });
+      if (read.status !== 'ok') {
+        continue;
+      }
+      const dedupeKey = `${recordPath}\u0000${read.value.recordId}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+      output.push({
+        recordFile: read.value,
+        recordPath,
+      });
+    }
+  }
+
+  return output;
+}
+
 async function listLocallyVisibleReadableRecords(options: {
   cwd: string;
   location: PluginLocation;
@@ -334,7 +450,43 @@ async function analyzeRemovalDependencyProtection(options: {
     .map((entry) => entry.location));
 
   const inspection = await inspectGlobalDependencyIndex(options.env);
-  if (inspection.status !== 'ok') {
+  const derivedIndex = await buildDerivedGlobalDependencyIndex({
+    recordEntries: await collectVisibleInstallRecordsForDependencyIndex(options),
+    env: options.env,
+  });
+
+  const effectiveRecords = inspection.status === 'ok'
+    ? [
+        ...inspection.value.records
+          .filter((entry, index) => inspection.references[index]?.status === 'verified'),
+        ...derivedIndex.rebuiltEntries.filter((entry) =>
+          !inspection.value.records.some((existing, index) =>
+            inspection.references[index]?.status === 'verified'
+            && existing.recordPath === entry.recordPath
+            && serializeComparableLocation(existing.location) === serializeComparableLocation(entry.location))),
+      ]
+    : derivedIndex.rebuiltEntries;
+  const effectiveReferenceStatusByIdentity = new Map<string, DependencyIndexReferenceInspection['status']>();
+  if (inspection.status === 'ok') {
+    for (const [index, reference] of inspection.references.entries()) {
+      const record = inspection.value.records[index];
+      if (!record) {
+        continue;
+      }
+      effectiveReferenceStatusByIdentity.set(
+        `${record.recordPath}\u0000${serializeComparableLocation(record.location)}`,
+        reference.status,
+      );
+    }
+  }
+  for (const record of derivedIndex.rebuiltEntries) {
+    effectiveReferenceStatusByIdentity.set(
+      `${record.recordPath}\u0000${serializeComparableLocation(record.location)}`,
+      'verified',
+    );
+  }
+
+  if (inspection.status !== 'ok' && derivedIndex.rebuiltEntries.length === 0) {
     return options.location.scope === 'user'
       ? {
           allowed: false,
@@ -352,8 +504,11 @@ async function analyzeRemovalDependencyProtection(options: {
         };
   }
 
-  const verifiedIndexDependents = inspection.value.records
-    .filter((entry, index) => inspection.references[index]?.status === 'verified')
+  const verifiedIndexDependents = effectiveRecords
+    .filter((entry) =>
+      effectiveReferenceStatusByIdentity.get(
+        `${entry.recordPath}\u0000${serializeComparableLocation(entry.location)}`,
+      ) === 'verified')
     .filter((entry) => !sameLocation(entry.location, options.location))
     .filter((entry) =>
       entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
@@ -363,11 +518,25 @@ async function analyzeRemovalDependencyProtection(options: {
     ...verifiedIndexDependents,
   ]);
 
-  const coverageIssue = inspection.references.some((reference) =>
-    reference.status !== 'verified'
-    && isRelevantIndexReference(options.location, reference));
+  const coverageIssue = [...effectiveReferenceStatusByIdentity.entries()].some(([identity, status]) => {
+    if (status === 'verified') {
+      return false;
+    }
+    const record = effectiveRecords.find((entry) =>
+      `${entry.recordPath}\u0000${serializeComparableLocation(entry.location)}` === identity);
+    return record
+      ? isRelevantIndexReference(options.location, {
+          recordPath: record.recordPath,
+          location: record.location,
+          status,
+        })
+      : false;
+  });
 
-  if (options.location.scope === 'user' && inspection.references.some((reference) => reference.status !== 'verified')) {
+  if (
+    options.location.scope === 'user'
+    && [...effectiveReferenceStatusByIdentity.values()].some((status) => status !== 'verified')
+  ) {
     return {
       allowed: false,
       blockedDependents,
@@ -852,6 +1021,7 @@ export async function tryUninstallUsingInstallState(options: {
           location,
           embeddedRoot: embeddedRootAttempt.root!,
           target: removalTarget,
+          cwd: options.commandOptions.cwd,
           env: context.env,
         });
         return createSharedSkillTriggerRuntimeRemovalStages({
@@ -897,11 +1067,9 @@ export async function tryUninstallUsingInstallState(options: {
             finalizeWarningCode: 'historicalLifecycleFinalizeFailed',
           })]
         : []),
-      createPathDeleteStage({
-        label: 'native transaction marker',
-        filePath: getNativeTransactionMarkerPath(location.plugin, context.env),
-        rollbackWarningCode: 'nativeMarkerRollbackFailed',
-        finalizeWarningCode: 'nativeMarkerFinalizeFailed',
+      createNativeTransactionMarkerDeleteStage({
+        pluginNameOrId: location.plugin,
+        env: context.env,
       }),
       createInstallRecordDeleteStage({ filePath: recordRead.path }),
     ],
@@ -930,28 +1098,125 @@ export async function tryUninstallUsingInstallState(options: {
   };
 }
 
-async function backupFiles(filePaths: string[], env: NodeJS.ProcessEnv): Promise<string[]> {
-  if (filePaths.length === 0) {
-    return [];
+function cleanupItemKey(item: InstallStateCleanupExecutionItem): string {
+  return [item.kind, item.path ?? '', item.label, item.detail ?? ''].join('\0');
+}
+
+function uniqueCleanupExecutionItems(
+  items: InstallStateCleanupExecutionItem[],
+): InstallStateCleanupExecutionItem[] {
+  const deduped = new Map<string, InstallStateCleanupExecutionItem>();
+  for (const item of items) {
+    deduped.set(cleanupItemKey(item), item);
   }
-  const backupRoot = assertCleanupBackupPathForTests(
-    path.join(resolveAwHome(env), 'cleanup-backups', Date.now().toString()),
-    'cleanup backup root',
-  );
-  const backedUp: string[] = [];
-  await fs.ensureDir(backupRoot);
-  for (const filePath of filePaths) {
-    if (!(await fs.pathExists(filePath))) {
-      continue;
+  return [...deduped.values()];
+}
+
+async function collectSkippedCleanupItems(options: {
+  evidence: InstallEvidence;
+  protectedCodexUserNativeCleanup: boolean;
+  skipExternalNativeItems: boolean;
+  skipClaimableProjectArtifacts: boolean;
+}): Promise<InstallStateCleanupExecutionItem[]> {
+  const items: InstallStateCleanupExecutionItem[] = [];
+  const codexNative = options.evidence.platform.codexNative;
+
+  if (options.skipExternalNativeItems && codexNative) {
+    const detail = '检测到外部或不可归属的 Codex native 内容，cleanup 未删除该原生条目。';
+    if (await fs.pathExists(codexNative.configPath)) {
+      items.push({
+        kind: 'native-config',
+        label: 'Codex enabled config',
+        path: codexNative.configPath,
+        detail,
+      });
     }
-    const destination = assertCleanupBackupPathForTests(
-      path.join(backupRoot, path.basename(filePath)),
-      'cleanup backup file',
-    );
-    await fs.copy(filePath, destination, { overwrite: true });
-    backedUp.push(destination);
+    if (await fs.pathExists(codexNative.installedManifestPath)) {
+      items.push({
+        kind: 'native-manifest',
+        label: 'Codex installed manifest',
+        path: codexNative.installedManifestPath,
+        detail,
+      });
+    }
+    if (await fs.pathExists(codexNative.activeCacheRootPath)) {
+      items.push({
+        kind: 'native-cache',
+        label: 'Codex active cache',
+        path: codexNative.activeCacheRootPath,
+        detail,
+      });
+    }
   }
-  return backedUp;
+
+  if (options.protectedCodexUserNativeCleanup && codexNative) {
+    const detail = 'shared native refs 仍保护其它 project consumer，cleanup 未删除该原生条目。';
+    const config = await readCodexConfigFile(codexNative.configPath);
+    if (config.snapshot.plugins[codexNative.pluginId]?.enabled === true) {
+      items.push({
+        kind: 'native-config',
+        label: 'Codex enabled config',
+        path: codexNative.configPath,
+        detail,
+      });
+    }
+    if (await fs.pathExists(codexNative.installedManifestPath)) {
+      items.push({
+        kind: 'native-manifest',
+        label: 'Codex installed manifest',
+        path: codexNative.installedManifestPath,
+        detail,
+      });
+    }
+    if (await fs.pathExists(codexNative.activeCacheRootPath)) {
+      items.push({
+        kind: 'native-cache',
+        label: 'Codex active cache',
+        path: codexNative.activeCacheRootPath,
+        detail,
+      });
+    }
+  }
+
+  if (options.skipClaimableProjectArtifacts) {
+    const detail = '这些项目产物可通过 `aw install --adopt-existing` 认领，cleanup 默认保留。';
+    if (
+      options.evidence.projectSharedIdentity.read
+      && options.evidence.projectSharedIdentity.read.status !== 'missing'
+    ) {
+      items.push({
+        kind: 'project-artifact-identity',
+        label: 'project artifact shared identity',
+        path: options.evidence.projectSharedIdentity.read.path,
+        detail,
+      });
+    }
+    for (const artifact of options.evidence.projectSharedIdentity.artifacts) {
+      if (!artifact.file.exists) {
+        continue;
+      }
+      items.push({
+        kind: 'repo-artifact',
+        label: 'project residual artifact',
+        path: artifact.file.path,
+        detail,
+      });
+    }
+  }
+
+  if (
+    options.evidence.sharedRuntimeOwner.read.status === 'ok'
+    && !options.evidence.sharedRuntimeOwner.ownerMatchesTarget
+  ) {
+    items.push({
+      kind: 'shared-runtime-owner',
+      label: 'shared runtime owner',
+      path: options.evidence.sharedRuntimeOwner.read.path,
+      detail: `shared runtime owner 当前属于 ${renderLocation(options.evidence.sharedRuntimeOwner.read.value.owner)}，cleanup 未删除该 owner 文件。`,
+    });
+  }
+
+  return uniqueCleanupExecutionItems(items);
 }
 
 async function collectProtectedCodexUserNativeSkippedItems(options: {
@@ -996,13 +1261,14 @@ async function collectProtectedCodexUserNativeSkippedItems(options: {
     });
   }
 
-  return items;
+  return uniqueCleanupExecutionItems(items);
 }
 
 interface CleanupDeleteStageGroup {
   label: string;
   stages: InstallStateTransactionStage[];
   postCommit?: InstallStateTransactionPostCommitAction[];
+  items?: InstallStateCleanupExecutionItem[];
 }
 
 function formatInstallStateWarning(
@@ -1017,8 +1283,12 @@ function formatInstallStateWarning(
 async function runCleanupDeleteStageGroups(options: {
   location: PluginLocation;
   groups: CleanupDeleteStageGroup[];
-}): Promise<string[]> {
+}): Promise<{
+  warnings: string[];
+  failedItems: InstallStateCleanupExecutionItem[];
+}> {
   const warnings: string[] = [];
+  const failedItems: InstallStateCleanupExecutionItem[] = [];
   for (const group of options.groups) {
     if (group.stages.length === 0 && (group.postCommit?.length ?? 0) === 0) {
       continue;
@@ -1035,12 +1305,16 @@ async function runCleanupDeleteStageGroups(options: {
           formatCommandError(error instanceof InstallStateTransactionError ? error.cause : error)
         }`,
       );
+      failedItems.push(...(group.items ?? []));
       if (error instanceof InstallStateTransactionError) {
         warnings.push(...error.warnings.map((warning) => formatInstallStateWarning(options.location, warning)));
       }
     }
   }
-  return warnings;
+  return {
+    warnings,
+    failedItems,
+  };
 }
 
 export async function cleanupInstallStateTarget(options: {
@@ -1062,35 +1336,17 @@ export async function cleanupInstallStateTarget(options: {
   if (projection.kind === 'installed' && options.allowInstalled !== true) {
     throw new Error(`${renderLocation(options.location)} 当前健康已安装，请改用 aw uninstall。`);
   }
-  if (projection.kind === 'adoptable') {
-    throw new Error(`${renderLocation(options.location)} 当前是可认领状态，cleanup 默认不会删除这些共享产物。`);
-  }
 
   const protection = await analyzeRemovalDependencyProtection({
     cwd: options.commandOptions.cwd,
     location: options.location,
     env: context.env,
   });
-  if (protection.blockedDependents.length > 0 && options.commandOptions.force !== true) {
+  if (protection.blockedDependents.length > 0) {
     throw new Error(
       `${renderLocation(options.location)} 仍被以下 verified dependent 引用：${protection.blockedDependents.map(renderLocation).join('、')}。`,
     );
   }
-
-  const forceCleanupRequired = !projection.installRecordPresent
-    && projection.kind === 'residual'
-    && evidence.projectSharedIdentity.artifacts.some((artifact) => artifact.file.exists);
-  if (forceCleanupRequired && options.commandOptions.force !== true) {
-    throw new Error('当前 cleanup 需要 --force 才能继续，因为它会先备份现有共享文件。');
-  }
-  const backedUp = options.commandOptions.force === true
-    ? await backupFiles(
-        evidence.projectSharedIdentity.artifacts
-          .filter((artifact) => artifact.file.exists)
-          .map((artifact) => artifact.file.path),
-        context.env,
-      )
-    : [];
 
   const recordRead = await readInstallRecordForLocation({
     cwd: options.commandOptions.cwd,
@@ -1112,6 +1368,9 @@ export async function cleanupInstallStateTarget(options: {
   const protectedCodexUserNativeCleanup = Boolean(
     codexSharedNativeRefs?.user === true || (codexSharedNativeRefs?.projects.length ?? 0) > 0,
   );
+  const skipExternalNativeItems =
+    projection.kind === 'external' && !isPureCodexUserNativeResidueForCleanup(evidence);
+  const skipClaimableProjectArtifacts = evidence.adoptable.possible;
   const pluginMeta = options.location.platform === 'codex' && options.location.scope === 'user'
     ? await loadProtectedCodexUserCleanupPluginMeta({
         cwd: options.commandOptions.cwd,
@@ -1128,17 +1387,24 @@ export async function cleanupInstallStateTarget(options: {
       });
   const platformAdapter = projection.kind === 'notInstalled'
     ? undefined
-    : createAdapters(options.commandOptions.cwd, context)[options.location.platform];
+    : (context.adapters ?? context.adaptersFactory(options.commandOptions.cwd, context))[options.location.platform];
   const nativeCleanupAdapter = platformAdapter as PlatformAdapter & {
     uninstallUserNativePluginById?: (pluginNameOrId: string) => Promise<void>;
   } | undefined;
   const preferDirectCodexUserNativeCleanup =
     codexUserNativeEvidencePresent &&
     !projection.installRecordPresent &&
+    !skipExternalNativeItems &&
     !protectedCodexUserNativeCleanup &&
     typeof nativeCleanupAdapter?.uninstallUserNativePluginById === 'function';
+  const skippedItems = await collectSkippedCleanupItems({
+    evidence,
+    protectedCodexUserNativeCleanup,
+    skipExternalNativeItems,
+    skipClaimableProjectArtifacts,
+  });
   const executionWarnings: string[] = [];
-  if (platformAdapter && options.location.scope === 'user') {
+  if (platformAdapter && options.location.scope === 'user' && !skipExternalNativeItems) {
     try {
       if (preferDirectCodexUserNativeCleanup) {
         await nativeCleanupAdapter!.uninstallUserNativePluginById!(`${options.pluginName}@aw`);
@@ -1153,7 +1419,7 @@ export async function cleanupInstallStateTarget(options: {
       );
     }
   }
-  if (pluginMeta && platformAdapter && !preferDirectCodexUserNativeCleanup) {
+  if (pluginMeta && platformAdapter && !preferDirectCodexUserNativeCleanup && !skipExternalNativeItems) {
     try {
       await platformAdapter.uninstallExtensions(
         pluginMeta,
@@ -1169,125 +1435,179 @@ export async function cleanupInstallStateTarget(options: {
     }
   }
 
-  const shouldPlanSharedRuntimeRemoval =
-    projection.installRecordPresent || evidence.sharedRuntimeOwner.read.status === 'ok';
-  const removalTarget = createMaterializationTarget(
-    options.location.platform,
-    options.location.scope,
-    options.commandOptions.cwd,
-    context.env,
-  );
-  const embeddedRootAttempt = shouldPlanSharedRuntimeRemoval
-    ? await tryResolveEmbeddedPluginsRoot()
-    : { root: null };
-  const removalStages = shouldPlanSharedRuntimeRemoval
-    ? embeddedRootAttempt.root
-      ? await (async () => {
-          const removalPlan = await planSharedSkillTriggerRuntimeOwnerRemoval({
-            location: options.location,
-            embeddedRoot: embeddedRootAttempt.root!,
-            target: removalTarget,
-            env: context.env,
-          });
-          return createSharedSkillTriggerRuntimeRemovalStages({
-            plan: removalPlan,
-            pluginName: options.location.plugin,
-            platform: options.location.platform,
-            embeddedRoot: embeddedRootAttempt.root!,
-            target: removalTarget,
-            env: context.env,
-          });
-        })()
-      : await createBestEffortSharedRuntimeRemovalStagesWithoutEmbeddedRoot({
-          location: options.location,
-          target: removalTarget,
-          env: context.env,
-          lifecycle: recordRead.status === 'ok' ? recordRead.value.record.lifecycle : undefined,
-          currentPlugin: options.target?.currentPlugin ?? options.target?.embeddedPlugin,
-          force: options.commandOptions.force === true,
-          error: embeddedRootAttempt.error,
-        })
-    : {
-        ownerAction: 'none' as const,
-        warnings: [],
-        stages: [],
-      };
-
   const recordPath = getInstallRecordPath(options.commandOptions.cwd, options.location, context.env);
-  const runtimeRoot = recordRead.status === 'ok'
-    ? recordRead.value.record.lifecycle?.runtimeRoot
-    : deriveLocationRuntimeRoot(options.location, context.env);
-  const residualRepoArtifactStages =
-    !projection.installRecordPresent && options.commandOptions.force === true
-      ? evidence.projectSharedIdentity.artifacts
-        .filter((artifact) => artifact.file.exists)
-        .map((artifact) =>
-          createPathDeleteStage({
-            label: `project residual artifact (${artifact.file.path})`,
-            filePath: artifact.file.path,
-            rollbackWarningCode: 'projectArtifactRollbackFailed',
-            finalizeWarningCode: 'projectArtifactFinalizeFailed',
-          }))
-      : [];
-  executionWarnings.push(...await runCleanupDeleteStageGroups({
-    location: options.location,
-    groups: [
-      {
+  const runtimeRoot = evidence.historicalLifecycle.path
+    ?? (recordRead.status === 'ok' ? recordRead.value.record.lifecycle?.runtimeRoot : null)
+    ?? deriveLocationRuntimeRoot(options.location, context.env);
+  const deleteGroups: CleanupDeleteStageGroup[] = [];
+
+  if (
+    evidence.sharedRuntimeOwner.read.status !== 'missing'
+    && !(evidence.sharedRuntimeOwner.read.status === 'ok' && !evidence.sharedRuntimeOwner.ownerMatchesTarget)
+  ) {
+    deleteGroups.push({
+      label: 'shared runtime owner',
+      stages: [createSharedRuntimeOwnerDeleteStage({ filePath: evidence.sharedRuntimeOwner.read.path })],
+      items: [{
+        kind: 'shared-runtime-owner',
         label: 'shared runtime owner',
-        stages: removalStages.stages,
-      },
-      ...residualRepoArtifactStages.map((stage) => ({
-        label: stage.label,
-        stages: [stage],
-      })),
-      ...(evidence.projectSharedIdentity.read
-        && evidence.projectSharedIdentity.read.status !== 'missing'
-        ? [{
-            label: 'project artifact identity',
-            stages: [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })],
-          }]
-        : []),
-      {
+        path: evidence.sharedRuntimeOwner.read.path,
+      }],
+    });
+  }
+
+  if (!skipClaimableProjectArtifacts) {
+    for (const artifact of evidence.projectSharedIdentity.artifacts) {
+      if (!artifact.file.exists) {
+        continue;
+      }
+      deleteGroups.push({
+        label: `project residual artifact (${artifact.file.path})`,
+        stages: [createPathDeleteStage({
+          label: `project residual artifact (${artifact.file.path})`,
+          filePath: artifact.file.path,
+          rollbackWarningCode: 'projectArtifactRollbackFailed',
+          finalizeWarningCode: 'projectArtifactFinalizeFailed',
+        })],
+        items: [{
+          kind: 'repo-artifact',
+          label: 'project residual artifact',
+          path: artifact.file.path,
+        }],
+      });
+    }
+  }
+
+  const trackedArtifactPaths = new Set<string>();
+  for (const artifact of evidence.installRecord.artifacts) {
+    for (const file of artifact.files) {
+      if (!file.exists || trackedArtifactPaths.has(file.path)) {
+        continue;
+      }
+      trackedArtifactPaths.add(file.path);
+      deleteGroups.push({
+        label: `tracked artifact (${file.path})`,
+        stages: [createPathDeleteStage({
+          label: `tracked artifact (${file.path})`,
+          filePath: file.path,
+          rollbackWarningCode: 'trackedArtifactRollbackFailed',
+          finalizeWarningCode: 'trackedArtifactFinalizeFailed',
+        })],
+        items: [{
+          kind: 'tracked-artifact',
+          label: 'tracked artifact',
+          path: file.path,
+        }],
+      });
+    }
+  }
+
+  if (
+    !skipClaimableProjectArtifacts
+    && evidence.projectSharedIdentity.read
+    && evidence.projectSharedIdentity.read.status !== 'missing'
+  ) {
+    deleteGroups.push({
+      label: 'project artifact identity',
+      stages: [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })],
+      items: [{
+        kind: 'project-artifact-identity',
+        label: 'project artifact shared identity',
+        path: evidence.projectSharedIdentity.read.path,
+      }],
+    });
+  }
+
+  if (
+    evidence.dynamicDiagnostic.read !== null
+    && !(evidence.dynamicDiagnostic.read.status === 'unavailable' && evidence.dynamicDiagnostic.read.code === 'missing')
+  ) {
+    deleteGroups.push({
+      label: 'dynamic diagnostic cache',
+      stages: [createPathDeleteStage({
         label: 'dynamic diagnostic cache',
-        stages: [createPathDeleteStage({
-          label: 'dynamic diagnostic cache',
-          filePath: getDiagnosticCachePath(options.commandOptions.cwd, options.location, context.env),
-          rollbackWarningCode: 'diagnosticCacheRollbackFailed',
-          finalizeWarningCode: 'diagnosticCacheFinalizeFailed',
-        })],
-      },
-      ...(runtimeRoot
-        ? [{
-            label: 'historical lifecycle runtime',
-            stages: [createPathDeleteStage({
-              label: 'historical lifecycle runtime',
-              filePath: runtimeRoot,
-              rollbackWarningCode: 'historicalLifecycleRollbackFailed',
-              finalizeWarningCode: 'historicalLifecycleFinalizeFailed',
-            })],
-          }]
-        : []),
-      {
+        filePath: evidence.dynamicDiagnostic.read.path,
+        rollbackWarningCode: 'diagnosticCacheRollbackFailed',
+        finalizeWarningCode: 'diagnosticCacheFinalizeFailed',
+      })],
+      items: [{
+        kind: 'diagnostic-cache',
+        label: 'dynamic diagnostic cache',
+        path: evidence.dynamicDiagnostic.read.path,
+      }],
+    });
+  }
+
+  if (evidence.historicalLifecycle.residuePresent) {
+    deleteGroups.push({
+      label: 'historical lifecycle runtime',
+      stages: [createPathDeleteStage({
+        label: 'historical lifecycle runtime',
+        filePath: runtimeRoot,
+        rollbackWarningCode: 'historicalLifecycleRollbackFailed',
+        finalizeWarningCode: 'historicalLifecycleFinalizeFailed',
+      })],
+      items: [{
+        kind: 'historical-lifecycle-runtime',
+        label: 'historical lifecycle runtime',
+        path: runtimeRoot,
+      }],
+    });
+  }
+
+  if (evidence.nativeTransaction.read.status !== 'missing') {
+    deleteGroups.push({
+      label: 'native transaction marker',
+      stages: [createNativeTransactionMarkerDeleteStage({
+        pluginNameOrId: options.pluginName,
+        env: context.env,
+      })],
+      items: [{
+        kind: 'native-transaction-marker',
         label: 'native transaction marker',
-        stages: [createPathDeleteStage({
-          label: 'native transaction marker',
-          filePath: getNativeTransactionMarkerPath(options.pluginName, context.env),
-          rollbackWarningCode: 'nativeMarkerRollbackFailed',
-          finalizeWarningCode: 'nativeMarkerFinalizeFailed',
-        })],
-      },
-      {
-        label: 'install record',
-        stages: [createInstallRecordDeleteStage({ filePath: recordPath })],
-        postCommit: [createDependencyIndexRefreshPostCommitAction({
-          mode: 'delete',
-          location: options.location,
-          recordPath,
-          env: context.env,
-        })],
-      },
-    ],
-  }));
+        path: evidence.nativeTransaction.read.path,
+      }],
+    });
+  }
+
+  if (
+    recordRead.status !== 'missing'
+    || evidence.dependencyIndex.projection.currentLocationReferenceStatuses.length > 0
+  ) {
+    deleteGroups.push({
+      label: 'install record',
+      stages: [createInstallRecordDeleteStage({ filePath: recordPath })],
+      postCommit: [createDependencyIndexRefreshPostCommitAction({
+        mode: 'delete',
+        location: options.location,
+        recordPath,
+        env: context.env,
+      })],
+      items: [
+        ...(recordRead.status !== 'missing'
+          ? [{
+              kind: 'install-record',
+              label: 'install record',
+              path: recordPath,
+            }]
+          : []),
+        ...(evidence.dependencyIndex.projection.currentLocationReferenceStatuses.length > 0
+          ? [{
+              kind: 'dependency-index-reference',
+              label: 'dependency index reference',
+              path: getGlobalDependencyIndexPath(context.env),
+              detail: evidence.dependencyIndex.projection.currentLocationReferenceStatuses.join(','),
+            }]
+          : []),
+      ],
+    });
+  }
+
+  const deleteResult = await runCleanupDeleteStageGroups({
+    location: options.location,
+    groups: deleteGroups,
+  });
+  executionWarnings.push(...deleteResult.warnings);
   const trackingDir = resolveTrackingDir(options.commandOptions.cwd, options.location, context.env);
   try {
     const trackingManifest = await readTrackingManifest(trackingDir);
@@ -1305,24 +1625,11 @@ export async function cleanupInstallStateTarget(options: {
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
   const warnings = [
     ...executionWarnings,
-    ...removalStages.warnings,
     ...(!protection.allowed && protection.failClosedReason
       ? [`[${renderLocation(options.location)}] 忽略 dependency index fail-closed：${protection.failClosedReason}`]
       : []),
-    ...(protection.blockedDependents.length > 0 && options.commandOptions.force === true
-      ? [
-          `[${renderLocation(options.location)}] 已按 --force 保留 ${
-            protection.blockedDependents.map(renderLocation).join('、')
-          }；这些 dependent 后续可能需要 repair、reinstall 或 cleanup。`,
-        ]
-      : []),
-    ...(backedUp.length > 0 ? [`已备份 ${backedUp.length} 个共享文件。`] : []),
     ...(gcWarning ? [`[${renderLocation(options.location)}] lifecycle runtime GC 已 fail closed：${gcWarning}`] : []),
   ];
-  const skippedItems = await collectProtectedCodexUserNativeSkippedItems({
-    protectedCodexUserNativeCleanup,
-    evidence,
-  });
 
   return {
     warnings,
@@ -1332,8 +1639,8 @@ export async function cleanupInstallStateTarget(options: {
     summary: recordRead.status === 'ok'
       ? 'cleanup completed for record-backed residual'
       : 'cleanup completed for residual state',
-    backups: backedUp,
     skippedItems,
+    failedItems: uniqueCleanupExecutionItems(deleteResult.failedItems),
   };
 }
 
@@ -1348,7 +1655,7 @@ export async function pruneDependencyIndexStaleEntry(options: {
   };
   const inspection = await inspectGlobalDependencyIndex(options.env);
   if (inspection.status !== 'ok') {
-    throw new Error('dependency index 当前不可读，请先重新运行 status --verbose 或 repair。');
+    throw new Error('dependency index 当前不可读，请先重新运行 status --verbose。');
   }
   const indexDigest = sha256Hex(await fs.readFile(inspection.path));
   if (indexDigest !== parsed.indexDigest) {
@@ -1382,6 +1689,8 @@ export async function pruneDependencyIndexStaleEntry(options: {
 
   return {
     warnings: [],
+    pruneToken: options.pruneToken,
+    action: 'retired',
     retiredEntries: [{
       location: parsed.location,
       recordPath: parsed.recordPath,
@@ -1398,6 +1707,7 @@ export async function readInstallStateProjection(options: {
   projection: ProjectInstallStateProjection;
   forceCleanupRequired: boolean;
   removalProtection: InstallStateRemovalProtection;
+  cleanupSafety: InstallStateCleanupSafety;
 }> {
   const evidence = await collectInstallEvidence({
     cwd: options.cwd,
@@ -1406,12 +1716,37 @@ export async function readInstallStateProjection(options: {
   });
   const projection = projectInstallState(evidence);
   const removalProtection = await analyzeRemovalDependencyProtection(options);
+  const ledger = options.location.platform === 'codex' && options.location.scope === 'user'
+    ? await readInstalledLedger(options.env)
+    : null;
+  const codexSharedNativeRefs = options.location.platform === 'codex' && options.location.scope === 'user'
+    ? normalizeSharedNativeRefs(
+        ledger?.plugins[options.location.plugin]?.platforms.codex?.sharedNativeRefs,
+      )
+    : null;
+  const derivedSharedRuntimeOwner = await readDerivedSharedSkillTriggerRuntimeOwner({
+    pluginName: options.location.plugin,
+    platform: options.location.platform,
+    env: options.env,
+    cwd: options.cwd,
+  });
+  const cleanupSafety: InstallStateCleanupSafety = {
+    protectedCodexUserNativeCleanup: Boolean(
+      codexSharedNativeRefs?.user === true || (codexSharedNativeRefs?.projects.length ?? 0) > 0,
+    ),
+    skipExternalNativeItems:
+      projection.kind === 'external' && !isPureCodexUserNativeResidueForCleanup(evidence),
+    skipClaimableProjectArtifacts: evidence.adoptable.possible,
+    sharedRuntimeOwnerConflict:
+      derivedSharedRuntimeOwner !== null
+      && !(options.location.platform === 'codex' && options.location.scope === 'project')
+      && !sameLocation(derivedSharedRuntimeOwner, options.location),
+  };
   return {
     evidence,
     projection,
-    forceCleanupRequired: !projection.installRecordPresent
-      && projection.kind === 'residual'
-      && evidence.projectSharedIdentity.artifacts.some((artifact) => artifact.file.exists),
+    forceCleanupRequired: false,
     removalProtection,
+    cleanupSafety,
   };
 }

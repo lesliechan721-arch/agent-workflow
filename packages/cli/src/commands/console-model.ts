@@ -35,16 +35,13 @@ export type PluginConsoleFeatureKind =
   | 'upgrade'
   | 'configure'
   | 'uninstall'
-  | 'repair'
   | 'cleanup'
   | 'reinstall'
   | 'adoptExisting'
-  | 'takeoverSharedRuntime'
   | 'resolveDuplicateInstall'
   | 'reapplyConfigRefresh'
   | 'dependencies'
-  | 'status'
-  | 'diagnose';
+  | 'status';
 
 export interface PluginConsoleFeatureSummary {
   kind: PluginConsoleFeatureKind;
@@ -277,16 +274,13 @@ export type PluginConsoleExecutableActionKind =
   | 'runUpgrade'
   | 'runConfig'
   | 'runUninstall'
-  | 'runRepair'
   | 'runCleanup'
   | 'runReinstall'
   | 'runAdoptExisting'
-  | 'runTakeoverSharedRuntime'
   | 'resolveDuplicateInstall'
   | 'runReapplyConfigRefresh'
   | 'openDependencies'
-  | 'openStatus'
-  | 'openDiagnose';
+  | 'openStatus';
 
 export interface PluginConsoleExecutableAction {
   kind: PluginConsoleExecutableActionKind;
@@ -320,10 +314,7 @@ export type PluginConsoleActionKind =
   | 'runCleanup'
   | 'runReinstall'
   | 'runAdoptExisting'
-  | 'runTakeoverSharedRuntime'
-  | 'repairInstall'
   | 'reapplyConfigRefresh'
-  | 'diagnoseCommand'
   | 'back';
 
 export interface PluginConsoleActionTarget {
@@ -426,7 +417,7 @@ const REASON_PRIORITY: Record<PluginConsoleReasonCode, number> = {
   missingRequiredConfig: 75,
   dependencyBlocked: 70,
   residueDetected: 65,
-  adoptableInstall: 60,
+  claimableProjectArtifacts: 60,
 };
 
 const WRITE_ACTION_KINDS = new Set<PluginConsoleActionKind>([
@@ -436,8 +427,6 @@ const WRITE_ACTION_KINDS = new Set<PluginConsoleActionKind>([
   'runCleanup',
   'runReinstall',
   'runAdoptExisting',
-  'runTakeoverSharedRuntime',
-  'repairInstall',
   'reapplyConfigRefresh',
 ]);
 
@@ -676,8 +665,8 @@ function collectInstallStateReasonCodes(cell: StatusMatrixCell): PluginConsoleRe
   }
 
   const reasons = new Set<PluginConsoleReasonCode>();
-  if (installState.kind === 'adoptable') {
-    reasons.add('adoptableInstall');
+  if (installState.reasonCodes.includes('claimableProjectArtifacts')) {
+    reasons.add('claimableProjectArtifacts');
   }
   if (installState.sharedRuntimeOwnerConflict) {
     reasons.add('foreignOwnershipConflict');
@@ -730,14 +719,14 @@ function collectInstallStateReasonCodes(cell: StatusMatrixCell): PluginConsoleRe
   ) {
     reasons.add('nativeIncomplete');
   } else if (
-    installState.kind === 'residual' ||
+    installState.kind === 'cleanupRequired' ||
     installState.nativeTransactionKind === 'markerOnlyUninstall' ||
     installState.nativeTransactionKind === 'recordUninstallResidual'
   ) {
     reasons.add('residueDetected');
   }
-  if (installState.kind === 'externallyManaged') {
-    reasons.add(installState.cleanupAvailable ? 'residueDetected' : 'foreignOwnershipConflict');
+  if (installState.kind === 'external') {
+    reasons.add(installState.reasonCodes.includes('claimableProjectArtifacts') ? 'claimableProjectArtifacts' : 'foreignOwnershipConflict');
   }
   addCodexUserNativeReasonCodes(cell, reasons);
 
@@ -874,7 +863,7 @@ function computeLocationStatus(
     reason === 'artifactRefreshFailed' ||
     reason === 'recordCorrupted' ||
     reason === 'nativeIncomplete' ||
-    reason === 'adoptableInstall' ||
+    reason === 'claimableProjectArtifacts' ||
     reason === 'foreignOwnershipConflict' ||
     reason === 'residueDetected' ||
     (reason === 'dependencyBlocked' && hasDependencyGap(cell))
@@ -954,12 +943,13 @@ function buildInstallStateActions(
 
   const target = locationTarget(cell);
   const commandArgs = formatCommandArgs(cell);
-  const diagnose = action('openStatus', '查看状态', target, {
+  const statusAction = action('openStatus', '状态', target, {
     command: ['aw', 'status', ...commandArgs, '--verbose'],
   });
   const configSupported = supportsConfigAction(configProjection);
   const dependencyProtected = installState.dependents.length > 0;
   const autoRemovable = installState.autoInstalled && installState.unusedDependencyHint;
+  const reinstallDisabledReason = installActionDisabledReason(cell);
   const uninstall = action('runUninstall', autoRemovable ? '清理自动依赖' : '卸载', target, {
     destructive: true,
     confirmText: autoRemovable
@@ -985,26 +975,13 @@ function buildInstallStateActions(
     return actions;
   }
 
-  if (reasons.includes('adoptableInstall')) {
+  if (reasons.includes('claimableProjectArtifacts')) {
     actions.push(action('runAdoptExisting', '认领现有安装', target, {
       destructive: true,
       confirmText: `确定要认领 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的现有安装吗？`,
     }));
-    if (installState.cleanupAvailable) {
-      actions.push(action('runCleanup', '清理', target, {
-        destructive: true,
-        confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的现有残留吗？`,
-      }));
-    }
-    actions.push(diagnose);
+    actions.push(statusAction);
     return dedupeActions(actions);
-  }
-
-  if (installState.sharedRuntimeOwnerConflict) {
-    actions.push(action('runTakeoverSharedRuntime', '接管共享触发策略', target, {
-      destructive: true,
-      confirmText: `确定要接管 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的共享触发策略吗？`,
-    }));
   }
 
   if (status === 'upgradeAvailable') {
@@ -1015,7 +992,7 @@ function buildInstallStateActions(
     configSupported &&
     (
       installState.kind === 'installed' ||
-      installState.kind === 'needsRepair' ||
+      installState.kind === 'cleanupRequired' ||
       status === 'upgradeAvailable' ||
       reasons.includes('missingRequiredConfig')
     )
@@ -1027,32 +1004,24 @@ function buildInstallStateActions(
     actions.push(action('reapplyConfigRefresh', '重新应用配置', target));
   }
 
-  if (
-    installState.repairAvailable &&
-    !installState.sharedRuntimeOwnerConflict &&
-    (
-      installState.kind === 'needsRepair' ||
-      installState.issueCodes.includes('dependencyMissing') ||
-      reasons.includes('recordCorrupted') ||
-      reasons.includes('artifactRefreshFailed') ||
-      reasons.includes('nativeIncomplete')
-    )
-  ) {
-    actions.push(action(
-      'repairInstall',
-      installState.issueCodes.includes('dependencyMissing') ? '补齐依赖' : '修复安装',
-      target,
-    ));
-  }
-
-  if (installState.kind === 'residual' || (installState.kind === 'externallyManaged' && installState.cleanupAvailable)) {
-    if (installState.cleanupAvailable && !installState.sharedRuntimeOwnerConflict) {
+  if (installState.kind === 'cleanupRequired') {
+    if (installState.cleanupAvailable) {
       actions.push(action('runCleanup', '清理', target, {
         destructive: true,
-        confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的残留吗？`,
+        confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
+      }));
+      actions.push(action('runReinstall', '重新安装', target, {
+        destructive: true,
+        confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
+        ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
       }));
     }
-    actions.push(diagnose);
+    actions.push(statusAction);
+    return dedupeActions(actions);
+  }
+
+  if (installState.kind === 'external') {
+    actions.push(statusAction);
     return dedupeActions(actions);
   }
 
@@ -1061,15 +1030,11 @@ function buildInstallStateActions(
     actions.push(action('runReinstall', '重新安装', target, {
       destructive: true,
       confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前安装吗？`,
-    }));
-  } else if (installState.cleanupAvailable && !installState.sharedRuntimeOwnerConflict) {
-    actions.push(action('runCleanup', '清理', target, {
-      destructive: true,
-      confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
+      ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
     }));
   }
 
-  actions.push(diagnose);
+  actions.push(statusAction);
   return dedupeActions(actions);
 }
 
@@ -1093,22 +1058,22 @@ function buildReasonCopy(
     case 'artifactRefreshFailed':
       return {
         issueSummary: '已写入内容和当前期望不一致，或最近一次刷新没有成功。',
-        detailHints: ['如果只是刷新失败，可以先重试；如果内容已经漂移，再考虑修复安装。'],
-        nextSteps: [createManualNextStep('重试刷新或修复安装', '先重试刷新或修复安装，再重新检查状态。')],
+        detailHints: ['如果只是项目文件没有对齐，可以先重新应用配置；需要整体重建时再重新安装。'],
+        nextSteps: [createManualNextStep('重新对齐当前安装', '先重新应用配置或重新安装，再重新检查状态。')],
       };
     case 'recordCorrupted':
       return {
         issueSummary: 'AW 记录和当前安装状态对不上。',
-        detailHints: ['通常需要先修复记录，再继续升级、卸载或接管。'],
-        nextSteps: [createManualNextStep('修复安装', '先执行修复安装，再重新检查状态。')],
+        detailHints: ['通常需要先清理或重新安装，再继续升级、卸载或配置变更。'],
+        nextSteps: [createManualNextStep('清理或重新安装', '先清理当前状态或重新安装，再重新检查状态。')],
       };
     case 'nativeIncomplete':
       return {
         issueSummary: '平台侧写入没有完整收口。',
-        detailHints: ['可以先尝试修复；如果只想撤掉未完成写入，再执行受控清理。'],
-        nextSteps: [createManualNextStep('处理修复动作', '先处理这个位置的修复动作，再重新检查状态。')],
+        detailHints: ['可以先清理未完成残留；如果仍需要继续使用，再重新安装。'],
+        nextSteps: [createManualNextStep('清理未完成状态', '先清理未完成残留，再决定是否重新安装。')],
       };
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       return {
         issueSummary: '发现了一份可认领的已有安装。',
         detailHints: ['认领只会补齐当前机器上的 AW 状态，不会直接改动已有仓库文件。'],
@@ -1117,20 +1082,20 @@ function buildReasonCopy(
     case 'foreignOwnershipConflict':
       return {
         issueSummary: '当前安装位置的归属或生效环境存在冲突。',
-        detailHints: ['先确认冲突来源，再决定是接管、认领，还是保留现有内容。'],
-        nextSteps: [createManualNextStep('查看诊断', '先查看诊断，再处理冲突来源。')],
+        detailHints: ['先查看状态详情确认冲突来源，再决定是保留、移除，还是在安全边界内认领。'],
+        nextSteps: [createManualNextStep('查看状态详情', '先查看状态详情，再处理冲突来源。')],
       };
     case 'residueDetected':
       return {
         issueSummary: '发现了残留文件或本机状态。',
-        detailHints: ['先确认来源，再决定是清理还是补齐记录。'],
-        nextSteps: [createManualNextStep('查看诊断', '先查看诊断，再处理当前残留。')],
+        detailHints: ['先确认来源，再决定是清理残留还是重新安装。'],
+        nextSteps: [createManualNextStep('清理当前状态', '先清理当前残留，再重新检查状态。')],
       };
     case 'dependencyBlocked':
       return {
         issueSummary: '依赖关系正在阻止当前操作。',
         detailHints: ['有的目标缺少上游依赖，也有的目标还在被下游安装引用。'],
-        nextSteps: [createManualNextStep('处理依赖链', '先处理依赖链，再重新尝试当前操作。')],
+        nextSteps: [createManualNextStep('查看状态详情', '先确认依赖链，再重新尝试当前操作。')],
       };
   }
 }
@@ -1147,7 +1112,7 @@ function reasonLabel(reason: PluginConsoleReasonCode): string {
       return '记录损坏';
     case 'nativeIncomplete':
       return '平台写入未完成';
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       return '可认领安装';
     case 'foreignOwnershipConflict':
       return '归属冲突';
@@ -1160,7 +1125,7 @@ function reasonLabel(reason: PluginConsoleReasonCode): string {
 
 function reasonSeverity(reason: PluginConsoleReasonCode): ConsoleIssueSummary['severity'] {
   switch (reason) {
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       return 'info';
     case 'missingRequiredConfig':
     case 'artifactRefreshFailed':
@@ -1242,11 +1207,12 @@ function buildLocationActions(
   }
 
   const target = locationTarget(cell);
-  const diagnose = action('openStatus', '查看状态', target, {
+  const statusAction = action('openStatus', '状态', target, {
     command: baseStatusCommand(cell),
   });
   const dependencyProtected = (cell.report?.dependencies?.dependents.length ?? 0) > 0;
   const autoRemovable = cell.report?.dependencies?.autoRemovable === true;
+  const reinstallDisabledReason = installActionDisabledReason(cell);
   const uninstall = action('runUninstall', autoRemovable ? '清理自动依赖' : '卸载', target, {
     destructive: true,
     confirmText: autoRemovable
@@ -1274,7 +1240,7 @@ function buildLocationActions(
   }
 
   if (hasOnlyForeignOwnershipConflict(cell, reasons)) {
-    actions.push(diagnose);
+    actions.push(statusAction);
     return actions;
   }
 
@@ -1282,19 +1248,23 @@ function buildLocationActions(
     if (managedEvidence) {
       actions.push(uninstall);
     }
-    actions.push(diagnose);
+    actions.push(statusAction);
     return actions;
   }
 
   if (reasons.includes('nativeIncomplete')) {
-    actions.push(action('repairInstall', '修复安装', target));
     if (cell.report?.native.recovery?.present && cell.report.native.recovery.evidenceMatches !== false) {
       actions.push(action('runCleanup', '清理', target, {
         destructive: true,
         confirmText: `确定要清理 ${pluginConsoleLocationLabel(cell)} 这次未完成安装留下的残留吗？`,
       }));
     }
-    actions.push(diagnose);
+    actions.push(action('runReinstall', '重新安装', target, {
+      destructive: true,
+      confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
+      ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
+    }));
+    actions.push(statusAction);
     return actions;
   }
 
@@ -1303,7 +1273,12 @@ function buildLocationActions(
       destructive: true,
       confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的残留吗？`,
     }));
-    actions.push(diagnose);
+    actions.push(action('runReinstall', '重新安装', target, {
+      destructive: true,
+      confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
+      ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
+    }));
+    actions.push(statusAction);
     return actions;
   }
 
@@ -1316,18 +1291,11 @@ function buildLocationActions(
     reasons.includes('dependencyBlocked') ||
     reasons.includes('artifactRefreshFailed')
   ) {
-    const repairLabel = hasDependencyGap(cell)
-      ? '补齐依赖'
-      : hasArtifactDrift(cell.report)
-        ? '重新安装/升级'
-        : '修复安装';
-    if (
-      hasDependencyGap(cell) ||
-      reasons.includes('recordCorrupted') ||
-      reasons.includes('artifactRefreshFailed')
-    ) {
-      actions.push(action('repairInstall', repairLabel, target));
-    }
+    actions.push(action('runReinstall', '重新安装', target, {
+      destructive: true,
+      confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前安装吗？`,
+      ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
+    }));
   }
 
   if (
@@ -1352,9 +1320,13 @@ function buildLocationActions(
     !reasons.includes('missingRequiredConfig') &&
     !reasons.includes('residueDetected') &&
     !(reasons.includes('dependencyBlocked') && !hasDependencyGap(cell)) &&
-    !actions.some((existing) => existing.kind === 'repairInstall')
+    !actions.some((existing) => existing.kind === 'runReinstall')
   ) {
-    actions.push(action('repairInstall', '修复安装', target));
+    actions.push(action('runReinstall', '重新安装', target, {
+      destructive: true,
+      confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前安装吗？`,
+      ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
+    }));
   }
 
   if (managedEvidence && !reasons.includes('residueDetected')) {
@@ -1365,15 +1337,16 @@ function buildLocationActions(
         confirmText: `确定要清理 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前状态吗？`,
       }));
     }
-    if (!reasons.includes('adoptableInstall')) {
+    if (!reasons.includes('claimableProjectArtifacts')) {
       actions.push(action('runReinstall', '重新安装', target, {
         destructive: true,
         confirmText: `确定要重新安装 ${cell.pluginName} 在 ${pluginConsoleLocationLabel(cell)} 的当前安装吗？`,
+        ...(reinstallDisabledReason ? { disabledReason: reinstallDisabledReason } : {}),
       }));
     }
   }
 
-  actions.push(diagnose);
+  actions.push(statusAction);
   return dedupeActions(actions);
 }
 
@@ -1648,7 +1621,7 @@ function summarizeLocations(locations: PluginConsoleLocation[]): string {
 function pickPrimaryLocation(locations: PluginConsoleLocation[]): PluginConsoleLocation | undefined {
   return [...locations].sort((left, right) =>
     STATUS_PRIORITY[right.status] - STATUS_PRIORITY[left.status] ||
-    (REASON_PRIORITY[right.reasonCodes[0] ?? 'adoptableInstall'] - REASON_PRIORITY[left.reasonCodes[0] ?? 'adoptableInstall']) ||
+    (REASON_PRIORITY[right.reasonCodes[0] ?? 'claimableProjectArtifacts'] - REASON_PRIORITY[left.reasonCodes[0] ?? 'claimableProjectArtifacts']) ||
     sortLocations(left, right),
   )[0];
 }
@@ -1739,14 +1712,9 @@ function featureKindForAction(actionEntry: PluginConsoleAction): PluginConsoleFe
       return 'reinstall';
     case 'runAdoptExisting':
       return 'adoptExisting';
-    case 'runTakeoverSharedRuntime':
-      return 'takeoverSharedRuntime';
-    case 'repairInstall':
-      return 'repair';
     case 'reapplyConfigRefresh':
       return 'reapplyConfigRefresh';
     case 'openStatus':
-    case 'diagnoseCommand':
       return 'status';
     default:
       return undefined;
@@ -1763,16 +1731,12 @@ function featureLabel(kind: PluginConsoleFeatureKind): string {
       return '配置';
     case 'uninstall':
       return '卸载';
-    case 'repair':
-      return '修复安装';
     case 'cleanup':
       return '清理';
     case 'reinstall':
       return '重新安装';
     case 'adoptExisting':
       return '认领现有安装';
-    case 'takeoverSharedRuntime':
-      return '接管共享触发策略';
     case 'resolveDuplicateInstall':
       return '处理重复安装';
     case 'reapplyConfigRefresh':
@@ -1780,9 +1744,7 @@ function featureLabel(kind: PluginConsoleFeatureKind): string {
     case 'dependencies':
       return '依赖';
     case 'status':
-      return '查看状态';
-    case 'diagnose':
-      return '查看诊断';
+      return '状态';
   }
 }
 
@@ -1795,7 +1757,7 @@ function featureSummaryFromAction(actionEntry: PluginConsoleAction): PluginConso
   return {
     kind,
     label: featureLabel(kind),
-    targetSelection: kind === 'status' || kind === 'diagnose' ? 'none' : 'singleTarget',
+    targetSelection: kind === 'status' ? 'none' : 'singleTarget',
     ...(actionEntry.disabledReason ? { disabledReason: actionEntry.disabledReason } : {}),
     ...(actionEntry.destructive ? { destructive: true } : {}),
   };
@@ -1890,30 +1852,24 @@ function featurePriority(kind: PluginConsoleFeatureKind): number {
       return 100;
     case 'upgrade':
       return 95;
-    case 'repair':
-      return 90;
     case 'cleanup':
-      return 78;
+      return 90;
     case 'configure':
       return 80;
     case 'adoptExisting':
-      return 75;
-    case 'takeoverSharedRuntime':
-      return 70;
+      return 88;
     case 'resolveDuplicateInstall':
-      return 65;
+      return 85;
     case 'reapplyConfigRefresh':
-      return 60;
-    case 'dependencies':
-      return 12;
+      return 78;
     case 'uninstall':
       return 55;
     case 'reinstall':
-      return 50;
+      return 70;
+    case 'dependencies':
+      return 12;
     case 'status':
       return 10;
-    case 'diagnose':
-      return 5;
   }
 }
 
@@ -1921,12 +1877,11 @@ function featureSelectionMode(
   kind: PluginConsoleFeatureKind,
   locations: PluginConsoleLocation[],
 ): PluginConsoleFeatureSummary['targetSelection'] {
-  if (kind === 'status' || kind === 'diagnose' || kind === 'dependencies') {
+  if (kind === 'status' || kind === 'dependencies') {
     return 'none';
   }
   if (
     kind === 'adoptExisting'
-    || kind === 'takeoverSharedRuntime'
     || kind === 'resolveDuplicateInstall'
   ) {
     return 'singleTargetOnly';
@@ -2060,10 +2015,76 @@ function pageStatusTone(status: PluginConsoleStatus): PluginConsoleTone {
   }
 }
 
+function featureKindForUiAction(uiAction: string | undefined): PluginConsoleFeatureKind | undefined {
+  switch (uiAction) {
+    case 'runInstall':
+      return 'install';
+    case 'runUpgrade':
+      return 'upgrade';
+    case 'openConfigWizard':
+    case 'runConfig':
+      return 'configure';
+    case 'runUninstall':
+      return 'uninstall';
+    case 'runCleanup':
+      return 'cleanup';
+    case 'runReinstall':
+      return 'reinstall';
+    case 'runAdoptExisting':
+      return 'adoptExisting';
+    case 'reapplyConfigRefresh':
+    case 'runReapplyConfigRefresh':
+      return 'reapplyConfigRefresh';
+    case 'openDependencies':
+      return 'dependencies';
+    case 'openStatus':
+      return 'status';
+    default:
+      return undefined;
+  }
+}
+
+function resolveRecommendedFeatureKind(
+  item: Pick<ConsoleControllerItem, 'summary' | 'locations'>,
+): PluginConsoleFeatureKind | undefined {
+  const enabledFeatures = item.summary.features
+    .filter((feature) => feature.disabledReason === undefined)
+    .map((feature) => feature.kind);
+  const enabledFeatureSet = new Set(enabledFeatures);
+  const primaryLocation = pickPrimaryLocation(item.locations);
+  const itemNextStepFeatures = item.summary.nextSteps
+    .map((step) => featureKindForUiAction(step.uiAction))
+    .filter((kind): kind is PluginConsoleFeatureKind => kind !== undefined);
+  const locationNextStepFeatures = (primaryLocation?.nextSteps ?? [])
+    .map((step) => featureKindForUiAction(step.uiAction))
+    .filter((kind): kind is PluginConsoleFeatureKind => kind !== undefined);
+  const orderedCandidates = [
+    ...(item.summary.reasonCodes.includes('duplicateInstall') ? ['resolveDuplicateInstall' as const] : []),
+    ...(item.summary.reasonCodes.includes('missingRequiredConfig') ? ['configure' as const] : []),
+    ...(item.summary.reasonCodes.includes('claimableProjectArtifacts') ? ['adoptExisting' as const] : []),
+    ...(item.summary.status === 'upgradeAvailable' ? ['upgrade' as const] : []),
+    ...(item.summary.status === 'notInstalled' ? ['install' as const] : []),
+    ...(item.summary.features.some((feature) => feature.kind === 'configure' && feature.disabledReason === undefined)
+      ? ['configure' as const]
+      : []),
+    ...locationNextStepFeatures,
+    ...itemNextStepFeatures,
+    ...(item.summary.status === 'abnormal' ? ['cleanup' as const, 'reinstall' as const, 'status' as const] : []),
+    ...enabledFeatures,
+  ];
+
+  for (const candidate of orderedCandidates) {
+    if (enabledFeatureSet.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return item.summary.features.find((feature) => feature.kind === 'status')?.kind;
+}
+
 function primaryFeatureLabel(summary: PluginConsoleSummary): string | undefined {
   return summary.features.find((feature) =>
     feature.kind !== 'status' &&
-    feature.kind !== 'diagnose' &&
     feature.kind !== 'dependencies' &&
     feature.disabledReason === undefined,
   )?.label;
@@ -2093,16 +2114,12 @@ function executableKindForFeature(
       return 'runConfig';
     case 'uninstall':
       return 'runUninstall';
-    case 'repair':
-      return 'runRepair';
     case 'cleanup':
       return 'runCleanup';
     case 'reinstall':
       return 'runReinstall';
     case 'adoptExisting':
       return 'runAdoptExisting';
-    case 'takeoverSharedRuntime':
-      return 'runTakeoverSharedRuntime';
     case 'resolveDuplicateInstall':
       return 'resolveDuplicateInstall';
     case 'reapplyConfigRefresh':
@@ -2111,8 +2128,6 @@ function executableKindForFeature(
       return 'openDependencies';
     case 'status':
       return 'openStatus';
-    case 'diagnose':
-      return 'openDiagnose';
   }
 }
 
@@ -2129,16 +2144,12 @@ function actionMatchesFeature(
       return actionEntry.kind === 'openConfigWizard';
     case 'uninstall':
       return actionEntry.kind === 'runUninstall';
-    case 'repair':
-      return actionEntry.kind === 'repairInstall';
     case 'cleanup':
       return actionEntry.kind === 'runCleanup';
     case 'reinstall':
       return actionEntry.kind === 'runReinstall';
     case 'adoptExisting':
       return actionEntry.kind === 'runAdoptExisting';
-    case 'takeoverSharedRuntime':
-      return actionEntry.kind === 'runTakeoverSharedRuntime';
     case 'resolveDuplicateInstall':
       return false;
     case 'reapplyConfigRefresh':
@@ -2146,7 +2157,6 @@ function actionMatchesFeature(
     case 'dependencies':
       return false;
     case 'status':
-    case 'diagnose':
       return false;
   }
 }
@@ -2155,7 +2165,7 @@ export function createPluginConsoleExecutableActions(
   item: ConsoleControllerItem,
   featureKind: PluginConsoleFeatureKind,
 ): PluginConsoleExecutableAction[] {
-  if (featureKind === 'status' || featureKind === 'diagnose' || featureKind === 'dependencies') {
+  if (featureKind === 'status' || featureKind === 'dependencies') {
     return [{
       kind: executableKindForFeature(featureKind),
       label: featureLabel(featureKind),
@@ -2203,12 +2213,7 @@ export function createConsolePluginDetailPageModel(
   item: ConsoleControllerItem,
   featureKind?: PluginConsoleFeatureKind,
 ): ConsolePluginDetailPageModel {
-  const recommendedKind = item.summary.features.find((feature) =>
-    feature.kind !== 'status' &&
-    feature.kind !== 'diagnose' &&
-    feature.kind !== 'dependencies' &&
-    feature.disabledReason === undefined,
-  )?.kind;
+  const recommendedKind = resolveRecommendedFeatureKind(item);
   const targetOptions = featureKind
     ? createPluginConsoleExecutableActions(item, featureKind)
       .filter((actionEntry) => actionEntry.target)
@@ -2487,14 +2492,8 @@ export function createConsoleControllerItems(
           : {}),
         ...createNextStepsBoundary(itemCopy.nextSteps),
       };
-      const recommendedFeatureKind = primaryLocation?.actions
-        .map((actionEntry) => featureKindForAction(actionEntry))
-        .find((kind) =>
-          kind !== undefined &&
-          kind !== 'status' &&
-          kind !== 'diagnose' &&
-          kind !== 'dependencies',
-        );
+      const summaryStub = { summary, locations } satisfies Pick<ConsoleControllerItem, 'summary' | 'locations'>;
+      const recommendedFeatureKind = resolveRecommendedFeatureKind(summaryStub);
       const detailPage: ConsolePluginDetailPageModel = {
         summary,
         statusSymbol: pageStatusSymbol(summary.status),

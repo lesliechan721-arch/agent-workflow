@@ -35,7 +35,7 @@ export type PluginConsoleReasonCode =
   | 'artifactRefreshFailed'
   | 'recordCorrupted'
   | 'nativeIncomplete'
-  | 'adoptableInstall'
+  | 'claimableProjectArtifacts'
   | 'foreignOwnershipConflict'
   | 'residueDetected'
   | 'dependencyBlocked';

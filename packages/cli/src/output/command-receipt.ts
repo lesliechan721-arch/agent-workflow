@@ -5,6 +5,7 @@ import type {
   GeneratedArtifact,
   NativePluginsByPlatform,
   NextStepInstruction,
+  PlatformName,
   ReceiptOverallState,
   ReceiptTargetIdentity,
   ReceiptTargetResult,
@@ -20,8 +21,8 @@ import type {
 import { isCleanupExecutionFailure } from '../commands/cleanup.js';
 import {
   createCliCommandNextStep,
-  createLegacyNextStepText,
   createNextStepsBoundary,
+  createStructuredNextStepsBoundary,
   createUiActionNextStep,
   dedupeNextSteps,
   formatNextStepForHuman,
@@ -121,7 +122,6 @@ export interface ReceiptNativeTransactionMarker {
   recordCommitted?: boolean;
   markerPending?: boolean;
   needsAttention?: boolean;
-  repairCommand?: string;
   cleanupCommand?: string;
 }
 
@@ -158,6 +158,29 @@ export interface CliCommandReceiptDetails {
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
   sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
   adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
+  reinstall?: {
+    configPreserved: boolean;
+    cleanupStage: {
+      overallState: ReceiptOverallState;
+      targets: Array<{
+        plugin: string;
+        platform: PlatformName;
+        scope: Scope;
+        projectKey?: string;
+        targetType: string;
+        state: 'completed' | 'notNeeded';
+        deletedItems: CleanupPlanItem[];
+        skippedItems: CleanupPlanItem[];
+        failedItems: CleanupPlanItem[];
+        residueItems: CleanupPlanItem[];
+        blockingReasons: CleanupTargetPayload['blockingReasons'];
+      }>;
+    };
+    installStage: {
+      overallState: ReceiptOverallState;
+      targetResults: ReceiptTargetResult[];
+    };
+  };
 }
 
 interface ReceiptAction extends ReceiptTarget {
@@ -196,7 +219,6 @@ interface ReceiptJsonBase {
   catalog?: CatalogResolution;
   nextStepsSchemaVersion: 1;
   nextSteps: NextStepInstruction[];
-  legacyNextSteps?: string[];
   privateStateFiles?: ReceiptFileEntry[];
   ignoredStateFiles?: ReceiptFileEntry[];
   sharedConfigFiles?: ReceiptFileEntry[];
@@ -210,6 +232,7 @@ interface ReceiptJsonBase {
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
   sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
   adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
+  reinstall?: CliCommandReceiptDetails['reinstall'];
 }
 
 export interface InitReceiptJson extends ReceiptJsonBase {
@@ -536,13 +559,30 @@ function buildConfigStoreRemovals(
 
 type ReceiptJsonDetails = Omit<
   ReceiptJsonBase,
-  'ok' | 'command' | 'warnings' | 'nextStepsSchemaVersion' | 'nextSteps' | 'legacyNextSteps' | 'configStoreRemovals'
+  'ok' | 'command' | 'warnings' | 'nextStepsSchemaVersion' | 'nextSteps' | 'configStoreRemovals'
 >;
 
 function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
   if (!result.receiptDetails) {
     return {};
   }
+  const nativeTransactionMarker = result.receiptDetails.nativeTransactionMarker
+    ? {
+        status: result.receiptDetails.nativeTransactionMarker.status,
+        ...(result.receiptDetails.nativeTransactionMarker.recordCommitted !== undefined
+          ? { recordCommitted: result.receiptDetails.nativeTransactionMarker.recordCommitted }
+          : {}),
+        ...(result.receiptDetails.nativeTransactionMarker.markerPending !== undefined
+          ? { markerPending: result.receiptDetails.nativeTransactionMarker.markerPending }
+          : {}),
+        ...(result.receiptDetails.nativeTransactionMarker.needsAttention !== undefined
+          ? { needsAttention: result.receiptDetails.nativeTransactionMarker.needsAttention }
+          : {}),
+        ...(result.receiptDetails.nativeTransactionMarker.cleanupCommand
+          ? { cleanupCommand: result.receiptDetails.nativeTransactionMarker.cleanupCommand }
+          : {}),
+      }
+    : undefined;
   return {
     ...(result.receiptDetails.privateStateFiles?.length
       ? { privateStateFiles: result.receiptDetails.privateStateFiles }
@@ -565,8 +605,8 @@ function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
     ...(result.receiptDetails.configRemovalActions?.length
       ? { configRemovalActions: result.receiptDetails.configRemovalActions }
       : {}),
-    ...(result.receiptDetails.nativeTransactionMarker
-      ? { nativeTransactionMarker: result.receiptDetails.nativeTransactionMarker }
+    ...(nativeTransactionMarker
+      ? { nativeTransactionMarker }
       : {}),
     ...(result.receiptDetails.dependencyIndex
       ? { dependencyIndex: result.receiptDetails.dependencyIndex }
@@ -579,6 +619,9 @@ function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
       : {}),
     ...(result.receiptDetails.adoptExistingLifecycleReason
       ? { adoptExistingLifecycleReason: result.receiptDetails.adoptExistingLifecycleReason }
+      : {}),
+    ...(result.receiptDetails.reinstall
+      ? { reinstall: result.receiptDetails.reinstall }
       : {}),
   };
 }
@@ -688,9 +731,9 @@ function buildStatusCommand(result: CliCommandResult): string {
 
 function buildInitNextStepsBoundary(): Pick<
   ReceiptJsonBase,
-  'nextStepsSchemaVersion' | 'nextSteps' | 'legacyNextSteps'
+  'nextStepsSchemaVersion' | 'nextSteps'
 > {
-  return createNextStepsBoundary([
+  return createStructuredNextStepsBoundary([
     createUiActionNextStep(
       '查看当前环境与插件状态',
       '可以确认 current catalog 是否已预热，以及当前环境识别到了哪些插件。',
@@ -703,6 +746,33 @@ function buildInitNextStepsBoundary(): Pick<
 function buildCommandNextSteps(result: CliCommandResult): NextStepInstruction[] {
   if (result.nextSteps && result.nextSteps.length > 0) {
     return dedupeNextSteps(result.nextSteps);
+  }
+
+  const marker = result.receiptDetails?.nativeTransactionMarker;
+  if (marker?.needsAttention && marker.cleanupCommand) {
+    const match = marker.cleanupCommand.match(/^aw cleanup\s+(.+?)\s+(?:-p|--platform)\s+(\S+)\s+(?:-s|--scope)\s+(\S+)$/);
+    if (match) {
+      const [, plugin, platform, scope] = match;
+      return dedupeNextSteps([
+        createUiActionNextStep(
+          '清理当前状态',
+          '会进入 cleanup 流程，删除可重建残留；当前默认保留配置。',
+          'runCleanup',
+          marker.cleanupCommand,
+        ),
+        createCliCommandNextStep(
+          '重新安装',
+          '清理后可以直接重建当前安装；配置默认会保留。',
+          `aw reinstall ${plugin} --platform ${platform} --scope ${scope}`,
+        ),
+      ]);
+    }
+    return [createUiActionNextStep(
+      '清理当前状态',
+      '会进入 cleanup 流程，删除可重建残留；当前默认保留配置。',
+      'runCleanup',
+      marker.cleanupCommand,
+    )];
   }
 
   return [createUiActionNextStep(
@@ -747,7 +817,7 @@ export function buildCommandReceiptJson(
   receipt: CliCommandReceipt,
 ): CommandReceiptJson {
   const warnings = [...new Set(receipt.result.warnings)];
-  const nextSteps = createNextStepsBoundary(buildCommandNextSteps(receipt.result));
+  const nextSteps = createStructuredNextStepsBoundary(buildCommandNextSteps(receipt.result));
   const succeededTargets = collectSucceededTargets(receipt);
   const actions = collectReceiptActions(command, receipt);
   const targetResults = buildTargetResults(command, receipt);
@@ -964,13 +1034,9 @@ export function renderCommandReceipt(
       lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
     }
     if (sharedOwnerSuppressed) {
-      lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有触发 shared runtime 接管。');
+      lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有改写 shared runtime owner。');
     }
-    if (markerNeedsAttention && payload.nativeTransactionMarker) {
-      lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
-    } else {
-      lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
-    }
+    lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
     if (payload.skipped.length > 0) {
       lines.push(`未处理 ${payload.skipped.length} 个目标：`);
       for (const entry of payload.skipped) {
@@ -1027,6 +1093,9 @@ export function renderCommandReceipt(
   if ((payload.projectArtifactIdentityFiles?.length ?? 0) > 0) {
     lines.push('已更新共享身份文件。');
   }
+  if (headlineVariant === 'reinstall' && payload.reinstall?.configPreserved) {
+    lines.push('已保留当前目标的 AW 自管配置。');
+  }
   const configRemovalSummary = renderConfigRemovalSummary(payload.configStoreRemovals);
   if (configRemovalSummary) {
     lines.push(configRemovalSummary);
@@ -1043,13 +1112,14 @@ export function renderCommandReceipt(
     lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
   }
   if (sharedOwnerSuppressed) {
-    lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有触发 shared runtime 接管。');
+    lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有改写 shared runtime owner。');
   }
-  if (markerNeedsAttention && payload.nativeTransactionMarker) {
-    lines.push(`下一步：${payload.nativeTransactionMarker.repairCommand} 或 ${payload.nativeTransactionMarker.cleanupCommand}`);
-  } else {
-    lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
+  if (headlineVariant === 'reinstall' && payload.reinstall) {
+    const cleanupCompleted = payload.reinstall.cleanupStage.targets.filter((target) => target.state === 'completed').length;
+    const cleanupSkipped = payload.reinstall.cleanupStage.targets.filter((target) => target.state === 'notNeeded').length;
+    lines.push(`重建前清理：已处理 ${cleanupCompleted} 个 target${cleanupSkipped > 0 ? `，${cleanupSkipped} 个 target 无需清理` : ''}。`);
   }
+  lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
   return lines;
 }
 
@@ -1130,6 +1200,19 @@ export function buildCleanupReceiptJson(result: {
   }
 
   const overallState = result.payload.overallState ?? (isCleanupExecutionFailure(result.payload) ? 'failed' : 'succeeded');
+  const legacyPayload = result.payload as CleanupTargetPayload & {
+    actualRemovals?: CleanupPlanItem[];
+    plannedRemovals?: CleanupPlanItem[];
+    remainingItems?: CleanupPlanItem[];
+  };
+  const cleanupScope = legacyPayload.cleanupScope ?? legacyPayload.plannedRemovals ?? [];
+  const deletedItems = legacyPayload.deletedItems ?? legacyPayload.actualRemovals ?? [];
+  const skippedItems = legacyPayload.skippedItems ?? [];
+  const failedItems = legacyPayload.failedItems ?? [];
+  const residueItems = legacyPayload.residueItems ?? legacyPayload.remainingItems ?? [];
+  const configActions = legacyPayload.configActions ?? [];
+  const affectedDependents = legacyPayload.affectedDependents ?? [];
+  const blockingReasons = legacyPayload.blockingReasons ?? [];
   const nextSteps = result.payload.nextStepsSchemaVersion === 1
     ? {
         nextStepsSchemaVersion: result.payload.nextStepsSchemaVersion,
@@ -1137,11 +1220,9 @@ export function buildCleanupReceiptJson(result: {
         ...(result.payload.legacyNextSteps ? { legacyNextSteps: result.payload.legacyNextSteps } : {}),
       }
     : createNextStepsBoundary([createCliCommandNextStep(
-      result.payload.dryRun ? '继续执行 cleanup' : '查看 cleanup 后状态',
-      result.payload.dryRun
-        ? '可以继续进入 cleanup 执行流程，并按这次预检确认删除项、备份项和配置处理结果。'
-        : '可以重新确认 cleanup 后还剩哪些安装证据、残留和后续可执行动作。',
-      result.payload.dryRun ? result.payload.recommendedCommand : buildStatusCommand({
+      '查看 cleanup 后状态',
+      '可以重新确认 cleanup 后还剩哪些安装证据、残留和后续可执行动作。',
+      buildStatusCommand({
         platforms: [result.payload.target.platform],
         plugins: [result.payload.target.plugin],
         warnings: [],
@@ -1155,14 +1236,16 @@ export function buildCleanupReceiptJson(result: {
       ...(result.payload.target.projectKey ? { projectKey: result.payload.target.projectKey } : {}),
     },
     action: 'cleanup',
-    state: result.payload.dryRun ? 'notRun' : overallState === 'failed' ? 'failed' : 'completed',
+    state: overallState === 'failed' ? 'failed' : 'completed',
     rollbackState: 'notNeeded',
   }];
-  const configStoreRemovals = result.payload.configStoreRemovals ?? (result.payload.wouldRemoveConfig.length > 0
-    ? result.payload.wouldRemoveConfig.map((entry) => ({
+  const configStoreRemovals = result.payload.configStoreRemovals ?? (configActions.length > 0
+    ? configActions
+      .filter((entry) => entry.status !== 'kept')
+      .map((entry) => ({
         store: {
           pluginName: entry.plugin,
-          storeKind: entry.scope === 'project' ? 'projectShared' as const : 'user' as const,
+          storeKind: entry.storeKind,
           ...(entry.projectKey ? { projectRoot: entry.projectKey } : {}),
         },
         state: entry.status === 'removed'
@@ -1191,6 +1274,14 @@ export function buildCleanupReceiptJson(result: {
     ...result.payload,
     receiptSchemaVersion: 2,
     overallState,
+    cleanupScope,
+    deletedItems,
+    skippedItems,
+    failedItems,
+    residueItems,
+    configActions,
+    affectedDependents,
+    blockingReasons,
     targetResults,
     ...nextSteps,
     ...(configStoreRemovals?.length ? { configStoreRemovals } : {}),
@@ -1205,12 +1296,17 @@ export function renderCleanupReceipt(result: {
   const payload = buildCleanupReceiptJson(result);
   if (payload.dependencyIndex) {
     const lines = [`已退休 ${payload.retiredEntries.length} 条 dependency index stale 引用。`];
+    lines.push(`prune token：${payload.pruneToken}`);
+    lines.push(`动作结果：${payload.action}`);
     if (payload.retiredEntries.length === 0) {
       lines.push('这次没有需要退休的项目引用。');
     } else {
       for (const entry of payload.retiredEntries) {
         lines.push(`- ${entry.recordPath}`);
       }
+    }
+    if (payload.skippedReason) {
+      lines.push(`跳过原因：${payload.skippedReason}`);
     }
     if (payload.nextSteps.length > 0) {
       lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
@@ -1220,28 +1316,21 @@ export function renderCleanupReceipt(result: {
 
   const cleanupFailed = isCleanupExecutionFailure(payload);
   const lines: string[] = [
-    `${payload.dryRun ? 'cleanup 评估完成' : cleanupFailed ? 'cleanup 失败' : 'cleanup 已完成'}：${payload.target.plugin}。`,
+    `${cleanupFailed ? 'cleanup 失败' : 'cleanup 已完成'}：${payload.target.plugin}。`,
     `目标类型：${payload.target.targetType}。`,
-    `force 语义：${payload.force ? '已启用' : '未启用'}${payload.forceReason ? `；${payload.forceReason}` : ''}`,
+    `force 语义：${payload.force ? '已启用' : '未启用'}。`,
   ];
-  lines.push(...renderCleanupPlanItems(payload.dryRun ? '计划删除项：' : '实际删除项：', payload.dryRun
-    ? payload.plannedRemovals
-    : payload.actualRemovals ?? payload.plannedRemovals));
-  lines.push(...renderCleanupPlanItems(payload.dryRun ? '备份项：' : '实际备份项：', payload.dryRun
-    ? payload.wouldBackups
-    : payload.actualBackups ?? []));
-  lines.push(...renderCleanupPlanItems(payload.dryRun ? '跳过项：' : '执行跳过项：', payload.dryRun
-    ? payload.skippedForeignItems
-    : payload.skippedItems ?? payload.skippedForeignItems));
+  lines.push(...renderCleanupPlanItems('cleanup 范围：', payload.cleanupScope));
+  lines.push(...renderCleanupPlanItems('已删除：', payload.deletedItems));
+  lines.push(...renderCleanupPlanItems('已跳过：', payload.skippedItems));
+  lines.push(...renderCleanupPlanItems('删除失败：', payload.failedItems));
+  lines.push(...renderCleanupPlanItems('残留项：', payload.residueItems));
   lines.push(...renderCleanupLocations('受影响依赖：', payload.affectedDependents));
   lines.push(...renderCleanupBlockingReasons(payload));
-  lines.push(...renderCleanupConfigActions(payload.dryRun ? '配置处理：' : '配置处理结果：', payload.wouldRemoveConfig));
+  lines.push(...renderCleanupConfigActions('配置处理结果：', payload.configActions));
   const configRemovalSummary = renderConfigRemovalSummary(payload.configStoreRemovals);
   if (configRemovalSummary) {
     lines.push(configRemovalSummary);
-  }
-  if (!payload.dryRun) {
-    lines.push(...renderCleanupPlanItems('未清项：', payload.remainingItems ?? []));
   }
   if (payload.nextSteps.length > 0) {
     lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);

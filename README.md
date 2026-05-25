@@ -13,7 +13,7 @@ aw install git-commit -p both
 aw status
 ```
 
-直接运行 `aw` 会进入交互控制台，从同一个入口完成安装、升级、配置、卸载、修复、清理、重新应用配置和状态排查。`install`、`uninstall`、`upgrade`、`config`、`status`、`repair`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
+直接运行 `aw` 会进入插件管理控制台，从同一个入口完成安装、升级、配置、卸载、清理、重新应用配置和状态排查。`install`、`uninstall`、`upgrade`、`config`、`status`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
 
 ```bash
 aw
@@ -36,11 +36,7 @@ aw install git-commit -p codex -s project
 
 ```bash
 aw status git-commit --verbose
-aw repair git-commit -p codex -s project
-aw repair git-commit -p codex -s project --adopt-existing
-aw repair --dependency-index
-aw cleanup git-commit -p codex -s project --plan
-aw cleanup git-commit -p codex -s project --plan --json
+aw install git-commit -p codex -s project --adopt-existing
 aw cleanup git-commit -p codex -s project
 aw cleanup git-commit -p codex -s project --remove-config
 aw cleanup --dependency-index --prune-stale <token> --yes
@@ -52,9 +48,9 @@ aw config reset codex-explore -s user --yes
 aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
 
-`aw cleanup --plan --json` 是只读预览，输出 `cleanupPlanSchemaVersion: 1`，可在真正清理前查看 planned removals、would backups、would remove config、skipped foreign items、affected dependents、blocking reasons 和建议命令。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。
+`aw cleanup` 会直接清理 AW 能证明归属的异常状态和残留；默认保留 AW 自管配置，也不会运行 uninstall lifecycle。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。dependency index stale reference 的唯一显式维护入口是 `aw cleanup --dependency-index --prune-stale <token> --yes`。
 
-触发策略不再是安装、升级、修复或重装参数。作者在 manifest 里声明每个 skill 的 `defaultTrigger` 和 `allowDynamicTrigger` 后，用户通过 `aw config` 或主控制台配置页调整 `aw.skillTriggers.<skill>.trigger`；如果 runtime 与当前配置不一致，用 `aw repair <plugin> -p <platform> -s <scope>` 脚本化重放配置。
+触发策略不再是安装、升级或重装参数。作者在 manifest 里声明每个 skill 的 `defaultTrigger` 和 `allowDynamicTrigger` 后，用户通过 `aw config` 或主控制台配置页调整 `aw.skillTriggers.<skill>.trigger`；如果 runtime 与当前配置不一致，在主控制台详情页使用“重新应用配置”重放当前配置。
 
 ## 当前插件
 

@@ -944,7 +944,7 @@ describe('install command P6 install-state semantics', () => {
         },
       ),
     ).rejects.toThrow(
-      '请先恢复该插件到当前 catalog，或运行 `aw uninstall git-commit -p codex -s user` 清理 Codex native 残留。',
+      'git-commit 当前不在 current catalog 中，无法继续当前安装。请先恢复该插件到 current catalog，或运行 `aw uninstall git-commit -p codex -s user` 清理 Codex native 残留。',
     );
   });
 
@@ -1371,7 +1371,6 @@ describe('install command P6 install-state semantics', () => {
             recordCommitted: true,
             markerPending: true,
             needsAttention: true,
-            repairCommand: 'aw repair git-commit -p codex -s project',
             cleanupCommand: 'aw cleanup git-commit -p codex -s project',
           },
           dependencyIndex: {
@@ -1410,6 +1409,14 @@ describe('install command P6 install-state semantics', () => {
       receiptSchemaVersion: 2,
       overallState: 'succeeded',
       nextStepsSchemaVersion: 1,
+      nextSteps: [
+        expect.objectContaining({
+          command: 'aw cleanup git-commit -p codex -s project',
+        }),
+        expect.objectContaining({
+          command: 'aw reinstall git-commit --platform codex --scope project',
+        }),
+      ],
       privateStateFiles: [{ path: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json' }],
       ignoredStateFiles: [{ repoRelativePath: '.gitignore' }],
       sharedConfigFiles: [{ path: '/tmp/workspace/.agent-workflows/plugin-config/git-commit/config.json' }],
@@ -1433,10 +1440,11 @@ describe('install command P6 install-state semantics', () => {
         needsTakeover: false,
       },
     });
+    expect(receipt).not.toHaveProperty('legacyNextSteps');
+    expect(receipt.nativeTransactionMarker).not.toHaveProperty('recoveryCommand');
 
     const human = renderCommandReceipt('install', rawReceipt).join('\n');
     expect(human).toContain('主要安装已经完成，但还需要收口本机原生状态');
-    expect(human).toContain('aw repair git-commit -p codex -s project');
     expect(human).toContain('aw cleanup git-commit -p codex -s project');
     expect(human).toContain('已更新团队共享配置。');
     expect(human).toContain('已更新共享身份文件。');
@@ -1444,6 +1452,8 @@ describe('install command P6 install-state semantics', () => {
     expect(human).toContain('当前项目的 repo-local skill trigger 已按本地项目路径处理');
     expect(human).not.toContain('takeoverRequired');
     expect(human).not.toContain('ownerConflict');
+    expect(human).not.toContain('aw repair');
+    expect(human).not.toContain('--takeover-shared-runtime');
   });
 
   it('keeps explicit single-platform installs scoped to requested targets, without letting dependencies widen the platform set', async () => {
@@ -2290,7 +2300,7 @@ describe('install command P6 install-state semantics', () => {
         },
       ),
     ).rejects.toThrow(
-      `aw repair ${plugin.manifest.name} --platform codex --scope project --adopt-existing`,
+      `aw install ${plugin.manifest.name} --platform codex --scope project --adopt-existing`,
     );
 
     await expect(readInstallRecord({

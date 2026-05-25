@@ -47,7 +47,7 @@ import { resolveSkillTriggerConfigEntries } from '../utils/skill-trigger-prefere
 import { getAgentVersionRequirement } from '../utils/agent-version.js';
 
 export type ConsoleWriteWizardOperation = 'install' | 'upgrade';
-export type ConsoleWriteIntent = ConsoleWriteWizardOperation | 'repairInstall' | 'cleanupRecovery';
+export type ConsoleWriteIntent = ConsoleWriteWizardOperation;
 
 export type ConsoleWriteBlockedReasonCode =
   | 'unsupportedProjectTarget'
@@ -58,7 +58,6 @@ export type ConsoleWriteBlockedReasonCode =
   | 'roleOrMcpConflict'
   | 'unmanagedArtifactConflict'
   | 'catalogUnavailable'
-  | 'cleanupRecoveryUnmatched'
   | 'agentVersionBlocked'
   | 'custom';
 
@@ -107,7 +106,6 @@ export interface ConsoleWizardStep {
     | 'selectPlugin'
     | 'selectPlatform'
     | 'selectLocation'
-    | 'selectSkillTrigger'
     | 'readOnlyPreflight'
     | 'requiredConfig'
     | 'runCommand';
@@ -142,14 +140,10 @@ export type ConsoleWriteActionPlan =
 
 export interface ResolveConsoleWriteActionPlanOptions {
   intent: ConsoleWriteIntent;
-  repairOperation?: ConsoleWriteWizardOperation;
-  cleanupRecoveryEvidenceMatches?: boolean;
 }
 
 export interface PrepareConsoleWritePreflightOptions {
   intent: ConsoleWriteIntent;
-  repairOperation?: ConsoleWriteWizardOperation;
-  cleanupRecoveryEvidenceMatches?: boolean;
   targets: ResolvedPluginTarget[];
   platforms: PlatformName[];
   cwd: string;
@@ -225,8 +219,6 @@ export interface CreateInstallWizardDecisionOptions {
   resolveRequiredConfigPrompts?: (
     options: ResolveConsoleRequiredConfigPromptsOptions,
   ) => Promise<ConsoleRequiredConfigPrompt[]>;
-  repairOperation?: ConsoleWriteWizardOperation;
-  cleanupRecoveryEvidenceMatches?: boolean;
   additionalChecks?: PrepareConsoleWritePreflightOptions['additionalChecks'];
 }
 
@@ -251,45 +243,12 @@ const SKILL_TRIGGER_OPTIONS: ConsoleSkillTriggerOption[] = [
   { value: 'auto', label: '自动' },
 ];
 
-function resolveWizardOperation(
-  options: ResolveConsoleWriteActionPlanOptions,
-): ConsoleWriteWizardOperation {
-  if (options.intent === 'repairInstall') {
-    return options.repairOperation ?? 'install';
-  }
-
-  if (options.intent === 'cleanupRecovery') {
-    throw new Error('cleanupRecovery does not map to an install/upgrade wizard operation.');
-  }
-
-  return options.intent;
-}
-
 export function resolveConsoleWriteActionPlan(
   options: ResolveConsoleWriteActionPlanOptions,
 ): ConsoleWriteActionPlan | ConsoleWriteBlockedReason {
-  if (options.intent === 'cleanupRecovery') {
-    if (options.cleanupRecoveryEvidenceMatches === true) {
-      return {
-        kind: 'directCommand',
-        operation: 'uninstall',
-        intent: options.intent,
-      };
-    }
-
-    return {
-      code: 'cleanupRecoveryUnmatched',
-      message: '这次 recovery breadcrumb 证据不匹配，不能直接执行清理。',
-      nextSteps: [
-        '先查看诊断，确认当前残留是否属于这次未完成安装。',
-        '若归属不明确，优先走卸载或人工清理，而不是自动接管。',
-      ],
-    };
-  }
-
   return {
     kind: 'wizardWrite',
-    operation: resolveWizardOperation(options),
+    operation: options.intent,
     intent: options.intent,
   };
 }
@@ -341,7 +300,7 @@ function mapWriteSafetyErrorToBlockedReason(
         code: 'userCodexConfigUnreadable',
         message: error.message,
         nextSteps: [
-          '先修复用户级 Codex 配置的语法或内容，再重新打开安装/升级向导。',
+          '先修正用户级 Codex 配置的语法或内容，再重新打开安装/升级向导。',
         ],
       };
     case 'projectConfigUnreadable':
@@ -349,7 +308,7 @@ function mapWriteSafetyErrorToBlockedReason(
         code: 'projectCodexConfigUnreadable',
         message: error.message,
         nextSteps: [
-          '先修复当前项目的 Codex 配置文件，再继续写入当前项目目标。',
+          '先修正当前项目的 Codex 配置文件，再继续写入当前项目目标。',
         ],
       };
     case 'externalOwnershipPresent':
@@ -366,7 +325,7 @@ function mapWriteSafetyErrorToBlockedReason(
         code: 'trackingIdentityBroken',
         message: error.message,
         nextSteps: [
-          '先修复 tracking identity，再决定是继续升级还是先卸载重装。',
+          '先修正 tracking identity，再决定是继续升级还是先卸载重装。',
         ],
       };
     case 'roleNameConflict':
@@ -428,8 +387,6 @@ export async function prepareConsoleWritePreflight(
 ): Promise<ConsoleWritePreflightResult> {
   const actionPlan = resolveConsoleWriteActionPlan({
     intent: options.intent,
-    repairOperation: options.repairOperation,
-    cleanupRecoveryEvidenceMatches: options.cleanupRecoveryEvidenceMatches,
   });
   if ('code' in actionPlan) {
     return {
@@ -824,8 +781,6 @@ export async function createInstallWizardDecision(
 ): Promise<ConsoleInstallWizardDecision> {
   const actionPlan = resolveConsoleWriteActionPlan({
     intent: options.intent,
-    repairOperation: options.repairOperation,
-    cleanupRecoveryEvidenceMatches: options.cleanupRecoveryEvidenceMatches,
   });
 
   if ('code' in actionPlan) {
@@ -864,8 +819,6 @@ export async function createInstallWizardDecision(
   const steps = createBaseSteps(skillTrigger);
   const preflight = await (options.preparePreflight ?? prepareConsoleWritePreflight)({
     intent: options.intent,
-    repairOperation: options.repairOperation,
-    cleanupRecoveryEvidenceMatches: options.cleanupRecoveryEvidenceMatches,
     targets: options.targets,
     platforms: options.platforms,
     cwd: options.cwd,
@@ -972,8 +925,7 @@ export function createResolvedInstallOptionEntry(
 
 export function isConsoleWriteWizardAction(
   action: PluginConsoleActionKind,
-): action is 'openInstallWizard' | 'runUpgrade' | 'repairInstall' {
+): action is 'openInstallWizard' | 'runUpgrade' {
   return action === 'openInstallWizard' ||
-    action === 'runUpgrade' ||
-    action === 'repairInstall';
+    action === 'runUpgrade';
 }

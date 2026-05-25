@@ -1606,7 +1606,7 @@ describe('skill trigger command integration', () => {
     await expect(fs.pathExists(codexOpenAiYamlPath(workspace.awHome))).resolves.toBe(false);
   });
 
-  it('fails Codex project upgrade preflight with duplicateInstall when the sibling user install is healthy', async () => {
+  it('fails Codex project upgrade preflight on missing project install record before duplicateInstall when the sibling user install is healthy', async () => {
     const workspace = await makeWorkspace();
     configureWorkspaceEnv(workspace);
     await initCommand({ force: true, env: process.env });
@@ -1661,7 +1661,7 @@ describe('skill trigger command integration', () => {
         }),
         env: process.env,
       },
-    )).rejects.toThrow(/duplicateInstall/);
+    )).rejects.toThrow('有效 install record');
     expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect(await findInstallRecord({
       cwd: workspace.repoRoot,
@@ -2228,8 +2228,11 @@ describe('skill trigger command integration', () => {
           env: process.env,
         },
       ),
-    ).rejects.toThrow('缺失 dependency metadata');
-    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(false);
+    ).resolves.toMatchObject({
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+    });
+    expect(await readCodexAllowImplicitInvocation(workspace.awHome)).toBe(true);
     expect((await readInstalledLedger(process.env)).ledgerState.status).toBe('degraded');
   });
 

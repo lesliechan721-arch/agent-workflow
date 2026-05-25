@@ -42,6 +42,7 @@ import {
 } from '../../src/utils/paths.js';
 import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import {
   activateCliEmbeddedRoot,
   registerCliCatalogSourceRoot,
@@ -196,6 +197,12 @@ async function readInstallRecord(options: {
     },
     env: options.env ?? process.env,
   });
+}
+
+async function createInstallStateBuilderForWorkspace(workspace: {
+  repoRoot: string;
+}): Promise<Awaited<ReturnType<typeof createMinimalPluginInstallStateFixtureBuilder>>> {
+  return createMinimalPluginInstallStateFixtureBuilder(path.dirname(workspace.repoRoot));
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -1954,6 +1961,34 @@ describe('CLI integration', () => {
     activateWorkspaceEnv({ awHome, codexHome, embeddedRoot, claudeHome: path.join(path.dirname(codexHome), 'claude-home') }, { forceClaude: true });
 
     await initCommand({ force: true });
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        adapters: {
+          claude: new FakeAdapter('claude', repoRoot, {
+            'git-commit': {
+              currentCatalogAvailable: true,
+              scopeInitialized: 'yes',
+              nativeInstalled: true,
+              marketplaceRegistered: true,
+            },
+          }),
+          codex: new FakeAdapter('codex', repoRoot, {}),
+        },
+      },
+    );
+    const builder = await createInstallStateBuilderForWorkspace({ repoRoot });
+    const claudeUser = builder.createTarget({
+      pluginName: 'git-commit',
+      platform: 'claude',
+      scope: 'user',
+    });
+    await builder.writeInstallRecord(claudeUser);
 
     const installedLedgerPath = path.join(awHome, 'installed.json');
     const installedLedger = createAvailableLedger();
@@ -2040,6 +2075,35 @@ describe('CLI integration', () => {
     await initCommand({ force: true });
 
     const projectKey = await resolveCodexProjectKey(repoRoot);
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        adapters: {
+          codex: new FakeAdapter('codex', repoRoot, {
+            'git-commit': {
+              currentCatalogAvailable: true,
+              scopeInitialized: 'yes',
+              nativeInstalled: true,
+              marketplaceRegistered: true,
+            },
+          }),
+          claude: new FakeAdapter('claude', repoRoot, {}),
+        },
+      },
+    );
+    const builder = await createInstallStateBuilderForWorkspace({ repoRoot });
+    const codexProject = builder.createTarget({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'project',
+      projectKey,
+    });
+    await builder.writeInstallRecord(codexProject);
     const installedLedgerPath = path.join(awHome, 'installed.json');
     const installedLedger = createAvailableLedger();
     installedLedger.plugins['git-commit'] = {
@@ -2128,6 +2192,17 @@ describe('CLI integration', () => {
     await initCommand({ force: true });
 
     const projectKey = await resolveCodexProjectKey(repoRoot);
+    await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      {
+        nativeCliRunner: createCodexMarketplaceAddRunner(repoRoot),
+      },
+    );
     const installedLedgerPath = path.join(awHome, 'installed.json');
     const installedLedger = createAvailableLedger();
     installedLedger.plugins['git-commit'] = {
@@ -2823,9 +2898,9 @@ describe('CLI integration', () => {
       },
     );
 
-    expect(result.matrix.health).toBe('needsAttention');
+    expect(result.matrix.health).toBe('ready');
     expect(result.matrix.cells[0]).toMatchObject({
-      health: 'needsAttention',
+      health: 'ready',
       installState: {
         currentCatalogAvailable: false,
       },

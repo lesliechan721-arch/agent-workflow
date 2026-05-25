@@ -204,7 +204,7 @@ renderer stdout 必须只输出 JSON：
 
 renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示 repair。artifact drift 或 missing 在 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
+配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示查看 status 详情；artifact drift 或 missing 在 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
 
 重新应用配置动作用于重放已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys，并同时运行 SkillTrigger built-in apply pipeline。成功后更新对应 artifact 的 accepted state 和 refresh 诊断，并让 runtime 触发策略对齐当前 effective 配置；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error` 或 built-in apply 结果，后续 status 可从 diagnostic cache 读取；没有可定位 dynamic artifact 但存在 SkillTrigger 内建字段时仍会运行 built-in apply pipeline。
 
@@ -268,7 +268,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - 不依赖当前 marketplace 中的同名插件；`uninstall` 会优先使用安装时保存的 historical runtime bundle，config refresh 也会使用它运行动态 artifact renderer。这个 runtime 不是 current catalog，不能当作当前依赖边或 schema 真值。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
-`aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或修复 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。常见底层状态包括：
+`aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或改写 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。它们不是安装真值，顶层安装状态仍只允许 `installed`、`notInstalled`、`cleanupRequired` 和 `external`。常见底层状态包括：
 
 | 维度 | 状态 |
 |------|------|

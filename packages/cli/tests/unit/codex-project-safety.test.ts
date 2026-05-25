@@ -7,7 +7,7 @@ import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
-import { repairCommand } from '../../src/commands/repair.js';
+import { runRepairWorkflow } from '../../src/commands/repair.js';
 import type { ResolvedPluginTarget } from '../../src/commands/common.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
 import { buildGeneratedName } from '../../src/generators/shared.js';
@@ -947,7 +947,7 @@ describe('Codex project safety preflight', () => {
       'utf8',
     );
 
-    await repairCommand(
+    await runRepairWorkflow(
       ['dynamic-artifacts'],
       {
         cwd: workspace.repoRoot,
@@ -1015,17 +1015,19 @@ describe('Codex project safety preflight', () => {
       'utf8',
     );
 
-    await uninstallCommand(
-      ['dynamic-artifacts'],
-      {
-        cwd: workspace.repoRoot,
-        scope: 'project',
-        platform: 'codex',
-      },
-      {
-        env: workspace.env,
-      },
-    );
+    await expect(
+      uninstallCommand(
+        ['dynamic-artifacts'],
+        {
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          platform: 'codex',
+        },
+        {
+          env: workspace.env,
+        },
+      ),
+    ).rejects.toThrow('missingInstallRecord');
 
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# foreign\n');
   });
@@ -1775,7 +1777,7 @@ describe('Codex project safety preflight', () => {
     ).resolves.toBe(false);
   });
 
-  it('fail-closes project uninstall when dependency metadata is missing even if user Codex config is unreadable', async () => {
+  it('fail-closes project uninstall when the install record is missing even if user Codex config is unreadable', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['instructions-mcp'],
       forceCodex: false,
@@ -1799,10 +1801,10 @@ describe('Codex project safety preflight', () => {
           env: workspace.env,
         },
       ),
-    ).rejects.toThrow('缺失 dependency metadata');
+    ).rejects.toThrow('missingInstallRecord');
   });
 
-  it('fail-closes project uninstall when dependency metadata is missing even if external ownership is present', async () => {
+  it('fail-closes project uninstall when the install record is missing even if external ownership is present', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['instructions-mcp'],
       forceCodex: false,
@@ -1830,7 +1832,7 @@ describe('Codex project safety preflight', () => {
           env: workspace.env,
         },
       ),
-    ).rejects.toThrow('缺失 dependency metadata');
+    ).rejects.toThrow('missingInstallRecord');
   });
 
   it('returns a read-only notInstalled projection for skills-only project status when user Codex config is unreadable', async () => {

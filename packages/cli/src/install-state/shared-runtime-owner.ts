@@ -2,7 +2,12 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { PlatformName, PluginMeta, SkillTriggerPreference } from '../types.js';
+import type {
+  PlatformName,
+  PluginLocation as DependencyGraphPluginLocation,
+  PluginMeta,
+  SkillTriggerPreference,
+} from '../types.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
 import {
@@ -20,11 +25,12 @@ import {
   type SkillTriggerMaterializationTarget,
 } from '../utils/skill-trigger-preferences.js';
 import {
+  inspectGlobalDependencyIndex,
   readInstallRecordFileAt,
   readSharedSkillTriggerRuntimeOwner,
 } from './facade.js';
 import { sha256Hex } from './internal.js';
-import { getSharedSkillTriggerRuntimeOwnerPath } from './paths.js';
+import { getInstallStatePrivateRoot, getSharedSkillTriggerRuntimeOwnerPath } from './paths.js';
 import {
   createSharedRuntimeOwnerDeleteStage,
   createSharedRuntimeOwnerWriteStage,
@@ -37,6 +43,7 @@ import type {
   PluginLocation,
   SharedSkillTriggerRuntimeOwner,
 } from './types.js';
+import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 
 export interface SharedSkillTriggerRuntimeOwnerInspection {
   ownerPath: string;
@@ -51,13 +58,11 @@ export type SharedSkillTriggerRuntimeOwnerAction =
   | 'none'
   | 'claim'
   | 'refresh'
-  | 'takeover'
+  | 'reassign'
   | 'release';
 
 export interface SharedSkillTriggerRuntimeTakeoverRequired {
   reason: 'foreignOwner' | 'unverifiedOwner' | 'invalidOwnerState';
-  takeoverAllowed: boolean;
-  suggestedFlag: '--takeover-shared-runtime' | null;
   message: string;
   currentOwner?: PluginLocation;
 }
@@ -87,8 +92,15 @@ export type SharedSkillTriggerRuntimeOwnerUpsertPlan =
 export interface SharedSkillTriggerRuntimeRemovalPlan {
   assessment: SharedSkillTriggerRuntimeSemanticsAssessment;
   ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
-  ownerAction: 'none' | 'release';
+  ownerAction: 'none' | 'release' | 'reassign';
   shouldDeleteOwner: boolean;
+  nextOwner: {
+    location: PluginLocation;
+    preference: SkillTriggerPreference;
+    recordFile: InstallRecordFile;
+    recordPath: string;
+  } | null;
+  shouldWriteOwner: boolean;
   shouldMaterializeRuntime: boolean;
 }
 
@@ -123,6 +135,15 @@ function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
     && left.platform === right.platform
     && left.scope === right.scope
     && (left.projectKey ?? null) === (right.projectKey ?? null);
+}
+
+function toDependencyGraphPluginLocation(location: PluginLocation): DependencyGraphPluginLocation {
+  return {
+    plugin: location.plugin,
+    platform: location.platform,
+    scope: location.scope,
+    projectKey: location.scope === 'project' ? (location.projectKey ?? null) : null,
+  };
 }
 
 function isPathInside(childPath: string, rootPath: string): boolean {
@@ -304,22 +325,198 @@ function formatOwnerInvalidReason(inspection: SharedSkillTriggerRuntimeOwnerInsp
   return 'owner 状态不可验证';
 }
 
-function formatReplayRepairGuidance(ownerLocation?: PluginLocation): string {
-  if (!ownerLocation) {
-    return '对应目标的 `aw repair`';
-  }
-
-  return `\`aw repair ${ownerLocation.plugin} --platform ${ownerLocation.platform} --scope ${ownerLocation.scope}\``;
-}
-
 function buildReplayFailClosedMessage(options: {
   pluginName: string;
   platform: PlatformName;
   detail: string;
   ownerLocation?: PluginLocation;
 }): string {
+  const ownerLabel = options.ownerLocation
+    ? formatLocation(options.ownerLocation)
+    : '当前冲突 owner';
   return `[${options.platform}/${options.pluginName}] ${options.detail}；shared runtime replay 已 fail closed。` +
-    `请先运行 ${formatReplayRepairGuidance(options.ownerLocation)}，如需改写，请重跑单目标写命令并加 \`--takeover-shared-runtime\`。`;
+    `请先卸载、cleanup，或调整 ${ownerLabel} 对应的有效安装后重试。`;
+}
+
+function participatesInSharedRuntimeOwner(location: PluginLocation): boolean {
+  return !(location.platform === 'codex' && location.scope === 'project');
+}
+
+function compareOwnerCandidate(
+  left: { location: PluginLocation; recordFile: InstallRecordFile; recordPath: string },
+  right: { location: PluginLocation; recordFile: InstallRecordFile; recordPath: string },
+): number {
+  return (
+    right.recordFile.record.updatedAt.localeCompare(left.recordFile.record.updatedAt)
+    || (left.location.scope === right.location.scope
+      ? 0
+      : left.location.scope === 'user'
+        ? -1
+        : 1)
+    || serializePluginLocation(toDependencyGraphPluginLocation(left.location)).localeCompare(
+      serializePluginLocation(toDependencyGraphPluginLocation(right.location)),
+    )
+    || left.recordPath.localeCompare(right.recordPath)
+  );
+}
+
+async function collectOwnerCandidateRecords(options: {
+  pluginName: string;
+  platform: PlatformName;
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  ownerInspection?: SharedSkillTriggerRuntimeOwnerInspection;
+}): Promise<Array<{
+  location: PluginLocation;
+  recordFile: InstallRecordFile;
+  recordPath: string;
+}>> {
+  const candidates = new Map<string, {
+    location: PluginLocation;
+    recordFile: InstallRecordFile;
+    recordPath: string;
+  }>();
+  const addCandidate = (recordFile: InstallRecordFile, recordPath: string): void => {
+    const location = locationFromRecord(recordFile);
+    if (
+      location.plugin !== options.pluginName
+      || location.platform !== options.platform
+      || !participatesInSharedRuntimeOwner(location)
+    ) {
+      return;
+    }
+    const key = `${recordPath}\u0000${recordFile.recordId}`;
+    if (!candidates.has(key)) {
+      candidates.set(key, {
+        location,
+        recordFile,
+        recordPath,
+      });
+    }
+  };
+
+  const inspection = await inspectGlobalDependencyIndex(options.env);
+  if (inspection.status === 'ok') {
+    for (const [index, reference] of inspection.references.entries()) {
+      if (reference.status !== 'verified') {
+        continue;
+      }
+      const record = inspection.value.records[index];
+      if (!record || record.location.plugin !== options.pluginName || record.location.platform !== options.platform) {
+        continue;
+      }
+      const read = await readInstallRecordFileAt(record.recordPath, { env: options.env });
+      if (read.status === 'ok') {
+        addCandidate(read.value, record.recordPath);
+      }
+    }
+  }
+
+  if (options.cwd) {
+    const recordRoots: PluginLocation[] = [
+      {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'user',
+      },
+      {
+        plugin: options.pluginName,
+        platform: options.platform,
+        scope: 'project',
+        projectKey: options.cwd,
+      },
+    ];
+    for (const pseudoLocation of recordRoots) {
+      const recordsDir = path.join(
+        getInstallStatePrivateRoot(options.cwd, pseudoLocation, options.env),
+        'records',
+      );
+      if (!(await fs.pathExists(recordsDir))) {
+        continue;
+      }
+      const entries = (await fs.readdir(recordsDir))
+        .filter((entry) => entry.endsWith('.json'))
+        .sort();
+      for (const entry of entries) {
+        const recordPath = path.join(recordsDir, entry);
+        const read = await readInstallRecordFileAt(recordPath, { env: options.env });
+        if (read.status === 'ok') {
+          addCandidate(read.value, recordPath);
+        }
+      }
+    }
+  }
+
+  if (
+    options.ownerInspection?.usable === true
+    && options.ownerInspection.ownerRecordRead?.status === 'ok'
+    && options.ownerInspection.read.status === 'ok'
+  ) {
+    const siblingRecordDir = path.dirname(options.ownerInspection.read.value.ownerRecordPath);
+    if (await fs.pathExists(siblingRecordDir)) {
+      const entries = (await fs.readdir(siblingRecordDir))
+        .filter((entry) => entry.endsWith('.json'))
+        .sort();
+      for (const entry of entries) {
+        const recordPath = path.join(siblingRecordDir, entry);
+        const read = await readInstallRecordFileAt(recordPath, { env: options.env });
+        if (read.status === 'ok') {
+          addCandidate(read.value, recordPath);
+        }
+      }
+    }
+    addCandidate(
+      options.ownerInspection.ownerRecordRead.value,
+      options.ownerInspection.read.value.ownerRecordPath,
+    );
+  }
+
+  return [...candidates.values()].sort(compareOwnerCandidate);
+}
+
+async function selectDerivedOwnerCandidate(options: {
+  pluginName: string;
+  platform: PlatformName;
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  ownerInspection?: SharedSkillTriggerRuntimeOwnerInspection;
+  excludeLocation?: PluginLocation;
+}): Promise<{
+  location: PluginLocation;
+  preference: SkillTriggerPreference;
+  recordFile: InstallRecordFile;
+  recordPath: string;
+} | null> {
+  const candidates = (await collectOwnerCandidateRecords(options))
+    .filter((candidate) =>
+      !options.excludeLocation || !sameLocation(candidate.location, options.excludeLocation));
+  const winner = candidates[0];
+  return winner
+    ? {
+        ...winner,
+        preference: preferenceFromRecord(winner.recordFile),
+      }
+    : null;
+}
+
+export async function readDerivedSharedSkillTriggerRuntimeOwner(options: {
+  pluginName: string;
+  platform: PlatformName;
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+}): Promise<PluginLocation | null> {
+  const ownerInspection = await inspectSharedSkillTriggerRuntimeOwner({
+    pluginName: options.pluginName,
+    platform: options.platform,
+    env: options.env,
+  });
+  return (await selectDerivedOwnerCandidate({
+    pluginName: options.pluginName,
+    platform: options.platform,
+    env: options.env,
+    cwd: options.cwd,
+    ownerInspection,
+  }))?.location ?? null;
 }
 
 async function verifyOwnerRecordDigest(owner: SharedSkillTriggerRuntimeOwner): Promise<boolean> {
@@ -441,7 +638,6 @@ export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {
   target: SkillTriggerMaterializationTarget;
   preference: SkillTriggerPreference;
   command: 'install' | 'repair' | 'upgrade';
-  takeoverSharedRuntime?: boolean;
   targetCount?: number;
   env?: NodeJS.ProcessEnv;
 }): Promise<SharedSkillTriggerRuntimeOwnerUpsertPlan> {
@@ -470,22 +666,19 @@ export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {
     };
   }
 
-  const takeoverAllowed = (options.targetCount ?? 1) === 1;
   const ownerMatchesTarget = ownerInspection.read.status === 'ok'
     && sameLocation(ownerInspection.read.value.owner, options.location);
+  const derivedOwner = await selectDerivedOwnerCandidate({
+    pluginName: options.location.plugin,
+    platform: options.location.platform,
+    env: options.env,
+    cwd: options.location.scope === 'project' ? options.location.projectKey ?? undefined : process.cwd(),
+    ownerInspection,
+  });
+  const derivedOwnerMatchesTarget = derivedOwner !== null
+    && sameLocation(derivedOwner.location, options.location);
 
-  if (ownerInspection.read.status === 'missing') {
-    return {
-      status: 'ok',
-      assessment,
-      ownerInspection,
-      ownerAction: 'claim',
-      shouldWriteOwner: true,
-      shouldMaterializeRuntime: assessment.semanticDelta !== 'noChange',
-    };
-  }
-
-  if (ownerMatchesTarget) {
+  if (ownerMatchesTarget && derivedOwnerMatchesTarget) {
     return {
       status: 'ok',
       assessment,
@@ -496,63 +689,46 @@ export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {
     };
   }
 
-  if (assessment.semanticDelta === 'noChange') {
+  if (derivedOwnerMatchesTarget) {
     return {
       status: 'ok',
       assessment,
       ownerInspection,
-      ownerAction: 'none',
-      shouldWriteOwner: false,
-      shouldMaterializeRuntime: false,
+      ownerAction: ownerMatchesTarget ? 'refresh' : 'claim',
+      shouldWriteOwner: true,
+      shouldMaterializeRuntime: assessment.semanticDelta !== 'noChange',
+    };
+  }
+
+  if (derivedOwner === null) {
+    return {
+      status: 'ok',
+      assessment,
+      ownerInspection,
+      ownerAction: ownerMatchesTarget ? 'refresh' : 'claim',
+      shouldWriteOwner: true,
+      shouldMaterializeRuntime: assessment.semanticDelta !== 'noChange',
     };
   }
 
   const takeoverRequired: SharedSkillTriggerRuntimeTakeoverRequired = ownerInspection.read.status === 'ok'
     ? {
       reason: ownerInspection.usable ? 'foreignOwner' : 'unverifiedOwner',
-      takeoverAllowed,
-      suggestedFlag: takeoverAllowed ? '--takeover-shared-runtime' : null,
       currentOwner: ownerInspection.read.value.owner,
       message: ownerInspection.usable
-        ? `shared runtime 当前由 ${formatLocation(ownerInspection.read.value.owner)} 控制；如需改写，请重跑同一条命令并加 --takeover-shared-runtime。`
-        : `shared runtime 当前 owner 指向 ${formatLocation(ownerInspection.read.value.owner)}，但状态不可验证（${formatOwnerInvalidReason(ownerInspection)}）；如需改写，请使用单目标命令并显式加 --takeover-shared-runtime。`,
+        ? `shared runtime 当前由 ${formatLocation(ownerInspection.read.value.owner)} 控制；请先卸载、cleanup，或调整该 owner 对应的有效安装后重试。`
+        : `shared runtime 当前 owner 指向 ${formatLocation(ownerInspection.read.value.owner)}，但状态不可验证（${formatOwnerInvalidReason(ownerInspection)}）；请先 cleanup 相关残留或恢复该 owner 对应的有效安装后重试。`,
     }
     : {
       reason: 'invalidOwnerState',
-      takeoverAllowed,
-      suggestedFlag: takeoverAllowed ? '--takeover-shared-runtime' : null,
-      message: `shared runtime owner 状态不可读；如需改写，请使用单目标命令并显式加 --takeover-shared-runtime。`,
+      message: 'shared runtime owner 状态不可读；请先 cleanup 相关残留后重试。',
     };
-
-  if (!options.takeoverSharedRuntime) {
-    return {
-      status: 'takeoverRequired',
-      assessment,
-      ownerInspection,
-      takeoverRequired,
-    };
-  }
-
-  if (!takeoverAllowed) {
-    return {
-      status: 'takeoverNotAllowed',
-      assessment,
-      ownerInspection,
-      takeoverRequired: {
-        ...takeoverRequired,
-        suggestedFlag: null,
-        message: '批量 upgrade 不能接管 shared runtime；请改用单目标 install / repair / explicit upgrade 并加 --takeover-shared-runtime。',
-      },
-    };
-  }
 
   return {
-    status: 'ok',
+    status: (options.targetCount ?? 1) === 1 ? 'takeoverRequired' : 'takeoverNotAllowed',
     assessment,
     ownerInspection,
-    ownerAction: 'takeover',
-    shouldWriteOwner: true,
-    shouldMaterializeRuntime: true,
+    takeoverRequired,
   };
 }
 
@@ -560,6 +736,7 @@ export async function planSharedSkillTriggerRuntimeOwnerRemoval(options: {
   location: PluginLocation;
   embeddedRoot: string;
   target: SkillTriggerMaterializationTarget;
+  cwd?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<SharedSkillTriggerRuntimeRemovalPlan> {
   const ownerInspection = await inspectSharedSkillTriggerRuntimeOwner({
@@ -582,12 +759,21 @@ export async function planSharedSkillTriggerRuntimeOwnerRemoval(options: {
       ownerInspection,
       ownerAction: 'none',
       shouldDeleteOwner: false,
+      nextOwner: null,
+      shouldWriteOwner: false,
       shouldMaterializeRuntime: false,
     };
   }
 
-  const ownerMatchesTarget = ownerInspection.read.status === 'ok'
-    && sameLocation(ownerInspection.read.value.owner, options.location);
+  const derivedOwner = await selectDerivedOwnerCandidate({
+    pluginName: options.location.plugin,
+    platform: options.location.platform,
+    env: options.env,
+    cwd: options.cwd ?? (options.location.scope === 'project' ? options.location.projectKey ?? undefined : process.cwd()),
+    ownerInspection,
+  });
+  const ownerMatchesTarget = derivedOwner !== null
+    && sameLocation(derivedOwner.location, options.location);
 
   if (!ownerMatchesTarget) {
     return {
@@ -595,15 +781,28 @@ export async function planSharedSkillTriggerRuntimeOwnerRemoval(options: {
       ownerInspection,
       ownerAction: 'none',
       shouldDeleteOwner: false,
+      nextOwner: null,
+      shouldWriteOwner: false,
       shouldMaterializeRuntime: false,
     };
   }
 
+  const nextOwner = await selectDerivedOwnerCandidate({
+    pluginName: options.location.plugin,
+    platform: options.location.platform,
+    env: options.env,
+    cwd: options.cwd ?? (options.location.scope === 'project' ? options.location.projectKey ?? undefined : process.cwd()),
+    ownerInspection,
+    excludeLocation: options.location,
+  });
+
   return {
     assessment,
     ownerInspection,
-    ownerAction: 'release',
-    shouldDeleteOwner: true,
+    ownerAction: nextOwner ? 'reassign' : 'release',
+    shouldDeleteOwner: !nextOwner,
+    nextOwner,
+    shouldWriteOwner: Boolean(nextOwner),
     shouldMaterializeRuntime: true,
   };
 }
@@ -667,7 +866,11 @@ export async function createSharedSkillTriggerRuntimeRemovalStages(options: {
   const warnings: string[] = [];
   const stages: InstallStateTransactionStage[] = [];
 
-  if (!options.plan.shouldDeleteOwner && !options.plan.shouldMaterializeRuntime) {
+  if (
+    !options.plan.shouldDeleteOwner
+    && !options.plan.shouldWriteOwner
+    && !options.plan.shouldMaterializeRuntime
+  ) {
     return {
       ownerAction: options.plan.ownerAction,
       warnings,
@@ -679,7 +882,7 @@ export async function createSharedSkillTriggerRuntimeRemovalStages(options: {
     const materialization = await createSharedSkillTriggerRuntimeMaterializationStage({
       pluginName: options.pluginName,
       platform: options.platform,
-      preference: 'default',
+      preference: options.plan.nextOwner?.preference ?? 'default',
       embeddedRoot: options.embeddedRoot,
       target: options.target,
       mode: 'bestEffortReplay',
@@ -688,7 +891,13 @@ export async function createSharedSkillTriggerRuntimeRemovalStages(options: {
     stages.push(materialization.stage);
   }
 
-  if (options.plan.shouldDeleteOwner) {
+  if (options.plan.shouldWriteOwner && options.plan.nextOwner) {
+    stages.push(await createSharedRuntimeOwnerIdentityWriteStage({
+      recordFile: options.plan.nextOwner.recordFile,
+      recordPath: options.plan.nextOwner.recordPath,
+      env: options.env,
+    }));
+  } else if (options.plan.shouldDeleteOwner) {
     stages.push(createSharedRuntimeOwnerDeleteStage({
       pluginName: options.pluginName,
       platform: options.platform,

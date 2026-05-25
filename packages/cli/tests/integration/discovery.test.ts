@@ -1375,10 +1375,10 @@ describe('managed plugin discovery', () => {
     });
     expect(payload.reports[0]?.plugins[0]?.native.recovery.suggestion).toContain('aw uninstall recovery-only -p codex -s user');
     expect(humanStatus.output).toContain('- recovery-only');
-    expect(humanStatus.output).toContain('状态：未安装');
-    expect(humanStatus.output).not.toContain('位置：');
-    expect(humanStatus.output).not.toContain('下一步：');
-    expect(humanStatus.output).toContain('不要直接覆盖当前残留，先确认来源。');
+    expect(humanStatus.output).toContain('状态：需要处理');
+    expect(humanStatus.output).toContain('位置：Codex（当前用户）');
+    expect(humanStatus.output).toContain('aw cleanup recovery-only --platform codex --scope user');
+    expect(humanStatus.output).toContain('发现需要先清理的 AW 状态');
     expect(humanStatus.output).not.toContain('native 写入已完成');
     expect(humanStatus.output).not.toContain('recovery breadcrumb 仍在');
   });

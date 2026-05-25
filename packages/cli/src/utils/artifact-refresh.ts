@@ -256,7 +256,7 @@ function createHistoricalRefreshBundleError(options: {
 }): Error {
   return new Error(
     `无法使用 ${options.pluginName} (${options.scope}) 的 historical lifecycle bundle 刷新 dynamic artifacts：${options.reason}。` +
-      `请先运行 \`aw repair ${options.pluginName} --platform codex --scope ${options.scope}\` 重建 install record 后再试。`,
+      `请先运行 \`aw reinstall ${options.pluginName} --platform codex --scope ${options.scope}\` 保留配置重建后再试。`,
   );
 }
 

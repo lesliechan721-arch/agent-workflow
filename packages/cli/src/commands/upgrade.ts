@@ -100,6 +100,7 @@ import {
   serializePluginLocation,
   sortPluginLocations,
 } from '../utils/plugin-dependency-location.js';
+import { createInstalledDependencyEdge } from '../utils/plugin-dependency-graph.js';
 import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recovery.js';
 import {
   planPluginDependencyUpgradeAll,
@@ -121,6 +122,8 @@ import {
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
 import { codexCapabilitySnapshotHasRepoManagedArtifacts } from '../utils/codex-project-surface.js';
 import type { PluginStatusReport, StatusReport } from '../types.js';
+import { readInstallRecordForLocation } from '../install-state/facade.js';
+import type { InstallRecordFile } from '../install-state/types.js';
 
 type UpgradeCommandRuntime = CommandExecutionContextInput & {
   resolveInstallOptions?: (
@@ -140,6 +143,31 @@ function withEarlyDegradedLedgerWarning(
   return [
     `installed.json 处于 degraded 状态（${ledger.ledgerState.reason ?? 'unknown'}），跳过 skill trigger 偏好 replay，保留 embedded pristine 默认策略。`,
   ];
+}
+
+function toPlannerInstallSource(
+  source: InstallRecordFile['record']['installSource'] | undefined,
+): InstalledScopeRecord<CodexCapabilitySnapshot>['installSource'] {
+  if (!source) {
+    return undefined;
+  }
+  return {
+    kind: source.kind,
+    explicitlyRequested: source.explicitlyRequested,
+    allowsUnusedCleanup: source.kind === 'dependency' && source.explicitlyRequested === false,
+  };
+}
+
+function toPlannerDependencyEdges(
+  edges: InstallRecordFile['record']['dependencyEdges'] | undefined,
+): InstalledScopeRecord<CodexCapabilitySnapshot>['dependencyEdges'] {
+  return edges?.map((edge) => createInstalledDependencyEdge({
+    dependency: {
+      ...edge.dependency,
+      projectKey: edge.dependency.projectKey ?? null,
+    },
+    declaration: structuredClone(edge.declaration),
+  }));
 }
 
 type UpgradeAllTrackingState = 'none' | 'managed' | 'invalid';
@@ -502,6 +530,15 @@ function createCodexUserRepairSuggestion(pluginName: string): string {
   return `请先运行 aw install ${pluginName} -p codex -s user 修复，或运行 aw uninstall ${pluginName} -p codex -s user 清理。`;
 }
 
+function createUpgradeCleanupRequiredReason(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  detail: string;
+}): string {
+  return `${options.pluginName} 在 ${options.platform} (${options.scope}) 缺少可用于 upgrade 的有效 install record：${options.detail}。请先运行 aw cleanup、aw reinstall 或重新 install。`;
+}
+
 function hasUpgradeReadyManagedEvidence(
   pluginStatus: PluginStatusReport,
   platform: PlatformName,
@@ -767,6 +804,35 @@ async function prepareExplicitUpgradeGraph(options: {
     projectKeysByPlatform,
     readStatusForRequestedLocations: true,
   });
+  for (const location of requestedLocations) {
+    const key = serializePluginLocation(location);
+    const installRecord = await readInstallRecordForLocation({
+      cwd: options.commandOptions.cwd,
+      location,
+      env: options.env,
+    });
+    if (installRecord.status !== 'ok') {
+      throw new Error(createUpgradeCleanupRequiredReason({
+        pluginName: location.plugin,
+        platform: location.platform,
+        scope: location.scope,
+        detail: installRecord.status === 'missing'
+          ? 'record 缺失'
+          : `${installRecord.code}${installRecord.error ? `: ${installRecord.error}` : ''}`,
+      }));
+    }
+
+    const plannerRecord = plannerState.installedRecords?.find((record) =>
+      serializePluginLocation(record.location) === key);
+    if (plannerRecord) {
+      plannerRecord.resolvedVersion = installRecord.value.record.source.pluginVersion;
+      plannerRecord.installSource = toPlannerInstallSource(installRecord.value.record.installSource);
+      plannerRecord.dependencyEdges = toPlannerDependencyEdges(installRecord.value.record.dependencyEdges);
+      plannerRecord.installOptions = installRecord.value.record.options
+        ? structuredClone(installRecord.value.record.options)
+        : undefined;
+    }
+  }
 
   return {
     plan: planPluginDependencyWrites({
@@ -1047,6 +1113,20 @@ async function evaluateUpgradeAllTarget(options: {
     target.pluginName,
     platform,
   );
+  const location = createPluginLocationForPlatform({
+    plugin: target.pluginName,
+    platform,
+    scope,
+    projectKeysByPlatform: {
+      codex: scopeKeys.codex ?? null,
+      claude: scopeKeys.claude ?? null,
+    },
+  });
+  const installRecord = await readInstallRecordForLocation({
+    cwd,
+    location,
+    env,
+  });
 
   if (platform === 'codex' && scope === 'project') {
     try {
@@ -1139,8 +1219,27 @@ async function evaluateUpgradeAllTarget(options: {
         platform,
         scope,
         target.pluginName,
-        'repairRequired',
+        'cleanupRequired',
         codexUserUpgradeBlockReason,
+      ),
+    };
+  }
+
+  if (installRecord.status !== 'ok') {
+    return {
+      skipped: createSkippedUpgradeTarget(
+        platform,
+        scope,
+        target.pluginName,
+        'cleanupRequired',
+        createUpgradeCleanupRequiredReason({
+          pluginName: target.pluginName,
+          platform,
+          scope,
+          detail: installRecord.status === 'missing'
+            ? 'record 缺失'
+            : `${installRecord.code}${installRecord.error ? `: ${installRecord.error}` : ''}`,
+        }),
       ),
     };
   }
@@ -1154,8 +1253,13 @@ async function evaluateUpgradeAllTarget(options: {
         platform,
         scope,
         target.pluginName,
-        'scopeNotInitialized',
-        `${target.pluginName} 在 ${platform} (${scope}) 没有可用于 upgrade --all 的完整受管证据；请先显式 reinstall，或先修复当前 scope 的 tracking / ledger。`,
+        'cleanupRequired',
+        createUpgradeCleanupRequiredReason({
+          pluginName: target.pluginName,
+          platform,
+          scope,
+          detail: '只有 legacy ledger / tracking 证据，没有可验证 install record',
+        }),
       ),
     };
   }
@@ -1189,7 +1293,7 @@ async function evaluateUpgradeAllTarget(options: {
           platform,
           scope,
           target.pluginName,
-          'repairRequired',
+          'cleanupRequired',
           versionComparison.issues.map((issue) => issue.message).join(' '),
         ),
       };
@@ -1200,7 +1304,7 @@ async function evaluateUpgradeAllTarget(options: {
           platform,
           scope,
           target.pluginName,
-          'repairRequired',
+          'cleanupRequired',
           `已安装版本 ${versionComparison.right.raw} 高于 current catalog 版本 ${versionComparison.left.raw}；请先检查 catalog 或修复当前安装状态。`,
         ),
       };
@@ -1830,8 +1934,13 @@ async function runUpgradeAll(
     if (!target?.currentPlugin || !status) {
       dependencySkips.push({
         location,
-        code: 'catalogNotCurrent',
-        reason: `${location.plugin} 当前 catalog 已缺失，请先执行 uninstall。`,
+        code: 'cleanupRequired',
+        reason: createUpgradeCleanupRequiredReason({
+          pluginName: location.plugin,
+          platform: location.platform,
+          scope: location.scope,
+          detail: !target?.currentPlugin ? 'current catalog 缺失' : '当前状态不可读',
+        }),
       });
       continue;
     }
@@ -1876,7 +1985,7 @@ async function runUpgradeAll(
       if (codexUserUpgradeBlockReason) {
         dependencySkips.push({
           location,
-          code: 'repairRequired',
+          code: 'cleanupRequired',
           reason: codexUserUpgradeBlockReason,
         });
         continue;
@@ -1896,7 +2005,7 @@ async function runUpgradeAll(
       if (fallbackOnly || !managedEvidence) {
         dependencySkips.push({
           location,
-          code: 'scopeNotInitialized',
+          code: fallbackOnly ? 'cleanupRequired' : 'notInstalled',
           reason: fallbackOnly
             ? `${location.plugin} 在 ${location.platform} (${location.scope}) 缺少安装时快照，不能直接 upgrade；请先执行 uninstall，再重新 install。`
             : `${location.plugin} 在 ${location.platform} (${location.scope}) 缺少完整受管安装证据，不能执行 upgrade。`,
@@ -2089,10 +2198,6 @@ export async function upgradeCommand(
 
   if (options.all && options.requestedSkillTrigger) {
     throw new Error('`upgrade` 不再接受 `--skill-trigger` / `-t`；请改用配置管理维护 skill trigger 偏好后再重试。');
-  }
-
-  if (options.all && options.takeoverSharedRuntime) {
-    throw new Error('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
   }
 
   const adapters = createAdapters(options.cwd, context);

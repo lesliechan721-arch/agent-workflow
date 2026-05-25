@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -10,8 +9,8 @@ import type { CurrentCatalogEvidenceInput } from '../../src/install-state/eviden
 import {
   createProjectArtifactSharedLocator,
   createSharedIdentityId,
-  getSharedSkillTriggerRuntimeOwnerPath,
   getProjectArtifactSharedIdentityPath,
+  getSharedSkillTriggerRuntimeOwnerPath,
 } from '../../src/install-state/index.js';
 import type { InstallRecordFile } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
@@ -40,8 +39,9 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-async function projectStateForScenario(
+async function collectProjectionForScenario(
   scenario: Parameters<typeof writeMinimalPluginInstallStateFixture>[0]['scenario'],
+  currentCatalog?: CurrentCatalogEvidenceInput,
 ) {
   const fixture = await writeMinimalPluginInstallStateFixture({
     rootDir: await makeTempDir(`aw-install-state-${scenario}-`),
@@ -53,7 +53,7 @@ async function projectStateForScenario(
     cwd: fixture.paths.repoRoot,
     location: fixture.target.location,
     env: createInstallStateFixtureEnv(fixture.paths),
-    currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    currentCatalog: currentCatalog ?? createCurrentCatalogForTarget(fixture.target),
   });
   return {
     fixture,
@@ -150,68 +150,6 @@ async function projectConfigOnlyCodexUserResidue(options: {
     }
     await fs.writeJson(dependentRecordPath, dependentRecord, { spaces: 2 });
   }
-
-  const evidence = await collectInstallEvidence({
-    cwd: builder.paths.repoRoot,
-    location: target.location,
-    env: createInstallStateFixtureEnv(builder.paths),
-    currentCatalog: createCurrentCatalogForTarget(target),
-  });
-  return {
-    evidence,
-    projection: projectInstallState(evidence),
-  };
-}
-
-async function projectStateWithUnindexedLocalDependent(
-  kind: 'needsRepair' | 'residual',
-) {
-  const builder = await createMinimalPluginInstallStateFixtureBuilder(
-    await makeTempDir(`aw-install-state-${kind}-local-dependent-`),
-  );
-  const target = builder.createTarget({
-    pluginName: `target-${kind}`,
-    platform: 'codex',
-    scope: 'project',
-    projectKey: builder.paths.repoRoot,
-  });
-  const dependentTarget = builder.createTarget({
-    pluginName: `dependent-${kind}`,
-    platform: 'codex',
-    scope: 'project',
-    projectKey: builder.paths.repoRoot,
-  });
-
-  if (kind === 'needsRepair') {
-    await builder.writeRepoArtifact(target);
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const targetRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
-    await fs.writeJson(
-      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
-      targetRecord,
-      { spaces: 2 },
-    );
-    await builder.writeProjectIdentity(target);
-    await builder.writeDiagnosticCache(target);
-    await builder.writeDependencyIndex([{ target, record: targetRecord }]);
-    await fs.writeFile(target.repoArtifactPath, `${target.repoArtifactContent}mutated\n`, 'utf8');
-  } else {
-    await builder.writeRepoArtifact(target);
-    await builder.writeDiagnosticCache(target);
-  }
-
-  const dependentRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(dependentTarget));
-  dependentRecord.record.dependencyEdges = [{
-    dependency: target.location,
-    declaration: {
-      name: target.location.plugin,
-    },
-  }];
-  await fs.writeJson(
-    path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${dependentTarget.recordId}.json`),
-    dependentRecord,
-    { spaces: 2 },
-  );
 
   const evidence = await collectInstallEvidence({
     cwd: builder.paths.repoRoot,
@@ -332,11 +270,7 @@ async function writeDynamicAgentRoleProjectionFixture(options: {
     }],
   };
   return {
-    builder,
-    target,
-    roleKey,
     configPath,
-    rolePath,
     roleContent,
     async project() {
       return projectInstallState(await collectInstallEvidence({
@@ -349,311 +283,34 @@ async function writeDynamicAgentRoleProjectionFixture(options: {
   };
 }
 
-describe('projectInstallState', () => {
-  it('covers the six default status classes', async () => {
-    await expect(projectStateForScenario('installed')).resolves.toMatchObject({
+describe('projectInstallState phase 1 four-state projection', () => {
+  it('projects the baseline four states from default fixtures', async () => {
+    await expect(collectProjectionForScenario('installed')).resolves.toMatchObject({
       projection: { kind: 'installed' },
     });
-    await expect(projectStateForScenario('needsRepair')).resolves.toMatchObject({
-      projection: { kind: 'needsRepair' },
+    await expect(collectProjectionForScenario('adoptable')).resolves.toMatchObject({
+      projection: {
+        kind: 'external',
+        reasonCodes: ['claimableProjectArtifacts'],
+      },
     });
-    await expect(projectStateForScenario('adoptable')).resolves.toMatchObject({
-      projection: { kind: 'adoptable' },
+    await expect(collectProjectionForScenario('externallyManaged')).resolves.toMatchObject({
+      projection: {
+        kind: 'external',
+        reasonCodes: ['foreignExternalEvidence'],
+      },
     });
-    await expect(projectStateForScenario('residual')).resolves.toMatchObject({
-      projection: { kind: 'residual' },
+    await expect(collectProjectionForScenario('residual')).resolves.toMatchObject({
+      projection: {
+        kind: 'cleanupRequired',
+      },
     });
-    await expect(projectStateForScenario('externallyManaged')).resolves.toMatchObject({
-      projection: { kind: 'externallyManaged' },
-    });
-    await expect(projectStateForScenario('notInstalled')).resolves.toMatchObject({
+    await expect(collectProjectionForScenario('notInstalled')).resolves.toMatchObject({
       projection: { kind: 'notInstalled' },
     });
   });
 
-  it('keeps healthy installs in installed when only the current catalog has drifted', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-catalog-drift-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: '0.2.0',
-        manifestDigest: 'drift-manifest',
-        bundleFingerprint: 'drift-bundle',
-      },
-    };
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    }));
-
-    expect(projection.kind).toBe('installed');
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(true);
-    expect(projection.issues).toEqual([]);
-  });
-
-  it('does not surface upgradeAvailable when only same-version content drifts', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-same-version-drift-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: fixture.target.source.pluginVersion,
-        manifestDigest: 'same-version-manifest-drift',
-        bundleFingerprint: 'same-version-bundle-drift',
-      },
-    };
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    }));
-
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'catalogVersionMismatch' }),
-      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
-    ]));
-  });
-
-  it('suppresses upgradeAvailable when the latest catalog is blocked by the current CLI', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-latest-blocked-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: '0.2.0',
-        manifestDigest: 'blocked-manifest',
-        bundleFingerprint: 'blocked-bundle',
-      },
-    };
-
-    const evidence = await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    });
-    const projection = projectInstallState(evidence, {
-      catalogLatestBlockedByCli: true,
-    });
-
-    expect(projection.catalogLatestBlockedByCli).toBe(true);
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.kind).toBe('installed');
-  });
-
-  it('ignores build metadata differences when projecting upgradeAvailable', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-build-metadata-drift-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: `${fixture.target.source.pluginVersion}+build.2`,
-        manifestDigest: 'build-metadata-manifest-drift',
-        bundleFingerprint: 'build-metadata-bundle-drift',
-      },
-    };
-
-    const installRecord = await fs.readJson(fixture.files.installRecordPath) as InstallRecordFile;
-    installRecord.record.source.pluginVersion = `${fixture.target.source.pluginVersion}+build.1`;
-    await fs.writeJson(fixture.files.installRecordPath, installRecord, { spaces: 2 });
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    }));
-
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'catalogVersionMismatch' }),
-      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
-    ]));
-  });
-
-  it('keeps installs healthy when stale version metadata points at the same catalog artifact', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-stale-version-metadata-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    const installRecord = await fs.readJson(fixture.files.installRecordPath) as InstallRecordFile;
-    installRecord.record.source.pluginVersion = '9.0.0';
-    if (installRecord.record.lifecycle) {
-      installRecord.record.lifecycle.pluginVersion = '9.0.0';
-    }
-    await fs.writeJson(fixture.files.installRecordPath, installRecord, { spaces: 2 });
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: createCurrentCatalogForTarget(fixture.target),
-    }));
-
-    expect(projection.kind).toBe('installed');
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'catalogVersionMismatch' }),
-      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
-    ]));
-  });
-
-  it('projects an abnormal state when the current catalog version is lower than the installed version', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-version-regression-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: '0.0.9',
-        manifestDigest: 'older-manifest',
-        bundleFingerprint: 'older-bundle',
-      },
-    };
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    }));
-
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.catalogDrift).toBe(true);
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'catalogVersionMismatch',
-      }),
-    ]));
-  });
-
-  it('projects an abnormal state when the current catalog version is not strict SemVer', async () => {
-    const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-invalid-version-'),
-      scenario: 'installed',
-    });
-    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
-    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
-    const driftedCatalog: CurrentCatalogEvidenceInput = {
-      ...createCurrentCatalogForTarget(fixture.target),
-      source: {
-        pluginVersion: 'latest',
-        manifestDigest: 'invalid-version-manifest',
-        bundleFingerprint: 'invalid-version-bundle',
-      },
-    };
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: fixture.paths.repoRoot,
-      location: fixture.target.location,
-      env: createInstallStateFixtureEnv(fixture.paths),
-      currentCatalog: driftedCatalog,
-    }));
-
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.upgradeAvailable).toBe(false);
-    expect(projection.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'catalogVersionNonCompliant',
-      }),
-    ]));
-  });
-
-  it('uses the Claude project subdirectory when reading project artifact shared identity', async () => {
-    const root = await makeTempDir('aw-install-state-claude-project-locator-');
-    const repoRoot = path.join(root, 'repo');
-    const projectA = path.join(repoRoot, 'packages', 'a');
-    const projectB = path.join(repoRoot, 'packages', 'b');
-    await fs.ensureDir(path.join(repoRoot, '.git'));
-    await fs.ensureDir(projectA);
-    await fs.ensureDir(projectB);
-
-    async function writeIdentity(projectRoot: string) {
-      const locator = createProjectArtifactSharedLocator({
-        plugin: 'git-commit',
-        platform: 'claude',
-        repoRoot,
-        projectRoot,
-      });
-      const identity = {
-        version: 1,
-        sharedIdentityId: createSharedIdentityId(locator),
-        locator,
-        source: {
-          pluginVersion: '0.1.0',
-          manifestDigest: 'sha256:manifest',
-          bundleFingerprint: 'sha256:bundle',
-        },
-        generatedAt: '2026-05-07T00:00:00.000Z',
-        artifacts: [],
-      };
-      const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
-      await fs.outputJson(identityPath, identity, { spaces: 2 });
-      return { identityPath, locator };
-    }
-
-    const identityA = await writeIdentity(projectA);
-    const identityB = await writeIdentity(projectB);
-
-    const evidence = await collectInstallEvidence({
-      cwd: projectA,
-      location: {
-        plugin: 'git-commit',
-        platform: 'claude',
-        scope: 'project',
-        projectKey: projectA,
-      },
-      env: {
-        ...process.env,
-        AW_HOME: path.join(root, '.aw'),
-        AW_CLAUDE_HOME: path.join(root, '.claude'),
-        HOME: root,
-      },
-    });
-
-    expect(identityA.identityPath).not.toBe(identityB.identityPath);
-    expect(evidence.projectSharedIdentity.read?.path).toBe(identityA.identityPath);
-    expect(evidence.projectSharedIdentity.read?.status).toBe('ok');
-    if (evidence.projectSharedIdentity.read?.status === 'ok') {
-      expect(evidence.projectSharedIdentity.read.value.locator.repoRelativeProjectRoot).toBe('packages/a');
-    }
-  });
-
-  it('keeps dynamic cache missing, broken, or detached as installed with dynamicDiagnosticUnavailable', async () => {
+  it('keeps installed when dynamic diagnostic cache is missing, corrupted, or detached', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
       await makeTempDir('aw-install-state-dynamic-unavailable-'),
     );
@@ -677,7 +334,10 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
     expect(projection.kind).toBe('installed');
-    expect(projection.dynamicDiagnosticUnavailable).toBe(true);
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicDiagnosticUnavailable',
+      detail: 'missing',
+    }));
 
     await builder.writeDiagnosticCache(target);
     await fs.writeFile(
@@ -692,7 +352,10 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
     expect(projection.kind).toBe('installed');
-    expect(projection.dynamicDiagnosticUnavailable).toBe(true);
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicDiagnosticUnavailable',
+      detail: 'invalidJson',
+    }));
 
     await builder.writeDiagnosticCache(target, {
       version: 1,
@@ -713,143 +376,51 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
     expect(projection.kind).toBe('installed');
-    expect(projection.dynamicDiagnosticUnavailable).toBe(true);
-  });
-
-  it('projects dynamic content drift, config stale, refresh failure, and disabled state without running a renderer', async () => {
-    const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-dynamic-projection-'),
-    );
-    const target = builder.createTarget({ platform: 'codex', scope: 'project' });
-    await builder.writeRepoArtifact(target);
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
-    await fs.writeJson(
-      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
-      record,
-      { spaces: 2 },
-    );
-    await builder.writeProjectIdentity(target);
-    await builder.writeDependencyIndex([{ target, record }]);
-    const env = createInstallStateFixtureEnv(builder.paths);
-
-    await builder.writeDiagnosticCache(target, {
-      version: 1,
-      recordId: target.recordId,
-      location: target.location,
-      updatedAt: target.timestamps.updatedAt,
-      artifacts: [{
-        id: `${target.pluginSlug}-instruction`,
-        target: 'codex.developerInstructionsBlock',
-        state: 'present',
-        artifactKey: `${target.pluginSlug}.skill`,
-        configDigest: 'config:old',
-        contentDigest: 'mismatch-digest',
-        lastRefresh: {
-          status: 'failed',
-          at: target.timestamps.updatedAt,
-          event: 'config',
-          error: 'boom',
-        },
-      }],
-    });
-    let projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
-      env,
-      currentCatalog: createCurrentCatalogForTarget(target),
-    }));
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.issues.map((issue) => issue.code)).toEqual(
-      expect.arrayContaining(['dynamicContentDrift', 'dynamicConfigStale', 'dynamicRefreshFailed']),
-    );
-
-    await fs.remove(target.repoArtifactPath);
-    await builder.writeDiagnosticCache(target, {
-      version: 1,
-      recordId: target.recordId,
-      location: target.location,
-      updatedAt: target.timestamps.updatedAt,
-      artifacts: [{
-        id: `${target.pluginSlug}-instruction`,
-        target: 'codex.developerInstructionsBlock',
-        state: 'disabled',
-        disabledReason: 'projectSharedConfigOff',
-        artifactKey: `${target.pluginSlug}.skill`,
-      }],
-    });
-    projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
-      env,
-      currentCatalog: {
-        ...createCurrentCatalogForTarget(target),
-        dynamicArtifacts: [{
-          id: `${target.pluginSlug}-instruction`,
-          target: 'codex.developerInstructionsBlock',
-          state: 'disabled',
-          disabledReason: 'projectSharedConfigOff',
-          artifactKey: `${target.pluginSlug}.skill`,
-          configDigest: `config:${target.pluginSlug}`,
-        }],
-      },
-    }));
-    expect(projection.kind).toBe('installed');
-    expect(projection.issues.map((issue) => issue.code)).not.toContain('artifactMissing');
-  });
-
-  it('recomputes dynamic codex.agentRole content digests from the registration and role file', async () => {
-    const fixture = await writeDynamicAgentRoleProjectionFixture();
-    const projection = await fixture.project();
-
-    expect(projection.kind).toBe('installed');
-    expect(projection.issues.map((issue) => issue.code)).not.toContain('dynamicContentDrift');
-  });
-
-  it.each([
-    ['registration residue', { writeRoleFile: false }],
-    ['role layer residue', { writeRegistration: false }],
-  ] as const)(
-    'keeps disabled dynamic codex.agentRole partial cleanup in needsRepair with %s',
-    async (_label, options) => {
-      const fixture = await writeDynamicAgentRoleProjectionFixture({
-        state: 'disabled',
-        ...options,
-      });
-      const projection = await fixture.project();
-
-      expect(projection.kind).toBe('needsRepair');
-      expect(projection.issues).toContainEqual(expect.objectContaining({
-        code: 'dynamicContentDrift',
-      }));
-    },
-  );
-
-  it('treats retargeted dynamic codex.agentRole registrations as drift', async () => {
-    const fixture = await writeDynamicAgentRoleProjectionFixture({
-      registrationRelativePath: 'agents/shadow.toml',
-    });
-    await fs.outputFile(
-      path.join(path.dirname(fixture.configPath), 'agents', 'shadow.toml'),
-      fixture.roleContent,
-      'utf8',
-    );
-
-    const projection = await fixture.project();
-
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.issues).toContainEqual(expect.objectContaining({
-      code: 'dynamicContentDrift',
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicDiagnosticUnavailable',
+      detail: 'artifactMismatch',
     }));
   });
 
-  it('projects fresh clone without identity and with current-catalog drift as residual instead of adoptable', async () => {
+  it('keeps installed when project identity is missing or invalid for an existing record', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
-      rootDir: await makeTempDir('aw-install-state-fresh-clone-drift-'),
-      scenario: 'freshCloneProject',
+      rootDir: await makeTempDir('aw-install-state-installed-identity-missing-'),
+      scenario: 'installed',
     });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const env = createInstallStateFixtureEnv(fixture.paths);
+
     await fs.remove(fixture.files.projectIdentityPath);
-    await fs.writeFile(fixture.target.repoArtifactPath, `${fixture.target.repoArtifactContent}drift\n`, 'utf8');
+    let projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.reasonCodes).toEqual([]);
+
+    await fs.writeFile(fixture.files.projectIdentityPath, '{"version": 1,', 'utf8');
+    projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'projectSharedIdentityUnavailable',
+    }));
+  });
+
+  it('keeps installed when historical lifecycle runtime is missing and exposes only diagnostics', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-installed-missing-runtime-'),
+      scenario: 'missingHistoricalLifecycle',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
 
     const projection = projectInstallState(await collectInstallEvidence({
       cwd: fixture.paths.repoRoot,
@@ -858,239 +429,337 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(fixture.target),
     }));
 
-    expect(projection.kind).toBe('residual');
-    expect(projection.adoptExistingAvailable).toBe(false);
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'historicalLifecycleUnavailable',
+    }));
   });
 
-  it('does not treat a foreign user shared-runtime owner as project residual by itself', async () => {
+  it('keeps installed when dependency index is missing, corrupted, or stale and exposes coverage diagnostics', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-installed-index-gaps-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const env = createInstallStateFixtureEnv(fixture.paths);
+
+    await fs.remove(fixture.files.dependencyIndexPath);
+    let projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dependencyIndexCoverageUntrusted',
+      detail: 'indexMissing',
+    }));
+
+    await fs.writeFile(fixture.files.dependencyIndexPath, '{"version": 1,', 'utf8');
+    projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(fixture.target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dependencyIndexCoverageUntrusted',
+      detail: 'indexCorrupted',
+    }));
+  });
+
+  it('prefers foreign external evidence over cleanup-required residue when no valid record exists', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-project-owner-foreign-'),
+      await makeTempDir('aw-install-state-foreign-over-residue-'),
     );
-    const projectTarget = builder.createTarget({
-      pluginName: 'codex-explore',
-      platform: 'codex',
-      scope: 'project',
-      projectKey: builder.paths.repoRoot,
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    await builder.writeExternalNativeEvidence(target);
+    await builder.writeDiagnosticCache(target, {
+      version: 1,
+      recordId: target.recordId,
+      location: target.location,
+      updatedAt: target.timestamps.updatedAt,
+      artifacts: [],
     });
-    const userTarget = builder.createTarget({
-      pluginName: 'codex-explore',
-      platform: 'codex',
-      scope: 'user',
-    });
-    await builder.writeRepoArtifact(projectTarget);
-    await builder.writeProjectIdentity(projectTarget);
-    const userRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(userTarget));
-    const userRecords = await builder.readScopedInstallRecordDirectory({
-      platform: 'codex',
-      scope: 'user',
-    });
-    const userRecordPath = userRecords.successes.find((entry) => entry.recordId === userTarget.recordId)?.path;
-    if (!userRecordPath) {
-      throw new Error(`missing fixture record for ${userTarget.recordId}`);
-    }
-    await fs.writeJson(userRecordPath, userRecord, { spaces: 2 });
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+
+    expect(projection.kind).toBe('external');
+    expect(projection.reasonCodes).toEqual(['foreignExternalEvidence']);
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'awOwnedResiduePresent',
+    }));
+  });
+
+  it('projects cleanupRequired for invalid record, native marker, historical runtime residue, dependency-index residue, and shared owner residue without a valid record', async () => {
+    const corruptedRecord = await collectProjectionForScenario('corruptedRecord');
+    expect(corruptedRecord.projection.kind).toBe('cleanupRequired');
+    expect(corruptedRecord.projection.reasonCodes).toContain('invalidInstallRecord');
+
+    const markerOnly = await collectProjectionForScenario('nativeMarkerOnly');
+    expect(markerOnly.projection.kind).toBe('cleanupRequired');
+    expect(markerOnly.projection.reasonCodes).toContain('nativeTransactionPresent');
+
+    const staleIndex = await collectProjectionForScenario('staleDependencyIndex');
+    expect(staleIndex.projection.kind).toBe('cleanupRequired');
+    expect(staleIndex.projection.reasonCodes).toContain('dependencyIndexReferenceResidue');
+
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-runtime-and-owner-residue-'),
+    );
+    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
     const env = createInstallStateFixtureEnv(builder.paths);
     await fs.outputJson(
       getSharedSkillTriggerRuntimeOwnerPath({
-        pluginName: projectTarget.location.plugin,
-        platform: projectTarget.location.platform,
+        pluginName: target.location.plugin,
+        platform: target.location.platform,
         env,
       }),
       {
         version: 1,
-        pluginName: projectTarget.location.plugin,
-        platform: projectTarget.location.platform,
-        owner: userTarget.location,
-        ownerRecordPath: userRecordPath,
-        ownerRecordDigest: crypto.createHash('sha256').update(await fs.readFile(userRecordPath)).digest('hex'),
+        pluginName: target.location.plugin,
+        platform: target.location.platform,
+        owner: target.location,
+        ownerRecordPath: path.join(builder.paths.awHome, 'missing-record.json'),
+        ownerRecordDigest: 'missing',
         preference: 'manual',
-        updatedAt: userRecord.record.updatedAt,
+        updatedAt: target.timestamps.updatedAt,
       },
       { spaces: 2 },
     );
 
     const projection = projectInstallState(await collectInstallEvidence({
       cwd: builder.paths.repoRoot,
-      location: projectTarget.location,
+      location: target.location,
       env,
-      currentCatalog: createCurrentCatalogForTarget(projectTarget),
+      currentCatalog: createCurrentCatalogForTarget(target),
     }));
-
-    expect(projection.kind).toBe('adoptable');
-    expect(projection.adoptExistingAvailable).toBe(true);
+    expect(projection.kind).toBe('cleanupRequired');
+    expect(projection.reasonCodes).toEqual(expect.arrayContaining([
+      'historicalRuntimeResidue',
+      'sharedRuntimeOwnerResidue',
+    ]));
+    expect(projection.reasons.find((reason) => reason.code === 'historicalRuntimeResidue')?.path).toBe(lifecycle.runtimeRoot);
   });
 
-  it('does not show unused dependency hints when the index is untrusted and suppresses the hint for explicitly retained dependencies', async () => {
-    const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-unused-dependency-'),
-    );
-    const target = builder.createTarget({ pluginName: 'dependent-only', platform: 'codex', scope: 'project' });
-    await builder.writeRepoArtifact(target);
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
-    record.record.installSource = {
-      kind: 'dependency',
-      explicitlyRequested: false,
-    };
-    await fs.writeJson(
-      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
-      record,
-      { spaces: 2 },
-    );
-    await builder.writeProjectIdentity(target);
-    await builder.writeDiagnosticCache(target, {
-      version: 1,
-      recordId: target.recordId,
-      location: target.location,
-      updatedAt: target.timestamps.updatedAt,
-      artifacts: [{
-        id: `${target.pluginSlug}-instruction`,
-        target: 'codex.developerInstructionsBlock',
-        state: 'present',
-        artifactKey: `${target.pluginSlug}.skill`,
-        contentDigest: target.repoArtifactDigest,
-        configDigest: `config:${target.pluginSlug}`,
-      }],
+  it('projects claimable project artifacts as external when identity and shared artifacts are verifiable', async () => {
+    const { projection } = await collectProjectionForScenario('adoptable');
+    expect(projection.kind).toBe('external');
+    expect(projection.reasonCodes).toEqual(['claimableProjectArtifacts']);
+  });
+
+  it('projects notInstalled when there is no record, external evidence, or residue', async () => {
+    const { projection } = await collectProjectionForScenario('notInstalled');
+    expect(projection.kind).toBe('notInstalled');
+    expect(projection.reasonCodes).toEqual([]);
+    expect(projection.diagnostics).toEqual([]);
+  });
+
+  it('never exposes legacy top-level states in phase 1 fixtures', async () => {
+    const scenarios: Array<Parameters<typeof writeMinimalPluginInstallStateFixture>[0]['scenario']> = [
+      'installed',
+      'adoptable',
+      'externallyManaged',
+      'residual',
+      'needsRepair',
+      'notInstalled',
+    ];
+    for (const scenario of scenarios) {
+      const { projection } = await collectProjectionForScenario(scenario);
+      expect([
+        'installed',
+        'notInstalled',
+        'cleanupRequired',
+        'external',
+      ]).toContain(projection.kind);
+    }
+  });
+
+  it('reports upgradeAvailable for newer current catalog versions while keeping the install healthy', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-catalog-upgrade-'),
+      scenario: 'installed',
     });
-    await builder.writeDependencyIndex([{ target, record }]);
-    const env = createInstallStateFixtureEnv(builder.paths);
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: '0.2.0',
+          manifestDigest: 'drift-manifest',
+          bundleFingerprint: 'drift-bundle',
+        },
+      },
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(true);
+    expect(projection.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
+  });
+
+  it('does not treat same-version catalog drift as upgradeAvailable', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-same-version-drift-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: fixture.target.source.pluginVersion,
+          manifestDigest: 'same-version-manifest-drift',
+          bundleFingerprint: 'same-version-bundle-drift',
+        },
+      },
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
+  });
+
+  it('suppresses upgradeAvailable when the latest catalog is blocked by the current CLI', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-latest-blocked-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+
+    const evidence = await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: '0.2.0',
+          manifestDigest: 'blocked-manifest',
+          bundleFingerprint: 'blocked-bundle',
+        },
+      },
+    });
+    const projection = projectInstallState(evidence, {
+      catalogLatestBlockedByCli: true,
+    });
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.catalogLatestBlockedByCli).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+  });
+
+  it('ignores build metadata differences when projecting upgradeAvailable', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-build-metadata-drift-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const installRecord = await fs.readJson(fixture.files.installRecordPath) as InstallRecordFile;
+    installRecord.record.source.pluginVersion = `${fixture.target.source.pluginVersion}+build.1`;
+    await fs.writeJson(fixture.files.installRecordPath, installRecord, { spaces: 2 });
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
+      env: createInstallStateFixtureEnv(fixture.paths),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: `${fixture.target.source.pluginVersion}+build.2`,
+          manifestDigest: 'build-metadata-manifest-drift',
+          bundleFingerprint: 'build-metadata-bundle-drift',
+        },
+      },
+    }));
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.catalogDrift).toBe(true);
+    expect(projection.upgradeAvailable).toBe(false);
+    expect(projection.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'catalogVersionMismatch' }),
+      expect.objectContaining({ code: 'catalogVersionNonCompliant' }),
+    ]));
+  });
+
+  it('keeps installed when current catalog version regresses or is invalid, exposing only diagnostics', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-install-state-version-diagnostics-'),
+      scenario: 'installed',
+    });
+    await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
+    await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
+    const env = createInstallStateFixtureEnv(fixture.paths);
 
     let projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
       env,
-      currentCatalog: createCurrentCatalogForTarget(target),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: '0.0.9',
+          manifestDigest: 'older-manifest',
+          bundleFingerprint: 'older-bundle',
+        },
+      },
     }));
-    expect(projection.autoInstalled).toBe(true);
-    expect(projection.unusedDependencyHint).toBe(true);
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'catalogVersionMismatch',
+    }));
 
-    await fs.remove(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
+      cwd: fixture.paths.repoRoot,
+      location: fixture.target.location,
       env,
-      currentCatalog: createCurrentCatalogForTarget(target),
+      currentCatalog: {
+        ...createCurrentCatalogForTarget(fixture.target),
+        source: {
+          pluginVersion: 'latest',
+          manifestDigest: 'invalid-version-manifest',
+          bundleFingerprint: 'invalid-version-bundle',
+        },
+      },
     }));
-    expect(projection.dependencyIndexTrusted).toBe(false);
-    expect(projection.unusedDependencyHint).toBe(false);
-
-    record.record.installSource = {
-      kind: 'dependency',
-      explicitlyRequested: true,
-    };
-    await fs.writeJson(
-      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
-      record,
-      { spaces: 2 },
-    );
-    await builder.writeDependencyIndex([{ target, record }]);
-    projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: target.location,
-      env,
-      currentCatalog: createCurrentCatalogForTarget(target),
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'catalogVersionNonCompliant',
     }));
-    expect(projection.autoInstalled).toBe(true);
-    expect(projection.unusedDependencyHint).toBe(false);
   });
 
-  it('moves record-plus-install-marker residual into needsRepair while keeping both repair and cleanup available', async () => {
-    const { projection } = await projectStateForScenario('recordAndInstallMarkerResidual');
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.nativeTransactionPresent).toBe(true);
-    expect(projection.nativeTransactionKind).toBe('recordInstallResidual');
-    expect(projection.repairAvailable).toBe(true);
-    expect(projection.cleanupAvailable).toBe(true);
-  });
-
-  it('exposes Codex user native residue cleanup whenever there are no known dependents', async () => {
-    const missing = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'missing' });
-    expect(missing.projection.kind).toBe('externallyManaged');
-    expect(missing.projection.cleanupAvailable).toBe(true);
-
-    const missingWithCache = await projectConfigOnlyCodexUserResidue({
-      dependencyIndexState: 'missing',
-      nativeEvidence: 'configAndCache',
-    });
-    expect(missingWithCache.projection.kind).toBe('externallyManaged');
-    expect(missingWithCache.projection.cleanupAvailable).toBe(true);
-
-    const corrupted = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'corrupted' });
-    expect(corrupted.projection.kind).toBe('externallyManaged');
-    expect(corrupted.projection.dependencyIndexCoverageReasons).toContain('indexCorrupted');
-    expect(corrupted.projection.cleanupAvailable).toBe(true);
-
-    const stale = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'staleReference' });
-    expect(stale.projection.kind).toBe('externallyManaged');
-    expect(stale.projection.dependencyIndexCoverageTrusted).toBe(false);
-    expect(stale.projection.dependencyIndexCoverageReasons).toContain('staleReference');
-    expect(stale.projection.cleanupAvailable).toBe(true);
-
-    const unreadable = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'unreadableReference' });
-    expect(unreadable.projection.kind).toBe('externallyManaged');
-    expect(unreadable.projection.dependencyIndexCoverageTrusted).toBe(false);
-    expect(unreadable.projection.dependencyIndexCoverageReasons).toContain('unreadableReference');
-    expect(unreadable.projection.cleanupAvailable).toBe(true);
-  });
-
-  it('does not expose config-only Codex cleanup when a readable local scoped record depends on it', async () => {
-    const missingWithLocalDependent = await projectConfigOnlyCodexUserResidue({
-      dependencyIndexState: 'missing',
-      localDependentScope: 'user',
-    });
-
-    expect(missingWithLocalDependent.projection.kind).toBe('externallyManaged');
-    expect(missingWithLocalDependent.projection.cleanupAvailable).toBe(false);
-  });
-
-  it('does not expose Codex user cleanup when a readable current-repo project record depends on it', async () => {
-    const missingWithProjectDependent = await projectConfigOnlyCodexUserResidue({
-      dependencyIndexState: 'missing',
-      localDependentScope: 'project',
-    });
-
-    expect(missingWithProjectDependent.projection.kind).toBe('externallyManaged');
-    expect(missingWithProjectDependent.projection.dependents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          plugin: 'helper-local-dependent',
-          scope: 'project',
-        }),
-      ]),
-    );
-    expect(missingWithProjectDependent.projection.cleanupAvailable).toBe(false);
-  });
-
-  it('does not expose cleanup for cache-only Codex native residue without ownership proof', async () => {
-    const cacheOnly = await projectConfigOnlyCodexUserResidue({
-      dependencyIndexState: 'missing',
-      nativeEvidence: 'cacheOnly',
-    });
-
-    expect(cacheOnly.projection.kind).toBe('externallyManaged');
-    expect(cacheOnly.projection.cleanupAvailable).toBe(false);
-  });
-
-  it.each(['needsRepair', 'residual'] as const)(
-    'does not expose cleanup for %s when a readable same-scope record still depends on it',
-    async (kind) => {
-      const blocked = await projectStateWithUnindexedLocalDependent(kind);
-
-      expect(blocked.projection.kind).toBe(kind);
-      expect(blocked.projection.dependents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            plugin: `dependent-${kind}`,
-          }),
-        ]),
-      );
-      expect(blocked.projection.cleanupAvailable).toBe(false);
-    },
-  );
-
-  it('marks broken dependency edges as needsRepair instead of catalog drift or unused hints', async () => {
+  it('keeps installed when dependency edges are broken, exposing dependency diagnostics without leaving installed', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-dependency-health-'),
+      await makeTempDir('aw-install-state-broken-dependency-'),
     );
     const dependency = builder.createTarget({ pluginName: 'helper-plugin', platform: 'codex', scope: 'project' });
     const target = builder.createTarget({ pluginName: 'parent-plugin', platform: 'codex', scope: 'project' });
@@ -1109,20 +778,7 @@ describe('projectInstallState', () => {
       { spaces: 2 },
     );
     await builder.writeProjectIdentity(target);
-    await builder.writeDiagnosticCache(target, {
-      version: 1,
-      recordId: target.recordId,
-      location: target.location,
-      updatedAt: target.timestamps.updatedAt,
-      artifacts: [{
-        id: `${target.pluginSlug}-instruction`,
-        target: 'codex.developerInstructionsBlock',
-        state: 'present',
-        artifactKey: `${target.pluginSlug}.skill`,
-        contentDigest: target.repoArtifactDigest,
-        configDigest: `config:${target.pluginSlug}`,
-      }],
-    });
+    await builder.writeDiagnosticCache(target);
     await builder.writeDependencyIndex([{ target, record }]);
 
     const projection = projectInstallState(await collectInstallEvidence({
@@ -1132,12 +788,13 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
 
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.issues.some((issue) => issue.code === 'dependencyMissing')).toBe(true);
-    expect(projection.unusedDependencyHint).toBe(false);
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dependencyMissing',
+    }));
   });
 
-  it('treats missing secondary dependency artifact paths as broken dependency health', async () => {
+  it('treats missing secondary dependency artifact paths as dependencyMissing diagnostics while staying installed', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
       await makeTempDir('aw-install-state-dependency-secondary-path-'),
     );
@@ -1193,10 +850,347 @@ describe('projectInstallState', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
 
-    expect(projection.kind).toBe('needsRepair');
-    expect(projection.issues).toContainEqual(expect.objectContaining({
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
       code: 'dependencyMissing',
       detail: 'missingArtifact',
     }));
+  });
+
+  it('keeps dynamic codex.agentRole content digests stable when registration and role file still match', async () => {
+    const fixture = await writeDynamicAgentRoleProjectionFixture();
+    const projection = await fixture.project();
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics.map((issue) => issue.code)).not.toContain('dynamicContentDrift');
+  });
+
+  it.each([
+    ['registration residue', { writeRoleFile: false }],
+    ['role layer residue', { writeRegistration: false }],
+  ] as const)(
+    'reports dynamic codex.agentRole partial-cleanup drift via diagnostics with %s',
+    async (_label, options) => {
+      const fixture = await writeDynamicAgentRoleProjectionFixture({
+        state: 'disabled',
+        ...options,
+      });
+      const projection = await fixture.project();
+
+      expect(projection.kind).toBe('installed');
+      expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'dynamicContentDrift',
+      }));
+      expect(projection.diagnostics.map((issue) => issue.code)).not.toContain('artifactMissing');
+    },
+  );
+
+  it('treats retargeted dynamic codex.agentRole registrations as dynamic drift diagnostics', async () => {
+    const fixture = await writeDynamicAgentRoleProjectionFixture({
+      registrationRelativePath: 'agents/shadow.toml',
+    });
+    await fs.outputFile(
+      path.join(path.dirname(fixture.configPath), 'agents', 'shadow.toml'),
+      fixture.roleContent,
+      'utf8',
+    );
+
+    const projection = await fixture.project();
+
+    expect(projection.kind).toBe('installed');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
+  });
+
+  it('shows unusedDependencyHint only for trusted auto-installed dependencies without dependents', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-unused-dependency-'),
+    );
+    const target = builder.createTarget({ pluginName: 'dependent-only', platform: 'codex', scope: 'project' });
+    await builder.writeRepoArtifact(target);
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+    record.record.installSource = {
+      kind: 'dependency',
+      explicitlyRequested: false,
+    };
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+      record,
+      { spaces: 2 },
+    );
+    await builder.writeProjectIdentity(target);
+    await builder.writeDiagnosticCache(target);
+    await builder.writeDependencyIndex([{ target, record }]);
+    const env = createInstallStateFixtureEnv(builder.paths);
+
+    let projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.autoInstalled).toBe(true);
+    expect(projection.unusedDependencyHint).toBe(true);
+
+    await fs.remove(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.dependencyIndexTrusted).toBe(false);
+    expect(projection.unusedDependencyHint).toBe(false);
+
+    record.record.installSource = {
+      kind: 'dependency',
+      explicitlyRequested: true,
+    };
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${target.recordId}.json`),
+      record,
+      { spaces: 2 },
+    );
+    await builder.writeDependencyIndex([{ target, record }]);
+    projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+    expect(projection.kind).toBe('installed');
+    expect(projection.autoInstalled).toBe(true);
+    expect(projection.unusedDependencyHint).toBe(false);
+  });
+
+  it('offers cleanup for cleanupRequired residue only when there are no verified dependents', async () => {
+    const freeResidue = await collectProjectionForScenario('residual');
+    expect(freeResidue.projection.kind).toBe('cleanupRequired');
+    expect(freeResidue.projection.cleanupAvailable).toBe(true);
+
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-residual-local-dependent-'),
+    );
+    const target = builder.createTarget({
+      pluginName: 'target-residual',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const dependentTarget = builder.createTarget({
+      pluginName: 'dependent-residual',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    await builder.writeRepoArtifact(target);
+    await builder.writeDiagnosticCache(target);
+    const dependentRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(dependentTarget));
+    dependentRecord.record.dependencyEdges = [{
+      dependency: target.location,
+      declaration: {
+        name: target.location.plugin,
+      },
+    }];
+    await fs.writeJson(
+      path.join(builder.paths.repoRoot, '.codex', '.agent-workflows', 'records', `${dependentTarget.recordId}.json`),
+      dependentRecord,
+      { spaces: 2 },
+    );
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: createCurrentCatalogForTarget(target),
+    }));
+
+    expect(projection.kind).toBe('cleanupRequired');
+    expect(projection.dependents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'dependent-residual',
+        scope: 'project',
+      }),
+    ]));
+    expect(projection.cleanupAvailable).toBe(false);
+  });
+
+  it('offers cleanup for Codex user native residue when config-backed evidence has no verified dependents', async () => {
+    const missing = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'missing' });
+    expect(missing.projection.kind).toBe('external');
+    expect(missing.projection.cleanupAvailable).toBe(true);
+
+    const missingWithCache = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'configAndCache',
+    });
+    expect(missingWithCache.projection.kind).toBe('external');
+    expect(missingWithCache.projection.cleanupAvailable).toBe(true);
+
+    const corrupted = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'corrupted' });
+    expect(corrupted.projection.kind).toBe('external');
+    expect(corrupted.projection.dependencyIndexCoverageReasons).toContain('indexCorrupted');
+    expect(corrupted.projection.cleanupAvailable).toBe(true);
+
+    const stale = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'staleReference' });
+    expect(stale.projection.kind).toBe('external');
+    expect(stale.projection.dependencyIndexCoverageTrusted).toBe(false);
+    expect(stale.projection.dependencyIndexCoverageReasons).toContain('staleReference');
+    expect(stale.projection.cleanupAvailable).toBe(true);
+
+    const unreadable = await projectConfigOnlyCodexUserResidue({ dependencyIndexState: 'unreadableReference' });
+    expect(unreadable.projection.kind).toBe('external');
+    expect(unreadable.projection.dependencyIndexCoverageTrusted).toBe(false);
+    expect(unreadable.projection.dependencyIndexCoverageReasons).toContain('unreadableReference');
+    expect(unreadable.projection.cleanupAvailable).toBe(true);
+  });
+
+  it('blocks Codex user native residue cleanup when verified dependents exist or ownership proof is missing', async () => {
+    const missingWithLocalDependent = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      localDependentScope: 'user',
+    });
+    expect(missingWithLocalDependent.projection.kind).toBe('external');
+    expect(missingWithLocalDependent.projection.cleanupAvailable).toBe(false);
+
+    const missingWithProjectDependent = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      localDependentScope: 'project',
+    });
+    expect(missingWithProjectDependent.projection.kind).toBe('external');
+    expect(missingWithProjectDependent.projection.dependents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          plugin: 'helper-local-dependent',
+          scope: 'project',
+        }),
+      ]),
+    );
+    expect(missingWithProjectDependent.projection.cleanupAvailable).toBe(false);
+
+    const cacheOnly = await projectConfigOnlyCodexUserResidue({
+      dependencyIndexState: 'missing',
+      nativeEvidence: 'cacheOnly',
+    });
+    expect(cacheOnly.projection.kind).toBe('external');
+    expect(cacheOnly.projection.cleanupAvailable).toBe(false);
+  });
+
+  it('does not let a foreign shared-runtime owner block claimable project artifacts', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-project-owner-foreign-'),
+    );
+    const projectTarget = builder.createTarget({
+      pluginName: 'codex-explore',
+      platform: 'codex',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const userTarget = builder.createTarget({
+      pluginName: 'codex-explore',
+      platform: 'codex',
+      scope: 'user',
+    });
+    await builder.writeRepoArtifact(projectTarget);
+    await builder.writeProjectIdentity(projectTarget);
+    const userRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(userTarget));
+    const userRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'codex',
+      scope: 'user',
+    });
+    const userRecordPath = userRecords.successes.find((entry) => entry.recordId === userTarget.recordId)?.path;
+    if (!userRecordPath) {
+      throw new Error(`missing fixture record for ${userTarget.recordId}`);
+    }
+    await fs.writeJson(userRecordPath, userRecord, { spaces: 2 });
+    const env = createInstallStateFixtureEnv(builder.paths);
+    await fs.outputJson(
+      getSharedSkillTriggerRuntimeOwnerPath({
+        pluginName: projectTarget.location.plugin,
+        platform: projectTarget.location.platform,
+        env,
+      }),
+      {
+        version: 1,
+        pluginName: projectTarget.location.plugin,
+        platform: projectTarget.location.platform,
+        owner: userTarget.location,
+        ownerRecordPath: userRecordPath,
+        ownerRecordDigest: 'mismatch',
+        preference: 'manual',
+        updatedAt: userRecord.record.updatedAt,
+      },
+      { spaces: 2 },
+    );
+
+    const projection = projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: projectTarget.location,
+      env,
+      currentCatalog: createCurrentCatalogForTarget(projectTarget),
+    }));
+
+    expect(projection.kind).toBe('external');
+    expect(projection.reasonCodes).toEqual(['claimableProjectArtifacts']);
+  });
+
+  it('uses the Claude project subdirectory when reading project artifact shared identity', async () => {
+    const root = await makeTempDir('aw-install-state-claude-project-locator-');
+    const repoRoot = path.join(root, 'repo');
+    const projectA = path.join(repoRoot, 'packages', 'a');
+    const projectB = path.join(repoRoot, 'packages', 'b');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(projectA);
+    await fs.ensureDir(projectB);
+
+    async function writeIdentity(projectRoot: string) {
+      const locator = createProjectArtifactSharedLocator({
+        plugin: 'git-commit',
+        platform: 'claude',
+        repoRoot,
+        projectRoot,
+      });
+      const identity = {
+        version: 1,
+        sharedIdentityId: createSharedIdentityId(locator),
+        locator,
+        source: {
+          pluginVersion: '0.1.0',
+          manifestDigest: 'sha256:manifest',
+          bundleFingerprint: 'sha256:bundle',
+        },
+        generatedAt: '2026-05-07T00:00:00.000Z',
+        artifacts: [],
+      };
+      const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
+      await fs.outputJson(identityPath, identity, { spaces: 2 });
+      return { identityPath };
+    }
+
+    const identityA = await writeIdentity(projectA);
+    const identityB = await writeIdentity(projectB);
+
+    const evidence = await collectInstallEvidence({
+      cwd: projectA,
+      location: {
+        plugin: 'git-commit',
+        platform: 'claude',
+        scope: 'project',
+        projectKey: projectA,
+      },
+      env: {
+        ...process.env,
+        AW_HOME: path.join(root, '.aw'),
+        AW_CLAUDE_HOME: path.join(root, '.claude'),
+        HOME: root,
+      },
+    });
+
+    expect(identityA.identityPath).not.toBe(identityB.identityPath);
+    expect(evidence.projectSharedIdentity.read?.path).toBe(identityA.identityPath);
   });
 });

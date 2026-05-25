@@ -1539,7 +1539,7 @@ describe('plugin config write helper', () => {
           mode: 'fast',
         },
       },
-    })).rejects.toThrow('aw repair --adopt-existing');
+    })).rejects.toThrow('aw install adoptable-refresh-plugin --platform codex --scope project --adopt-existing');
 
     expect(nativeCliRunner).not.toHaveBeenCalled();
     expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();

@@ -23,6 +23,7 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
 import { getCatalogFullPackageRoot } from '../../src/utils/bundle-layout.js';
+import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import {
   resolveCodexPaths,
   resolveClaudeProjectKey,
@@ -39,6 +40,7 @@ import {
 } from '../helpers/workspace.js';
 import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
+import type { InstallRecordFile, PluginLocation as InstallStatePluginLocation } from '../../src/install-state/types.js';
 
 const tempDirs: string[] = [];
 
@@ -179,6 +181,53 @@ function activateWorkspaceEnv(
   replaceProcessEnv(env);
   activateCliEmbeddedRoot(workspace.embeddedRoot, 'upgrade command embedded root activation');
   return env;
+}
+
+async function writeUpgradeInstallRecord(options: {
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+  pluginName?: string;
+  pluginVersion?: string;
+  platform?: PlatformName;
+  scope?: 'user' | 'project';
+  projectKey?: string;
+}): Promise<void> {
+  const pluginName = options.pluginName ?? 'git-commit';
+  const platform = options.platform ?? 'codex';
+  const scope = options.scope ?? 'project';
+  const location: InstallStatePluginLocation = {
+    plugin: pluginName,
+    platform,
+    scope,
+    ...(scope === 'project' ? { projectKey: options.projectKey ?? options.repoRoot } : {}),
+  };
+  const recordPath = getInstallRecordPath(options.repoRoot, location, options.env, 'write');
+  await fs.ensureDir(path.dirname(recordPath));
+  const recordId = path.basename(recordPath, '.json');
+  const record: InstallRecordFile = {
+    version: 2,
+    recordId,
+    record: {
+      pluginName,
+      platform,
+      scope,
+      ...(scope === 'project' ? { projectKey: location.projectKey } : {}),
+      installedAt: '2026-04-29T00:00:00.000Z',
+      updatedAt: '2026-04-29T00:00:00.000Z',
+      source: {
+        pluginVersion: options.pluginVersion ?? '0.1.0',
+        manifestDigest: 'synthetic-upgrade-manifest-digest',
+        bundleFingerprint: 'synthetic-upgrade-bundle-fingerprint',
+      },
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+      },
+      artifacts: [],
+      dependencyEdges: [],
+    },
+  };
+  await fs.writeJson(recordPath, record, { spaces: 2 });
 }
 
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
@@ -781,7 +830,7 @@ describe('upgrade command coverage', () => {
           },
         },
       ),
-    ).rejects.toThrow('缺少安装时快照');
+    ).rejects.toThrow('有效 install record');
   });
 
   it('reapplies current catalog for capability-changed plugins without pre-uninstall', async () => {
@@ -790,6 +839,13 @@ describe('upgrade command coverage', () => {
 
     await initCommand({ force: true });
     await writeInstalledLedger(createAvailableLedger(), process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      scope: 'project',
+      platform: 'codex',
+      projectKey: await resolveCodexProjectKey(repoRoot),
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
@@ -866,6 +922,13 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(installedLedger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      scope: 'project',
+      platform: 'codex',
+      projectKey,
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
@@ -999,6 +1062,7 @@ describe('upgrade command coverage', () => {
         title: 'codexProjectUserConfigUnreadable',
         setup: async (repoRoot: string, codexHome: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
           await fs.ensureDir(codexHome);
           await fs.writeFile(path.join(codexHome, 'config.toml'), '[[plugins', 'utf8');
         },
@@ -1012,6 +1076,7 @@ describe('upgrade command coverage', () => {
         title: 'externalOwnershipUnknown',
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
         },
         adapterState: {
           currentCatalogAvailable: true,
@@ -1026,6 +1091,7 @@ describe('upgrade command coverage', () => {
         title: 'externalOwnershipPresent',
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
         },
         adapterState: {
           currentCatalogAvailable: true,
@@ -1038,6 +1104,7 @@ describe('upgrade command coverage', () => {
         title: 'trackingIntegrityError',
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
           await fs.outputJson(
             path.join(repoRoot, '.codex', '.agent-workflows-manifest.json'),
             {
@@ -1068,6 +1135,7 @@ describe('upgrade command coverage', () => {
         mutateRepo: removeGitCommitFromCatalog,
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
         },
         adapterState: {
           currentCatalogAvailable: false,
@@ -1080,6 +1148,7 @@ describe('upgrade command coverage', () => {
         mutateRepo: restoreAppsOnGitCommit,
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
         },
         adapterState: {
           currentCatalogAvailable: true,
@@ -1091,6 +1160,7 @@ describe('upgrade command coverage', () => {
         title: 'projectConfigUnreadable',
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
           await fs.ensureDir(path.join(repoRoot, '.codex'));
           await fs.writeFile(path.join(repoRoot, '.codex', 'config.toml'), '[mcp_servers', 'utf8');
         },
@@ -1104,6 +1174,7 @@ describe('upgrade command coverage', () => {
         title: 'unmanagedRepoArtifactConflict',
         setup: async (repoRoot: string) => {
           await writeCodexProjectManagedLedgerRecord({ repoRoot });
+          await writeUpgradeInstallRecord({ repoRoot, env: process.env, scope: 'project', platform: 'codex', projectKey: await resolveCodexProjectKey(repoRoot) });
           await fs.outputJson(
             path.join(repoRoot, '.codex', '.agent-workflows-manifest.json'),
             {
@@ -1226,6 +1297,20 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(ledger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      scope: 'project',
+      platform: 'codex',
+      projectKey: codexProjectKey,
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      scope: 'project',
+      platform: 'claude',
+      projectKey: claudeProjectKey,
+    });
 
     const result = await upgradeCommand(
       [],
@@ -1331,6 +1416,20 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(ledger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot: nestedCwd,
+      env: process.env,
+      scope: 'project',
+      platform: 'codex',
+      projectKey: codexProjectKey,
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot: nestedCwd,
+      env: process.env,
+      scope: 'project',
+      platform: 'claude',
+      projectKey: claudeProjectKey,
+    });
 
     const codex = new FakeAdapter('codex', nestedCwd, {
       'git-commit': {
@@ -1557,6 +1656,13 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(installedLedger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      scope: 'project',
+      platform: 'codex',
+      projectKey: codexProjectKey,
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'git-commit': {
@@ -1758,6 +1864,27 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(ledger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      pluginName: 'upgrade-all-root',
+      scope: 'user',
+      platform: 'codex',
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      pluginName: 'reachable-auto-dep',
+      scope: 'user',
+      platform: 'codex',
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      pluginName: 'orphan-auto-dep',
+      scope: 'user',
+      platform: 'codex',
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'upgrade-all-root': {
@@ -1796,7 +1923,7 @@ describe('upgrade command coverage', () => {
       },
     );
 
-    expect(result.plugins).toEqual(['upgrade-all-root']);
+    expect(result.plugins).toEqual(['orphan-auto-dep', 'reachable-auto-dep', 'upgrade-all-root']);
     expect(result.receiptTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         plugin: 'upgrade-all-root',
@@ -1804,7 +1931,7 @@ describe('upgrade command coverage', () => {
       }),
       expect.objectContaining({
         plugin: 'reachable-auto-dep',
-        requested: false,
+        requested: true,
         dependencyOf: [{
           plugin: 'upgrade-all-root',
           platform: 'codex',
@@ -1812,14 +1939,10 @@ describe('upgrade command coverage', () => {
         }],
       }),
     ]));
-    expect(result.receiptTargets?.some((target) => target.plugin === 'orphan-auto-dep')).toBe(false);
-    expect(result.receiptActions).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        plugin: 'reachable-auto-dep',
-        type: 'upgradeDependency',
-      }),
-    ]));
+    expect(result.receiptTargets?.some((target) => target.plugin === 'orphan-auto-dep')).toBe(true);
+    expect(result.receiptActions).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual([
+      'orphan-auto-dep',
       'reachable-auto-dep',
       'upgrade-all-root',
     ]);
@@ -1875,6 +1998,20 @@ describe('upgrade command coverage', () => {
       },
     };
     await writeInstalledLedger(ledger, process.env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      pluginName: 'skip-root',
+      scope: 'user',
+      platform: 'codex',
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env: process.env,
+      pluginName: 'capability-changed-dep',
+      scope: 'user',
+      platform: 'codex',
+    });
 
     const codex = new FakeAdapter('codex', repoRoot, {
       'skip-root': {
@@ -1907,7 +2044,7 @@ describe('upgrade command coverage', () => {
       },
     );
 
-    expect(result.plugins).toEqual(['skip-root']);
+    expect(result.plugins).toEqual(['capability-changed-dep', 'skip-root']);
     expect(result.skipped).toEqual([]);
     expect(result.receiptTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1916,7 +2053,7 @@ describe('upgrade command coverage', () => {
       }),
       expect.objectContaining({
         plugin: 'capability-changed-dep',
-        requested: false,
+        requested: true,
         dependencyOf: [{
           plugin: 'skip-root',
           platform: 'codex',
@@ -1924,11 +2061,10 @@ describe('upgrade command coverage', () => {
         }],
       }),
     ]));
-    expect(result.receiptActions).toEqual(expect.arrayContaining([
+    expect(result.receiptTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         plugin: 'capability-changed-dep',
-        type: 'upgradeDependency',
-        requested: false,
+        requested: true,
       }),
     ]));
     expect(codex.extensionInstallCalls).toEqual([
@@ -1969,7 +2105,7 @@ describe('upgrade command coverage', () => {
           },
         },
       ),
-    ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+    ).rejects.toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
 
     expect(codex.installCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual([]);

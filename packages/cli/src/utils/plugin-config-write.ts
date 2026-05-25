@@ -1146,7 +1146,7 @@ async function resolveCodexDynamicRefreshImpact(options: {
     } else {
       throw new Error(
         `当前项目里的 ${options.plugin.manifest.name} 存在未认领或无法验证的残留状态，不能直接刷新共享 artifacts。` +
-        '请先运行 `aw status --verbose` 查看状态，再选择 `aw repair --adopt-existing`、`aw cleanup` 或 `aw reinstall`。',
+        `请先运行 \`aw status --verbose\` 查看状态，再选择 \`aw install ${options.plugin.manifest.name} --platform codex --scope project --adopt-existing\`、\`aw cleanup\` 或 \`aw reinstall\`。`,
       );
     }
   }
@@ -1154,7 +1154,7 @@ async function resolveCodexDynamicRefreshImpact(options: {
   if (adoptExistingRequired) {
     throw new Error(
       `当前项目里的 ${options.plugin.manifest.name} 共享产物尚未被本机认领；这次写入会影响 repo-visible artifacts。` +
-      '请先运行 `aw repair --adopt-existing`，再重试 config write。',
+      `请先运行 \`aw install ${options.plugin.manifest.name} --platform codex --scope project --adopt-existing\`，再重试 config write。`,
     );
   }
 

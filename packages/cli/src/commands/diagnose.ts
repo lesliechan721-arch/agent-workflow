@@ -17,14 +17,14 @@ import {
 import type {
   CleanupBlockingReason,
   CleanupLocationSummary,
-  CleanupTargetPayload,
 } from './cleanup.js';
-import { cleanupCommand } from './cleanup.js';
+import { buildCleanupEvaluation } from './cleanup.js';
 import type { CommandExecutionContextInput } from './runtime.js';
 import { createCommandExecutionContext } from './runtime.js';
 import { buildCommandCandidates } from './discovery.js';
 import type { DiscoveryEvidenceSummary } from './discovery.js';
 import {
+  normalizeCleanupCommandOptions,
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
 } from './options.js';
@@ -182,6 +182,7 @@ export interface StatusJsonLocation {
   nextStepsSchemaVersion: 1;
   nextSteps: NextStepInstruction[];
   legacyNextSteps?: string[];
+  reasonCodes: ProjectInstallStateProjection['reasonCodes'];
   record: {
     present: boolean;
     status: InstallEvidence['installRecord']['read']['status'];
@@ -272,15 +273,13 @@ export interface StatusJsonLocation {
     recordCommitted: boolean;
     markerPending: boolean;
     needsAttention: boolean;
-    repairCommand?: string;
+    recoveryCommand?: string;
     cleanupCommand?: string;
   };
   catalogDrift: boolean;
   catalogLatestBlockedByCli: boolean;
   upgradeAvailable: boolean;
-  repairAvailable: boolean;
   cleanupAvailable: boolean;
-  adoptExistingAvailable: boolean;
   findings: string[];
   issues: ProjectInstallStateProjection['issues'];
   forceCleanup: {
@@ -363,12 +362,21 @@ function cleanupLocationSummary(location: PluginLocation): CleanupLocationSummar
   };
 }
 
-function renderCleanupPlanCommand(location: PluginLocation, force = false): string {
-  return `aw cleanup ${renderLocationArgs(location, location.plugin)} --plan${force ? ' --force' : ''}`;
+function renderCleanupCommand(location: PluginLocation, force = false): string {
+  return `aw cleanup ${renderLocationArgs(location, location.plugin)}${force ? ' --force' : ''}`;
+}
+
+function cleanupActionAvailable(state: CollectedLocationState): boolean {
+  return state.projection.cleanupAvailable
+    || state.projection.nativeTransactionKind !== 'none'
+    || state.forceCleanup.required;
 }
 
 function consoleStatusForLocation(state: CollectedLocationState): PluginConsoleStatus {
   if (state.projection.kind === 'installed') {
+    if (state.projection.nativeTransactionKind !== 'none') {
+      return 'abnormal';
+    }
     return state.projection.upgradeAvailable ? 'upgradeAvailable' : 'installed';
   }
   if (state.projection.kind === 'notInstalled') {
@@ -428,7 +436,7 @@ function consoleReasonLabel(reason: PluginConsoleReasonCode): string {
       return '记录损坏';
     case 'nativeIncomplete':
       return '平台写入未完成';
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       return '可认领安装';
     case 'foreignOwnershipConflict':
       return '归属冲突';
@@ -441,7 +449,7 @@ function consoleReasonLabel(reason: PluginConsoleReasonCode): string {
 
 function consoleReasonSeverity(reason: PluginConsoleReasonCode): ConsoleIssueSummary['severity'] {
   switch (reason) {
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       return 'info';
     case 'missingRequiredConfig':
     case 'artifactRefreshFailed':
@@ -475,24 +483,18 @@ function featureSummary(
         return '配置';
       case 'uninstall':
         return '卸载';
-      case 'repair':
-        return '修复安装';
       case 'cleanup':
         return '清理';
       case 'reinstall':
         return '重新安装';
       case 'adoptExisting':
         return '认领现有安装';
-      case 'takeoverSharedRuntime':
-        return '接管共享触发策略';
       case 'resolveDuplicateInstall':
         return '处理重复安装';
       case 'reapplyConfigRefresh':
         return '重新应用配置';
       case 'status':
         return '查看状态';
-      case 'diagnose':
-        return '查看诊断';
       case 'dependencies':
         return '依赖';
     }
@@ -501,7 +503,7 @@ function featureSummary(
   return {
     kind,
     label,
-    targetSelection: options.targetSelection ?? (kind === 'status' || kind === 'diagnose' ? 'none' : 'singleTarget'),
+    targetSelection: options.targetSelection ?? (kind === 'status' ? 'none' : 'singleTarget'),
     ...(options.destructive ? { destructive: true } : {}),
     ...(options.disabledReason ? { disabledReason: options.disabledReason } : {}),
   };
@@ -526,19 +528,16 @@ function dedupeFeatureSummaries(features: PluginConsoleFeatureSummary[]): Plugin
 
 function collectConsoleReasonCodes(state: CollectedLocationState): PluginConsoleReasonCode[] {
   const reasons = new Set<PluginConsoleReasonCode>();
-  if (state.projection.kind === 'adoptable' || state.projection.adoptExistingAvailable) {
-    reasons.add('adoptableInstall');
+  if (state.projection.reasonCodes.includes('claimableProjectArtifacts')) {
+    reasons.add('claimableProjectArtifacts');
   }
-  if (state.projection.kind === 'residual') {
-    reasons.add('residueDetected');
-  }
-  if (state.projection.kind === 'externallyManaged') {
-    reasons.add(state.projection.cleanupAvailable ? 'residueDetected' : 'foreignOwnershipConflict');
-  }
-  if (state.projection.kind === 'needsRepair') {
+  if (state.projection.kind === 'cleanupRequired') {
     reasons.add('recordCorrupted');
   }
-  if (state.projection.sharedRuntimeNeedsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
+  if (state.projection.kind === 'external') {
+    reasons.add(cleanupActionAvailable(state) ? 'residueDetected' : 'foreignOwnershipConflict');
+  }
+  if (state.evidence.sharedRuntimeOwner.needsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
     reasons.add('foreignOwnershipConflict');
   }
   if (
@@ -576,17 +575,16 @@ function collectConsoleReasonCodes(state: CollectedLocationState): PluginConsole
     reasons.add('dependencyBlocked');
   }
   if (hasAwNativeResidueDiscoveryEvidence(state.target) &&
-    (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged')) {
-    reasons.add(state.projection.cleanupAvailable ? 'residueDetected' : 'foreignOwnershipConflict');
+    (state.projection.kind === 'notInstalled' || state.projection.kind === 'external')) {
+    reasons.add(cleanupActionAvailable(state) ? 'residueDetected' : 'foreignOwnershipConflict');
   }
   return [...reasons];
 }
 
 function shouldEvaluateCleanup(state: CollectedLocationState): boolean {
-  return state.projection.kind === 'needsRepair' ||
-    state.projection.kind === 'adoptable' ||
-    state.projection.kind === 'residual' ||
-    state.projection.kind === 'externallyManaged' ||
+  return state.projection.kind === 'cleanupRequired' ||
+    state.projection.kind === 'external' ||
+    state.projection.nativeTransactionKind !== 'none' ||
     state.forceCleanup.required ||
     state.projection.dependents.length > 0 ||
     hasAwNativeResidueDiscoveryEvidence(state.target);
@@ -625,13 +623,13 @@ function hasAwNativeResidueDiscoveryEvidence(target: InstallStateTarget): boolea
 
 function isNativeResidueAttentionState(state: CollectedLocationState): boolean {
   return (
-    (state.projection.kind === 'notInstalled' || state.projection.kind === 'externallyManaged') &&
+    (state.projection.kind === 'notInstalled' || state.projection.kind === 'external') &&
     hasAwNativeResidueDiscoveryEvidence(state.target)
   );
 }
 
 function renderStateLabelForLocation(state: CollectedLocationState): string {
-  return isNativeResidueAttentionState(state)
+  return (state.projection.nativeTransactionKind !== 'none' || isNativeResidueAttentionState(state))
     ? '需要处理'
     : renderStateLabel(state.projection.kind);
 }
@@ -645,7 +643,6 @@ function buildNativeTransactionMarkerSummary(
   pluginName: string,
   projection: ProjectInstallStateProjection,
 ): StatusJsonLocation['nativeTransactionMarker'] {
-  const args = renderLocationArgs(location, pluginName);
   const status = projection.nativeTransactionKind;
   const needsAttention = status !== 'none';
   return {
@@ -654,8 +651,7 @@ function buildNativeTransactionMarkerSummary(
     recordCommitted: status === 'recordInstallResidual',
     markerPending: needsAttention,
     needsAttention,
-    ...(needsAttention ? { repairCommand: `aw repair ${args}` } : {}),
-    ...(needsAttention ? { cleanupCommand: `aw cleanup ${args}` } : {}),
+    ...(needsAttention ? { cleanupCommand: renderCleanupCommand(location) } : {}),
   };
 }
 
@@ -1256,7 +1252,7 @@ function createForceCleanupHint(
   required: boolean;
   backupItems: ForceCleanupBackupItem[];
 } {
-  if (projection.installRecordPresent || projection.kind !== 'residual') {
+  if (projection.installRecordPresent || projection.kind !== 'cleanupRequired') {
     return {
       required: false,
       backupItems: [],
@@ -1297,13 +1293,10 @@ function createSummaryText(options: {
     return '发现只剩原生残留标记，没有可继续依赖的安装记录。';
   }
   if (
-    (projection.kind === 'notInstalled' || projection.kind === 'externallyManaged') &&
+    (projection.kind === 'notInstalled' || projection.kind === 'external') &&
     hasAwNativeResidueDiscoveryEvidence(target)
   ) {
     return '检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。';
-  }
-  if (projection.catalogLatestBlockedByCli) {
-    return '当前 catalog 更新受 CLI 版本限制；先升级 aw，再决定是否升级插件。';
   }
   if (projection.kind === 'installed' && projection.catalogDrift) {
     return '当前安装仍可识别，但目录里的插件版本已经变化，建议升级或重装。';
@@ -1326,23 +1319,22 @@ function createSummaryText(options: {
   if (hasIssue(projection, 'dependencyMissing')) {
     return '依赖链里有缺口，当前目标不能算健康。';
   }
-  if (projection.kind === 'needsRepair') {
-    return '当前安装可定位，但有异常需要收口。';
-  }
-  if (projection.kind === 'adoptable') {
-    return '发现了一份可认领的已有项目安装。';
-  }
-  if (projection.kind === 'residual') {
+  if (projection.kind === 'cleanupRequired') {
     if (projection.dependents.length > 0) {
       return '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。';
     }
-    return '发现残留文件或本机状态，建议清理后再继续。';
+    return '发现需要先清理的 AW 状态，建议清理后再继续。';
   }
-  if (projection.kind === 'externallyManaged') {
-    return '检测到外部安装痕迹，AW 不会把它当成本地已管理安装。';
+  if (projection.kind === 'external') {
+    return projection.reasonCodes.includes('claimableProjectArtifacts')
+      ? '发现了一份可认领的已有项目安装。'
+      : '检测到外部安装痕迹，AW 不会把它当成本地已管理安装。';
   }
   if (projection.kind === 'notInstalled') {
     return '当前没有找到已安装记录。';
+  }
+  if (projection.catalogLatestBlockedByCli) {
+    return '当前 catalog 更新受 CLI 版本限制；先升级 aw，再决定是否升级插件。';
   }
   if (disabledCodexSkillEntries.length > 0) {
     return '当前安装状态正常，且 codex.skill 已按配置禁用。';
@@ -1451,7 +1443,7 @@ function createFindings(options: {
       .filter((value): value is string => Boolean(value));
     findings.push(`依赖边仍指向缺失或不健康的位置：${uniqueStrings(dependencies).join('、')}。`);
   }
-  if (projection.sharedRuntimeNeedsTakeover && !shouldSuppressSharedOwnerConflict(evidence.location)) {
+  if (evidence.sharedRuntimeOwner.needsTakeover && !shouldSuppressSharedOwnerConflict(evidence.location)) {
     findings.push('共享 skill trigger owner 指向了别的位置。');
   }
   if (projection.autoInstalled && projection.unusedDependencyHint) {
@@ -1510,27 +1502,21 @@ function createNextSteps(options: {
     backupItems: ForceCleanupBackupItem[];
   };
 }): string[] {
-  const { location, pluginName, projection, dependencyIndexActions, forceCleanup } = options;
+  const { location, pluginName, projection, evidence, dependencyIndexActions, forceCleanup } = options;
   const args = renderLocationArgs(location, pluginName);
   const steps: string[] = [];
   if (projection.nativeTransactionKind === 'recordInstallResidual') {
-    steps.push(`aw repair ${args}`);
     steps.push(`aw cleanup ${args}`);
   } else if (projection.nativeTransactionKind === 'markerOnlyInstall' || projection.nativeTransactionKind === 'markerOnlyUninstall') {
     steps.push(`aw cleanup ${args}`);
-  } else if (projection.kind === 'needsRepair') {
-    if (projection.repairAvailable) {
-      steps.push(`aw repair ${args}`);
-    }
+  } else if (projection.kind === 'cleanupRequired') {
     if (projection.cleanupAvailable) {
       steps.push(`aw cleanup ${args}`);
     }
-  } else if (projection.kind === 'adoptable') {
-    steps.push(`aw repair ${args} --adopt-existing`);
+  } else if (projection.kind === 'external' && projection.reasonCodes.includes('claimableProjectArtifacts')) {
+    steps.push(`aw install ${args} --adopt-existing`);
     steps.push(`aw status ${args} --verbose`);
-  } else if (projection.kind === 'residual' && projection.cleanupAvailable) {
-    steps.push(`aw cleanup ${args}`);
-  } else if (projection.kind === 'externallyManaged' && projection.cleanupAvailable) {
+  } else if (projection.kind === 'external' && projection.cleanupAvailable) {
     steps.push(`aw cleanup ${args}`);
   } else if (projection.kind === 'installed' && projection.catalogDrift) {
     steps.push(`aw upgrade ${args}`);
@@ -1541,8 +1527,14 @@ function createNextSteps(options: {
     steps.push(`aw install ${args}`);
   }
   if (forceCleanup.required) {
-    steps.push(`aw cleanup ${args} --plan --force`);
     steps.push(`aw cleanup ${args} --force`);
+  }
+  if (
+    evidence.sharedRuntimeOwner.needsTakeover &&
+    !shouldSuppressSharedOwnerConflict(location) &&
+    projection.kind !== 'external'
+  ) {
+    steps.push(`aw status ${args} --verbose`);
   }
   for (const action of dependencyIndexActions) {
     if (action.command) {
@@ -1561,19 +1553,11 @@ function nextStepFromLegacyCommand(step: string): NextStepInstruction {
       step,
     );
   }
-  if (step.startsWith('aw repair ') && step.includes('--adopt-existing')) {
+  if (step.startsWith('aw install ') && step.includes('--adopt-existing')) {
     return createUiActionNextStep(
       '认领现有安装',
       '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
       'runAdoptExisting',
-      step,
-    );
-  }
-  if (step.startsWith('aw repair ')) {
-    return createUiActionNextStep(
-      '修复安装',
-      '会进入修复流程，补齐当前安装缺失或不一致的状态。',
-      'runRepair',
       step,
     );
   }
@@ -1633,61 +1617,27 @@ async function evaluateCleanupPath(
     };
   }
 
-  const baseResult = await cleanupCommand(
-    [state.location.plugin],
-    {
-      cwd: state.target.executionCwd,
-      platform: state.location.platform,
-      scope: state.location.scope,
-      plan: true,
-    },
-    runtime,
-  );
-  if (baseResult.payload.dependencyIndex) {
-    return {
-      evaluated: true,
-      available: false,
-      forceRequired: false,
-      blockingReasons: [],
-      affectedDependents: [],
-    };
-  }
-
-  const basePayload = baseResult.payload as CleanupTargetPayload;
-  const forceRequired = basePayload.blockingReasons.some((reason) =>
-    reason.code === 'forceRequired' || reason.code === 'verifiedDependents');
-  if (forceRequired) {
-    const forcePreviewResult = await cleanupCommand(
-      [state.location.plugin],
-      {
-        cwd: state.target.executionCwd,
-        platform: state.location.platform,
-        scope: state.location.scope,
-        plan: true,
-        force: true,
-      },
-      runtime,
-    );
-    const forcePayload = forcePreviewResult.payload as CleanupTargetPayload;
-    return {
-      evaluated: true,
-      available: forcePayload.blockingReasons.length === 0,
-      forceRequired: true,
-      previewCommand: basePayload.recommendedCommand,
-      ...(forcePayload.blockingReasons.length === 0 ? { executeCommand: forcePayload.recommendedCommand } : {}),
-      blockingReasons: forcePayload.blockingReasons,
-      affectedDependents: forcePayload.affectedDependents,
-    };
-  }
-
+  const context = createCommandExecutionContext(runtime);
+  const commandOptions = normalizeCleanupCommandOptions({
+    cwd: state.target.executionCwd,
+    platform: state.location.platform,
+    scope: state.location.scope,
+    force: state.forceCleanup.required,
+  });
+  const evaluation = await buildCleanupEvaluation({
+    location: cleanupLocationSummary(state.location),
+    commandOptions,
+    env: context.env,
+    target: null,
+  });
+  const available = cleanupActionAvailable(state) && evaluation.payload.blockingReasons.length === 0;
   return {
     evaluated: true,
-    available: basePayload.blockingReasons.length === 0,
-    forceRequired: false,
-    previewCommand: renderCleanupPlanCommand(state.location),
-    ...(basePayload.blockingReasons.length === 0 ? { executeCommand: basePayload.recommendedCommand } : {}),
-    blockingReasons: basePayload.blockingReasons,
-    affectedDependents: basePayload.affectedDependents,
+    available,
+    forceRequired: state.forceCleanup.required,
+    ...(available ? { executeCommand: renderCleanupCommand(state.location, state.forceCleanup.required) } : {}),
+    blockingReasons: evaluation.payload.blockingReasons,
+    affectedDependents: evaluation.payload.affectedDependents,
   };
 }
 
@@ -1713,7 +1663,7 @@ function cleanupIssueSummary(
     suggestedFeatures: reason.code === 'duplicateInstall'
       ? [featureSummary('adoptExisting')]
       : reason.code === 'foreignOwnershipConflict'
-        ? [featureSummary('diagnose')]
+        ? [featureSummary('status')]
         : [featureSummary('cleanup', {
             label: cleanup.forceRequired ? '查看清理预览' : '清理',
             destructive: cleanup.executeCommand !== undefined,
@@ -1729,18 +1679,18 @@ function diagnoseIssueSummary(
 ): ConsoleIssueSummary {
   const suggestedFeatures: PluginConsoleFeatureSummary[] = [];
   switch (reason) {
-    case 'adoptableInstall':
+    case 'claimableProjectArtifacts':
       suggestedFeatures.push(featureSummary('adoptExisting'));
       break;
     case 'artifactRefreshFailed':
-      suggestedFeatures.push(featureSummary('repair'));
+      suggestedFeatures.push(featureSummary('reinstall'));
       if (state.projection.issues.some((issue) => issue.code === 'dynamicRefreshFailed')) {
         suggestedFeatures.push(featureSummary('reapplyConfigRefresh'));
       }
       break;
     case 'recordCorrupted':
     case 'nativeIncomplete':
-      suggestedFeatures.push(featureSummary('repair'));
+      suggestedFeatures.push(featureSummary('cleanup'));
       break;
     case 'duplicateInstall':
       suggestedFeatures.push(featureSummary('resolveDuplicateInstall', {
@@ -1749,15 +1699,12 @@ function diagnoseIssueSummary(
       }));
       break;
     case 'dependencyBlocked':
-      suggestedFeatures.push(featureSummary('repair'));
+      suggestedFeatures.push(featureSummary('status'));
       break;
     case 'missingRequiredConfig':
       suggestedFeatures.push(featureSummary('configure'));
       break;
     case 'foreignOwnershipConflict':
-      if (state.projection.sharedRuntimeNeedsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
-        suggestedFeatures.push(featureSummary('takeoverSharedRuntime'));
-      }
       break;
     case 'residueDetected':
       break;
@@ -1792,7 +1739,7 @@ function createDiagnoseLocationSummary(
   ];
   const suggestedFeatures = dedupeFeatureSummaries([
     ...issues.flatMap((issue) => issue.suggestedFeatures),
-    featureSummary('diagnose'),
+    featureSummary('status'),
   ]);
 
   const status = consoleStatusForLocation(input.state);
@@ -1891,6 +1838,7 @@ function toStatusJsonLocation(
     locationLabel: locationLabel(state.location),
     state: state.projection.kind,
     ...nextStepsBoundaryFromLegacy(state.nextSteps),
+    reasonCodes: state.projection.reasonCodes,
     record: {
       present: state.evidence.installRecord.present,
       status: state.evidence.installRecord.read.status,
@@ -1989,9 +1937,7 @@ function toStatusJsonLocation(
     catalogDrift: state.projection.catalogDrift,
     catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
     upgradeAvailable: state.projection.upgradeAvailable,
-    repairAvailable: state.projection.repairAvailable,
-    cleanupAvailable: state.projection.cleanupAvailable,
-    adoptExistingAvailable: state.projection.adoptExistingAvailable,
+    cleanupAvailable: cleanupActionAvailable(state),
     findings: state.findings,
     issues: state.projection.issues,
     forceCleanup: state.forceCleanup,
@@ -2096,8 +2042,8 @@ export function renderDiagnoseHumanOutput(
         lines.push(`  - 发现无法读取的项目引用：${action.location.plugin}${action.error ? `（${action.error}）` : ''}`);
       }
     }
-    lines.push(`  可执行操作：repair=${state.projection.repairAvailable ? 'yes' : 'no'}，cleanup=${state.projection.cleanupAvailable ? 'yes' : 'no'}${state.forceCleanup.required ? '，cleanup --force=needed' : ''}`);
-    if (state.projection.cleanupAvailable) {
+    lines.push(`  可执行操作：cleanup=${cleanupActionAvailable(state) ? 'yes' : 'no'}${state.forceCleanup.required ? '，cleanup --force=needed' : ''}`);
+    if (cleanupActionAvailable(state)) {
       lines.push('  提醒：cleanup 不会执行 uninstall lifecycle。');
     }
     if (state.forceCleanup.required && state.forceCleanup.backupItems.length > 0) {
@@ -2173,13 +2119,9 @@ function renderStateLabel(kind: ProjectInstallStateProjection['kind']): string {
   switch (kind) {
     case 'installed':
       return '已安装';
-    case 'needsRepair':
+    case 'cleanupRequired':
       return '需要处理';
-    case 'adoptable':
-      return '可认领';
-    case 'residual':
-      return '有残留';
-    case 'externallyManaged':
+    case 'external':
       return '外部管理';
     case 'notInstalled':
       return '未安装';

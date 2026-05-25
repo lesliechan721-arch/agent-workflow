@@ -31,10 +31,12 @@ export type RawCommandOptions = {
 export type RawInstallCommandOptions = RawCommandOptions & {
   requestedSkillTrigger?: SkillTriggerPreference | string;
   skillTrigger?: SkillTriggerPreference | string;
-  takeoverSharedRuntime?: boolean;
+  adoptExisting?: boolean;
 };
 
-export type RawUpgradeCommandOptions = RawInstallCommandOptions & {
+export type RawUpgradeCommandOptions = RawCommandOptions & {
+  requestedSkillTrigger?: SkillTriggerPreference | string;
+  skillTrigger?: SkillTriggerPreference | string;
   all?: boolean;
 };
 
@@ -54,23 +56,6 @@ export type RawDiagnoseCommandOptions = RawStatusCommandOptions & {
 
 export interface DiagnoseCommandOptions extends StatusCommandOptions {
   deep?: boolean;
-}
-
-export type RawRepairCommandOptions = RawCommandOptions & {
-  adoptExisting?: boolean;
-  dependencyIndex?: boolean;
-  json?: boolean;
-  requestedSkillTrigger?: SkillTriggerPreference | string;
-  skillTrigger?: SkillTriggerPreference | string;
-  takeoverSharedRuntime?: boolean;
-};
-
-export interface RepairCommandOptions extends CommandOptions {
-  adoptExisting: boolean;
-  dependencyIndex: boolean;
-  json?: boolean;
-  requestedSkillTrigger?: SkillTriggerPreference;
-  takeoverSharedRuntime?: boolean;
 }
 
 export type RawUninstallCommandOptions = RawCommandOptions & {
@@ -96,12 +81,13 @@ export interface CleanupCommandOptions extends CommandOptions {
   dependencyIndex: boolean;
   pruneStale?: string;
   yes: boolean;
-  plan: boolean;
   removeConfig: boolean;
   json?: boolean;
 }
 
-export type RawReinstallCommandOptions = RawInstallCommandOptions & {
+export type RawReinstallCommandOptions = RawCommandOptions & {
+  requestedSkillTrigger?: SkillTriggerPreference | string;
+  skillTrigger?: SkillTriggerPreference | string;
   json?: boolean;
 };
 
@@ -129,7 +115,7 @@ export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
 
 export function assertNoDeprecatedSkillTriggerOption(
   raw: Pick<RawInstallCommandOptions, 'requestedSkillTrigger' | 'skillTrigger'>,
-  commandName: 'install' | 'upgrade' | 'repair' | 'reinstall',
+  commandName: 'install' | 'upgrade' | 'reinstall',
 ): void {
   if (raw.requestedSkillTrigger === undefined && raw.skillTrigger === undefined) {
     return;
@@ -319,11 +305,27 @@ function normalizeRequestedSkillTrigger(
   return value === undefined ? undefined : parseSkillTriggerPreference(value);
 }
 
+function assertNoRemovedTakeoverOption(
+  raw: { takeoverSharedRuntime?: boolean } | Record<string, unknown>,
+  commandName: 'install' | 'upgrade' | 'reinstall',
+): void {
+  if ((raw as { takeoverSharedRuntime?: boolean }).takeoverSharedRuntime !== true) {
+    return;
+  }
+  throw new Error(
+    `\`${commandName}\` 不再接受 \`--takeover-shared-runtime\`；shared runtime owner 冲突现在只会作为 blocker 暴露。`,
+  );
+}
+
 export function normalizeInstallCommandOptions(
   raw: RawInstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): InstallCommandOptions {
-  return {
+  assertNoRemovedTakeoverOption(raw as RawInstallCommandOptions & { takeoverSharedRuntime?: boolean }, 'install');
+  if (raw.adoptExisting === true && raw.scope !== 'project') {
+    throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
+  }
+  const normalized = {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
       requirePlatform: true,
@@ -331,17 +333,19 @@ export function normalizeInstallCommandOptions(
       ...defaults,
     }),
     requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
-    takeoverSharedRuntime: raw.takeoverSharedRuntime,
+    adoptExisting: raw.adoptExisting === true,
   };
+  if (normalized.adoptExisting && normalized.scope !== 'project') {
+    throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
+  }
+  return normalized;
 }
 
 export function normalizeUpgradeCommandOptions(
   raw: RawUpgradeCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): UpgradeCommandOptions {
-  if (raw.all && raw.takeoverSharedRuntime) {
-    throw new Error('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
-  }
+  assertNoRemovedTakeoverOption(raw as RawUpgradeCommandOptions & { takeoverSharedRuntime?: boolean }, 'upgrade');
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
@@ -351,7 +355,6 @@ export function normalizeUpgradeCommandOptions(
     }),
     all: raw.all,
     requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
-    takeoverSharedRuntime: raw.takeoverSharedRuntime,
   };
 }
 
@@ -389,35 +392,6 @@ export function normalizeDiagnoseCommandOptions(
   };
 }
 
-export function normalizeRepairCommandOptions(
-  raw: RawRepairCommandOptions = {},
-  defaults: NormalizeCommandOptionsDefaults = {},
-): RepairCommandOptions {
-  if (raw.dependencyIndex && raw.adoptExisting) {
-    throw new Error('--dependency-index 不能与 --adopt-existing 一起使用。');
-  }
-  if (raw.dependencyIndex && raw.scope !== undefined) {
-    throw new Error('--dependency-index 不接受 `--scope`。');
-  }
-  if (raw.dependencyIndex && raw.platform !== undefined) {
-    throw new Error('--dependency-index 不接受 `--platform`。');
-  }
-  return {
-    ...normalizeCommandOptions(raw, {
-      defaultScope: 'user',
-      requirePlatform: raw.dependencyIndex !== true,
-      missingPlatformMessage: 'repair 命令需要显式指定 `--platform codex|claude|both`。',
-      ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
-      ...defaults,
-    }),
-    adoptExisting: raw.adoptExisting === true,
-    dependencyIndex: raw.dependencyIndex === true,
-    json: raw.json === true,
-    requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
-    takeoverSharedRuntime: raw.takeoverSharedRuntime,
-  };
-}
-
 export function normalizeUninstallCommandOptions(
   raw: RawUninstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
@@ -437,6 +411,9 @@ export function normalizeCleanupCommandOptions(
   raw: RawCleanupCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): CleanupCommandOptions {
+  if (raw.plan === true) {
+    throw new Error('`cleanup --plan` 已移除；请直接运行 `aw cleanup`，或先用 `aw status --verbose` 查看当前状态。');
+  }
   if (raw.dependencyIndex && raw.scope !== undefined) {
     throw new Error('cleanup --dependency-index 不接受 `--scope`。');
   }
@@ -455,7 +432,6 @@ export function normalizeCleanupCommandOptions(
     dependencyIndex: raw.dependencyIndex === true,
     pruneStale: raw.pruneStale,
     yes: raw.yes === true,
-    plan: raw.plan === true,
     removeConfig: raw.removeConfig === true,
     json: raw.json === true,
   } satisfies CleanupCommandOptions;
@@ -466,9 +442,6 @@ export function normalizeCleanupCommandOptions(
     }
     if (!normalized.yes) {
       throw new Error('cleanup --dependency-index --prune-stale 需要显式传入 --yes。');
-    }
-    if (normalized.plan) {
-      throw new Error('cleanup --dependency-index --prune-stale 不支持 --plan。');
     }
     if (normalized.removeConfig) {
       throw new Error('cleanup --dependency-index --prune-stale 不支持 --remove-config。');
@@ -484,6 +457,7 @@ export function normalizeReinstallCommandOptions(
   raw: RawReinstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): ReinstallCommandOptions {
+  assertNoRemovedTakeoverOption(raw as RawReinstallCommandOptions & { takeoverSharedRuntime?: boolean }, 'reinstall');
   return {
     ...normalizeInstallCommandOptions(raw, {
       defaultScope: 'user',

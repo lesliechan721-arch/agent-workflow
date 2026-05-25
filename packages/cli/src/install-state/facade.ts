@@ -20,6 +20,7 @@ import {
 import { sha256Hex } from './internal.js';
 import { serializePluginLocation } from './ids.js';
 import type {
+  DependencyIndexReferenceInspection,
   DynamicArtifactDiagnosticCache,
   GlobalDependencyIndex,
   GlobalDependencyIndexInspection,
@@ -35,6 +36,19 @@ import type {
   SharedSkillTriggerRuntimeOwner,
 } from './types.js';
 import { getGlobalDependencyIndexPath, getInstallRecordPath, getDiagnosticCachePath } from './paths.js';
+
+export interface DerivedGlobalDependencyIndexRecordEntry {
+  recordFile: InstallRecordFile;
+  recordPath: string;
+}
+
+export interface DerivedGlobalDependencyIndexResult {
+  value: GlobalDependencyIndex;
+  rebuiltEntries: GlobalDependencyIndexRecord[];
+  preservedEntries: Array<GlobalDependencyIndexRecord & {
+    status: 'staleCandidate' | 'unreadableReference';
+  }>;
+}
 
 function unsupported(pathValue: string, code: string, error: string, legacyEvidence?: LegacyInstallStateEvidence): InstallStateReadResult<never> {
   return {
@@ -419,6 +433,84 @@ export async function inspectGlobalDependencyIndex(
     path: indexPath,
     value: validated.value,
     references,
+  };
+}
+
+export async function buildDerivedGlobalDependencyIndex(options: {
+  recordEntries: readonly DerivedGlobalDependencyIndexRecordEntry[];
+  env?: NodeJS.ProcessEnv;
+  now?: string;
+}): Promise<DerivedGlobalDependencyIndexResult> {
+  const now = options.now ?? new Date().toISOString();
+  const inspection = await inspectGlobalDependencyIndex(options.env);
+  const dedupedEntries = new Map<string, DerivedGlobalDependencyIndexRecordEntry>();
+
+  for (const entry of options.recordEntries) {
+    dedupedEntries.set(
+      `${entry.recordPath}\u0000${entry.recordFile.recordId}`,
+      entry,
+    );
+  }
+
+  const rebuiltEntries = await Promise.all(
+    [...dedupedEntries.values()].map(async (entry) =>
+      buildGlobalDependencyIndexRecord({
+        recordFile: entry.recordFile,
+        recordPath: entry.recordPath,
+        recordDigest: await readFileSha256(entry.recordPath),
+        now,
+      })),
+  );
+
+  const preservedEntries: Array<GlobalDependencyIndexRecord & {
+    status: 'staleCandidate' | 'unreadableReference';
+  }> = inspection.status === 'ok'
+    ? inspection.references
+      .map((reference, index) => ({
+        reference,
+        record: inspection.value.records[index]!,
+      }))
+      .filter((entry): entry is {
+        reference: DependencyIndexReferenceInspection & {
+          status: 'staleCandidate' | 'unreadableReference';
+        };
+        record: GlobalDependencyIndexRecord;
+      } =>
+        entry.reference.status === 'staleCandidate'
+        || entry.reference.status === 'unreadableReference')
+      .map((entry) => ({
+        ...entry.record,
+        status: entry.reference.status,
+      }))
+    : [];
+
+  const rebuiltIdentityKeys = new Set(rebuiltEntries.map((entry) => [
+    entry.recordPath,
+    serializePluginLocation(entry.location),
+  ].join('\u0000')));
+
+  const records = [
+    ...preservedEntries
+      .filter((entry) =>
+        !rebuiltIdentityKeys.has([
+          entry.recordPath,
+          serializePluginLocation(entry.location),
+        ].join('\u0000')))
+      .map(({ status: _status, ...record }) => record),
+    ...rebuiltEntries,
+  ].sort((left, right) => (
+    left.recordPath.localeCompare(right.recordPath)
+    || serializePluginLocation(left.location).localeCompare(serializePluginLocation(right.location))
+  ));
+
+  return {
+    value: {
+      version: 1,
+      updatedAt: now,
+      records,
+    },
+    rebuiltEntries,
+    preservedEntries,
   };
 }
 

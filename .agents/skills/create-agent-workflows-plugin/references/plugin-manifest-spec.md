@@ -408,7 +408,7 @@ codex:
 
 Codex scope 对作者的影响：
 
-- `--scope user` 走 Codex native plugin 平面。AW 会用 `codex plugin marketplace add/list/remove` 管理本地 marketplace，并通过 `codex plugin add/remove` 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。友好状态只有在 enabled config、active cache、native transaction 状态和 AW per-plugin record 都健康时才显示为已安装；enabled-only、cache-only 或 native transaction marker 残留不算已安装，并会给出 repair / cleanup 动作。
+- `--scope user` 走 Codex native plugin 平面。AW 会用 `codex plugin marketplace add/list/remove` 管理本地 marketplace，并通过 `codex plugin add/remove` 写用户级 enabled config 和 materialized cache；没有只写 config 的 fallback。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断。`aw status --json` 中 `native.pluginInstalled` 指 cache installed，`native.pluginEnabled` 指 config enabled。顶层状态只有在 enabled config、active cache 和 AW per-plugin record 都健康时才显示为 `installed`；enabled-only、cache-only 或 native transaction marker 残留不算已安装，只能作为 diagnostics、command blocker 或 `cleanupRequired` 细节。
 - `--scope project` 只写 repo-managed artifacts，不调用 Codex native CLI / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`；写入前仍要求本机 Codex `>= 0.131.0`。
 - `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时报错。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
@@ -417,6 +417,7 @@ CLI 入口和输出对作者的影响：
 
 - `aw` 主命令是唯一交互入口；配置向导只存在于主控制台。脚本化配置请使用 `aw config set/unset/reset`，读配置使用 `aw config list/get`；不要把 `aw config configure` 写进 README、测试或脚本。
 - 子命令面向脚本调用；写命令加 `--json` 时 stdout 是单一 JSON receipt，默认输出只展示友好完成状态和下一步。需要诊断时使用 `--verbose`、`--debug` 或 `status --json`。
+- 旧恢复命令已移除，不再作为公开入口。project fresh clone 认领共享产物使用 `aw install --adopt-existing`；异常状态和 AW-owned 残留使用 `aw cleanup`；按 current catalog 删除后重建使用 `aw reinstall`；dependency index stale reference 只使用 `aw cleanup --dependency-index --prune-stale <token> --yes`。
 - 插件 README、示例和测试断言不要依赖默认输出里的内部词，也不要把默认输出当机器协议解析。
 
 ## interface block

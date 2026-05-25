@@ -503,7 +503,7 @@ describe('cli entry integration', () => {
     expect(payload).not.toHaveProperty('configSchemaVersion');
   });
 
-  it('lets cleanup --force remove the target while keeping verified dependents and printing the follow-up guidance', async () => {
+  it('blocks cleanup --force when verified dependents still reference the target and surfaces the blocker', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-cleanup-force-'));
     tempDirs.push(root);
     registerCliTempRoot(root, 'cli entry cleanup force root');
@@ -565,12 +565,12 @@ describe('cli entry integration', () => {
       },
     );
 
-    expect(exitCode).toBe(0);
-    expect(capture.readStdout()).toContain('cleanup 已完成：git-commit。');
-    expect(capture.readStdout()).toContain('受影响依赖：');
-    expect(capture.readStdout()).toContain('helper-local-dependent');
-    expect(capture.readStdout()).toContain('repair、reinstall 或 cleanup');
-    await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain(target.pluginId);
+    const rendered = `${capture.readStdout()}\n${capture.readStderr()}`;
+    expect(exitCode).toBe(1);
+    expect(rendered).toContain('无法继续 cleanup');
+    expect(rendered).toContain('helper-local-dependent');
+    expect(rendered).toContain('verified dependents');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toContain(target.pluginId);
     await expect(fs.pathExists(dependentRecordPath)).resolves.toBe(true);
   });
 
@@ -1585,7 +1585,7 @@ describe('cli entry integration', () => {
     expect(exitCode).toBe(1);
     await installSideEffect;
     expect(capture.readStderr()).toContain('AW 没有持久化恢复证据');
-    expect(capture.readStderr()).toContain('不能承诺后续 repair / uninstall 一定具备自动授权');
+    expect(capture.readStderr()).toContain('不能承诺后续 cleanup / uninstall 一定具备自动授权');
 
     const logEntries = (await fs.readFile(logFile, 'utf8'))
       .trim()
@@ -2497,7 +2497,7 @@ describe('cli entry integration', () => {
     expect(capture.readStdout()).toContain('状态详情');
     expect(capture.readStdout()).toContain('诊断结果');
     expect(capture.readStdout()).toContain('检测到 Codex 原生残留。不要直接覆盖当前残留，先确认来源。');
-    expect(capture.readStdout()).toContain('可执行操作：repair=no，cleanup=yes');
+    expect(capture.readStdout()).toContain('可执行操作：cleanup=yes');
   });
 
   it('renders Codex enabled-only, cache-only and recovery residue as external-friendly summaries with native reason codes', async () => {

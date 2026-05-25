@@ -535,9 +535,9 @@ describe('status P7', () => {
       } as never,
     );
 
-    expect(human.output).toContain('状态：需要处理');
-    expect(human.output).toContain('aw repair');
-    expect(human.output).toContain('修复安装');
+    expect(human.output).toContain('状态：已安装');
+    expect(human.output).toContain('安装记录还在，但原生安装收尾没有完成。');
+    expect(human.output).not.toContain('aw repair');
     expect(await fs.readFile(fixture.files.installRecordPath, 'utf8')).toBe(beforeRecord);
     expect(await fs.readFile(fixture.files.nativeMarkerPath, 'utf8')).toBe(beforeMarker);
 
@@ -559,7 +559,8 @@ describe('status P7', () => {
     const payload = JSON.parse(jsonResult.output) as {
       locations: Array<{
         state: string;
-        nextSteps: string[];
+        reasonCodes: string[];
+        nextSteps: Array<{ command?: string; kind: string }>;
         record: { present: boolean };
         nativeState: { transactionKind: string };
         nativeTransactionMarker: {
@@ -571,7 +572,8 @@ describe('status P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'needsRepair',
+      state: 'installed',
+      reasonCodes: [],
       record: { present: true },
       nativeState: { transactionKind: 'recordInstallResidual' },
       nativeTransactionMarker: {
@@ -584,13 +586,13 @@ describe('status P7', () => {
     expect(payload.locations[0].nextSteps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          command: expect.stringContaining('aw repair'),
-        }),
-        expect.objectContaining({
           command: expect.stringContaining('aw cleanup'),
         }),
       ]),
     );
+    expect(JSON.stringify(payload.locations[0])).not.toContain('aw repair');
+    expect(JSON.stringify(payload.locations[0])).not.toContain('--takeover-shared-runtime');
+    expect(payload.locations[0]).not.toHaveProperty('legacyNextSteps');
   });
 
   it('emits prune tokens for stale dependency index references in status JSON and verbose output', async () => {

@@ -373,7 +373,7 @@ function createCodexRecoverySuggestion(
   recoveryBreadcrumbPersisted: boolean,
 ): string {
   if (operation === 'write' && !recoveryBreadcrumbPersisted) {
-    return 'Codex native side effect 已发生，但 AW 没有持久化恢复证据；当前不能承诺后续 repair / uninstall 一定具备自动授权。';
+    return 'Codex native side effect 已发生，但 AW 没有持久化恢复证据；当前不能承诺后续 cleanup / uninstall 一定具备自动授权。';
   }
 
   if (operation === 'delete') {
@@ -913,7 +913,7 @@ function createCodexNativeRecoverySuggestion(
   evidenceMatches: boolean,
 ): string {
   const repairCommand = `aw install ${pluginName} -p codex -s user`;
-  const cleanupCommand = `aw uninstall ${pluginName} -p codex -s user`;
+  const cleanupCommand = `aw cleanup ${pluginName} -p codex -s user`;
 
   if (state === 'cleanup_failed' || !evidenceMatches) {
     return `重新运行 ${cleanupCommand} 清理残留恢复记录；如果 Codex cache 和 config 已经手动清掉，AW 仍需要删除 breadcrumb。`;
@@ -3518,7 +3518,7 @@ export class CodexAdapter implements PlatformAdapter {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 repair / uninstall 一定具备自动授权；请先运行 \`aw status --verbose\` 检查 breadcrumb、config 和 cache 诊断，再决定后续修复或清理。`,
+        `Codex 原生插件 ${plugin.manifest.name}@aw 已写入，但 AW 没有持久化恢复证据：${detail}。当前不能承诺后续 cleanup / uninstall 一定具备自动授权；请先运行 \`aw status --verbose\` 检查 breadcrumb、config 和 cache 诊断，再决定后续修复或清理。`,
       );
     }
 

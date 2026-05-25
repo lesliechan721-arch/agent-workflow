@@ -336,7 +336,7 @@ describe('uninstall command (P9 install-state path)', () => {
         },
         makeRuntime(createBuilderEnv(builder.paths)),
       ),
-    ).rejects.toThrow(/\[reason=unsafeStandardUninstall\].*aw cleanup/);
+    ).rejects.toThrow(/\[reason=historicalRuntimeUnavailable\].*historical runtime/);
   });
 
   it('blocks uninstall when a verified dependent still references the target', async () => {

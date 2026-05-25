@@ -109,10 +109,10 @@ import {
 } from './diagnose.js';
 import { isCodexProjectStatusFatalError } from './codex-project-safety.js';
 import {
-  createLegacyCommandNextStep,
-  createLegacyNextStepText,
+  createCliCommandNextStep,
   createManualNextStep,
   createNextStepsBoundary,
+  createStructuredNextStepsBoundary,
   createUiActionNextStep,
   dedupeNextSteps,
   formatNextStepForHuman,
@@ -152,12 +152,13 @@ export interface StatusMatrixCell {
 }
 
 export interface StatusMatrixInstallState {
-  kind: 'installed' | 'needsRepair' | 'adoptable' | 'residual' | 'externallyManaged' | 'notInstalled';
+  kind: 'installed' | 'cleanupRequired' | 'external' | 'notInstalled';
   summary: string;
   nextStepsSchemaVersion: 1;
   nextSteps: NextStepInstruction[];
   legacyNextSteps?: string[];
   findings: string[];
+  reasonCodes: string[];
   issueCodes: string[];
   autoInstalled: boolean;
   unusedDependencyHint: boolean;
@@ -167,9 +168,7 @@ export interface StatusMatrixInstallState {
     scope: Scope;
     projectKey?: string | null;
   }>;
-  repairAvailable: boolean;
   cleanupAvailable: boolean;
-  adoptExistingAvailable: boolean;
   currentCatalogAvailable: boolean;
   catalogDrift: boolean;
   catalogLatestBlockedByCli: boolean;
@@ -183,7 +182,6 @@ export interface StatusMatrixInstallState {
     | 'recordUninstallResidual'
     | 'invalid';
   sharedRuntimeOwnerPresent: boolean;
-  sharedRuntimeNeedsTakeover: boolean;
   sharedRuntimeParticipatesInOwner: boolean;
   sharedRuntimeSemanticDelta: 'change' | 'noChange' | 'unknown';
   sharedRuntimeOwnerConflict: boolean;
@@ -298,15 +296,6 @@ function installCommandForCell(
   cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
 ): string {
   return `aw install ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`;
-}
-
-function repairCommandForCell(
-  cell: Pick<StatusMatrixCell, 'pluginName' | 'platform' | 'scope'>,
-  options: { adoptExisting?: boolean; takeoverSharedRuntime?: boolean } = {},
-): string {
-  return `aw repair ${cell.pluginName} --platform ${cell.platform} --scope ${cell.scope}`
-    + `${options.adoptExisting ? ' --adopt-existing' : ''}`
-    + `${options.takeoverSharedRuntime ? ' --takeover-shared-runtime' : ''}`;
 }
 
 function cleanupCommandForCell(
@@ -1559,19 +1548,10 @@ function createNotInstalledSummary(pluginName: string): StatusSummary {
 }
 
 function instructionFromCollectedNextStep(step: string): NextStepInstruction {
-  if (step.startsWith('aw repair ') && step.includes('--adopt-existing')) {
-    return createUiActionNextStep(
-      '认领现有安装',
-      '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
-      'runAdoptExisting',
-      step,
-    );
-  }
-  if (step.startsWith('aw repair ')) {
-    return createUiActionNextStep(
-      '修复安装',
-      '会进入修复流程，补齐当前安装缺失或不一致的状态。',
-      'runRepair',
+  if (step.startsWith('aw cleanup --dependency-index --prune-stale ')) {
+    return createCliCommandNextStep(
+      '清理过期依赖索引引用',
+      '这会显式修剪指定的 stale dependency-index 引用，不会改动插件安装真值。',
       step,
     );
   }
@@ -1619,6 +1599,48 @@ function instructionFromCollectedNextStep(step: string): NextStepInstruction {
 }
 
 function nextStepsForCollectedLocation(state: CollectedLocationState): NextStepInstruction[] {
+  const baseLocation = {
+    pluginName: state.location.plugin,
+    platform: state.location.platform,
+    scope: state.location.scope,
+  };
+  if (state.projection.kind === 'external') {
+    if (state.projection.reasonCodes.includes('claimableProjectArtifacts')) {
+      return [createCliCommandNextStep(
+        '认领现有安装',
+        '这份共享产物尚未建立本机 ownership；请用显式认领入口创建本机安装记录。',
+        `${installCommandForCell(baseLocation)} --adopt-existing`,
+      )];
+    }
+    return [createManualNextStep(
+      '确认外部安装来源',
+      'AW 当前不会默认删除或覆盖这份内容；请先确认来源，再决定是否自行移除。',
+      { manualKind: 'blocker' },
+    )];
+  }
+  if (state.projection.kind === 'cleanupRequired') {
+    return dedupeNextSteps([
+      createUiActionNextStep(
+        '清理当前状态',
+        '会进入 cleanup 流程，删除可重建残留；当前默认保留配置。',
+        'runCleanup',
+        cleanupCommandForCell(baseLocation),
+      ),
+      createCliCommandNextStep(
+        '重新安装',
+        '清理后可以直接重建当前安装；配置默认会保留。',
+        `aw reinstall ${state.location.plugin} --platform ${state.location.platform} --scope ${state.location.scope}`,
+      ),
+    ]);
+  }
+  if (state.projection.kind === 'installed' && state.projection.nativeTransactionKind !== 'none') {
+    return [createUiActionNextStep(
+      '清理当前状态',
+      '安装真值仍在，但本机原生收尾没有完成；请先清理残留，配置默认保留。',
+      'runCleanup',
+      cleanupCommandForCell(baseLocation),
+    )];
+  }
   const nextSteps = dedupeNextSteps(state.nextSteps.map(instructionFromCollectedNextStep));
   return nextSteps.length > 0 ? nextSteps : [detailStatusNextStep({
     pluginName: state.location.plugin,
@@ -1688,7 +1710,7 @@ function buildFriendlySummaries(
         statusLabel: item.statusLabel,
         location: item.locationSummary ?? summarizeFallbackLocation(summary),
         ...(nextStep ? { nextStep: formatNextStepForHuman(nextStep) } : {}),
-        ...createNextStepsBoundary(nextSteps, item.legacyNextSteps ?? summary.legacyNextSteps),
+        ...createStructuredNextStepsBoundary(nextSteps),
         ...(item.issueSummary ? { issueSummary: item.issueSummary } : {}),
       };
     }
@@ -1702,7 +1724,7 @@ function buildFriendlySummaries(
       statusLabel: PLUGIN_CONSOLE_STATUS_LABELS[status],
       location: summarizeFallbackLocation(summary),
       ...(nextStep ? { nextStep: formatNextStepForHuman(nextStep) } : {}),
-      ...createNextStepsBoundary(nextSteps, summary.legacyNextSteps),
+      ...createStructuredNextStepsBoundary(nextSteps),
     };
   });
 }
@@ -1767,13 +1789,9 @@ function renderCollectedStatusHumanOutput(
     switch (state.projection.kind) {
       case 'installed':
         return '已安装';
-      case 'needsRepair':
+      case 'cleanupRequired':
         return '需要处理';
-      case 'adoptable':
-        return '可认领';
-      case 'residual':
-        return '残留待清理';
-      case 'externallyManaged':
+      case 'external':
         return '外部管理';
       case 'notInstalled':
         return '未安装';
@@ -2007,7 +2025,7 @@ function statusHealthFromProjectionKind(
   switch (kind) {
     case 'installed':
       return 'ready';
-    case 'externallyManaged':
+    case 'external':
       return 'external';
     case 'notInstalled':
       return 'notInstalled';
@@ -2035,7 +2053,7 @@ function statusHealthForCollectedState(
     return 'unknown';
   }
   if (
-    (installState.kind === 'externallyManaged' || installState.kind === 'notInstalled') &&
+    (installState.kind === 'external' || installState.kind === 'notInstalled') &&
     hasAwNativeResidueDiscoveryEvidence(state)
   ) {
     return 'needsAttention';
@@ -2142,8 +2160,9 @@ async function createInstallStateForCell(options: {
   return {
     kind: state.projection.kind,
     summary: state.summary,
-    ...createNextStepsBoundary(nextStepsForCollectedLocation(state), state.nextSteps),
+    ...createStructuredNextStepsBoundary(nextStepsForCollectedLocation(state)),
     findings: state.findings,
+    reasonCodes: state.projection.reasonCodes,
     issueCodes: state.projection.issues.map((issue) => issue.code),
     autoInstalled: state.projection.autoInstalled,
     unusedDependencyHint: state.projection.unusedDependencyHint,
@@ -2154,9 +2173,7 @@ async function createInstallStateForCell(options: {
         scope: dependent.scope,
         projectKey: dependent.projectKey ?? null,
       })),
-    repairAvailable: state.projection.repairAvailable,
     cleanupAvailable: state.projection.cleanupAvailable,
-    adoptExistingAvailable: state.projection.adoptExistingAvailable,
     currentCatalogAvailable: Boolean(state.target.currentPlugin),
     catalogDrift: state.projection.catalogDrift,
     catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
@@ -2164,7 +2181,6 @@ async function createInstallStateForCell(options: {
     dynamicDiagnosticUnavailable: state.projection.dynamicDiagnosticUnavailable,
     nativeTransactionKind: state.projection.nativeTransactionKind,
     sharedRuntimeOwnerPresent: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-    sharedRuntimeNeedsTakeover: state.evidence.sharedRuntimeOwner.needsTakeover,
     sharedRuntimeParticipatesInOwner: sharedRuntimeAssessment?.participatesInSharedRuntimeOwner === true,
     sharedRuntimeSemanticDelta: sharedRuntimeAssessment?.semanticDelta ?? 'unknown',
     sharedRuntimeOwnerConflict,
@@ -2383,7 +2399,7 @@ async function createCompatibilityReports(options: {
       ledgerStateStatus: 'available',
       ledgerStateReason: null,
       scopeInitialized: state.evidence.installRecord.present ? 'yes' : 'no',
-      externalOwnership: { present: state.projection.kind === 'externallyManaged', checkState: 'known' },
+      externalOwnership: { present: state.projection.kind === 'external', checkState: 'known' },
       projectTrust: state.location.scope === 'project' ? 'unknown' : 'not_applicable',
       scopeManagedEvidence: {
         ledger: state.target.discoveryEvidence?.sources.includes('ledger') === true || state.evidence.installRecord.present,
@@ -3002,11 +3018,11 @@ function buildConsoleLocationReadModelByKey(options: {
       diagnostics.push({
         label: '依赖索引',
         value: state.projection.dependencyIndexRevisitProjectLocations.length > 0
-          ? `覆盖仍不完整；请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+          ? `覆盖仍不完整；请回到这些位置重新运行 status --verbose：${state.projection.dependencyIndexRevisitProjectLocations
             .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
             .join('，')}`
           : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
-            ? '覆盖仍不完整；请回到可能相关的仓库重新运行 status --verbose 或 repair。'
+            ? '覆盖仍不完整；请回到可能相关的仓库重新运行 status --verbose。'
             : `覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}`,
         tone: 'info',
       });
@@ -3064,16 +3080,16 @@ function fallbackNotInstalledState(): StatusMatrixInstallState {
       createManualNextStep(
         '选择目标位置',
         '先选择要安装到哪个位置，再继续安装流程。',
+        { manualKind: 'guidance' },
       ),
     ]),
     findings: [],
+    reasonCodes: [],
     issueCodes: [],
     autoInstalled: false,
     unusedDependencyHint: false,
     dependents: [],
-    repairAvailable: false,
     cleanupAvailable: false,
-    adoptExistingAvailable: false,
     currentCatalogAvailable: true,
     catalogDrift: false,
     catalogLatestBlockedByCli: false,
@@ -3081,7 +3097,6 @@ function fallbackNotInstalledState(): StatusMatrixInstallState {
     dynamicDiagnosticUnavailable: true,
     nativeTransactionKind: 'none',
     sharedRuntimeOwnerPresent: false,
-    sharedRuntimeNeedsTakeover: false,
     sharedRuntimeParticipatesInOwner: false,
     sharedRuntimeSemanticDelta: 'unknown',
     sharedRuntimeOwnerConflict: false,
@@ -3109,42 +3124,33 @@ function summarizeCandidateInstallState(
           detailCommand,
         )],
       };
-    case 'needsRepair':
+    case 'cleanupRequired':
       return {
-        summary: '安装存在异常，需要修复。',
+        summary: '发现需要先清理的 AW 状态。',
         nextSteps: [createUiActionNextStep(
-          '修复安装',
-          '会进入修复流程，补齐当前安装缺失或不一致的状态。',
-          'runRepair',
-          repairCommandForCell(baseLocation),
-        )],
-      };
-    case 'adoptable':
-      return {
-        summary: '发现可认领的现有安装。',
-        nextSteps: [createUiActionNextStep(
-          '认领现有安装',
-          '会进入认领流程，把当前已存在的安装纳入 AW 管理。',
-          'runAdoptExisting',
-          repairCommandForCell(baseLocation, { adoptExisting: true }),
-        )],
-      };
-    case 'residual':
-      return {
-        summary: '发现可清理的残留。',
-        nextSteps: [createUiActionNextStep(
-          '清理残留',
-          '会进入 cleanup 流程，评估并清理当前残留状态。',
+          '清理当前状态',
+          '会进入 cleanup 流程，删除可重建残留；当前默认保留配置。',
           'runCleanup',
           cleanupCommandForCell(baseLocation),
         )],
       };
-    case 'externallyManaged':
+    case 'external':
+      if (candidate.installState?.reasonCodes.includes('claimableProjectArtifacts')) {
+        return {
+          summary: '发现可认领的项目共享产物。',
+          nextSteps: [createCliCommandNextStep(
+            '认领现有安装',
+            '这份共享产物尚未建立本机 ownership；请用显式认领入口创建本机安装记录。',
+            `${installCommandForCell(baseLocation)} --adopt-existing`,
+          )],
+        };
+      }
       return {
-        summary: '发现由其他来源管理的安装。',
+        summary: '发现不属于本机 AW 管理的外部内容。',
         nextSteps: [createManualNextStep(
           '确认外部安装来源',
-          '先确认这份安装是否由外部来源管理，再决定是否继续处理。',
+          'AW 当前不会默认删除或覆盖这份内容；请先确认来源，再决定是否自行移除或改走显式认领入口。',
+          { manualKind: 'blocker' },
         )],
       };
     case 'notInstalled':
@@ -3154,6 +3160,7 @@ function summarizeCandidateInstallState(
         nextSteps: [createManualNextStep(
           '选择目标位置',
           '先选择要安装到哪个位置，再继续安装流程。',
+          { manualKind: 'guidance' },
         )],
       };
   }
@@ -3171,14 +3178,13 @@ function createCandidateInstallState(candidate: CommandCandidate): StatusMatrixI
     kind: candidate.installState.kind,
     summary: summarized.summary,
     ...createNextStepsBoundary(summarized.nextSteps),
+    reasonCodes: candidate.installState.reasonCodes,
     autoInstalled: candidate.installState.autoInstalled,
     unusedDependencyHint: candidate.installState.unusedDependencyHint,
-    repairAvailable: candidate.installState.kind === 'needsRepair',
-    cleanupAvailable: candidate.installState.kind === 'residual' || candidate.installState.kind === 'externallyManaged',
-    adoptExistingAvailable: candidate.installState.adoptExistingAvailable,
+    cleanupAvailable: candidate.installState.kind === 'cleanupRequired',
     currentCatalogAvailable: Boolean(candidate.target.currentPlugin),
     sharedRuntimeOwnerConflict: candidate.installState.ownerConflict,
-    issueCodes: candidate.installState.kind === 'needsRepair'
+    issueCodes: candidate.installState.kind === 'cleanupRequired'
       ? ['installRecordInvalid']
       : [],
   };
@@ -3409,11 +3415,11 @@ export async function statusCommand(
     const dependencyIndexRecoveryMessage = state.projection.dependencyIndexCoverageTrusted
       ? null
       : state.projection.dependencyIndexRevisitProjectLocations.length > 0
-        ? `请回到这些位置重新运行 status --verbose 或 repair：${state.projection.dependencyIndexRevisitProjectLocations
+        ? `请回到这些位置重新运行 status --verbose：${state.projection.dependencyIndexRevisitProjectLocations
           .map((location) => `${location.plugin}:${location.projectKey ?? '.'}`)
           .join('，')}。`
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
-          ? '请回到可能相关的仓库重新运行 status --verbose 或 repair。'
+          ? '请回到可能相关的仓库重新运行 status --verbose。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`;
     return {
       plugin: state.location.plugin,
@@ -3425,7 +3431,8 @@ export async function statusCommand(
         ? `Codex（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`
         : `Claude Code（${state.location.scope === 'project' ? '当前项目' : '当前用户'}）`,
       state: state.projection.kind,
-      ...createNextStepsBoundary(locationNextSteps, state.nextSteps),
+      ...createStructuredNextStepsBoundary(locationNextSteps),
+      reasonCodes: state.projection.reasonCodes,
       record: {
         present: state.evidence.installRecord.present,
         status: state.evidence.installRecord.read.status,
@@ -3543,7 +3550,6 @@ export async function statusCommand(
         needsAttention: state.projection.nativeTransactionKind !== 'none',
         ...(state.projection.nativeTransactionKind !== 'none'
           ? {
-              repairCommand: `aw repair ${state.location.plugin} -p ${state.location.platform} -s ${state.location.scope}`,
               cleanupCommand: `aw cleanup ${state.location.plugin} -p ${state.location.platform} -s ${state.location.scope}`,
             }
           : {}),
@@ -3551,9 +3557,7 @@ export async function statusCommand(
       catalogDrift: state.projection.catalogDrift,
       catalogLatestBlockedByCli: state.projection.catalogLatestBlockedByCli,
       upgradeAvailable: state.projection.upgradeAvailable,
-      repairAvailable: state.projection.repairAvailable,
       cleanupAvailable: state.projection.cleanupAvailable,
-      adoptExistingAvailable: state.projection.adoptExistingAvailable,
       findings: state.findings,
       issues: state.projection.issues,
       forceCleanup: state.forceCleanup,

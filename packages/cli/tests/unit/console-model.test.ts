@@ -168,13 +168,12 @@ function installState(overrides: Partial<StatusMatrixInstallState> = {}): Status
     summary: '当前安装状态正常。',
     nextSteps: [],
     findings: [],
+    reasonCodes: [],
     issueCodes: [],
     autoInstalled: false,
     unusedDependencyHint: false,
     dependents: [],
-    repairAvailable: true,
     cleanupAvailable: false,
-    adoptExistingAvailable: false,
     currentCatalogAvailable: true,
     catalogDrift: false,
     catalogLatestBlockedByCli: false,
@@ -182,7 +181,6 @@ function installState(overrides: Partial<StatusMatrixInstallState> = {}): Status
     dynamicDiagnosticUnavailable: false,
     nativeTransactionKind: 'none',
     sharedRuntimeOwnerPresent: false,
-    sharedRuntimeNeedsTakeover: false,
     sharedRuntimeParticipatesInOwner: false,
     sharedRuntimeSemanticDelta: 'noChange',
     sharedRuntimeOwnerConflict: false,
@@ -653,15 +651,15 @@ describe('console-model', () => {
       scope: 'project',
       projectKey: '/workspace',
       installState: installState({
-        kind: 'adoptable',
+        kind: 'external',
         summary: '发现了一份可认领的已有项目安装。',
-        adoptExistingAvailable: true,
+        reasonCodes: ['claimableProjectArtifacts'],
       }),
       report: undefined,
     }));
     const dependencyBlocked = singleSummary(cell({
       installState: installState({
-        kind: 'needsRepair',
+        kind: 'cleanupRequired',
         summary: '缺少依赖。',
         issueCodes: ['dependencyMissing'],
       }),
@@ -699,8 +697,8 @@ describe('console-model', () => {
     ]);
 
     expect([...allCodes].sort()).toEqual([
-      'adoptableInstall',
       'artifactRefreshFailed',
+      'claimableProjectArtifacts',
       'dependencyBlocked',
       'foreignOwnershipConflict',
       'missingRequiredConfig',
@@ -955,7 +953,7 @@ describe('console-model', () => {
     expect(controller.pageItem.statusSymbol).toBe('!');
     expect(controller.pageItem.statusTone).toBe('danger');
     expect(controller.pageItem.platformSummary).toBe('Codex（个人）');
-    expect(controller.pageItem.primaryActionLabel).toBe('配置');
+    expect(controller.pageItem.primaryActionLabel).toBe('清理');
 
     expect(controller.summary).not.toHaveProperty('statusIcon');
     expect(controller.summary).not.toHaveProperty('statusTone');
@@ -1013,8 +1011,8 @@ describe('console-model', () => {
     const writeActions = controller.locations[0]!.actions.filter((action) =>
       action.kind === 'runUpgrade' ||
       action.kind === 'runUninstall' ||
-      action.kind === 'repairInstall' ||
-      action.kind === 'cleanupRecovery' ||
+      action.kind === 'runCleanup' ||
+      action.kind === 'runReinstall' ||
       action.kind === 'reapplyConfigRefresh',
     );
 
@@ -1057,31 +1055,24 @@ describe('console-model', () => {
       scope: 'project',
       projectKey: '/workspace',
       installState: installState({
-        kind: 'adoptable',
+        kind: 'external',
         summary: '发现了一份可认领的已有项目安装。',
+        reasonCodes: ['claimableProjectArtifacts'],
         nextSteps: [{
           kind: 'uiAction',
           label: '认领现有安装',
           description: '会进入认领流程，把当前项目里已有的安装纳入 AW 管理。',
           uiAction: 'runAdoptExisting',
         }],
-        adoptExistingAvailable: true,
       }),
       report: undefined,
     }));
     const ownerConflict = singleController(cell({
       installState: installState({
-        kind: 'needsRepair',
+        kind: 'installed',
         summary: '共享触发策略当前由另一个安装位置控制。',
-        nextSteps: [{
-          kind: 'uiAction',
-          label: '接管共享触发策略',
-          description: '会进入接管流程，把共享 runtime 的控制权切换到当前安装位置。',
-          uiAction: 'runTakeoverSharedRuntime',
-        }],
         issueCodes: ['artifactMissing'],
         sharedRuntimeOwnerPresent: true,
-        sharedRuntimeNeedsTakeover: true,
         sharedRuntimeParticipatesInOwner: true,
         sharedRuntimeSemanticDelta: 'change',
         sharedRuntimeOwnerConflict: true,
@@ -1092,8 +1083,8 @@ describe('console-model', () => {
     expect(adoptable.summary.features.map((feature) => feature.kind)).toContain('adoptExisting');
     expect(adoptable.locations[0]!.actions.find((entry) => entry.label === '认领现有安装')?.kind).toBe('runAdoptExisting');
 
-    expect(ownerConflict.summary.features.map((feature) => feature.kind)).toContain('takeoverSharedRuntime');
-    expect(ownerConflict.locations[0]!.actions.find((entry) => entry.label === '接管共享触发策略')?.kind).toBe('runTakeoverSharedRuntime');
+    expect(ownerConflict.summary.features.map((feature) => feature.kind)).not.toContain('takeoverSharedRuntime');
+    expect(ownerConflict.summary.features.map((feature) => feature.kind)).toContain('reinstall');
   });
 
   it('keeps public feature payload free of target, confirmText and command details', () => {
@@ -1123,9 +1114,8 @@ describe('console-model', () => {
         pluginName: 'adoptable-plugin',
         platform: 'codex',
         installState: installState({
-          kind: 'adoptable',
-          adoptExistingAvailable: true,
-          cleanupAvailable: true,
+          kind: 'external',
+          reasonCodes: ['claimableProjectArtifacts'],
         }),
         report: undefined,
       }),
@@ -1133,9 +1123,8 @@ describe('console-model', () => {
         pluginName: 'adoptable-plugin',
         platform: 'claude',
         installState: installState({
-          kind: 'adoptable',
-          adoptExistingAvailable: true,
-          cleanupAvailable: true,
+          kind: 'external',
+          reasonCodes: ['claimableProjectArtifacts'],
         }),
         report: undefined,
       }),
@@ -1143,10 +1132,9 @@ describe('console-model', () => {
         pluginName: 'takeover-plugin',
         platform: 'codex',
         installState: installState({
-          kind: 'needsRepair',
+          kind: 'installed',
           issueCodes: ['artifactMissing'],
           sharedRuntimeOwnerPresent: true,
-          sharedRuntimeNeedsTakeover: true,
           sharedRuntimeParticipatesInOwner: true,
           sharedRuntimeSemanticDelta: 'change',
           sharedRuntimeOwnerConflict: true,
@@ -1160,7 +1148,7 @@ describe('console-model', () => {
     const takeover = controller.find((entry) => entry.summary.pluginName === 'takeover-plugin');
     expect(demo?.summary.features.find((feature) => feature.kind === 'uninstall')?.targetSelection).toBe('multiTargetAllowed');
     expect(adoptable?.summary.features.find((feature) => feature.kind === 'adoptExisting')?.targetSelection).toBe('singleTargetOnly');
-    expect(takeover?.summary.features.find((feature) => feature.kind === 'takeoverSharedRuntime')?.targetSelection).toBe('singleTargetOnly');
+    expect(takeover?.summary.features.find((feature) => feature.kind === 'takeoverSharedRuntime')).toBeUndefined();
   });
 
   it('keeps detail target options empty until a feature is chosen', () => {

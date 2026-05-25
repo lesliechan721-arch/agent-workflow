@@ -657,7 +657,7 @@ describe('diagnose P7', () => {
     );
 
     expect(result.output).toContain('结论：需要处理');
-    expect(result.output).toContain('aw repair');
+    expect(result.output).not.toContain('aw repair');
     expect(result.output).toContain('aw cleanup');
     expect(await fs.readFile(fixture.files.installRecordPath, 'utf8')).toBe(beforeRecord);
     expect(await fs.readFile(fixture.files.nativeMarkerPath, 'utf8')).toBe(beforeMarker);
@@ -933,7 +933,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'externallyManaged',
+      state: 'external',
       cleanupAvailable: true,
     });
     expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
@@ -945,7 +945,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+    expect(human.output).toContain('可执行操作：cleanup=yes');
     expect(human.output).toContain(cleanupCommand);
   });
 
@@ -968,7 +968,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'externallyManaged',
+      state: 'external',
       cleanupAvailable: true,
     });
     expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
@@ -980,7 +980,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+    expect(human.output).toContain('可执行操作：cleanup=yes');
     expect(human.output).toContain(cleanupCommand);
   });
 
@@ -1003,7 +1003,7 @@ describe('diagnose P7', () => {
         }>;
       };
       expect(payload.locations[0]).toMatchObject({
-        state: 'externallyManaged',
+        state: 'external',
         cleanupAvailable: true,
       });
       expect(payload.locations[0]?.nextSteps).toEqual(expect.arrayContaining([
@@ -1015,7 +1015,7 @@ describe('diagnose P7', () => {
         { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
         runtime,
       );
-      expect(human.output).toContain('可执行操作：repair=no，cleanup=yes');
+      expect(human.output).toContain('可执行操作：cleanup=yes');
       expect(human.output).toContain(cleanupCommand);
     }
   });
@@ -1039,7 +1039,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'externallyManaged',
+      state: 'external',
       cleanupAvailable: false,
     });
     expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
@@ -1049,7 +1049,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).toContain('可执行操作：cleanup=no');
     expect(human.output).not.toContain(cleanupCommand);
   });
 
@@ -1073,7 +1073,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'externallyManaged',
+      state: 'external',
       cleanupAvailable: false,
     });
     expect(payload.locations[0]?.dependents).toEqual(
@@ -1091,7 +1091,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).toContain('可执行操作：cleanup=no');
     expect(human.output).not.toContain(cleanupCommand);
   });
 
@@ -1114,7 +1114,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'externallyManaged',
+      state: 'external',
       cleanupAvailable: false,
     });
     expect(payload.locations[0]?.nextSteps).not.toContain(cleanupCommand);
@@ -1124,7 +1124,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'user' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).toContain('可执行操作：cleanup=no');
     expect(human.output).not.toContain(cleanupCommand);
   });
 
@@ -1146,7 +1146,7 @@ describe('diagnose P7', () => {
       }>;
     };
     expect(payload.locations[0]).toMatchObject({
-      state: 'residual',
+      state: 'cleanupRequired',
       summary: '发现残留文件或本机状态，但当前还有其它安装在依赖它，不能直接清理。',
       cleanupAvailable: false,
     });
@@ -1164,7 +1164,7 @@ describe('diagnose P7', () => {
       { cwd: builder.paths.repoRoot, platform: 'codex', scope: 'project' },
       runtime,
     );
-    expect(human.output).toContain('可执行操作：repair=no，cleanup=no');
+    expect(human.output).toContain('可执行操作：cleanup=no');
     expect(human.output).toContain('当前还有其它安装在依赖它，不能直接清理。');
     expect(human.output).not.toContain(cleanupCommand);
   });

@@ -273,7 +273,6 @@ describe('reinstall command (P9)', () => {
       { target: projectTarget, record: projectRecord },
     ]);
 
-    const uninstallSpy = vi.fn<typeof import('../../src/commands/uninstall.js').uninstallCommand>();
     const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
     const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
     await expect(
@@ -290,14 +289,12 @@ describe('reinstall command (P9)', () => {
             codex: new FakeAdapter(),
             claude: new FakeAdapter(),
           } satisfies Record<PlatformName, PlatformAdapter>,
-          uninstallCommandImpl: uninstallSpy,
           cleanupCommandImpl: cleanupSpy,
           installCommandImpl: installSpy,
         },
       ),
     ).rejects.toThrow(/duplicateInstall/);
 
-    expect(uninstallSpy).not.toHaveBeenCalled();
     expect(cleanupSpy).not.toHaveBeenCalled();
     expect(installSpy).not.toHaveBeenCalled();
   });
@@ -332,12 +329,12 @@ describe('reinstall command (P9)', () => {
           installCommandImpl: installSpy,
         },
       ),
-    ).rejects.toThrow(/可认领状态/);
+    ).rejects.toThrow(/install .*--adopt-existing/);
 
     expect(installSpy).not.toHaveBeenCalled();
   });
 
-  it('does not proceed to install when uninstall fails closed on a missing dependency index', async () => {
+  it('rebuilds dependency protection from valid records before reinstalling a healthy target', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
 
@@ -352,35 +349,41 @@ describe('reinstall command (P9)', () => {
     ));
     await fs.remove(path.join(builder.paths.awHome, 'dependency-index'));
 
-    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
-    await expect(
-      reinstallCommand(
-        ['git-commit'],
-        {
-          cwd: builder.paths.repoRoot,
-          scope: 'user',
-          platform: 'codex',
-        },
-        {
-          env: {
-            ...process.env,
-            AW_HOME: builder.paths.awHome,
-            AW_CODEX_HOME: builder.paths.codexHome,
-            AW_CLAUDE_HOME: builder.paths.claudeHome,
-          },
-          adapters: {
-            codex: new FakeAdapter(),
-            claude: new FakeAdapter(),
-          } satisfies Record<PlatformName, PlatformAdapter>,
-          installCommandImpl: installSpy,
-        },
-      ),
-    ).rejects.toThrow(/dependency index/);
+    const installSpy = vi.fn(async () => ({
+      plugins: ['git-commit'],
+      platforms: ['codex'],
+      warnings: [],
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+    }));
 
-    expect(installSpy).not.toHaveBeenCalled();
+    const result = await reinstallCommand(
+      ['git-commit'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+        installCommandImpl: installSpy,
+      },
+    );
+
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    expect(result.platforms).toEqual(['codex']);
   });
 
-  it('does not proceed to implicit cleanup when repairable residue fails closed on a missing dependency index', async () => {
+  it('rebuilds dependency protection before implicit cleanup on repairable residue', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await fs.mkdtemp(path.join(os.tmpdir(), 'aw-p9-reinstall-needs-repair-')),
       scenario: 'recordAndInstallMarkerResidual',
@@ -389,43 +392,46 @@ describe('reinstall command (P9)', () => {
     await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
     await fs.remove(path.join(fixture.paths.awHome, 'dependency-index'));
 
-    const cleanupSpy = vi.fn<typeof import('../../src/commands/cleanup.js').cleanupCommand>();
-    const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
+    const installSpy = vi.fn(async () => ({
+      plugins: [fixture.target.location.plugin],
+      platforms: [fixture.target.location.platform],
+      warnings: [],
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+    }));
 
-    await expect(
-      reinstallCommand(
-        [fixture.target.location.plugin],
-        {
-          cwd: fixture.paths.repoRoot,
-          scope: fixture.target.location.scope,
-          platform: fixture.target.location.platform,
+    const result = await reinstallCommand(
+      [fixture.target.location.plugin],
+      {
+        cwd: fixture.paths.repoRoot,
+        scope: fixture.target.location.scope,
+        platform: fixture.target.location.platform,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: fixture.paths.awHome,
+          AW_CODEX_HOME: fixture.paths.codexHome,
+          AW_CLAUDE_HOME: fixture.paths.claudeHome,
         },
-        {
-          env: {
-            ...process.env,
-            AW_HOME: fixture.paths.awHome,
-            AW_CODEX_HOME: fixture.paths.codexHome,
-            AW_CLAUDE_HOME: fixture.paths.claudeHome,
-          },
-          adapters: {
-            codex: new FakeAdapter(),
-            claude: new FakeAdapter(),
-          } satisfies Record<PlatformName, PlatformAdapter>,
-          cleanupCommandImpl: cleanupSpy,
-          installCommandImpl: installSpy,
-        },
-      ),
-    ).rejects.toThrow(/dependency index/);
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+        installCommandImpl: installSpy,
+      },
+    );
 
-    expect(cleanupSpy).not.toHaveBeenCalled();
-    expect(installSpy).not.toHaveBeenCalled();
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    expect(result.platforms).toEqual([fixture.target.location.platform]);
   });
 
-  it('reports blocked dependents before suggesting cleanup --force for record-less project residuals', async () => {
+  it('prefers install --adopt-existing over deleting claimable project artifacts, even when dependents still reference them', async () => {
     const builder = await makeBuilder();
+    await seedRepoPlugin(builder.paths.repoRoot);
     const projectKey = await fs.realpath(builder.paths.repoRoot);
     const target = builder.createTarget({
-      pluginName: 'residual-target',
+      pluginName: 'git-commit',
       platform: 'codex',
       scope: 'project',
       projectKey,
@@ -505,7 +511,7 @@ describe('reinstall command (P9)', () => {
     );
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toMatch(/可认领状态/);
+    expect((error as Error).message).toMatch(/install .*--adopt-existing/);
     expect(cleanupSpy).not.toHaveBeenCalled();
     expect(installSpy).not.toHaveBeenCalled();
   });

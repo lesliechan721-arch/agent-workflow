@@ -443,7 +443,9 @@ describe('status command P8', () => {
 
     const payload = JSON.parse(result.output) as {
       locations: Array<{
+        reasonCodes: string[];
         issues: Array<{ code: string; detail?: string }>;
+        summary: string;
         findings: string[];
         record: { status: string };
       }>;
@@ -451,11 +453,10 @@ describe('status command P8', () => {
 
     expect(payload.locations[0]).toMatchObject({
       record: { status: 'invalid' },
-      issues: [expect.objectContaining({ code: 'installRecordInvalid' })],
+      reasonCodes: expect.arrayContaining(['invalidInstallRecord']),
+      issues: [],
     });
-    expect(payload.locations[0]?.findings).toEqual(expect.arrayContaining([
-      expect.stringContaining('安装记录不可读：Invalid install record file.record.lifecycle.runtimeRoot'),
-    ]));
+    expect(payload.locations[0]?.summary).toContain('需要先清理');
   });
 
   it('marks console catalogUnavailable when current catalog is unavailable and no plugin rows are present', async () => {

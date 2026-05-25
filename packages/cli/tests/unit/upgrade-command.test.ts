@@ -26,9 +26,11 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readInstallRecordForLocation } from '../../src/install-state/facade.js';
+import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import type { InstallRecordFile } from '../../src/install-state/types.js';
 import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { createDependencyPluginManifest } from '../support/plugin-dependency-fixtures.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
@@ -152,6 +154,58 @@ function createInstallSource(kind: 'explicit' | 'dependency') {
         explicitlyRequested: false,
         allowsUnusedCleanup: true,
       };
+}
+
+async function writeUpgradeInstallRecord(options: {
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+  plugin: PluginMeta;
+  platform?: PlatformName;
+  scope?: Scope;
+  installSource?: 'explicit' | 'dependency';
+  dependencyEdges?: InstalledDependencyEdge[];
+  projectKey?: string;
+}): Promise<void> {
+  const platform = options.platform ?? 'codex';
+  const scope = options.scope ?? 'user';
+  const location = {
+    plugin: options.plugin.manifest.name,
+    platform,
+    scope,
+    ...(scope === 'project' ? { projectKey: options.projectKey ?? options.repoRoot } : {}),
+  } satisfies {
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    projectKey?: string;
+  };
+  const recordPath = getInstallRecordPath(options.repoRoot, location, options.env, 'write');
+  await fs.ensureDir(path.dirname(recordPath));
+  const recordId = path.basename(recordPath, '.json');
+  const record: InstallRecordFile = {
+    version: 2,
+    recordId,
+    record: {
+      pluginName: options.plugin.manifest.name,
+      platform,
+      scope,
+      ...(scope === 'project' ? { projectKey: location.projectKey } : {}),
+      installedAt: '2026-05-06T00:00:00.000Z',
+      updatedAt: '2026-05-06T00:00:00.000Z',
+      source: {
+        pluginVersion: options.plugin.manifest.version,
+        manifestDigest: 'synthetic-upgrade-manifest-digest',
+        bundleFingerprint: 'synthetic-upgrade-bundle-fingerprint',
+      },
+      installSource: {
+        kind: options.installSource ?? 'explicit',
+        explicitlyRequested: (options.installSource ?? 'explicit') === 'explicit',
+      },
+      artifacts: [],
+      dependencyEdges: structuredClone(options.dependencyEdges ?? []),
+    },
+  };
+  await fs.writeJson(recordPath, record, { spaces: 2 });
 }
 
 function createManagedCodexUserRecord(options: {
@@ -398,6 +452,11 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin,
+    });
 
     const target = createResolvedTarget(plugin);
     const preparedLedger = await readInstalledLedger(env);
@@ -478,6 +537,12 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin,
+      installSource: 'dependency',
+    });
 
     const explicitTarget = createResolvedTarget(plugin);
     mockCatalogTargets({
@@ -573,6 +638,27 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: existingChild,
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: parent,
+      dependencyEdges: [{
+        dependency: {
+          plugin: existingChild.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: existingChild.manifest.name,
+        },
+      }],
+    });
 
     const explicitTarget = createResolvedTarget(parent);
     const existingDependencyTarget = createResolvedTarget(existingChild);
@@ -807,6 +893,27 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: oldChild,
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: parent,
+      dependencyEdges: [{
+        dependency: {
+          plugin: oldChild.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          projectKey: null,
+        },
+        declaration: {
+          name: oldChild.manifest.name,
+        },
+      }],
+    });
 
     const explicitTarget = createResolvedTarget(parent);
     const newDependencyTarget = createResolvedTarget(newChild);
@@ -908,6 +1015,11 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: parent,
+    });
 
     const explicitTarget = createResolvedTarget(parent);
     const dependencyTarget = createResolvedTarget(configuredChild);
@@ -1096,6 +1208,20 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: codexOnly,
+      platform: 'codex',
+      scope: 'user',
+    });
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin: claudeOnly,
+      platform: 'claude',
+      scope: 'user',
+    });
 
     const codexTarget = createResolvedTarget(codexOnly);
     const claudeTarget = createResolvedTarget(claudeOnly);
@@ -1142,7 +1268,7 @@ describe('upgrade command dependency graph', () => {
     expect(claude.installOrder).toEqual([claudeOnly.manifest.name]);
   });
 
-  it('rejects upgrade --all takeover before any write', async () => {
+  it('rejects removed upgrade --all takeover flag before any write', async () => {
     const { repoRoot, env } = await makeWorkspace();
 
     await expect(
@@ -1163,7 +1289,7 @@ describe('upgrade command dependency graph', () => {
           },
         },
       ),
-    ).rejects.toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`');
+    ).rejects.toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
   });
 
   it('fails upgrade --all --platform both before any marketplace write when either platform version is blocked', async () => {
@@ -1187,6 +1313,11 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin,
+    });
     mockCatalogTargets({
       explicitTargets: [createResolvedTarget(plugin)],
       allTargets: [createResolvedTarget(plugin)],
@@ -1268,6 +1399,11 @@ describe('upgrade command dependency graph', () => {
         },
       },
     }, env);
+    await writeUpgradeInstallRecord({
+      repoRoot,
+      env,
+      plugin,
+    });
 
     const target = createResolvedTarget(plugin);
     mockCatalogTargets({
@@ -1309,7 +1445,7 @@ describe('upgrade command dependency graph', () => {
         plugin: plugin.manifest.name,
         platform: 'codex',
         scope: 'user',
-        code: 'repairRequired',
+        code: 'cleanupRequired',
         reason: expect.stringContaining('installed ledger resolvedVersion'),
       }),
     ]);

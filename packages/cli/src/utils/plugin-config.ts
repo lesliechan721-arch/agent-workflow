@@ -140,8 +140,15 @@ export interface PluginConfigStoreReceipt {
 }
 
 export interface ResetPluginConfigStoreReceipt extends PluginConfigStoreReceipt {
+  storeKind: 'user' | 'projectShared' | 'projectLocal';
   existed: boolean;
   deleted: boolean;
+}
+
+export interface PluginConfigStoreTarget {
+  storeKind: 'user' | 'projectShared' | 'projectLocal';
+  path: string;
+  projectLayer?: ProjectConfigStoreLayer;
 }
 
 export interface RequiredPluginConfigPreflightTarget {
@@ -590,6 +597,40 @@ export function resolvePluginConfigStorePath(options: {
   return filePath;
 }
 
+export function resolvePluginConfigStoreTargets(options: {
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  access?: PluginConfigStorePathAccess;
+}): PluginConfigStoreTarget[] {
+  if (options.scope === 'user') {
+    return [{
+      storeKind: 'user',
+      path: resolvePluginConfigStorePath(options),
+    }];
+  }
+
+  return [
+    {
+      storeKind: 'projectShared',
+      path: resolvePluginConfigStorePath({
+        ...options,
+        projectLayer: 'shared',
+      }),
+      projectLayer: 'shared',
+    },
+    {
+      storeKind: 'projectLocal',
+      path: resolvePluginConfigStorePath({
+        ...options,
+        projectLayer: 'local',
+      }),
+      projectLayer: 'local',
+    },
+  ];
+}
+
 async function readStoreFile(filePath: string): Promise<Record<string, unknown>> {
   const value = await fs.readJson(filePath);
   if (!isRecord(value)) {
@@ -753,10 +794,43 @@ export async function resetPluginConfigStore(options: {
   return {
     pluginName: options.pluginName,
     scope: options.scope,
+    storeKind: options.scope === 'user'
+      ? 'user'
+      : options.projectLayer === 'local'
+        ? 'projectLocal'
+        : 'projectShared',
     path: filePath,
     existed,
     deleted: existed,
   };
+}
+
+export async function resetPluginConfigStores(options: {
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ResetPluginConfigStoreReceipt[]> {
+  const targets = resolvePluginConfigStoreTargets({
+    ...options,
+    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
+  });
+  const receipts: ResetPluginConfigStoreReceipt[] = [];
+  for (const target of targets) {
+    const existed = await fs.pathExists(target.path);
+    if (existed) {
+      await fs.remove(target.path);
+    }
+    receipts.push({
+      pluginName: options.pluginName,
+      scope: options.scope,
+      storeKind: target.storeKind,
+      path: target.path,
+      existed,
+      deleted: existed,
+    });
+  }
+  return receipts;
 }
 
 function coercePrimitiveValue(

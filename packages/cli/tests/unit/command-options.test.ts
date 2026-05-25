@@ -5,7 +5,6 @@ import {
   normalizeCleanupCommandOptions,
   normalizeDiagnoseCommandOptions,
   normalizeInstallCommandOptions,
-  normalizeRepairCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
@@ -29,31 +28,26 @@ describe('command options normalization', () => {
     });
   });
 
-  it('normalizes repair options including adopt-existing and takeover', () => {
-    expect(normalizeRepairCommandOptions({
+  it('normalizes install adopt-existing for project scope', () => {
+    expect(normalizeInstallCommandOptions({
       cwd: '/tmp/workspace',
       scope: 'project',
       platform: 'codex',
       adoptExisting: true,
-      takeoverSharedRuntime: true,
       json: true,
     })).toMatchObject({
       cwd: '/tmp/workspace',
       scope: 'project',
       platform: 'codex',
       adoptExisting: true,
-      dependencyIndex: false,
-      takeoverSharedRuntime: true,
-      json: true,
     });
   });
 
-  it('rejects repair --dependency-index with --adopt-existing before command execution', () => {
-    expect(() => normalizeRepairCommandOptions({
+  it('rejects install --adopt-existing outside project scope before command execution', () => {
+    expect(() => normalizeInstallCommandOptions({
       cwd: '/tmp/workspace',
-      dependencyIndex: true,
       adoptExisting: true,
-    })).toThrow('--dependency-index 不能与 --adopt-existing 一起使用。');
+    })).toThrow('`install --adopt-existing` 只允许 `--scope project`。');
   });
 
   it('normalizes cleanup dependency-index prune arguments', () => {
@@ -68,7 +62,6 @@ describe('command options normalization', () => {
       dependencyIndex: true,
       pruneStale: 'stale-token',
       yes: true,
-      plan: false,
       removeConfig: false,
       json: true,
     });
@@ -89,11 +82,8 @@ describe('command options normalization', () => {
 
     expect(() => normalizeCleanupCommandOptions({
       cwd: '/tmp/workspace',
-      dependencyIndex: true,
-      pruneStale: 'stale-token',
-      yes: true,
       plan: true,
-    })).toThrow('cleanup --dependency-index --prune-stale 不支持 --plan。');
+    })).toThrow('`cleanup --plan` 已移除；请直接运行 `aw cleanup`，或先用 `aw status --verbose` 查看当前状态。');
 
     expect(() => normalizeCleanupCommandOptions({
       cwd: '/tmp/workspace',
@@ -129,7 +119,7 @@ describe('command options normalization', () => {
     })).toThrow('Unsupported platform "auto". Expected one of: codex, claude, both.');
   });
 
-  it('normalizes uninstall --remove-config and cleanup --plan --force --remove-config', () => {
+  it('normalizes uninstall --remove-config and rejects removed cleanup --plan', () => {
     expect(normalizeUninstallCommandOptions({
       cwd: '/tmp/workspace',
       platform: 'codex',
@@ -140,38 +130,33 @@ describe('command options normalization', () => {
       removeConfig: true,
     });
 
-    expect(normalizeCleanupCommandOptions({
+    expect(() => normalizeCleanupCommandOptions({
       cwd: '/tmp/workspace',
       platform: 'codex',
       plan: true,
       force: true,
       removeConfig: true,
-    })).toMatchObject({
-      cwd: '/tmp/workspace',
-      platform: 'codex',
-      plan: true,
-      force: true,
-      removeConfig: true,
-      yes: false,
-    });
+    })).toThrow('`cleanup --plan` 已移除；请直接运行 `aw cleanup`，或先用 `aw status --verbose` 查看当前状态。');
   });
 
-  it('normalizes takeover for install and rejects upgrade --all takeover', () => {
-    expect(normalizeInstallCommandOptions({
+  it('rejects removed takeover flags for install, upgrade, and reinstall', () => {
+    expect(() => normalizeInstallCommandOptions({
       cwd: '/tmp/workspace',
       platform: 'codex',
       takeoverSharedRuntime: true,
-    })).toMatchObject({
-      cwd: '/tmp/workspace',
-      platform: 'codex',
-      takeoverSharedRuntime: true,
-    });
+    } as any)).toThrow('`install` 不再接受 `--takeover-shared-runtime`');
 
     expect(() => normalizeUpgradeCommandOptions({
       cwd: '/tmp/workspace',
       all: true,
       takeoverSharedRuntime: true,
-    })).toThrow('`upgrade --all` 不支持 `--takeover-shared-runtime`；请改用单目标 upgrade。');
+    } as any)).toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
+
+    expect(() => normalizeReinstallCommandOptions({
+      cwd: '/tmp/workspace',
+      platform: 'codex',
+      takeoverSharedRuntime: true,
+    } as any)).toThrow('`reinstall` 不再接受 `--takeover-shared-runtime`');
   });
 
   it('normalizes catalog selector options and keeps them independent from platform defaults', () => {

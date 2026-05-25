@@ -194,7 +194,7 @@ Codex 没有完全等价的"隐藏手动入口"字段；即使 `allow_implicit_i
 
 ## AW 内建触发配置
 
-平台原生文件提供 runtime 表达，AW 的长期真值来自 manifest 默认策略和内建配置。安装、升级、修复和重装不再接收触发策略参数；用户通过 `aw config` 或主控制台配置页调整触发策略：
+平台原生文件提供 runtime 表达，AW 的长期真值来自 manifest 默认策略和内建配置。安装、升级和重装不再接收触发策略参数；用户通过 `aw config` 或主控制台配置页调整触发策略：
 
 ```bash
 aw config set <plugin> aw.skillTriggers.<skill>.trigger manual
@@ -227,7 +227,7 @@ manifest 中的每个显式受管 skill 都必须声明默认策略和是否允�
 
 静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 声明的 `skillKey` 都必须有对应 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。
 
-本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner 身份和完整性证据。owner 文件不保存 SkillTrigger 真值；`aw init` replay、marketplace refresh、shared runtime takeover 和卸载后 rematerialize 都从 owner location 的 current effective built-in config 重新计算。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
+本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner 身份和完整性证据。owner 文件不保存 SkillTrigger 真值；`aw init` replay、marketplace refresh、卸载后 rematerialize 和重新应用配置都从 owner location 的 current effective built-in config 重新计算。owner 冲突只作为 blocker、diagnostic 或状态详情，解决方式是卸载、cleanup 或调整 owner 对应的有效安装后重试原写命令。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
 
 `marketplace.policy.products` 也会影响 bundle 裁剪：Claude-only 插件只生成 Claude skill 产物，不生成 Codex bundle，也不要求 `agents/openai.yaml`；Codex-only 插件只生成 Codex skill 产物，不生成 Claude platform manifest/runtime。省略或空 `products` 时才按双平台 skill 处理。
 

@@ -11,6 +11,7 @@ import type {
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
   getCodexHome,
+  resolveAwHome,
   resolveClaudePaths,
   resolveCodexPaths,
 } from '../utils/paths.js';
@@ -33,7 +34,10 @@ import {
   readProjectArtifactIdentityForLocator,
   readSharedSkillTriggerRuntimeOwner,
 } from './facade.js';
-import { createRecordId } from './ids.js';
+import {
+  createHistoricalLifecycleScopeKey,
+  createRecordId,
+} from './ids.js';
 import { sha256Hex, stableStringify } from './internal.js';
 import {
   createProjectArtifactSharedLocator,
@@ -42,6 +46,7 @@ import {
   resolveProjectScopeRepoRoot,
 } from './paths.js';
 import type {
+  DependencyIndexReferenceInspection,
   DynamicArtifactDiagnosticCache,
   DynamicArtifactDiagnosticEntry,
   GlobalDependencyIndexInspection,
@@ -192,6 +197,8 @@ export interface DependencyProjectionEvidence {
   localScopedDependents: PluginLocation[];
   unusedDependencyHint: boolean;
   dependencyHealth: DependencyHealthEvidence[];
+  currentLocationReferenceStatuses: DependencyIndexReferenceInspection['status'][];
+  currentLocationReferenceResidue: boolean;
   coverage: DependencyIndexCoverageEvidence;
 }
 
@@ -203,6 +210,7 @@ export interface HistoricalLifecycleEvidence {
   manifestExists: boolean;
   sourceMatchesRecord: boolean;
   healthy: boolean;
+  residuePresent: boolean;
 }
 
 export interface SharedOwnerEvidence {
@@ -533,6 +541,7 @@ async function inspectHistoricalLifecycle(record: InstallRecordFile | null): Pro
       manifestExists: false,
       sourceMatchesRecord: false,
       healthy: true,
+      residuePresent: false,
     };
   }
 
@@ -555,6 +564,68 @@ async function inspectHistoricalLifecycle(record: InstallRecordFile | null): Pro
     manifestExists,
     sourceMatchesRecord,
     healthy: runtimeRootExists && bundleRootExists && manifestExists && sourceMatchesRecord,
+    residuePresent: true,
+  };
+}
+
+async function inspectHistoricalLifecycleResidue(options: {
+  location: PluginLocation;
+  env: NodeJS.ProcessEnv;
+}): Promise<HistoricalLifecycleEvidence> {
+  const runtimeRootBase = path.join(
+    resolveAwHome(options.env),
+    'lifecycle-runtimes',
+    options.location.platform,
+    options.location.scope,
+    createHistoricalLifecycleScopeKey(options.location),
+    createRecordId(options.location),
+  );
+
+  if (!(await fs.pathExists(runtimeRootBase))) {
+    return {
+      expected: false,
+      path: null,
+      runtimeRootExists: false,
+      bundleRootExists: false,
+      manifestExists: false,
+      sourceMatchesRecord: false,
+      healthy: true,
+      residuePresent: false,
+    };
+  }
+
+  const entries = await fs.readdir(runtimeRootBase, { withFileTypes: true }).catch(() => []);
+  const firstResidue = entries.find((entry) => entry.isDirectory() || entry.isFile());
+  if (!firstResidue) {
+    return {
+      expected: false,
+      path: null,
+      runtimeRootExists: false,
+      bundleRootExists: false,
+      manifestExists: false,
+      sourceMatchesRecord: false,
+      healthy: true,
+      residuePresent: false,
+    };
+  }
+
+  const residuePath = path.join(runtimeRootBase, firstResidue.name);
+  const bundleRoot = path.join(residuePath, 'bundle');
+  const manifestPath = path.join(bundleRoot, 'plugin.json');
+  const [bundleRootExists, manifestExists] = await Promise.all([
+    fs.pathExists(bundleRoot),
+    fs.pathExists(manifestPath),
+  ]);
+
+  return {
+    expected: false,
+    path: residuePath,
+    runtimeRootExists: true,
+    bundleRootExists,
+    manifestExists,
+    sourceMatchesRecord: false,
+    healthy: false,
+    residuePresent: true,
   };
 }
 
@@ -745,6 +816,7 @@ async function buildDependencyProjection(options: {
     .filter((entry) => !sameLocation(entry.location, options.location))
     .filter((entry) => entry.dependencyEdges.some((edge) => sameLocation(edge.dependency, options.location)))
     .map((entry) => entry.location));
+  const currentLocationReferenceStatuses: DependencyIndexReferenceInspection['status'][] = [];
 
   let trusted = false;
   if (options.inspection.status === 'missing') {
@@ -753,7 +825,11 @@ async function buildDependencyProjection(options: {
     coverageReasons.push('indexCorrupted');
   } else {
     trusted = options.inspection.references.every((reference) => reference.status === 'verified');
-    for (const reference of options.inspection.references) {
+    for (const [index, reference] of options.inspection.references.entries()) {
+      const entry = options.inspection.value.records[index];
+      if (entry && sameLocation(entry.location, options.location)) {
+        currentLocationReferenceStatuses.push(reference.status);
+      }
       if (reference.status === 'verified') {
         verifiedLocations.push(reference.location);
         continue;
@@ -801,6 +877,11 @@ async function buildDependencyProjection(options: {
     localScopedDependents,
     unusedDependencyHint,
     dependencyHealth,
+    currentLocationReferenceStatuses: [...new Set(currentLocationReferenceStatuses)],
+    currentLocationReferenceResidue: currentLocationReferenceStatuses.length > 0 && (
+      options.record === null
+      || currentLocationReferenceStatuses.some((status) => status !== 'verified')
+    ),
     coverage: {
       coverageTrusted,
       trusted,
@@ -988,7 +1069,12 @@ export async function collectInstallEvidence(
       makeDynamicArtifactKey(artifact) === makeDynamicArtifactKey(entry),
     ) ?? null,
   }));
-  const historicalLifecycle = await inspectHistoricalLifecycle(installRecord);
+  const historicalLifecycle = installRecord
+    ? await inspectHistoricalLifecycle(installRecord)
+    : await inspectHistoricalLifecycleResidue({
+      location: options.location,
+      env,
+    });
   const dependencyInspection = await inspectGlobalDependencyIndex(env);
   const dependencyProjection = await buildDependencyProjection({
     cwd: options.cwd,
@@ -1168,7 +1254,7 @@ export async function collectInstallEvidence(
       privateStatePresent,
       repoVisibleArtifactPresent,
       sharedIdentityPresent: Boolean(projectIdentityPresent),
-      historicalLifecyclePresent: historicalLifecycle.expected,
+      historicalLifecyclePresent: historicalLifecycle.residuePresent,
       nativeMarkerPresent: nativeTransaction.present,
       sharedOwnerPresent: sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok',
     },

@@ -31,6 +31,7 @@ export type ConfigFieldKind = 'manifest' | 'builtIn';
 export type ConfigValueState = 'default' | 'configured' | 'fixed' | 'ignored' | 'orphaned' | 'invalid';
 export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
+export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'rolledBack' | 'notRun' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
 export type ConfigStoreRemovalState = 'removed' | 'notFound' | 'skipped' | 'failed';
@@ -39,6 +40,7 @@ export interface NextStepInstruction {
   kind: NextStepKind;
   label: string;
   description: string;
+  manualKind?: ManualNextStepKind;
   uiAction?: string;
   command?: string;
 }
@@ -1054,18 +1056,19 @@ export interface CommandOptions extends CatalogSelectionOptions {
 
 export interface InstallCommandOptions extends CommandOptions {
   requestedSkillTrigger?: SkillTriggerPreference;
-  takeoverSharedRuntime?: boolean;
+  adoptExisting?: boolean;
 }
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
   requestedSkillTrigger?: SkillTriggerPreference;
-  takeoverSharedRuntime?: boolean;
 }
 
 export type SkippedUpgradeCode =
   | 'scopeNotInitialized'
   | 'repairRequired'
+  | 'cleanupRequired'
+  | 'notInstalled'
   | 'dependencySkipped'
   | 'capabilityChanged'
   | 'codexProjectUserConfigUnreadable'
