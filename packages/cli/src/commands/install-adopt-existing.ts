@@ -217,6 +217,8 @@ interface RepairRuntimeOverrides extends CommandExecutionContextInput {
   p8CurrentPluginsByName?: Record<string, PluginMeta>;
 }
 
+type DynamicDiagnosticLastRefreshEvent = NonNullable<DynamicArtifactDiagnosticEntry['lastRefresh']>['event'];
+
 function normalizeRepairCommandOptions(
   raw: RawRepairCommandOptions = {},
 ): RepairCommandOptions {
@@ -600,6 +602,7 @@ function toDynamicDiagnosticEntry(
   artifact: GeneratedArtifact,
   scope: Scope,
   updatedAt: string,
+  refreshEvent: DynamicDiagnosticLastRefreshEvent,
 ): DynamicArtifactDiagnosticEntry | null {
   if (!artifact.id || !artifact.target) {
     return null;
@@ -620,7 +623,7 @@ function toDynamicDiagnosticEntry(
     lastRefresh: {
       status: 'success',
       at: updatedAt,
-      event: 'repair',
+      event: refreshEvent,
     },
     refreshReach: {
       commandScope: scope === 'project' ? 'projectShared' : 'user',
@@ -634,6 +637,7 @@ function createDynamicDiagnosticCacheValue(options: {
   recordFile: InstallRecordFile;
   location: PluginLocation;
   artifacts: readonly GeneratedArtifact[];
+  refreshEvent: DynamicDiagnosticLastRefreshEvent;
 }): DynamicArtifactDiagnosticCache {
   return {
     version: 1,
@@ -648,7 +652,12 @@ function createDynamicDiagnosticCacheValue(options: {
     },
     updatedAt: options.recordFile.record.updatedAt,
     artifacts: options.artifacts
-      .map((artifact) => toDynamicDiagnosticEntry(artifact, options.location.scope, options.recordFile.record.updatedAt))
+      .map((artifact) => toDynamicDiagnosticEntry(
+        artifact,
+        options.location.scope,
+        options.recordFile.record.updatedAt,
+        options.refreshEvent,
+      ))
       .filter((artifact): artifact is DynamicArtifactDiagnosticEntry => artifact !== null),
   };
 }
@@ -1181,11 +1190,12 @@ async function ensureDependencyLocationHealthy(options: {
   if (options.location.platform === 'codex' && requiresCodexNativePlugin(dependencyPlugin, options.location.scope)) {
     await adapters.codex.installPlugin(dependencyPlugin, options.location.scope);
   }
+  const refreshEvent: DynamicDiagnosticLastRefreshEvent = previousRecord ? 'upgrade' : 'install';
   const generatedArtifacts = await adapters[options.location.platform].installExtensions(
     dependencyPlugin,
     options.location.scope,
     {
-      event: previousRecord ? 'upgrade' : 'install',
+      event: refreshEvent,
       skillTriggerPreference: options.parentPreference ?? 'default',
     },
   );
@@ -1247,6 +1257,7 @@ async function ensureDependencyLocationHealthy(options: {
       recordFile: nextRecord,
       location: options.location,
       artifacts: generatedArtifacts,
+      refreshEvent,
     }),
     currentRecord: nextRecord,
     env: options.env,
@@ -1633,6 +1644,7 @@ async function repairInstalledLocation(options: {
       recordFile: nextRecord,
       location,
       artifacts: generatedArtifacts,
+      refreshEvent: 'upgrade',
     }),
     currentRecord: nextRecord,
     env: options.env,
@@ -1766,6 +1778,7 @@ async function repairMarkerOnlyLocation(options: {
       recordFile,
       location,
       artifacts: generatedArtifacts,
+      refreshEvent: 'install',
     }),
     currentRecord: recordFile,
     env: options.env,
@@ -1954,6 +1967,7 @@ async function adoptExistingLocation(options: {
       recordFile,
       location,
       artifacts: generatedArtifacts,
+      refreshEvent: 'install',
     }),
     currentRecord: recordFile,
     env: options.env,

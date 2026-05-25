@@ -43,6 +43,7 @@ import type {
   PlatformAdapter,
   PlatformName,
   PluginMeta,
+  PluginStatusReport,
   Scope,
   StatusReport,
 } from '../../src/types.js';
@@ -199,6 +200,48 @@ class FakeAdapter implements PlatformAdapter {
       plugins: [],
     };
   }
+}
+
+class VisibleManagedAdapter extends FakeAdapter {
+  readonly statusCalls: string[] = [];
+
+  override async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+    this.statusCalls.push(plugin.manifest.name);
+    return {
+      platform: 'codex',
+      scope,
+      initialized: true,
+      plugins: [createManagedPluginStatus(plugin.manifest.name)],
+    };
+  }
+}
+
+function createManagedPluginStatus(pluginName: string): PluginStatusReport {
+  return {
+    pluginName,
+    native: {
+      marketplaceRegistered: true,
+      pluginAvailable: true,
+      pluginInstalled: true,
+    },
+    generatedArtifacts: [],
+    driftWarnings: [],
+    ledgerStateStatus: 'available',
+    ledgerStateReason: null,
+    scopeInitialized: 'yes',
+    catalogCompatibility: 'current',
+    scopeManagedEvidence: {
+      ledger: true,
+      tracking: false,
+      sharedNativeRef: false,
+    },
+    platformRuntimeEvidence: {
+      present: false,
+    },
+    platformNativeFallbackEvidence: {
+      present: false,
+    },
+  };
 }
 
 function makeRuntime(
@@ -400,6 +443,84 @@ describe('uninstall command (P9 install-state path)', () => {
       ),
     ).rejects.toThrow(/cleanup-parent/);
 
+    expect(codex.uninstallPluginCalls).toEqual([]);
+    expect(codex.uninstallExtensionsCalls).toEqual([]);
+  });
+
+  it('fails closed without suggesting repair when visible dependency metadata is incomplete', async () => {
+    const builder = await makeBuilder();
+    const child = builder.createTarget({ pluginName: 'cleanup-child', platform: 'codex', scope: 'user' });
+    const parent = builder.createTarget({ pluginName: 'cleanup-parent', platform: 'codex', scope: 'user' });
+
+    await builder.writeRepoArtifact(parent);
+    await builder.writeInstallRecord(parent);
+
+    const parentPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'cleanup-parent');
+    const childPlugin = await ensureRepoPlugin(builder.paths.repoRoot, 'cleanup-child');
+    setEmbeddedPluginsRootOverrideForTests(builder.paths.repoRoot);
+    const ledger = createAvailableLedger();
+    ledger.plugins[parent.location.plugin] = {
+      lastResolvedVersion: parentPlugin.manifest.version,
+      platforms: {
+        codex: {
+          lastRequestedScope: 'user',
+          lastRequestedAt: parent.timestamps.updatedAt,
+          userScope: {
+            managed: true,
+            updatedAt: parent.timestamps.updatedAt,
+            resolvedVersion: parentPlugin.manifest.version,
+            capabilitySnapshot: {},
+            installSource: {
+              kind: 'explicit',
+              explicitlyRequested: true,
+              allowsUnusedCleanup: false,
+            },
+            dependencyEdges: [],
+          },
+        },
+      },
+    };
+    ledger.plugins[child.location.plugin] = {
+      lastResolvedVersion: childPlugin.manifest.version,
+      platforms: {
+        codex: {
+          lastRequestedScope: 'user',
+          lastRequestedAt: child.timestamps.updatedAt,
+          userScope: {
+            managed: true,
+            updatedAt: child.timestamps.updatedAt,
+            resolvedVersion: childPlugin.manifest.version,
+            capabilitySnapshot: {},
+            installSource: {
+              kind: 'dependency',
+              explicitlyRequested: false,
+              allowsUnusedCleanup: true,
+            },
+          },
+        },
+      },
+    };
+    const env = createBuilderEnv(builder.paths);
+    await writeInstalledLedger(ledger, env);
+
+    const codex = new VisibleManagedAdapter();
+    let errorMessage = '';
+    try {
+      await uninstallCommand(
+        [parent.location.plugin],
+        {
+          cwd: builder.paths.repoRoot,
+          scope: 'user',
+          platform: 'codex',
+        },
+        makeRuntime(env, { codex }),
+      );
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+    expect(codex.statusCalls).toContain('cleanup-child');
+    expect(errorMessage).toMatch(/aw status --verbose.*dependency index.*aw cleanup \/ aw reinstall/);
+    expect(errorMessage).not.toContain('repair');
     expect(codex.uninstallPluginCalls).toEqual([]);
     expect(codex.uninstallExtensionsCalls).toEqual([]);
   });

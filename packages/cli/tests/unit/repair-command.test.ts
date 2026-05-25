@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
+import { readDynamicArtifactDiagnosticCacheAt } from '../../src/install-state/facade.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -249,6 +250,22 @@ describe('install --adopt-existing migration', () => {
     await expect(fs.pathExists(fixture.files.installRecordPath)).resolves.toBe(true);
     await expect(fs.pathExists(fixture.files.diagnosticCachePath)).resolves.toBe(true);
     await expect(fs.pathExists(fixture.files.projectIdentityPath)).resolves.toBe(true);
+    const cacheRead = await readDynamicArtifactDiagnosticCacheAt(fixture.files.diagnosticCachePath, {
+      expectedLocation: fixture.target.location,
+    });
+    expect(cacheRead).toMatchObject({
+      status: 'ok',
+      value: {
+        artifacts: [
+          {
+            lastRefresh: {
+              event: 'install',
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(cacheRead)).not.toContain('repair');
   });
 
   it('fails install --adopt-existing outside project scope before writing local state', async () => {

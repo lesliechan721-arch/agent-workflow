@@ -1661,7 +1661,7 @@ export async function uninstallCommand(
       .map((location) => formatDependentLocation(location, currentProjectKeysByPlatform))
       .join('、');
     throw new Error(
-      `无法卸载以下插件：当前可见范围内存在缺失 dependency metadata 的已安装记录（${details}），无法可靠判断它们是否仍被依赖。请先 repair 或 reinstall 这些记录后再重试。`,
+      `无法卸载以下插件：当前可见范围内存在缺失 dependency metadata 的已安装记录（${details}），无法可靠判断它们是否仍被依赖。请先运行 aw status --verbose 检查这些记录，维护 dependency index，或按需使用 aw cleanup / aw reinstall 后再重试。`,
     );
   }
   if (uninstallPlan.blocked.length > 0) {
