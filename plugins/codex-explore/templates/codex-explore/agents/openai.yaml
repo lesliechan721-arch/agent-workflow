@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Explore"
   short_description: "只读证据探索与上下文隔离"
-  default_prompt: "使用 $codex-explore 做只读证据探索，隔离大量候选材料并总结关键证据。"
+  default_prompt: "使用 $codex-explore 委派只读证据探索，并整理关键证据。"
 
 policy:
   allow_implicit_invocation: true

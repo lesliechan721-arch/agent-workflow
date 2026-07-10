@@ -2618,7 +2618,7 @@ describe('codex-explore integration acceptance', () => {
     ]);
     expect(projectConfig.snapshot.agents['codex-explore-agent']).toEqual({
       key: 'codex-explore-agent',
-      description: '只读探索代码、文档、网页和长上下文，并整理关键证据。',
+      description: '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。',
       configFile: 'agents/aw-codex-explore-codex-explore-agent.toml',
     });
     await expect(fs.pathExists(skillPath)).resolves.toBe(true);

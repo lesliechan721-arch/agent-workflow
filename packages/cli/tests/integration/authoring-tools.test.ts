@@ -1271,7 +1271,7 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('aw config set <plugin> aw.skillTriggers.<skill>.trigger manual');
     expect(triggersDoc).toContain('allowDynamicTrigger: true');
     expect(triggersDoc).toContain('面向 Codex 时必需');
-    expect(triggersDoc).toContain('`when_to_use`');
+    expect(triggersDoc).not.toContain('when_to_use');
     expect(triggersDoc).toContain(
       '公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry',
     );
@@ -2938,6 +2938,7 @@ describe('authoring tools', () => {
         '---',
         'name: frontmatter-test',
         'description: Validate frontmatter handling.',
+        'when_to_use: false',
         'user-invocable: "true"',
         'disable-model-invocation: false',
         'metadata:',
@@ -2971,6 +2972,7 @@ describe('authoring tools', () => {
     } catch (error) {
       invalidFrontmatterStdout = (error as { stdout?: string }).stdout ?? '';
     }
+    expect(invalidFrontmatterStdout).toContain('frontmatter.when_to_use must be a string');
     expect(invalidFrontmatterStdout).toContain('frontmatter.user-invocable must be a boolean');
     expect(invalidFrontmatterStdout).toContain('frontmatter.metadata.short-description must be a string');
     expect(invalidFrontmatterStdout).toContain('frontmatter.allowed-tools[1] must be a string');
@@ -3000,7 +3002,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     });
-    expect(result.stdout).toContain('when_to_use is recommended');
+    expect(result.stdout).not.toContain('when_to_use is recommended');
     expect(result.stdout).toContain('[PASS] All checks passed.');
   });
 

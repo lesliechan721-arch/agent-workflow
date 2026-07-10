@@ -228,7 +228,7 @@ Skill 触发策略是 AW 内建配置，不再是安装、升级或重装参数�
 {
   "skillTriggers": {
     "commit": {
-      "defaultTrigger": "manual",
+      "defaultTrigger": "auto",
       "allowDynamicTrigger": true
     }
   }

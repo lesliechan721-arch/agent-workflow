@@ -1121,7 +1121,7 @@ function validateAllowedTools(value, fieldName) {
   }
 }
 
-function validateSkillFrontmatter(fm, skillName, targetsClaude) {
+function validateSkillFrontmatter(fm, skillName) {
   const fieldName = `skills/${skillName}/SKILL.md frontmatter`;
 
   if (fm.name === undefined) {
@@ -1150,10 +1150,6 @@ function validateSkillFrontmatter(fm, skillName, targetsClaude) {
 
   if (fm.when_to_use !== undefined) {
     validateNonEmptyString(fm.when_to_use, `${fieldName}.when_to_use`);
-  } else if (targetsClaude && fm['disable-model-invocation'] !== true) {
-    warn(
-      `${fieldName}.when_to_use is recommended when Claude model invocation is enabled`,
-    );
   }
 
   validateOptionalBoolean(fm, 'user-invocable', fieldName);
@@ -2738,9 +2734,7 @@ function validateSkills(pluginDir, manifest) {
           error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
         }
       } else {
-        const shouldApplyClaudeWarnings =
-          variant.platform === null ? targetsClaude : variant.platform === 'claude';
-        validateSkillFrontmatter(fm, dir.name, shouldApplyClaudeWarnings);
+        validateSkillFrontmatter(fm, dir.name);
       }
     }
 

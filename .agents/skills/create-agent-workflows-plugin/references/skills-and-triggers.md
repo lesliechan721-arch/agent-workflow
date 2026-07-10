@@ -26,7 +26,6 @@ plugins/<name>/skills/
 |------|------|--------|------|
 | `name` | string | — | 必填。skill 标识，小写短横线，≤64 字符 |
 | `description` | string | — | 必填。说明"做什么"和"什么时候用"；影响平台 skill 发现和匹配质量，≤1024 字符 |
-| `when_to_use` | string | — | Claude Code：可选但建议自动发现型 skill 提供。写清楚模型什么时候应自动调用，可包含触发短语和用户说法示例 |
 | `user-invocable` | boolean | `true` | Claude Code：是否允许用户手动调用 |
 | `disable-model-invocation` | boolean | `false` | Claude Code：是否禁止模型自动调用 |
 | `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示，≤1024 字符 |
@@ -136,7 +135,7 @@ policy:
 
 ### 配方 1：保守手动触发
 
-适合 `commit`、`deploy`、`release` 等有副作用的流程。
+适合 `deploy`、`release` 等有副作用的流程。`git-commit` 按插件约定保留自动触发，不属于这一配方。
 
 ```yaml
 # SKILL.md
@@ -163,11 +162,10 @@ policy:
 ---
 name: your-skill
 description: 当用户需要某类低风险辅助工作时，执行对应工作流。
-when_to_use: Use when the user asks for this low-risk helper workflow, including phrases like "check this setup" or "summarize this state".
 ---
 ```
 
-允许 Claude Code 自动发现时，建议显式写 `when_to_use`。`description` 仍是公共字段；`when_to_use` 是 Claude 自动匹配质量优化项，不会被 Codex 读取。
+允许自动发现时，直接在 `description` 写清技能用途、触发条件、常见用户说法和必要反例。`description` 是两个平台共享的发现信息，避免再维护平台专属的重复触发文案。
 
 ```yaml
 # agents/openai.yaml
@@ -248,7 +246,7 @@ manifest 中的每个显式受管 skill 都必须声明默认策略和是否允�
 ## 调试检查点
 
 - 自动触发不符合预期 → 先检查 `SKILL.md` 的 `description` 是否足够具体，再看 `allow_implicit_invocation`。不要靠 `default_prompt` 修正自动触发边界。
-- 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用。
+- 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用；`git-commit` 按插件约定保留自动触发。
 - 不要把 Claude slash command 当作双端公共协议；手动触发命令请用公共 `slashCommands`，Codex 侧会生成 fixed/manual-only skill。
 - `disable-model-invocation: true` 不等于 Claude 不能手动调用（用户仍可调用）。
 

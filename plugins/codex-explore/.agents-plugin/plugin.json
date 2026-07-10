@@ -1,7 +1,7 @@
 {
   "name": "codex-explore",
-  "version": "0.1.10",
-  "description": "为 Codex 提供只读探索 workflow，适合跨代码、文档、日志和网页整理证据。",
+  "version": "0.1.11",
+  "description": "为 Codex 提供只读探索工作流，适合跨代码、文档、日志和网页整理证据。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -33,7 +33,7 @@
       {
         "name": "delegation-authorization",
         "title": "Codex Explore 子代理授权",
-        "content": "调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该 workflow 中启用子代理；Gate 未通过时不得启动子代理。"
+        "content": "调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该工作流中启用子代理；Gate 未通过时不得启动子代理。"
       }
     ]
   },

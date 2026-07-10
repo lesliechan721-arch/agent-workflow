@@ -171,7 +171,7 @@ export async function renderArtifactPlan(context) {
     explorerModel,
     modelReasoningEffort,
   };
-  const roleDescription = '只读探索代码、文档、网页和长上下文，并整理关键证据。';
+  const roleDescription = '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。';
 
   return {
     version: 1,
