@@ -8,7 +8,7 @@ export const CURRENT_CATALOG_MANIFEST_PACKAGE = '@yiliang/aw-plugins-manifest';
 export const CURRENT_CATALOG_FULL_PACKAGE = '@yiliang/aw-plugins';
 export const DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS = 5000;
 export const MINIMUM_AGENT_VERSIONS = {
-  codex: '0.131.0',
+  codex: '0.144.0',
   claude: '2.1.88',
 } as const;
 export const AGENT_VERSION_PROBE_COMMANDS = {

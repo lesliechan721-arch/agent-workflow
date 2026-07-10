@@ -705,7 +705,7 @@ function createCodexMarketplaceAddRunner(
       if (invocation.command === 'codex') {
         return {
           exitCode: 0,
-          stdout: 'codex-cli 0.131.0',
+          stdout: 'codex-cli 0.144.0',
           stderr: '',
         };
       }
@@ -1820,7 +1820,7 @@ describe('codex-explore integration acceptance', () => {
     };
 
     expect(userSkill).toContain('model=gpt-5.5');
-    expect(projectSkill).toContain('model=gpt-5.4-mini');
+    expect(projectSkill).toContain('model=gpt-5.6-luna');
     expect(projectSkill).toContain('reasoning=low');
     expect(userMetadataAuto).toBe(true);
     expect(projectMetadataAuto).toBe(true);
@@ -2585,7 +2585,7 @@ describe('codex-explore integration acceptance', () => {
       env: process.env,
       values: {
         explorerModel: 'gpt-5.5',
-        modelReasoningEffort: 'xhigh',
+        modelReasoningEffort: 'max',
       },
     });
 
@@ -2634,13 +2634,13 @@ describe('codex-explore integration acceptance', () => {
     expect(skillContent).toContain('agent_type: "codex-explore-agent"');
     expect(skillContent).toContain('fork_turns: "none"');
     expect(skillContent).toContain('默认模型 `gpt-5.5`');
-    expect(skillContent).toContain('推理强度 `xhigh`');
-    expect(skillContent).toContain('配置的 `gpt-5.5` / `xhigh` 不会应用');
+    expect(skillContent).toContain('推理强度 `max`');
+    expect(skillContent).toContain('配置的 `gpt-5.5` / `max` 不会应用');
     expect(skillContent).toContain('只有当前工具列表提供 `close_agent` 时');
     expect(skillContent).toContain('`interrupt_agent` 只用于取消仍在运行的任务');
     expect(roleContent).toContain('name = "codex-explore-agent"');
     expect(roleContent).toContain('model = "gpt-5.5"');
-    expect(roleContent).toContain('model_reasoning_effort = "xhigh"');
+    expect(roleContent).toContain('model_reasoning_effort = "max"');
     expect(trackedArtifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'codex-explore-skill',
@@ -3942,8 +3942,8 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explore-skill');
 
     await expect(fs.pathExists(projectStorePath)).resolves.toBe(false);
-    expect(skillContent).toContain('默认模型 `gpt-5.4-mini`');
-    expect(skillContent).toContain('推理强度 `low`');
+    expect(skillContent).toContain('默认模型 `gpt-5.6-luna`');
+    expect(skillContent).toContain('推理强度 `medium`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {

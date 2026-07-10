@@ -237,15 +237,15 @@ async function testDefaultsComeFromManifestSchema() {
     const skill = findArtifact(plan, 'codex-explore-skill');
     const role = findArtifact(plan, 'codex-explore-agent-role');
 
-    assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4-mini`/);
-    assert.match(skill.content.skillFile, /推理强度 `low`/);
-    assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
-    assert.equal(role.content.roleFile.model_reasoning_effort, 'low');
+    assert.match(skill.content.skillFile, /默认模型 `gpt-5\.6-luna`/);
+    assert.match(skill.content.skillFile, /推理强度 `medium`/);
+    assert.equal(role.content.roleFile.model, 'gpt-5.6-luna');
+    assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.4-mini');
-    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
+    assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.6-luna');
+    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'medium');
     assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -321,9 +321,13 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.9');
+  assert.equal(manifest.version, '0.1.10');
   assert.match(manifest.config.schema.explorerModel.description, /仅在 spawn_agent 公开 agent_type 时生效/);
   assert.match(manifest.config.schema.modelReasoningEffort.description, /否则子代理继承父代理推理强度/);
+  assert.deepEqual(
+    manifest.config.schema.modelReasoningEffort.values,
+    ['low', 'medium', 'high', 'xhigh', 'max'],
+  );
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
   assert.match(manifest.extensions.instructions[0].content, /调用 `codex-explore` 技能/);

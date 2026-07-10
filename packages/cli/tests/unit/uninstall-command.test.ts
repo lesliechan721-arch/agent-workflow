@@ -269,7 +269,7 @@ function createAgentVersionRunner(options: {
     if (invocation.command === 'codex') {
       return {
         exitCode: 0,
-        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stdout: options.codex ?? 'codex-cli 0.144.0',
         stderr: '',
       };
     }

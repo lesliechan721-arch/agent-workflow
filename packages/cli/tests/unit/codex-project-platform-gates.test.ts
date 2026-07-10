@@ -488,7 +488,7 @@ describe('Codex project platform gates', () => {
       failures: [{
         platform: 'codex',
         reasonCode: 'agentVersionMissing',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
     expect(codex.uninstallPluginCalls).toEqual([]);
@@ -544,7 +544,7 @@ describe('Codex project platform gates', () => {
       failures: [{
         platform: 'codex',
         reasonCode: 'agentVersionMissing',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
     expect(codex.installPluginCalls).toEqual([]);
@@ -602,7 +602,7 @@ describe('Codex project platform gates', () => {
       failures: [{
         platform: 'codex',
         reasonCode: 'agentVersionMissing',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
     expect(codex.installExtensionsCalls).toEqual([]);
@@ -661,7 +661,7 @@ describe('Codex project platform gates', () => {
       failures: [{
         platform: 'codex',
         reasonCode: 'agentVersionMissing',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
     expect(codex.uninstallPluginCalls).toEqual([]);

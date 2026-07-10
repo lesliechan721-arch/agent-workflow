@@ -413,7 +413,7 @@ Codex project scope 完全走 repo-visible artifacts，不走 native plugin 平�
 - 不写 `~/.codex/config.toml [plugins]`
 - 不写 `~/.codex/plugins/cache/...`
 
-这是为了让项目级安装具有清晰边界：命令只改变当前仓库，不改变用户全局 Codex 环境。写入前仍必须通过 Codex `>= 0.131.0` 的宿主版本门禁；缺少 `codex`、版本不可解析或版本过低时，本次 project 写命令在修改 repo-visible artifacts、install record 或 project artifact identity 前失败。通过门禁后，Codex project 安装也不应该产生用户级 native side effect。
+这是为了让项目级安装具有清晰边界：命令只改变当前仓库，不改变用户全局 Codex 环境。写入前仍必须通过 Codex `>= 0.144.0` 的宿主版本门禁；缺少 `codex`、版本不可解析或版本过低时，本次 project 写命令在修改 repo-visible artifacts、install record 或 project artifact identity 前失败。通过门禁后，Codex project 安装也不应该产生用户级 native side effect。
 
 ```mermaid
 flowchart TD

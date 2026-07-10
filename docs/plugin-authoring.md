@@ -14,7 +14,7 @@
 - `marketplace.policy.products` 是插件最终支持平台的来源；它不仅控制安装和升级门禁，也会参与 build 裁剪、platform manifest/runtime 生成、平台 marketplace 过滤和 `pnpm plugin:test` 平台选择
 - `dependencies.plugins` 声明 AW 插件之间的直接依赖；安装、升级、卸载和 status 都会用同一套 location-aware planner 解释它
 - `version`、`compatibility.aw.minVersion` 和 `dependencies.plugins[].minVersion` 都使用严格 SemVer；旧式依赖 `version` / `range` 字段会被拒绝
-- 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本；AW CLI 内置宿主门槛，当前为 Codex `>= 0.131.0`、Claude Code `>= 2.1.88`
+- 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本；AW CLI 内置宿主门槛，当前为 Codex `>= 0.144.0`、Claude Code `>= 2.1.88`
 - 不手改 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`（这两个是 bundle 产物），也不把命令阶段产物回写到 `plugins/` 源码目录
 - 详细约定见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
 
@@ -325,7 +325,7 @@ pnpm plugin:test --all
 
 - **Claude**：`project` 和 `user` scope 都完整支持，settings 层别区分
 - **Codex user scope**：使用 native plugin / marketplace 平面。AW 通过 `codex plugin marketplace add/list/remove` 管理本地 marketplace，通过 `codex plugin add/remove` 完成安装或卸载，并在写后校验 enabled config 与 active cache。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 verbose/native view 只读诊断。作者不能依赖“只写 config”或 app-server 写入主链路的旧行为。
-- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。写入前仍要求本机 Codex `>= 0.131.0`，通过门禁后不能产生用户级 native 副作用。
+- **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。写入前仍要求本机 Codex `>= 0.144.0`，通过门禁后不能产生用户级 native 副作用。
 - **Apps 与 Codex project installability**：`apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时失败。包含 `apps` 的 Codex 插件在 project scope 会 fail fast；纯 native-only 插件也不能以 project scope 安装。面向项目安装的插件至少要提供 repo-visible surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
 - **共享 runtime owner**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 的同一 plugin/platform 同时只有一个 owner 可以控制 shared skill trigger runtime；owner 冲突只作为写命令 blocker、diagnostic 或状态详情展示。用户需要卸载、cleanup 或调整 owner 对应的有效安装后重试原写命令。Codex project scope 不参与 shared runtime owner 合同，只改当前仓库 repo skill。

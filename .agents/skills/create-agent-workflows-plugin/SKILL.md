@@ -123,7 +123,7 @@ plugins/<name>/
 ### Codex scope 提醒
 
 - Codex `--scope user` 使用 native plugin 平面。AW 会用 `codex plugin marketplace add/list/remove` 管理本地 marketplace，并通过 `codex plugin add/remove` 写入 native plugin；`codex app-server` 只用于 verbose/native view 只读诊断。不要再按“只写 `[plugins."<plugin>@aw"]`”或 app-server 写入主链路理解安装结果。`aw status` 只有在 enabled config、active materialized cache 和 AW per-plugin record 都健康时才把它投影为 `installed`；enabled-only、cache-only 或 native transaction 残留只会作为 diagnostics、command blocker 或 `cleanupRequired` 细节展示。
-- Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace CLI 或 app-server RPC，也不会改用户级 config/cache；但写入前仍要求本机 Codex `>= 0.131.0`。
+- Codex `--scope project` 只写当前仓库 repo-managed artifacts，不调用 native marketplace CLI 或 app-server RPC，也不会改用户级 config/cache；但写入前仍要求本机 Codex `>= 0.144.0`。
 - 面向 Codex project 的插件必须有 repo-managed surface。纯 native-only 插件不能 project 安装；包含 `apps` 的插件 project scope 会 fail fast，请引导用户使用 `--scope user` 或拆分插件。
 - 带 lifecycle 的插件要保持幂等：Codex user native CLI 写入成功后如果 AW 后续步骤失败，用户可能重试同一条 install，或在状态进入 `cleanupRequired` 后运行 cleanup 收口；只有 verified install record 引用的 historical lifecycle runtime 才能驱动普通 uninstall lifecycle，cleanup 不运行 lifecycle。没有声明 lifecycle 只是表示插件没有安装/卸载脚本，不是 status 问题。
 
@@ -174,7 +174,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - `version` 和 `compatibility.aw.minVersion` 都必须是严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份；插件升级不要求 CLI 发版，但修改 runtime、依赖最低版本、最低 CLI 版本或平台能力时必须发布新的插件 `version`。
-- 不要在 manifest 中声明最低 Codex 或 Claude Code 版本字段；AW CLI 内置宿主门槛，当前是 Codex `>= 0.131.0`、Claude Code `>= 2.1.88`。
+- 不要在 manifest 中声明最低 Codex 或 Claude Code 版本字段；AW CLI 内置宿主门槛，当前是 Codex `>= 0.144.0`、Claude Code `>= 2.1.88`。
 - 发布到 `latest` catalog 的插件 `version` 必须是 stable SemVer；prerelease 插件只能进入 `beta` catalog。`beta` catalog version 必须是 prerelease，且可以混合 stable / prerelease 插件 version；同一个 catalog version 不能跨轨道复用。
 - `dependencies.plugins` 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。`minVersion` 是严格 SemVer 最低依赖版本；`when.platforms` 只能写 `codex` / `claude`，`target.scope` 只能写 `user` / `project`；不要写旧式 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、`platform` 或 `target.platform`。
 - 依赖字段只保留在 source/runtime `.agents-plugin/plugin.json`；平台原生 manifest 和 marketplace manifest 不包含 `dependencies`。

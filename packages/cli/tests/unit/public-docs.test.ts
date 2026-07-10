@@ -164,7 +164,7 @@ describe('public docs', () => {
     expect(manifestSpec).toContain('catalog history 记录历史 catalog version、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`');
   });
 
-  it('documents the Codex 0.131 and Claude 2.1.88 host contracts without old write paths', async () => {
+  it('documents the Codex 0.144 and Claude 2.1.88 host contracts without old write paths', async () => {
     const docs = [
       'docs/plugin-authoring.md',
       'docs/plugin-installation.md',
@@ -178,14 +178,14 @@ describe('public docs', () => {
     ];
     const combined = (await Promise.all(docs.map((file) => readRepoFile(file)))).join('\n');
 
-    expect(combined).toContain('Codex `>= 0.131.0`');
+    expect(combined).toContain('Codex `>= 0.144.0`');
     expect(combined).toContain('Claude Code `>= 2.1.88`');
     expect(combined).toContain('codex plugin add/remove');
     expect(combined).toContain('codex plugin marketplace add/list/remove');
     expect(combined).toContain('`plugin/list`、`plugin/installed`、`plugin/read` 只用于');
     expect(combined).toContain('`.codex-plugin/plugin.json` 的 `hooks` 字段');
     expect(combined).toContain('`.codex/hooks.json`');
-    expect(combined).toContain('写入前仍要求本机 Codex `>= 0.131.0`');
+    expect(combined).toContain('写入前仍要求本机 Codex `>= 0.144.0`');
     expect(combined).toContain('不声明 per-plugin 宿主 agent 版本');
 
     expect(combined).not.toContain('`plugin/install`');

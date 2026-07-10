@@ -232,7 +232,7 @@ function createAgentVersionRunner(options: {
     if (invocation.command === 'codex') {
       return {
         exitCode: 0,
-        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stdout: options.codex ?? 'codex-cli 0.144.0',
         stderr: '',
       };
     }
@@ -1646,10 +1646,10 @@ describe('install command P6 install-state semantics', () => {
         platform: 'codex',
         reasonCode: 'agentVersionTooLow',
         detectedVersion: '0.130.0',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
-    expect(payload?.failures[0]?.suggestedAction).toContain('升级到 >= 0.131.0');
+    expect(payload?.failures[0]?.suggestedAction).toContain('升级到 >= 0.144.0');
     expect(codex.installOrder).toEqual([]);
     expect(claude.installOrder).toEqual([]);
     await expect(readInstallRecord({

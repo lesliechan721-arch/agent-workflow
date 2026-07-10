@@ -244,7 +244,7 @@ describe('catalog fetch smoke', () => {
       env: process.env,
     })).resolves.toMatchObject({
       exitCode: 0,
-      stdout: 'codex-cli 0.131.0',
+      stdout: 'codex-cli 0.144.0',
       stderr: '',
     });
     await expect(distNativeCli.runNativeCli({

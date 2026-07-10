@@ -191,7 +191,7 @@ function createAgentVersionRunner(options: {
     if (invocation.command === 'codex') {
       return {
         exitCode: 0,
-        stdout: options.codex ?? 'codex-cli 0.131.0',
+        stdout: options.codex ?? 'codex-cli 0.144.0',
         stderr: '',
       };
     }
@@ -901,7 +901,7 @@ describe('cleanup command (P9)', () => {
         platform: 'codex',
         reasonCode: 'agentVersionTooLow',
         detectedVersion: '0.130.0',
-        requiredMinVersion: '0.131.0',
+        requiredMinVersion: '0.144.0',
       }],
     });
     expect(codex.uninstallPluginCalls).toEqual([]);
@@ -1455,7 +1455,7 @@ describe('cleanup command (P9)', () => {
             AW_CLAUDE_HOME: builder.paths.claudeHome,
           },
           nativeCliRunner: createAgentVersionRunner({
-            codex: 'codex-cli 0.131.0',
+            codex: 'codex-cli 0.144.0',
             claude: '2.1.87 (Claude Code)',
           }),
           adapters: {

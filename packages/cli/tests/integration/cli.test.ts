@@ -225,7 +225,7 @@ function createCodexMarketplaceAddRunner(
     if (invocation.args.length === 1 && invocation.args[0] === '--version') {
       return {
         exitCode: 0,
-        stdout: invocation.command === 'claude' ? '2.1.88 (Claude Code)' : 'codex-cli 0.131.0',
+        stdout: invocation.command === 'claude' ? '2.1.88 (Claude Code)' : 'codex-cli 0.144.0',
         stderr: '',
       };
     }
