@@ -2627,12 +2627,17 @@ describe('codex-explore integration acceptance', () => {
       'allow_implicit_invocation: true',
     );
     expect(skillContent).toContain('探索子代理');
-    expect(skillContent).toContain('默认使用 Codex Explore 自带的探索子代理');
+    expect(skillContent).toContain('优先使用 Codex Explore 自带的探索子代理');
+    expect(skillContent).toContain('以当前工具实际公开的参数为准');
     expect(skillContent).toContain('不要改用 Codex 内置 `explorer`');
+    expect(skillContent).toContain('task_name: "codex_explore_1"');
     expect(skillContent).toContain('agent_type: "codex-explore-agent"');
+    expect(skillContent).toContain('fork_turns: "none"');
     expect(skillContent).toContain('默认模型 `gpt-5.5`');
     expect(skillContent).toContain('推理强度 `xhigh`');
-    expect(skillContent).toContain('`close_agent` 关闭本 workflow 启动的子代理');
+    expect(skillContent).toContain('配置的 `gpt-5.5` / `xhigh` 不会应用');
+    expect(skillContent).toContain('只有当前工具列表提供 `close_agent` 时');
+    expect(skillContent).toContain('`interrupt_agent` 只用于取消仍在运行的任务');
     expect(roleContent).toContain('name = "codex-explore-agent"');
     expect(roleContent).toContain('model = "gpt-5.5"');
     expect(roleContent).toContain('model_reasoning_effort = "xhigh"');

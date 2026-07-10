@@ -95,7 +95,9 @@ async function testPresentSkillArtifact() {
   assert.equal(role.content.roleFile.model_reasoning_effort, 'high');
   assert.match(role.content.roleFile.developer_instructions, /叶子探索子代理/);
   assert.match(role.content.roleFile.developer_instructions, /只做只读调查/);
-  assert.match(role.content.roleFile.developer_instructions, /不得调用 `spawn_agent`、`wait_agent`、`close_agent`/);
+  assert.match(role.content.roleFile.developer_instructions, /不得调用任何子代理调度或管理工具/);
+  assert.match(role.content.roleFile.developer_instructions, /`send_input`、`send_message`、`followup_task`/);
+  assert.match(role.content.roleFile.developer_instructions, /`resume_agent`、`close_agent`、`interrupt_agent`、`list_agents`/);
   assert.match(role.content.roleFile.developer_instructions, /也不得继续拆分/);
   assert.match(role.content.roleFile.developer_instructions, /保持只读/);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
@@ -122,10 +124,17 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /探索 `\/path\/to\/external-project`/);
   assert.match(skill.content.skillFile, /如果正反例与其它阈值发生冲突/);
   assert.match(skill.content.skillFile, /先做 Gate 判断/);
-  assert.match(skill.content.skillFile, /默认使用 Codex Explore 自带的探索子代理/);
+  assert.match(skill.content.skillFile, /优先使用 Codex Explore 自带的探索子代理/);
+  assert.match(skill.content.skillFile, /以当前工具实际公开的参数为准/);
+  assert.match(skill.content.skillFile, /不得传入 schema 未公开的字段/);
+  assert.match(skill.content.skillFile, /task_name: "codex_explore_1"/);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
+  assert.match(skill.content.skillFile, /fork_turns: "none"/);
   assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4`/);
   assert.match(skill.content.skillFile, /推理强度 `high`/);
+  assert.match(skill.content.skillFile, /继承父代理模型和推理强度/);
+  assert.match(skill.content.skillFile, /配置的 `gpt-5\.4` \/ `high` 不会应用/);
+  assert.match(skill.content.skillFile, /不得声称专用 role 已生效/);
   assert.match(skill.content.skillFile, /不要改用 Codex 内置 `explorer`/);
   assert.match(skill.content.skillFile, /立即停止使用本 workflow/);
   assert.match(skill.content.skillFile, /当前会话的工具、联网、官方文档优先和上层安全策略/);
@@ -136,18 +145,29 @@ async function testPresentSkillArtifact() {
     skill.content.skillFile,
     /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/,
   );
-  assert.match(skill.content.skillFile, /叶子探索代理，不得调用 `spawn_agent`、`wait_agent`、`close_agent` 或再拆子任务/);
+  assert.match(skill.content.skillFile, /叶子探索代理，不得调用任何子代理调度或管理工具/);
   assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill.content.skillFile, /主 agent 不要重复探索同一个问题/);
   assert.match(skill.content.skillFile, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
-  assert.match(skill.content.skillFile, /读取并整合结果后，立即用 `close_agent`/);
-  assert.match(skill.content.skillFile, /`wait_agent` 不等于关闭 agent/);
+  assert.match(skill.content.skillFile, /按当前工具实际公开的 schema 传参/);
+  assert.match(skill.content.skillFile, /v2 的 `wait_agent` 可能只返回 mailbox 更新摘要/);
+  assert.match(skill.content.skillFile, /只有当前工具列表提供 `close_agent` 时/);
+  assert.match(skill.content.skillFile, /`interrupt_agent` 只用于取消仍在运行的任务/);
+  assert.match(skill.content.skillFile, /`wait_agent` 只负责等待，不等于关闭 agent/);
   assert.match(skill.content.skillFile, /不要静默换到内置 `explorer`/);
   assert.equal(skill.content.skillFile.includes('aw install'), false);
   assert.equal(skill.content.skillFile.includes('aw config'), false);
   assert.match(
     skill.content.skillFile,
-    /spawn_agent\(\{[\s\S]*agent_type: "codex-explore-agent"[\s\S]*message: "\.\.\."[\s\S]*\}\)/,
+    /spawn_agent\(\{\n  task_name: "codex_explore_1",\n  agent_type: "codex-explore-agent",\n  fork_turns: "none",\n  message: "\.\.\."\n\}\)/,
+  );
+  assert.match(
+    skill.content.skillFile,
+    /spawn_agent\(\{\n  agent_type: "codex-explore-agent",\n  message: "\.\.\."\n\}\)/,
+  );
+  assert.match(
+    skill.content.skillFile,
+    /spawn_agent\(\{\n  task_name: "codex_explore_1",\n  fork_turns: "none",\n  message: "\.\.\."\n\}\)/,
   );
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
@@ -269,6 +289,12 @@ async function testStaticSkillContracts() {
   assert.match(skill, /先做 Gate 判断/);
   assert.match(skill, /自带的探索子代理/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
+  assert.match(skill, /同时公开 `task_name` 和 `agent_type`/);
+  assert.match(skill, /公开 `agent_type` 但不公开 `task_name`/);
+  assert.match(skill, /公开 `task_name` 但不公开 `agent_type`/);
+  assert.match(skill, /不得传入 schema 未公开的字段/);
+  assert.match(skill, /fork_turns: "none"/);
+  assert.match(skill, /继承父代理模型和推理强度/);
   assert.match(skill, /不要静默换到内置 `explorer`/);
   assert.match(skill, /当前会话的工具、联网、官方文档优先和上层安全策略/);
   assert.match(skill, /子代理继承当前会话可用的工具和权限/);
@@ -276,12 +302,15 @@ async function testStaticSkillContracts() {
   assert.match(skill, /只读边界/);
   assert.match(skill, /每个子代理的 prompt 至少写清/);
   assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/);
-  assert.match(skill, /叶子探索代理，不得调用 `spawn_agent`、`wait_agent`、`close_agent` 或再拆子任务/);
+  assert.match(skill, /叶子探索代理，不得调用任何子代理调度或管理工具/);
   assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill, /主 agent 不要重复探索同一个问题/);
   assert.match(skill, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
-  assert.match(skill, /`wait_agent` 不等于关闭 agent/);
+  assert.match(skill, /按当前工具实际公开的 schema 传参/);
+  assert.match(skill, /只有当前工具列表提供 `close_agent` 时/);
+  assert.match(skill, /`interrupt_agent` 只用于取消仍在运行的任务/);
+  assert.match(skill, /`wait_agent` 只负责等待，不等于关闭 agent/);
   assert.match(skill, /不要静默换到内置 `explorer`/);
   assert.equal(skill.includes('codex-explorer'), false);
 
@@ -292,6 +321,9 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
+  assert.equal(manifest.version, '0.1.9');
+  assert.match(manifest.config.schema.explorerModel.description, /仅在 spawn_agent 公开 agent_type 时生效/);
+  assert.match(manifest.config.schema.modelReasoningEffort.description, /否则子代理继承父代理推理强度/);
   assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
   assert.match(manifest.extensions.instructions[0].content, /调用 `codex-explore` 技能/);
@@ -333,7 +365,14 @@ async function testStaticSkillContracts() {
       roleKey: 'codex-explore-agent',
     },
   ]);
-  assert.equal('buildConfig' in manifest, false);
+  assert.deepEqual(manifest.buildConfig, {
+    fileRules: {
+      codex: {
+        include: ['templates/**'],
+        exclude: [],
+      },
+    },
+  });
 }
 
 async function testTrimBlockDedentsWithoutLeakingIndentation() {

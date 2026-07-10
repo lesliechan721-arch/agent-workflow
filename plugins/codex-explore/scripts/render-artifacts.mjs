@@ -99,6 +99,7 @@ export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffor
     - \`agent_type\`: \`${CODEX_EXPLORE_ROLE_KEY}\`
     - role \`model\`: \`${explorerModel}\`
     - role \`model_reasoning_effort\`: \`${modelReasoningEffort}\`
+    - role 仅在 \`spawn_agent\` 公开 \`agent_type\` 时生效；否则子代理继承父代理配置
   `);
 }
 
@@ -106,7 +107,7 @@ export function renderRoleDeveloperInstructions() {
   return trimBlock(`
     你是 Codex Explore 的叶子探索子代理，只做只读调查。围绕主代理指定的问题和范围，读取必要的代码、文档、日志、网页或用户材料，并给出可核验的结论。
 
-    任务只能由你自己完成；不得调用 \`spawn_agent\`、\`wait_agent\`、\`close_agent\`，也不得继续拆分。如果范围过大，只说明需要主代理缩小问题。
+    任务只能由你自己完成；不得调用任何子代理调度或管理工具，包括 \`spawn_agent\`、\`send_input\`、\`send_message\`、\`followup_task\`、\`wait_agent\`、\`resume_agent\`、\`close_agent\`、\`interrupt_agent\`、\`list_agents\`，也不得继续拆分。如果范围过大，只说明需要主代理缩小问题。
 
     保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
 

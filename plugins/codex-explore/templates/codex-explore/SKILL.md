@@ -47,7 +47,20 @@ Gate 通过后，主 agent 不要重复探索同一个问题；进入委派流�
 
 ## 委派规则
 
-默认使用 Codex Explore 自带的探索子代理。role 已配置默认模型 `{{explorerModel}}` 和推理强度 `{{modelReasoningEffort}}`。`spawn_agent` 只传 `agent_type` 和 `message`，不要改用 Codex 内置 `explorer`，也不要为了覆盖模型或推理强度切到其它 agent。
+优先使用 Codex Explore 自带的探索子代理。role 已配置默认模型 `{{explorerModel}}` 和推理强度 `{{modelReasoningEffort}}`，但只有当前 `spawn_agent` 工具公开 `agent_type` 时才能选择该 role。调用前以当前工具实际公开的参数为准，不要按 Codex 版本号或配置文件猜测，也不得传入 schema 未公开的字段。
+
+如果 `spawn_agent` 同时公开 `task_name` 和 `agent_type`，按 Codex v2 可选 role 方式调用。`task_name` 使用 `codex_explore_1`、`codex_explore_2` 这类当前父任务下唯一的名称；必须传 `fork_turns: "none"`，否则全历史 fork 会拒绝 role 覆盖：
+
+```ts
+spawn_agent({
+  task_name: "codex_explore_1",
+  agent_type: "{{explorerRoleKey}}",
+  fork_turns: "none",
+  message: "..."
+})
+```
+
+如果 `spawn_agent` 公开 `agent_type` 但不公开 `task_name`，按 Codex v1 方式调用。不要设置全历史 `fork_context`：
 
 ```ts
 spawn_agent({
@@ -56,7 +69,19 @@ spawn_agent({
 })
 ```
 
-如果 Codex runtime 报告 `{{explorerRoleKey}}` 不可用，或用户要求的模型/推理强度不能由当前配置的 role 满足，立即停止使用本 workflow，向用户说明当前 Codex Explore 子代理不可用或配置不匹配，并由主 agent 按普通任务继续处理。不要静默换到内置 `explorer` 或其它 role。
+如果 `spawn_agent` 公开 `task_name` 但不公开 `agent_type`，说明当前 Codex v2 runtime 隐藏了自定义 role 选择。不要传入隐藏的 `agent_type`、`model` 或 `reasoning_effort`，也不要改用 Codex 内置 `explorer`；改用继承父代理模型和推理强度的默认子代理，并把完整的叶子代理、只读边界和输出合同写入 `message`：
+
+```ts
+spawn_agent({
+  task_name: "codex_explore_1",
+  fork_turns: "none",
+  message: "..."
+})
+```
+
+走隐藏 metadata 的兼容路径前，向用户简短说明本次探索子代理将继承父代理的模型和推理强度，配置的 `{{explorerModel}}` / `{{modelReasoningEffort}}` 不会应用；不得声称专用 role 已生效。如果用户明确要求本次必须使用指定模型或推理强度，立即停止使用本 workflow，说明当前 runtime 无法满足，并由主 agent 按普通任务继续处理。
+
+如果工具既不公开 `task_name` 也不公开 `agent_type`，或在 `agent_type` 可用时 Codex runtime 报告 `{{explorerRoleKey}}` 不可用，立即停止使用本 workflow，向用户说明当前 Codex Explore 子代理不可用，并由主 agent 按普通任务继续处理。不要静默换到内置 `explorer` 或其它 role。
 
 除非用户另有要求，默认启动 1 个子代理。只有多个探索问题互不重叠、彼此能独立完成且确实值得拆分时，才启动 2 到 3 个；极少数复杂场景最多 4 个。
 
@@ -65,7 +90,7 @@ spawn_agent({
 - 资料来源：代码库、用户内容、官方文档、公开网页、命令输出，或这些来源的组合。
 - 具体问题：明确要回答什么，不要只写“看看这个模块”或“查一下资料”。
 - 探索深度：只能使用 `quick`、`medium`、`very thorough`。
-- 委派边界：明确子代理是叶子探索代理，不得调用 `spawn_agent`、`wait_agent`、`close_agent` 或再拆子任务；如果范围过大，只说明需要主 agent 缩小问题。
+- 委派边界：明确子代理是叶子探索代理，不得调用任何子代理调度或管理工具（包括 `spawn_agent`、`send_input`、`send_message`、`followup_task`、`wait_agent`、`resume_agent`、`close_agent`、`interrupt_agent`、`list_agents`），也不得再拆子任务；如果范围过大，只说明需要主 agent 缩小问题。
 - 只读边界：明确不得创建、编辑、移动、删除、格式化或回退文件，不得安装依赖，不得请求提权，不得登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
 - 期望输出：要求返回关键结论、证据路径或链接、必要行号、来源时间、不确定点，以及建议主 agent 下一步查看的内容。
 
@@ -81,7 +106,7 @@ spawn_agent({
 
 启动后必须等子代理进入最终状态并读取结果，不要因为短暂无返回就关闭后重做。
 
-设置 `wait_agent.timeout_ms` 前，先按任务规模、资料量、探索深度和子代理数量估算合理等待时间。默认一次给足预期完成时间，不要用过短 timeout 反复空转轮询；`quick` 可以短等，`medium` 和 `very thorough` 通常更适合按分钟级等待。
+调用 `wait_agent` 时按当前工具实际公开的 schema 传参，不要混用 v1 和 v2 的调用形状。设置 `wait_agent.timeout_ms` 前，先按任务规模、资料量、探索深度和子代理数量估算合理等待时间。默认一次给足预期完成时间，不要用过短 timeout 反复空转轮询；`quick` 可以短等，`medium` 和 `very thorough` 通常更适合按分钟级等待。v2 的 `wait_agent` 可能只返回 mailbox 更新摘要；继续等待并读取主会话收到的最终状态通知，不要把摘要当成子代理结果。
 
 ### 整合边界
 
@@ -89,6 +114,6 @@ spawn_agent({
 
 只有在子代理结论存在明显矛盾、缺少关键证据、或最终答案需要精确引用时，主 agent 才补读少量材料核验；补读范围应限于子代理指出的具体文件、行号、链接或最小必要上下文。不要把“核验”扩展成重新探索。
 
-### 关闭清理
+### 完成与清理
 
-读取并整合结果后，立即用 `close_agent` 关闭本 workflow 启动的子代理。`wait_agent` 不等于关闭 agent；它只负责等待结果。
+读取并整合结果后，只有当前工具列表提供 `close_agent` 时，才用它关闭本 workflow 启动的子代理。没有 `close_agent` 时无需执行清理；`interrupt_agent` 只用于取消仍在运行的任务，不能代替 `close_agent` 清理已完成的子代理。`wait_agent` 只负责等待，不等于关闭 agent。
