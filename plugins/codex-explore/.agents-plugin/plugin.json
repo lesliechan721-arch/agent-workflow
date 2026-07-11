@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "为 Codex 提供只读探索工作流，适合跨代码、文档、日志和网页整理证据。",
   "compatibility": {
     "aw": {
@@ -54,14 +54,14 @@
         "type": "string",
         "title": "探索模型",
         "default": "gpt-5.6-luna",
-        "description": "Codex Explore 专用 role 使用的默认模型；仅在 spawn_agent 公开 agent_type 时生效，否则子代理继承父代理模型。"
+        "description": "Codex Explore 专用 role 使用的默认模型。"
       },
       "modelReasoningEffort": {
         "type": "enum",
         "title": "探索推理强度",
         "values": ["low", "medium", "high", "xhigh", "max"],
         "default": "medium",
-        "description": "Codex Explore 专用 role 使用的推理强度；仅在 spawn_agent 公开 agent_type 时生效，否则子代理继承父代理推理强度。"
+        "description": "Codex Explore 专用 role 使用的推理强度。"
       }
     }
   },

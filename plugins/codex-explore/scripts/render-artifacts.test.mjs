@@ -107,7 +107,7 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /用户明确要求使用 codex-explore 时加载，但仍须通过 Gate 才能启动子代理/);
   assert.match(skill.content.skillFile, /容易污染主会话上下文的只读证据探索/);
   assert.match(skill.content.skillFile, /跨 6 个以上文件、3 个以上模块、多来源资料、长日志、需要跨多个官方文档或网页检索/);
-  assert.match(skill.content.skillFile, /取证范围边界不明确/);
+  assert.match(skill.content.skillFile, /候选材料范围较大、边界未知/);
   assert.match(skill.content.skillFile, /陌生、外部、本轮尚未建立上下文/);
   assert.match(skill.content.skillFile, /大量候选文件、搜索结果、日志、网页或用户材料/);
   assert.match(skill.content.skillFile, /明显占用或污染当前会话上下文/);
@@ -115,29 +115,30 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /在陌生或外部的大量材料中搜索、筛选和核验证据，仍应使用本工作流/);
   assert.match(skill.content.skillFile, /任务目标本身是实现、修改、格式化、提交或其它写操作/);
   assert.match(skill.content.skillFile, /无法清楚分离出只读证据探索/);
-  assert.match(skill.content.skillFile, /上面的取证范围和上下文污染条件/);
-  assert.match(skill.content.skillFile, /交叉验证不能单独作为启动子代理的理由/);
+  assert.match(skill.content.skillFile, /上述材料范围和上下文污染条件/);
+  assert.match(skill.content.skillFile, /交叉验证或独立核对假设不能单独触发本工作流/);
   assert.match(skill.content.skillFile, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill.content.skillFile, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
   assert.match(skill.content.skillFile, /问题本身不需要隔离探索上下文/);
   assert.match(skill.content.skillFile, /探索 `\/path\/to\/external-project`/);
-  assert.match(skill.content.skillFile, /如果正反例与其它阈值发生冲突/);
+  assert.match(skill.content.skillFile, /正反例与数量阈值冲突时/);
   assert.match(skill.content.skillFile, /先做 Gate 判断/);
-  assert.match(skill.content.skillFile, /优先使用 Codex Explore 自带的探索子代理/);
-  assert.match(skill.content.skillFile, /以当前工具实际公开的参数为准/);
+  assert.match(skill.content.skillFile, /只使用 Codex Explore 自带的探索 role/);
+  assert.match(skill.content.skillFile, /以当前 `spawn_agent` 工具实际公开的 schema 为准/);
   assert.match(skill.content.skillFile, /不得传入 schema 未公开的字段/);
-  assert.match(skill.content.skillFile, /task_name: "codex_explore_1"/);
+  assert.match(skill.content.skillFile, /公开 `task_name` 时/);
+  assert.match(skill.content.skillFile, /`codex_explore_1`、`codex_explore_2`/);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
-  assert.match(skill.content.skillFile, /fork_turns: "none"/);
-  assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4`/);
-  assert.match(skill.content.skillFile, /推理强度 `high`/);
-  assert.match(skill.content.skillFile, /继承父代理模型和推理强度/);
-  assert.match(skill.content.skillFile, /配置的 `gpt-5\.4` \/ `high` 不会应用/);
-  assert.match(skill.content.skillFile, /不得声称专用 role 已生效/);
-  assert.match(skill.content.skillFile, /不要改用 Codex 内置 `explorer`/);
+  assert.match(skill.content.skillFile, /公开 `fork_turns` 时，传 `"none"`/);
+  assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4`/);
+  assert.match(skill.content.skillFile, /推理强度是 `high`/);
+  assert.match(skill.content.skillFile, /工具不公开 `agent_type`/);
+  assert.match(skill.content.skillFile, /schema 明确不允许 `codex-explore-agent`/);
+  assert.match(skill.content.skillFile, /developer instructions 由专用 role 提供/);
+  assert.match(skill.content.skillFile, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill.content.skillFile, /立即停止使用本工作流/);
-  assert.match(skill.content.skillFile, /询问用户是否接受由主代理继续处理/);
-  assert.match(skill.content.skillFile, /得到同意前不要继续/);
+  assert.match(skill.content.skillFile, /如果用户明确要求必须由 Codex Explore 子代理完成/);
+  assert.match(skill.content.skillFile, /先询问是否接受主代理继续/);
   assert.match(skill.content.skillFile, /当前会话的工具、联网、官方文档优先和上层安全策略/);
   assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill.content.skillFile, /不能凭记忆补事实/);
@@ -148,29 +149,29 @@ async function testPresentSkillArtifact() {
   );
   assert.match(skill.content.skillFile, /叶子探索代理，不得调用任何子代理调度或管理工具/);
   assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
-  assert.match(skill.content.skillFile, /主代理不要重复探索同一个问题/);
-  assert.match(skill.content.skillFile, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
+  assert.match(skill.content.skillFile, /不再同步调查同一个问题或同一批候选材料/);
+  assert.match(skill.content.skillFile, /任务规模、资料量、探索深度和子代理数量.*`timeout_ms`/s);
   assert.match(skill.content.skillFile, /按当前工具实际公开的 schema 传参/);
-  assert.match(skill.content.skillFile, /v2 的 `wait_agent` 可能只返回 mailbox 更新摘要/);
+  assert.match(skill.content.skillFile, /`wait_agent` 可能只返回 mailbox 更新摘要/);
   assert.match(skill.content.skillFile, /只有当前工具列表提供 `close_agent` 时/);
   assert.match(skill.content.skillFile, /`interrupt_agent` 只用于取消仍在运行的任务/);
-  assert.match(skill.content.skillFile, /`wait_agent` 只负责等待，不等于关闭 agent/);
-  assert.match(skill.content.skillFile, /不要静默换到内置 `explorer`/);
+  assert.match(skill.content.skillFile, /`wait_agent` 也不等于关闭 agent/);
+  assert.match(skill.content.skillFile, /不得无限重试或降级到其它代理/);
+  assert.match(skill.content.skillFile, /启动重试、异常重试、空输出补问和缺失项补问合计最多一次/);
+  assert.match(skill.content.skillFile, /`spawn_agent` 没有创建子代理/);
+  assert.match(skill.content.skillFile, /子代理进入异常终态/);
+  assert.match(skill.content.skillFile, /等待超时：超时不等于失败/);
+  assert.match(skill.content.skillFile, /成功终态但没有输出/);
+  assert.match(skill.content.skillFile, /输出不符合 prompt 中的输出合同/);
+  assert.match(skill.content.skillFile, /不要整合或转述不可核验的内容/);
+  assert.match(skill.content.skillFile, /不得超过当前可用并发槽位/);
+  assert.match(skill.content.skillFile, /无论成功、失败或结果无效/);
   assert.equal(skill.content.skillFile.includes('阻塞决策'), false);
   assert.equal(skill.content.skillFile.includes('aw install'), false);
   assert.equal(skill.content.skillFile.includes('aw config'), false);
-  assert.match(
-    skill.content.skillFile,
-    /spawn_agent\(\{\n  task_name: "codex_explore_1",\n  agent_type: "codex-explore-agent",\n  fork_turns: "none",\n  message: "\.\.\."\n\}\)/,
-  );
-  assert.match(
-    skill.content.skillFile,
-    /spawn_agent\(\{\n  agent_type: "codex-explore-agent",\n  message: "\.\.\."\n\}\)/,
-  );
-  assert.match(
-    skill.content.skillFile,
-    /spawn_agent\(\{\n  task_name: "codex_explore_1",\n  fork_turns: "none",\n  message: "\.\.\."\n\}\)/,
-  );
+  assert.equal(skill.content.skillFile.includes('Codex v1'), false);
+  assert.equal(skill.content.skillFile.includes('Codex v2'), false);
+  assert.equal(skill.content.skillFile.includes('同时公开 `task_name` 和 `agent_type`'), false);
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
@@ -198,8 +199,8 @@ async function testCustomConfigOverridesSkillTemplates() {
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
   assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
-  assert.match(skill.content.skillFile, /默认模型 `gpt-5\.4-mini`/);
-  assert.match(skill.content.skillFile, /推理强度 `xhigh`/);
+  assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4-mini`/);
+  assert.match(skill.content.skillFile, /推理强度是 `xhigh`/);
   assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
   assert.equal(role.content.roleFile.model_reasoning_effort, 'xhigh');
 }
@@ -239,8 +240,8 @@ async function testDefaultsComeFromManifestSchema() {
     const skill = findArtifact(plan, 'codex-explore-skill');
     const role = findArtifact(plan, 'codex-explore-agent-role');
 
-    assert.match(skill.content.skillFile, /默认模型 `gpt-5\.6-luna`/);
-    assert.match(skill.content.skillFile, /推理强度 `medium`/);
+    assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.6-luna`/);
+    assert.match(skill.content.skillFile, /推理强度是 `medium`/);
     assert.equal(role.content.roleFile.model, 'gpt-5.6-luna');
     assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
 
@@ -272,7 +273,7 @@ async function testStaticSkillContracts() {
   assert.match(skill, /用户明确要求使用 codex-explore 时加载，但仍须通过 Gate 才能启动子代理/);
   assert.match(skill, /容易污染主会话上下文的只读证据探索/);
   assert.match(skill, /跨 6 个以上文件、3 个以上模块、多来源资料、长日志、需要跨多个官方文档或网页检索/);
-  assert.match(skill, /取证范围边界不明确/);
+  assert.match(skill, /候选材料范围较大、边界未知/);
   assert.match(skill, /陌生、外部、本轮尚未建立上下文/);
   assert.match(skill, /大量候选文件、搜索结果、日志、网页或用户材料/);
   assert.match(skill, /明显占用或污染当前会话上下文/);
@@ -280,23 +281,22 @@ async function testStaticSkillContracts() {
   assert.match(skill, /在陌生或外部的大量材料中搜索、筛选和核验证据，仍应使用本工作流/);
   assert.match(skill, /任务目标本身是实现、修改、格式化、提交或其它写操作/);
   assert.match(skill, /无法清楚分离出只读证据探索/);
-  assert.match(skill, /上面的取证范围和上下文污染条件/);
-  assert.match(skill, /交叉验证不能单独作为启动子代理的理由/);
+  assert.match(skill, /上述材料范围和上下文污染条件/);
+  assert.match(skill, /交叉验证或独立核对假设不能单独触发本工作流/);
   assert.match(skill, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
   assert.match(skill, /问题本身不需要隔离探索上下文/);
   assert.match(skill, /探索 `\/path\/to\/external-project`/);
-  assert.match(skill, /如果正反例与其它阈值发生冲突/);
+  assert.match(skill, /正反例与数量阈值冲突时/);
   assert.match(skill, /先做 Gate 判断/);
-  assert.match(skill, /自带的探索子代理/);
+  assert.match(skill, /自带的探索 role/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
-  assert.match(skill, /同时公开 `task_name` 和 `agent_type`/);
-  assert.match(skill, /公开 `agent_type` 但不公开 `task_name`/);
-  assert.match(skill, /公开 `task_name` 但不公开 `agent_type`/);
+  assert.match(skill, /调用 `spawn_agent` 时始终传 `agent_type/);
+  assert.match(skill, /公开 `task_name` 时/);
+  assert.match(skill, /公开 `fork_turns` 时/);
   assert.match(skill, /不得传入 schema 未公开的字段/);
-  assert.match(skill, /fork_turns: "none"/);
-  assert.match(skill, /继承父代理模型和推理强度/);
-  assert.match(skill, /不要静默换到内置 `explorer`/);
+  assert.match(skill, /模型、推理强度和 developer instructions 由专用 role 提供/);
+  assert.match(skill, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill, /当前会话的工具、联网、官方文档优先和上层安全策略/);
   assert.match(skill, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill, /不能凭记忆补事实/);
@@ -305,16 +305,21 @@ async function testStaticSkillContracts() {
   assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/);
   assert.match(skill, /叶子探索代理，不得调用任何子代理调度或管理工具/);
   assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
-  assert.match(skill, /主代理不要重复探索同一个问题/);
-  assert.match(skill, /`wait_agent\.timeout_ms`.*任务规模.*资料量.*探索深度.*子代理数量/s);
+  assert.match(skill, /不再同步调查同一个问题或同一批候选材料/);
+  assert.match(skill, /任务规模、资料量、探索深度和子代理数量.*`timeout_ms`/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
   assert.match(skill, /按当前工具实际公开的 schema 传参/);
   assert.match(skill, /只有当前工具列表提供 `close_agent` 时/);
   assert.match(skill, /`interrupt_agent` 只用于取消仍在运行的任务/);
-  assert.match(skill, /`wait_agent` 只负责等待，不等于关闭 agent/);
-  assert.match(skill, /不要静默换到内置 `explorer`/);
-  assert.match(skill, /询问用户是否接受由主代理继续处理/);
-  assert.match(skill, /得到同意前不要继续/);
+  assert.match(skill, /`wait_agent` 也不等于关闭 agent/);
+  assert.match(skill, /启动重试、异常重试、空输出补问和缺失项补问合计最多一次/);
+  assert.match(skill, /成功终态但没有输出/);
+  assert.match(skill, /输出不符合 prompt 中的输出合同/);
+  assert.match(skill, /如果用户明确要求必须由 Codex Explore 子代理完成/);
+  assert.match(skill, /不得超过当前可用并发槽位/);
+  assert.match(skill, /无论成功、失败或结果无效/);
+  assert.equal(skill.includes('Codex v1'), false);
+  assert.equal(skill.includes('Codex v2'), false);
   assert.equal(skill.includes('阻塞决策'), false);
   assert.equal(skill.includes('codex-explorer'), false);
 
@@ -325,9 +330,9 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.11');
-  assert.match(manifest.config.schema.explorerModel.description, /仅在 spawn_agent 公开 agent_type 时生效/);
-  assert.match(manifest.config.schema.modelReasoningEffort.description, /否则子代理继承父代理推理强度/);
+  assert.equal(manifest.version, '0.1.12');
+  assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
+  assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
   assert.deepEqual(
     manifest.config.schema.modelReasoningEffort.values,
     ['low', 'medium', 'high', 'xhigh', 'max'],

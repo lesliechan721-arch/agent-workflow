@@ -99,7 +99,7 @@ export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffor
     - \`agent_type\`: \`${CODEX_EXPLORE_ROLE_KEY}\`
     - role \`model\`: \`${explorerModel}\`
     - role \`model_reasoning_effort\`: \`${modelReasoningEffort}\`
-    - role 仅在 \`spawn_agent\` 公开 \`agent_type\` 时生效；否则子代理继承父代理配置
+    - role 仅在 \`spawn_agent\` 公开 \`agent_type\` 且允许 \`${CODEX_EXPLORE_ROLE_KEY}\` 时生效；否则 Gate 不通过，不启动子代理
   `);
 }
 
