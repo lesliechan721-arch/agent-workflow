@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "为 Codex 提供只读探索工作流，适合跨代码、文档、日志和网页整理证据。",
   "compatibility": {
     "aw": {
