@@ -7,7 +7,13 @@ const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
 const CODEX_EXPLORE_ROLE_ID = 'codex-explore-agent-role';
 const CODEX_EXPLORE_ROLE_KEY = 'codex-explore-agent';
-const REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
+const SKILL_REFRESH_KEYS = [
+  'explorerModel',
+  'modelReasoningEffort',
+  'minimumInitialWaitMinutes',
+  'convergenceWaitMinutes',
+];
+const ROLE_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -63,7 +69,17 @@ async function readManifestDefaults() {
   return {
     explorerModel: schema.explorerModel?.default ?? 'gpt-5.6-luna',
     modelReasoningEffort: schema.modelReasoningEffort?.default ?? 'medium',
+    minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
+    convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
   };
+}
+
+function resolvePositiveNumber(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function minutesToMilliseconds(minutes) {
+  return Math.round(minutes * 60_000);
 }
 
 function resolveConfigValues(context, defaults) {
@@ -91,6 +107,14 @@ function resolveConfigValues(context, defaults) {
       typeof values.modelReasoningEffort === 'string' && values.modelReasoningEffort.trim() !== ''
         ? values.modelReasoningEffort
         : defaults.modelReasoningEffort,
+    minimumInitialWaitMinutes: resolvePositiveNumber(
+      values.minimumInitialWaitMinutes,
+      defaults.minimumInitialWaitMinutes,
+    ),
+    convergenceWaitMinutes: resolvePositiveNumber(
+      values.convergenceWaitMinutes,
+      defaults.convergenceWaitMinutes,
+    ),
   };
 }
 
@@ -154,7 +178,12 @@ export async function readArtifactRenderContext() {
 
 export async function renderArtifactPlan(context) {
   const defaults = await readManifestDefaults();
-  const { explorerModel, modelReasoningEffort } = resolveConfigValues(context, defaults);
+  const {
+    explorerModel,
+    modelReasoningEffort,
+    minimumInitialWaitMinutes,
+    convergenceWaitMinutes,
+  } = resolveConfigValues(context, defaults);
   const platform = context?.platform ?? 'codex';
 
   if (platform !== 'codex') {
@@ -170,6 +199,10 @@ export async function renderArtifactPlan(context) {
     explorerRoleKey: CODEX_EXPLORE_ROLE_KEY,
     explorerModel,
     modelReasoningEffort,
+    minimumInitialWaitMinutes,
+    minimumInitialWaitTimeoutMs: minutesToMilliseconds(minimumInitialWaitMinutes),
+    convergenceWaitMinutes,
+    convergenceWaitTimeoutMs: minutesToMilliseconds(convergenceWaitMinutes),
   };
   const roleDescription = '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。';
 
@@ -183,7 +216,7 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_EXPLORE_SKILL_KEY,
-        refreshKeys: REFRESH_KEYS,
+        refreshKeys: SKILL_REFRESH_KEYS,
         content: {
           skillFile: renderTemplate(skillTemplate, replacements),
           openaiYaml: renderTemplate(openaiTemplate, replacements),
@@ -196,7 +229,7 @@ export async function renderArtifactPlan(context) {
         target: 'codex.agentRole',
         state: 'present',
         roleKey: CODEX_EXPLORE_ROLE_KEY,
-        refreshKeys: REFRESH_KEYS,
+        refreshKeys: ROLE_REFRESH_KEYS,
         content: {
           registration: {
             description: roleDescription,

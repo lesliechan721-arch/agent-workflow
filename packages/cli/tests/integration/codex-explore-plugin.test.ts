@@ -46,6 +46,12 @@ import { runWithZeroWriteSnapshot } from '../helpers/repo-managed-state.js';
 import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
+const CODEX_EXPLORE_SKILL_REFRESH_KEYS = [
+  'explorerModel',
+  'modelReasoningEffort',
+  'minimumInitialWaitMinutes',
+  'convergenceWaitMinutes',
+];
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -205,7 +211,7 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: 'codex-explore',
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
         skillFile: \`# Recorded Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
@@ -276,7 +282,7 @@ async function addCodexExploreDynamicSkillArtifact(rootDir: string): Promise<voi
         target: 'codex.skill',
         projectManagedKind: 'skill',
         states: ['present'],
-        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        refreshKeys: CODEX_EXPLORE_SKILL_REFRESH_KEYS,
         skillKey: 'codex-explore',
       },
     ];
@@ -293,7 +299,7 @@ async function configureCodexExploreSkillOnlyArtifact(rootDir: string): Promise<
         target: 'codex.skill',
         projectManagedKind: 'skill',
         states: ['present'],
-        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        refreshKeys: CODEX_EXPLORE_SKILL_REFRESH_KEYS,
         skillKey: 'codex-explore',
       }],
     };
@@ -320,7 +326,7 @@ async function configureCodexExploreSingleSkillArtifact(options: {
         target: 'codex.skill',
         projectManagedKind: 'skill',
         states: ['present'],
-        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        refreshKeys: CODEX_EXPLORE_SKILL_REFRESH_KEYS,
         skillKey: options.skillKey,
       }],
     };
@@ -364,7 +370,7 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: 'codex-explore',
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
         skillFile: \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
@@ -415,7 +421,7 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: 'codex-explore',
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
         skillFile: \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
@@ -467,7 +473,7 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: ${JSON.stringify(options.skillKey)},
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
         skillFile: \`# ${options.title}\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',

@@ -62,6 +62,22 @@
         "values": ["low", "medium", "high", "xhigh", "max"],
         "default": "medium",
         "description": "Codex Explore 专用 role 使用的推理强度。"
+      },
+      "minimumInitialWaitMinutes": {
+        "type": "number",
+        "title": "首次最小等待时间（分钟）",
+        "default": 10,
+        "min": 1,
+        "max": 60,
+        "description": "用户未明确指定时，主代理首次等待探索结果的最短时间。"
+      },
+      "convergenceWaitMinutes": {
+        "type": "number",
+        "title": "催促后等待时间（分钟）",
+        "default": 5,
+        "min": 1,
+        "max": 30,
+        "description": "主代理要求子代理尽快收敛后，再等待结果的时间。"
       }
     }
   },
@@ -82,7 +98,12 @@
         "target": "codex.skill",
         "projectManagedKind": "skill",
         "states": ["present"],
-        "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+        "refreshKeys": [
+          "explorerModel",
+          "modelReasoningEffort",
+          "minimumInitialWaitMinutes",
+          "convergenceWaitMinutes"
+        ],
         "skillKey": "codex-explore"
       },
       {

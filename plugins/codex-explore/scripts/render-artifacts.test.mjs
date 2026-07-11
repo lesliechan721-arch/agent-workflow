@@ -37,6 +37,8 @@ function createContext(overrides = {}) {
       values: {
         explorerModel: 'gpt-5.4',
         modelReasoningEffort: 'high',
+        minimumInitialWaitMinutes: 12,
+        convergenceWaitMinutes: 6,
       },
     },
     ...overrides,
@@ -82,7 +84,12 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.deepEqual(skill.refreshKeys, [
+    'explorerModel',
+    'modelReasoningEffort',
+    'minimumInitialWaitMinutes',
+    'convergenceWaitMinutes',
+  ]);
   assert.equal(role.state, 'present');
   assert.equal(role.kind, 'codexRole');
   assert.equal(role.target, 'codex.agentRole');
@@ -137,36 +144,53 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /developer instructions 由专用 role 提供/);
   assert.match(skill.content.skillFile, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill.content.skillFile, /立即停止使用本工作流/);
-  assert.match(skill.content.skillFile, /如果用户明确要求必须由 Codex Explore 子代理完成/);
-  assert.match(skill.content.skillFile, /先询问是否接受主代理继续/);
+  assert.match(skill.content.skillFile, /只有用户明确同意后才能继续/);
   assert.match(skill.content.skillFile, /当前会话的工具、联网、官方文档优先和上层安全策略/);
   assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
   assert.match(skill.content.skillFile, /不能凭记忆补事实/);
   assert.match(skill.content.skillFile, /每个子代理的 prompt 至少写清/);
   assert.match(
     skill.content.skillFile,
-    /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/,
+    /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/,
   );
   assert.match(skill.content.skillFile, /叶子探索代理，不得调用任何子代理调度或管理工具/);
-  assert.match(skill.content.skillFile, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill.content.skillFile, /不再同步调查同一个问题或同一批候选材料/);
-  assert.match(skill.content.skillFile, /任务规模、资料量、探索深度和子代理数量.*`timeout_ms`/s);
+  assert.match(skill.content.skillFile, /只维护尚未收齐有效结果的子代理集合/);
+  assert.match(skill.content.skillFile, /“首次等待”和“催促后等待”两个阶段/);
+  assert.match(skill.content.skillFile, /不记录启动时间或计算剩余时间/);
+  assert.match(skill.content.skillFile, /首次最小等待为 `12` 分钟（`timeout_ms=720000`）/);
+  assert.match(skill.content.skillFile, /催促后等待为 `6` 分钟（`timeout_ms=360000`）/);
+  assert.match(skill.content.skillFile, /用户明确指定等待时间就优先使用用户给出的时间/);
+  assert.match(skill.content.skillFile, /不得短于插件配置的首次最小等待/);
+  assert.match(skill.content.skillFile, /根据任务复杂度一次性选择更长的整数分钟/);
+  assert.match(skill.content.skillFile, /首次等待真正超时后/);
+  assert.match(skill.content.skillFile, /只向尚未完成的子代理发送一次非中断收敛请求/);
+  assert.match(skill.content.skillFile, /`interrupt` 参数时必须显式传 `false`/);
+  assert.match(skill.content.skillFile, /催促后等待使用插件配置的固定时长/);
+  assert.match(skill.content.skillFile, /催促后等待再次超时.*超时失败/s);
+  assert.match(skill.content.skillFile, /不得由主代理静默探索同一范围/);
+  assert.match(skill.content.skillFile, /用户没有取消或替换原任务.*回到原等待阶段/s);
   assert.match(skill.content.skillFile, /按当前工具实际公开的 schema 传参/);
   assert.match(skill.content.skillFile, /`wait_agent` 可能只返回 mailbox 更新摘要/);
   assert.match(skill.content.skillFile, /只有当前工具列表提供 `close_agent` 时/);
-  assert.match(skill.content.skillFile, /`interrupt_agent` 只用于取消仍在运行的任务/);
+  assert.match(skill.content.skillFile, /`interrupt_agent` 不能代替正常结束后的 `close_agent`/);
   assert.match(skill.content.skillFile, /`wait_agent` 也不等于关闭 agent/);
   assert.match(skill.content.skillFile, /不得无限重试或降级到其它代理/);
   assert.match(skill.content.skillFile, /启动重试、异常重试、空输出补问和缺失项补问合计最多一次/);
   assert.match(skill.content.skillFile, /`spawn_agent` 没有创建子代理/);
   assert.match(skill.content.skillFile, /子代理进入异常终态/);
-  assert.match(skill.content.skillFile, /等待超时：超时不等于失败/);
+  assert.match(skill.content.skillFile, /以当前工具实际输出标识的最终状态为准/);
+  assert.match(skill.content.skillFile, /等待超时：首次等待超时后发送一次收敛请求/);
   assert.match(skill.content.skillFile, /成功终态但没有输出/);
   assert.match(skill.content.skillFile, /输出不符合 prompt 中的输出合同/);
   assert.match(skill.content.skillFile, /不要整合或转述不可核验的内容/);
   assert.match(skill.content.skillFile, /不得超过当前可用并发槽位/);
-  assert.match(skill.content.skillFile, /无论成功、失败或结果无效/);
+  assert.match(skill.content.skillFile, /正常结束并读取结果后/);
   assert.equal(skill.content.skillFile.includes('阻塞决策'), false);
+  assert.equal(skill.content.skillFile.includes('软截止'), false);
+  assert.equal(skill.content.skillFile.includes('硬截止'), false);
+  assert.equal(skill.content.skillFile.includes('探索深度'), false);
+  assert.equal(skill.content.skillFile.includes('`quick`'), false);
   assert.equal(skill.content.skillFile.includes('aw install'), false);
   assert.equal(skill.content.skillFile.includes('aw config'), false);
   assert.equal(skill.content.skillFile.includes('Codex v1'), false);
@@ -189,6 +213,8 @@ async function testCustomConfigOverridesSkillTemplates() {
         values: {
           explorerModel: 'gpt-5.4-mini',
           modelReasoningEffort: 'xhigh',
+          minimumInitialWaitMinutes: 20,
+          convergenceWaitMinutes: 8,
         },
       },
     }),
@@ -198,9 +224,16 @@ async function testCustomConfigOverridesSkillTemplates() {
 
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.deepEqual(skill.refreshKeys, [
+    'explorerModel',
+    'modelReasoningEffort',
+    'minimumInitialWaitMinutes',
+    'convergenceWaitMinutes',
+  ]);
   assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4-mini`/);
   assert.match(skill.content.skillFile, /推理强度是 `xhigh`/);
+  assert.match(skill.content.skillFile, /首次最小等待为 `20` 分钟（`timeout_ms=1200000`）/);
+  assert.match(skill.content.skillFile, /催促后等待为 `8` 分钟（`timeout_ms=480000`）/);
   assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
   assert.equal(role.content.roleFile.model_reasoning_effort, 'xhigh');
 }
@@ -242,6 +275,8 @@ async function testDefaultsComeFromManifestSchema() {
 
     assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.6-luna`/);
     assert.match(skill.content.skillFile, /推理强度是 `medium`/);
+    assert.match(skill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
+    assert.match(skill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
     assert.equal(role.content.roleFile.model, 'gpt-5.6-luna');
     assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
 
@@ -249,6 +284,8 @@ async function testDefaultsComeFromManifestSchema() {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.6-luna');
     assert.equal(manifest.config.schema.modelReasoningEffort.default, 'medium');
+    assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
+    assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
     assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -302,24 +339,44 @@ async function testStaticSkillContracts() {
   assert.match(skill, /不能凭记忆补事实/);
   assert.match(skill, /只读边界/);
   assert.match(skill, /每个子代理的 prompt 至少写清/);
-  assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*探索深度[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/);
+  assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*委派边界[\s\S]*只读边界[\s\S]*期望输出/);
   assert.match(skill, /叶子探索代理，不得调用任何子代理调度或管理工具/);
-  assert.match(skill, /`quick`.*`medium`.*`very thorough`/s);
   assert.match(skill, /不再同步调查同一个问题或同一批候选材料/);
-  assert.match(skill, /任务规模、资料量、探索深度和子代理数量.*`timeout_ms`/s);
+  assert.match(skill, /只维护尚未收齐有效结果的子代理集合/);
+  assert.match(skill, /“首次等待”和“催促后等待”两个阶段/);
+  assert.match(skill, /不记录启动时间或计算剩余时间/);
+  assert.match(skill, /首次最小等待为 `\{\{minimumInitialWaitMinutes\}\}` 分钟/);
+  assert.match(skill, /`timeout_ms=\{\{minimumInitialWaitTimeoutMs\}\}`/);
+  assert.match(skill, /催促后等待为 `\{\{convergenceWaitMinutes\}\}` 分钟/);
+  assert.match(skill, /`timeout_ms=\{\{convergenceWaitTimeoutMs\}\}`/);
+  assert.match(skill, /用户明确指定等待时间就优先使用用户给出的时间/);
+  assert.match(skill, /不得短于插件配置的首次最小等待/);
+  assert.match(skill, /根据任务复杂度一次性选择更长的整数分钟/);
+  assert.match(skill, /首次等待真正超时后/);
+  assert.match(skill, /只向尚未完成的子代理发送一次非中断收敛请求/);
+  assert.match(skill, /`interrupt` 参数时必须显式传 `false`/);
+  assert.match(skill, /催促后等待使用插件配置的固定时长/);
+  assert.match(skill, /催促后等待再次超时.*超时失败/s);
+  assert.match(skill, /不得由主代理静默探索同一范围/);
+  assert.match(skill, /用户没有取消或替换原任务.*回到原等待阶段/s);
   assert.match(skill, /关键结论、证据路径或链接、必要行号、来源时间和不确定点/);
   assert.match(skill, /按当前工具实际公开的 schema 传参/);
   assert.match(skill, /只有当前工具列表提供 `close_agent` 时/);
-  assert.match(skill, /`interrupt_agent` 只用于取消仍在运行的任务/);
+  assert.match(skill, /`interrupt_agent` 不能代替正常结束后的 `close_agent`/);
   assert.match(skill, /`wait_agent` 也不等于关闭 agent/);
   assert.match(skill, /启动重试、异常重试、空输出补问和缺失项补问合计最多一次/);
   assert.match(skill, /成功终态但没有输出/);
+  assert.match(skill, /以当前工具实际输出标识的最终状态为准/);
   assert.match(skill, /输出不符合 prompt 中的输出合同/);
-  assert.match(skill, /如果用户明确要求必须由 Codex Explore 子代理完成/);
+  assert.match(skill, /只有用户明确同意后才能继续/);
   assert.match(skill, /不得超过当前可用并发槽位/);
-  assert.match(skill, /无论成功、失败或结果无效/);
+  assert.match(skill, /正常结束并读取结果后/);
   assert.equal(skill.includes('Codex v1'), false);
   assert.equal(skill.includes('Codex v2'), false);
+  assert.equal(skill.includes('软截止'), false);
+  assert.equal(skill.includes('硬截止'), false);
+  assert.equal(skill.includes('探索深度'), false);
+  assert.equal(skill.includes('`quick`'), false);
   assert.equal(skill.includes('阻塞决策'), false);
   assert.equal(skill.includes('codex-explorer'), false);
 
@@ -333,6 +390,10 @@ async function testStaticSkillContracts() {
   assert.equal(manifest.version, '0.1.12');
   assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
   assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
+  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
+  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.max, 60);
+  assert.equal(manifest.config.schema.convergenceWaitMinutes.min, 1);
+  assert.equal(manifest.config.schema.convergenceWaitMinutes.max, 30);
   assert.deepEqual(
     manifest.config.schema.modelReasoningEffort.values,
     ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -363,7 +424,12 @@ async function testStaticSkillContracts() {
       target: 'codex.skill',
       projectManagedKind: 'skill',
       states: ['present'],
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: [
+        'explorerModel',
+        'modelReasoningEffort',
+        'minimumInitialWaitMinutes',
+        'convergenceWaitMinutes',
+      ],
       skillKey: 'codex-explore',
     },
     {
