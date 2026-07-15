@@ -1,6 +1,6 @@
 {
   "name": "git-commit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "在用户请求提交代码、文档或其它改动时，核对变更范围并完成中文约定式 Git 提交。",
   "compatibility": {
     "aw": {
@@ -35,10 +35,6 @@
         "claudeCommandOutputFill": {
           "claude": true,
           "codex": false
-        },
-        "gitInspectionStep": {
-          "claude": "1. 优先使用上方注入的 Git 快照确认工作区变更；快照不足以判断提交范围时，再运行必要的 Git 查看命令。",
-          "codex": "1. 运行 `git status` 和必要的 `git diff`，确认当前工作区变更和提交范围。"
         }
       }
     }
