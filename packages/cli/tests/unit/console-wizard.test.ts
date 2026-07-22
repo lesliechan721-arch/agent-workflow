@@ -531,7 +531,7 @@ describe('console write decision model', () => {
       code: 'agentVersionBlocked',
       message: expect.stringContaining('Codex 写入被版本门禁阻断'),
     });
-    expect(result.nextSteps.join('\n')).toContain('0.144.0');
+    expect(result.nextSteps.join('\n')).toContain('0.145.0');
   });
 
   it('maps unreadable user Codex config to a structured blocked reason', async () => {

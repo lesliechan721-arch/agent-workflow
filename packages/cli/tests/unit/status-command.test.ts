@@ -92,7 +92,7 @@ function createAgentVersionRunner(options: {
       throw new Error(`Unexpected native CLI invocation in status-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
     }
     const output = invocation.command === 'codex'
-      ? options.codex ?? 'codex-cli 0.144.0'
+      ? options.codex ?? 'codex-cli 0.145.0'
       : invocation.command === 'claude'
         ? options.claude ?? '2.1.88 (Claude Code)'
         : undefined;
@@ -162,9 +162,9 @@ describe('status command P8', () => {
         platform: 'codex',
         status: 'tooOld',
         detectedVersion: '0.130.0',
-        requiredMinVersion: '0.144.0',
+        requiredMinVersion: '0.145.0',
         reasonCode: 'agentVersionTooLow',
-        suggestedAction: expect.stringContaining('升级到 >= 0.144.0'),
+        suggestedAction: expect.stringContaining('升级到 >= 0.145.0'),
       }),
       expect.objectContaining({
         platform: 'claude',

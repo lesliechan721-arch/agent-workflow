@@ -33,7 +33,7 @@ function createAgentVersionRunner(options: {
       throw new Error(`Unexpected native CLI invocation in diagnose-command.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
     }
     if (invocation.command === 'codex') {
-      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.144.0', stderr: '' };
+      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.145.0', stderr: '' };
     }
     if (invocation.command === 'claude') {
       return { exitCode: 0, stdout: options.claude ?? '2.1.88 (Claude Code)', stderr: '' };
@@ -404,7 +404,7 @@ describe('diagnose P7', () => {
       {
         env: createInstallStateFixtureEnv(fixture.paths),
         nativeCliRunner: createAgentVersionRunner({
-          codex: 'codex-cli 0.144.0',
+          codex: 'codex-cli 0.145.0',
           claude: '2.1.87 (Claude Code)',
         }),
         p7Targets: [{
@@ -432,8 +432,8 @@ describe('diagnose P7', () => {
       expect.objectContaining({
         platform: 'codex',
         status: 'supported',
-        detectedVersion: '0.144.0',
-        requiredMinVersion: '0.144.0',
+        detectedVersion: '0.145.0',
+        requiredMinVersion: '0.145.0',
       }),
       expect.objectContaining({
         platform: 'claude',

@@ -5,7 +5,7 @@
 - Node.js 版本至少为 `20`
 - 已全局安装 `@yiliang/aw`（`npm install -g @yiliang/aw`）
 - 写入 Claude 目标时需要 Claude Code `>= 2.1.88`
-- 写入 Codex 目标时需要 Codex `>= 0.144.0`；Codex project scope 也会在写 repo-visible artifacts 前检查版本
+- 写入 Codex 目标时需要 Codex `>= 0.145.0`；Codex project scope 也会在写 repo-visible artifacts 前检查版本。Codex `0.144.x` 可能不暴露 `spawn_agent` 的 `agent_type` 参数，导致 `codex-explore` 无法调度专用子代理
 
 ## 快速上手
 
@@ -325,7 +325,7 @@ Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled
 | 写入位置 | 当前项目目录下的 `.claude/`；Codex 写当前仓库的 `.agents/skills` 和 `.codex/` | `~/.claude/` 或 `~/.codex/`，并按需使用 `~/.aw` native runtime |
 | 适用场景 | 项目级配置，提交到版本控制 | 跨项目共享的个人配置 |
 
-> **Codex 注意**：`--scope user` 使用 Codex native plugin 平面。AW 会先通过 `codex plugin marketplace add <canonical ~/.aw>` 注册或重新指向本地 marketplace，用 `codex plugin marketplace list` 校验，再通过 `codex plugin add/remove` 完成安装或卸载，并做写后本地证据校验；AW 不回退到只写或只删 `~/.codex/config.toml`。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 `status --verbose`、native view 和诊断详情这类只读视图，不是普通写命令主链路。`--scope project` 不写 `~/.codex/config.toml [marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；它只写当前仓库的 repo-visible artifacts，并维护 `.agent-workflows/project-artifacts/` 下的 shared identity metadata，但写入前仍要求本机 Codex `>= 0.144.0`。
+> **Codex 注意**：`--scope user` 使用 Codex native plugin 平面。AW 会先通过 `codex plugin marketplace add <canonical ~/.aw>` 注册或重新指向本地 marketplace，用 `codex plugin marketplace list` 校验，再通过 `codex plugin add/remove` 完成安装或卸载，并做写后本地证据校验；AW 不回退到只写或只删 `~/.codex/config.toml`。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 `status --verbose`、native view 和诊断详情这类只读视图，不是普通写命令主链路。`--scope project` 不写 `~/.codex/config.toml [marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；它只写当前仓库的 repo-visible artifacts，并维护 `.agent-workflows/project-artifacts/` 下的 shared identity metadata，但写入前仍要求本机 Codex `>= 0.145.0`。
 
 ### Platform
 
@@ -355,7 +355,7 @@ Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled
 - `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置，包含公共 hooks 和 `extensions.nativeHooks.codex`
 - `.codex/agents/*.toml` — Codex agent role 文件
 
-Codex project scope 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己通过 artifact identity 确认拥有的 hook groups，手写配置或其它工具写入的 runtime-valid groups 会原样保留。Codex user scope 的 hooks 不写这里；它们随 native bundle 进入 `.codex-plugin/plugin.json` 的 `hooks` 字段，由 Codex `>= 0.144.0` 原生插件生命周期加载。历史上由 AW 写到 user scope `.codex/hooks.json` 的旧 hook groups 本期不迁移、不接管；缺少 ownership evidence 时也不会自动删除。
+Codex project scope 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己通过 artifact identity 确认拥有的 hook groups，手写配置或其它工具写入的 runtime-valid groups 会原样保留。Codex user scope 的 hooks 不写这里；它们随 native bundle 进入 `.codex-plugin/plugin.json` 的 `hooks` 字段，由 Codex `>= 0.145.0` 原生插件生命周期加载。历史上由 AW 写到 user scope `.codex/hooks.json` 的旧 hook groups 本期不迁移、不接管；缺少 ownership evidence 时也不会自动删除。
 
 安装成功后，AW 会为当前 location 写入独立 install record v2。record 只保存归属、必要安装选项、安装来源和 canonical outgoing dependency edges；它是本机安装真值，但不是健康状态数据库，也不是 SkillTrigger 真值来源。project scope 还会在 `.agent-workflows/project-artifacts/<platform>/` 写入可提交的 shared identity metadata，用于 fresh clone 后识别“可认领”的共享产物。动态 artifact 的 accepted state、`configDigest`、`contentDigest`、`lastRefresh` 和 `refreshReach` 写入 dynamic diagnostic cache，供 `status` / `status --verbose` 只读展示。
 
@@ -474,7 +474,7 @@ Codex project scope 安装 / 显式升级时，如果用户级 `~/.codex/config.
 
 ### Codex native CLI 或 native view 诊断失败
 
-`aw install <plugin> -p codex -s user` 和 `aw uninstall <plugin> -p codex -s user` 需要 Codex `>= 0.144.0` 提供 `codex plugin add/remove` 和 `codex plugin marketplace add/list/remove`。如果 CLI 不可用、命令失败、marketplace 未指向当前 canonical `AW_HOME`，或写后本地证据无法证明 plugin 已安装/已移除，命令会失败并给出可行动建议。AW 不会退回到只写 enabled config 或只删 config；请先升级/修复 Codex CLI 或 workspace policy，再重试同一条 `aw install` / `aw uninstall`。`codex app-server` 只影响 verbose/native view 只读诊断，RPC 不可用会显示 `nativeViewUnknown`，不会阻断 Codex CLI 写入主链路。
+`aw install <plugin> -p codex -s user` 和 `aw uninstall <plugin> -p codex -s user` 需要 Codex `>= 0.145.0` 提供 `codex plugin add/remove` 和 `codex plugin marketplace add/list/remove`。如果 CLI 不可用、命令失败、marketplace 未指向当前 canonical `AW_HOME`，或写后本地证据无法证明 plugin 已安装/已移除，命令会失败并给出可行动建议。AW 不会退回到只写 enabled config 或只删 config；请先升级/修复 Codex CLI 或 workspace policy，再重试同一条 `aw install` / `aw uninstall`。`codex app-server` 只影响 verbose/native view 只读诊断，RPC 不可用会显示 `nativeViewUnknown`，不会阻断 Codex CLI 写入主链路。
 
 排查时建议加 `--verbose` 或 `--debug`。debug event 会区分：
 

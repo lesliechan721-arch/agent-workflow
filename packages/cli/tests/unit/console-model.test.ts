@@ -753,7 +753,7 @@ describe('console-model', () => {
             command: 'codex',
             status: 'tooOld',
             detectedVersion: '0.130.0',
-            requiredMinVersion: '0.144.0',
+            requiredMinVersion: '0.145.0',
             reasonCode: 'agentVersionTooLow',
             stdout: 'codex-cli 0.130.0',
             stderr: '',
@@ -769,9 +769,9 @@ describe('console-model', () => {
         platform: 'codex',
         status: 'tooOld',
         detectedVersion: '0.130.0',
-        requiredMinVersion: '0.144.0',
+        requiredMinVersion: '0.145.0',
         reasonCode: 'agentVersionTooLow',
-        suggestedAction: expect.stringContaining('升级到 >= 0.144.0'),
+        suggestedAction: expect.stringContaining('升级到 >= 0.145.0'),
       }),
     ]);
     expect(JSON.stringify(items[0]?.summary.agentVersionSummary)).not.toContain('rawVersionOutput');

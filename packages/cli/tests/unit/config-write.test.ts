@@ -207,7 +207,7 @@ function createAgentVersionRunner(options: {
       throw new Error(`Unexpected native CLI invocation in config-write.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
     }
     if (invocation.command === 'codex') {
-      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.144.0', stderr: '' };
+      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.145.0', stderr: '' };
     }
     if (invocation.command === 'claude') {
       return { exitCode: 0, stdout: options.claude ?? '2.1.88 (Claude Code)', stderr: '' };
@@ -1269,7 +1269,7 @@ describe('plugin config write helper', () => {
       scope: 'user',
       cwd,
       env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.144.0' }),
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.145.0' }),
       key: 'aw.skillTriggers.commit.trigger',
       action: 'set',
       value: 'manual',
@@ -1361,7 +1361,7 @@ describe('plugin config write helper', () => {
       scope: 'user',
       cwd,
       env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.144.0' }),
+      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.145.0' }),
       request: {
         updates: {
           mode: 'fast',

@@ -958,7 +958,7 @@ describe('Codex project safety preflight', () => {
         env: workspace.env,
         nativeCliRunner: async (invocation) => {
           if (invocation.command === 'codex' && invocation.args.length === 1 && invocation.args[0] === '--version') {
-            return { exitCode: 0, stdout: 'codex-cli 0.144.0', stderr: '' };
+            return { exitCode: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
           }
           return { exitCode: 0, stdout: '', stderr: '' };
         },

@@ -72,7 +72,7 @@ status 和控制台依赖投影测试要保持只读：不得创建 `~/.aw`、�
 
 主控制台安装向导需要覆盖平台兼容性和可安装性：`marketplace.policy.products` 过滤、`both` 下单平台插件禁用、显式多插件名共同兼容平台交集、无共同兼容平台时 dispatch 前失败，以及 fake prompt 返回不兼容平台时的拒绝。`Codex + project scope` 还要覆盖 repo-visible 候选过滤、空态、显式插件名早失败和正向可选插件；skills-only、mcp-only、slashCommands-only 应可选，apps-only 不进入候选，apps-mixed disabled 且指向 user scope 或拆分插件。
 
-主控制台 Codex project scope 测试不能只依赖“是否有 repo-visible surface”。写动作必须先通过 Codex `>= 0.144.0` 版本门禁；PATH 缺少 `codex`、版本不可解析或低于 `0.144.0` 时，安装、升级、卸载、cleanup、reinstall 和会刷新 artifact 的配置动作都不能写 repo-visible artifacts，也不能创建 record、marker 或用户级 native 状态。只读发现和状态页面可以展示 Codex project 候选或已有 project evidence，但必须把版本阻断作为写入前提展示。
+主控制台 Codex project scope 测试不能只依赖“是否有 repo-visible surface”。写动作必须先通过 Codex `>= 0.145.0` 版本门禁；PATH 缺少 `codex`、版本不可解析或低于 `0.145.0` 时，安装、升级、卸载、cleanup、reinstall 和会刷新 artifact 的配置动作都不能写 repo-visible artifacts，也不能创建 record、marker 或用户级 native 状态。只读发现和状态页面可以展示 Codex project 候选或已有 project evidence，但必须把版本阻断作为写入前提展示。
 
 SkillTrigger 回归要覆盖 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。`aw install`、`aw upgrade`、`aw reinstall` 的 help 不展示 `-t` 或 `--skill-trigger`，传入这些旧参数时确定性失败并引导到 `aw config` 或主控制台配置页。
 
@@ -90,7 +90,7 @@ debug event 断言要按事件类型锁核心 payload，而不是只看人类输
 
 Codex project repo-visible 写命令要有 CLI output 回归：pure project install / uninstall / explicit upgrade 不得输出 native marketplace add 或 plugin enabled 成功信息；成功 receipt 要点名 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules`、`.codex/agents` 中实际触达的目标面，并包含 project artifact identity 和 private state 分类。默认 status 在正常 project 场景不能把用户级 marketplace 缺失作为主诊断；external ownership 只能作为附加诊断和 next step。
 
-Codex project repo-visible 测试还要断言通过版本门禁后不会调用 marketplace add/list/remove、`codex plugin add/remove` 或 app-server RPC，也不会写用户级 config/cache。缺少 `codex` 可执行文件、版本不可解析或版本低于 `0.144.0` 时，命令要在写任何 repo artifact 前 fail fast。纯 native-only 插件和包含 `apps` 的 Codex project 安装也要在写任何 repo artifact 前 fail fast。
+Codex project repo-visible 测试还要断言通过版本门禁后不会调用 marketplace add/list/remove、`codex plugin add/remove` 或 app-server RPC，也不会写用户级 config/cache。缺少 `codex` 可执行文件、版本不可解析或版本低于 `0.145.0` 时，命令要在写任何 repo artifact 前 fail fast。纯 native-only 插件和包含 `apps` 的 Codex project 安装也要在写任何 repo artifact 前 fail fast。
 
 Codex project required config 顺序要用零写入 helper 锁住：project installability、用户级 Codex config external ownership、必要的 project `.codex/config.toml` 解析、project artifact identity 和 unmanaged repo artifact 冲突都必须早于 required AW config 表单 / store 写入。安全预检失败时，主控制台不调用 required config 表单，不创建 config store，不写 native state、artifact、identity 或 record。同一条 mixed explicit command 里同一插件只解析一次 required config，主控制台同一轮只展示一次配置表单。
 

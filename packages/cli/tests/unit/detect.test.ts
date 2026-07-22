@@ -174,7 +174,7 @@ describe('detect utils', () => {
           }
           return {
             exitCode: 0,
-            stdout: 'codex-cli 0.144.0',
+            stdout: 'codex-cli 0.145.0',
             stderr: '',
           };
         },
@@ -209,7 +209,7 @@ describe('detect utils', () => {
           }
           return {
             exitCode: 0,
-            stdout: 'codex-cli 0.144.0',
+            stdout: 'codex-cli 0.145.0',
             stderr: '',
           };
         },

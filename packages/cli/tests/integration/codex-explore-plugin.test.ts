@@ -711,7 +711,7 @@ function createCodexMarketplaceAddRunner(
       if (invocation.command === 'codex') {
         return {
           exitCode: 0,
-          stdout: 'codex-cli 0.144.0',
+          stdout: 'codex-cli 0.145.0',
           stderr: '',
         };
       }

@@ -19,7 +19,7 @@ import type { PlatformAdapter, PlatformName } from '../../src/types.js';
 
 const DEFAULT_GUARDED_NATIVE_COMMANDS = ['codex', 'claude'] as const;
 const DEFAULT_VERSION_OUTPUTS: Record<string, string> = {
-  codex: 'codex-cli 0.144.0',
+  codex: 'codex-cli 0.145.0',
   claude: '2.1.88 (Claude Code)',
 };
 

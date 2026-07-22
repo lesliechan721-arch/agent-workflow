@@ -236,7 +236,7 @@ function createCodexMarketplaceAddRunner(
     if (invocation.command === 'codex' && invocation.args.length === 1 && invocation.args[0] === '--version') {
       return {
         exitCode: 0,
-        stdout: 'codex-cli 0.144.0',
+        stdout: 'codex-cli 0.145.0',
         stderr: '',
       };
     }
@@ -1339,7 +1339,7 @@ describe('cli entry integration', () => {
       if (invocation.args.length === 1 && invocation.args[0] === '--version') {
         return {
           exitCode: 0,
-          stdout: 'codex-cli 0.144.0',
+          stdout: 'codex-cli 0.145.0',
           stderr: '',
         };
       }
@@ -1375,7 +1375,7 @@ describe('cli entry integration', () => {
       if (invocation.args.length === 1 && invocation.args[0] === '--version') {
         return {
           exitCode: 0,
-          stdout: 'codex-cli 0.144.0',
+          stdout: 'codex-cli 0.145.0',
           stderr: '',
         };
       }
@@ -1462,7 +1462,7 @@ describe('cli entry integration', () => {
       if (invocation.args.length === 1 && invocation.args[0] === '--version') {
         return {
           exitCode: 0,
-          stdout: 'codex-cli 0.144.0',
+          stdout: 'codex-cli 0.145.0',
           stderr: '',
         };
       }

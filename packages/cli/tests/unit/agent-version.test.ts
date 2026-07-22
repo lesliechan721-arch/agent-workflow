@@ -38,7 +38,7 @@ describe('agent-version', () => {
   });
 
   it('reads built-in minimum versions by platform', () => {
-    expect(getMinimumAgentVersion('codex')).toBe('0.144.0');
+    expect(getMinimumAgentVersion('codex')).toBe('0.145.0');
     expect(getMinimumAgentVersion('claude')).toBe('2.1.88');
     expect(getAgentVersionRequirement('claude')).toMatchObject({
       platform: 'claude',
@@ -49,19 +49,19 @@ describe('agent-version', () => {
   });
 
   it('extracts the first strict SemVer token from supported version outputs', () => {
-    expect(extractStrictSemVerTokenFromVersionOutput('codex-cli 0.144.0')).toBe('0.144.0');
+    expect(extractStrictSemVerTokenFromVersionOutput('codex-cli 0.145.0')).toBe('0.145.0');
     expect(extractStrictSemVerTokenFromVersionOutput('2.1.119 (Claude Code)')).toBe('2.1.119');
     expect(extractStrictSemVerTokenFromVersionOutput('noise\n0.144.1-alpha.1 more')).toBe('0.144.1-alpha.1');
   });
 
   it.each([
     'latest',
-    'v0.144.0',
-    'agent-0.144.0',
+    'v0.145.0',
+    'agent-0.145.0',
     '0.144',
-    '0.144.0beta',
-    '0.144.0.1',
-    '"0.144.0"',
+    '0.145.0beta',
+    '0.145.0.1',
+    '"0.145.0"',
   ])('rejects invalid SemVer token output %s', (output) => {
     expect(extractStrictSemVerTokenFromVersionOutput(output)).toBeNull();
   });
@@ -71,7 +71,7 @@ describe('agent-version', () => {
       runner: async () => ({
         exitCode: 0,
         stdout: 'codex-cli',
-        stderr: '0.144.0',
+        stderr: '0.145.0',
       }),
     });
 
@@ -79,11 +79,11 @@ describe('agent-version', () => {
       platform: 'codex',
       command: 'codex',
       status: 'supported',
-      detectedVersion: '0.144.0',
-      requiredMinVersion: '0.144.0',
+      detectedVersion: '0.145.0',
+      requiredMinVersion: '0.145.0',
     });
     expect(result.rawOutput).toContain('codex-cli');
-    expect(result.rawOutput).toContain('0.144.0');
+    expect(result.rawOutput).toContain('0.145.0');
   });
 
   it('caches matching probes within the current process', async () => {
@@ -92,7 +92,7 @@ describe('agent-version', () => {
       calls += 1;
       return {
         exitCode: 0,
-        stdout: 'codex-cli 0.144.0',
+        stdout: 'codex-cli 0.145.0',
         stderr: '',
       };
     };
@@ -108,9 +108,26 @@ describe('agent-version', () => {
     });
 
     expect(calls).toBe(1);
-    expect(first).toMatchObject({ status: 'supported', detectedVersion: '0.144.0' });
-    expect(second).toMatchObject({ status: 'supported', detectedVersion: '0.144.0' });
+    expect(first).toMatchObject({ status: 'supported', detectedVersion: '0.145.0' });
+    expect(second).toMatchObject({ status: 'supported', detectedVersion: '0.145.0' });
     expect(second).not.toBe(first);
+  });
+
+  it.each(['0.144.0', '0.144.999'])('rejects Codex %s below the 0.145.0 minimum', async (version) => {
+    await expect(
+      probeAgentVersion('codex', {
+        runner: async () => ({
+          exitCode: 0,
+          stdout: `codex-cli ${version}`,
+          stderr: '',
+        }),
+      }),
+    ).resolves.toMatchObject({
+      status: 'tooOld',
+      reasonCode: 'agentVersionTooLow',
+      detectedVersion: version,
+      requiredMinVersion: '0.145.0',
+    });
   });
 
   it('compares prerelease precedence with strict SemVer rules', async () => {
@@ -118,27 +135,27 @@ describe('agent-version', () => {
       probeAgentVersion('codex', {
         runner: async () => ({
           exitCode: 0,
-          stdout: 'codex-cli 0.144.0-beta.1',
+          stdout: 'codex-cli 0.145.0-beta.1',
           stderr: '',
         }),
       }),
     ).resolves.toMatchObject({
       status: 'tooOld',
       reasonCode: 'agentVersionTooLow',
-      detectedVersion: '0.144.0-beta.1',
+      detectedVersion: '0.145.0-beta.1',
     });
 
     await expect(
       probeAgentVersion('codex', {
         runner: async () => ({
           exitCode: 0,
-          stdout: 'codex-cli 0.144.1-alpha.1',
+          stdout: 'codex-cli 0.145.1-alpha.1',
           stderr: '',
         }),
       }),
     ).resolves.toMatchObject({
       status: 'supported',
-      detectedVersion: '0.144.1-alpha.1',
+      detectedVersion: '0.145.1-alpha.1',
     });
 
     await expect(

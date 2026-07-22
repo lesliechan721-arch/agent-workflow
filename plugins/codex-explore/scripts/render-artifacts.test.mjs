@@ -452,7 +452,7 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.14');
+  assert.equal(manifest.version, '0.1.15');
   assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
   assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);

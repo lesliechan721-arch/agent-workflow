@@ -655,7 +655,7 @@ describe('authoring tools', () => {
             minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
           },
           codex: {
-            minVersion: '0.144.0',
+            minVersion: '0.145.0',
           },
         },
       },
@@ -1259,7 +1259,7 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
     expect(manifestSpecDoc).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
-    expect(manifestSpecDoc).toContain('Codex `>= 0.144.0`、Claude Code `>= 2.1.88`');
+    expect(manifestSpecDoc).toContain('Codex `>= 0.145.0`、Claude Code `>= 2.1.88`');
     expect(() =>
       validatePluginManifest(
         '/tmp/coding-standards',
@@ -1323,7 +1323,7 @@ describe('authoring tools', () => {
     expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
     expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
     expect(exampleDoc).toContain('codex plugin marketplace add/list');
-    expect(exampleDoc).toContain('写入前仍要求本机 Codex `>= 0.144.0`');
+    expect(exampleDoc).toContain('写入前仍要求本机 Codex `>= 0.145.0`');
     expect(exampleDoc).toContain(
       '`skillTriggers.review-workflow.{defaultTrigger, allowDynamicTrigger}`',
     );

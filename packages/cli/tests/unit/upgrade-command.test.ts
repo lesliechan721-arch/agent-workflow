@@ -239,7 +239,7 @@ function createAgentVersionRunner(options: {
     if (invocation.command === 'codex') {
       return {
         exitCode: 0,
-        stdout: options.codex ?? 'codex-cli 0.144.0',
+        stdout: options.codex ?? 'codex-cli 0.145.0',
         stderr: '',
       };
     }
@@ -1342,7 +1342,7 @@ describe('upgrade command dependency graph', () => {
         {
           env,
           nativeCliRunner: createAgentVersionRunner({
-            codex: 'codex-cli 0.144.0',
+            codex: 'codex-cli 0.145.0',
             claude: '2.1.87 (Claude Code)',
           }),
           adapters: { codex, claude },
