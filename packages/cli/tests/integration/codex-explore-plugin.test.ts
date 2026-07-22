@@ -1639,7 +1639,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    expect(renderedMarketplaceSkill).toContain('推理强度 `medium`');
+    expect(renderedMarketplaceSkill).toContain('推理强度是 `medium`');
     expect(renderedMarketplaceSkill).not.toContain('{{modelReasoningEffort}}');
 
     const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPluginFromMarketplace').mockImplementation(
@@ -1682,9 +1682,9 @@ describe('codex-explore integration acceptance', () => {
       fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-agent.toml'), 'utf8'),
     ]);
 
-    expect(runtimeSkill).toContain('推理强度 `low`');
-    expect(runtimeSkill).not.toContain('推理强度 `medium`');
-    expect(cachedSkill).toContain('推理强度 `low`');
+    expect(runtimeSkill).toContain('推理强度是 `low`');
+    expect(runtimeSkill).not.toContain('推理强度是 `medium`');
+    expect(cachedSkill).toContain('推理强度是 `low`');
     expect(roleContent).toContain('model_reasoning_effort = "low"');
   });
 
@@ -2632,18 +2632,18 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(skillMetadataPath, 'utf8')).resolves.toContain(
       'allow_implicit_invocation: true',
     );
-    expect(skillContent).toContain('探索子代理');
-    expect(skillContent).toContain('优先使用 Codex Explore 自带的探索子代理');
-    expect(skillContent).toContain('以当前工具实际公开的参数为准');
-    expect(skillContent).toContain('不要改用 Codex 内置 `explorer`');
-    expect(skillContent).toContain('task_name: "codex_explore_1"');
+    expect(skillContent).toContain('专用子代理');
+    expect(skillContent).toContain('只使用 Codex Explore 自带的探索 role');
+    expect(skillContent).toContain('以当前 `spawn_agent` 工具实际公开的 schema 为准');
+    expect(skillContent).toContain('不得启动默认子代理或改用内置 `explorer`');
+    expect(skillContent).toContain('如 `trace_wait_agent`');
     expect(skillContent).toContain('agent_type: "codex-explore-agent"');
-    expect(skillContent).toContain('fork_turns: "none"');
-    expect(skillContent).toContain('默认模型 `gpt-5.5`');
-    expect(skillContent).toContain('推理强度 `max`');
-    expect(skillContent).toContain('配置的 `gpt-5.5` / `max` 不会应用');
+    expect(skillContent).toContain('传 `"none"`，避免全历史 fork');
+    expect(skillContent).toContain('默认模型是 `gpt-5.5`');
+    expect(skillContent).toContain('推理强度是 `max`');
+    expect(skillContent).toContain('模型、推理强度和 developer instructions 由专用 role 提供');
     expect(skillContent).toContain('只有当前工具列表提供 `close_agent` 时');
-    expect(skillContent).toContain('`interrupt_agent` 只用于取消仍在运行的任务');
+    expect(skillContent).toContain('`interrupt_agent` 若只中断当前 turn');
     expect(roleContent).toContain('name = "codex-explore-agent"');
     expect(roleContent).toContain('model = "gpt-5.5"');
     expect(roleContent).toContain('model_reasoning_effort = "max"');
@@ -3597,8 +3597,8 @@ describe('codex-explore integration acceptance', () => {
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('推理强度 `medium`');
-    expect(projectSkillContent).toContain('推理强度 `low`');
+    expect(userSkillContent).toContain('推理强度是 `medium`');
+    expect(projectSkillContent).toContain('推理强度是 `low`');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3744,7 +3744,7 @@ describe('codex-explore integration acceptance', () => {
     const trackedSkill = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-skill');
 
-    expect(skillContent).toContain('推理强度 `low`');
+    expect(skillContent).toContain('推理强度是 `low`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
@@ -3948,8 +3948,8 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explore-skill');
 
     await expect(fs.pathExists(projectStorePath)).resolves.toBe(false);
-    expect(skillContent).toContain('默认模型 `gpt-5.6-luna`');
-    expect(skillContent).toContain('推理强度 `medium`');
+    expect(skillContent).toContain('默认模型是 `gpt-5.6-luna`');
+    expect(skillContent).toContain('推理强度是 `medium`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
