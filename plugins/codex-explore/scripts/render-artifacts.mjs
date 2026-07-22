@@ -67,8 +67,8 @@ async function readManifestDefaults() {
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
   return {
-    explorerModel: schema.explorerModel?.default ?? 'gpt-5.6-luna',
-    modelReasoningEffort: schema.modelReasoningEffort?.default ?? 'medium',
+    explorerModel: schema.explorerModel?.default ?? 'gpt-5.6-terra',
+    modelReasoningEffort: schema.modelReasoningEffort?.default ?? 'low',
     minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
     convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
   };

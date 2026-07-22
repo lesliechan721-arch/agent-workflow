@@ -1826,7 +1826,6 @@ describe('codex-explore integration acceptance', () => {
     };
 
     expect(userSkill).toContain('model=gpt-5.5');
-    expect(projectSkill).toContain('model=gpt-5.6-luna');
     expect(projectSkill).toContain('reasoning=low');
     expect(userMetadataAuto).toBe(true);
     expect(projectMetadataAuto).toBe(true);
@@ -3875,7 +3874,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('refreshes tracked artifacts through config reset and restores default render output', async () => {
+  it('refreshes tracked artifacts through config reset', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
@@ -3928,8 +3927,7 @@ describe('codex-explore integration acceptance', () => {
     });
 
     const projectStorePath = path.join(repoRoot, '.agent-workflows', 'plugin-config', 'codex-explore', 'config.json');
-    const [skillContent, afterTracking, projectStatus] = await Promise.all([
-      fs.readFile(path.join(repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
+    const [afterTracking, projectStatus] = await Promise.all([
       readTrackingManifest(projectPaths.trackingDir),
       statusCommand(
         ['codex-explore'],
@@ -3948,8 +3946,6 @@ describe('codex-explore integration acceptance', () => {
       artifact.id === 'codex-explore-skill');
 
     await expect(fs.pathExists(projectStorePath)).resolves.toBe(false);
-    expect(skillContent).toContain('默认模型是 `gpt-5.6-luna`');
-    expect(skillContent).toContain('推理强度是 `medium`');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {

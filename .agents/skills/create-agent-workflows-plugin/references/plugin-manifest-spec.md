@@ -239,11 +239,11 @@ AW 版本管理里有三套身份，不能混用：
   },
   "config": {
     "schema": {
-      "explorerModel": { "type": "string", "default": "gpt-5.6-luna" },
+      "explorerModel": { "type": "string", "default": "gpt-5.6-terra" },
       "modelReasoningEffort": {
         "type": "enum",
         "values": ["low", "medium", "high", "xhigh", "max"],
-        "default": "medium"
+        "default": "low"
       }
     }
   },

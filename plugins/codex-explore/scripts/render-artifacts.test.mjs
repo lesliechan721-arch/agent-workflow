@@ -309,17 +309,17 @@ async function testDefaultsComeFromManifestSchema() {
     const skill = findArtifact(plan, 'codex-explore-skill');
     const role = findArtifact(plan, 'codex-explore-agent-role');
 
-    assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.6-luna`/);
-    assert.match(skill.content.skillFile, /推理强度是 `medium`/);
+    assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.6-terra`/);
+    assert.match(skill.content.skillFile, /推理强度是 `low`/);
     assert.match(skill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
     assert.match(skill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
-    assert.equal(role.content.roleFile.model, 'gpt-5.6-luna');
-    assert.equal(role.content.roleFile.model_reasoning_effort, 'medium');
+    assert.equal(role.content.roleFile.model, 'gpt-5.6-terra');
+    assert.equal(role.content.roleFile.model_reasoning_effort, 'low');
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.6-luna');
-    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'medium');
+    assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.6-terra');
+    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
     assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
     assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
     assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
@@ -452,7 +452,7 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.15');
+  assert.equal(manifest.version, '0.1.16');
   assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
   assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
