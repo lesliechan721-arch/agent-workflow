@@ -120,7 +120,11 @@ async function testPresentSkillArtifact() {
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
   assert.match(skill.content.skillFile, /description: 只读证据探索委派工作流/);
-  assert.match(skill.content.skillFile, /用户明确要求使用 codex-explore 时加载，但仍须通过 Gate 才能启动子代理/);
+  assert.match(skill.content.skillFile, /候选内容多、主代理直接探索会明显占用或污染上下文时触发/);
+  assert.match(skill.content.skillFile, /不用于代码 review、缺陷判定或其它以质量评价和修改建议为目标的任务/);
+  assert.match(skill.content.skillFile, /来源和候选材料已知、少量定向读取即可完成时不要触发/);
+  assert.equal(skill.content.skillFile.includes('review 中仅可委派独立分离的事实检索子问题'), false);
+  assert.equal(skill.content.skillFile.includes('用户明确要求使用时也必须先通过 Gate'), false);
   assert.match(skill.content.skillFile, /目标是把会明显占用或污染主会话上下文的只读证据探索交给专用子代理/);
   assert.match(skill.content.skillFile, /完成标准：每个委派问题得到符合证据合同的结果或明确的缺失说明/);
   assert.match(skill.content.skillFile, /已标记为未解决且没有并行接管/);
@@ -134,7 +138,9 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /任务目标本身是实现、修改、格式化、提交或其它写操作/);
   assert.match(skill.content.skillFile, /无法清楚分离出只读证据探索/);
   assert.match(skill.content.skillFile, /数量只作辅助判断/);
-  assert.match(skill.content.skillFile, /能把探索工作写成具体问题/);
+  assert.match(skill.content.skillFile, /能把探索工作写成具体的事实检索问题/);
+  assert.match(skill.content.skillFile, /划定资料来源和预期证据输出/);
+  assert.match(skill.content.skillFile, /缺陷判定、质量评价、严重性分级、修改建议或通过结论/);
   assert.match(skill.content.skillFile, /交叉验证或独立核对假设不能单独触发本工作流/);
   assert.match(skill.content.skillFile, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill.content.skillFile, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
@@ -343,7 +349,11 @@ async function testStaticSkillContracts() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
   assert.match(skill, /description: 只读证据探索委派工作流/);
-  assert.match(skill, /用户明确要求使用 codex-explore 时加载，但仍须通过 Gate 才能启动子代理/);
+  assert.match(skill, /候选内容多、主代理直接探索会明显占用或污染上下文时触发/);
+  assert.match(skill, /不用于代码 review、缺陷判定或其它以质量评价和修改建议为目标的任务/);
+  assert.match(skill, /来源和候选材料已知、少量定向读取即可完成时不要触发/);
+  assert.equal(skill.includes('review 中仅可委派独立分离的事实检索子问题'), false);
+  assert.equal(skill.includes('用户明确要求使用时也必须先通过 Gate'), false);
   assert.match(skill, /目标是把会明显占用或污染主会话上下文的只读证据探索交给专用子代理/);
   assert.match(skill, /完成标准：每个委派问题得到符合证据合同的结果或明确的缺失说明/);
   assert.match(skill, /已标记为未解决且没有并行接管/);
@@ -357,7 +367,9 @@ async function testStaticSkillContracts() {
   assert.match(skill, /任务目标本身是实现、修改、格式化、提交或其它写操作/);
   assert.match(skill, /无法清楚分离出只读证据探索/);
   assert.match(skill, /数量只作辅助判断/);
-  assert.match(skill, /能把探索工作写成具体问题/);
+  assert.match(skill, /能把探索工作写成具体的事实检索问题/);
+  assert.match(skill, /划定资料来源和预期证据输出/);
+  assert.match(skill, /缺陷判定、质量评价、严重性分级、修改建议或通过结论/);
   assert.match(skill, /交叉验证或独立核对假设不能单独触发本工作流/);
   assert.match(skill, /问题必须先做只读证据探索才能可靠推进/);
   assert.match(skill, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
@@ -452,7 +464,7 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.16');
+  assert.equal(manifest.version, '0.1.17');
   assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
   assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
