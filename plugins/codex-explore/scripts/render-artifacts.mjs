@@ -118,15 +118,6 @@ function resolveConfigValues(context, defaults) {
   };
 }
 
-export function renderDefaultExplorerConfig({ explorerModel, modelReasoningEffort }) {
-  return trimBlock(`
-    - \`agent_type\`: \`${CODEX_EXPLORE_ROLE_KEY}\`
-    - role \`model\`: \`${explorerModel}\`
-    - role \`model_reasoning_effort\`: \`${modelReasoningEffort}\`
-    - role 仅在 \`spawn_agent\` 公开 \`agent_type\` 且允许 \`${CODEX_EXPLORE_ROLE_KEY}\` 时生效；否则 Gate 不通过，不启动子代理
-  `);
-}
-
 export function renderRoleDeveloperInstructions() {
   return trimBlock(`
     你是 Codex Explore 的叶子探索子代理，只做只读调查。围绕主代理指定的问题和范围，读取必要的代码、文档、日志、网页或用户材料。完成标准是回答具体问题，并让每个关键结论都能由实际读取的证据核验。
@@ -137,7 +128,16 @@ export function renderRoleDeveloperInstructions() {
 
     只引用实际读取的来源。每个关键结论紧跟可核验的来源定位，例如文件路径与必要行号、URL、用户材料的段落或行号、命令或工具名称及可识别的输出片段或记录 ID；时间敏感来源还要提供来源时间。明确标记直接证据与推断，报告来源冲突、证据缺失和会影响结论的不确定点。证据不足时缩小结论，不要猜测。
 
-    返回关键结论和对应证据，以及建议主代理下一步查看的少量内容。避免展开无关材料，不要替主代理实现或修改。
+    向公开网页或外部搜索发送查询前，最小化并脱敏查询；不得包含密钥、个人数据、私有代码或用户材料原文。无法安全脱敏时，只使用本地或用户已提供的来源并报告限制。
+
+    除非主代理另有输出要求，对每个关键结论使用以下模板：
+    - 结论：
+      - 类型：直接证据 | 推断
+      - 证据：文件:行号 | URL（来源时间） | 可识别的命令输出或记录 ID
+      - 冲突或缺口：
+      - 建议补读：
+
+    只返回关键结论和对应证据。避免展开无关材料，不要替主代理实现或修改。
   `);
 }
 
@@ -194,10 +194,6 @@ export async function renderArtifactPlan(context) {
 
   const { skillTemplate, openaiTemplate } = await readSkillTemplates();
   const replacements = {
-    defaultExplorerConfig: renderDefaultExplorerConfig({
-      explorerModel,
-      modelReasoningEffort,
-    }),
     explorerRoleKey: CODEX_EXPLORE_ROLE_KEY,
     explorerModel,
     modelReasoningEffort,

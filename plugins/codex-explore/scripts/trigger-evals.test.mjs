@@ -1,0 +1,154 @@
+import assert from 'node:assert/strict';
+import { readFile, rm } from 'node:fs/promises';
+
+import {
+  buildCodexArgs,
+  createEvalWorkspace,
+  inspectExecEvent,
+  loadEvalCases,
+  parseArgs,
+  parseExecEventLine,
+  summarizeCase,
+} from '../evals/run-trigger-evals.mjs';
+
+async function testEvalCorpus() {
+  const cases = await loadEvalCases('all');
+  assert.equal(cases.length, 20);
+  assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
+  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 8);
+  assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
+
+  const expectedContracts = new Map([
+    ['cross_module_fact', [true, true]],
+    ['explicit_known_file', [true, false]],
+    ['skill_design_review', [false, false]],
+    ['large_pr_review', [false, false]],
+    ['official_docs_and_logs', [true, true]],
+  ]);
+  for (const [id, [shouldLoad, shouldSpawn]] of expectedContracts) {
+    const entry = cases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required eval case ${id}`);
+    assert.equal(entry.should_load_skill, shouldLoad);
+    assert.equal(entry.should_spawn_agent, shouldSpawn);
+  }
+}
+
+function testArguments() {
+  assert.deepEqual(
+    parseArgs(['--split', 'validation', '--runs', '5', '--threshold', '0.6']),
+    {
+      split: 'validation',
+      runs: 5,
+      threshold: 0.6,
+      timeoutMs: 180_000,
+      codexBin: 'codex',
+      model: undefined,
+      output: undefined,
+      help: false,
+    },
+  );
+  assert.throws(() => parseArgs(['--split', 'unknown']), /train, validation, or all/);
+  assert.throws(() => parseArgs(['--runs', '0']), /positive integer/);
+  assert.throws(() => parseArgs(['--threshold', '1']), /less than 1/);
+}
+
+function testJsonlDetection() {
+  assert.equal(parseExecEventLine('not json'), null);
+  const loadEvent = parseExecEventLine(JSON.stringify({
+    type: 'item.started',
+    item: {
+      id: 'item_1',
+      type: 'command_execution',
+      command: "sed -n '1,220p' .agents/skills/codex-explore/SKILL.md",
+    },
+  }));
+  assert.deepEqual(
+    inspectExecEvent(loadEvent, '/tmp/eval/.agents/skills/codex-explore/SKILL.md'),
+    {
+      loaded: true,
+      loadEvidence: "sed -n '1,220p' .agents/skills/codex-explore/SKILL.md",
+    },
+  );
+
+  const spawnEvent = parseExecEventLine(JSON.stringify({
+    type: 'item.started',
+    item: {
+      id: 'item_2',
+      type: 'collab_tool_call',
+      tool: 'spawn_agent',
+      prompt: 'Trace the cross-module fact.',
+    },
+  }));
+  assert.deepEqual(
+    inspectExecEvent(spawnEvent, '/tmp/eval/.agents/skills/codex-explore/SKILL.md'),
+    {
+      spawned: true,
+      spawnEvidence: 'Trace the cross-module fact.',
+    },
+  );
+}
+
+function testSummary() {
+  const summary = summarizeCase(
+    {
+      id: 'example',
+      split: 'train',
+      query: 'query',
+      should_load_skill: true,
+      should_spawn_agent: false,
+    },
+    [
+      { loaded: true, spawned: false, execution_error: false },
+      { loaded: true, spawned: false, execution_error: false },
+      { loaded: false, spawned: false, execution_error: false },
+    ],
+    0.5,
+  );
+  assert.equal(summary.observed.load_rate, 2 / 3);
+  assert.equal(summary.observed.spawn_rate, 0);
+  assert.equal(summary.passed, true);
+}
+
+async function testWorkspaceStaging() {
+  const workspace = await createEvalWorkspace();
+  try {
+    const [skill, role] = await Promise.all([
+      readFile(workspace.skillPath, 'utf8'),
+      readFile(workspace.rolePath, 'utf8'),
+    ]);
+    assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
+    assert.equal(skill.includes('user-invocable:'), false);
+    assert.match(role, /codex-explore-agent/);
+    assert.match(role, /冲突或缺口/);
+
+    const args = buildCodexArgs(
+      workspace,
+      { query: '$codex-explore read known/settings.ts' },
+      { model: 'gpt-test' },
+    );
+    assert.ok(args.includes('--json'));
+    assert.ok(args.includes('--ephemeral'));
+    assert.ok(args.includes('read-only'));
+    assert.ok(args.includes('gpt-test'));
+    assert.ok(args.some((arg) => arg.includes('agents.codex-explore-agent.config_file=')));
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  await testEvalCorpus();
+  testArguments();
+  testJsonlDetection();
+  testSummary();
+  await testWorkspaceStaging();
+  console.log('trigger eval tests passed');
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = 1;
+});

@@ -1,9 +1,9 @@
 ---
 name: codex-explore
-description: 只读证据探索委派工作流。仅在需要从边界不明、陌生或外部的代码库、文档集、日志、网页或用户材料中筛选和核验证据，且候选内容多、主代理直接探索会明显占用或污染上下文时触发。不用于代码 review、缺陷判定或其它以质量评价和修改建议为目标的任务。来源和候选材料已知、少量定向读取即可完成时不要触发。
-user-invocable: true
+description: 当用户需要从大量、边界不明或陌生的代码库、文档、日志、网页或用户材料中搜索、筛选并核验事实，且候选内容会显著占用主会话上下文时使用；即使最终答案很短也适用。仅用于可独立完成的只读事实检索；不要用于代码 review、缺陷或质量判断、修改建议、写操作，或少量已知来源的定向读取。
+compatibility: 仅适用于支持 spawn_agent.agent_type 的 Codex；需随插件安装 codex-explore-agent role。
 metadata:
-  short-description: 只读证据探索与上下文隔离
+  short-description: 大型只读探索与证据核验
 ---
 
 # Codex Explore
@@ -26,17 +26,19 @@ metadata:
 - 用户只是顺带提到 `codex-explore` 或 `plugins/codex-explore`，但没有要求用它做只读探索，且问题本身不需要隔离探索上下文。
 - 任务目标本身是实现、修改、格式化、提交或其它写操作，并且无法清楚分离出只读证据探索；或者要委派的子任务需要提权、登录、购买、发布、发送消息或调用有副作用的接口。
 
-价值 Gate 通过后再检查运行能力。只有当前 `spawn_agent` 工具公开 `agent_type`，且其 schema 未限制或明确允许 `{{explorerRoleKey}}` 时才启动子代理。工具不公开 `agent_type`、schema 明确不允许 `{{explorerRoleKey}}`，或运行时报告 role 不可用时，不启动替代 role；把该范围视为委派失败，按后文的失败回退规则处理。
+价值 Gate 通过后，读取当前 `spawn_agent` schema 检查运行能力。仅当工具公开 `agent_type`，且未限制或明确允许 `{{explorerRoleKey}}` 时才启动子代理。否则不启动替代 role；把该范围视为委派失败，按后文的失败回退规则处理。
 
 ## 委派规则
 
-只使用 Codex Explore 自带的探索 role，其默认模型是 `{{explorerModel}}`，推理强度是 `{{modelReasoningEffort}}`；模型、推理强度和 developer instructions 由专用 role 提供，不在 `spawn_agent` 调用中重复覆盖。调用前以当前 `spawn_agent` 工具实际公开的 schema 为准，不按 Codex 版本号或配置文件猜测，也不得传入 schema 未公开的字段；不得启动默认子代理或改用内置 `explorer`、其它 role。
+只使用 Codex Explore 自带的探索 role，其默认模型是 `{{explorerModel}}`，推理强度是 `{{modelReasoningEffort}}`；模型、推理强度和 developer instructions 由专用 role 提供，不在 `spawn_agent` 调用中重复覆盖。不得启动默认子代理或改用内置 `explorer`、其它 role。
 
 任务涉及网络、文档或时间敏感事实时，遵守当前会话的工具、联网、官方文档优先和上层安全策略。子代理继承当前会话可用的工具和权限；不能访问来源时说明限制，不能凭记忆补事实。
 
 调用 `spawn_agent` 时始终传 `agent_type: "{{explorerRoleKey}}"` 和完整的 `message`。其它调度参数只在 schema 公开时传入：
 - 公开 `task_name` 时，用小写字母、数字和下划线概括具体探索目的，如 `trace_wait_agent`；同一父任务下重名时才追加 `_2`、`_3`，不使用无语义的序号名称。
 - 公开 `fork_turns` 时，传 `"none"`，避免全历史 fork 影响专用 role。
+
+不按 Codex 版本号或配置文件猜测工具字段；schema 未公开的字段一律不传。运行时报告 role 不可用时，按委派失败处理。
 
 除非用户另有要求，默认启动 1 个子代理。只有多个探索问题互不重叠、彼此能独立完成且确实值得拆分时，才启动 2 到 3 个；不得超过当前可用并发槽位，任何情况下最多 4 个。
 
@@ -47,6 +49,10 @@ metadata:
 - 期望输出：本任务必须回答的字段、格式和覆盖范围。
 
 不要在 prompt 中重复专用 role 已提供的叶子代理、只读和通用证据规则。
+
+## 隐私 Gotcha
+
+向公开网页或外部搜索发送查询前，最小化并脱敏查询；不得包含密钥、个人数据、私有代码或用户材料原文。无法安全脱敏时，只使用本地或用户已提供的来源并报告限制。
 
 ## 等待与整合
 

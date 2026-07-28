@@ -116,13 +116,24 @@ async function testPresentSkillArtifact() {
   assert.match(role.content.roleFile.developer_instructions, /明确标记直接证据与推断/);
   assert.match(role.content.roleFile.developer_instructions, /来源冲突、证据缺失/);
   assert.match(role.content.roleFile.developer_instructions, /证据不足时缩小结论，不要猜测/);
+  assert.match(role.content.roleFile.developer_instructions, /最小化并脱敏查询/);
+  assert.match(role.content.roleFile.developer_instructions, /不得包含密钥、个人数据、私有代码或用户材料原文/);
+  assert.match(role.content.roleFile.developer_instructions, /类型：直接证据 \| 推断/);
+  assert.match(role.content.roleFile.developer_instructions, /证据：文件:行号 \| URL（来源时间）/);
+  assert.match(role.content.roleFile.developer_instructions, /冲突或缺口/);
+  assert.match(role.content.roleFile.developer_instructions, /建议补读/);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
   assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
   assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
-  assert.match(skill.content.skillFile, /description: 只读证据探索委派工作流/);
-  assert.match(skill.content.skillFile, /候选内容多、主代理直接探索会明显占用或污染上下文时触发/);
-  assert.match(skill.content.skillFile, /不用于代码 review、缺陷判定或其它以质量评价和修改建议为目标的任务/);
-  assert.match(skill.content.skillFile, /来源和候选材料已知、少量定向读取即可完成时不要触发/);
+  assert.match(skill.content.skillFile, /description: 当用户需要从大量、边界不明或陌生的代码库/);
+  assert.match(skill.content.skillFile, /候选内容会显著占用主会话上下文时使用/);
+  assert.match(skill.content.skillFile, /即使最终答案很短也适用/);
+  assert.match(skill.content.skillFile, /仅用于可独立完成的只读事实检索/);
+  assert.match(skill.content.skillFile, /不要用于代码 review、缺陷或质量判断、修改建议、写操作/);
+  assert.match(skill.content.skillFile, /少量已知来源的定向读取/);
+  assert.match(skill.content.skillFile, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
+  assert.match(skill.content.skillFile, /需随插件安装 codex-explore-agent role/);
+  assert.equal(skill.content.skillFile.includes('user-invocable:'), false);
   assert.equal(skill.content.skillFile.includes('review 中仅可委派独立分离的事实检索子问题'), false);
   assert.equal(skill.content.skillFile.includes('用户明确要求使用时也必须先通过 Gate'), false);
   assert.match(skill.content.skillFile, /目标是把会明显占用或污染主会话上下文的只读证据探索交给专用子代理/);
@@ -149,10 +160,11 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /任务特征与数量阈值冲突时/);
   assert.match(skill.content.skillFile, /先做委派价值 Gate/);
   assert.match(skill.content.skillFile, /不满足价值条件时交回主代理，按普通任务处理/);
-  assert.match(skill.content.skillFile, /价值 Gate 通过后再检查运行能力/);
+  assert.match(skill.content.skillFile, /价值 Gate 通过后，读取当前 `spawn_agent` schema 检查运行能力/);
   assert.match(skill.content.skillFile, /只使用 Codex Explore 自带的探索 role/);
-  assert.match(skill.content.skillFile, /以当前 `spawn_agent` 工具实际公开的 schema 为准/);
-  assert.match(skill.content.skillFile, /不得传入 schema 未公开的字段/);
+  assert.match(skill.content.skillFile, /仅当工具公开 `agent_type`/);
+  assert.match(skill.content.skillFile, /未限制或明确允许 `codex-explore-agent`/);
+  assert.match(skill.content.skillFile, /schema 未公开的字段一律不传/);
   assert.match(skill.content.skillFile, /公开 `task_name` 时/);
   assert.match(skill.content.skillFile, /概括具体探索目的，如 `trace_wait_agent`/);
   assert.match(skill.content.skillFile, /重名时才追加 `_2`、`_3`/);
@@ -161,8 +173,7 @@ async function testPresentSkillArtifact() {
   assert.match(skill.content.skillFile, /公开 `fork_turns` 时，传 `"none"`/);
   assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4`/);
   assert.match(skill.content.skillFile, /推理强度是 `high`/);
-  assert.match(skill.content.skillFile, /工具不公开 `agent_type`/);
-  assert.match(skill.content.skillFile, /schema 明确不允许 `codex-explore-agent`/);
+  assert.match(skill.content.skillFile, /运行时报告 role 不可用时，按委派失败处理/);
   assert.match(skill.content.skillFile, /把该范围视为委派失败，按后文的失败回退规则处理/);
   assert.match(skill.content.skillFile, /developer instructions 由专用 role 提供/);
   assert.match(skill.content.skillFile, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
@@ -175,6 +186,10 @@ async function testPresentSkillArtifact() {
     /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*期望输出/,
   );
   assert.match(skill.content.skillFile, /不要在 prompt 中重复专用 role 已提供的叶子代理、只读和通用证据规则/);
+  assert.match(skill.content.skillFile, /## 隐私 Gotcha/);
+  assert.match(skill.content.skillFile, /最小化并脱敏查询/);
+  assert.match(skill.content.skillFile, /不得包含密钥、个人数据、私有代码或用户材料原文/);
+  assert.match(skill.content.skillFile, /无法安全脱敏时，只使用本地或用户已提供的来源并报告限制/);
   assert.equal(skill.content.skillFile.includes('`send_input`'), false);
   assert.match(skill.content.skillFile, /子代理未终态且未确认停止期间.*不再同步调查同一个问题或同一批候选材料/s);
   assert.match(skill.content.skillFile, /以当前会话中已有的工具返回和完成通知为准/);
@@ -241,8 +256,8 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /只读证据探索与上下文隔离/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 委派只读证据探索，并整理关键证据。/);
+  assert.match(skill.content.openaiYaml, /大型只读探索与证据核验/);
+  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 从大量或边界不明的材料中检索并核验证据。/);
   assert.equal(skill.content.openaiYaml.includes('任务边界不明确'), false);
   assert.equal(skill.content.openaiYaml.includes('普通实现、修改、调试'), false);
 }
@@ -348,10 +363,15 @@ async function testStaticSkillContracts() {
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  assert.match(skill, /description: 只读证据探索委派工作流/);
-  assert.match(skill, /候选内容多、主代理直接探索会明显占用或污染上下文时触发/);
-  assert.match(skill, /不用于代码 review、缺陷判定或其它以质量评价和修改建议为目标的任务/);
-  assert.match(skill, /来源和候选材料已知、少量定向读取即可完成时不要触发/);
+  assert.match(skill, /description: 当用户需要从大量、边界不明或陌生的代码库/);
+  assert.match(skill, /候选内容会显著占用主会话上下文时使用/);
+  assert.match(skill, /即使最终答案很短也适用/);
+  assert.match(skill, /仅用于可独立完成的只读事实检索/);
+  assert.match(skill, /不要用于代码 review、缺陷或质量判断、修改建议、写操作/);
+  assert.match(skill, /少量已知来源的定向读取/);
+  assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
+  assert.match(skill, /需随插件安装 codex-explore-agent role/);
+  assert.equal(skill.includes('user-invocable:'), false);
   assert.equal(skill.includes('review 中仅可委派独立分离的事实检索子问题'), false);
   assert.equal(skill.includes('用户明确要求使用时也必须先通过 Gate'), false);
   assert.match(skill, /目标是把会明显占用或污染主会话上下文的只读证据探索交给专用子代理/);
@@ -378,7 +398,7 @@ async function testStaticSkillContracts() {
   assert.match(skill, /任务特征与数量阈值冲突时/);
   assert.match(skill, /先做委派价值 Gate/);
   assert.match(skill, /不满足价值条件时交回主代理，按普通任务处理/);
-  assert.match(skill, /价值 Gate 通过后再检查运行能力/);
+  assert.match(skill, /价值 Gate 通过后，读取当前 `spawn_agent` schema 检查运行能力/);
   assert.match(skill, /自带的探索 role/);
   assert.match(skill, /\{\{explorerRoleKey\}\}/);
   assert.match(skill, /调用 `spawn_agent` 时始终传 `agent_type/);
@@ -387,7 +407,7 @@ async function testStaticSkillContracts() {
   assert.match(skill, /重名时才追加 `_2`、`_3`/);
   assert.equal(skill.includes('codex_explore_1'), false);
   assert.match(skill, /公开 `fork_turns` 时/);
-  assert.match(skill, /不得传入 schema 未公开的字段/);
+  assert.match(skill, /schema 未公开的字段一律不传/);
   assert.match(skill, /模型、推理强度和 developer instructions 由专用 role 提供/);
   assert.match(skill, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill, /把该范围视为委派失败，按后文的失败回退规则处理/);
@@ -397,6 +417,9 @@ async function testStaticSkillContracts() {
   assert.match(skill, /每个子代理的 prompt 只写本次任务需要的内容/);
   assert.match(skill, /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*期望输出/);
   assert.match(skill, /不要在 prompt 中重复专用 role 已提供的叶子代理、只读和通用证据规则/);
+  assert.match(skill, /## 隐私 Gotcha/);
+  assert.match(skill, /最小化并脱敏查询/);
+  assert.match(skill, /不得包含密钥、个人数据、私有代码或用户材料原文/);
   assert.equal(skill.includes('`send_input`'), false);
   assert.match(skill, /子代理未终态且未确认停止期间.*不再同步调查同一个问题或同一批候选材料/s);
   assert.match(skill, /以当前会话中已有的工具返回和完成通知为准/);
@@ -458,13 +481,13 @@ async function testStaticSkillContracts() {
   assert.equal(skill.includes('codex-explorer'), false);
 
   assert.match(metadata, /allow_implicit_invocation:\s*true/);
-  assert.match(metadata, /short_description: "只读证据探索与上下文隔离"/);
-  assert.match(metadata, /使用 \$codex-explore 委派只读证据探索，并整理关键证据。/);
+  assert.match(metadata, /short_description: "大型只读探索与证据核验"/);
+  assert.match(metadata, /使用 \$codex-explore 从大量或边界不明的材料中检索并核验证据。/);
   assert.equal(metadata.includes('任务边界不明确'), false);
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.17');
+  assert.equal(manifest.version, '0.1.18');
   assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
   assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
