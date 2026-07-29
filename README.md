@@ -43,7 +43,7 @@ aw cleanup --dependency-index --prune-stale <token> --yes
 aw reinstall git-commit -p codex -s user
 aw config list codex-explore -s user
 aw config set codex-explore explorerModel gpt-5.4-mini -s user
-aw config unset codex-explore modelReasoningEffort -s user
+aw config unset codex-explore explorerModel -s user
 aw config reset codex-explore -s user --yes
 aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
@@ -60,6 +60,8 @@ aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
 
 `codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
+
+探索子代理的模型参数按字段独立选择：当前请求中用户显式指定的值优先，其次使用插件配置，仍未指定时不传对应参数并使用 Codex 内建默认。`explorerModel` 默认不配置，`modelReasoningEffort` 默认是 `low`；二者只影响 skill 的动态调度，不写入专用 role 文件。
 
 ## 开发
 

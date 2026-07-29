@@ -94,12 +94,12 @@ async function testPresentSkillArtifact() {
   assert.equal(role.kind, 'codexRole');
   assert.equal(role.target, 'codex.agentRole');
   assert.equal(role.roleKey, 'codex-explore-agent');
-  assert.deepEqual(role.refreshKeys, ['explorerModel', 'modelReasoningEffort']);
+  assert.deepEqual(role.refreshKeys, []);
   assert.equal(role.content.registration.description, '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。');
   assert.equal(role.content.roleFile.name, 'codex-explore-agent');
   assert.equal(role.content.roleFile.description, '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。');
-  assert.equal(role.content.roleFile.model, 'gpt-5.4');
-  assert.equal(role.content.roleFile.model_reasoning_effort, 'high');
+  assert.equal('model' in role.content.roleFile, false);
+  assert.equal('model_reasoning_effort' in role.content.roleFile, false);
   assert.match(role.content.roleFile.developer_instructions, /叶子探索子代理/);
   assert.match(role.content.roleFile.developer_instructions, /只做只读调查/);
   assert.match(role.content.roleFile.developer_instructions, /不得调用任何子代理调度或管理工具/);
@@ -171,11 +171,18 @@ async function testPresentSkillArtifact() {
   assert.equal(skill.content.skillFile.includes('codex_explore_1'), false);
   assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
   assert.match(skill.content.skillFile, /公开 `fork_turns` 时，传 `"none"`/);
-  assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4`/);
-  assert.match(skill.content.skillFile, /推理强度是 `high`/);
+  assert.match(skill.content.skillFile, /模型和推理强度按字段独立选择/);
+  assert.match(skill.content.skillFile, /用户在当前请求中显式指定的值/);
+  assert.match(skill.content.skillFile, /`model`: `gpt-5\.4`/);
+  assert.match(skill.content.skillFile, /`reasoning_effort`: `high`/);
+  assert.match(skill.content.skillFile, /前两者都没有时不传对应参数，让 Codex 使用内建默认/);
+  assert.match(skill.content.skillFile, /用户显式指定的字段未公开时，不启动子代理/);
+  assert.match(skill.content.skillFile, /只有插件默认值的字段未公开时，省略该字段/);
+  assert.match(skill.content.skillFile, /不要省略参数后静默重试/);
   assert.match(skill.content.skillFile, /运行时报告 role 不可用时，按委派失败处理/);
   assert.match(skill.content.skillFile, /把该范围视为委派失败，按后文的失败回退规则处理/);
   assert.match(skill.content.skillFile, /developer instructions 由专用 role 提供/);
+  assert.match(skill.content.skillFile, /模型和推理强度通过 `spawn_agent` 动态选择/);
   assert.match(skill.content.skillFile, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill.content.skillFile, /当前会话的工具、联网、官方文档优先和上层安全策略/);
   assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
@@ -287,12 +294,13 @@ async function testCustomConfigOverridesSkillTemplates() {
     'minimumInitialWaitMinutes',
     'convergenceWaitMinutes',
   ]);
-  assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.4-mini`/);
-  assert.match(skill.content.skillFile, /推理强度是 `xhigh`/);
+  assert.match(skill.content.skillFile, /`model`: `gpt-5\.4-mini`/);
+  assert.match(skill.content.skillFile, /`reasoning_effort`: `xhigh`/);
   assert.match(skill.content.skillFile, /首次最小等待为 `20` 分钟（`timeout_ms=1200000`）/);
   assert.match(skill.content.skillFile, /催促后等待为 `8` 分钟（`timeout_ms=480000`）/);
-  assert.equal(role.content.roleFile.model, 'gpt-5.4-mini');
-  assert.equal(role.content.roleFile.model_reasoning_effort, 'xhigh');
+  assert.deepEqual(role.refreshKeys, []);
+  assert.equal('model' in role.content.roleFile, false);
+  assert.equal('model_reasoning_effort' in role.content.roleFile, false);
 }
 
 async function testDefaultsComeFromManifestSchema() {
@@ -330,16 +338,17 @@ async function testDefaultsComeFromManifestSchema() {
     const skill = findArtifact(plan, 'codex-explore-skill');
     const role = findArtifact(plan, 'codex-explore-agent-role');
 
-    assert.match(skill.content.skillFile, /默认模型是 `gpt-5\.6-terra`/);
-    assert.match(skill.content.skillFile, /推理强度是 `low`/);
+    assert.equal(skill.content.skillFile.includes('`model`:'), false);
+    assert.match(skill.content.skillFile, /`reasoning_effort`: `low`/);
+    assert.match(skill.content.skillFile, /未列出的字段没有插件默认值/);
     assert.match(skill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
     assert.match(skill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
-    assert.equal(role.content.roleFile.model, 'gpt-5.6-terra');
-    assert.equal(role.content.roleFile.model_reasoning_effort, 'low');
+    assert.equal('model' in role.content.roleFile, false);
+    assert.equal('model_reasoning_effort' in role.content.roleFile, false);
 
     const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    assert.equal(manifest.config.schema.explorerModel.default, 'gpt-5.6-terra');
+    assert.equal('default' in manifest.config.schema.explorerModel, false);
     assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
     assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
     assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
@@ -351,7 +360,7 @@ async function testDefaultsComeFromManifestSchema() {
 
 async function testStaticSkillContracts() {
   const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
-  const [skill, metadata] = await Promise.all([
+  const [skill, metadata, rendererSource] = await Promise.all([
     readFirstExisting([
       new URL('../templates/codex-explore/SKILL.md', import.meta.url),
       new URL('../codex/templates/codex-explore/SKILL.md', import.meta.url),
@@ -360,6 +369,7 @@ async function testStaticSkillContracts() {
       new URL('../templates/codex-explore/agents/openai.yaml', import.meta.url),
       new URL('../codex/templates/codex-explore/agents/openai.yaml', import.meta.url),
     ]),
+    readFile(scriptPath, 'utf8'),
   ]);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
@@ -408,7 +418,9 @@ async function testStaticSkillContracts() {
   assert.equal(skill.includes('codex_explore_1'), false);
   assert.match(skill, /公开 `fork_turns` 时/);
   assert.match(skill, /schema 未公开的字段一律不传/);
-  assert.match(skill, /模型、推理强度和 developer instructions 由专用 role 提供/);
+  assert.match(skill, /\{\{spawnModelGuidance\}\}/);
+  assert.match(skill, /模型和推理强度通过 `spawn_agent` 动态选择/);
+  assert.match(skill, /developer instructions 由专用 role 提供/);
   assert.match(skill, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
   assert.match(skill, /把该范围视为委派失败，按后文的失败回退规则处理/);
   assert.match(skill, /当前会话的工具、联网、官方文档优先和上层安全策略/);
@@ -487,9 +499,21 @@ async function testStaticSkillContracts() {
   assert.equal(metadata.includes('普通实现、修改、调试'), false);
   assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
   assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.18');
-  assert.equal(manifest.config.schema.explorerModel.description, 'Codex Explore 专用 role 使用的默认模型。');
-  assert.equal(manifest.config.schema.modelReasoningEffort.description, 'Codex Explore 专用 role 使用的推理强度。');
+  assert.equal(manifest.version, '0.1.19');
+  assert.equal(
+    manifest.config.schema.explorerModel.description,
+    '用户未指定时传给 Codex Explore 子代理的默认模型；未配置则使用 Codex 内建默认。',
+  );
+  assert.equal(
+    manifest.config.schema.modelReasoningEffort.description,
+    '用户未指定时传给 Codex Explore 子代理的默认推理强度。',
+  );
+  assert.equal('default' in manifest.config.schema.explorerModel, false);
+  assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
+  assert.equal(
+    rendererSource.includes("schema.modelReasoningEffort?.default ?? 'low'"),
+    false,
+  );
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.max, 60);
   assert.equal(manifest.config.schema.convergenceWaitMinutes.min, 1);
@@ -539,7 +563,7 @@ async function testStaticSkillContracts() {
       target: 'codex.agentRole',
       projectManagedKind: 'agent',
       states: ['present'],
-      refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+      refreshKeys: [],
       requiresCodexProjectConfig: true,
       roleKey: 'codex-explore-agent',
     },

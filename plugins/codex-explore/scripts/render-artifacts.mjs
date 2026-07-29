@@ -13,7 +13,7 @@ const SKILL_REFRESH_KEYS = [
   'minimumInitialWaitMinutes',
   'convergenceWaitMinutes',
 ];
-const ROLE_REFRESH_KEYS = ['explorerModel', 'modelReasoningEffort'];
+const ROLE_REFRESH_KEYS = [];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -67,8 +67,12 @@ async function readManifestDefaults() {
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
   return {
-    explorerModel: schema.explorerModel?.default ?? 'gpt-5.6-terra',
-    modelReasoningEffort: schema.modelReasoningEffort?.default ?? 'low',
+    explorerModel:
+      typeof schema.explorerModel?.default === 'string' &&
+      schema.explorerModel.default.trim() !== ''
+        ? schema.explorerModel.default
+        : undefined,
+    modelReasoningEffort: schema.modelReasoningEffort?.default,
     minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
     convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
   };
@@ -80,6 +84,13 @@ function resolvePositiveNumber(value, fallback) {
 
 function minutesToMilliseconds(minutes) {
   return Math.round(minutes * 60_000);
+}
+
+function resolveOptionalString(value, fallback) {
+  if (typeof value === 'string' && value.trim() !== '') {
+    return value;
+  }
+  return typeof fallback === 'string' && fallback.trim() !== '' ? fallback : undefined;
 }
 
 function resolveConfigValues(context, defaults) {
@@ -99,14 +110,11 @@ function resolveConfigValues(context, defaults) {
   }
 
   return {
-    explorerModel:
-      typeof values.explorerModel === 'string' && values.explorerModel.trim() !== ''
-        ? values.explorerModel
-        : defaults.explorerModel,
-    modelReasoningEffort:
-      typeof values.modelReasoningEffort === 'string' && values.modelReasoningEffort.trim() !== ''
-        ? values.modelReasoningEffort
-        : defaults.modelReasoningEffort,
+    explorerModel: resolveOptionalString(values.explorerModel, defaults.explorerModel),
+    modelReasoningEffort: resolveOptionalString(
+      values.modelReasoningEffort,
+      defaults.modelReasoningEffort,
+    ),
     minimumInitialWaitMinutes: resolvePositiveNumber(
       values.minimumInitialWaitMinutes,
       defaults.minimumInitialWaitMinutes,
@@ -116,6 +124,32 @@ function resolveConfigValues(context, defaults) {
       defaults.convergenceWaitMinutes,
     ),
   };
+}
+
+function renderSpawnModelGuidance(explorerModel, modelReasoningEffort) {
+  const configuredDefaults = [];
+  if (explorerModel) {
+    configuredDefaults.push(`- \`model\`: \`${explorerModel}\``);
+  }
+  if (modelReasoningEffort) {
+    configuredDefaults.push(`- \`reasoning_effort\`: \`${modelReasoningEffort}\``);
+  }
+
+  return [
+    '模型和推理强度按字段独立选择，优先级固定为：',
+    '1. 用户在当前请求中显式指定的值。',
+    '2. 下列插件默认值。',
+    '3. 前两者都没有时不传对应参数，让 Codex 使用内建默认。',
+    '',
+    configuredDefaults.length > 0 ? '当前插件默认值：' : '当前没有配置插件默认值。',
+    ...configuredDefaults,
+    ...(configuredDefaults.length > 0 ? ['未列出的字段没有插件默认值。'] : []),
+    '',
+    '只在当前 `spawn_agent` schema 公开对应字段时传 `model` 或 `reasoning_effort`：',
+    '- 用户显式指定的字段未公开时，不启动子代理，说明当前调度能力无法满足该指定。',
+    '- 只有插件默认值的字段未公开时，省略该字段，向用户说明已降级为 Codex 内建默认，再继续调度。',
+    '- 已传入的模型不可用、推理强度不受支持或其它非临时参数错误按启动失败处理；不要省略参数后静默重试。',
+  ].join('\n');
 }
 
 export function renderRoleDeveloperInstructions() {
@@ -195,8 +229,7 @@ export async function renderArtifactPlan(context) {
   const { skillTemplate, openaiTemplate } = await readSkillTemplates();
   const replacements = {
     explorerRoleKey: CODEX_EXPLORE_ROLE_KEY,
-    explorerModel,
-    modelReasoningEffort,
+    spawnModelGuidance: renderSpawnModelGuidance(explorerModel, modelReasoningEffort),
     minimumInitialWaitMinutes,
     minimumInitialWaitTimeoutMs: minutesToMilliseconds(minimumInitialWaitMinutes),
     convergenceWaitMinutes,
@@ -236,8 +269,6 @@ export async function renderArtifactPlan(context) {
             name: CODEX_EXPLORE_ROLE_KEY,
             description: roleDescription,
             developer_instructions: renderRoleDeveloperInstructions(),
-            model: explorerModel,
-            model_reasoning_effort: modelReasoningEffort,
           },
         },
       },

@@ -1,8 +1,12 @@
 import { spawn } from 'node:child_process';
 import {
+  access,
+  chmod,
+  copyFile,
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -19,6 +23,12 @@ import { validationCases } from './validation-cases.mjs';
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(evalDir, '..');
 const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+const BASELINE_DEFAULTS = {
+  explorerModel: 'gpt-5.6-terra',
+  modelReasoningEffort: 'low',
+  minimumInitialWaitMinutes: 10,
+  convergenceWaitMinutes: 5,
+};
 const caseSets = {
   train: trainCases,
   validation: validationCases,
@@ -161,14 +171,51 @@ function tomlString(value) {
 }
 
 function renderRoleToml(roleFile) {
-  return [
+  const lines = [
     `name = ${tomlString(roleFile.name)}`,
     `description = ${tomlString(roleFile.description)}`,
     `developer_instructions = ${tomlString(roleFile.developer_instructions)}`,
-    `model = ${tomlString(roleFile.model)}`,
-    `model_reasoning_effort = ${tomlString(roleFile.model_reasoning_effort)}`,
-    '',
-  ].join('\n');
+  ];
+  if (typeof roleFile.model === 'string' && roleFile.model.trim() !== '') {
+    lines.push(`model = ${tomlString(roleFile.model)}`);
+  }
+  if (
+    typeof roleFile.model_reasoning_effort === 'string' &&
+    roleFile.model_reasoning_effort.trim() !== ''
+  ) {
+    lines.push(
+      `model_reasoning_effort = ${tomlString(roleFile.model_reasoning_effort)}`,
+    );
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+export async function readEvalResource(relativePath) {
+  const normalized = path.normalize(relativePath);
+  if (
+    normalized === '..' ||
+    normalized.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(normalized)
+  ) {
+    throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
+  }
+  const localPath = path.join(evalDir, normalized);
+  try {
+    return await readFile(localPath, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) {
+      throw error;
+    }
+  }
+
+  const context = JSON.parse(
+    await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'),
+  );
+  if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
+    throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
+  }
+  return readFile(path.join(context.sourceRoot, 'evals', normalized), 'utf8');
 }
 
 async function writeFixtureFiles(root) {
@@ -217,20 +264,88 @@ async function writeFixtureFiles(root) {
   }));
 }
 
-export async function createEvalWorkspace() {
+function renderBaselineTemplate(template, values) {
+  return Object.entries(values).reduce(
+    (content, [key, value]) => content.split(`{{${key}}}`).join(String(value)),
+    template,
+  );
+}
+
+function resolveBaselineConfigValues(configValues) {
+  return {
+    explorerModel:
+      typeof configValues.explorerModel === 'string' &&
+      configValues.explorerModel.trim() !== ''
+        ? configValues.explorerModel
+        : BASELINE_DEFAULTS.explorerModel,
+    modelReasoningEffort:
+      typeof configValues.modelReasoningEffort === 'string' &&
+      configValues.modelReasoningEffort.trim() !== ''
+        ? configValues.modelReasoningEffort
+        : BASELINE_DEFAULTS.modelReasoningEffort,
+    minimumInitialWaitMinutes:
+      typeof configValues.minimumInitialWaitMinutes === 'number'
+        ? configValues.minimumInitialWaitMinutes
+        : BASELINE_DEFAULTS.minimumInitialWaitMinutes,
+    convergenceWaitMinutes:
+      typeof configValues.convergenceWaitMinutes === 'number'
+        ? configValues.convergenceWaitMinutes
+        : BASELINE_DEFAULTS.convergenceWaitMinutes,
+  };
+}
+
+async function renderBaselineArtifacts(currentSkill, currentRole, configValues) {
+  const values = resolveBaselineConfigValues(configValues);
+  const template = await readEvalResource(
+    path.join('baselines', 'codex-explore-0.1.18', 'SKILL.md'),
+  );
+  return {
+    skillFile: renderBaselineTemplate(template, {
+      explorerRoleKey: 'codex-explore-agent',
+      explorerModel: values.explorerModel,
+      modelReasoningEffort: values.modelReasoningEffort,
+      minimumInitialWaitMinutes: values.minimumInitialWaitMinutes,
+      minimumInitialWaitTimeoutMs: values.minimumInitialWaitMinutes * 60_000,
+      convergenceWaitMinutes: values.convergenceWaitMinutes,
+      convergenceWaitTimeoutMs: values.convergenceWaitMinutes * 60_000,
+    }),
+    openaiYaml: currentSkill.content.openaiYaml,
+    roleFile: {
+      ...currentRole.content.roleFile,
+      model: values.explorerModel,
+      model_reasoning_effort: values.modelReasoningEffort,
+    },
+  };
+}
+
+export async function createEvalWorkspace({
+  configValues = {},
+  variant = 'current',
+} = {}) {
+  if (!['current', 'old'].includes(variant)) {
+    throw new Error(`Unsupported eval variant: ${variant}`);
+  }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));
   try {
     const plan = await renderArtifactPlan({
       event: 'install',
       platform: 'codex',
       scope: 'project',
-      config: { values: {} },
+      config: { values: configValues },
     });
     const skill = plan.artifacts.find((entry) => entry.id === 'codex-explore-skill');
     const role = plan.artifacts.find((entry) => entry.id === 'codex-explore-agent-role');
     if (!skill?.content?.skillFile || !skill.content.openaiYaml || !role?.content?.roleFile) {
       throw new Error('Renderer did not return the expected codex-explore skill and role.');
     }
+    const staged =
+      variant === 'old'
+        ? await renderBaselineArtifacts(skill, role, configValues)
+        : {
+            skillFile: skill.content.skillFile,
+            openaiYaml: skill.content.openaiYaml,
+            roleFile: role.content.roleFile,
+          };
 
     const skillRoot = path.join(root, '.agents', 'skills', 'codex-explore');
     const skillPath = path.join(skillRoot, 'SKILL.md');
@@ -242,9 +357,9 @@ export async function createEvalWorkspace() {
       writeFixtureFiles(root),
     ]);
     await Promise.all([
-      writeFile(skillPath, skill.content.skillFile, 'utf8'),
-      writeFile(openaiPath, skill.content.openaiYaml, 'utf8'),
-      writeFile(rolePath, renderRoleToml(role.content.roleFile), 'utf8'),
+      writeFile(skillPath, staged.skillFile, 'utf8'),
+      writeFile(openaiPath, staged.openaiYaml, 'utf8'),
+      writeFile(rolePath, renderRoleToml(staged.roleFile), 'utf8'),
     ]);
 
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -261,6 +376,7 @@ export async function createEvalWorkspace() {
       rolePath,
       roleDescription: role.content.registration.description,
       authorization,
+      variant,
     };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -310,12 +426,16 @@ export function inspectExecEvent(event, skillPath) {
   return {};
 }
 
+function codexConfigValue(value) {
+  return typeof value === 'string' ? tomlString(value) : JSON.stringify(value);
+}
+
 export function buildCodexArgs(workspace, evalCase, options) {
   const args = [
     'exec',
     '--json',
-    '--ephemeral',
     '--ignore-user-config',
+    '--ignore-rules',
     '--skip-git-repo-check',
     '--color',
     'never',
@@ -328,12 +448,23 @@ export function buildCodexArgs(workspace, evalCase, options) {
     '--config',
     `skills.include_instructions=true`,
     '--config',
+    'shell_environment_policy.exclude=["CODEX_HOME"]',
+    '--config',
     `developer_instructions=${tomlString(workspace.authorization)}`,
     '--config',
     `agents.codex-explore-agent.description=${tomlString(workspace.roleDescription)}`,
     '--config',
     `agents.codex-explore-agent.config_file=${tomlString(workspace.rolePath)}`,
   ];
+  for (const feature of evalCase.enable_features ?? []) {
+    args.push('--enable', feature);
+  }
+  for (const feature of evalCase.disable_features ?? []) {
+    args.push('--disable', feature);
+  }
+  for (const [key, value] of Object.entries(evalCase.codex_config ?? {})) {
+    args.push('--config', `${key}=${codexConfigValue(value)}`);
+  }
   if (options.model) {
     args.push('--model', options.model);
   }
@@ -341,7 +472,98 @@ export function buildCodexArgs(workspace, evalCase, options) {
   return args;
 }
 
+async function listFilesRecursively(root) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const candidate = path.join(root, entry.name);
+    return entry.isDirectory() ? listFilesRecursively(candidate) : [candidate];
+  }));
+  return nested.flat();
+}
+
+function parseSpawnCallFromRolloutLine(line, rolloutFile, codexHome) {
+  const event = parseExecEventLine(line);
+  const payload = event?.type === 'response_item' ? event.payload : null;
+  if (payload?.type !== 'function_call' || payload.name !== 'spawn_agent') {
+    return null;
+  }
+
+  let args;
+  try {
+    args =
+      typeof payload.arguments === 'string'
+        ? JSON.parse(payload.arguments)
+        : payload.arguments;
+  } catch {
+    args = null;
+  }
+  return {
+    call_id: typeof payload.call_id === 'string' ? payload.call_id : null,
+    namespace: typeof payload.namespace === 'string' ? payload.namespace : null,
+    arguments: args && typeof args === 'object' && !Array.isArray(args) ? args : null,
+    rollout_file: path.relative(codexHome, rolloutFile),
+  };
+}
+
+export async function readSpawnCallsFromRollouts(codexHome) {
+  const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
+    .filter((file) => file.endsWith('.jsonl'));
+  const calls = [];
+  const seen = new Set();
+  for (const file of files) {
+    const content = await readFile(file, 'utf8');
+    for (const line of content.split('\n')) {
+      const call = parseSpawnCallFromRolloutLine(line, file, codexHome);
+      if (!call) {
+        continue;
+      }
+      const identity = call.call_id ?? `${call.rollout_file}:${calls.length}`;
+      if (!seen.has(identity)) {
+        seen.add(identity);
+        calls.push(call);
+      }
+    }
+  }
+  return calls;
+}
+
+async function pathExists(candidate) {
+  try {
+    await access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function copyCodexAuthFiles(
+  codexHome,
+  sourceHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+) {
+  for (const name of ['auth.json', '.credentials.json']) {
+    const source = path.join(sourceHome, name);
+    if (!(await pathExists(source))) {
+      continue;
+    }
+    const target = path.join(codexHome, name);
+    await copyFile(source, target);
+    await chmod(target, 0o600);
+  }
+}
+
 function shouldStopEarly(evalCase, observed) {
+  if (evalCase.wait_for_completion) {
+    return null;
+  }
   if (!evalCase.should_load_skill && observed.loaded) {
     return 'unexpected_skill_load';
   }
@@ -361,101 +583,191 @@ function shouldStopEarly(evalCase, observed) {
 
 export async function runCodexOnce(workspace, evalCase, options) {
   const args = buildCodexArgs(workspace, evalCase, options);
-  return new Promise((resolve, reject) => {
-    const child = spawn(options.codexBin, args, {
-      cwd: workspace.root,
-      env: { ...process.env, NO_COLOR: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const observed = {
-      loaded: evalCase.explicit_skill,
-      spawned: false,
-      loadEvidence: evalCase.explicit_skill ? 'explicit $codex-explore mention' : null,
-      spawnEvidence: null,
-    };
-    let stderr = '';
-    let finalMessage = null;
-    let stopReason = null;
-    let settled = false;
-    let forceKillTimer;
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-home-'));
+  try {
+    await copyCodexAuthFiles(codexHome);
+  } catch (error) {
+    await rm(codexHome, { recursive: true, force: true });
+    throw error;
+  }
+  const startedAt = Date.now();
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn(options.codexBin, args, {
+        cwd: workspace.root,
+        env: { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const observed = {
+        loaded: evalCase.explicit_skill,
+        spawned: false,
+        loadEvidence: evalCase.explicit_skill ? 'explicit $codex-explore mention' : null,
+        spawnEvidence: null,
+        spawnCalls: [],
+      };
+      let stderr = '';
+      let finalMessage = null;
+      let usage = null;
+      let stopReason = null;
+      let interruptedSignal = null;
+      let settled = false;
+      let forceKillTimer;
+      let rolloutPollPending = false;
+      const eventTrace = [];
 
-    const stop = (reason) => {
-      if (stopReason || child.exitCode !== null || child.signalCode !== null) {
-        return;
-      }
-      stopReason = reason;
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
-      forceKillTimer.unref();
-    };
+      const stop = (reason) => {
+        if (stopReason || child.exitCode !== null || child.signalCode !== null) {
+          return;
+        }
+        stopReason = reason;
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        forceKillTimer.unref();
+      };
+      const handleInterrupt = (signal) => {
+        interruptedSignal = signal;
+        stop(`parent_${signal.toLowerCase()}`);
+      };
+      const handleSigint = () => handleInterrupt('SIGINT');
+      const handleSigterm = () => handleInterrupt('SIGTERM');
+      const removeInterruptHandlers = () => {
+        process.off('SIGINT', handleSigint);
+        process.off('SIGTERM', handleSigterm);
+      };
+      process.once('SIGINT', handleSigint);
+      process.once('SIGTERM', handleSigterm);
 
-    const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-    timeout.unref();
+      const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
+      timeout.unref();
 
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => {
-      stderr = `${stderr}${chunk}`.slice(-16_000);
-    });
+      const pollRollouts = async () => {
+        if (rolloutPollPending) {
+          return;
+        }
+        rolloutPollPending = true;
+        try {
+          const calls = await readSpawnCallsFromRollouts(codexHome);
+          if (calls.length > 0) {
+            observed.spawned = true;
+            observed.spawnCalls = calls;
+            observed.spawnEvidence ??= `rollout:${calls[0].call_id ?? 'spawn_agent'}`;
+            const earlyReason = shouldStopEarly(evalCase, observed);
+            if (earlyReason) {
+              stop(earlyReason);
+            }
+          }
+        } catch (error) {
+          if (error?.code !== 'ENOENT') {
+            stderr = `${stderr}\nFailed to poll rollout evidence: ${
+              error instanceof Error ? error.message : String(error)
+            }`.trim();
+          }
+        } finally {
+          rolloutPollPending = false;
+        }
+      };
+      const rolloutPollTimer = setInterval(() => {
+        void pollRollouts();
+      }, 250);
+      rolloutPollTimer.unref();
 
-    const lines = readline.createInterface({ input: child.stdout });
-    lines.on('line', (line) => {
-      const event = parseExecEventLine(line);
-      const evidence = inspectExecEvent(event, workspace.skillPath);
-      if (evidence.loaded) {
-        observed.loaded = true;
-        observed.loadEvidence ??= evidence.loadEvidence;
-      }
-      if (evidence.spawned) {
-        observed.spawned = true;
-        observed.spawnEvidence ??= evidence.spawnEvidence;
-      }
-      const item = eventItem(event);
-      if (item?.type === 'agent_message' && typeof item.text === 'string') {
-        finalMessage = item.text;
-      }
-      const earlyReason = shouldStopEarly(evalCase, observed);
-      if (earlyReason) {
-        stop(earlyReason);
-      }
-    });
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        stderr = `${stderr}${chunk}`.slice(-16_000);
+      });
 
-    child.once('error', (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(forceKillTimer);
-      lines.close();
-      reject(new Error(`Failed to start ${options.codexBin}: ${error.message}`));
-    });
+      const lines = readline.createInterface({ input: child.stdout });
+      lines.on('line', (line) => {
+        const event = parseExecEventLine(line);
+        if (options.captureTrace && event) {
+          eventTrace.push(event);
+        }
+        const evidence = inspectExecEvent(event, workspace.skillPath);
+        if (evidence.loaded) {
+          observed.loaded = true;
+          observed.loadEvidence ??= evidence.loadEvidence;
+        }
+        if (evidence.spawned) {
+          observed.spawned = true;
+          observed.spawnEvidence ??= evidence.spawnEvidence;
+        }
+        const item = eventItem(event);
+        if (item?.type === 'agent_message' && typeof item.text === 'string') {
+          finalMessage = item.text;
+        }
+        if (event?.type === 'turn.completed' && event.usage) {
+          usage = event.usage;
+        }
+        const earlyReason = shouldStopEarly(evalCase, observed);
+        if (earlyReason) {
+          stop(earlyReason);
+        }
+      });
 
-    child.once('close', (exitCode, signal) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(forceKillTimer);
-      lines.close();
-      const termination = stopReason ?? 'completed';
-      const executionError =
-        termination === 'timeout' ||
-        (termination === 'completed' && exitCode !== 0);
-      resolve({
-        loaded: observed.loaded,
-        spawned: observed.spawned,
-        load_evidence: observed.loadEvidence,
-        spawn_evidence: observed.spawnEvidence,
-        termination,
-        exit_code: exitCode,
-        signal,
-        execution_error: executionError,
-        stderr: stderr.trim() || undefined,
-        final_message: finalMessage,
+      child.once('error', (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        clearTimeout(forceKillTimer);
+        clearInterval(rolloutPollTimer);
+        removeInterruptHandlers();
+        lines.close();
+        reject(new Error(`Failed to start ${options.codexBin}: ${error.message}`));
+      });
+
+      child.once('close', async (exitCode, signal) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        clearTimeout(forceKillTimer);
+        clearInterval(rolloutPollTimer);
+        removeInterruptHandlers();
+        lines.close();
+        try {
+          observed.spawnCalls = await readSpawnCallsFromRollouts(codexHome);
+        } catch (error) {
+          stderr = `${stderr}\nFailed to read rollout evidence: ${
+            error instanceof Error ? error.message : String(error)
+          }`.trim();
+        }
+        if (observed.spawnCalls.length > 0) {
+          observed.spawned = true;
+          observed.spawnEvidence ??=
+            `rollout:${observed.spawnCalls[0].call_id ?? 'spawn_agent'}`;
+        }
+        if (interruptedSignal) {
+          reject(new Error(`Interrupted by ${interruptedSignal}.`));
+          return;
+        }
+        const termination = stopReason ?? 'completed';
+        const executionError =
+          termination === 'timeout' ||
+          (termination === 'completed' && exitCode !== 0);
+        resolve({
+          loaded: observed.loaded,
+          spawned: observed.spawned,
+          load_evidence: observed.loadEvidence,
+          spawn_evidence: observed.spawnEvidence,
+          spawn_calls: observed.spawnCalls,
+          termination,
+          exit_code: exitCode,
+          signal,
+          execution_error: executionError,
+          stderr: stderr.trim() || undefined,
+          final_message: finalMessage,
+          duration_ms: Date.now() - startedAt,
+          usage,
+          event_trace: options.captureTrace ? eventTrace : undefined,
+        });
       });
     });
-  });
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
 }
 
 export function ratePasses(rate, expected, threshold) {

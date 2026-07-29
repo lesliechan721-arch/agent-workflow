@@ -30,7 +30,9 @@ metadata:
 
 ## 委派规则
 
-只使用 Codex Explore 自带的探索 role，其默认模型是 `{{explorerModel}}`，推理强度是 `{{modelReasoningEffort}}`；模型、推理强度和 developer instructions 由专用 role 提供，不在 `spawn_agent` 调用中重复覆盖。不得启动默认子代理或改用内置 `explorer`、其它 role。
+只使用 Codex Explore 自带的探索 role；叶子代理约束和 developer instructions 由专用 role 提供，模型和推理强度通过 `spawn_agent` 动态选择。不得启动默认子代理或改用内置 `explorer`、其它 role。
+
+{{spawnModelGuidance}}
 
 任务涉及网络、文档或时间敏感事实时，遵守当前会话的工具、联网、官方文档优先和上层安全策略。子代理继承当前会话可用的工具和权限；不能访问来源时说明限制，不能凭记忆补事实。
 

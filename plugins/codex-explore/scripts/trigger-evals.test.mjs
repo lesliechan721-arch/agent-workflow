@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFile, rm } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   buildCodexArgs,
+  copyCodexAuthFiles,
   createEvalWorkspace,
   inspectExecEvent,
   loadEvalCases,
@@ -123,6 +134,8 @@ async function testWorkspaceStaging() {
     assert.equal(skill.includes('user-invocable:'), false);
     assert.match(role, /codex-explore-agent/);
     assert.match(role, /冲突或缺口/);
+    assert.equal(role.includes('\nmodel = '), false);
+    assert.equal(role.includes('\nmodel_reasoning_effort = '), false);
 
     const args = buildCodexArgs(
       workspace,
@@ -130,12 +143,34 @@ async function testWorkspaceStaging() {
       { model: 'gpt-test' },
     );
     assert.ok(args.includes('--json'));
-    assert.ok(args.includes('--ephemeral'));
+    assert.equal(args.includes('--ephemeral'), false);
+    assert.ok(args.includes('--ignore-rules'));
     assert.ok(args.includes('read-only'));
     assert.ok(args.includes('gpt-test'));
+    assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME"]'));
     assert.ok(args.some((arg) => arg.includes('agents.codex-explore-agent.config_file=')));
   } finally {
     await rm(workspace.root, { recursive: true, force: true });
+  }
+}
+
+async function testCredentialIsolation() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-copy-'));
+  const sourceHome = path.join(root, 'source');
+  const targetHome = path.join(root, 'target');
+  try {
+    await Promise.all([
+      mkdir(sourceHome, { recursive: true }),
+      mkdir(targetHome, { recursive: true }),
+    ]);
+    await writeFile(path.join(sourceHome, 'auth.json'), '{"token":"test"}\n', 'utf8');
+    await copyCodexAuthFiles(targetHome, sourceHome);
+    const target = path.join(targetHome, 'auth.json');
+    assert.equal((await lstat(target)).isSymbolicLink(), false);
+    assert.equal((await stat(target)).mode & 0o777, 0o600);
+    assert.equal(await readFile(target, 'utf8'), '{"token":"test"}\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -145,6 +180,7 @@ async function main() {
   testJsonlDetection();
   testSummary();
   await testWorkspaceStaging();
+  await testCredentialIsolation();
   console.log('trigger eval tests passed');
 }
 

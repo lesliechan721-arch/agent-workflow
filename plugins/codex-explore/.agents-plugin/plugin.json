@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
@@ -47,7 +47,8 @@
     "tests": {
       "node": [
         "./scripts/render-artifacts.test.mjs",
-        "./scripts/trigger-evals.test.mjs"
+        "./scripts/trigger-evals.test.mjs",
+        "./scripts/model-selection-evals.test.mjs"
       ]
     }
   },
@@ -56,15 +57,14 @@
       "explorerModel": {
         "type": "string",
         "title": "探索模型",
-        "default": "gpt-5.6-terra",
-        "description": "Codex Explore 专用 role 使用的默认模型。"
+        "description": "用户未指定时传给 Codex Explore 子代理的默认模型；未配置则使用 Codex 内建默认。"
       },
       "modelReasoningEffort": {
         "type": "enum",
         "title": "探索推理强度",
         "values": ["low", "medium", "high", "xhigh", "max"],
         "default": "low",
-        "description": "Codex Explore 专用 role 使用的推理强度。"
+        "description": "用户未指定时传给 Codex Explore 子代理的默认推理强度。"
       },
       "minimumInitialWaitMinutes": {
         "type": "number",
@@ -116,7 +116,7 @@
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
         "states": ["present"],
-        "refreshKeys": ["explorerModel", "modelReasoningEffort"],
+        "refreshKeys": [],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-agent"
       }
