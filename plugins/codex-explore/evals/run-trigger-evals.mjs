@@ -17,6 +17,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { renderArtifactPlan } from '../scripts/render-artifacts.mjs';
+import { sanityCases } from './sanity-cases.mjs';
 import { trainCases } from './train-cases.mjs';
 import { validationCases } from './validation-cases.mjs';
 
@@ -32,6 +33,7 @@ const BASELINE_DEFAULTS = {
 const caseSets = {
   train: trainCases,
   validation: validationCases,
+  sanity: sanityCases,
 };
 
 const DEFAULT_OPTIONS = {
@@ -50,7 +52,8 @@ function usage() {
 Runs real Codex skill-load and Gate/spawn evaluations against a temporary read-only fixture.
 
 Options:
-  --split <train|validation|all>  Eval split to run (default: train)
+  --split <train|validation|sanity|all>
+                                    Eval split to run (default: train)
   --runs <count>                  Repetitions per query (default: 3)
   --threshold <rate>              Pass boundary between 0 and 1 (default: 0.5)
   --timeout-ms <milliseconds>     Per-run safety timeout (default: 180000)
@@ -92,8 +95,8 @@ export function parseArgs(argv) {
     const value = readOptionValue(argv, index, flag);
     index += 1;
     if (flag === '--split') {
-      if (!['train', 'validation', 'all'].includes(value)) {
-        throw new Error('--split must be train, validation, or all.');
+      if (!['train', 'validation', 'sanity', 'all'].includes(value)) {
+        throw new Error('--split must be train, validation, sanity, or all.');
       }
       options.split = value;
     } else if (flag === '--runs') {
@@ -154,7 +157,8 @@ function readCaseSet(split) {
 }
 
 export async function loadEvalCases(split = 'train') {
-  const selectedSplits = split === 'all' ? ['train', 'validation'] : [split];
+  const selectedSplits =
+    split === 'all' ? ['train', 'validation', 'sanity'] : [split];
   const cases = selectedSplits.flatMap(readCaseSet);
   const ids = new Set();
   for (const entry of cases) {
@@ -294,11 +298,29 @@ function resolveBaselineConfigValues(configValues) {
   };
 }
 
-async function renderBaselineArtifacts(currentSkill, currentRole, configValues) {
+async function renderBaselineArtifacts(configValues) {
   const values = resolveBaselineConfigValues(configValues);
-  const template = await readEvalResource(
-    path.join('baselines', 'codex-explore-0.1.18', 'SKILL.md'),
-  );
+  const baselineRoot = path.join('baselines', 'codex-explore-0.1.18');
+  const [
+    template,
+    openaiYaml,
+    roleDeveloperInstructions,
+    runtimeContextText,
+  ] = await Promise.all([
+    readEvalResource(path.join(baselineRoot, 'SKILL.md')),
+    readEvalResource(path.join(baselineRoot, 'openai.yaml')),
+    readEvalResource(
+      path.join(baselineRoot, 'role-developer-instructions.md'),
+    ),
+    readEvalResource(path.join(baselineRoot, 'runtime-context.json')),
+  ]);
+  const runtimeContext = JSON.parse(runtimeContextText);
+  if (
+    typeof runtimeContext.authorization !== 'string' ||
+    typeof runtimeContext.role_description !== 'string'
+  ) {
+    throw new Error('Baseline runtime context is invalid.');
+  }
   return {
     skillFile: renderBaselineTemplate(template, {
       explorerRoleKey: 'codex-explore-agent',
@@ -309,12 +331,16 @@ async function renderBaselineArtifacts(currentSkill, currentRole, configValues) 
       convergenceWaitMinutes: values.convergenceWaitMinutes,
       convergenceWaitTimeoutMs: values.convergenceWaitMinutes * 60_000,
     }),
-    openaiYaml: currentSkill.content.openaiYaml,
+    openaiYaml,
     roleFile: {
-      ...currentRole.content.roleFile,
+      name: 'codex-explore-agent',
+      description: '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。',
+      developer_instructions: roleDeveloperInstructions.trimEnd(),
       model: values.explorerModel,
       model_reasoning_effort: values.modelReasoningEffort,
     },
+    roleDescription: runtimeContext.role_description,
+    authorization: runtimeContext.authorization,
   };
 }
 
@@ -327,25 +353,48 @@ export async function createEvalWorkspace({
   }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));
   try {
-    const plan = await renderArtifactPlan({
-      event: 'install',
-      platform: 'codex',
-      scope: 'project',
-      config: { values: configValues },
-    });
-    const skill = plan.artifacts.find((entry) => entry.id === 'codex-explore-skill');
-    const role = plan.artifacts.find((entry) => entry.id === 'codex-explore-agent-role');
-    if (!skill?.content?.skillFile || !skill.content.openaiYaml || !role?.content?.roleFile) {
-      throw new Error('Renderer did not return the expected codex-explore skill and role.');
+    let staged;
+    if (variant === 'old') {
+      staged = await renderBaselineArtifacts(configValues);
+    } else {
+      const plan = await renderArtifactPlan({
+        event: 'install',
+        platform: 'codex',
+        scope: 'project',
+        config: { values: configValues },
+      });
+      const skill = plan.artifacts.find(
+        (entry) => entry.id === 'codex-explore-skill',
+      );
+      const role = plan.artifacts.find(
+        (entry) => entry.id === 'codex-explore-agent-role',
+      );
+      if (
+        !skill?.content?.skillFile ||
+        !skill.content.openaiYaml ||
+        !role?.content?.roleFile
+      ) {
+        throw new Error(
+          'Renderer did not return the expected codex-explore skill and role.',
+        );
+      }
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      const authorization = manifest.extensions?.instructions?.find(
+        (entry) => entry.name === 'delegation-authorization',
+      )?.content;
+      if (typeof authorization !== 'string' || authorization.trim() === '') {
+        throw new Error(
+          'Plugin manifest is missing delegation-authorization instructions.',
+        );
+      }
+      staged = {
+        skillFile: skill.content.skillFile,
+        openaiYaml: skill.content.openaiYaml,
+        roleFile: role.content.roleFile,
+        roleDescription: role.content.registration.description,
+        authorization,
+      };
     }
-    const staged =
-      variant === 'old'
-        ? await renderBaselineArtifacts(skill, role, configValues)
-        : {
-            skillFile: skill.content.skillFile,
-            openaiYaml: skill.content.openaiYaml,
-            roleFile: role.content.roleFile,
-          };
 
     const skillRoot = path.join(root, '.agents', 'skills', 'codex-explore');
     const skillPath = path.join(skillRoot, 'SKILL.md');
@@ -362,20 +411,12 @@ export async function createEvalWorkspace({
       writeFile(rolePath, renderRoleToml(staged.roleFile), 'utf8'),
     ]);
 
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    const authorization = manifest.extensions?.instructions?.find(
-      (entry) => entry.name === 'delegation-authorization',
-    )?.content;
-    if (typeof authorization !== 'string' || authorization.trim() === '') {
-      throw new Error('Plugin manifest is missing delegation-authorization instructions.');
-    }
-
     return {
       root,
       skillPath,
       rolePath,
-      roleDescription: role.content.registration.description,
-      authorization,
+      roleDescription: staged.roleDescription,
+      authorization: staged.authorization,
       variant,
     };
   } catch (error) {
@@ -440,7 +481,7 @@ export function buildCodexArgs(workspace, evalCase, options) {
     '--color',
     'never',
     '--sandbox',
-    'read-only',
+    options.sandboxMode ?? 'read-only',
     '--cd',
     workspace.root,
     '--enable',

@@ -24,12 +24,13 @@ import {
 
 async function testEvalCorpus() {
   const cases = await loadEvalCases('all');
-  assert.equal(cases.length, 20);
+  assert.equal(cases.length, 28);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 8);
+  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 8);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 14);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 14);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 11);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
@@ -38,6 +39,9 @@ async function testEvalCorpus() {
     ['skill_design_review', [false, false]],
     ['large_pr_review', [false, false]],
     ['official_docs_and_logs', [true, true]],
+    ['casual_unknown_repo', [true, true]],
+    ['plain_name_small_request', [true, false]],
+    ['composite_review_boundary', [false, false]],
   ]);
   for (const [id, [shouldLoad, shouldSpawn]] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);
@@ -61,7 +65,10 @@ function testArguments() {
       help: false,
     },
   );
-  assert.throws(() => parseArgs(['--split', 'unknown']), /train, validation, or all/);
+  assert.throws(
+    () => parseArgs(['--split', 'unknown']),
+    /train, validation, sanity, or all/,
+  );
   assert.throws(() => parseArgs(['--runs', '0']), /positive integer/);
   assert.throws(() => parseArgs(['--threshold', '1']), /less than 1/);
 }

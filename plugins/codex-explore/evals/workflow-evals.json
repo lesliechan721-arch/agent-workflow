@@ -1,0 +1,34 @@
+{
+  "skill_name": "codex-explore",
+  "evals": [
+    {
+      "id": "versioned_docs_outcome",
+      "prompt": "$codex-explore 在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料；相关文件名和位置未知。等待探索完成后说明 timeout 如何变化以及 migration 与哪个版本一致，给出文件与行号，区分直接证据和推断；不要修改文件。最终答复末尾逐行输出：`FACT v1_timeout_seconds=<值>`、`FACT v2_timeout_seconds=<值>`、`FACT migration_timeout_seconds=<值>`、`FACT migration_matches=<版本>`。",
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_count": 1,
+        "agent_type": "codex-explore-agent",
+        "final_message_includes_all": [
+          "docs/vendor/api-v1.md",
+          "docs/vendor/api-v2.md",
+          "docs/vendor/migration.md",
+          "直接证据",
+          "FACT v1_timeout_seconds=30",
+          "FACT v2_timeout_seconds=45",
+          "FACT migration_timeout_seconds=45",
+          "FACT migration_matches=v2"
+        ],
+        "final_message_patterns": [
+          "docs/vendor/api-v1\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+          "docs/vendor/api-v2\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+          "docs/vendor/migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+        ],
+        "workspace_unchanged": true
+      }
+    }
+  ]
+}

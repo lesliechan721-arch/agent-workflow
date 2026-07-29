@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
@@ -48,7 +48,8 @@
       "node": [
         "./scripts/render-artifacts.test.mjs",
         "./scripts/trigger-evals.test.mjs",
-        "./scripts/model-selection-evals.test.mjs"
+        "./scripts/model-selection-evals.test.mjs",
+        "./scripts/workflow-evals.test.mjs"
       ]
     }
   },

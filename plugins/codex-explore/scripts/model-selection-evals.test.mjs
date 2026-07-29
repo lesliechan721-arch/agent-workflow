@@ -334,6 +334,14 @@ async function testFrozenBaselineStaging() {
     assert.match(oldSkill, /推理强度是 `high`/);
     assert.match(oldRole, /\nmodel = "gpt-5\.6-terra"/);
     assert.match(oldRole, /\nmodel_reasoning_effort = "high"/);
+    assert.equal(
+      old.roleDescription,
+      '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。',
+    );
+    assert.equal(
+      old.authorization,
+      '调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该工作流中启用子代理；Gate 未通过时不得启动子代理。',
+    );
   } finally {
     await Promise.all([
       rm(current.root, { recursive: true, force: true }),
