@@ -239,18 +239,34 @@ metadata:
 
 # ${skillTitle}
 
-这个 skill 用于 [TODO: 写清楚这个插件实际要完成的工作流]。
+目标：[TODO: 写清用户要完成的结果，以及没有本 skill 时 agent 容易做错什么]。
 
-建议按这个顺序处理：
+完成标准：
 
-1. [TODO: 第一步]
+- [TODO: 可观察、可验证的成功结果]
+
+## 前置判断
+
+- [TODO: 需要读取的输入、状态或授权边界]
+
+## 工作流
+
+1. [TODO: 第一步，以及为什么需要这一步]
 2. [TODO: 第二步]
-3. [TODO: 第三步]
+3. [TODO: 运行验证；失败时修复并重跑]
 
-边界：
+## 验证
 
-- [TODO: 不要扩大修改范围]
-- [TODO: 遇到高风险操作时先停下来说明]
+- [TODO: 验证命令、检查表或输出断言]
+
+## 输出
+
+- [TODO: 交付文件、数据或回复结构]
+
+## Gotchas / 边界
+
+- [TODO: 没有明确说明时 agent 容易误判的项目事实]
+- [TODO: 禁止、需要确认或不能扩大范围的操作]
 `;
 }
 
@@ -380,7 +396,9 @@ Options:
   --display-name <text>         Human-facing plugin display name.
   --short-description <text>    Short UI description.
   --skill-name <name>           Initial skill directory name.
-  --skill-description <text>    Initial skill description and UI summary.
+  --skill-description <text>    What the initial skill does and when to use it.
+  --skill-short-description <text>
+                                Initial skill UI summary. Default: --skill-description, then plugin UI summary.
   --version <semver>            Plugin version. Default: 0.1.0
   --min-version <semver>        Plugin compatibility.aw.minVersion. Default: --catalog-min-version or 0.0.0
   --catalog-min-version <semver>
@@ -484,6 +502,9 @@ function parseArgs(argv) {
       case '--skill-description':
         options.skillDescription = value;
         break;
+      case '--skill-short-description':
+        options.skillShortDescription = value;
+        break;
       case '--version':
         options.version = value;
         break;
@@ -575,7 +596,8 @@ function main() {
     const skillName = initialSkillName;
     const skillDescription = args.skillDescription || args.description;
     const skillDisplayName = titleCaseSlug(skillName);
-    const skillShortDescription = args.skillDescription || shortDescription;
+    const skillShortDescription =
+      args.skillShortDescription || args.skillDescription || shortDescription;
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 

@@ -20,6 +20,25 @@
 
 创建或维护插件时，优先从 `.agents/skills/create-agent-workflows-plugin/SKILL.md` 的场景入口开始读。
 
+## Skill Authoring
+
+插件内 skill 使用 Agent Skills portable core，并按目标平台叠加 AW 扩展：
+
+- portable core frontmatter 包含 `name`、`description`，以及可选的 `license`、`compatibility`、`metadata`、字符串形式 `allowed-tools`
+- Claude 扩展包含 `user-invocable`、`disable-model-invocation`、`shell` 和数组形式 `allowed-tools`
+- Codex 平台 metadata 放在 `agents/openai.yaml`，其中 `policy.allow_implicit_invocation` 必须显式声明
+
+双平台源码可以使用已知平台扩展，但不能把它们描述成 Agent Skills portable core。`validate_plugin.js` 默认按 AW source profile 校验；需要检查严格 portable frontmatter 时使用 `--strict-agent-skills`。
+
+设计 skill 时先确定用户意图、输入输出、完成标准、相邻任务边界和真实失败案例。主 `SKILL.md` 只保留每次触发都需要的工作流与 gotcha，建议少于 500 行和 5,000 tokens；长规则放 `references/`，重复或脆弱逻辑放可测试的 `scripts/`，并明确说明何时读取或执行。允许自动发现的 skill 要用真实正例和 near-miss 负例验证 description；模型输出质量要与无 skill 或旧版本 baseline 比较，不能用 `pnpm plugin:test` 代替行为 eval。
+
+详细指南：
+
+- `.agents/skills/create-agent-workflows-plugin/references/skill-design.md`
+- `.agents/skills/create-agent-workflows-plugin/references/skill-scripts.md`
+- `.agents/skills/create-agent-workflows-plugin/references/skill-evaluation.md`
+- `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`
+
 ## Version And Catalog Contract
 
 AW 有三套独立版本身份：

@@ -1,0 +1,23 @@
+{
+  "skill_name": "create-agent-workflows-plugin",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "使用 $create-agent-workflows-plugin 新建一个双平台 release-notes 插件。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
+      "expected_output": "创建最小插件源码，skill 的职责、description、触发策略和输出格式清楚，作者校验通过且没有修改 marketplace 或生成目录。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "使用 $create-agent-workflows-plugin 给一个已经存在的双平台插件增加 skill 内的 JSON 校验脚本。只改这个 skill 及必要测试，不改变插件安装、scope 或 lifecycle 行为。",
+      "expected_output": "先读取现有 manifest 和 skill，再做局部修改；脚本非交互、支持 --help、输出可解析并有失败测试，范围外文件保持不变。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "使用 $create-agent-workflows-plugin 检查一个 Claude-only skill 的 frontmatter。它使用 user-invocable 和数组形式 allowed-tools；请说明哪些是 Agent Skills core、哪些是平台扩展，并保持现有手动调用行为。",
+      "expected_output": "不会为了严格 core 静默删除 Claude 行为字段；会按 AW profile 校验并清楚报告 portable core 与平台扩展边界。",
+      "files": []
+    }
+  ]
+}

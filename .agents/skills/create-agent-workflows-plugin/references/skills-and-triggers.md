@@ -2,6 +2,8 @@
 
 Skills 是插件向用户或模型暴露的可调用工作流。每个 skill 是一组 Markdown 指令 + 平台元数据，由 CLI 按插件最终支持平台分发到对应目录。
 
+本文负责 AW/平台 metadata 和触发合同。决定 skill 职责、编写 description、组织正文与资源时先读 `references/skill-design.md`；skill 内脚本和行为评估分别见 `references/skill-scripts.md`、`references/skill-evaluation.md`。
+
 ## Skill 目录结构
 
 ```text
@@ -12,51 +14,35 @@ plugins/<name>/skills/
     │   └── openai.yaml          # 面向 Codex 时必需：Codex 平台元数据
     ├── references/              # 可选：按需加载的参考文档
     │   └── *.md
-    └── scripts/                 # 可选：辅助脚本
-        └── *.js | *.sh
+    ├── scripts/                 # 可选：由 agent 执行的辅助脚本
+    │   └── *.js | *.sh
+    ├── assets/                  # 可选：模板、图片和静态数据
+    └── evals/                   # 可选：作者期触发/输出质量用例
+        └── evals.json
 ```
 
 一个插件可以包含多个 skill 子目录，每个子目录名即 skill 标识（小写短横线格式）。
 
-## SKILL.md 规范
+## SKILL.md profile
 
-### Frontmatter 字段
+AW 区分两层 frontmatter：
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `name` | string | — | 必填。skill 标识，小写短横线，≤64 字符 |
-| `description` | string | — | 必填。说明"做什么"和"什么时候用"；影响平台 skill 发现和匹配质量，≤1024 字符 |
-| `user-invocable` | boolean | `true` | Claude Code：是否允许用户手动调用 |
-| `disable-model-invocation` | boolean | `false` | Claude Code：是否禁止模型自动调用 |
-| `metadata.short-description` | string | — | 可选。简短描述，用于 UI 展示，≤1024 字符 |
-| `allowed-tools` | `string` \| `string[]` | — | Claude Code：声明 shell 插值中允许执行的命令模式（如 `Bash(git *)` ） |
-| `shell` | string | `bash` | Claude Code：shell 插值使用的解释器，仅支持 `bash` 和 `powershell` |
+- **Agent Skills portable core**：`name`、`description`，以及可选的 `license`、`compatibility`、`metadata`、字符串形式 `allowed-tools`
+- **AW 平台扩展**：Claude 的 `user-invocable`、`disable-model-invocation`、`shell` 和数组形式 `allowed-tools`；Codex 的 `agents/openai.yaml`
 
-`allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
+完整约束和选择原则见 `references/skill-design.md`。默认 `validate_plugin.js` 接受 portable core 加目标平台的已知扩展；`--strict-agent-skills` 只接受 portable core。未知字段和旧式 `when_to_use` 会失败。
 
-示例：
+双平台、可严格移植的基础 frontmatter：
 
 ```yaml
 ---
 name: repo-check
 description: 当用户要求检查仓库状态或执行仓库诊断时，执行完整的仓库健康检查工作流。
-user-invocable: true
-disable-model-invocation: true
+compatibility: Requires git
 metadata:
   short-description: 仓库状态诊断
 ---
 ```
-
-### 正文组织建议
-
-正文是 skill 触发后加载的工作指令（不是给用户的文档，而是给 agent 的指令）。建议结构：
-
-1. **标题 + 一句话概述**
-2. **执行步骤**：编号列表，按顺序描述 agent 应执行的操作
-3. **边界约束**：不要做的事情、遇到异常时的处理方式
-4. **输出格式**（如有要求）
-
-保持简洁，避免重复 frontmatter 中已有的信息。大段参考资料放 `references/` 目录，按需加载。
 
 SKILL.md 和 `references/` 下的 Markdown 文件均支持模板渲染（`{{var}}`、`{{#if}}`、`{{#unless}}`），可按平台生成不同内容。需在 `buildConfig.templates` 中配置 include glob 和变量，详见 `references/build-config-spec.md`。
 
@@ -64,7 +50,7 @@ SKILL.md 和 `references/` 下的 Markdown 文件均支持模板渲染（`{{var}
 
 SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` 行内语法和 `` ```! `` 代码块语法，在加载时执行 shell 命令并将输出内联到 prompt。**此能力为 Claude Code 专属，Codex 不支持。**
 
-使用此功能时需在 frontmatter 中声明 `allowed-tools` 和（可选的）`shell` 字段。完整语法规范、支持范围和 frontmatter 配置见 `references/claude-only-capabilities.md` § 命令结果填充。
+使用此功能时需在 frontmatter 中声明 `allowed-tools` 和（可选的）`shell` 字段。字符串形式 `allowed-tools` 属于 portable core；数组形式和 `shell` 属于 Claude 扩展。完整语法规范、支持范围和配置见 `references/claude-only-capabilities.md` § 命令结果填充。
 
 ## agents/openai.yaml 规范
 

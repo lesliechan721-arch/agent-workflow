@@ -10,7 +10,9 @@ const errors = [];
 const warnings = [];
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
+const MAX_SKILL_COMPATIBILITY_LEN = 500;
 const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
+const MAX_SKILL_LINES = 500;
 const MAX_OPENAI_INTERFACE_NAME_LEN = 64;
 const MAX_OPENAI_INTERFACE_DESCRIPTION_LEN = 1024;
 const MAX_OPENAI_DEFAULT_PROMPT_LEN = 1024;
@@ -21,6 +23,19 @@ const MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_COMMAND_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_URL_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
+const AGENT_SKILLS_CORE_FRONTMATTER_FIELDS = new Set([
+  'name',
+  'description',
+  'license',
+  'compatibility',
+  'metadata',
+  'allowed-tools',
+]);
+const CLAUDE_SKILL_FRONTMATTER_FIELDS = new Set([
+  'user-invocable',
+  'disable-model-invocation',
+  'shell',
+]);
 const CLAUDE_SLASH_COMMAND_ONLY_FIELDS = new Set([
   'allowed-tools',
   'model',
@@ -993,7 +1008,7 @@ function validateNonEmptyString(value, fieldName, maxLength) {
     error(`${fieldName} must not be empty`);
     return null;
   }
-  if (maxLength !== undefined && trimmed.length > maxLength) {
+  if (maxLength !== undefined && countCharacters(trimmed) > maxLength) {
     error(`${fieldName} must be <= ${maxLength} characters`);
   }
   return trimmed;
@@ -1001,6 +1016,15 @@ function validateNonEmptyString(value, fieldName, maxLength) {
 
 function countCharacters(value) {
   return Array.from(value).length;
+}
+
+function countLines(value) {
+  if (value.length === 0) return 0;
+  const normalized = value.replace(/\r\n?/g, '\n');
+  const withoutFinalNewline = normalized.endsWith('\n')
+    ? normalized.slice(0, -1)
+    : normalized;
+  return withoutFinalNewline.split('\n').length;
 }
 
 function sanitizeSingleLine(value) {
@@ -1099,11 +1123,18 @@ function validateOptionalBoolean(record, key, fieldName) {
   }
 }
 
-function validateAllowedTools(value, fieldName) {
+function validateAllowedTools(value, fieldName, options) {
   if (typeof value === 'string') {
     if (value.trim().length === 0) {
       error(`${fieldName} must not be an empty string`);
     }
+    return;
+  }
+
+  if (!options.allowArray) {
+    error(
+      `${fieldName} must be a space-separated string in the Agent Skills portable core profile`,
+    );
     return;
   }
 
@@ -1121,8 +1152,15 @@ function validateAllowedTools(value, fieldName) {
   }
 }
 
-function validateSkillFrontmatter(fm, skillName) {
+function validateSkillFrontmatter(fm, skillName, options) {
   const fieldName = `skills/${skillName}/SKILL.md frontmatter`;
+  const allowedFields = new Set(AGENT_SKILLS_CORE_FRONTMATTER_FIELDS);
+  if (!options.strictAgentSkills && options.targetsClaude) {
+    for (const key of CLAUDE_SKILL_FRONTMATTER_FIELDS) {
+      allowedFields.add(key);
+    }
+  }
+  validateAllowedKeys(fm, fieldName, [...allowedFields]);
 
   if (fm.name === undefined) {
     error(`${fieldName} missing "name"`);
@@ -1130,7 +1168,7 @@ function validateSkillFrontmatter(fm, skillName) {
     const name = validateNonEmptyString(fm.name, `${fieldName}.name`, MAX_SKILL_NAME_LEN);
     if (name) {
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
-        error(`${fieldName}.name must use lowercase hyphen-case`);
+        error(`${fieldName}.name must use ASCII lowercase hyphen-case`);
       }
       if (name !== skillName) {
         error(`${fieldName}.name "${name}" must match skill directory "${skillName}"`);
@@ -1148,8 +1186,16 @@ function validateSkillFrontmatter(fm, skillName) {
     );
   }
 
-  if (fm.when_to_use !== undefined) {
-    validateNonEmptyString(fm.when_to_use, `${fieldName}.when_to_use`);
+  if (fm.license !== undefined) {
+    validateNonEmptyString(fm.license, `${fieldName}.license`);
+  }
+
+  if (fm.compatibility !== undefined) {
+    validateNonEmptyString(
+      fm.compatibility,
+      `${fieldName}.compatibility`,
+      MAX_SKILL_COMPATIBILITY_LEN,
+    );
   }
 
   validateOptionalBoolean(fm, 'user-invocable', fieldName);
@@ -1157,17 +1203,26 @@ function validateSkillFrontmatter(fm, skillName) {
 
   if (fm.metadata !== undefined) {
     const metadata = expectRecord(fm.metadata, `${fieldName}.metadata`);
-    if (metadata && metadata['short-description'] !== undefined) {
-      validateNonEmptyString(
-        metadata['short-description'],
-        `${fieldName}.metadata.short-description`,
-        MAX_SKILL_SHORT_DESCRIPTION_LEN,
-      );
+    if (metadata) {
+      for (const [key, value] of Object.entries(metadata)) {
+        if (typeof value !== 'string') {
+          error(`${fieldName}.metadata.${key} must be a string`);
+        }
+      }
+      if (metadata['short-description'] !== undefined) {
+        validateNonEmptyString(
+          metadata['short-description'],
+          `${fieldName}.metadata.short-description`,
+          MAX_SKILL_SHORT_DESCRIPTION_LEN,
+        );
+      }
     }
   }
 
   if (fm['allowed-tools'] !== undefined) {
-    validateAllowedTools(fm['allowed-tools'], `${fieldName}.allowed-tools`);
+    validateAllowedTools(fm['allowed-tools'], `${fieldName}.allowed-tools`, {
+      allowArray: !options.strictAgentSkills && options.targetsClaude,
+    });
   }
 
   if (fm.shell !== undefined) {
@@ -2683,7 +2738,7 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
   }
 }
 
-function validateSkills(pluginDir, manifest) {
+function validateSkills(pluginDir, manifest, options) {
   if (!manifest.skills) return;
   const skillsDir = path.join(pluginDir, manifest.skills);
   if (!fs.existsSync(skillsDir)) return;
@@ -2710,6 +2765,12 @@ function validateSkills(pluginDir, manifest) {
     }
 
     const content = fs.readFileSync(skillMdPath, 'utf8');
+    const lineCount = countLines(content);
+    if (lineCount >= MAX_SKILL_LINES) {
+      warn(
+        `skills/${dir.name}/SKILL.md has ${lineCount} lines; Agent Skills recommends keeping SKILL.md under ${MAX_SKILL_LINES} lines`,
+      );
+    }
     const variants = renderedContentVariants(
       manifest,
       skillMdRelativePath,
@@ -2734,7 +2795,10 @@ function validateSkills(pluginDir, manifest) {
           error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
         }
       } else {
-        validateSkillFrontmatter(fm, dir.name);
+        validateSkillFrontmatter(fm, dir.name, {
+          strictAgentSkills: options.strictAgentSkills,
+          targetsClaude,
+        });
       }
     }
 
@@ -2821,6 +2885,7 @@ function validateSlashCommandFrontmatter(commandRoot, commandRelativePath, front
         validateAllowedTools(
           claudeBlock['allowed-tools'],
           `${fieldName}.claude.allowed-tools`,
+          { allowArray: true },
         );
       }
       if (claudeBlock.model !== undefined) {
@@ -3026,6 +3091,33 @@ function validateSlashCommands(pluginDir, manifest) {
 // Main
 // ---------------------------------------------------------------------------
 
+function printUsage() {
+  console.log(`Usage:
+  node validate_plugin.js <plugin-directory> [options]
+
+Options:
+  --catalog-min-version <semver>
+                               Validate compatibility.aw.minVersion against a target catalog.
+  --strict-agent-skills        Allow only Agent Skills portable core frontmatter.
+  --json                       Emit one machine-readable JSON result to stdout.
+  -h, --help                   Show this help message.
+`);
+}
+
+function exitCliError(message, json) {
+  if (json) {
+    console.log(JSON.stringify({
+      ok: false,
+      profile: 'unknown',
+      warnings: [],
+      errors: [message],
+    }, null, 2));
+  } else {
+    console.error(message);
+  }
+  process.exit(1);
+}
+
 async function validatePluginDir(pluginDir, options) {
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
@@ -3070,7 +3162,7 @@ async function validatePluginDir(pluginDir, options) {
   validateAppsContent(pluginDir, manifest);
   warnCodexProjectScopeLimitations(manifest);
   validateExtensionNameUniqueness(manifest);
-  validateSkills(pluginDir, manifest);
+  validateSkills(pluginDir, manifest, options);
   validateSlashCommands(pluginDir, manifest);
 }
 
@@ -3079,38 +3171,48 @@ function parseArgs(argv) {
   const options = {
     pluginDir: null,
     catalogMinVersion: null,
+    strictAgentSkills: false,
+    json: args.includes('--json'),
   };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === '-h' || arg === '--help') {
+      printUsage();
+      process.exit(0);
+    }
+    if (arg === '--json') {
+      continue;
+    }
+    if (arg === '--strict-agent-skills') {
+      options.strictAgentSkills = true;
+      continue;
+    }
     if (!arg.startsWith('--')) {
       if (!options.pluginDir) {
         options.pluginDir = arg;
         continue;
       }
-      console.error(`Unknown argument: ${arg}`);
-      process.exit(1);
+      exitCliError(`Unknown argument: ${arg}`, options.json);
     }
 
     if (arg === '--catalog-min-version') {
       const value = args[index + 1];
       if (!value || value.startsWith('--')) {
-        console.error('--catalog-min-version requires a value.');
-        process.exit(1);
+        exitCliError('--catalog-min-version requires a value.', options.json);
       }
       index += 1;
       if (!STRICT_SEMVER_PATTERN.test(value)) {
-        console.error(
+        exitCliError(
           `Invalid --catalog-min-version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(value)}.`,
+          options.json,
         );
-        process.exit(1);
       }
       options.catalogMinVersion = value;
       continue;
     }
 
-    console.error(`Unknown option: ${arg}`);
-    process.exit(1);
+    exitCliError(`Unknown option: ${arg}`, options.json);
   }
 
   return options;
@@ -3119,19 +3221,32 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv);
   if (!args.pluginDir) {
-    console.error('Usage: node validate_plugin.js <plugin-directory> [--catalog-min-version <semver>]');
-    process.exit(1);
+    exitCliError('plugin-directory is required; run with --help for usage.', args.json);
   }
 
   const resolved = path.resolve(args.pluginDir);
   if (!fs.existsSync(resolved)) {
-    console.error(`[ERROR] Directory not found: ${resolved}`);
-    process.exit(1);
+    exitCliError(`[ERROR] Directory not found: ${resolved}`, args.json);
   }
 
   await validatePluginDir(resolved, {
     catalogMinVersion: args.catalogMinVersion,
+    strictAgentSkills: args.strictAgentSkills,
   });
+
+  if (args.json) {
+    console.log(JSON.stringify({
+      ok: errors.length === 0,
+      profile: args.strictAgentSkills ? 'agent-skills-portable-core' : 'aw-source',
+      pluginDirectory: resolved,
+      warnings,
+      errors,
+    }, null, 2));
+    if (errors.length > 0) {
+      process.exit(1);
+    }
+    return;
+  }
 
   if (warnings.length > 0) {
     console.log(`\n[WARN] ${warnings.length} warning(s):`);

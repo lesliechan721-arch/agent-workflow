@@ -10,11 +10,13 @@ code-review/
 │   └── plugin.json              # 完整 manifest：version + compatibility + skills + slashCommands + MCP + dependencies + extensions + buildConfig + scripts/config
 ├── review-skills/
 │   └── review-workflow/
-│       ├── SKILL.md             # 轻量审查工作流（含模板变量 {{platformName}}）
+│       ├── SKILL.md             # 审查工作流、完成标准和验证循环（含模板变量 {{platformName}}）
 │       ├── agents/
 │       │   └── openai.yaml      # Codex 平台元数据
-│       └── references/
-│           └── review-rules.md  # 审查规则参考文档
+│       ├── references/
+│       │   └── review-rules.md  # 审查规则参考文档
+│       └── evals/
+│           └── evals.json       # 小型、脱敏的输出质量用例
 ├── scripts/
 │   ├── aw-config.mjs            # 标准 AW config helper
 │   ├── lifecycle.mjs            # install / upgrade / uninstall 生命周期入口
@@ -34,6 +36,7 @@ code-review/
 | 能力 | 在示例中的体现 |
 |------|--------------|
 | Skills | `review-skills/review-workflow/` — 源码 skill 承载实际工作流 |
+| Skill Evals | `review-skills/review-workflow/evals/evals.json` — 作者期真实 prompt、预期结果和输入 fixture |
 | Skill Triggers | `skillTriggers.review-workflow.{defaultTrigger, allowDynamicTrigger}` — 声明默认触发策略，并允许用户通过 AW 配置改为 `manual` / `auto` |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
@@ -52,6 +55,8 @@ code-review/
 | agentOverrides | hooks 中的 before_tool 条目通过 `"codex": null` 排除 Codex 平台 |
 
 示例不再使用 Claude 原生 `userConfig` 承载共享配置。跨平台配置统一写在 AW `config.schema`；Claude-only `userConfig` 只应在确实需要 Claude Code 原生能力时使用，详见 `references/claude-only-capabilities.md`。
+
+`evals/evals.json` 属于作者期质量材料，不是 runtime 指令。AW 会复制声明的 skill 子树，所以这里只放小型、脱敏 fixture；大型日志、仓库快照和私有输入应保存在独立 eval workspace。
 
 示例 manifest 还包含一个带平台条件和 scope target 的依赖：
 

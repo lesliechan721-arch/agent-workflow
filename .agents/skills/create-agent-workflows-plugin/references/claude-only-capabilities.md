@@ -64,7 +64,7 @@ Claude runtime manifest 专属字段通过 `buildConfig.manifestOverrides.claude
 | `allowed-tools` | `string` \| `string[]` | — | 放行命令执行的工具模式（如 `Bash(git *)`），未声明则可能被权限系统拦截 |
 | `shell` | string | `bash` | 使用的 shell 解释器，仅支持 `bash` 和 `powershell` |
 
-`allowed-tools` 可写单个字符串，也可写字符串数组；多条规则建议用数组写法，便于阅读和 diff。
+字符串形式 `allowed-tools` 属于 Agent Skills portable core；数组形式是 Claude 扩展，多条规则时便于阅读和 diff。需要严格 portable frontmatter 时使用单个空格分隔字符串，并运行 `validate_plugin.js --strict-agent-skills`。
 
 公共 `slashCommands` 的 `claude` frontmatter block，以及 `skills` 的 frontmatter，均支持这两个字段。`slashCommands` 的完整公共格式见 `references/slash-commands.md`。
 
