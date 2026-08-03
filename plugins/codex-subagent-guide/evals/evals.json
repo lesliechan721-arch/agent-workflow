@@ -122,6 +122,36 @@
       }
     },
     {
+      "id": "project_rule_partial_context",
+      "prompt": "$codex-subagent-guide 委派已获准。适用 AGENTS.md 明确要求子代理继承最近两轮，最终交付物是只读事实核对；这不是用户临时偏好。V2 立即启动，V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
+      }
+    },
+    {
+      "id": "skill_rule_full_history_context",
+      "prompt": "$codex-subagent-guide 委派已获准。另一个已加载 skill 明确要求这个子任务继承完整历史；立即启动并遵守该 context 要求，不要因为任务可以在 message 中自包含而改用干净上下文。",
+      "expected_output": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "all" }, "present_arguments": ["message"] }
+      }
+    },
+    {
+      "id": "same_priority_context_conflict",
+      "prompt": "$codex-subagent-guide 委派已获准。两个同优先级的已加载 skill 给出互斥 context 要求：一个要求干净上下文，另一个要求完整历史；没有更高优先级指令可以消解。不要猜测或 spawn，只说明冲突。",
+      "expected_output": "同级 context 冲突无法消解时停止调度。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "无法消解", "无法同时"] },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "无法消解", "无法同时"] }
+      }
+    },
+    {
       "id": "missing_preset_role",
       "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
       "expected_output": "缺失预设 role 时 fail closed。",

@@ -66,6 +66,9 @@ async function testEvalSpec() {
       'partial_custom_model',
       'full_history',
       'full_history_custom_override',
+      'project_rule_partial_context',
+      'skill_rule_full_history_context',
+      'same_priority_context_conflict',
       'missing_preset_role',
       'fixed_role_custom_conflict',
     ],
@@ -87,6 +90,16 @@ async function testEvalSpec() {
   assert.equal(fullCustom.expectations.v1.arguments.model, 'gpt-5.6-terra');
   assert.equal(fullCustom.expectations.v1.arguments.fork_context, true);
   assert.equal(fullCustom.expectations.v2.spawn_calls.max, 0);
+  const projectContext = spec.evals.find((entry) => entry.id === 'project_rule_partial_context');
+  assert.equal(projectContext.expectations.v1.spawn_calls.max, 0);
+  assert.equal(projectContext.expectations.v2.arguments.agent_type, 'codex-subagent-simple');
+  assert.equal(projectContext.expectations.v2.arguments.fork_turns, '2');
+  const skillContext = spec.evals.find((entry) => entry.id === 'skill_rule_full_history_context');
+  assert.equal(skillContext.expectations.v1.arguments.fork_context, true);
+  assert.equal(skillContext.expectations.v2.arguments.fork_turns, 'all');
+  const contextConflict = spec.evals.find((entry) => entry.id === 'same_priority_context_conflict');
+  assert.equal(contextConflict.expectations.v1.spawn_calls.max, 0);
+  assert.equal(contextConflict.expectations.v2.spawn_calls.max, 0);
 }
 
 async function testRolloutArgumentEvidence() {

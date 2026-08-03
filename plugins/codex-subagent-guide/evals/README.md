@@ -2,9 +2,10 @@
 
 ## 触发评估
 
-固定语料分成 train（12）、validation（8）和不参与 description 调优的 sanity（6）。它同时检查：
+固定语料分成 train（14）、validation（9）和不参与 description 调优的 sanity（7）。它同时检查：
 
 - 已经由用户、项目规则或其它技能授权委派时，加载 skill 并启动子代理。
+- 上游 skill 只授权、不提供代理管理时加载；专用 skill 已完整拥有委派生命周期时不叠加加载。
 - 只询问是否应该委派、概念文档、安装配置、明确禁止子代理等 near miss，不加载也不启动。
 - 显式调用 skill 或管理已有 agent 时加载 skill，但不额外 spawn。
 
@@ -18,7 +19,7 @@ node plugins/codex-subagent-guide/evals/run-trigger-evals.mjs --split sanity --r
 
 ## Routing 参数评估
 
-`evals.json` 覆盖四个预设 role、逐字段自定义、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、显式冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据最终说明猜测实际参数。
+`evals.json` 覆盖四个预设 role、逐字段自定义、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、同级 context 冲突、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据最终说明猜测实际参数。
 
 ```bash
 node plugins/codex-subagent-guide/evals/run-routing-evals.mjs --runs 3 --output /tmp/codex-subagent-guide-routing.json
@@ -34,4 +35,4 @@ runner 默认用 `gpt-5.6-luna` 运行 V1、`gpt-5.6-sol` 运行 V2，可用 `--
 
 如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
 
-等待、timeout、close 和重复 spawn 的生命周期规则继续由渲染单测机械验证；实时 eval 不启动长时间等待或 close 工作流。
+渲染单测只验证等待、timeout、follow-up、close 和重复 spawn 等生命周期规则已进入最终 `SKILL.md`，不验证模型是否按这些规则行动。实时 routing eval 在 spawn 后停止，不启动长时间等待或 close 工作流；生命周期行为仍需要 workflow eval 或人工轨迹检查。

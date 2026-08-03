@@ -24,6 +24,12 @@ export const validationCases = [
     should_spawn_agent: true,
   },
   {
+    id: 'validation_specialized_workflow_owner',
+    query: '安全审计专用 skill 已经启动并管理 agent_delta，它自己的流程覆盖 role、fork、等待、失败恢复和收尾。继续该专用流程，不要再启动 agent。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
     id: 'validation_should_we_delegate',
     query: '先判断是否需要多 agent 并行，不要真的调用 spawn_agent。',
     should_load_skill: false,

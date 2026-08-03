@@ -18,6 +18,12 @@ export const sanityCases = [
     should_spawn_agent: true,
   },
   {
+    id: 'sanity_codex_explore_owns_lifecycle',
+    query: '$codex-explore 已通过自己的 Gate 并启动专用 agent，它的指令已经完整规定 role、fork、等待、恢复和清理。继续该工作流等待现有 agent，不要启动新 agent。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
     id: 'sanity_docs_only',
     query: '帮我润色一段介绍 multi-agent 的 README，不使用任何 agent 工具。',
     should_load_skill: false,

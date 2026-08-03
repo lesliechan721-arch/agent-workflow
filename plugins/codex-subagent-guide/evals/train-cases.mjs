@@ -30,6 +30,18 @@ export const trainCases = [
     should_spawn_agent: true,
   },
   {
+    id: 'authorization_only_requires_guide',
+    query: '某个已加载 skill 只负责确认这次可以委派，明确没有规定 agent_type、spawn 参数、上下文、等待或清理。请用通用子代理管理流程启动一个 agent，核对 src/simple.ts 的事实。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'specialized_workflow_owns_lifecycle',
+    query: '一个已加载的专用探索 skill 已经选择 role、传入 spawn 参数并启动 agent_alpha，也完整规定了等待、结果校验、恢复和清理。请继续它的现有流程，不要新建 agent。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
     id: 'decision_only_near_miss',
     query: '你觉得这个小任务是否值得委派给子代理？只分析利弊，先不要启动任何 agent。',
     should_load_skill: false,

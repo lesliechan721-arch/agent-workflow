@@ -27,13 +27,13 @@ import {
 
 async function testEvalCorpus() {
   const cases = await loadEvalCases('all');
-  assert.equal(cases.length, 26);
-  assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
-  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 6);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 16);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 12);
+  assert.equal(cases.length, 30);
+  assert.equal(cases.filter((entry) => entry.split === 'train').length, 14);
+  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 9);
+  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 7);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 17);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 13);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 13);
   assert.equal(
     cases.filter((entry) => entry.should_load_skill && !entry.should_spawn_agent).length,
     4,
@@ -42,10 +42,14 @@ async function testEvalCorpus() {
 
   const required = new Map([
     ['authorized_simple_lookup', [true, true]],
+    ['authorization_only_requires_guide', [true, true]],
+    ['specialized_workflow_owns_lifecycle', [false, false]],
     ['decision_only_near_miss', [false, false]],
     ['explicit_skill_without_authority', [true, false]],
     ['manage_existing_agent', [true, false]],
+    ['validation_specialized_workflow_owner', [false, false]],
     ['validation_config_help', [false, false]],
+    ['sanity_codex_explore_owns_lifecycle', [false, false]],
     ['sanity_existing_cleanup', [true, false]],
   ]);
   for (const [id, [shouldLoad, shouldSpawn]] of required) {
@@ -140,7 +144,9 @@ async function testWorkspaceStaging() {
       readFile(workspace.skillPath, 'utf8'),
       ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
     ]);
-    assert.match(skill, /适用 AGENTS\.md 或其它技能已明确要求 Codex 使用子代理/);
+    assert.match(skill, /适用 AGENTS\.md 或其它技能已经授权 Codex 使用子代理/);
+    assert.match(skill, /且没有专用 skill 自行完整管理本次委派时使用/);
+    assert.match(skill, /不与已经定义独立委派流程的专用 skill 叠加使用/);
     assert.match(skill, /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/);
     assert.deepEqual(
       workspace.roles.map((role) => role.roleFile.name),

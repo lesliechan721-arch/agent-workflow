@@ -104,6 +104,8 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /\| 通用任务 \|/);
   assert.match(skill.content.skillFile, /\| 复杂任务 \|/);
   assert.match(skill.content.skillFile, /\| 计划与审核 \|/);
+  assert.match(skill.content.skillFile, /且没有专用 skill 自行完整管理本次委派时使用/);
+  assert.match(skill.content.skillFile, /不与已经定义独立委派流程的专用 skill 叠加使用/);
   assert.match(skill.content.skillFile, /计划或审核优先于其前置探索/);
   assert.match(skill.content.skillFile, /复杂实现与调试优先于通用/);
   assert.match(skill.content.skillFile, /预定义任务只传表中的 `agent_type`/);
@@ -125,7 +127,10 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
     /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/,
   );
   assert.match(skill.content.skillFile, /具体参数和兼容性服从当前工具 schema/);
-  assert.match(skill.content.skillFile, /显式要求无法同时满足时停止并说明/);
+  assert.match(skill.content.skillFile, /用户、适用规则或其它已加载 skill 明确要求继承/);
+  assert.match(skill.content.skillFile, /多个显式 context 要求按当前指令优先级解析/);
+  assert.match(skill.content.skillFile, /同级冲突无法消解/);
+  assert.match(skill.content.skillFile, /context 选择独立于预设或自定义任务分类/);
   assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
 
   assert.match(skill.content.skillFile, /调用时只等待尚未终态的 agent/);
@@ -135,6 +140,10 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /只有 `wait_agent` 明确报告超时才发起存活探测/);
   assert.match(skill.content.skillFile, /同一子任务同时最多有一个未决探测/);
   assert.match(skill.content.skillFile, /暂未回复不能单独证明代理已经挂死/);
+  assert.match(skill.content.skillFile, /向原 agent 发送一次聚焦缺口的 follow-up/);
+  assert.match(skill.content.skillFile, /收到结果后重新校验/);
+  assert.match(skill.content.skillFile, /不要为可恢复缺口重复 spawn 相同任务/);
+  assert.match(skill.content.skillFile, /不得把不合格结果当作任务完成/);
   assert.match(skill.content.skillFile, /是否请求部分结果或提前收敛由主代理/);
   assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
   assert.match(
