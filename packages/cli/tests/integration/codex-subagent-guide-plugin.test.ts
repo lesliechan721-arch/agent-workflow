@@ -90,7 +90,7 @@ describe('codex-subagent-guide dynamic artifacts', () => {
     const skill = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
     const metadata = await fs.readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8');
 
-    expect(skill).toContain('正整数 `fork_turns` 表示部分历史');
+    expect(skill).toContain('完整历史、按轮次继承或其它非干净模式都统一视为继承上下文');
     expect(metadata).toContain('allow_implicit_invocation: true');
 
     for (const role of ROLE_EXPECTATIONS) {

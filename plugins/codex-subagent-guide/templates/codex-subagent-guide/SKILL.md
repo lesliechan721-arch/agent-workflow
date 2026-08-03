@@ -19,13 +19,11 @@ metadata:
 - 只传当前 `spawn_agent` schema 公开且目标模型支持的字段和值。
 - 用户、其它技能或规则显式指定的自定义值不可用时停止并说明，不循环试探或降级到预定义任务。
 
-## 选择 fork
+## 选择上下文
 
-默认使用干净上下文。当 `spawn_agent` 公开 `fork_turns` 而未公开 `fork_context` 时，使用 `fork_turns: "none"`；公开 `fork_context` 而未公开 `fork_turns` 时，使用 `fork_context: false`。出现其它或组合形状时服从当前 schema 和描述，不套用这两条。在 `message` 中写清目标、范围、必要事实和预期输出。
+默认使用干净上下文，并按当前 `spawn_agent` schema 传表示“不继承”的值，例如 `fork_turns: "none"` 或 `fork_context: false`。在 `message` 中写清目标、范围、必要事实和预期输出。
 
-不要把所有带历史的 fork 统一视为完整继承。按当前 schema 对 `agent_type`、`model` 和 `reasoning_effort` 分别判断：只有 schema 明确说明某字段在全历史模式中继承父代理时才省略该字段。正整数 `fork_turns` 表示部分历史，不等同于 `fork_turns: "all"`，可与 schema 明确支持的 override 组合。插件自动选择的预设与用户显式要求的全历史 fork 冲突时，优先满足 fork 并省略预设；用户、其它技能或规则同时显式要求互斥字段时停止并说明。`fork_context: true`、`fork_turns: "all"` 或其它新形状的具体约束始终以当前 schema 为准。
-
-只有用户明确要求，或任务无法通过完整 `message` 自包含必要上下文时才继承。不要仅为了少写委派说明而继承。
+只有用户明确要求，或任务无法通过完整 `message` 自包含必要上下文时，才使用非干净上下文。完整历史、按轮次继承或其它非干净模式都统一视为继承上下文，具体参数和兼容性服从当前工具 schema；显式要求无法同时满足时停止并说明。不要仅为了少写委派说明而继承。
 
 ## 等待与关闭
 

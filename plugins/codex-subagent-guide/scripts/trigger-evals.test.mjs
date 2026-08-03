@@ -141,7 +141,7 @@ async function testWorkspaceStaging() {
       ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
     ]);
     assert.match(skill, /适用 AGENTS\.md 或其它技能已明确要求 Codex 使用子代理/);
-    assert.match(skill, /正整数 `fork_turns` 表示部分历史/);
+    assert.match(skill, /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/);
     assert.deepEqual(
       workspace.roles.map((role) => role.roleFile.name),
       [

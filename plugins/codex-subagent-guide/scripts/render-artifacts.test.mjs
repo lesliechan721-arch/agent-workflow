@@ -115,18 +115,15 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /默认使用干净上下文/);
   assert.match(
     skill.content.skillFile,
-    /公开 `fork_turns` 而未公开 `fork_context` 时，使用 `fork_turns: "none"`/,
+    /按当前 `spawn_agent` schema 传表示“不继承”的值/,
   );
   assert.match(
     skill.content.skillFile,
-    /正整数 `fork_turns` 表示部分历史，不等同于 `fork_turns: "all"`/,
+    /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/,
   );
-  assert.match(
-    skill.content.skillFile,
-    /按当前 schema 对 `agent_type`、`model` 和 `reasoning_effort` 分别判断/,
-  );
-  assert.match(skill.content.skillFile, /全历史 fork 冲突时，优先满足 fork 并省略预设/);
-  assert.match(skill.content.skillFile, /同时显式要求互斥字段时停止并说明/);
+  assert.match(skill.content.skillFile, /具体参数和兼容性服从当前工具 schema/);
+  assert.match(skill.content.skillFile, /显式要求无法同时满足时停止并说明/);
+  assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
 
   assert.match(skill.content.skillFile, /`wait_agent` 公开 `targets` 时/);
   assert.match(skill.content.skillFile, /`wait_agent` 未公开 `targets` 且描述为 mailbox wait 时/);
