@@ -7,7 +7,8 @@ export const trainCases = [
   },
   {
     id: 'authorized_general_delivery',
-    query: '项目 AGENTS.md 已要求这个任务用一个 agent 委派。请启动子代理，负责一个边界清晰的常规文档实现。',
+    query: '请根据 docs/architecture.md 起草一段边界清晰的常规说明文档。',
+    workspace_fixture: 'project_authorization',
     should_load_skill: true,
     should_spawn_agent: true,
   },
@@ -31,13 +32,15 @@ export const trainCases = [
   },
   {
     id: 'authorization_only_requires_guide',
-    query: '某个已加载 skill 只负责确认这次可以委派，明确没有规定 agent_type、spawn 参数、上下文、等待或清理。请用通用子代理管理流程启动一个 agent，核对 src/simple.ts 的事实。',
+    query: '$delegation-authorizer 核对 src/simple.ts 的事实并整理证据。',
+    workspace_fixture: 'authorization_skill',
     should_load_skill: true,
     should_spawn_agent: true,
   },
   {
     id: 'specialized_workflow_owns_lifecycle',
-    query: '一个已加载的专用探索 skill 已经选择 role、传入 spawn 参数并启动 agent_alpha，也完整规定了等待、结果校验、恢复和清理。请继续它的现有流程，不要新建 agent。',
+    query: '$delegation-lifecycle-owner 继续现有的专用委派流程，等待已经运行的 agent_alpha。',
+    workspace_fixture: 'lifecycle_skill',
     should_load_skill: false,
     should_spawn_agent: false,
   },

@@ -6,6 +6,7 @@ import {
   renderRoleDeveloperInstructions,
 } from './render-artifacts.mjs';
 
+const SHORT_DESCRIPTION = '子代理任务分类、参数选择、上下文继承、等待与生命周期管理';
 const ROLE_EXPECTATIONS = [
   {
     artifactId: 'codex-subagent-simple-role',
@@ -160,7 +161,10 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.equal(skill.content.skillFile.includes('{{spawnParameterGuidance}}'), false);
   assert.equal(skill.content.skillFile.includes('{{minimumInitialWaitMinutes}}'), false);
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation: true/);
-  assert.match(skill.content.openaiYaml, /子代理任务分类、fork 与等待指导/);
+  assert.match(skill.content.skillFile, new RegExp(`short-description: ${SHORT_DESCRIPTION}`));
+  assert.match(skill.content.openaiYaml, new RegExp(`short_description: "${SHORT_DESCRIPTION}"`));
+  assert.ok(Array.from(SHORT_DESCRIPTION).length >= 25);
+  assert.ok(Array.from(SHORT_DESCRIPTION).length <= 64);
 });
 
 test('renders a configured initial liveness probe delay', async () => {

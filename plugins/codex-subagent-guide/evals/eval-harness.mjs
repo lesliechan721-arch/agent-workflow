@@ -20,6 +20,12 @@ import { renderArtifactPlan } from '../scripts/render-artifacts.mjs';
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_KEY = 'codex-subagent-guide';
+export const TRIGGER_WORKSPACE_FIXTURES = new Set([
+  'default',
+  'project_authorization',
+  'authorization_skill',
+  'lifecycle_skill',
+]);
 const ROOT_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
   'Use spawn_agent only when the user, project instructions, or an applicable skill has already authorized delegation.',
@@ -93,7 +99,76 @@ async function writeFixtureFiles(root) {
   }));
 }
 
-export async function createEvalWorkspace({ withSkill = true } = {}) {
+async function writeSkillFixture(root, name, content) {
+  const skillPath = path.join(root, '.agents', 'skills', name, 'SKILL.md');
+  await mkdir(path.dirname(skillPath), { recursive: true });
+  await writeFile(skillPath, content, 'utf8');
+  return skillPath;
+}
+
+async function writeTriggerWorkspaceFixture(root, fixture) {
+  if (fixture === 'default') {
+    return [];
+  }
+  if (fixture === 'project_authorization') {
+    await writeFile(
+      path.join(root, 'AGENTS.md'),
+      [
+        '# Evaluation Instructions',
+        '',
+        'Delegation is authorized and required for the user task in this workspace.',
+        'This rule does not choose an agent type, spawn parameters, context inheritance, waiting, recovery, or cleanup.',
+        'Load applicable skills before managing the delegated work.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    return [];
+  }
+  if (fixture === 'authorization_skill') {
+    return [await writeSkillFixture(
+      root,
+      'delegation-authorizer',
+      [
+        '---',
+        'name: delegation-authorizer',
+        'description: Use when explicitly invoked to authorize subagent delegation for the current task without defining how delegation is managed.',
+        '---',
+        '',
+        '# Delegation Authorizer',
+        '',
+        'Delegation is authorized and required for the current user task.',
+        'This skill does not choose an agent type, spawn parameters, context inheritance, waiting, recovery, or cleanup.',
+        '',
+      ].join('\n'),
+    )];
+  }
+  if (fixture === 'lifecycle_skill') {
+    return [await writeSkillFixture(
+      root,
+      'delegation-lifecycle-owner',
+      [
+        '---',
+        'name: delegation-lifecycle-owner',
+        'description: Use when explicitly invoked to continue a specialized delegation workflow that already owns role selection, spawning, waiting, recovery, and cleanup.',
+        '---',
+        '',
+        '# Delegation Lifecycle Owner',
+        '',
+        'Continue the already-running specialized delegation workflow.',
+        'This skill fully owns role selection, spawn parameters, waiting, result validation, recovery, and cleanup.',
+        'Do not load a general subagent-management skill and do not spawn a duplicate agent.',
+        '',
+      ].join('\n'),
+    )];
+  }
+  throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);
+}
+
+export async function createEvalWorkspace({ withSkill = true, fixture = 'default' } = {}) {
+  if (!TRIGGER_WORKSPACE_FIXTURES.has(fixture)) {
+    throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);
+  }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-eval-'));
   try {
     const plan = await renderArtifactPlan({
@@ -149,7 +224,17 @@ export async function createEvalWorkspace({ withSkill = true } = {}) {
         : []),
     ]);
 
-    return { root, skillPath, roles, withSkill };
+    const fixtureSkillPaths = await writeTriggerWorkspaceFixture(root, fixture);
+
+    return {
+      root,
+      skillPath,
+      roles,
+      withSkill,
+      fixture,
+      fixtureSkillPaths,
+      useProjectRules: fixture === 'project_authorization',
+    };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
     throw error;
@@ -210,7 +295,11 @@ export function buildCodexArgs(workspace, evalCase, options) {
     'exec',
     '--json',
     '--ignore-user-config',
-    '--ignore-rules',
+  ];
+  if (!workspace.useProjectRules) {
+    args.push('--ignore-rules');
+  }
+  args.push(
     '--skip-git-repo-check',
     '--color',
     'never',
@@ -228,7 +317,7 @@ export function buildCodexArgs(workspace, evalCase, options) {
     `developer_instructions=${tomlString(ROOT_DEVELOPER_INSTRUCTIONS)}`,
     '--config',
     `features.multi_agent_v2.enabled=${profile === 'v2' ? 'true' : 'false'}`,
-  ];
+  );
   if (profile === 'v2') {
     args.push(
       '--config',
@@ -370,6 +459,12 @@ function earlyStopReason(evalCase, observed) {
   return null;
 }
 
+export function skillRequestedExplicitly(evalCase) {
+  return Boolean(
+    evalCase.explicit_skill || evalCase.query.includes('$codex-subagent-guide'),
+  );
+}
+
 export async function runCodexOnce(workspace, evalCase, options) {
   const codexHome = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-home-'));
   await copyCodexAuthFiles(codexHome).catch(async (error) => {
@@ -387,12 +482,12 @@ export async function runCodexOnce(workspace, evalCase, options) {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.end();
-      const explicitSkill =
-        workspace.withSkill && evalCase.query.includes('$codex-subagent-guide');
+      const requestedExplicitly = skillRequestedExplicitly(evalCase);
       const observed = {
-        loaded: explicitSkill,
+        requestedExplicitly,
+        loaded: false,
         spawned: false,
-        loadEvidence: explicitSkill ? 'explicit $codex-subagent-guide mention' : null,
+        loadEvidence: null,
         spawnEvidence: null,
         spawnCalls: [],
       };
@@ -536,6 +631,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           termination === 'timeout' ||
           (termination === 'completed' && exitCode !== 0);
         resolve({
+          requested_explicitly: observed.requestedExplicitly,
           loaded: observed.loaded,
           spawned: observed.spawned,
           load_evidence: observed.loadEvidence,

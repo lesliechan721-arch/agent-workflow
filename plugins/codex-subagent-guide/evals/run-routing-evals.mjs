@@ -206,8 +206,17 @@ function evaluateArguments(call, expectedArguments) {
   });
 }
 
+function hasLoadEvidence(run) {
+  return (
+    run.loaded === true &&
+    typeof run.load_evidence === 'string' &&
+    run.load_evidence !== ''
+  );
+}
+
 export function evaluateRoutingRun(run, expected, variant) {
   const calls = run.spawn_calls ?? [];
+  const loadObserved = hasLoadEvidence(run);
   const assertions = [
     {
       name: 'execution',
@@ -216,8 +225,8 @@ export function evaluateRoutingRun(run, expected, variant) {
     },
     {
       name: 'skill_load',
-      passed: variant === 'with_skill' ? run.loaded === true : run.loaded === false,
-      evidence: `variant=${variant} loaded=${Boolean(run.loaded)}`,
+      passed: variant === 'with_skill' ? loadObserved : run.loaded === false,
+      evidence: `variant=${variant} loaded=${Boolean(run.loaded)} evidence=${JSON.stringify(run.load_evidence ?? null)}`,
     },
     {
       name: 'spawn_call_count',
@@ -270,8 +279,12 @@ export function summarizeRoutingVariant(entry, profile, variant, runs, threshold
   const rawEvidenceMissing = gradedRuns.filter(
     (run) => run.spawned && (run.spawn_calls ?? []).length === 0,
   ).length;
+  const loadEvidenceMissing = variant === 'with_skill'
+    ? gradedRuns.filter((run) => !run.execution_error && !hasLoadEvidence(run)).length
+    : 0;
   const complete =
     rawEvidenceMissing === 0 &&
+    loadEvidenceMissing === 0 &&
     gradedRuns.every((run) => !run.execution_error);
   return {
     id: entry.id,
@@ -282,6 +295,7 @@ export function summarizeRoutingVariant(entry, profile, variant, runs, threshold
     pass_rate: passRate,
     complete,
     raw_evidence_missing: rawEvidenceMissing,
+    load_evidence_missing: loadEvidenceMissing,
     passed: complete && passRate > threshold,
     runs: gradedRuns,
   };
@@ -312,8 +326,10 @@ export function routingReportStatus(results, expectedResultCount) {
 
 function thrownExecutionError(error) {
   return {
+    requested_explicitly: false,
     loaded: false,
     spawned: false,
+    load_evidence: null,
     spawn_calls: [],
     termination: 'environment_error',
     exit_code: null,
@@ -400,6 +416,10 @@ async function run(options) {
     (total, result) => total + result.raw_evidence_missing,
     0,
   );
+  const loadEvidenceMissing = results.reduce(
+    (total, result) => total + result.load_evidence_missing,
+    0,
+  );
   const currentResults = results.filter((result) => result.variant === 'with_skill');
   const baselineResults = results.filter((result) => result.variant === 'without_skill');
   const report = {
@@ -415,7 +435,9 @@ async function run(options) {
     environment_error: environmentError ?? (
       rawEvidenceMissing > 0
         ? 'Raw spawn_agent arguments were unavailable for one or more observed calls.'
-        : null
+        : loadEvidenceMissing > 0
+          ? 'Skill load evidence was unavailable for one or more with-skill runs.'
+          : null
     ),
     summary: {
       expected_results: expectedResultCount,
@@ -425,6 +447,7 @@ async function run(options) {
       baseline_passed: baselineResults.filter((result) => result.passed).length,
       baseline_total: baselineResults.length,
       raw_evidence_missing: rawEvidenceMissing,
+      load_evidence_missing: loadEvidenceMissing,
     },
     results,
   };

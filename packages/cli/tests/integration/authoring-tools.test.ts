@@ -397,6 +397,32 @@ describe('authoring tools', () => {
       'init_plugin.js',
     );
 
+    await expect(
+      execFileAsync(
+        'node',
+        [
+          scriptPath,
+          'invalid-skill-metadata',
+          '--description',
+          '用于验证 skill UI metadata 长度约束的示例插件。',
+          '--skill-short-description',
+          '仓库诊断',
+          '--repo-root',
+          tempRepo,
+        ],
+        {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('--skill-short-description must be 25-64 characters'),
+    });
+    await expect(
+      fs.pathExists(path.join(tempRepo, 'plugins', 'invalid-skill-metadata')),
+    ).resolves.toBe(false);
+
     await execFileAsync(
       'node',
       [
@@ -411,7 +437,7 @@ describe('authoring tools', () => {
         '--skill-name',
         'repo-check',
         '--skill-description',
-        '手动触发这个 skill，执行仓库检查工作流',
+        '手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流',
         '--with-apps',
         '--repo-root',
         tempRepo,
@@ -474,7 +500,7 @@ describe('authoring tools', () => {
     expect(skillMdContent).toContain('user-invocable: true');
     expect(skillMdContent).toContain('disable-model-invocation: true');
     expect(skillMdContent).toContain(
-      'metadata:\n  short-description: "手动触发这个 skill，执行仓库检查工作流"',
+      'metadata:\n  short-description: "手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流"',
     );
     expect(skillMdContent).toContain('完成标准：');
     expect(skillMdContent).toContain('## 验证');
@@ -491,7 +517,7 @@ describe('authoring tools', () => {
     );
     expect(openaiYamlContent).toContain('display_name: "Repo Check"');
     expect(openaiYamlContent).toContain(
-      'short_description: "手动触发这个 skill，执行仓库检查工作流"',
+      'short_description: "手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流"',
     );
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.app.json')),
@@ -533,7 +559,7 @@ describe('authoring tools', () => {
         scriptPath,
         'catalog-aware',
         '--description',
-        '带 catalog 最低版本上下文的插件。',
+        '用于验证 catalog 最低版本上下文与兼容性约束的示例插件。',
         '--catalog-min-version',
         '0.8.0',
         '--repo-root',
@@ -703,7 +729,7 @@ describe('authoring tools', () => {
         '--skill-description',
         '检查仓库状态并输出诊断结论',
         '--skill-short-description',
-        '仓库诊断',
+        '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
         '--repo-root',
         tempRepo,
       ],
@@ -729,7 +755,9 @@ describe('authoring tools', () => {
     );
     expect(skillMdContent).toContain('name: repo-diagnose');
     expect(skillMdContent).toContain('description: "检查仓库状态并输出诊断结论"');
-    expect(skillMdContent).toContain('metadata:\n  short-description: "仓库诊断"');
+    expect(skillMdContent).toContain(
+      'metadata:\n  short-description: "检查仓库状态、配置、依赖与风险并输出可执行的诊断结论"',
+    );
 
     const openaiYamlContent = await fs.readFile(
       path.join(
@@ -744,8 +772,12 @@ describe('authoring tools', () => {
       'utf8',
     );
     expect(openaiYamlContent).toContain('display_name: "Repo Diagnose"');
-    expect(openaiYamlContent).toContain('short_description: "仓库诊断"');
-    expect(openaiYamlContent).toContain('default_prompt: "使用 $repo-diagnose：仓库诊断。"');
+    expect(openaiYamlContent).toContain(
+      'short_description: "检查仓库状态、配置、依赖与风险并输出可执行的诊断结论"',
+    );
+    expect(openaiYamlContent).toContain(
+      'default_prompt: "使用 $repo-diagnose：检查仓库状态、配置、依赖与风险并输出可执行的诊断结论。"',
+    );
     expect(openaiYamlContent).not.toContain('display_name: "Automation Suite"');
     expect(openaiYamlContent).not.toContain(
       'short_description: "检查仓库状态并输出诊断结论"',
@@ -2508,7 +2540,7 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('allow_implicit_invocation must be a boolean'),
     });
 
-    const overlongCodexText = 'x'.repeat(1025);
+    const overlongCodexText = 'x'.repeat(65);
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
       [
@@ -2539,7 +2571,7 @@ describe('authoring tools', () => {
       invalidOpenAiYamlStdout = (error as { stdout?: string }).stdout ?? '';
     }
     expect(invalidOpenAiYamlStdout).toContain('interface.display_name must not be empty');
-    expect(invalidOpenAiYamlStdout).toContain('interface.short_description must be <= 1024 characters');
+    expect(invalidOpenAiYamlStdout).toContain('interface.short_description must be <= 64 characters');
     expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt must not be empty');
     expect(invalidOpenAiYamlStdout).toContain('interface.icon_small must be a relative path under assets/');
     expect(invalidOpenAiYamlStdout).toContain('interface.icon_large must be a relative path under assets/');
@@ -2566,6 +2598,27 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('interface.default_prompt must explicitly mention "$metadata-test"'),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  short_description: "Too short"',
+        '  default_prompt: "Use $metadata-test to validate metadata."',
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('interface.short_description must be >= 25 characters'),
     });
 
     await fs.writeFile(
@@ -2889,7 +2942,7 @@ describe('authoring tools', () => {
             },
             shortDescription: {
               claude: 'Claude metadata workflow',
-              codex: 'Codex metadata workflow',
+              codex: 'Codex metadata validation workflow',
             },
             displayName: {
               claude: 'Claude Metadata',

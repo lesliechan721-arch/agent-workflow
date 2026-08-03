@@ -1,6 +1,6 @@
 interface:
   display_name: "Git Commit"
-  short_description: "核对范围并创建约定式 Git 提交"
+  short_description: "核对变更范围、仓库规范与提交边界后创建可追溯的约定式 Git 提交"
   default_prompt: "使用 $commit 核对当前改动，并按仓库规范完成 Git 提交。"
 
 policy:

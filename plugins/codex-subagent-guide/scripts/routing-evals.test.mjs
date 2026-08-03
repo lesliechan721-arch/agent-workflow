@@ -151,6 +151,7 @@ function testMechanicalAssertions() {
   };
   const passingRun = {
     loaded: true,
+    load_evidence: 'read SKILL.md',
     execution_error: false,
     termination: 'spawn_observed',
     exit_code: null,
@@ -173,7 +174,7 @@ function testMechanicalAssertions() {
     false,
   );
 
-  const baseline = { ...passingRun, loaded: false };
+  const baseline = { ...passingRun, loaded: false, load_evidence: null };
   assert.equal(evaluateRoutingRun(baseline, expected, 'without_skill').passed, true);
 
   const missingRawArguments = {
@@ -210,11 +211,39 @@ function testMechanicalAssertions() {
     },
     'v2',
     'with_skill',
-    [{ ...missingRawArguments, loaded: true }],
+    [{ ...missingRawArguments, loaded: true, load_evidence: 'read SKILL.md' }],
     0.5,
   );
   assert.equal(incomplete.complete, false);
   assert.equal(incomplete.raw_evidence_missing, 1);
+  assert.equal(incomplete.load_evidence_missing, 0);
+
+  const missingLoadEvidence = summarizeRoutingVariant(
+    {
+      id: 'missing_load',
+      expected_output: 'load evidence required',
+      expectations: {
+        v2: {
+          spawn_calls: { min: 0, max: 0 },
+        },
+      },
+    },
+    'v2',
+    'with_skill',
+    [{
+      loaded: true,
+      load_evidence: null,
+      spawned: false,
+      execution_error: false,
+      termination: 'completed',
+      exit_code: 0,
+      spawn_calls: [],
+    }],
+    0.5,
+  );
+  assert.equal(missingLoadEvidence.complete, false);
+  assert.equal(missingLoadEvidence.load_evidence_missing, 1);
+  assert.equal(missingLoadEvidence.passed, false);
 }
 
 function testReportStatus() {
@@ -230,6 +259,7 @@ function testReportStatus() {
   };
   const completed = {
     loaded: true,
+    load_evidence: 'read SKILL.md',
     execution_error: false,
     termination: 'completed',
     exit_code: 0,
@@ -241,7 +271,7 @@ function testReportStatus() {
     entry,
     'v2',
     'without_skill',
-    [{ ...completed, loaded: false, final_message: '不知道。' }],
+    [{ ...completed, loaded: false, load_evidence: null, final_message: '不知道。' }],
     0.5,
   );
   assert.deepEqual(routingReportStatus([current, baseline], 2), {

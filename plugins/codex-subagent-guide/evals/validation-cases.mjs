@@ -7,7 +7,8 @@ export const validationCases = [
   },
   {
     id: 'validation_parallel_general',
-    query: '这项工作已批准并行 agent。请把常规说明文档的起草委派出去。',
+    query: '请为现有模块起草一份简洁的常规说明文档。',
+    workspace_fixture: 'project_authorization',
     should_load_skill: true,
     should_spawn_agent: true,
   },
@@ -25,7 +26,8 @@ export const validationCases = [
   },
   {
     id: 'validation_specialized_workflow_owner',
-    query: '安全审计专用 skill 已经启动并管理 agent_delta，它自己的流程覆盖 role、fork、等待、失败恢复和收尾。继续该专用流程，不要再启动 agent。',
+    query: '$delegation-lifecycle-owner 继续安全审计的现有流程，等待已经运行的 agent_delta。',
+    workspace_fixture: 'lifecycle_skill',
     should_load_skill: false,
     should_spawn_agent: false,
   },

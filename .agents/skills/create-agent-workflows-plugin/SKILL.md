@@ -85,7 +85,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js --help` 查看完整参数。
 
 - 默认创建带 skill 的最小插件，并为该 skill 生成 fixed/manual 的 `skillTriggers` entry
-- `--skill-short-description` 只控制初始 skill 的 UI metadata；省略时兼容回退到 `--skill-description`，再回退到插件 UI 摘要
+- `--skill-short-description` 只控制初始 skill 的 UI metadata，必须为 25–64 字符；省略时兼容回退到 `--skill-description`，再回退到插件 UI 摘要，回退值也必须满足同一长度约束
 - `--no-skills` 创建不含 skill 的插件
 - `--with-mcp` / `--with-apps` 只在确实需要时使用
 - `--with-config-api` / `--with-lifecycle` 添加插件根脚本和 Node 测试样板

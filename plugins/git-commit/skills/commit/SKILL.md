@@ -3,7 +3,7 @@ name: commit
 description: 当用户明确要求实际创建一次 Git commit 时必须使用，包括“提交一下”、提交当前改动、已暂存内容或指定文件，以及“提交并推送”中的提交步骤；核对范围后创建约定式提交。仅要求拟写或评审 commit message、查看状态、解释改动、暂存文件、推送已有提交，或单独执行 merge/amend/rebase/cherry-pick/revert/tag 等历史操作时不要使用。
 user-invocable: true
 metadata:
-  short-description: 核对范围并创建约定式 Git 提交
+  short-description: 核对变更范围、仓库规范与提交边界后创建可追溯的约定式 Git 提交
 {{#if claudeCommandOutputFill}}
 allowed-tools: "Bash(git status *) Bash(git diff *)"
 shell: bash

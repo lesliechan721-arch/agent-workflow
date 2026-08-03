@@ -25,7 +25,7 @@
   },
   "interface": {
     "displayName": "Codex Subagent Guide",
-    "shortDescription": "子代理任务分类、fork 与等待指导",
+    "shortDescription": "子代理任务分类、参数选择、上下文继承、等待与生命周期管理",
     "capabilities": ["Skills", "Agents"]
   },
   "scripts": {

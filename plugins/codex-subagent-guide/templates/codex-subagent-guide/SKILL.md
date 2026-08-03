@@ -3,7 +3,7 @@ name: codex-subagent-guide
 description: 当用户、适用 AGENTS.md 或其它技能已经授权 Codex 使用子代理、委派或并行 agent 工作，且没有专用 skill 自行完整管理本次委派时使用；提供通用的子代理调度与生命周期管理。不与已经定义独立委派流程的专用 skill 叠加使用，也不用于判断是否应该委派；技能加载本身不授予委派权限。
 compatibility: Supports Codex multi-agent V1 and V2 collaboration tools with the bundled agent roles installed.
 metadata:
-  short-description: 子代理任务分类、fork 与等待指导
+  short-description: 子代理任务分类、参数选择、上下文继承、等待与生命周期管理
 ---
 
 # Codex Subagent Guide

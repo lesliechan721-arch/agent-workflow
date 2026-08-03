@@ -10,12 +10,22 @@ function fail(message) {
 
 const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+const MIN_CODEX_SHORT_DESCRIPTION_LEN = 25;
+const MAX_CODEX_SHORT_DESCRIPTION_LEN = 64;
 
 function requireHyphenName(value, fieldName) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
     fail(
       `${fieldName} must use lowercase hyphen-case. Example: "git-commit", got "${value}".`,
     );
+  }
+  return value;
+}
+
+function requireCharacterRange(value, fieldName, minLength, maxLength) {
+  const count = Array.from(String(value).trim()).length;
+  if (count < minLength || count > maxLength) {
+    fail(`${fieldName} must be ${minLength}-${maxLength} characters, got ${count}.`);
   }
   return value;
 }
@@ -398,7 +408,7 @@ Options:
   --skill-name <name>           Initial skill directory name.
   --skill-description <text>    What the initial skill does and when to use it.
   --skill-short-description <text>
-                                Initial skill UI summary. Default: --skill-description, then plugin UI summary.
+                                Initial skill UI summary (25-64 characters). Default: --skill-description, then plugin UI summary.
   --version <semver>            Plugin version. Default: 0.1.0
   --min-version <semver>        Plugin compatibility.aw.minVersion. Default: --catalog-min-version or 0.0.0
   --catalog-min-version <semver>
@@ -554,6 +564,14 @@ function main() {
   const initialSkillName = args.noSkills
     ? undefined
     : requireHyphenName(args.skillName || pluginName, 'skill_name');
+  const initialSkillShortDescription = args.noSkills
+    ? undefined
+    : requireCharacterRange(
+      args.skillShortDescription || args.skillDescription || shortDescription,
+      '--skill-short-description',
+      MIN_CODEX_SHORT_DESCRIPTION_LEN,
+      MAX_CODEX_SHORT_DESCRIPTION_LEN,
+    );
   const repoRoot = path.resolve(args.repoRoot);
 
   const pluginsRoot = path.join(repoRoot, 'plugins');
@@ -596,8 +614,7 @@ function main() {
     const skillName = initialSkillName;
     const skillDescription = args.skillDescription || args.description;
     const skillDisplayName = titleCaseSlug(skillName);
-    const skillShortDescription =
-      args.skillShortDescription || args.skillDescription || shortDescription;
+    const skillShortDescription = initialSkillShortDescription;
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 

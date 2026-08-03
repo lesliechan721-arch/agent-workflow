@@ -63,7 +63,7 @@ SKILL.md 正文和 `references/` 下的 Markdown 文件支持 `` !`command` `` �
 ```yaml
 interface:
   display_name: "Repo Check"              # UI 显示名称
-  short_description: "检查仓库状态"        # 推荐 25-64 字符
+  short_description: "检查仓库状态、变更风险与测试结果并生成可执行的简明报告" # 25-64 字符
   icon_small: "./assets/icon-small.png"    # 可选：小图标路径
   icon_large: "./assets/icon-large.svg"    # 可选：大图标路径
   brand_color: "#3B82F6"                   # 可选：品牌主色
@@ -86,7 +86,7 @@ policy:
 ### interface 块
 
 - `display_name`：建议直接写人类可读的 Title Case 名称，如 `Repo Check`。Codex 只清洗单行并校验非空且 ≤ 64 字符，不会把 `repo-check` 自动转换成 `Repo Check`
-- `short_description`：推荐 25-64 字符，便于 UI 快速扫读；Codex loader 实际校验为非空且 ≤ 1024 字符
+- `short_description`：必须为 25-64 字符，便于 UI 快速扫读；这是 AW 作者 profile 采用的上游 OpenAI metadata 约束
 - `default_prompt`：用户/UI 调起 skill 时使用的一句默认起手话，不是模型指令正文。写短句，必须显式包含 `$skill-name`，例如 `使用 $repo-check 检查仓库状态。`；Codex loader 实际校验为非空且 ≤ 1024 字符
 - `brand_color`：可选；填写时必须是 `#RRGGBB`
 - `icon_small` / `icon_large`：可选；填写时必须是相对路径，且位于当前 skill 的 `assets/` 目录下，例如 `./assets/icon-small.png`。不要使用绝对路径、`..` 或 `assets/` 之外的目录

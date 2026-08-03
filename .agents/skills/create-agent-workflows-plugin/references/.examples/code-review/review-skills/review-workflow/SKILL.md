@@ -4,7 +4,7 @@ description: 当用户要求审查代码、diff 或当前分支改动时使用�
 user-invocable: true
 disable-model-invocation: true
 metadata:
-  short-description: 完整代码审查工作流
+  short-description: 执行完整代码审查、证据核验、风险分级与可执行建议生成工作流
 ---
 
 # Code Review Workflow

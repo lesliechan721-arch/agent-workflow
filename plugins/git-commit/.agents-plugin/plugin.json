@@ -25,7 +25,7 @@
   },
   "interface": {
     "displayName": "Git Commit",
-    "shortDescription": "核对范围并创建约定式 Git 提交",
+    "shortDescription": "核对变更范围、仓库规范与提交边界后创建可追溯的约定式 Git 提交",
     "capabilities": ["Skills"]
   },
   "scripts": {

@@ -8,6 +8,7 @@ import {
   executionErrorEvidence,
   ratePasses,
   runCodexOnce,
+  TRIGGER_WORKSPACE_FIXTURES,
   writeJsonReport,
 } from './eval-harness.mjs';
 import { sanityCases } from './sanity-cases.mjs';
@@ -120,9 +121,18 @@ function validateCase(entry, split, index) {
   if (entry.should_spawn_agent && !entry.should_load_skill) {
     throw new Error(`${split}[${index}] cannot spawn without loading the skill.`);
   }
+  const workspaceFixture = entry.workspace_fixture ?? 'default';
+  if (!TRIGGER_WORKSPACE_FIXTURES.has(workspaceFixture)) {
+    throw new Error(
+      `${split}[${index}].workspace_fixture must be one of ${[
+        ...TRIGGER_WORKSPACE_FIXTURES,
+      ].join(', ')}.`,
+    );
+  }
   return {
     ...entry,
     split,
+    workspace_fixture: workspaceFixture,
     explicit_skill: entry.query.includes('$codex-subagent-guide'),
   };
 }
@@ -145,6 +155,14 @@ export function summarizeCase(evalCase, runs, threshold) {
   const loadRate = runs.filter((run) => run.loaded).length / runs.length;
   const spawnRate = runs.filter((run) => run.spawned).length / runs.length;
   const executionErrors = runs.filter((run) => run.execution_error).length;
+  const loadEvidenceMissing = evalCase.should_load_skill
+    ? runs.filter(
+      (run) =>
+        !run.execution_error &&
+        (!run.loaded || typeof run.load_evidence !== 'string' || run.load_evidence === ''),
+    ).length
+    : 0;
+  const complete = executionErrors === 0 && loadEvidenceMissing === 0;
   return {
     id: evalCase.id,
     split: evalCase.split,
@@ -157,9 +175,11 @@ export function summarizeCase(evalCase, runs, threshold) {
       load_rate: loadRate,
       spawn_rate: spawnRate,
       execution_errors: executionErrors,
+      load_evidence_missing: loadEvidenceMissing,
     },
+    complete,
     passed:
-      executionErrors === 0 &&
+      complete &&
       ratePasses(loadRate, evalCase.should_load_skill, threshold) &&
       ratePasses(spawnRate, evalCase.should_spawn_agent, threshold),
     runs,
@@ -168,8 +188,10 @@ export function summarizeCase(evalCase, runs, threshold) {
 
 function thrownExecutionError(error) {
   return {
+    requested_explicitly: false,
     loaded: false,
     spawned: false,
+    load_evidence: null,
     spawn_calls: [],
     termination: 'environment_error',
     exit_code: null,
@@ -183,7 +205,17 @@ function thrownExecutionError(error) {
 
 async function run(options) {
   const cases = await loadEvalCases(options.split);
-  const workspace = await createEvalWorkspace({ withSkill: true });
+  const workspaces = new Map();
+  const workspaceForCase = async (evalCase) => {
+    const fixture = evalCase.workspace_fixture;
+    if (!workspaces.has(fixture)) {
+      workspaces.set(
+        fixture,
+        await createEvalWorkspace({ withSkill: true, fixture }),
+      );
+    }
+    return workspaces.get(fixture);
+  };
   const results = [];
   let environmentError = null;
   try {
@@ -195,7 +227,7 @@ async function run(options) {
         );
         let result;
         try {
-          result = await runCodexOnce(workspace, evalCase, {
+          result = await runCodexOnce(await workspaceForCase(evalCase), evalCase, {
             ...options,
             profile: 'v2',
             captureTrace: true,
@@ -215,10 +247,20 @@ async function run(options) {
       }
     }
   } finally {
-    await rm(workspace.root, { recursive: true, force: true });
+    await Promise.all(
+      [...workspaces.values()].map((workspace) =>
+        rm(workspace.root, { recursive: true, force: true })),
+    );
   }
 
-  const complete = !environmentError && results.length === cases.length;
+  const loadEvidenceMissing = results.reduce(
+    (total, result) => total + result.observed.load_evidence_missing,
+    0,
+  );
+  const complete =
+    !environmentError &&
+    results.length === cases.length &&
+    results.every((result) => result.complete);
   const report = {
     schema_version: 1,
     generated_at: new Date().toISOString(),
@@ -234,6 +276,7 @@ async function run(options) {
       completed_cases: results.length,
       passed: results.filter((result) => result.passed).length,
       failed: results.filter((result) => !result.passed).length,
+      load_evidence_missing: loadEvidenceMissing,
     },
     results,
   };

@@ -67,7 +67,7 @@ AW 的共享源码还允许目标平台需要的扩展：
 | `shell` | Claude | 命令结果填充使用的 shell |
 | `allowed-tools` 数组形式 | Claude | Claude 可读写法；不是 portable core 的 canonical 表达 |
 | `metadata.short-description` | 项目/UI 约定 | 仍必须是字符串 metadata |
-| `agents/openai.yaml` | Codex | UI、依赖和隐式调用策略 |
+| `agents/openai.yaml` | Codex | UI、依赖和隐式调用策略；`short_description` 为 25–64 字符，`default_prompt` 必须显式包含 `$skill-name` |
 
 双平台源码可以保留这些已知扩展，但不能声称源码能严格通过只接受 portable core 的 validator。需要严格可移植时，使用字符串形式 `allowed-tools`，移除平台扩展，或通过模板生成分平台 frontmatter。
 

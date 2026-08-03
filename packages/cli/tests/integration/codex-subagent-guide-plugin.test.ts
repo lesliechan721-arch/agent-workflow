@@ -107,6 +107,9 @@ describe('codex-subagent-guide dynamic artifacts', () => {
     expect(skill).toContain('首次探测前至少等待 `12` 分钟（`timeout_ms=720000`）');
     expect(skill).toContain('任务专用 skill 明确提供首次存活探测下限时优先使用');
     expect(metadata).toContain('allow_implicit_invocation: true');
+    expect(metadata).toContain(
+      'short_description: 子代理任务分类、参数选择、上下文继承、等待与生命周期管理',
+    );
 
     const roleContents = new Map<string, string>();
     for (const role of ROLE_EXPECTATIONS) {

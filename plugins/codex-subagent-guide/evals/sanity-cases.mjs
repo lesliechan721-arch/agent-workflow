@@ -13,13 +13,15 @@ export const sanityCases = [
   },
   {
     id: 'sanity_parallel_phrase',
-    query: '按 AGENTS.md 的要求并行 agent 工作：请把复杂调试交给一个子代理。',
+    query: '调查 src/complex 下并发问题的根因并给出结论。',
+    workspace_fixture: 'project_authorization',
     should_load_skill: true,
     should_spawn_agent: true,
   },
   {
-    id: 'sanity_codex_explore_owns_lifecycle',
-    query: '$codex-explore 已通过自己的 Gate 并启动专用 agent，它的指令已经完整规定 role、fork、等待、恢复和清理。继续该工作流等待现有 agent，不要启动新 agent。',
+    id: 'sanity_specialized_owner_native',
+    query: '$delegation-lifecycle-owner 继续现有工作流并等待已经运行的 agent，不要启动重复 agent。',
+    workspace_fixture: 'lifecycle_skill',
     should_load_skill: false,
     should_spawn_agent: false,
   },

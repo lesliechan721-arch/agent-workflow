@@ -41,7 +41,7 @@ codex:
   description: 在 Codex 中手动执行代码审查工作流。
   interface:
     display_name: "Review Command"
-    short_description: "手动代码审查命令"
+    short_description: "显式启动代码审查、证据核验、风险分级与可执行报告生成工作流"
     icon_small: ./assets/review-16.svg
     icon_large: ./assets/review-64.svg
     brand_color: "#2563EB"
