@@ -40,9 +40,9 @@ metadata:
 3. 否则根据任务判断；无法明确分档时选择 standard。
 
 预设 role：
-- `quick` → `{{quickRoleKey}}`：问题明确、歧义低，主要是在大量候选中定位、提取或核对窄范围事实。role 固定使用 `gpt-5.6-luna` / `medium`。
-- `standard` → `{{standardRoleKey}}`：常规跨文件、跨模块或多来源追踪核对，包含适度归纳或来源冲突。role 固定使用 `gpt-5.6-luna` / `high`。
-- `deep` → `{{deepRoleKey}}`：高歧义、强冲突、复杂因果、范围特别大，或要求高完整性和深入核验。role 固定使用 `gpt-5.6-luna` / `xhigh`。
+- `quick` → `{{quickRoleKey}}`：问题明确、歧义低，主要是在大量候选中定位、提取或核对窄范围事实。
+- `standard` → `{{standardRoleKey}}`：常规跨文件、跨模块或多来源追踪核对，包含适度归纳或来源冲突。
+- `deep` → `{{deepRoleKey}}`：高歧义、强冲突、复杂因果、范围特别大，或要求高完整性和深入核验。
 
 调用预设 role 时不得传 `model` 或 `reasoning_effort`。`{{customRoleKey}}` 不锁定这两个字段且永不自动选择；只有用户在当前请求中显式指定至少一个字段时才能使用。用户显式字段未由 schema 公开时不启动子代理，说明当前调度能力无法满足该指定。已传入的模型不可用、推理强度不受支持或其它非临时参数错误按启动失败处理；不得删除字段、切换预设或静默重试。
 

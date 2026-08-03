@@ -9,28 +9,27 @@ const SKILL_REFRESH_KEYS = [
   'minimumInitialWaitMinutes',
   'convergenceWaitMinutes',
 ];
-const ROLE_REFRESH_KEYS = [];
 const CODEX_EXPLORE_ROLES = [
   {
     id: 'codex-explore-quick-role',
     key: 'codex-explore-quick',
     description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
-    model: 'gpt-5.6-luna',
-    modelReasoningEffort: 'medium',
+    modelKey: 'quickModel',
+    effortKey: 'quickReasoningEffort',
   },
   {
     id: 'codex-explore-standard-role',
     key: 'codex-explore-standard',
     description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
-    model: 'gpt-5.6-luna',
-    modelReasoningEffort: 'high',
+    modelKey: 'standardModel',
+    effortKey: 'standardReasoningEffort',
   },
   {
     id: 'codex-explore-deep-role',
     key: 'codex-explore-deep',
     description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
-    model: 'gpt-5.6-luna',
-    modelReasoningEffort: 'xhigh',
+    modelKey: 'deepModel',
+    effortKey: 'deepReasoningEffort',
   },
   {
     id: 'codex-explore-custom-role',
@@ -52,6 +51,10 @@ const openaiTemplatePaths = [
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function optionalString(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
 export function trimBlock(text) {
@@ -93,6 +96,17 @@ async function readManifestDefaults() {
   return {
     minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
     convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
+    roles: Object.fromEntries(
+      CODEX_EXPLORE_ROLES.map((role) => [
+        role.key,
+        {
+          model: role.modelKey ? optionalString(schema[role.modelKey]?.default) : undefined,
+          reasoningEffort: role.effortKey
+            ? optionalString(schema[role.effortKey]?.default)
+            : undefined,
+        },
+      ]),
+    ),
   };
 }
 
@@ -129,6 +143,22 @@ function resolveConfigValues(context, defaults) {
       values.convergenceWaitMinutes,
       defaults.convergenceWaitMinutes,
     ),
+    roles: Object.fromEntries(
+      CODEX_EXPLORE_ROLES.map((role) => {
+        const roleDefaults = defaults.roles[role.key] ?? {};
+        return [
+          role.key,
+          {
+            model: role.modelKey
+              ? optionalString(values[role.modelKey]) ?? roleDefaults.model
+              : undefined,
+            reasoningEffort: role.effortKey
+              ? optionalString(values[role.effortKey]) ?? roleDefaults.reasoningEffort
+              : undefined,
+          },
+        ];
+      }),
+    ),
   };
 }
 
@@ -155,7 +185,7 @@ export function renderRoleDeveloperInstructions() {
   `);
 }
 
-function renderRoleArtifact(role, developerInstructions) {
+function renderRoleArtifact(role, developerInstructions, config) {
   return {
     id: role.id,
     kind: 'codexRole',
@@ -163,7 +193,7 @@ function renderRoleArtifact(role, developerInstructions) {
     target: 'codex.agentRole',
     state: 'present',
     roleKey: role.key,
-    refreshKeys: ROLE_REFRESH_KEYS,
+    refreshKeys: [role.modelKey, role.effortKey].filter(Boolean),
     content: {
       registration: {
         description: role.description,
@@ -172,9 +202,9 @@ function renderRoleArtifact(role, developerInstructions) {
         name: role.key,
         description: role.description,
         developer_instructions: developerInstructions,
-        ...(role.model ? { model: role.model } : {}),
-        ...(role.modelReasoningEffort
-          ? { model_reasoning_effort: role.modelReasoningEffort }
+        ...(config.model ? { model: config.model } : {}),
+        ...(config.reasoningEffort
+          ? { model_reasoning_effort: config.reasoningEffort }
           : {}),
       },
     },
@@ -220,7 +250,7 @@ export async function readArtifactRenderContext() {
 
 export async function renderArtifactPlan(context) {
   const defaults = await readManifestDefaults();
-  const { minimumInitialWaitMinutes, convergenceWaitMinutes } = resolveConfigValues(
+  const { minimumInitialWaitMinutes, convergenceWaitMinutes, roles } = resolveConfigValues(
     context,
     defaults,
   );
@@ -259,7 +289,8 @@ export async function renderArtifactPlan(context) {
           openaiYaml: renderTemplate(openaiTemplate, replacements),
         },
       },
-      ...CODEX_EXPLORE_ROLES.map((role) => renderRoleArtifact(role, developerInstructions)),
+      ...CODEX_EXPLORE_ROLES.map((role) =>
+        renderRoleArtifact(role, developerInstructions, roles[role.key] ?? {})),
     ],
   };
 }

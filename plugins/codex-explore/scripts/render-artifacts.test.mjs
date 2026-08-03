@@ -14,18 +14,24 @@ const expectedRoles = [
   {
     id: 'codex-explore-quick-role',
     key: 'codex-explore-quick',
+    modelKey: 'quickModel',
+    effortKey: 'quickReasoningEffort',
     model: 'gpt-5.6-luna',
     effort: 'medium',
   },
   {
     id: 'codex-explore-standard-role',
     key: 'codex-explore-standard',
+    modelKey: 'standardModel',
+    effortKey: 'standardReasoningEffort',
     model: 'gpt-5.6-luna',
     effort: 'high',
   },
   {
     id: 'codex-explore-deep-role',
     key: 'codex-explore-deep',
+    modelKey: 'deepModel',
+    effortKey: 'deepReasoningEffort',
     model: 'gpt-5.6-luna',
     effort: 'xhigh',
   },
@@ -89,7 +95,10 @@ function assertRoleArtifact(plan, expected) {
   assert.equal(role.target, 'codex.agentRole');
   assert.equal(role.state, 'present');
   assert.equal(role.roleKey, expected.key);
-  assert.deepEqual(role.refreshKeys, []);
+  assert.deepEqual(
+    role.refreshKeys,
+    expected.modelKey ? [expected.modelKey, expected.effortKey] : [],
+  );
   assert.equal(role.content.roleFile.name, expected.key);
   assert.equal(role.content.roleFile.model, expected.model);
   assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
@@ -157,6 +166,8 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal(text.includes('{{'), false);
   assert.equal(text.includes('codex-explore-agent'), false);
   assert.equal(text.includes('插件默认值'), false);
+  assert.equal(text.includes('gpt-5.6-luna'), false);
+  assert.equal(text.includes('role 固定使用'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
   assert.match(skill.content.openaiYaml, /使用 \$codex-explore/);
@@ -170,13 +181,21 @@ async function testConfigSourcesAndManifestDefaults() {
         values: {
           minimumInitialWaitMinutes: 20,
           convergenceWaitMinutes: 8,
+          standardModel: 'configured-standard',
+          standardReasoningEffort: 'max',
         },
       },
     }),
   );
   const configuredSkill = findArtifact(configured, 'codex-explore-skill');
+  const configuredStandard = findArtifact(configured, 'codex-explore-standard-role');
+  const configuredQuick = findArtifact(configured, 'codex-explore-quick-role');
   assert.match(configuredSkill.content.skillFile, /首次最小等待为 `20` 分钟（`timeout_ms=1200000`）/);
   assert.match(configuredSkill.content.skillFile, /催促后等待为 `8` 分钟（`timeout_ms=480000`）/);
+  assert.equal(configuredStandard.content.roleFile.model, 'configured-standard');
+  assert.equal(configuredStandard.content.roleFile.model_reasoning_effort, 'max');
+  assert.equal(configuredQuick.content.roleFile.model, 'gpt-5.6-luna');
+  assert.equal(configuredQuick.content.roleFile.model_reasoning_effort, 'medium');
 
   const defaults = await runRenderer(
     createContext({
@@ -188,8 +207,11 @@ async function testConfigSourcesAndManifestDefaults() {
     }),
   );
   const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
+  const defaultStandard = findArtifact(defaults, 'codex-explore-standard-role');
   assert.match(defaultSkill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
   assert.match(defaultSkill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
+  assert.equal(defaultStandard.content.roleFile.model, 'gpt-5.6-luna');
+  assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
 }
 
 async function testStaticManifestContract() {
@@ -201,9 +223,23 @@ async function testStaticManifestContract() {
 
   assert.equal(manifest.version, '0.2.0');
   assert.deepEqual(Object.keys(manifest.config.schema), [
+    'quickModel',
+    'quickReasoningEffort',
+    'standardModel',
+    'standardReasoningEffort',
+    'deepModel',
+    'deepReasoningEffort',
     'minimumInitialWaitMinutes',
     'convergenceWaitMinutes',
   ]);
+  for (const role of expectedRoles.filter((entry) => entry.modelKey)) {
+    assert.equal(manifest.config.schema[role.modelKey].default, role.model);
+    assert.equal(manifest.config.schema[role.effortKey].default, role.effort);
+    assert.deepEqual(
+      manifest.config.schema[role.effortKey].values,
+      ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    );
+  }
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
   assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
   assert.equal(manifest.skillTriggers['codex-explore'].defaultTrigger, 'auto');
@@ -229,13 +265,14 @@ async function testStaticManifestContract() {
       ...expectedRoles.map((role) => ({
         id: role.id,
         target: 'codex.agentRole',
-        refreshKeys: [],
+        refreshKeys: role.modelKey ? [role.modelKey, role.effortKey] : [],
         key: role.key,
       })),
     ],
   );
   assert.equal(rendererSource.includes('explorerModel'), false);
   assert.equal(rendererSource.includes("'modelReasoningEffort'"), false);
+  assert.equal(rendererSource.includes("model: 'gpt-5.6-luna'"), false);
 }
 
 async function testTrimBlockAndUnsupportedPlatform() {

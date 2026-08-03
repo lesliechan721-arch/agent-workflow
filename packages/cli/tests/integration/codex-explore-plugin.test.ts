@@ -55,18 +55,27 @@ const CURRENT_CODEX_EXPLORE_ROLES = [
     id: 'codex-explore-quick-role',
     key: 'codex-explore-quick',
     description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
+    modelKey: 'quickModel',
+    effortKey: 'quickReasoningEffort',
+    model: 'gpt-5.6-luna',
     effort: 'medium',
   },
   {
     id: 'codex-explore-standard-role',
     key: 'codex-explore-standard',
     description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
+    modelKey: 'standardModel',
+    effortKey: 'standardReasoningEffort',
+    model: 'gpt-5.6-luna',
     effort: 'high',
   },
   {
     id: 'codex-explore-deep-role',
     key: 'codex-explore-deep',
     description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
+    modelKey: 'deepModel',
+    effortKey: 'deepReasoningEffort',
+    model: 'gpt-5.6-luna',
     effort: 'xhigh',
   },
   {
@@ -246,10 +255,10 @@ const values = context.artifactRenderConfig?.values ?? {};
 const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
 const roles = [
-  ['codex-explore-quick-role', 'codex-explore-quick', 'medium'],
-  ['codex-explore-standard-role', 'codex-explore-standard', 'high'],
-  ['codex-explore-deep-role', 'codex-explore-deep', 'xhigh'],
-  ['codex-explore-custom-role', 'codex-explore-custom', null],
+  ['codex-explore-quick-role', 'codex-explore-quick', 'quickModel', 'quickReasoningEffort', 'gpt-5.6-luna', 'medium'],
+  ['codex-explore-standard-role', 'codex-explore-standard', 'standardModel', 'standardReasoningEffort', 'gpt-5.6-luna', 'high'],
+  ['codex-explore-deep-role', 'codex-explore-deep', 'deepModel', 'deepReasoningEffort', 'gpt-5.6-luna', 'xhigh'],
+  ['codex-explore-custom-role', 'codex-explore-custom', null, null, null, null],
 ];
 
 const plan = {
@@ -268,14 +277,14 @@ const plan = {
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
       },
     },
-    ...roles.map(([id, roleKey, effort]) => ({
+    ...roles.map(([id, roleKey, modelKey, effortKey, defaultModel, defaultEffort]) => ({
       id,
       kind: 'codexRole',
       platform: 'codex',
       target: 'codex.agentRole',
       state: 'present',
       roleKey,
-      refreshKeys: [],
+      refreshKeys: modelKey ? [modelKey, effortKey] : [],
       content: {
         registration: {
           description: \`Recorded \${roleKey}\`,
@@ -284,8 +293,11 @@ const plan = {
           name: roleKey,
           description: \`Recorded \${roleKey}\`,
           developer_instructions: 'Read only.',
-          ...(effort
-            ? { model: 'gpt-5.6-luna', model_reasoning_effort: effort }
+          ...(modelKey
+            ? {
+                model: values[modelKey] ?? defaultModel,
+                model_reasoning_effort: values[effortKey] ?? defaultEffort,
+              }
             : {}),
         },
       },
@@ -2638,6 +2650,8 @@ describe('codex-explore integration acceptance', () => {
       values: {
         minimumInitialWaitMinutes: 12,
         convergenceWaitMinutes: 6,
+        standardModel: 'user-standard',
+        standardReasoningEffort: 'low',
       },
     });
     await writePluginConfigStore({
@@ -2648,6 +2662,8 @@ describe('codex-explore integration acceptance', () => {
       values: {
         minimumInitialWaitMinutes: 20,
         convergenceWaitMinutes: 10,
+        standardModel: 'project-standard',
+        standardReasoningEffort: 'max',
       },
     });
 
@@ -2697,25 +2713,31 @@ describe('codex-explore integration acceptance', () => {
     expect(skillContent).toContain('只使用 Codex Explore 自带的以下 role');
     expect(skillContent).toContain('顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件');
     expect(skillContent).toContain('不得启动默认子代理或改用内置 `explorer`');
-    expect(skillContent).toContain('如 `trace_wait_agent`');
     expect(skillContent).toContain('`quick` → `codex-explore-quick`');
     expect(skillContent).toContain('`standard` → `codex-explore-standard`');
     expect(skillContent).toContain('`deep` → `codex-explore-deep`');
     expect(skillContent).toContain('选择 `codex-explore-custom`');
-    expect(skillContent).toContain('传 `"none"`，避免全历史 fork');
+    expect(skillContent).toContain('有 `fork_turns` 时传 `"none"`');
     expect(skillContent).toContain('首次最小等待为 `20` 分钟');
     expect(skillContent).toContain('催促后等待为 `10` 分钟');
     expect(skillContent).toContain('调用预设 role 时不得传 `model` 或 `reasoning_effort`');
     expect(skillContent).toContain('只传用户实际指定且当前 schema 公开的字段');
-    expect(skillContent).toContain('只有当前工具列表提供 `close_agent` 时');
-    expect(skillContent).toContain('`interrupt_agent` 若只中断当前 turn');
+    expect(skillContent).toContain('若当前工具提供 `close_agent`，必须关闭');
+    expect(skillContent).not.toContain('role 固定使用');
+    expect(skillContent).not.toContain('gpt-5.6-luna');
     for (let index = 0; index < CURRENT_CODEX_EXPLORE_ROLES.length; index += 1) {
       const role = CURRENT_CODEX_EXPLORE_ROLES[index];
       const roleContent = roleContents[index];
       expect(roleContent).toContain(`name = "${role.key}"`);
       if (role.effort) {
-        expect(roleContent).toContain('model = "gpt-5.6-luna"');
-        expect(roleContent).toContain(`model_reasoning_effort = "${role.effort}"`);
+        const expectedModel = role.key === 'codex-explore-standard'
+          ? 'project-standard'
+          : role.model;
+        const expectedEffort = role.key === 'codex-explore-standard'
+          ? 'max'
+          : role.effort;
+        expect(roleContent).toContain(`model = "${expectedModel}"`);
+        expect(roleContent).toContain(`model_reasoning_effort = "${expectedEffort}"`);
       } else {
         expect(roleContent).not.toContain('\nmodel = ');
         expect(roleContent).not.toContain('\nmodel_reasoning_effort = ');
@@ -2736,7 +2758,7 @@ describe('codex-explore integration acceptance', () => {
         state: 'present',
         artifactKey: role.key,
         roleKey: role.key,
-        refreshKeys: [],
+        refreshKeys: role.modelKey ? [role.modelKey, role.effortKey] : [],
         configDigest: expect.stringMatching(/^sha256:/),
         contentDigest: expect.stringMatching(/^sha256:/),
       })),
@@ -3980,6 +4002,86 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     }), 'codex-explore-skill')).toMatchObject({
       state: 'present',
     });
+  });
+
+  it('refreshes the selected preset role when its model config changes', async () => {
+    const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
+    const standardRolePath = path.join(
+      projectPaths.configDir,
+      'agents',
+      'aw-codex-explore-codex-explore-standard.toml',
+    );
+    const quickRolePath = path.join(
+      projectPaths.configDir,
+      'agents',
+      'aw-codex-explore-codex-explore-quick.toml',
+    );
+    const beforeTracking = await readTrackingManifest(projectPaths.trackingDir);
+    const beforeArtifacts = beforeTracking.plugins['codex-explore']?.artifacts ?? [];
+    const beforeSkillDigest = beforeArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-skill')?.configDigest;
+    const beforeStandardDigest = beforeArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-standard-role')?.configDigest;
+    const beforeQuickDigest = beforeArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-quick-role')?.configDigest;
+    const beforeQuickContent = await fs.readFile(quickRolePath, 'utf8');
+
+    const result = await runCliEntry(
+      ['config', 'set', 'codex-explore', 'standardModel', 'configured-standard', '-s', 'project', '--json'],
+      {
+        cwd: repoRoot,
+        env: process.env,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: true,
+      command: 'config:set',
+      scope: 'project',
+      updatedKeys: ['standardModel'],
+      artifactRefresh: {
+        attempted: true,
+        status: 'succeeded',
+        triggerKeys: ['standardModel'],
+      },
+    });
+
+    const afterTracking = await readTrackingManifest(projectPaths.trackingDir);
+    const afterArtifacts = afterTracking.plugins['codex-explore']?.artifacts ?? [];
+    const trackedSkill = afterArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-skill');
+    const trackedStandard = afterArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-standard-role');
+    const trackedQuick = afterArtifacts.find((artifact) =>
+      artifact.id === 'codex-explore-quick-role');
+
+    await expect(fs.readFile(standardRolePath, 'utf8')).resolves.toContain(
+      'model = "configured-standard"',
+    );
+    await expect(fs.readFile(quickRolePath, 'utf8')).resolves.toBe(beforeQuickContent);
+    expect(trackedStandard?.configDigest).not.toBe(beforeStandardDigest);
+    expect(trackedStandard?.lastRefresh).toMatchObject({
+      status: 'succeeded',
+      event: 'refresh',
+      triggerKeys: ['standardModel'],
+    });
+    expect(trackedSkill?.configDigest).toBe(beforeSkillDigest);
+    expect(trackedQuick?.configDigest).toBe(beforeQuickDigest);
   });
 
   it.skip('re-enables lightweight instruction through config unset and rewrites the managed block from current render config', async () => {

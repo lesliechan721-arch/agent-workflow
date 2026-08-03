@@ -55,6 +55,45 @@
   },
   "config": {
     "schema": {
+      "quickModel": {
+        "type": "string",
+        "title": "Quick 探索模型",
+        "default": "gpt-5.6-luna",
+        "description": "quick 探索 role 使用的模型。"
+      },
+      "quickReasoningEffort": {
+        "type": "enum",
+        "title": "Quick 探索推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "default": "medium",
+        "description": "quick 探索 role 使用的 model_reasoning_effort。"
+      },
+      "standardModel": {
+        "type": "string",
+        "title": "Standard 探索模型",
+        "default": "gpt-5.6-luna",
+        "description": "standard 探索 role 使用的模型。"
+      },
+      "standardReasoningEffort": {
+        "type": "enum",
+        "title": "Standard 探索推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "default": "high",
+        "description": "standard 探索 role 使用的 model_reasoning_effort。"
+      },
+      "deepModel": {
+        "type": "string",
+        "title": "Deep 探索模型",
+        "default": "gpt-5.6-luna",
+        "description": "deep 探索 role 使用的模型。"
+      },
+      "deepReasoningEffort": {
+        "type": "enum",
+        "title": "Deep 探索推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "default": "xhigh",
+        "description": "deep 探索 role 使用的 model_reasoning_effort。"
+      },
       "minimumInitialWaitMinutes": {
         "type": "number",
         "title": "首次最小等待时间（分钟）",
@@ -103,7 +142,7 @@
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
         "states": ["present"],
-        "refreshKeys": [],
+        "refreshKeys": ["quickModel", "quickReasoningEffort"],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-quick"
       },
@@ -114,7 +153,7 @@
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
         "states": ["present"],
-        "refreshKeys": [],
+        "refreshKeys": ["standardModel", "standardReasoningEffort"],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-standard"
       },
@@ -125,7 +164,7 @@
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
         "states": ["present"],
-        "refreshKeys": [],
+        "refreshKeys": ["deepModel", "deepReasoningEffort"],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-deep"
       },

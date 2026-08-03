@@ -392,11 +392,21 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 
 > P0/P11 runtime contract：`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
-`codex-explore` 提供 quick（`gpt-5.6-luna/medium`）、standard（`gpt-5.6-luna/high`）和 deep（`gpt-5.6-luna/xhigh`）三档锁定探索 role；无法明确分档时使用 standard。用户显式指定 model 或 reasoning effort 时使用不锁定参数的 custom role，并只透传显式字段。review、缺陷分析、质量判断、修改或实现任务中的独立大范围只读探索可以使用这些 role，最终判断、建议和写操作仍由主流程完成。
+`codex-explore` 提供 quick、standard 和 deep 三档预设探索 role；无法明确分档时使用 standard。每档 role 的 model 和 reasoning effort 都能独立配置；用户显式指定 model 或 reasoning effort 时使用不锁定参数的 custom role，并只透传显式字段。review、缺陷分析、质量判断、修改或实现任务中的独立大范围只读探索可以使用这些 role，最终判断、建议和写操作仍由主流程完成。
 
-插件配置只控制首次等待和催促后等待窗口：
+预设 role 的配置键与默认值：
+
+| 探索深度 | model 配置与默认值 | effort 配置与默认值 |
+|---|---|---|
+| quick | `quickModel=gpt-5.6-luna` | `quickReasoningEffort=medium` |
+| standard | `standardModel=gpt-5.6-luna` | `standardReasoningEffort=high` |
+| deep | `deepModel=gpt-5.6-luna` | `deepReasoningEffort=xhigh` |
+
+这些配置和两个等待窗口都可以通过 `aw config` 调整：
 
 ```bash
+aw config set codex-explore standardModel gpt-5.6-terra -s user
+aw config set codex-explore standardReasoningEffort max -s user
 aw config set codex-explore minimumInitialWaitMinutes 15 -s user
 aw config set codex-explore convergenceWaitMinutes 5 -s user
 ```

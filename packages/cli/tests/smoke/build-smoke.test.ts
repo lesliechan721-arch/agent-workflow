@@ -274,6 +274,16 @@ describe('build smoke', () => {
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
+      config: {
+        schema: {
+          quickModel: { type: 'string', default: 'gpt-5.6-luna' },
+          quickReasoningEffort: { type: 'enum', default: 'medium' },
+          standardModel: { type: 'string', default: 'gpt-5.6-luna' },
+          standardReasoningEffort: { type: 'enum', default: 'high' },
+          deepModel: { type: 'string', default: 'gpt-5.6-luna' },
+          deepReasoningEffort: { type: 'enum', default: 'xhigh' },
+        },
+      },
       scripts: {
         artifacts: {
           render: {
@@ -291,16 +301,29 @@ describe('build smoke', () => {
             skillKey: 'codex-explore',
           }),
           ...[
-            ['codex-explore-quick-role', 'codex-explore-quick'],
-            ['codex-explore-standard-role', 'codex-explore-standard'],
-            ['codex-explore-deep-role', 'codex-explore-deep'],
-            ['codex-explore-custom-role', 'codex-explore-custom'],
-          ].map(([id, roleKey]) => expect.objectContaining({
+            [
+              'codex-explore-quick-role',
+              'codex-explore-quick',
+              ['quickModel', 'quickReasoningEffort'],
+            ],
+            [
+              'codex-explore-standard-role',
+              'codex-explore-standard',
+              ['standardModel', 'standardReasoningEffort'],
+            ],
+            [
+              'codex-explore-deep-role',
+              'codex-explore-deep',
+              ['deepModel', 'deepReasoningEffort'],
+            ],
+            ['codex-explore-custom-role', 'codex-explore-custom', []],
+          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
             id,
             platform: 'codex',
             target: 'codex.agentRole',
             requiresCodexProjectConfig: true,
             roleKey,
+            refreshKeys,
           })),
         ]),
       },

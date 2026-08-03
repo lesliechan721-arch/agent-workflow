@@ -39,6 +39,7 @@ describe('public docs', () => {
     expect(readme).toContain('| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |');
     expect(readme).toContain('`codex-explore` 是 Codex 通用只读探索 workflow');
     expect(readme).toContain('代码库、文档、网络资料、日志和用户材料');
+    expect(readme).toContain('每档 role 的 model 和 reasoning effort 都能独立配置');
     expect(readme).not.toContain('为 Codex 提供只读代码库探索流程');
   });
 
