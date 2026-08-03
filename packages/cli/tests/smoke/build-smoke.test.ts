@@ -234,7 +234,7 @@ describe('build smoke', () => {
             id: 'codex-subagent-guide-skill',
             target: 'codex.skill',
             skillKey: 'codex-subagent-guide',
-            refreshKeys: [],
+            refreshKeys: ['minimumInitialWaitMinutes'],
           }),
           ...[
             [
