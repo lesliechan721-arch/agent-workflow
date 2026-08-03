@@ -139,6 +139,8 @@ async function testWorkspaceStaging() {
       ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
     ]);
     assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
+    assert.match(skill, /spawn_agent 不提供子代理只读 sandbox.*只读.*行为约束/);
+    assert.match(skill, /用户把权限级只读作为继续条件/);
     assert.equal(skill.includes('user-invocable:'), false);
     assert.deepEqual(
       workspace.roles.map((role) => role.roleFile.name),
@@ -150,7 +152,8 @@ async function testWorkspaceStaging() {
       ],
     );
     for (const role of roles) {
-      assert.match(role, /冲突或缺口/);
+      assert.match(role, /区分直接证据、推断、冲突和缺失/);
+      assert.match(role, /尤其不得调用 `wait_agent`/);
     }
     assert.match(roles[0], /model = "gpt-5\.6-luna"/);
     assert.match(roles[0], /model_reasoning_effort = "medium"/);

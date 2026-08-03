@@ -1,9 +1,9 @@
 ---
 name: codex-explore
 description: 当任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中搜索、筛选并核验可引用事实时使用；也适用于代码 review、缺陷分析、质量判断、修改或实现任务中可独立分离的大范围只读探索子任务。只负责事实探索，不负责最终判断、建议或写操作；不用于少量已知来源的定向读取。
-compatibility: 仅适用于支持 spawn_agent.agent_type 的 Codex；需随插件安装 codex-explore-quick、codex-explore-standard、codex-explore-deep、codex-explore-custom roles。
+compatibility: 仅适用于支持 spawn_agent.agent_type 的 Codex；需随插件安装 codex-explore-quick、codex-explore-standard、codex-explore-deep、codex-explore-custom roles；spawn_agent 不提供子代理只读 sandbox，“只读”仅是行为约束。
 metadata:
-  short-description: 大型只读探索与证据核验
+  short-description: 行为只读的大型证据探索与核验
 ---
 
 # Codex Explore
@@ -25,6 +25,7 @@ metadata:
 - 来源和候选材料已知，预计只需用 `rg` 加定向读取 2 到 3 个文件或少量明确片段即可完成，且不会读取大量无关内容。
 - 用户只是顺带提到 `codex-explore` 或 `plugins/codex-explore`，但没有要求用它做只读探索，且问题本身不需要隔离探索上下文。
 - 拟委派的子任务本身要求缺陷判定、质量评价、严重性分级、修改建议、实现或其它写操作，无法清楚分离成只读事实探索；或者需要提权、登录、购买、发布、发送消息或调用有副作用的接口。
+- 用户把权限级只读作为继续条件；`spawn_agent` 不提供子代理只读 sandbox，本工作流无法满足该条件。
 
 价值 Gate 通过后先按下节选定 role，再读取当前 `spawn_agent` schema 检查运行能力。仅当工具公开 `agent_type`，且未限制或明确允许选定 role 时才启动子代理。否则不启动替代 role；把该范围视为委派失败，按后文的失败回退规则处理。
 
@@ -64,6 +65,10 @@ metadata:
 ## 隐私 Gotcha
 
 向公开网页或外部搜索发送查询前，最小化并脱敏查询；不得包含密钥、个人数据、私有代码或用户材料原文。无法安全脱敏时，只使用本地或用户已提供的来源并报告限制。
+
+## 只读边界
+
+“只读”表示主代理和叶子代理不得主动执行写操作，不代表宿主撤销了文件写权限。用户只要求不要修改文件时，按本工作流的行为约束继续；用户要求权限级保证时，说明 `spawn_agent` 不提供子代理只读 sandbox 并停止本工作流，不得把指令约束描述为权限隔离。
 
 ## 等待与整合
 

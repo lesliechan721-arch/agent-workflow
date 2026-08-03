@@ -29,8 +29,8 @@ function usage() {
   return `Usage: node plugins/codex-explore/evals/run-workflow-evals.mjs [OPTIONS]
 
 Runs a current-skill outcome smoke to completion. It checks the selected agent,
-the final evidence contract, and workspace changes. It does not inspect Codex
-wait or message-delivery internals.
+the final evidence contract, workspace changes, and the parent collaboration
+timeline extracted from rollout function calls.
 
 Options:
   --runs <count>                Repetitions per case (default: 1)
@@ -95,6 +95,20 @@ function nonEmptyStrings(value) {
   );
 }
 
+function validateLifecycleContract(value, id) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !Number.isInteger(value.minimum_initial_wait_timeout_ms) ||
+    value.minimum_initial_wait_timeout_ms <= 0 ||
+    !Number.isInteger(value.max_recoveries) ||
+    value.max_recoveries < 0
+  ) {
+    throw new Error(`${id}.expected.lifecycle does not define the lifecycle contract.`);
+  }
+}
+
 function validateCase(entry, index) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     throw new Error(`evals[${index}] must be an object.`);
@@ -112,10 +126,12 @@ function validateCase(entry, index) {
     typeof expected.agent_type !== 'string' ||
     !nonEmptyStrings(expected.final_message_includes_all) ||
     !nonEmptyStrings(expected.final_message_patterns) ||
-    expected.workspace_unchanged !== true
+    expected.workspace_unchanged !== true ||
+    !expected.lifecycle
   ) {
     throw new Error(`${entry.id}.expected does not define the outcome contract.`);
   }
+  validateLifecycleContract(expected.lifecycle, entry.id);
   for (const pattern of expected.final_message_patterns) {
     new RegExp(pattern, 'iu');
   }
@@ -178,6 +194,128 @@ function unchanged(changes) {
   );
 }
 
+function waitTimedOut(call) {
+  if (call?.output && typeof call.output === 'object') {
+    return call.output.timed_out === true;
+  }
+  return typeof call?.output === 'string' && /timed[ _-]?out/i.test(call.output);
+}
+
+export function evaluateLifecycleTrace(calls, contract) {
+  const timeline = Array.isArray(calls) ? calls : [];
+  const assertions = [];
+  const add = (name, passed, evidence) => {
+    assertions.push({ name: `lifecycle:${name}`, passed, evidence });
+  };
+  const indexes = (tool) => timeline.flatMap(
+    (call, index) => call?.tool === tool ? [index] : [],
+  );
+  const spawnIndexes = indexes('spawn_agent');
+  const waitIndexes = indexes('wait_agent');
+  const probeIndexes = indexes('send_message');
+  const followupIndexes = indexes('followup_task');
+  const closeIndexes = indexes('close_agent');
+  const resultIndexes = timeline.flatMap(
+    (call, index) =>
+      call?.tool === 'agent_message' && call.output?.message_type === 'FINAL_ANSWER'
+        ? [index]
+        : [],
+  );
+  const retrySpawnIndexes = spawnIndexes.slice(1);
+  const recoveryIndexes = [...followupIndexes, ...retrySpawnIndexes].sort(
+    (left, right) => left - right,
+  );
+
+  add('trace_present', timeline.length > 0, `calls=${timeline.length}`);
+  const firstSpawn = spawnIndexes[0];
+  const firstWait = waitIndexes.find((index) => index > firstSpawn);
+  add(
+    'wait_after_spawn',
+    Number.isInteger(firstSpawn) && Number.isInteger(firstWait),
+    `spawn_index=${firstSpawn ?? 'missing'} wait_index=${firstWait ?? 'missing'}`,
+  );
+  const firstWaitTimeout = Number.isInteger(firstWait)
+    ? timeline[firstWait]?.arguments?.timeout_ms
+    : undefined;
+  add(
+    'minimum_initial_wait',
+    Number.isInteger(firstWaitTimeout) &&
+      firstWaitTimeout >= contract.minimum_initial_wait_timeout_ms,
+    `minimum=${contract.minimum_initial_wait_timeout_ms} actual=${firstWaitTimeout ?? 'missing'}`,
+  );
+
+  let previousWaitIndex = null;
+  let probesSinceWait = 0;
+  let probesFollowTimeout = true;
+  let onePendingProbe = true;
+  for (const [index, call] of timeline.entries()) {
+    if (call?.tool === 'wait_agent') {
+      previousWaitIndex = index;
+      probesSinceWait = 0;
+      continue;
+    }
+    if (call?.tool !== 'send_message') {
+      continue;
+    }
+    probesSinceWait += 1;
+    const previousWait = Number.isInteger(previousWaitIndex)
+      ? timeline[previousWaitIndex]
+      : null;
+    probesFollowTimeout &&= waitTimedOut(previousWait);
+    onePendingProbe &&= probesSinceWait <= 1;
+  }
+  add(
+    'probe_only_after_timeout',
+    probesFollowTimeout,
+    `probe_indexes=${JSON.stringify(probeIndexes)}`,
+  );
+  add(
+    'one_pending_probe',
+    onePendingProbe,
+    `probe_indexes=${JSON.stringify(probeIndexes)}`,
+  );
+  add(
+    'probe_followed_by_wait',
+    probeIndexes.every((probeIndex) => waitIndexes.some((waitIndex) => waitIndex > probeIndex)),
+    `probe_indexes=${JSON.stringify(probeIndexes)} wait_indexes=${JSON.stringify(waitIndexes)}`,
+  );
+
+  add(
+    'recovery_limit',
+    recoveryIndexes.length <= contract.max_recoveries,
+    `maximum=${contract.max_recoveries} actual=${recoveryIndexes.length}`,
+  );
+  add(
+    'recovery_followed_by_wait',
+    recoveryIndexes.every(
+      (recoveryIndex) => waitIndexes.some((waitIndex) => waitIndex > recoveryIndex),
+    ),
+    `recovery_indexes=${JSON.stringify(recoveryIndexes)} wait_indexes=${JSON.stringify(waitIndexes)}`,
+  );
+
+  const lastResultIndex = resultIndexes.at(-1);
+  const lastRecoveryIndex = recoveryIndexes.at(-1);
+  add(
+    'cleanup_after_result',
+    closeIndexes.every(
+      (closeIndex) => Number.isInteger(lastResultIndex) && lastResultIndex < closeIndex,
+    ),
+    `close_indexes=${JSON.stringify(closeIndexes)} result_index=${lastResultIndex ?? 'missing'}`,
+  );
+  add(
+    'result_before_final',
+    Number.isInteger(lastResultIndex) &&
+      lastResultIndex > firstWait &&
+      (!Number.isInteger(lastRecoveryIndex) || lastResultIndex > lastRecoveryIndex),
+    `result_index=${lastResultIndex ?? 'missing'} wait_index=${firstWait ?? 'missing'} recovery_index=${lastRecoveryIndex ?? 'none'}`,
+  );
+
+  return {
+    passed: assertions.every((assertion) => assertion.passed),
+    assertions,
+  };
+}
+
 export function evaluateWorkflowRun(run, expected) {
   const finalMessage = run.final_message ?? '';
   const spawnCalls = run.spawn_calls ?? [];
@@ -224,6 +362,9 @@ export function evaluateWorkflowRun(run, expected) {
       unchanged(run.workspace_changes),
     evidence: JSON.stringify(run.workspace_changes),
   });
+  assertions.push(
+    ...evaluateLifecycleTrace(run.collaboration_timeline, expected.lifecycle).assertions,
+  );
   return {
     passed: assertions.every((assertion) => assertion.passed),
     assertions,

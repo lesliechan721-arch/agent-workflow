@@ -102,14 +102,21 @@ function assertRoleArtifact(plan, expected) {
   assert.equal(role.content.roleFile.model, expected.model);
   assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
   assert.equal(role.content.registration.description, role.content.roleFile.description);
-  assert.match(role.content.roleFile.developer_instructions, /叶子探索子代理/);
-  assert.match(role.content.roleFile.developer_instructions, /不得调用任何子代理调度或管理工具/);
-  assert.match(role.content.roleFile.developer_instructions, /收到父代理显式存活探测后/);
+  assert.match(role.content.roleFile.developer_instructions, /Codex Explore 叶子代理/);
+  assert.match(role.content.roleFile.developer_instructions, /不得读取或调用 `codex-explore` skill/);
+  assert.match(role.content.roleFile.developer_instructions, /忽略其中的父代理编排规则/);
+  assert.match(role.content.roleFile.developer_instructions, /`send_message` 是唯一例外/);
+  assert.match(role.content.roleFile.developer_instructions, /尤其不得调用 `wait_agent`/);
+  assert.match(role.content.roleFile.developer_instructions, /不得.*等待父代理确认/);
+  assert.match(role.content.roleFile.developer_instructions, /收到父代理明确的存活探测时/);
   assert.match(role.content.roleFile.developer_instructions, /`status=progress`/);
-  assert.match(role.content.roleFile.developer_instructions, /回复 progress 后继续原任务/);
+  assert.match(role.content.roleFile.developer_instructions, /不得借此交付调查结果/);
+  assert.match(role.content.roleFile.developer_instructions, /progress 后继续调查/);
   assert.match(role.content.roleFile.developer_instructions, /保持只读/);
-  assert.match(role.content.roleFile.developer_instructions, /只引用实际读取的来源/);
+  assert.match(role.content.roleFile.developer_instructions, /绑定实际读取的来源定位/);
   assert.match(role.content.roleFile.developer_instructions, /最小化并脱敏查询/);
+  assert.match(role.content.roleFile.developer_instructions, /直接返回 final answer 并结束/);
+  assert.equal(role.content.roleFile.developer_instructions.includes('- 结论：'), false);
 }
 
 async function testRenderedArtifactsAndSkillContract() {
@@ -134,9 +141,12 @@ async function testRenderedArtifactsAndSkillContract() {
   const text = skill.content.skillFile;
   assert.match(text, /也适用于代码 review、缺陷分析、质量判断、修改或实现任务中/);
   assert.match(text, /只负责事实探索，不负责最终判断、建议或写操作/);
+  assert.match(text, /spawn_agent 不提供子代理只读 sandbox.*只读.*行为约束/);
   assert.match(text, /顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件/);
   assert.match(text, /Gate 只判断拟委派的子任务/);
   assert.match(text, /拟委派的子任务本身要求缺陷判定/);
+  assert.match(text, /用户把权限级只读作为继续条件/);
+  assert.match(text, /本工作流无法满足该条件/);
   assert.match(text, /选择优先级固定为/);
   assert.match(text, /无法明确分档时选择 standard/);
   assert.match(text, /`quick` → `codex-explore-quick`/);
@@ -161,6 +171,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /必须关闭本工作流启动、结果已经使用且目标及必要后代都不再需要的子代理/);
   assert.equal((text.match(/close_agent/g) ?? []).length, 1);
   assert.match(text, /不得包含密钥、个人数据、私有代码或用户材料原文/);
+  assert.match(text, /不得把指令约束描述为权限隔离/);
   assert.equal(text.includes('要求 `targets` 且返回 `status`'), false);
   assert.equal(text.includes('`timed_out: true`'), false);
   assert.equal(text.includes('公开 `interrupt` 参数时'), false);
@@ -184,6 +195,7 @@ async function testRenderedArtifactsAndSkillContract() {
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
   assert.match(skill.content.openaiYaml, /使用 \$codex-explore/);
+  assert.match(skill.content.openaiYaml, /行为只读的大型证据探索与核验/);
 }
 
 async function testConfigSourcesAndManifestDefaults() {
@@ -231,7 +243,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.0');
+  assert.equal(manifest.version, '0.2.1');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',

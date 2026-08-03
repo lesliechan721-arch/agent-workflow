@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
@@ -25,7 +25,7 @@
   },
   "interface": {
     "displayName": "Codex Explore",
-    "shortDescription": "Codex 大型只读探索与证据核验",
+    "shortDescription": "Codex 行为只读的大型证据探索与核验",
     "capabilities": ["Skills", "Instructions", "Agents"]
   },
   "extensions": {
