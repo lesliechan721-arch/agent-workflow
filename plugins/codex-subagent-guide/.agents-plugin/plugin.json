@@ -1,0 +1,164 @@
+{
+  "name": "codex-subagent-guide",
+  "version": "0.1.0",
+  "description": "在 Codex 已决定使用子代理后，按任务类型选择预设 agent type，并指导自定义参数、上下文 fork、事件等待和清理。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skillTriggers": {
+    "codex-subagent-guide": {
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["codex", "subagent", "reasoning", "wait"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "interface": {
+    "displayName": "Codex Subagent Guide",
+    "shortDescription": "子代理任务分类、fork 与等待指导",
+    "capabilities": ["Skills", "Agents"]
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    },
+    "tests": {
+      "node": ["./scripts/render-artifacts.test.mjs"]
+    }
+  },
+  "config": {
+    "schema": {
+      "simpleTaskModel": {
+        "type": "string",
+        "title": "简单任务模型",
+        "default": "gpt-5.6-luna",
+        "description": "简单任务 agent type 使用的模型，适用于探索、检索和结果验证。"
+      },
+      "simpleTaskReasoningEffort": {
+        "type": "enum",
+        "title": "简单任务推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max"],
+        "default": "high",
+        "description": "简单任务 agent type 使用的 model_reasoning_effort。"
+      },
+      "generalTaskModel": {
+        "type": "string",
+        "title": "通用任务模型",
+        "default": "gpt-5.6-luna",
+        "description": "通用任务 agent type 使用的模型，适用于常规实现和其它通用交付。"
+      },
+      "generalTaskReasoningEffort": {
+        "type": "enum",
+        "title": "通用任务推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max"],
+        "default": "max",
+        "description": "通用任务 agent type 使用的 model_reasoning_effort。"
+      },
+      "complexTaskModel": {
+        "type": "string",
+        "title": "复杂任务模型",
+        "default": "gpt-5.6-terra",
+        "description": "复杂任务 agent type 使用的模型，适用于复杂实现、未知根因和调试。"
+      },
+      "complexTaskReasoningEffort": {
+        "type": "enum",
+        "title": "复杂任务推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max"],
+        "default": "max",
+        "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
+      },
+      "planningReviewTaskModel": {
+        "type": "string",
+        "title": "计划与审核任务模型",
+        "default": "gpt-5.6-sol",
+        "description": "计划与审核 agent type 使用的模型，适用于审核、架构设计和实施计划。"
+      },
+      "planningReviewTaskReasoningEffort": {
+        "type": "enum",
+        "title": "计划与审核任务推理强度",
+        "values": ["low", "medium", "high", "xhigh", "max"],
+        "default": "xhigh",
+        "description": "计划与审核 agent type 使用的 model_reasoning_effort。"
+      }
+    }
+  },
+  "buildConfig": {
+    "fileRules": {
+      "codex": {
+        "include": ["templates/**"],
+        "exclude": []
+      }
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "codex-subagent-guide-skill",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.skill",
+        "projectManagedKind": "skill",
+        "states": ["present"],
+        "refreshKeys": [],
+        "skillKey": "codex-subagent-guide"
+      },
+      {
+        "id": "codex-subagent-simple-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["simpleTaskModel", "simpleTaskReasoningEffort"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-simple"
+      },
+      {
+        "id": "codex-subagent-general-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["generalTaskModel", "generalTaskReasoningEffort"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-general"
+      },
+      {
+        "id": "codex-subagent-complex-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["complexTaskModel", "complexTaskReasoningEffort"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-complex"
+      },
+      {
+        "id": "codex-subagent-plan-review-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": ["planningReviewTaskModel", "planningReviewTaskReasoningEffort"],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-plan-review"
+      }
+    ]
+  }
+}
