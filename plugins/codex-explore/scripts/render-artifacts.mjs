@@ -7,7 +7,6 @@ const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
 const SKILL_REFRESH_KEYS = [
   'minimumInitialWaitMinutes',
-  'convergenceWaitMinutes',
 ];
 const CODEX_EXPLORE_ROLES = [
   {
@@ -95,7 +94,6 @@ async function readManifestDefaults() {
 
   return {
     minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
-    convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
     roles: Object.fromEntries(
       CODEX_EXPLORE_ROLES.map((role) => [
         role.key,
@@ -139,10 +137,6 @@ function resolveConfigValues(context, defaults) {
       values.minimumInitialWaitMinutes,
       defaults.minimumInitialWaitMinutes,
     ),
-    convergenceWaitMinutes: resolvePositiveNumber(
-      values.convergenceWaitMinutes,
-      defaults.convergenceWaitMinutes,
-    ),
     roles: Object.fromEntries(
       CODEX_EXPLORE_ROLES.map((role) => {
         const roleDefaults = defaults.roles[role.key] ?? {};
@@ -166,9 +160,11 @@ export function renderRoleDeveloperInstructions() {
   return trimBlock(`
     你是 Codex Explore 的叶子探索子代理，只做只读调查。围绕主代理指定的问题和范围，读取必要的代码、文档、日志、网页或用户材料。完成标准是回答具体问题，并让每个关键结论都能由实际读取的证据核验。
 
-    任务只能由你自己完成；不得调用任何子代理调度或管理工具，包括 \`spawn_agent\`、\`send_input\`、\`send_message\`、\`followup_task\`、\`wait_agent\`、\`resume_agent\`、\`close_agent\`、\`interrupt_agent\`、\`list_agents\`，也不得继续拆分。如果范围过大，只说明需要主代理缩小问题。
+    任务只能由你自己完成；不得调用任何子代理调度或管理工具，也不得继续拆分。如果范围过大，只说明需要主代理缩小问题。
 
-    保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、发送消息，或调用任何有副作用的外部接口。
+    不得主动或例行向父代理汇报。唯一例外是收到父代理显式存活探测后，可以只回复一次 \`status=progress\` 和必要进度，或 \`status=blocked\` 和阻塞原因。不得借此委派或要求其它代理工作；回复 progress 后继续原任务，不要为探测缩减范围、提前收敛或结束当前 turn。
+
+    保持只读：不得创建、编辑、移动、删除、格式化或回退文件；不得安装依赖、请求提权、登录账号、购买、发布、向外部人员或服务发送消息，或调用任何有副作用的外部接口。
 
     只引用实际读取的来源。每个关键结论紧跟可核验的来源定位，例如文件路径与必要行号、URL、用户材料的段落或行号、命令或工具名称及可识别的输出片段或记录 ID；时间敏感来源还要提供来源时间。明确标记直接证据与推断，报告来源冲突、证据缺失和会影响结论的不确定点。证据不足时缩小结论，不要猜测。
 
@@ -250,7 +246,7 @@ export async function readArtifactRenderContext() {
 
 export async function renderArtifactPlan(context) {
   const defaults = await readManifestDefaults();
-  const { minimumInitialWaitMinutes, convergenceWaitMinutes, roles } = resolveConfigValues(
+  const { minimumInitialWaitMinutes, roles } = resolveConfigValues(
     context,
     defaults,
   );
@@ -268,8 +264,6 @@ export async function renderArtifactPlan(context) {
     customRoleKey: CODEX_EXPLORE_ROLES[3].key,
     minimumInitialWaitMinutes,
     minimumInitialWaitTimeoutMs: minutesToMilliseconds(minimumInitialWaitMinutes),
-    convergenceWaitMinutes,
-    convergenceWaitTimeoutMs: minutesToMilliseconds(convergenceWaitMinutes),
   };
   const developerInstructions = renderRoleDeveloperInstructions();
 

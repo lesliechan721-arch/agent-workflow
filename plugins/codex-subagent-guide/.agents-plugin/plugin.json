@@ -96,6 +96,14 @@
         "values": ["low", "medium", "high", "xhigh", "max"],
         "default": "xhigh",
         "description": "计划与审核 agent type 使用的 model_reasoning_effort。"
+      },
+      "minimumInitialWaitMinutes": {
+        "type": "number",
+        "title": "首次存活探测前最小等待（分钟）",
+        "default": 10,
+        "min": 1,
+        "max": 60,
+        "description": "没有任务专用技能提供等待下限时，首次发起非中断存活探测前的最短等待时间。"
       }
     }
   },
@@ -116,7 +124,7 @@
         "target": "codex.skill",
         "projectManagedKind": "skill",
         "states": ["present"],
-        "refreshKeys": [],
+        "refreshKeys": ["minimumInitialWaitMinutes"],
         "skillKey": "codex-subagent-guide"
       },
       {

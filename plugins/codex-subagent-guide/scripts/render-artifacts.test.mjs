@@ -63,7 +63,7 @@ function artifactsFrom(plan) {
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-subagent-guide');
-  assert.deepEqual(skill.refreshKeys, []);
+  assert.deepEqual(skill.refreshKeys, ['minimumInitialWaitMinutes']);
   assert.equal(skill.state, 'present');
 
   const roles = new Map();
@@ -94,6 +94,9 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
       role.content.roleFile.developer_instructions,
       renderRoleDeveloperInstructions(),
     );
+    assert.match(role.content.roleFile.developer_instructions, /收到父代理显式存活探测时/);
+    assert.match(role.content.roleFile.developer_instructions, /`status=progress`/);
+    assert.match(role.content.roleFile.developer_instructions, /回复 progress 后继续原任务/);
     assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
@@ -125,21 +128,41 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /显式要求无法同时满足时停止并说明/);
   assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
 
-  assert.match(skill.content.skillFile, /`wait_agent` 公开 `targets` 时/);
-  assert.match(skill.content.skillFile, /`wait_agent` 未公开 `targets` 且描述为 mailbox wait 时/);
-  assert.match(skill.content.skillFile, /当前工具列表公开 `close_agent` 时/);
-  assert.match(skill.content.skillFile, /读取当前 schema 的 min、default、max/);
+  assert.match(skill.content.skillFile, /调用时只等待尚未终态的 agent/);
+  assert.match(skill.content.skillFile, /返回活动通知而非最终结果时，以完成通知为准/);
+  assert.match(skill.content.skillFile, /其它已加载的任务专用 skill 明确提供首次存活探测下限时优先使用/);
+  assert.match(skill.content.skillFile, /首次探测前至少等待 `10` 分钟（`timeout_ms=600000`）/);
+  assert.match(skill.content.skillFile, /只有 `wait_agent` 明确报告超时才发起存活探测/);
+  assert.match(skill.content.skillFile, /同一子任务同时最多有一个未决探测/);
+  assert.match(skill.content.skillFile, /暂未回复不能单独证明代理已经挂死/);
+  assert.match(skill.content.skillFile, /是否请求部分结果或提前收敛由主代理/);
+  assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
   assert.match(
     skill.content.skillFile,
     /compatibility: Supports Codex multi-agent V1 and V2 collaboration tools with the bundled agent roles installed/,
   );
   assert.equal(skill.content.skillFile.includes('时是 V1'), false);
   assert.equal(skill.content.skillFile.includes('时是 V2'), false);
-  assert.equal(skill.content.skillFile.includes('timeout_ms=600000'), false);
-  assert.ok(skill.content.skillFile.split('\n').length <= 70);
+  assert.equal(skill.content.skillFile.includes('催促后等待'), false);
+  assert.equal(skill.content.skillFile.includes('非中断收敛请求'), false);
+  assert.equal(skill.content.skillFile.includes('list_agents'), false);
+  assert.equal(skill.content.skillFile.includes('interrupt_agent'), false);
+  assert.ok(skill.content.skillFile.split('\n').length <= 80);
   assert.equal(skill.content.skillFile.includes('{{spawnParameterGuidance}}'), false);
+  assert.equal(skill.content.skillFile.includes('{{minimumInitialWaitMinutes}}'), false);
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation: true/);
   assert.match(skill.content.openaiYaml, /子代理任务分类、fork 与等待指导/);
+});
+
+test('renders a configured initial liveness probe delay', async () => {
+  const { skill } = artifactsFrom(
+    await renderArtifactPlan(createContext({ minimumInitialWaitMinutes: 15 })),
+  );
+
+  assert.match(
+    skill.content.skillFile,
+    /首次探测前至少等待 `15` 分钟（`timeout_ms=900000`）/,
+  );
 });
 
 test('renders a configured role without changing the others', async () => {

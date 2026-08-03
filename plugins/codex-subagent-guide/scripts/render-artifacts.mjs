@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const SKILL_ID = 'codex-subagent-guide-skill';
 const SKILL_KEY = 'codex-subagent-guide';
-const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
+const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。仅在收到父代理显式存活探测时，可以只回复一次 `status=progress` 和必要进度，或 `status=blocked` 和阻塞原因；不得主动或例行汇报。回复 progress 后继续原任务，不要为探测缩减范围、提前收敛或结束当前 turn。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
 const TASK_TYPES = [
   {
     id: 'simple',
@@ -80,29 +80,46 @@ async function readDefaults() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
-  return Object.fromEntries(
-    TASK_TYPES.map(({ id, modelKey, effortKey }) => [
-      id,
-      {
-        model: optionalString(schema[modelKey]?.default),
-        reasoningEffort: optionalString(schema[effortKey]?.default),
-      },
-    ]),
-  );
+  return {
+    minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
+    roles: Object.fromEntries(
+      TASK_TYPES.map(({ id, modelKey, effortKey }) => [
+        id,
+        {
+          model: optionalString(schema[modelKey]?.default),
+          reasoningEffort: optionalString(schema[effortKey]?.default),
+        },
+      ]),
+    ),
+  };
+}
+
+function resolvePositiveNumber(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function resolveConfig(context, defaults) {
   const values = isRecord(context?.config?.values) ? context.config.values : {};
 
-  return Object.fromEntries(
-    TASK_TYPES.map(({ id, modelKey, effortKey }) => [
-      id,
-      {
-        model: optionalString(values[modelKey]) ?? defaults[id].model,
-        reasoningEffort: optionalString(values[effortKey]) ?? defaults[id].reasoningEffort,
-      },
-    ]),
-  );
+  return {
+    minimumInitialWaitMinutes: resolvePositiveNumber(
+      values.minimumInitialWaitMinutes,
+      defaults.minimumInitialWaitMinutes,
+    ),
+    roles: Object.fromEntries(
+      TASK_TYPES.map(({ id, modelKey, effortKey }) => [
+        id,
+        {
+          model: optionalString(values[modelKey]) ?? defaults.roles[id].model,
+          reasoningEffort: optionalString(values[effortKey]) ?? defaults.roles[id].reasoningEffort,
+        },
+      ]),
+    ),
+  };
+}
+
+function minutesToMilliseconds(minutes) {
+  return Math.round(minutes * 60_000);
 }
 
 function renderSpawnParameterGuidance() {
@@ -151,7 +168,7 @@ export async function renderArtifactPlan(context) {
 
   const roleArtifacts = TASK_TYPES.map(
     ({ id, description, roleId, roleKey, modelKey, effortKey }) => {
-      const { model, reasoningEffort } = config[id];
+      const { model, reasoningEffort } = config.roles[id];
       return {
         id: roleId,
         kind: 'codexRole',
@@ -184,10 +201,14 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: SKILL_KEY,
-        refreshKeys: [],
+        refreshKeys: ['minimumInitialWaitMinutes'],
         content: {
           skillFile: renderTemplate(skillTemplate, {
             spawnParameterGuidance: renderSpawnParameterGuidance(),
+            minimumInitialWaitMinutes: config.minimumInitialWaitMinutes,
+            minimumInitialWaitTimeoutMs: minutesToMilliseconds(
+              config.minimumInitialWaitMinutes,
+            ),
           }),
           openaiYaml: openaiTemplate,
         },

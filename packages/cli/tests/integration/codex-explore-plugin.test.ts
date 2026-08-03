@@ -48,7 +48,6 @@ import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.
 const tempDirs: string[] = [];
 const CURRENT_CODEX_EXPLORE_SKILL_REFRESH_KEYS = [
   'minimumInitialWaitMinutes',
-  'convergenceWaitMinutes',
 ];
 const CURRENT_CODEX_EXPLORE_ROLES = [
   {
@@ -88,7 +87,6 @@ const CODEX_EXPLORE_SKILL_REFRESH_KEYS = [
   'explorerModel',
   'modelReasoningEffort',
   'minimumInitialWaitMinutes',
-  'convergenceWaitMinutes',
 ];
 
 function addLegacyModelConfigSchema(manifest: Record<string, unknown>): void {
@@ -1681,7 +1679,7 @@ describe('codex-explore integration acceptance', () => {
     expect(location.record?.present).toBe(true);
   });
 
-  it('refreshes Codex user dynamic skill from historical bundle when local marketplace runtime has rendered templates', async () => {
+  it('refreshes Codex user dynamic skill from historical bundle and ignores removed convergence config', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
@@ -1692,7 +1690,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        minimumInitialWaitMinutes: 10,
+        minimumInitialWaitMinutes: 12,
+        // Historical stores may retain this removed key; current rendering must ignore it.
         convergenceWaitMinutes: 6,
       },
     });
@@ -1707,7 +1706,8 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    expect(renderedMarketplaceSkill).toContain('催促后等待为 `6` 分钟');
+    expect(renderedMarketplaceSkill).toContain('首次存活探测前至少等待 `12` 分钟');
+    expect(renderedMarketplaceSkill).not.toContain('催促后等待');
     expect(renderedMarketplaceSkill).not.toContain('{{spawnModelGuidance}}');
 
     const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPluginFromMarketplace').mockImplementation(
@@ -1724,7 +1724,7 @@ describe('codex-explore integration acceptance', () => {
       },
     );
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '15', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -1738,21 +1738,26 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect(nativeRefreshSpy).toHaveBeenCalled();
 
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
-    const [runtimeSkill, cachedSkill, roleContent] = await Promise.all([
+    const [runtimeSkill, cachedSkill, roleContent, configStore] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
       fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
       fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-custom.toml'), 'utf8'),
+      fs.readJson(path.join(awHome, 'plugin-config', 'codex-explore', 'config.json')),
     ]);
 
-    expect(runtimeSkill).toContain('催促后等待为 `5` 分钟');
-    expect(runtimeSkill).not.toContain('催促后等待为 `6` 分钟');
-    expect(cachedSkill).toContain('催促后等待为 `5` 分钟');
+    expect(runtimeSkill).toContain('首次存活探测前至少等待 `15` 分钟');
+    expect(runtimeSkill).not.toContain('催促后等待');
+    expect(cachedSkill).toContain('首次存活探测前至少等待 `15` 分钟');
+    expect(configStore).toMatchObject({
+      minimumInitialWaitMinutes: 15,
+      convergenceWaitMinutes: 6,
+    });
     expect(roleContent).not.toContain('\nmodel = ');
     expect(roleContent).not.toContain('\nmodel_reasoning_effort = ');
   });
@@ -2649,7 +2654,6 @@ describe('codex-explore integration acceptance', () => {
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 12,
-        convergenceWaitMinutes: 6,
         standardModel: 'user-standard',
         standardReasoningEffort: 'low',
       },
@@ -2661,7 +2665,6 @@ describe('codex-explore integration acceptance', () => {
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 20,
-        convergenceWaitMinutes: 10,
         standardModel: 'project-standard',
         standardReasoningEffort: 'max',
       },
@@ -2718,11 +2721,12 @@ describe('codex-explore integration acceptance', () => {
     expect(skillContent).toContain('`deep` → `codex-explore-deep`');
     expect(skillContent).toContain('选择 `codex-explore-custom`');
     expect(skillContent).toContain('有 `fork_turns` 时传 `"none"`');
-    expect(skillContent).toContain('首次最小等待为 `20` 分钟');
-    expect(skillContent).toContain('催促后等待为 `10` 分钟');
+    expect(skillContent).toContain('首次存活探测前至少等待 `20` 分钟');
+    expect(skillContent).toContain('同一子任务同时最多有一个未决探测');
+    expect(skillContent).not.toContain('催促后等待');
     expect(skillContent).toContain('调用预设 role 时不得传 `model` 或 `reasoning_effort`');
     expect(skillContent).toContain('只传用户实际指定且当前 schema 公开的字段');
-    expect(skillContent).toContain('若当前工具提供 `close_agent`，必须关闭');
+    expect(skillContent).toContain('只在当前工具提供 `close_agent` 时执行清理');
     expect(skillContent).not.toContain('role 固定使用');
     expect(skillContent).not.toContain('gpt-5.6-luna');
     for (let index = 0; index < CURRENT_CODEX_EXPLORE_ROLES.length; index += 1) {
@@ -2814,7 +2818,7 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: 'codex-explore',
-      refreshKeys: ['minimumInitialWaitMinutes', 'convergenceWaitMinutes'],
+      refreshKeys: ['minimumInitialWaitMinutes'],
       content: {
         skillFile: '---\\nname: codex-explore\\ndescription: Legacy explore.\\n---\\n\\n# Legacy Explore\\n',
         openaiYaml: 'interface:\\n  display_name: "Codex Explore"\\n  short_description: "Legacy explore"\\n  default_prompt: "Use $codex-explore."\\npolicy:\\n  allow_implicit_invocation: true\\n',
@@ -3745,7 +3749,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 12,
-        convergenceWaitMinutes: 6,
       },
     });
     await writePluginConfigStore({
@@ -3755,7 +3758,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 20,
-        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -3779,7 +3781,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     const userTrackingBefore = await readTrackingManifest(userPaths.trackingDir);
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '-s', 'project', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '25', '-s', 'project', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -3794,7 +3796,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
         artifacts: expect.arrayContaining([
           expect.objectContaining({
             scope: 'project',
@@ -3821,8 +3823,8 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('首次最小等待为 `12` 分钟');
-    expect(projectSkillContent).toContain('催促后等待为 `5` 分钟');
+    expect(userSkillContent).toContain('首次存活探测前至少等待 `12` 分钟');
+    expect(projectSkillContent).toContain('首次存活探测前至少等待 `25` 分钟');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3904,7 +3906,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 20,
-        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -3925,7 +3926,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifact.id === 'codex-explore-standard-role')?.configDigest;
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '-s', 'project', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '25', '-s', 'project', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -3937,11 +3938,11 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       ok: true,
       command: 'config:set',
       scope: 'project',
-      updatedKeys: ['convergenceWaitMinutes'],
+      updatedKeys: ['minimumInitialWaitMinutes'],
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
         artifacts: expect.arrayContaining([
           expect.objectContaining({
             scope: 'project',
@@ -3984,13 +3985,13 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     const trackedRole = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-standard-role');
 
-    expect(skillContent).toContain('催促后等待为 `5` 分钟');
+    expect(skillContent).toContain('首次存活探测前至少等待 `25` 分钟');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
         status: 'succeeded',
         event: 'refresh',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect(trackedSkill?.configDigest).not.toBe(beforeSkillDigest);
@@ -4208,7 +4209,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 20,
-        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -4244,7 +4244,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes', 'minimumInitialWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
 
@@ -4273,7 +4273,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       lastRefresh: {
         status: 'succeeded',
         event: 'refresh',
-        triggerKeys: ['convergenceWaitMinutes', 'minimumInitialWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect(trackedSkill?.configDigest).not.toBe(beforeSkillDigest);
@@ -4308,7 +4308,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '15', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -4322,7 +4322,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect((await fs.readFile(lifecycleLogPath, 'utf8')).trim().split('\n').filter(Boolean)).toEqual(['install']);
@@ -4380,7 +4380,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       env: process.env,
       values: {
         minimumInitialWaitMinutes: 12,
-        convergenceWaitMinutes: 6,
       },
     });
     await writePluginConfigStore({
@@ -4543,7 +4542,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     const repoBProjectPaths = resolveCodexPaths(repoB, 'project', process.env);
     const beforeRepoBTracking = await readTrackingManifest(repoBProjectPaths.trackingDir);
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '15', '--json'],
       {
         cwd: repoA,
         env: process.env,
@@ -4558,7 +4557,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['convergenceWaitMinutes'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect(result.parseJsonStdout<{

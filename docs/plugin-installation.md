@@ -402,13 +402,12 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 | standard | `standardModel=gpt-5.6-luna` | `standardReasoningEffort=high` |
 | deep | `deepModel=gpt-5.6-luna` | `deepReasoningEffort=xhigh` |
 
-这些配置和两个等待窗口都可以通过 `aw config` 调整：
+这些角色配置和首次存活探测前的最小等待都可以通过 `aw config` 调整：
 
 ```bash
 aw config set codex-explore standardModel gpt-5.6-terra -s user
 aw config set codex-explore standardReasoningEffort max -s user
 aw config set codex-explore minimumInitialWaitMinutes 15 -s user
-aw config set codex-explore convergenceWaitMinutes 5 -s user
 ```
 
 `codex-subagent-guide` 只处理已经获准的委派，不把 skill 加载或插件安装视为使用子代理的授权。它兼容当前 Codex multi-agent V1/V2 工具合同，但不预判版本，而是按当前公开的工具和字段应用新上下文、事件等待与 `close_agent` 清理等纠错规则。
@@ -427,6 +426,7 @@ effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `aut
 ```bash
 aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
 aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
+aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
 ```
 
 查看该插件的完整配置：

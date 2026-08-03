@@ -235,7 +235,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
         "kind": "skill",
         "projectManagedKind": "skill",
         "states": ["present"],
-        "refreshKeys": ["minimumInitialWaitMinutes", "convergenceWaitMinutes"],
+        "refreshKeys": ["minimumInitialWaitMinutes"],
         "skillKey": "codex-explore"
       }
     ]
@@ -268,7 +268,7 @@ renderer plan 示例：
       "target": "codex.skill",
       "state": "present",
       "skillKey": "codex-explore",
-      "refreshKeys": ["minimumInitialWaitMinutes", "convergenceWaitMinutes"],
+      "refreshKeys": ["minimumInitialWaitMinutes"],
       "content": {
         "skillFile": "---\nname: codex-explore\n---\n# Codex Explore\n",
         "openaiYaml": "policy:\n  allow_implicit_invocation: true\n"
