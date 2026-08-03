@@ -36,10 +36,10 @@ export const validationCases = [
     should_spawn_agent: false,
   },
   {
-    id: 'known_config_edit_validation',
-    query: '把 known/settings.ts 的 DEFAULT_REGION 改为 us-east-1，并更新对应测试。',
-    should_load_skill: false,
-    should_spawn_agent: false,
+    id: 'composite_implementation_validation',
+    query: '我要给这个陌生 repo 加 regional_checkout。实现前先跨网关、结算、任务和共享配置搜索全部扩展点与现有调用链，给出可核验路径；主流程之后再负责修改和测试。',
+    should_load_skill: true,
+    should_spawn_agent: true,
   },
   {
     id: 'single_constant_validation',

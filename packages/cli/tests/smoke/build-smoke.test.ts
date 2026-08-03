@@ -138,13 +138,18 @@ describe('build smoke', () => {
             target: 'codex.skill',
             skillKey: 'codex-explore',
           }),
-          expect.objectContaining({
-            id: 'codex-explore-agent-role',
+          ...[
+            ['codex-explore-quick-role', 'codex-explore-quick'],
+            ['codex-explore-standard-role', 'codex-explore-standard'],
+            ['codex-explore-deep-role', 'codex-explore-deep'],
+            ['codex-explore-custom-role', 'codex-explore-custom'],
+          ].map(([id, roleKey]) => expect.objectContaining({
+            id,
             platform: 'codex',
             target: 'codex.agentRole',
             requiresCodexProjectConfig: true,
-            roleKey: 'codex-explore-agent',
-          }),
+            roleKey,
+          })),
         ]),
       },
     });

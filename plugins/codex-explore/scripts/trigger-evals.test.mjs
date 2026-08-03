@@ -28,9 +28,9 @@ async function testEvalCorpus() {
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
   assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 14);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 14);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 11);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 18);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 15);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
@@ -41,7 +41,8 @@ async function testEvalCorpus() {
     ['official_docs_and_logs', [true, true]],
     ['casual_unknown_repo', [true, true]],
     ['plain_name_small_request', [true, false]],
-    ['composite_review_boundary', [false, false]],
+    ['composite_review_boundary', [true, true]],
+    ['composite_write_boundary', [true, true]],
   ]);
   for (const [id, [shouldLoad, shouldSpawn]] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);
@@ -133,16 +134,30 @@ function testSummary() {
 async function testWorkspaceStaging() {
   const workspace = await createEvalWorkspace();
   try {
-    const [skill, role] = await Promise.all([
+    const [skill, ...roles] = await Promise.all([
       readFile(workspace.skillPath, 'utf8'),
-      readFile(workspace.rolePath, 'utf8'),
+      ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
     ]);
     assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
     assert.equal(skill.includes('user-invocable:'), false);
-    assert.match(role, /codex-explore-agent/);
-    assert.match(role, /冲突或缺口/);
-    assert.equal(role.includes('\nmodel = '), false);
-    assert.equal(role.includes('\nmodel_reasoning_effort = '), false);
+    assert.deepEqual(
+      workspace.roles.map((role) => role.roleFile.name),
+      [
+        'codex-explore-quick',
+        'codex-explore-standard',
+        'codex-explore-deep',
+        'codex-explore-custom',
+      ],
+    );
+    for (const role of roles) {
+      assert.match(role, /冲突或缺口/);
+    }
+    assert.match(roles[0], /model = "gpt-5\.6-luna"/);
+    assert.match(roles[0], /model_reasoning_effort = "medium"/);
+    assert.match(roles[1], /model_reasoning_effort = "high"/);
+    assert.match(roles[2], /model_reasoning_effort = "xhigh"/);
+    assert.equal(roles[3].includes('\nmodel = '), false);
+    assert.equal(roles[3].includes('\nmodel_reasoning_effort = '), false);
 
     const args = buildCodexArgs(
       workspace,
@@ -155,7 +170,14 @@ async function testWorkspaceStaging() {
     assert.ok(args.includes('read-only'));
     assert.ok(args.includes('gpt-test'));
     assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME"]'));
-    assert.ok(args.some((arg) => arg.includes('agents.codex-explore-agent.config_file=')));
+    for (const roleName of [
+      'codex-explore-quick',
+      'codex-explore-standard',
+      'codex-explore-deep',
+      'codex-explore-custom',
+    ]) {
+      assert.ok(args.some((arg) => arg.includes(`agents.${roleName}.config_file=`)));
+    }
   } finally {
     await rm(workspace.root, { recursive: true, force: true });
   }

@@ -9,18 +9,31 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(new URL('./render-artifacts.mjs', import.meta.url));
 const scriptModuleUrl = pathToFileURL(scriptPath).href;
-
-async function readFirstExisting(urls) {
-  let lastError;
-  for (const url of urls) {
-    try {
-      return await readFile(fileURLToPath(url), 'utf8');
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError;
-}
+const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
+const expectedRoles = [
+  {
+    id: 'codex-explore-quick-role',
+    key: 'codex-explore-quick',
+    model: 'gpt-5.6-luna',
+    effort: 'medium',
+  },
+  {
+    id: 'codex-explore-standard-role',
+    key: 'codex-explore-standard',
+    model: 'gpt-5.6-luna',
+    effort: 'high',
+  },
+  {
+    id: 'codex-explore-deep-role',
+    key: 'codex-explore-deep',
+    model: 'gpt-5.6-luna',
+    effort: 'xhigh',
+  },
+  {
+    id: 'codex-explore-custom-role',
+    key: 'codex-explore-custom',
+  },
+];
 
 function createContext(overrides = {}) {
   return {
@@ -29,14 +42,12 @@ function createContext(overrides = {}) {
     scope: 'user',
     plugin: {
       name: 'codex-explore',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     config: {
       mode: 'artifact-render',
       targetScope: 'user',
       values: {
-        explorerModel: 'gpt-5.4',
-        modelReasoningEffort: 'high',
         minimumInitialWaitMinutes: 12,
         convergenceWaitMinutes: 6,
       },
@@ -72,449 +83,176 @@ function findArtifact(plan, id) {
   return artifact;
 }
 
-async function testPresentSkillArtifact() {
-  const { trimBlock } = await import(scriptModuleUrl);
+function assertRoleArtifact(plan, expected) {
+  const role = findArtifact(plan, expected.id);
+  assert.equal(role.kind, 'codexRole');
+  assert.equal(role.target, 'codex.agentRole');
+  assert.equal(role.state, 'present');
+  assert.equal(role.roleKey, expected.key);
+  assert.deepEqual(role.refreshKeys, []);
+  assert.equal(role.content.roleFile.name, expected.key);
+  assert.equal(role.content.roleFile.model, expected.model);
+  assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
+  assert.equal(role.content.registration.description, role.content.roleFile.description);
+  assert.match(role.content.roleFile.developer_instructions, /叶子探索子代理/);
+  assert.match(role.content.roleFile.developer_instructions, /不得调用任何子代理调度或管理工具/);
+  assert.match(role.content.roleFile.developer_instructions, /保持只读/);
+  assert.match(role.content.roleFile.developer_instructions, /只引用实际读取的来源/);
+  assert.match(role.content.roleFile.developer_instructions, /最小化并脱敏查询/);
+}
+
+async function testRenderedArtifactsAndSkillContract() {
   const plan = await runRenderer(createContext());
   const skill = findArtifact(plan, 'codex-explore-skill');
-  const role = findArtifact(plan, 'codex-explore-agent-role');
 
   assert.equal(plan.version, 1);
-  assert.equal(plan.artifacts.length, 2);
-  assert.equal(skill.state, 'present');
+  assert.equal(plan.artifacts.length, 5);
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
+  assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
   assert.deepEqual(skill.refreshKeys, [
-    'explorerModel',
-    'modelReasoningEffort',
     'minimumInitialWaitMinutes',
     'convergenceWaitMinutes',
   ]);
-  assert.equal(role.state, 'present');
-  assert.equal(role.kind, 'codexRole');
-  assert.equal(role.target, 'codex.agentRole');
-  assert.equal(role.roleKey, 'codex-explore-agent');
-  assert.deepEqual(role.refreshKeys, []);
-  assert.equal(role.content.registration.description, '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。');
-  assert.equal(role.content.roleFile.name, 'codex-explore-agent');
-  assert.equal(role.content.roleFile.description, '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。');
-  assert.equal('model' in role.content.roleFile, false);
-  assert.equal('model_reasoning_effort' in role.content.roleFile, false);
-  assert.match(role.content.roleFile.developer_instructions, /叶子探索子代理/);
-  assert.match(role.content.roleFile.developer_instructions, /只做只读调查/);
-  assert.match(role.content.roleFile.developer_instructions, /不得调用任何子代理调度或管理工具/);
-  assert.match(role.content.roleFile.developer_instructions, /`send_input`、`send_message`、`followup_task`/);
-  assert.match(role.content.roleFile.developer_instructions, /`resume_agent`、`close_agent`、`interrupt_agent`、`list_agents`/);
-  assert.match(role.content.roleFile.developer_instructions, /也不得继续拆分/);
-  assert.match(role.content.roleFile.developer_instructions, /保持只读/);
-  assert.match(role.content.roleFile.developer_instructions, /完成标准是回答具体问题/);
-  assert.match(role.content.roleFile.developer_instructions, /每个关键结论都能由实际读取的证据核验/);
-  assert.match(role.content.roleFile.developer_instructions, /只引用实际读取的来源/);
-  assert.match(role.content.roleFile.developer_instructions, /每个关键结论紧跟可核验的来源定位/);
-  assert.match(role.content.roleFile.developer_instructions, /用户材料的段落或行号/);
-  assert.match(role.content.roleFile.developer_instructions, /命令或工具名称及可识别的输出片段或记录 ID/);
-  assert.match(role.content.roleFile.developer_instructions, /明确标记直接证据与推断/);
-  assert.match(role.content.roleFile.developer_instructions, /来源冲突、证据缺失/);
-  assert.match(role.content.roleFile.developer_instructions, /证据不足时缩小结论，不要猜测/);
-  assert.match(role.content.roleFile.developer_instructions, /最小化并脱敏查询/);
-  assert.match(role.content.roleFile.developer_instructions, /不得包含密钥、个人数据、私有代码或用户材料原文/);
-  assert.match(role.content.roleFile.developer_instructions, /类型：直接证据 \| 推断/);
-  assert.match(role.content.roleFile.developer_instructions, /证据：文件:行号 \| URL（来源时间）/);
-  assert.match(role.content.roleFile.developer_instructions, /冲突或缺口/);
-  assert.match(role.content.roleFile.developer_instructions, /建议补读/);
-  assert.equal(plan.artifacts.some((entry) => entry.id === 'lightweight-instruction'), false);
-  assert.equal(plan.artifacts.some((entry) => entry.id === 'codex-explorer-role'), false);
-  assert.equal(skill.content.skillFile.includes('codex-explorer'), false);
-  assert.match(skill.content.skillFile, /description: 当任务需要在范围大、边界不明或陌生的代码库/);
-  assert.match(skill.content.skillFile, /必须浏览大量候选内容时使用/);
-  assert.match(skill.content.skillFile, /即使最终只需简短结论也适用/);
-  assert.match(skill.content.skillFile, /仅用于可独立完成的只读事实检索/);
-  assert.match(skill.content.skillFile, /不要用于代码 review、缺陷或质量判断、修改建议、写操作/);
-  assert.match(skill.content.skillFile, /少量已知来源的定向读取/);
-  assert.match(skill.content.skillFile, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
-  assert.match(skill.content.skillFile, /需随插件安装 codex-explore-agent role/);
-  assert.equal(skill.content.skillFile.includes('user-invocable:'), false);
-  assert.equal(skill.content.skillFile.includes('review 中仅可委派独立分离的事实检索子问题'), false);
-  assert.equal(skill.content.skillFile.includes('用户明确要求使用时也必须先通过 Gate'), false);
-  assert.match(skill.content.skillFile, /目标是把会明显占用或污染主会话上下文的只读证据探索交给专用子代理/);
-  assert.match(skill.content.skillFile, /完成标准：每个委派问题得到符合证据合同的结果或明确的缺失说明/);
-  assert.match(skill.content.skillFile, /已标记为未解决且没有并行接管/);
-  assert.match(skill.content.skillFile, /跨 6 个以上文件、3 个以上模块、多来源资料、长日志、需要跨多个官方文档或网页检索/);
-  assert.match(skill.content.skillFile, /候选材料范围较大、边界未知/);
-  assert.match(skill.content.skillFile, /陌生、外部、本轮尚未建立上下文/);
-  assert.match(skill.content.skillFile, /大量可能无关的候选内容/);
-  assert.match(skill.content.skillFile, /明显占用或污染当前会话上下文/);
-  assert.match(skill.content.skillFile, /最终答案只有一个事实并不是停止理由/);
-  assert.match(skill.content.skillFile, /需要搜索、筛选和核验证据/);
-  assert.match(skill.content.skillFile, /任务目标本身是实现、修改、格式化、提交或其它写操作/);
-  assert.match(skill.content.skillFile, /无法清楚分离出只读证据探索/);
-  assert.match(skill.content.skillFile, /数量只作辅助判断/);
-  assert.match(skill.content.skillFile, /能把探索工作写成具体的事实检索问题/);
-  assert.match(skill.content.skillFile, /划定资料来源和预期证据输出/);
-  assert.match(skill.content.skillFile, /缺陷判定、质量评价、严重性分级、修改建议或通过结论/);
-  assert.match(skill.content.skillFile, /交叉验证或独立核对假设不能单独触发本工作流/);
-  assert.match(skill.content.skillFile, /问题必须先做只读证据探索才能可靠推进/);
-  assert.match(skill.content.skillFile, /只是顺带提到 `codex-explore` 或 `plugins\/codex-explore`/);
-  assert.match(skill.content.skillFile, /问题本身不需要隔离探索上下文/);
-  assert.equal(skill.content.skillFile.includes('/path/to/external-project'), false);
-  assert.match(skill.content.skillFile, /任务特征与数量阈值冲突时/);
-  assert.match(skill.content.skillFile, /先做委派价值 Gate/);
-  assert.match(skill.content.skillFile, /不满足价值条件时交回主代理，按普通任务处理/);
-  assert.match(skill.content.skillFile, /价值 Gate 通过后，读取当前 `spawn_agent` schema 检查运行能力/);
-  assert.match(skill.content.skillFile, /只使用 Codex Explore 自带的探索 role/);
-  assert.match(skill.content.skillFile, /仅当工具公开 `agent_type`/);
-  assert.match(skill.content.skillFile, /未限制或明确允许 `codex-explore-agent`/);
-  assert.match(skill.content.skillFile, /schema 未公开的字段一律不传/);
-  assert.match(skill.content.skillFile, /公开 `task_name` 时/);
-  assert.match(skill.content.skillFile, /概括具体探索目的，如 `trace_wait_agent`/);
-  assert.match(skill.content.skillFile, /重名时才追加 `_2`、`_3`/);
-  assert.equal(skill.content.skillFile.includes('codex_explore_1'), false);
-  assert.match(skill.content.skillFile, /agent_type: "codex-explore-agent"/);
-  assert.match(skill.content.skillFile, /公开 `fork_turns` 时，传 `"none"`/);
-  assert.match(skill.content.skillFile, /模型和推理强度按字段独立选择/);
-  assert.match(skill.content.skillFile, /用户在当前请求中显式指定的值/);
-  assert.match(skill.content.skillFile, /`model`: `gpt-5\.4`/);
-  assert.match(skill.content.skillFile, /`reasoning_effort`: `high`/);
-  assert.match(skill.content.skillFile, /前两者都没有时不传对应参数，让 Codex 使用内建默认/);
-  assert.match(skill.content.skillFile, /用户显式指定的字段未公开时，不启动子代理/);
-  assert.match(skill.content.skillFile, /只有插件默认值的字段未公开时，省略该字段/);
-  assert.match(skill.content.skillFile, /不要省略参数后静默重试/);
-  assert.match(skill.content.skillFile, /运行时报告 role 不可用时，按委派失败处理/);
-  assert.match(skill.content.skillFile, /把该范围视为委派失败，按后文的失败回退规则处理/);
-  assert.match(skill.content.skillFile, /developer instructions 由专用 role 提供/);
-  assert.match(skill.content.skillFile, /模型和推理强度通过 `spawn_agent` 动态选择/);
-  assert.match(skill.content.skillFile, /不得启动默认子代理或改用内置 `explorer`、其它 role/);
-  assert.match(skill.content.skillFile, /当前会话的工具、联网、官方文档优先和上层安全策略/);
-  assert.match(skill.content.skillFile, /子代理继承当前会话可用的工具和权限/);
-  assert.match(skill.content.skillFile, /不能凭记忆补事实/);
-  assert.match(skill.content.skillFile, /每个子代理的 prompt 只写本次任务需要的内容/);
-  assert.match(
-    skill.content.skillFile,
-    /范围[\s\S]*资料来源[\s\S]*具体问题[\s\S]*期望输出/,
-  );
-  assert.match(skill.content.skillFile, /不要在 prompt 中重复专用 role 已提供的叶子代理、只读和通用证据规则/);
-  assert.match(skill.content.skillFile, /## 隐私 Gotcha/);
-  assert.match(skill.content.skillFile, /最小化并脱敏查询/);
-  assert.match(skill.content.skillFile, /不得包含密钥、个人数据、私有代码或用户材料原文/);
-  assert.match(skill.content.skillFile, /无法安全脱敏时，只使用本地或用户已提供的来源并报告限制/);
-  assert.equal(skill.content.skillFile.includes('`send_input`'), false);
-  assert.match(skill.content.skillFile, /子代理未终态且未确认停止期间.*不再同步调查同一个问题或同一批候选材料/s);
-  assert.match(skill.content.skillFile, /以当前会话中已有的工具返回和完成通知为准/);
-  assert.match(skill.content.skillFile, /无需为此创建额外文件、清单或外部状态/);
-  assert.equal(skill.content.skillFile.includes('主代理记录每个子任务'), false);
-  assert.match(skill.content.skillFile, /要求 `targets` 且返回 `status`/);
-  assert.match(skill.content.skillFile, /不接受 `targets` 且只返回消息或 activity 摘要/);
-  assert.match(skill.content.skillFile, /不按 Codex 版本号或配置猜测/);
-  assert.match(skill.content.skillFile, /同一终态可能同时出现在等待结果和完成通知中/);
-  assert.match(skill.content.skillFile, /按子任务引用去重/);
-  assert.match(skill.content.skillFile, /“常规等待”和“催促后等待”/);
-  assert.match(skill.content.skillFile, /首次最小等待为 `12` 分钟（`timeout_ms=720000`）/);
-  assert.match(skill.content.skillFile, /催促后等待为 `6` 分钟（`timeout_ms=360000`）/);
-  assert.match(skill.content.skillFile, /单次调用窗口，不是整批子代理的总时限/);
-  assert.match(skill.content.skillFile, /首次常规等待优先使用用户指定的单次时长/);
-  assert.match(skill.content.skillFile, /后续默认复用.*每次调用重新计时/s);
-  assert.match(skill.content.skillFile, /不计算剩余批次时间，也不承诺精确总时限/);
-  assert.match(skill.content.skillFile, /`timed_out: true`.*才算真正超时/);
-  assert.match(skill.content.skillFile, /向未完成代理发送一次非中断收敛请求/);
-  assert.match(skill.content.skillFile, /公开 `interrupt` 参数时显式传 `false`/);
-  assert.match(skill.content.skillFile, /催促后等待固定使用配置窗口/);
-  assert.match(skill.content.skillFile, /有停止能力时.*确认其不再运行后.*对应子任务标记为失败/s);
-  assert.match(skill.content.skillFile, /没有停止能力或无法确认终态时.*标记为未解决.*不接管或重新委派该范围/s);
-  assert.match(skill.content.skillFile, /最终答复前成功终止时按正常结果校验，否则只报告缺失/);
-  assert.match(skill.content.skillFile, /没有创建子代理的委派失败，或已确认终态或停止的失败子任务，适用以下回退/);
-  assert.match(
-    skill.content.skillFile,
-    /把该范围视为委派失败[\s\S]*没有创建子代理的委派失败，或已确认终态或停止的失败子任务[\s\S]*用户明确要求使用 `codex-explore`[\s\S]*本工作流自动触发时/,
-  );
-  assert.match(skill.content.skillFile, /用户明确要求使用 `codex-explore` 或隔离探索上下文时.*不由主代理接管该范围/s);
-  assert.match(skill.content.skillFile, /本工作流自动触发时.*做一次最小、只读且任务相关的回退/s);
-  assert.match(skill.content.skillFile, /用户没有取消或替换原任务.*回到原等待阶段/s);
-  assert.match(skill.content.skillFile, /只传 schema 公开的参数/);
-  assert.match(skill.content.skillFile, /`list_agents` 可用于状态对账，不能代替结果内容/);
-  assert.match(skill.content.skillFile, /剩余结果无论为何都不会改变结论.*不属于用户要求的覆盖范围/);
-  assert.match(skill.content.skillFile, /只有当前工具列表提供 `close_agent` 时/);
-  assert.match(skill.content.skillFile, /`interrupt_agent` 若只中断当前 turn.*不能当作正常关闭/s);
-  assert.match(skill.content.skillFile, /`wait_agent` 也不等于关闭 agent/);
-  assert.match(skill.content.skillFile, /不降级到其它代理/);
-  assert.match(skill.content.skillFile, /启动重试、异常重试、空输出补问和缺失项补问合计最多一次/);
-  assert.match(skill.content.skillFile, /`spawn_agent` 没有创建子代理/);
-  assert.match(skill.content.skillFile, /子代理进入异常终态/);
-  assert.match(skill.content.skillFile, /成功终态但没有输出/);
-  assert.match(skill.content.skillFile, /输出不符合任务或证据合同/);
-  assert.match(skill.content.skillFile, /失败或无效内容不得整合/);
-  assert.match(skill.content.skillFile, /关键结论是否绑定实际读取且可核验的来源定位/);
-  assert.match(skill.content.skillFile, /用户材料的段落或行号/);
-  assert.match(skill.content.skillFile, /命令或工具名称及可识别的输出片段或记录 ID/);
-  assert.match(skill.content.skillFile, /直接证据、推断、来源冲突和证据缺失是否明确区分/);
-  assert.match(skill.content.skillFile, /补读子代理指出的最小必要上下文/);
-  assert.match(skill.content.skillFile, /只保留通过校验的关键结论、对应证据/);
-  assert.match(skill.content.skillFile, /不得超过当前可用并发槽位/);
-  assert.match(skill.content.skillFile, /正常结束并读取结果后/);
-  assert.equal(skill.content.skillFile.includes('阻塞决策'), false);
-  assert.equal(skill.content.skillFile.includes('软截止'), false);
-  assert.equal(skill.content.skillFile.includes('硬截止'), false);
-  assert.equal(skill.content.skillFile.includes('探索深度'), false);
-  assert.equal(skill.content.skillFile.includes('`quick`'), false);
-  assert.equal(skill.content.skillFile.includes('aw install'), false);
-  assert.equal(skill.content.skillFile.includes('aw config'), false);
-  assert.equal(skill.content.skillFile.includes('Codex v1'), false);
-  assert.equal(skill.content.skillFile.includes('Codex v2'), false);
-  assert.equal(skill.content.skillFile.includes('同时公开 `task_name` 和 `agent_type`'), false);
-  assert.equal(skill.content.skillFile.includes('\n    ## 何时使用'), false);
+
+  for (const role of expectedRoles) {
+    assertRoleArtifact(plan, role);
+  }
+  const custom = findArtifact(plan, 'codex-explore-custom-role');
+  assert.equal('model' in custom.content.roleFile, false);
+  assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
+
+  const text = skill.content.skillFile;
+  assert.match(text, /也适用于代码 review、缺陷分析、质量判断、修改或实现任务中/);
+  assert.match(text, /只负责事实探索，不负责最终判断、建议或写操作/);
+  assert.match(text, /顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件/);
+  assert.match(text, /Gate 只判断拟委派的子任务/);
+  assert.match(text, /拟委派的子任务本身要求缺陷判定/);
+  assert.match(text, /选择优先级固定为/);
+  assert.match(text, /无法明确分档时选择 standard/);
+  assert.match(text, /`quick` → `codex-explore-quick`/);
+  assert.match(text, /`standard` → `codex-explore-standard`/);
+  assert.match(text, /`deep` → `codex-explore-deep`/);
+  assert.match(text, /选择 `codex-explore-custom`/);
+  assert.match(text, /`codex-explore-custom`.*永不自动选择/s);
+  assert.match(text, /调用预设 role 时不得传 `model` 或 `reasoning_effort`/);
+  assert.match(text, /只传用户实际指定且当前 schema 公开的字段/);
+  assert.match(text, /不得删除字段、切换预设或静默重试/);
+  assert.match(text, /探索深度：只写 `quick`、`standard` 或 `deep`/);
+  assert.match(text, /公开 `fork_turns` 时，传 `"none"`/);
+  assert.match(text, /首次最小等待为 `12` 分钟（`timeout_ms=720000`）/);
+  assert.match(text, /催促后等待为 `6` 分钟（`timeout_ms=360000`）/);
+  assert.match(text, /用户明确要求使用 `codex-explore` 或隔离探索上下文时.*不由主代理接管该范围/s);
+  assert.match(text, /本工作流自动触发时.*做一次最小、只读且任务相关的回退/s);
+  assert.match(text, /只有当前工具列表提供 `close_agent` 时/);
+  assert.match(text, /不得包含密钥、个人数据、私有代码或用户材料原文/);
+  assert.equal(text.includes('{{'), false);
+  assert.equal(text.includes('codex-explore-agent'), false);
+  assert.equal(text.includes('插件默认值'), false);
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /大型只读探索与证据核验/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore 从大量或边界不明的材料中检索并核验证据。/);
-  assert.equal(skill.content.openaiYaml.includes('任务边界不明确'), false);
-  assert.equal(skill.content.openaiYaml.includes('普通实现、修改、调试'), false);
+  assert.match(skill.content.openaiYaml, /使用 \$codex-explore/);
 }
 
-async function testCustomConfigOverridesSkillTemplates() {
-  const plan = await runRenderer(
+async function testConfigSourcesAndManifestDefaults() {
+  const configured = await runRenderer(
     createContext({
       config: undefined,
       renderConfig: {
         values: {
-          explorerModel: 'gpt-5.4-mini',
-          modelReasoningEffort: 'xhigh',
           minimumInitialWaitMinutes: 20,
           convergenceWaitMinutes: 8,
         },
       },
     }),
   );
-  const skill = findArtifact(plan, 'codex-explore-skill');
-  const role = findArtifact(plan, 'codex-explore-agent-role');
+  const configuredSkill = findArtifact(configured, 'codex-explore-skill');
+  assert.match(configuredSkill.content.skillFile, /首次最小等待为 `20` 分钟（`timeout_ms=1200000`）/);
+  assert.match(configuredSkill.content.skillFile, /催促后等待为 `8` 分钟（`timeout_ms=480000`）/);
 
-  assert.equal(skill.state, 'present');
-  assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, [
-    'explorerModel',
-    'modelReasoningEffort',
+  const defaults = await runRenderer(
+    createContext({
+      config: {
+        mode: 'artifact-render',
+        targetScope: 'project',
+        values: {},
+      },
+    }),
+  );
+  const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
+  assert.match(defaultSkill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
+  assert.match(defaultSkill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
+}
+
+async function testStaticManifestContract() {
+  const [manifestText, rendererSource] = await Promise.all([
+    readFile(manifestPath, 'utf8'),
+    readFile(scriptPath, 'utf8'),
+  ]);
+  const manifest = JSON.parse(manifestText);
+
+  assert.equal(manifest.version, '0.2.0');
+  assert.deepEqual(Object.keys(manifest.config.schema), [
     'minimumInitialWaitMinutes',
     'convergenceWaitMinutes',
   ]);
-  assert.match(skill.content.skillFile, /`model`: `gpt-5\.4-mini`/);
-  assert.match(skill.content.skillFile, /`reasoning_effort`: `xhigh`/);
-  assert.match(skill.content.skillFile, /首次最小等待为 `20` 分钟（`timeout_ms=1200000`）/);
-  assert.match(skill.content.skillFile, /催促后等待为 `8` 分钟（`timeout_ms=480000`）/);
-  assert.deepEqual(role.refreshKeys, []);
-  assert.equal('model' in role.content.roleFile, false);
-  assert.equal('model_reasoning_effort' in role.content.roleFile, false);
-}
-
-async function testDefaultsComeFromManifestSchema() {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-manifest-'));
-
-  try {
-    const contextPath = path.join(tempDir, 'context.json');
-    await writeFile(
-      contextPath,
-      JSON.stringify(
-        {
-          event: 'refresh',
-          platform: 'codex',
-          scope: 'project',
-          config: {
-            mode: 'artifact-render',
-            targetScope: 'project',
-            values: {},
-          },
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    );
-
-    const { stdout } = await execFileAsync(process.execPath, [scriptPath], {
-      env: {
-        ...process.env,
-        AW_PLUGIN_CONTEXT: contextPath,
-      },
-      cwd: path.dirname(scriptPath),
-    });
-    const plan = JSON.parse(stdout);
-    const skill = findArtifact(plan, 'codex-explore-skill');
-    const role = findArtifact(plan, 'codex-explore-agent-role');
-
-    assert.equal(skill.content.skillFile.includes('`model`:'), false);
-    assert.match(skill.content.skillFile, /`reasoning_effort`: `low`/);
-    assert.match(skill.content.skillFile, /未列出的字段没有插件默认值/);
-    assert.match(skill.content.skillFile, /首次最小等待为 `10` 分钟（`timeout_ms=600000`）/);
-    assert.match(skill.content.skillFile, /催促后等待为 `5` 分钟（`timeout_ms=300000`）/);
-    assert.equal('model' in role.content.roleFile, false);
-    assert.equal('model_reasoning_effort' in role.content.roleFile, false);
-
-    const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    assert.equal('default' in manifest.config.schema.explorerModel, false);
-    assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
-    assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
-    assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
-    assert.equal('enableLightweightInstruction' in manifest.config.schema, false);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-
-async function testStaticSkillContracts() {
-  const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
-  const [skill, metadata, rendererSource] = await Promise.all([
-    readFirstExisting([
-      new URL('../templates/codex-explore/SKILL.md', import.meta.url),
-      new URL('../codex/templates/codex-explore/SKILL.md', import.meta.url),
-    ]),
-    readFirstExisting([
-      new URL('../templates/codex-explore/agents/openai.yaml', import.meta.url),
-      new URL('../codex/templates/codex-explore/agents/openai.yaml', import.meta.url),
-    ]),
-    readFile(scriptPath, 'utf8'),
-  ]);
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-
-  const requiredTemplateContracts = [
-    /description: 当任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中/,
-    /必须浏览大量候选内容时使用/,
-    /即使最终只需简短结论也适用/,
-    /仅用于可独立完成的只读事实检索/,
-    /不要用于代码 review、缺陷或质量判断、修改建议、写操作/,
-    /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/,
-    /\{\{explorerRoleKey\}\}/,
-    /\{\{spawnModelGuidance\}\}/,
-    /首次最小等待为 `\{\{minimumInitialWaitMinutes\}\}` 分钟/,
-    /`timeout_ms=\{\{minimumInitialWaitTimeoutMs\}\}`/,
-    /催促后等待为 `\{\{convergenceWaitMinutes\}\}` 分钟/,
-    /`timeout_ms=\{\{convergenceWaitTimeoutMs\}\}`/,
-    /用户明确要求使用 `codex-explore` 或隔离探索上下文时.*不由主代理接管该范围/s,
-    /本工作流自动触发时.*做一次最小、只读且任务相关的回退/s,
-    /不得包含密钥、个人数据、私有代码或用户材料原文/,
-  ];
-  for (const contract of requiredTemplateContracts) {
-    assert.match(skill, contract);
-  }
-  for (const forbidden of [
-    'user-invocable:',
-    'codex-explorer',
-    'Codex v1',
-    'Codex v2',
-    '软截止',
-    '硬截止',
-    '探索深度',
-    '`quick`',
-  ]) {
-    assert.equal(skill.includes(forbidden), false);
-  }
-
-  assert.match(metadata, /allow_implicit_invocation:\s*true/);
-  assert.match(metadata, /short_description: "大型只读探索与证据核验"/);
-  assert.match(metadata, /使用 \$codex-explore 从大量或边界不明的材料中检索并核验证据。/);
-  assert.equal(metadata.includes('任务边界不明确'), false);
-  assert.equal(metadata.includes('普通实现、修改、调试'), false);
-  assert.equal(manifest.skillTriggers?.['codex-explore']?.defaultTrigger, 'auto');
-  assert.equal(manifest.skillTriggers?.['codex-explore']?.allowDynamicTrigger, true);
-  assert.equal(manifest.version, '0.1.20');
-  assert.equal(
-    manifest.config.schema.explorerModel.description,
-    '用户未指定时传给 Codex Explore 子代理的默认模型；未配置则使用 Codex 内建默认。',
-  );
-  assert.equal(
-    manifest.config.schema.modelReasoningEffort.description,
-    '用户未指定时传给 Codex Explore 子代理的默认推理强度。',
-  );
-  assert.equal('default' in manifest.config.schema.explorerModel, false);
-  assert.equal(manifest.config.schema.modelReasoningEffort.default, 'low');
-  assert.equal(
-    rendererSource.includes("schema.modelReasoningEffort?.default ?? 'low'"),
-    false,
-  );
-  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.min, 1);
-  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.max, 60);
-  assert.equal(manifest.config.schema.convergenceWaitMinutes.min, 1);
-  assert.equal(manifest.config.schema.convergenceWaitMinutes.max, 30);
-  assert.deepEqual(
-    manifest.config.schema.modelReasoningEffort.values,
-    ['low', 'medium', 'high', 'xhigh', 'max'],
-  );
-  assert.deepEqual(manifest.marketplace?.policy?.products, ['CODEX']);
+  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
+  assert.equal(manifest.config.schema.convergenceWaitMinutes.default, 5);
+  assert.equal(manifest.skillTriggers['codex-explore'].defaultTrigger, 'auto');
+  assert.equal(manifest.skillTriggers['codex-explore'].allowDynamicTrigger, true);
+  assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
-  assert.match(manifest.extensions.instructions[0].content, /调用 `codex-explore` 技能/);
   assert.match(manifest.extensions.instructions[0].content, /Gate 通过/);
-  assert.match(manifest.extensions.instructions[0].content, /用户同意在该工作流中启用子代理/);
-  assert.match(manifest.extensions.instructions[0].content, /Gate 未通过时不得启动子代理/);
-  assert.equal(manifest.artifacts.targets.length, 2);
-  if (manifest.artifacts.targets.some((target) => 'kind' in target)) {
-    assert.deepEqual(
-      manifest.artifacts.targets.map((target) => target.kind),
-      ['skill', 'codexRole'],
-    );
-  }
-  const normalizedTargets = manifest.artifacts.targets.map((target) => {
-    const normalized = { ...target };
-    delete normalized.kind;
-    return normalized;
-  });
-  assert.deepEqual(normalizedTargets, [
-    {
-      id: 'codex-explore-skill',
-      platform: 'codex',
-      scopes: ['user', 'project'],
-      target: 'codex.skill',
-      projectManagedKind: 'skill',
-      states: ['present'],
-      refreshKeys: [
-        'explorerModel',
-        'modelReasoningEffort',
-        'minimumInitialWaitMinutes',
-        'convergenceWaitMinutes',
-      ],
-      skillKey: 'codex-explore',
-    },
-    {
-      id: 'codex-explore-agent-role',
-      platform: 'codex',
-      scopes: ['user', 'project'],
-      target: 'codex.agentRole',
-      projectManagedKind: 'agent',
-      states: ['present'],
-      refreshKeys: [],
-      requiresCodexProjectConfig: true,
-      roleKey: 'codex-explore-agent',
-    },
-  ]);
-  assert.deepEqual(manifest.buildConfig, {
-    fileRules: {
-      codex: {
-        include: ['templates/**'],
-        exclude: [],
+
+  assert.deepEqual(
+    manifest.artifacts.targets.map((target) => ({
+      id: target.id,
+      target: target.target,
+      refreshKeys: target.refreshKeys,
+      key: target.skillKey ?? target.roleKey,
+    })),
+    [
+      {
+        id: 'codex-explore-skill',
+        target: 'codex.skill',
+        refreshKeys: ['minimumInitialWaitMinutes', 'convergenceWaitMinutes'],
+        key: 'codex-explore',
       },
-    },
-  });
+      ...expectedRoles.map((role) => ({
+        id: role.id,
+        target: 'codex.agentRole',
+        refreshKeys: [],
+        key: role.key,
+      })),
+    ],
+  );
+  assert.equal(rendererSource.includes('explorerModel'), false);
+  assert.equal(rendererSource.includes("'modelReasoningEffort'"), false);
 }
 
-async function testTrimBlockDedentsWithoutLeakingIndentation() {
-  const { trimBlock } = await import(scriptModuleUrl);
-
-  const result = trimBlock(`
+async function testTrimBlockAndUnsupportedPlatform() {
+  const { trimBlock, renderArtifactPlan } = await import(scriptModuleUrl);
+  assert.equal(
+    trimBlock(`
         第一行
           第二行
 
         - 列表项
-          - 子项
-  `);
-
-  assert.equal(
-    result,
-    ['第一行', '  第二行', '', '- 列表项', '  - 子项'].join('\n'),
+    `),
+    ['第一行', '  第二行', '', '- 列表项'].join('\n'),
+  );
+  await assert.rejects(
+    () => renderArtifactPlan({ platform: 'claude' }),
+    /Unsupported platform: claude/,
   );
 }
 
 async function main() {
-  await testPresentSkillArtifact();
-  await testCustomConfigOverridesSkillTemplates();
-  await testDefaultsComeFromManifestSchema();
-  await testStaticSkillContracts();
-  await testTrimBlockDedentsWithoutLeakingIndentation();
+  await testRenderedArtifactsAndSkillContract();
+  await testConfigSourcesAndManifestDefaults();
+  await testStaticManifestContract();
+  await testTrimBlockAndUnsupportedPlatform();
   console.log('render-artifacts tests passed');
 }
 

@@ -1,7 +1,0 @@
-interface:
-  display_name: "Codex Explore"
-  short_description: "大型只读探索与证据核验"
-  default_prompt: "使用 $codex-explore 从大量或边界不明的材料中检索并核验证据。"
-
-policy:
-  allow_implicit_invocation: true

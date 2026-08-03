@@ -1,4 +1,0 @@
-{
-  "role_description": "只读探索代码、文档、网页、日志和大段材料，并整理关键证据。",
-  "authorization": "调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该工作流中启用子代理；Gate 未通过时不得启动子代理。"
-}

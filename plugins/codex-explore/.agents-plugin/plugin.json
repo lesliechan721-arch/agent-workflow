@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.1.20",
+  "version": "0.2.0",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
@@ -55,18 +55,6 @@
   },
   "config": {
     "schema": {
-      "explorerModel": {
-        "type": "string",
-        "title": "探索模型",
-        "description": "用户未指定时传给 Codex Explore 子代理的默认模型；未配置则使用 Codex 内建默认。"
-      },
-      "modelReasoningEffort": {
-        "type": "enum",
-        "title": "探索推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max"],
-        "default": "low",
-        "description": "用户未指定时传给 Codex Explore 子代理的默认推理强度。"
-      },
       "minimumInitialWaitMinutes": {
         "type": "number",
         "title": "首次最小等待时间（分钟）",
@@ -103,15 +91,13 @@
         "projectManagedKind": "skill",
         "states": ["present"],
         "refreshKeys": [
-          "explorerModel",
-          "modelReasoningEffort",
           "minimumInitialWaitMinutes",
           "convergenceWaitMinutes"
         ],
         "skillKey": "codex-explore"
       },
       {
-        "id": "codex-explore-agent-role",
+        "id": "codex-explore-quick-role",
         "platform": "codex",
         "scopes": ["user", "project"],
         "target": "codex.agentRole",
@@ -119,7 +105,40 @@
         "states": ["present"],
         "refreshKeys": [],
         "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore-agent"
+        "roleKey": "codex-explore-quick"
+      },
+      {
+        "id": "codex-explore-standard-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": [],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-standard"
+      },
+      {
+        "id": "codex-explore-deep-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": [],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-deep"
+      },
+      {
+        "id": "codex-explore-custom-role",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.agentRole",
+        "projectManagedKind": "agent",
+        "states": ["present"],
+        "refreshKeys": [],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-custom"
       }
     ]
   }

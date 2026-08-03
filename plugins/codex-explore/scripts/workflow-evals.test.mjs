@@ -31,7 +31,7 @@ function runResult(finalMessage) {
     exit_code: 0,
     spawn_calls: [{
       arguments: {
-        agent_type: 'codex-explore-agent',
+        agent_type: 'codex-explore-standard',
       },
     }],
     final_message: finalMessage,
@@ -59,10 +59,6 @@ function testArguments() {
     () => parseWorkflowEvalArgs(['--timeout-ms', '100']),
     /at least 10000/,
   );
-  assert.throws(
-    () => parseWorkflowEvalArgs(['--variant', 'old']),
-    /Unknown option/,
-  );
 }
 
 async function testSpecAndAssertions() {
@@ -71,6 +67,7 @@ async function testSpecAndAssertions() {
   assert.equal(spec.evals.length, 1);
   const entry = spec.evals[0];
   assert.equal(entry.id, 'versioned_docs_outcome');
+  assert.equal(entry.expected.agent_type, 'codex-explore-standard');
   assert.match(entry.prompt, /docs\/ 的全部候选文档中搜索并筛选/);
   for (const knownFile of ['api-v1.md', 'api-v2.md', 'migration.md']) {
     assert.equal(entry.prompt.includes(knownFile), false);

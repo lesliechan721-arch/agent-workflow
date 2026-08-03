@@ -247,7 +247,7 @@ async function run(options) {
   for (const entry of spec.evals) {
     const runs = [];
     for (let index = 0; index < options.runs; index += 1) {
-      process.stderr.write(`[current] ${entry.id} run ${index + 1}/${options.runs}\n`);
+      process.stderr.write(`${entry.id} run ${index + 1}/${options.runs}\n`);
       const workspace = await createEvalWorkspace();
       try {
         const before = await captureWorkspaceSnapshot(workspace.root);

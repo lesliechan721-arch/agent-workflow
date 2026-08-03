@@ -10,7 +10,6 @@ import {
 } from './run-trigger-evals.mjs';
 
 const DEFAULT_OPTIONS = {
-  variant: 'both',
   runs: 3,
   threshold: 0.5,
   timeoutMs: 180_000,
@@ -24,13 +23,12 @@ const DEFAULT_OPTIONS = {
 function usage() {
   return `Usage: node plugins/codex-explore/evals/run-model-selection-evals.mjs [OPTIONS]
 
-Runs current-skill and frozen old-skill model-selection behavior evaluations in
-clean Codex sessions, then checks the current skill's raw spawn_agent arguments.
+Runs current-skill model-selection behavior evaluations in clean Codex sessions,
+then checks the raw spawn_agent arguments.
 
 Options:
-  --variant <current|old|both>  Variants to run (default: both)
-  --runs <count>                Repetitions per case and variant (default: 3)
-  --threshold <rate>            Current-skill pass boundary (default: 0.5)
+  --runs <count>                Repetitions per case (default: 3)
+  --threshold <rate>            Pass boundary (default: 0.5)
   --timeout-ms <milliseconds>   Per-run safety timeout (default: 180000)
   --codex-bin <path>            Codex executable (default: codex)
   --model <model>               Optional parent model override
@@ -70,12 +68,7 @@ export function parseModelEvalArgs(argv) {
     }
     const value = readOptionValue(argv, index, flag);
     index += 1;
-    if (flag === '--variant') {
-      if (!['current', 'old', 'both'].includes(value)) {
-        throw new Error('--variant must be current, old, or both.');
-      }
-      options.variant = value;
-    } else if (flag === '--runs') {
+    if (flag === '--runs') {
       options.runs = positiveInteger(value, flag);
     } else if (flag === '--threshold') {
       options.threshold = Number(value);
@@ -102,7 +95,7 @@ export function parseModelEvalArgs(argv) {
   return options;
 }
 
-function validateExpectedCurrent(expected, id) {
+function validateExpected(expected, id) {
   const range = expected?.spawn_calls;
   if (
     !range ||
@@ -111,7 +104,7 @@ function validateExpectedCurrent(expected, id) {
     range.min < 0 ||
     range.max < range.min
   ) {
-    throw new Error(`${id}.expected_current.spawn_calls must define a valid integer range.`);
+    throw new Error(`${id}.expected.spawn_calls must define a valid integer range.`);
   }
 }
 
@@ -134,7 +127,7 @@ function validateEvalCase(entry, index) {
   if (!Array.isArray(entry.files) || !Array.isArray(entry.assertions)) {
     throw new Error(`${entry.id}.files and assertions must be arrays.`);
   }
-  validateExpectedCurrent(entry.expected_current, entry.id);
+  validateExpected(entry.expected, entry.id);
   return entry;
 }
 
@@ -142,9 +135,6 @@ export async function loadModelEvalSpec() {
   const spec = JSON.parse(await readEvalResource('evals.json'));
   if (spec?.skill_name !== 'codex-explore' || !Array.isArray(spec.evals)) {
     throw new Error('evals.json must describe codex-explore and contain evals.');
-  }
-  if (typeof spec.baseline?.should_spawn_agent !== 'boolean') {
-    throw new Error('evals.json baseline.should_spawn_agent must be boolean.');
   }
   const evals = spec.evals.map(validateEvalCase);
   const ids = new Set(evals.map((entry) => entry.id));
@@ -260,19 +250,10 @@ export function evaluateModelSelectionRun(run, expected) {
   };
 }
 
-export function summarizeVariant(entry, variant, runs, threshold) {
-  if (variant === 'old') {
-    return {
-      id: entry.id,
-      variant,
-      expected_output: entry.expected_output,
-      graded: false,
-      runs,
-    };
-  }
+export function summarizeModelEval(entry, runs, threshold) {
   const gradedRuns = runs.map((run) => ({
     ...run,
-    evaluation: evaluateModelSelectionRun(run, entry.expected_current),
+    evaluation: evaluateModelSelectionRun(run, entry.expected),
   }));
   const runnable = gradedRuns.filter((run) => !run.evaluation.skipped);
   const environmentSkips = gradedRuns.length - runnable.length;
@@ -281,31 +262,22 @@ export function summarizeVariant(entry, variant, runs, threshold) {
     : runnable.filter((run) => run.evaluation.passed).length / gradedRuns.length;
   return {
     id: entry.id,
-    variant,
     expected_output: entry.expected_output,
-    expected: entry.expected_current,
+    expected: entry.expected,
     pass_rate: passRate,
     passed: passRate === null ? null : passRate > threshold,
     complete: environmentSkips === 0,
     environment_skips: environmentSkips,
-    graded: true,
     runs: gradedRuns,
   };
 }
 
-function selectedVariants(variant) {
-  return variant === 'both' ? ['current', 'old'] : [variant];
-}
-
-export function modelEvalRunCase(entry, variant, baseline) {
+export function modelEvalRunCase(entry) {
   return {
     query: entry.prompt,
     explicit_skill: true,
     should_load_skill: true,
-    should_spawn_agent:
-      variant === 'old'
-        ? baseline.should_spawn_agent
-        : entry.expected_current.spawn_calls.min > 0,
+    should_spawn_agent: entry.expected.spawn_calls.min > 0,
     wait_for_completion: Boolean(entry.wait_for_completion),
     enable_features: entry.enable_features,
     disable_features: entry.disable_features,
@@ -313,12 +285,12 @@ export function modelEvalRunCase(entry, variant, baseline) {
   };
 }
 
-export function modelEvalReportStatus(currentResults, allowEnvironmentSkips) {
-  if (currentResults.length === 0) {
+export function modelEvalReportStatus(results, allowEnvironmentSkips) {
+  if (results.length === 0) {
     return { complete: true, passed: null };
   }
-  const complete = currentResults.every((result) => result.complete);
-  const performancePassed = currentResults.every(
+  const complete = results.every((result) => result.complete);
+  const performancePassed = results.every(
     (result) => result.passed !== false,
   );
   return {
@@ -338,46 +310,40 @@ async function run(options) {
 
   const results = [];
   for (const entry of selectedCases) {
-    for (const variant of selectedVariants(options.variant)) {
-      const runs = [];
-      for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
-        process.stderr.write(
-          `[${variant}] ${entry.id} run ${runIndex + 1}/${options.runs}\n`,
-        );
-        const workspace = await createEvalWorkspace({
-          configValues: entry.config_values,
-          variant,
-        });
-        try {
-          runs.push(await runCodexOnce(
-            workspace,
-            modelEvalRunCase(entry, variant, spec.baseline),
-            {
-              codexBin: options.codexBin,
-              model: options.model,
-              timeoutMs: options.timeoutMs,
-              captureTrace: true,
-            },
-          ));
-        } finally {
-          await rm(workspace.root, { recursive: true, force: true });
-        }
+    const runs = [];
+    for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
+      process.stderr.write(
+        `${entry.id} run ${runIndex + 1}/${options.runs}\n`,
+      );
+      const workspace = await createEvalWorkspace({
+        configValues: entry.config_values,
+      });
+      try {
+        runs.push(await runCodexOnce(
+          workspace,
+          modelEvalRunCase(entry),
+          {
+            codexBin: options.codexBin,
+            model: options.model,
+            timeoutMs: options.timeoutMs,
+            captureTrace: true,
+          },
+        ));
+      } finally {
+        await rm(workspace.root, { recursive: true, force: true });
       }
-      results.push(summarizeVariant(entry, variant, runs, options.threshold));
     }
+    results.push(summarizeModelEval(entry, runs, options.threshold));
   }
 
-  const currentResults = results.filter((result) => result.variant === 'current');
   const reportStatus = modelEvalReportStatus(
-    currentResults,
+    results,
     options.allowEnvironmentSkips,
   );
   const report = {
     schema_version: 1,
     generated_at: new Date().toISOString(),
     skill_name: spec.skill_name,
-    baseline: spec.baseline,
-    variant: options.variant,
     runs_per_case: options.runs,
     threshold: options.threshold,
     model: options.model ?? null,
@@ -386,20 +352,17 @@ async function run(options) {
     passed: reportStatus.passed,
     summary: {
       cases: selectedCases.length,
-      current_passed: currentResults.filter(
+      passed: results.filter(
         (result) => result.complete && result.passed,
       ).length,
-      current_failed: currentResults.filter(
+      failed: results.filter(
         (result) => result.complete && result.passed === false,
       ).length,
-      current_incomplete: currentResults.filter((result) => !result.complete).length,
-      current_environment_skipped: currentResults.reduce(
+      incomplete: results.filter((result) => !result.complete).length,
+      environment_skipped: results.reduce(
         (total, result) => total + result.environment_skips,
         0,
       ),
-      baseline_runs: results
-        .filter((result) => result.variant === 'old')
-        .reduce((total, result) => total + result.runs.length, 0),
     },
     results,
   };
@@ -409,7 +372,7 @@ async function run(options) {
     await writeFile(options.output, output, 'utf8');
   }
   process.stdout.write(output);
-  if (currentResults.length > 0 && report.passed !== true) {
+  if (report.passed !== true) {
     process.exitCode = 1;
   }
 }

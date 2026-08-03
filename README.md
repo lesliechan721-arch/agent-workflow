@@ -42,8 +42,8 @@ aw cleanup git-commit -p codex -s project --remove-config
 aw cleanup --dependency-index --prune-stale <token> --yes
 aw reinstall git-commit -p codex -s user
 aw config list codex-explore -s user
-aw config set codex-explore explorerModel gpt-5.4-mini -s user
-aw config unset codex-explore explorerModel -s user
+aw config set codex-explore minimumInitialWaitMinutes 15 -s user
+aw config unset codex-explore minimumInitialWaitMinutes -s user
 aw config reset codex-explore -s user --yes
 aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
@@ -61,7 +61,9 @@ aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 
 `codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
-探索子代理的模型参数按字段独立选择：当前请求中用户显式指定的值优先，其次使用插件配置，仍未指定时不传对应参数并使用 Codex 内建默认。`explorerModel` 默认不配置，`modelReasoningEffort` 默认是 `low`；二者只影响 skill 的动态调度，不写入专用 role 文件。
+`codex-explore` 按探索深度提供三档锁定 role：quick 使用 `gpt-5.6-luna/medium`，standard 使用 `gpt-5.6-luna/high`，deep 使用 `gpt-5.6-luna/xhigh`；模型会按任务复杂度选择，无法明确分档时使用 standard。用户显式指定 model 或 reasoning effort 时改用不锁定参数的 custom role，只透传用户指定的字段。
+
+代码 review、缺陷分析、质量判断、修改和实现任务只要能分离出值得隔离的大范围只读事实探索，也可以使用该 workflow；探索子代理不负责最终判断、建议或写操作。
 
 ## 开发
 

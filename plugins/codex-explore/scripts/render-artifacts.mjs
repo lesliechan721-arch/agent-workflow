@@ -5,15 +5,39 @@ import { fileURLToPath } from 'node:url';
 
 const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
-const CODEX_EXPLORE_ROLE_ID = 'codex-explore-agent-role';
-const CODEX_EXPLORE_ROLE_KEY = 'codex-explore-agent';
 const SKILL_REFRESH_KEYS = [
-  'explorerModel',
-  'modelReasoningEffort',
   'minimumInitialWaitMinutes',
   'convergenceWaitMinutes',
 ];
 const ROLE_REFRESH_KEYS = [];
+const CODEX_EXPLORE_ROLES = [
+  {
+    id: 'codex-explore-quick-role',
+    key: 'codex-explore-quick',
+    description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
+    model: 'gpt-5.6-luna',
+    modelReasoningEffort: 'medium',
+  },
+  {
+    id: 'codex-explore-standard-role',
+    key: 'codex-explore-standard',
+    description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
+    model: 'gpt-5.6-luna',
+    modelReasoningEffort: 'high',
+  },
+  {
+    id: 'codex-explore-deep-role',
+    key: 'codex-explore-deep',
+    description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
+    model: 'gpt-5.6-luna',
+    modelReasoningEffort: 'xhigh',
+  },
+  {
+    id: 'codex-explore-custom-role',
+    key: 'codex-explore-custom',
+    description: '仅用于用户显式指定 model 或 reasoning_effort 的只读探索；本 role 不锁定模型参数。',
+  },
+];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -67,12 +91,6 @@ async function readManifestDefaults() {
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
   return {
-    explorerModel:
-      typeof schema.explorerModel?.default === 'string' &&
-      schema.explorerModel.default.trim() !== ''
-        ? schema.explorerModel.default
-        : undefined,
-    modelReasoningEffort: schema.modelReasoningEffort?.default,
     minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
     convergenceWaitMinutes: schema.convergenceWaitMinutes?.default ?? 5,
   };
@@ -84,13 +102,6 @@ function resolvePositiveNumber(value, fallback) {
 
 function minutesToMilliseconds(minutes) {
   return Math.round(minutes * 60_000);
-}
-
-function resolveOptionalString(value, fallback) {
-  if (typeof value === 'string' && value.trim() !== '') {
-    return value;
-  }
-  return typeof fallback === 'string' && fallback.trim() !== '' ? fallback : undefined;
 }
 
 function resolveConfigValues(context, defaults) {
@@ -110,11 +121,6 @@ function resolveConfigValues(context, defaults) {
   }
 
   return {
-    explorerModel: resolveOptionalString(values.explorerModel, defaults.explorerModel),
-    modelReasoningEffort: resolveOptionalString(
-      values.modelReasoningEffort,
-      defaults.modelReasoningEffort,
-    ),
     minimumInitialWaitMinutes: resolvePositiveNumber(
       values.minimumInitialWaitMinutes,
       defaults.minimumInitialWaitMinutes,
@@ -124,32 +130,6 @@ function resolveConfigValues(context, defaults) {
       defaults.convergenceWaitMinutes,
     ),
   };
-}
-
-function renderSpawnModelGuidance(explorerModel, modelReasoningEffort) {
-  const configuredDefaults = [];
-  if (explorerModel) {
-    configuredDefaults.push(`- \`model\`: \`${explorerModel}\``);
-  }
-  if (modelReasoningEffort) {
-    configuredDefaults.push(`- \`reasoning_effort\`: \`${modelReasoningEffort}\``);
-  }
-
-  return [
-    '模型和推理强度按字段独立选择，优先级固定为：',
-    '1. 用户在当前请求中显式指定的值。',
-    '2. 下列插件默认值。',
-    '3. 前两者都没有时不传对应参数，让 Codex 使用内建默认。',
-    '',
-    configuredDefaults.length > 0 ? '当前插件默认值：' : '当前没有配置插件默认值。',
-    ...configuredDefaults,
-    ...(configuredDefaults.length > 0 ? ['未列出的字段没有插件默认值。'] : []),
-    '',
-    '只在当前 `spawn_agent` schema 公开对应字段时传 `model` 或 `reasoning_effort`：',
-    '- 用户显式指定的字段未公开时，不启动子代理，说明当前调度能力无法满足该指定。',
-    '- 只有插件默认值的字段未公开时，省略该字段，向用户说明已降级为 Codex 内建默认，再继续调度。',
-    '- 已传入的模型不可用、推理强度不受支持或其它非临时参数错误按启动失败处理；不要省略参数后静默重试。',
-  ].join('\n');
 }
 
 export function renderRoleDeveloperInstructions() {
@@ -173,6 +153,32 @@ export function renderRoleDeveloperInstructions() {
 
     只返回关键结论和对应证据。避免展开无关材料，不要替主代理实现或修改。
   `);
+}
+
+function renderRoleArtifact(role, developerInstructions) {
+  return {
+    id: role.id,
+    kind: 'codexRole',
+    platform: 'codex',
+    target: 'codex.agentRole',
+    state: 'present',
+    roleKey: role.key,
+    refreshKeys: ROLE_REFRESH_KEYS,
+    content: {
+      registration: {
+        description: role.description,
+      },
+      roleFile: {
+        name: role.key,
+        description: role.description,
+        developer_instructions: developerInstructions,
+        ...(role.model ? { model: role.model } : {}),
+        ...(role.modelReasoningEffort
+          ? { model_reasoning_effort: role.modelReasoningEffort }
+          : {}),
+      },
+    },
+  };
 }
 
 function renderTemplate(template, replacements) {
@@ -214,12 +220,10 @@ export async function readArtifactRenderContext() {
 
 export async function renderArtifactPlan(context) {
   const defaults = await readManifestDefaults();
-  const {
-    explorerModel,
-    modelReasoningEffort,
-    minimumInitialWaitMinutes,
-    convergenceWaitMinutes,
-  } = resolveConfigValues(context, defaults);
+  const { minimumInitialWaitMinutes, convergenceWaitMinutes } = resolveConfigValues(
+    context,
+    defaults,
+  );
   const platform = context?.platform ?? 'codex';
 
   if (platform !== 'codex') {
@@ -228,14 +232,16 @@ export async function renderArtifactPlan(context) {
 
   const { skillTemplate, openaiTemplate } = await readSkillTemplates();
   const replacements = {
-    explorerRoleKey: CODEX_EXPLORE_ROLE_KEY,
-    spawnModelGuidance: renderSpawnModelGuidance(explorerModel, modelReasoningEffort),
+    quickRoleKey: CODEX_EXPLORE_ROLES[0].key,
+    standardRoleKey: CODEX_EXPLORE_ROLES[1].key,
+    deepRoleKey: CODEX_EXPLORE_ROLES[2].key,
+    customRoleKey: CODEX_EXPLORE_ROLES[3].key,
     minimumInitialWaitMinutes,
     minimumInitialWaitTimeoutMs: minutesToMilliseconds(minimumInitialWaitMinutes),
     convergenceWaitMinutes,
     convergenceWaitTimeoutMs: minutesToMilliseconds(convergenceWaitMinutes),
   };
-  const roleDescription = '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。';
+  const developerInstructions = renderRoleDeveloperInstructions();
 
   return {
     version: 1,
@@ -253,25 +259,7 @@ export async function renderArtifactPlan(context) {
           openaiYaml: renderTemplate(openaiTemplate, replacements),
         },
       },
-      {
-        id: CODEX_EXPLORE_ROLE_ID,
-        kind: 'codexRole',
-        platform: 'codex',
-        target: 'codex.agentRole',
-        state: 'present',
-        roleKey: CODEX_EXPLORE_ROLE_KEY,
-        refreshKeys: ROLE_REFRESH_KEYS,
-        content: {
-          registration: {
-            description: roleDescription,
-          },
-          roleFile: {
-            name: CODEX_EXPLORE_ROLE_KEY,
-            description: roleDescription,
-            developer_instructions: renderRoleDeveloperInstructions(),
-          },
-        },
-      },
+      ...CODEX_EXPLORE_ROLES.map((role) => renderRoleArtifact(role, developerInstructions)),
     ],
   };
 }

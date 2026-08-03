@@ -66,9 +66,9 @@ export const trainCases = [
     should_spawn_agent: false,
   },
   {
-    id: 'write_data_script',
-    query: '写一个脚本，把 materials/summary.csv 转成 JSON 并保存到 output/summary.json。',
-    should_load_skill: false,
-    should_spawn_agent: false,
+    id: 'composite_review_exploration',
+    query: 'review changes/large-pr.diff 前，先在这个陌生 repo 的网关、任务和存储模块中把 deleteSafely 的全部调用点与数据流查清并列出文件证据；探索结果返回后我再判断 bug 和严重性。',
+    should_load_skill: true,
+    should_spawn_agent: true,
   },
 ];

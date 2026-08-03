@@ -11,7 +11,7 @@
       },
       "expected": {
         "spawn_count": 1,
-        "agent_type": "codex-explore-agent",
+        "agent_type": "codex-explore-standard",
         "final_message_includes_all": [
           "docs/vendor/api-v1.md",
           "docs/vendor/api-v2.md",

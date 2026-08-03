@@ -7,7 +7,7 @@
 - `should_load_skill`：Codex 是否加载 `codex-explore`。
 - `should_spawn_agent`：skill 加载后，Gate 是否实际调用 `spawn_agent`。
 
-train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝、代码 review、写操作和少量已知来源等近似正反例。sanity 额外覆盖口语、简短请求、普通名称调用，以及 review / 写操作中夹带大范围检索的复合边界。不要根据 validation 或 sanity 结果反向修改已有用例；先在 train 上迭代，最后只用 validation 和 sanity 检查泛化。
+train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝、纯 review 判断、写操作、少量已知来源，以及 review / 实现任务中可独立分离的大范围只读探索。sanity 额外覆盖口语、简短请求、普通名称调用和复合任务边界。不要根据 validation 或 sanity 结果反向修改已有用例；先在 train 上迭代，最后只用 validation 和 sanity 检查泛化。
 
 ## 运行
 
@@ -38,7 +38,7 @@ runner 会在临时目录渲染当前 skill、专用 role 和合成材料，使�
 
 `workflow-evals.json` 保留一个从 `docs/` 候选集中筛选版本资料的用例。runner 不在观察到 spawn 后提前终止，而是等待当前 skill 的完整进程结束，并机械检查：
 
-- 只启动一个 `codex-explore-agent`
+- 只启动一个 `codex-explore-standard`
 - 最终答复包含三份来源的行号、直接证据标记和预期 `FACT key=value`
 - 临时 workspace 在运行前后没有新增、删除或修改文件
 
@@ -52,21 +52,19 @@ node plugins/codex-explore/evals/run-workflow-evals.mjs \
 
 报告保留最终答复、`spawn_agent` 参数、workspace diff、duration 和可用时的 token usage。常规 `pnpm plugin:test codex-explore` 只测试 runner 和断言，不发起模型调用。
 
-## 模型选择行为
+## Role 与模型选择行为
 
-`evals.json` 的 8 个真实工作流用例覆盖：
+`evals.json` 的 9 个真实工作流用例覆盖：
 
-- 默认配置省略 `model`、传 `reasoning_effort=low`
-- 自定义插件默认值
-- 用户同时或逐字段显式指定时，分别覆盖对应插件默认值
-- schema 隐藏默认字段时降级省略、隐藏用户显式字段时阻断
-- 无效显式值不静默删除后重试
+- 根据任务复杂度自动选择 quick、standard 或 deep，并确认预设 role 不传 `model` / `reasoning_effort`
+- 用户同时或逐字段显式指定时使用 custom role，只透传显式字段
+- schema 隐藏覆盖字段时预设 role 仍可启动，用户显式字段则阻断
+- 无效显式值不删除字段、不切换预设后重试
 
-默认同时运行当前 skill 和冻结的 `0.1.18` old-skill baseline；baseline 独立保存当时的 `SKILL.md`、`openai.yaml`、role instructions、role 描述和委派授权，不调用当前 renderer。两者使用相同 prompt、配置、合成材料和独立干净会话。只对当前 skill 执行机械断言，旧版保留为对比轨迹：
+runner 只渲染和评测当前 skill 及其四个 role，并对每次运行的 `spawn_agent` 参数执行机械断言：
 
 ```bash
 node plugins/codex-explore/evals/run-model-selection-evals.mjs \
-  --variant both \
   --runs 3 \
   --output /tmp/codex-explore-model-selection.json
 ```
@@ -75,9 +73,8 @@ node plugins/codex-explore/evals/run-model-selection-evals.mjs \
 
 ```bash
 node plugins/codex-explore/evals/run-model-selection-evals.mjs \
-  --variant current \
   --runs 1 \
-  --case default_config
+  --case auto_standard
 ```
 
 `codex exec --json` 的简化协作事件不包含模型调度参数，因此 runner 为每次运行在工作区外创建隔离的临时 `CODEX_HOME`，以 `0600` 权限复制当前认证文件，并从临时 session rollout 读取原始 `spawn_agent` arguments。模型 shell 环境不会继承该临时 home 路径；临时认证和 session 在正常完成、启动异常或收到中断信号后都会删除，不写入用户正常 session。报告同时保存参数证据、duration、可用时的 token usage、最终消息和 JSONL event trace；为避免等待完整探索而提前停止的用例没有完整 token usage，这是预期行为。

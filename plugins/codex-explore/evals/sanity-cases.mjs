@@ -26,14 +26,14 @@ export const sanityCases = [
   {
     id: 'composite_review_boundary',
     query: 'review changes/large-pr.diff 前先把 deleteSafely 在这个陌生 repo 的所有调用点和数据流查清，再判断 bug 严重性并给修改建议。',
-    should_load_skill: false,
-    should_spawn_agent: false,
+    should_load_skill: true,
+    should_spawn_agent: true,
   },
   {
     id: 'composite_write_boundary',
     query: '我要给这个陌生 repo 加 regional_checkout，先搜索所有扩展点和调用链，然后直接修改代码并补测试。',
-    should_load_skill: false,
-    should_spawn_agent: false,
+    should_load_skill: true,
+    should_spawn_agent: true,
   },
   {
     id: 'casual_two_known_files',

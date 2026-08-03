@@ -1,16 +1,10 @@
 {
   "skill_name": "codex-explore",
-  "baseline": {
-    "name": "old_skill",
-    "version": "0.1.18",
-    "skill_file": "baselines/codex-explore-0.1.18/SKILL.md",
-    "should_spawn_agent": true
-  },
   "evals": [
     {
-      "id": "default_config",
-      "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，给出可核验的文件证据；不要修改代码。",
-      "expected_output": "使用专用 role 启动一个新鲜上下文子代理；省略 model，显式传 reasoning_effort=low。",
+      "id": "auto_quick",
+      "prompt": "$codex-explore reports/audit/ 有很多候选日志，但问题很窄且没有冲突：只定位 request=req-9 首次和最后一次出现的组件，给出原始记录位置；不要做原因分析。",
+      "expected_output": "自动选择 quick role，只传 agent_type，不传 model 或 reasoning_effort。",
       "files": [],
       "config_values": {},
       "codex_config": {
@@ -18,160 +12,10 @@
         "features.multi_agent_v2.hide_spawn_agent_metadata": false,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
-      "expected_current": {
+      "expected": {
         "spawn_calls": { "min": 1, "max": 1 },
         "arguments": {
-          "agent_type": "codex-explore-agent",
-          "model": null,
-          "reasoning_effort": "low",
-          "fork_turns": "none"
-        },
-        "present_arguments": ["message", "task_name"]
-      },
-      "assertions": [
-        "spawn_agent 只调用一次并使用 codex-explore-agent",
-        "未配置 model 时调用参数中不存在 model",
-        "插件默认 reasoning_effort=low 被显式传入",
-        "fork_turns=none，message 与 task_name 均存在"
-      ]
-    },
-    {
-      "id": "configured_defaults",
-      "prompt": "$codex-explore 请结合 docs/vendor/ 的多版本接口说明和 logs/ 的四段日志核验 401 的协议变化来源，并区分直接证据和推断。",
-      "expected_output": "用户没有指定调度参数时，分别使用插件配置的 model 和 reasoning_effort 默认值。",
-      "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "high"
-      },
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "expected_current": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "arguments": {
-          "agent_type": "codex-explore-agent",
-          "model": "gpt-5.6-terra",
-          "reasoning_effort": "high",
-          "fork_turns": "none"
-        },
-        "present_arguments": ["message", "task_name"]
-      },
-      "assertions": [
-        "spawn_agent 只调用一次并使用 codex-explore-agent",
-        "model 使用插件默认 gpt-5.6-terra",
-        "reasoning_effort 使用插件默认 high"
-      ]
-    },
-    {
-      "id": "user_overrides_config",
-      "prompt": "$codex-explore 使用 model=gpt-5.6-sol、reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
-      "expected_output": "用户对 model 和 reasoning_effort 的显式指定分别覆盖插件默认值。",
-      "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "low"
-      },
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "expected_current": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "arguments": {
-          "agent_type": "codex-explore-agent",
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "xhigh",
-          "fork_turns": "none"
-        },
-        "present_arguments": ["message", "task_name"]
-      },
-      "assertions": [
-        "spawn_agent 只调用一次并使用 codex-explore-agent",
-        "model 使用用户指定的 gpt-5.6-sol 而不是插件默认值",
-        "reasoning_effort 使用用户指定的 xhigh 而不是插件默认值"
-      ]
-    },
-    {
-      "id": "user_overrides_model_only",
-      "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
-      "expected_output": "用户只指定 model 时，仅覆盖插件 model 默认值，reasoning_effort 仍使用插件配置。",
-      "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "low"
-      },
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "expected_current": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "arguments": {
-          "agent_type": "codex-explore-agent",
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "low",
-          "fork_turns": "none"
-        },
-        "present_arguments": ["message", "task_name"]
-      },
-      "assertions": [
-        "model 使用用户指定的 gpt-5.6-sol",
-        "reasoning_effort 保留插件配置的 low"
-      ]
-    },
-    {
-      "id": "user_overrides_reasoning_only",
-      "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
-      "expected_output": "用户只指定 reasoning_effort 时，仅覆盖插件 reasoning_effort 默认值，model 仍使用插件配置。",
-      "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "low"
-      },
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "expected_current": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "arguments": {
-          "agent_type": "codex-explore-agent",
-          "model": "gpt-5.6-terra",
-          "reasoning_effort": "xhigh",
-          "fork_turns": "none"
-        },
-        "present_arguments": ["message", "task_name"]
-      },
-      "assertions": [
-        "model 保留插件配置的 gpt-5.6-terra",
-        "reasoning_effort 使用用户指定的 xhigh"
-      ]
-    },
-    {
-      "id": "hidden_default_fields",
-      "prompt": "$codex-explore 请从 reports/audit/ 的多日记录和 docs/runbooks/ 的处理手册中重建 request=req-9 的组件时间线，并为每个跳转给出来源。",
-      "expected_output": "schema 未公开 model 和 reasoning_effort 时，省略仅来自插件默认配置的字段并继续启动专用子代理。",
-      "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "low"
-      },
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
-      },
-      "expected_current": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "allowed_environment_errors": ["must match the configured schema"],
-        "arguments": {
-          "agent_type": "codex-explore-agent",
+          "agent_type": "codex-explore-quick",
           "model": null,
           "reasoning_effort": null,
           "fork_turns": "none"
@@ -179,54 +23,205 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "spawn_agent 仍使用 codex-explore-agent 且只调用一次",
-        "schema 未公开的 model 与 reasoning_effort 均未传入",
-        "fork_turns=none，message 与 task_name 均存在"
+        "窄范围、低歧义定位选择 codex-explore-quick",
+        "预设 role 不传 model 或 reasoning_effort"
+      ]
+    },
+    {
+      "id": "auto_standard",
+      "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+      "expected_output": "自动选择默认 standard role，只传 agent_type。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-standard",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "常规跨模块追踪选择 codex-explore-standard",
+        "预设 role 不传 model 或 reasoning_effort"
+      ]
+    },
+    {
+      "id": "auto_deep",
+      "prompt": "$codex-explore materials/、docs/vendor/ 和 reports/audit/ 中材料很多、说法冲突且边界未知。请深入重建续费失败的复杂因果链，穷尽相互矛盾的证据并说明无法确认之处，完整性优先。",
+      "expected_output": "自动选择 deep role，只传 agent_type。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-deep",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "高歧义、强冲突和高完整性要求选择 codex-explore-deep",
+        "预设 role 不传 model 或 reasoning_effort"
+      ]
+    },
+    {
+      "id": "custom_both_fields",
+      "prompt": "$codex-explore 使用 model=gpt-5.6-sol、reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
+      "expected_output": "显式 model 和 reasoning_effort 使用 custom role，并原样透传两个字段。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-custom",
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "xhigh",
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "显式字段选择 codex-explore-custom",
+        "model 与 reasoning_effort 均原样透传"
+      ]
+    },
+    {
+      "id": "custom_model_only",
+      "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
+      "expected_output": "显式 model 使用 custom role，只传 model。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-custom",
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "只透传用户指定的 model",
+        "未指定的 reasoning_effort 不存在"
+      ]
+    },
+    {
+      "id": "custom_reasoning_only",
+      "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
+      "expected_output": "显式 reasoning_effort 使用 custom role，只传 reasoning_effort。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-custom",
+          "model": null,
+          "reasoning_effort": "xhigh",
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "只透传用户指定的 reasoning_effort",
+        "未指定的 model 不存在"
+      ]
+    },
+    {
+      "id": "hidden_fields_preset",
+      "prompt": "$codex-explore 用 standard 深度从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线，并为每个跳转给出来源。",
+      "expected_output": "schema 隐藏覆盖字段时，预设 role 仍可只凭 agent_type 启动。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "allowed_environment_errors": ["must match the configured schema"],
+        "arguments": {
+          "agent_type": "codex-explore-standard",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": ["message", "task_name"]
+      },
+      "assertions": [
+        "隐藏字段不影响预设 role",
+        "调用中不存在 model 与 reasoning_effort"
       ]
     },
     {
       "id": "hidden_explicit_field",
       "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
-      "expected_output": "schema 未公开用户显式指定的 model 字段时不启动子代理，并向用户说明能力限制。",
+      "expected_output": "schema 未公开用户显式指定字段时不启动子代理，并说明能力限制。",
       "files": [],
-      "config_values": {
-        "modelReasoningEffort": "low"
-      },
+      "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
         "features.multi_agent_v2.hide_spawn_agent_metadata": false,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
       },
       "wait_for_completion": true,
-      "expected_current": {
+      "expected": {
         "spawn_calls": { "min": 0, "max": 0 },
         "allowed_environment_errors": ["must match the configured schema"],
         "final_message_includes_any": ["未公开", "不支持", "无法"]
       },
       "assertions": [
         "没有调用 spawn_agent",
-        "最终答复说明当前 schema 无法满足用户显式指定的 model"
+        "最终答复说明当前 schema 无法满足用户显式 model"
       ]
     },
     {
       "id": "invalid_explicit_values",
-      "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要省略参数后改用默认值重试。",
-      "expected_output": "无效显式值最多尝试一次；不得删除无效字段后静默重试。",
+      "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
+      "expected_output": "无效显式值最多尝试一次；custom role 不降级到预设。",
       "files": [],
-      "config_values": {
-        "explorerModel": "gpt-5.6-terra",
-        "modelReasoningEffort": "low"
-      },
+      "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
         "features.multi_agent_v2.hide_spawn_agent_metadata": false,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "wait_for_completion": true,
-      "expected_current": {
+      "expected": {
         "spawn_calls": { "min": 0, "max": 1 },
         "arguments_if_called": {
-          "agent_type": "codex-explore-agent",
+          "agent_type": "codex-explore-custom",
           "model": "definitely-unavailable-model",
           "reasoning_effort": "turbo"
         },
@@ -234,8 +229,8 @@
       },
       "assertions": [
         "spawn_agent 调用次数不超过一次",
-        "如果调用，必须保留用户指定的无效值，不得改成插件默认或省略字段重试",
-        "最终答复说明参数不可用或启动失败"
+        "如果调用，使用 custom role 并保留显式无效字段",
+        "不得切换到 quick、standard 或 deep 重试"
       ]
     }
   ]

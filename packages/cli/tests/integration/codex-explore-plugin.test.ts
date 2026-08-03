@@ -46,12 +46,57 @@ import { runWithZeroWriteSnapshot } from '../helpers/repo-managed-state.js';
 import { registerCurrentTestReadonlyFixtureRoot } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
+const CURRENT_CODEX_EXPLORE_SKILL_REFRESH_KEYS = [
+  'minimumInitialWaitMinutes',
+  'convergenceWaitMinutes',
+];
+const CURRENT_CODEX_EXPLORE_ROLES = [
+  {
+    id: 'codex-explore-quick-role',
+    key: 'codex-explore-quick',
+    description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
+    effort: 'medium',
+  },
+  {
+    id: 'codex-explore-standard-role',
+    key: 'codex-explore-standard',
+    description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
+    effort: 'high',
+  },
+  {
+    id: 'codex-explore-deep-role',
+    key: 'codex-explore-deep',
+    description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
+    effort: 'xhigh',
+  },
+  {
+    id: 'codex-explore-custom-role',
+    key: 'codex-explore-custom',
+    description: '仅用于用户显式指定 model 或 reasoning_effort 的只读探索；本 role 不锁定模型参数。',
+  },
+];
 const CODEX_EXPLORE_SKILL_REFRESH_KEYS = [
   'explorerModel',
   'modelReasoningEffort',
   'minimumInitialWaitMinutes',
   'convergenceWaitMinutes',
 ];
+
+function addLegacyModelConfigSchema(manifest: Record<string, unknown>): void {
+  const config = (manifest.config ?? {}) as { schema?: Record<string, unknown> };
+  config.schema = {
+    ...(config.schema ?? {}),
+    explorerModel: {
+      type: 'string',
+    },
+    modelReasoningEffort: {
+      type: 'enum',
+      values: ['low', 'medium', 'high', 'xhigh', 'max'],
+      default: 'low',
+    },
+  };
+  manifest.config = config;
+}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -200,6 +245,12 @@ if (${JSON.stringify(failScopes)}.includes(context.scope)) {
 const values = context.artifactRenderConfig?.values ?? {};
 const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
+const roles = [
+  ['codex-explore-quick-role', 'codex-explore-quick', 'medium'],
+  ['codex-explore-standard-role', 'codex-explore-standard', 'high'],
+  ['codex-explore-deep-role', 'codex-explore-deep', 'xhigh'],
+  ['codex-explore-custom-role', 'codex-explore-custom', null],
+];
 
 const plan = {
   version: 1,
@@ -211,31 +262,34 @@ const plan = {
       target: 'codex.skill',
       state: 'present',
       skillKey: 'codex-explore',
-      refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
+      refreshKeys: ${JSON.stringify(CURRENT_CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
         skillFile: \`# Recorded Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
         openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
       },
     },
-    {
-      id: 'codex-explore-agent-role',
+    ...roles.map(([id, roleKey, effort]) => ({
+      id,
       kind: 'codexRole',
       platform: 'codex',
       target: 'codex.agentRole',
       state: 'present',
-      roleKey: 'codex-explore-agent',
+      roleKey,
       refreshKeys: [],
       content: {
         registration: {
-          description: 'Recorded explore agent',
+          description: \`Recorded \${roleKey}\`,
         },
         roleFile: {
-          name: 'codex-explore-agent',
-          description: 'Recorded explore agent',
+          name: roleKey,
+          description: \`Recorded \${roleKey}\`,
           developer_instructions: 'Read only.',
+          ...(effort
+            ? { model: 'gpt-5.6-luna', model_reasoning_effort: effort }
+            : {}),
         },
       },
-    },
+    })),
   ],
 };
 
@@ -246,6 +300,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 
 async function addCodexExploreRoleGuidanceInstructionArtifact(rootDir: string): Promise<void> {
   await mutateCodexExploreManifest(rootDir, (manifest) => {
+    addLegacyModelConfigSchema(manifest);
     const artifacts = manifest.artifacts as { targets?: Record<string, unknown>[] };
     artifacts.targets = [
       ...(artifacts.targets ?? []),
@@ -265,6 +320,7 @@ async function addCodexExploreRoleGuidanceInstructionArtifact(rootDir: string): 
 
 async function addCodexExploreDynamicSkillArtifact(rootDir: string): Promise<void> {
   await mutateCodexExploreManifest(rootDir, (manifest) => {
+    addLegacyModelConfigSchema(manifest);
     const artifacts = manifest.artifacts as { targets?: Record<string, unknown>[] };
     const targets = artifacts.targets ?? [];
     if (targets.some((target) => target.id === 'codex-explore-skill' && target.target === 'codex.skill')) {
@@ -289,6 +345,7 @@ async function addCodexExploreDynamicSkillArtifact(rootDir: string): Promise<voi
 
 async function configureCodexExploreSkillOnlyArtifact(rootDir: string): Promise<void> {
   await mutateCodexExploreManifest(rootDir, (manifest) => {
+    addLegacyModelConfigSchema(manifest);
     manifest.artifacts = {
       targets: [{
         id: 'codex-explore-skill',
@@ -310,6 +367,7 @@ async function configureCodexExploreSingleSkillArtifact(options: {
   skillKey: string;
 }): Promise<void> {
   await mutateCodexExploreManifest(options.rootDir, (manifest) => {
+    addLegacyModelConfigSchema(manifest);
     manifest.skillTriggers = {
       [options.skillKey]: {
         defaultTrigger: 'auto',
@@ -1622,8 +1680,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.4-mini',
-        modelReasoningEffort: 'medium',
+        minimumInitialWaitMinutes: 10,
+        convergenceWaitMinutes: 6,
       },
     });
     await installCommand(
@@ -1637,7 +1695,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    expect(renderedMarketplaceSkill).toContain('`reasoning_effort`: `medium`');
+    expect(renderedMarketplaceSkill).toContain('催促后等待为 `6` 分钟');
     expect(renderedMarketplaceSkill).not.toContain('{{spawnModelGuidance}}');
 
     const nativeRefreshSpy = vi.spyOn(CodexAdapter.prototype, 'installPluginFromMarketplace').mockImplementation(
@@ -1654,7 +1712,7 @@ describe('codex-explore integration acceptance', () => {
       },
     );
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
+      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -1668,7 +1726,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
       },
     });
     expect(nativeRefreshSpy).toHaveBeenCalled();
@@ -1677,12 +1735,12 @@ describe('codex-explore integration acceptance', () => {
     const [runtimeSkill, cachedSkill, roleContent] = await Promise.all([
       fs.readFile(userDynamicSkillPath(awHome), 'utf8'),
       fs.readFile(cachedDynamicSkillPath(process.env), 'utf8'),
-      fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-agent.toml'), 'utf8'),
+      fs.readFile(path.join(userPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-custom.toml'), 'utf8'),
     ]);
 
-    expect(runtimeSkill).toContain('`reasoning_effort`: `low`');
-    expect(runtimeSkill).not.toContain('`reasoning_effort`: `medium`');
-    expect(cachedSkill).toContain('`reasoning_effort`: `low`');
+    expect(runtimeSkill).toContain('催促后等待为 `5` 分钟');
+    expect(runtimeSkill).not.toContain('催促后等待为 `6` 分钟');
+    expect(cachedSkill).toContain('催促后等待为 `5` 分钟');
     expect(roleContent).not.toContain('\nmodel = ');
     expect(roleContent).not.toContain('\nmodel_reasoning_effort = ');
   });
@@ -2578,8 +2636,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.4',
-        modelReasoningEffort: 'medium',
+        minimumInitialWaitMinutes: 12,
+        convergenceWaitMinutes: 6,
       },
     });
     await writePluginConfigStore({
@@ -2588,8 +2646,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.5',
-        modelReasoningEffort: 'max',
+        minimumInitialWaitMinutes: 20,
+        convergenceWaitMinutes: 10,
       },
     });
 
@@ -2608,10 +2666,13 @@ describe('codex-explore integration acceptance', () => {
     const userPaths = resolveCodexPaths(repoRoot, 'user', process.env);
     const skillPath = path.join(repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md');
     const skillMetadataPath = projectSkillMetadataPath(repoRoot);
-    const rolePath = path.join(projectPaths.configDir, 'agents', 'aw-codex-explore-codex-explore-agent.toml');
     const skillContent = await fs.readFile(skillPath, 'utf8');
     const projectConfig = await readCodexConfigFile(projectPaths.configTomlPath);
-    const roleContent = await fs.readFile(rolePath, 'utf8');
+    const roleContents = await Promise.all(CURRENT_CODEX_EXPLORE_ROLES.map((role) =>
+      fs.readFile(
+        path.join(projectPaths.configDir, 'agents', `aw-codex-explore-${role.key}.toml`),
+        'utf8',
+      )));
     const trackedArtifacts = (await readTrackingManifest(projectPaths.trackingDir)).plugins['codex-explore']?.artifacts ?? [];
 
     expect(nativeCalls).toEqual([
@@ -2620,33 +2681,46 @@ describe('codex-explore integration acceptance', () => {
         args: ['--version'],
       }),
     ]);
-    expect(projectConfig.snapshot.agents['codex-explore-agent']).toEqual({
-      key: 'codex-explore-agent',
-      description: '只读探索代码、文档、网页、日志和大段材料，并整理关键证据。',
-      configFile: 'agents/aw-codex-explore-codex-explore-agent.toml',
-    });
+    for (const role of CURRENT_CODEX_EXPLORE_ROLES) {
+      expect(projectConfig.snapshot.agents[role.key]).toEqual({
+        key: role.key,
+        description: role.description,
+        configFile: `agents/aw-codex-explore-${role.key}.toml`,
+      });
+    }
     await expect(fs.pathExists(skillPath)).resolves.toBe(true);
     await expect(fs.pathExists(skillMetadataPath)).resolves.toBe(true);
     await expect(fs.readFile(skillMetadataPath, 'utf8')).resolves.toContain(
       'allow_implicit_invocation: true',
     );
     expect(skillContent).toContain('专用子代理');
-    expect(skillContent).toContain('只使用 Codex Explore 自带的探索 role');
-    expect(skillContent).toContain('只在当前 `spawn_agent` schema 公开对应字段时传');
+    expect(skillContent).toContain('只使用 Codex Explore 自带的以下 role');
+    expect(skillContent).toContain('顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件');
     expect(skillContent).toContain('不得启动默认子代理或改用内置 `explorer`');
     expect(skillContent).toContain('如 `trace_wait_agent`');
-    expect(skillContent).toContain('agent_type: "codex-explore-agent"');
+    expect(skillContent).toContain('`quick` → `codex-explore-quick`');
+    expect(skillContent).toContain('`standard` → `codex-explore-standard`');
+    expect(skillContent).toContain('`deep` → `codex-explore-deep`');
+    expect(skillContent).toContain('选择 `codex-explore-custom`');
     expect(skillContent).toContain('传 `"none"`，避免全历史 fork');
-    expect(skillContent).toContain('`model`: `gpt-5.5`');
-    expect(skillContent).toContain('`reasoning_effort`: `max`');
-    expect(skillContent).toContain('用户在当前请求中显式指定的值');
-    expect(skillContent).toContain('前两者都没有时不传对应参数，让 Codex 使用内建默认');
-    expect(skillContent).toContain('模型和推理强度通过 `spawn_agent` 动态选择');
+    expect(skillContent).toContain('首次最小等待为 `20` 分钟');
+    expect(skillContent).toContain('催促后等待为 `10` 分钟');
+    expect(skillContent).toContain('调用预设 role 时不得传 `model` 或 `reasoning_effort`');
+    expect(skillContent).toContain('只传用户实际指定且当前 schema 公开的字段');
     expect(skillContent).toContain('只有当前工具列表提供 `close_agent` 时');
     expect(skillContent).toContain('`interrupt_agent` 若只中断当前 turn');
-    expect(roleContent).toContain('name = "codex-explore-agent"');
-    expect(roleContent).not.toContain('\nmodel = ');
-    expect(roleContent).not.toContain('\nmodel_reasoning_effort = ');
+    for (let index = 0; index < CURRENT_CODEX_EXPLORE_ROLES.length; index += 1) {
+      const role = CURRENT_CODEX_EXPLORE_ROLES[index];
+      const roleContent = roleContents[index];
+      expect(roleContent).toContain(`name = "${role.key}"`);
+      if (role.effort) {
+        expect(roleContent).toContain('model = "gpt-5.6-luna"');
+        expect(roleContent).toContain(`model_reasoning_effort = "${role.effort}"`);
+      } else {
+        expect(roleContent).not.toContain('\nmodel = ');
+        expect(roleContent).not.toContain('\nmodel_reasoning_effort = ');
+      }
+    }
     expect(trackedArtifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'codex-explore-skill',
@@ -2656,16 +2730,16 @@ describe('codex-explore integration acceptance', () => {
         configDigest: expect.stringMatching(/^sha256:/),
         contentDigest: expect.stringMatching(/^sha256:/),
       }),
-      expect.objectContaining({
-        id: 'codex-explore-agent-role',
+      ...CURRENT_CODEX_EXPLORE_ROLES.map((role) => expect.objectContaining({
+        id: role.id,
         target: 'codex.agentRole',
         state: 'present',
-        artifactKey: 'codex-explore-agent',
-        roleKey: 'codex-explore-agent',
+        artifactKey: role.key,
+        roleKey: role.key,
         refreshKeys: [],
         configDigest: expect.stringMatching(/^sha256:/),
         contentDigest: expect.stringMatching(/^sha256:/),
-      }),
+      })),
     ]));
 
     if (await fs.pathExists(userPaths.configTomlPath)) {
@@ -2673,6 +2747,131 @@ describe('codex-explore integration acceptance', () => {
         '[plugins."codex-explore@aw"]',
       );
     }
+  });
+
+  it('upgrades the legacy single explore role to the four depth roles and prunes old artifacts', async () => {
+    const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
+    await mutateCodexExploreManifest(repoRoot, (manifest) => {
+      manifest.version = '0.1.20';
+      manifest.artifacts = {
+        targets: [
+          {
+            id: 'codex-explore-skill',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: CURRENT_CODEX_EXPLORE_SKILL_REFRESH_KEYS,
+            skillKey: 'codex-explore',
+          },
+          {
+            id: 'codex-explore-agent-role',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.agentRole',
+            projectManagedKind: 'agent',
+            states: ['present'],
+            refreshKeys: [],
+            requiresCodexProjectConfig: true,
+            roleKey: 'codex-explore-agent',
+          },
+        ],
+      };
+    });
+    await writeCodexExploreRenderer(
+      repoRoot,
+      `
+const plan = {
+  version: 1,
+  artifacts: [
+    {
+      id: 'codex-explore-skill',
+      kind: 'skill',
+      platform: 'codex',
+      target: 'codex.skill',
+      state: 'present',
+      skillKey: 'codex-explore',
+      refreshKeys: ['minimumInitialWaitMinutes', 'convergenceWaitMinutes'],
+      content: {
+        skillFile: '---\\nname: codex-explore\\ndescription: Legacy explore.\\n---\\n\\n# Legacy Explore\\n',
+        openaiYaml: 'interface:\\n  display_name: "Codex Explore"\\n  short_description: "Legacy explore"\\n  default_prompt: "Use $codex-explore."\\npolicy:\\n  allow_implicit_invocation: true\\n',
+      },
+    },
+    {
+      id: 'codex-explore-agent-role',
+      kind: 'codexRole',
+      platform: 'codex',
+      target: 'codex.agentRole',
+      state: 'present',
+      roleKey: 'codex-explore-agent',
+      refreshKeys: [],
+      content: {
+        registration: { description: 'Legacy explore role.' },
+        roleFile: {
+          name: 'codex-explore-agent',
+          description: 'Legacy explore role.',
+          developer_instructions: 'Read only.',
+        },
+      },
+    },
+  ],
+};
+process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
+`,
+    );
+    let embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
+
+    await initCommand({ force: true });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'default',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
+    const legacyRolePath = path.join(
+      projectPaths.configDir,
+      'agents',
+      'aw-codex-explore-codex-explore-agent.toml',
+    );
+    expect((await readCodexConfigFile(projectPaths.configTomlPath)).snapshot.agents['codex-explore-agent']).toBeDefined();
+    await expect(fs.pathExists(legacyRolePath)).resolves.toBe(true);
+
+    await copyWorkspacePlugin(repoRoot, 'codex-explore');
+    embeddedRoot = await rebuildEmbeddedRoot(repoRoot);
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
+    await upgradeCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+        requestedSkillTrigger: 'default',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const upgradedConfig = await readCodexConfigFile(projectPaths.configTomlPath);
+    expect(upgradedConfig.snapshot.agents['codex-explore-agent']).toBeUndefined();
+    await expect(fs.pathExists(legacyRolePath)).resolves.toBe(false);
+    for (const role of CURRENT_CODEX_EXPLORE_ROLES) {
+      expect(upgradedConfig.snapshot.agents[role.key]).toBeDefined();
+      await expect(fs.pathExists(path.join(
+        projectPaths.configDir,
+        'agents',
+        `aw-codex-explore-${role.key}.toml`,
+      ))).resolves.toBe(true);
+    }
+    const trackedArtifacts = (await readTrackingManifest(projectPaths.trackingDir))
+      .plugins['codex-explore']?.artifacts ?? [];
+    expect(trackedArtifacts.some((artifact) => artifact.id === 'codex-explore-agent-role')).toBe(false);
   });
 
   it.skip('installs disabled lightweight instruction by removing the managed block and keeping status out of missing state', async () => {
@@ -2977,7 +3176,10 @@ describe('codex-explore integration acceptance', () => {
       scope: 'project',
     });
     const skillArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-skill');
-    const roleArtifact = findDynamicDiagnosticEntry(location, 'codex-explore-agent-role');
+    const roleArtifacts = CURRENT_CODEX_EXPLORE_ROLES.map((role) => ({
+      role,
+      artifact: findDynamicDiagnosticEntry(location, role.id),
+    }));
 
     expect(plugin?.projectTrust).toBe('unknown');
     expect(location.dynamicDiagnostic?.available).toBe(true);
@@ -2985,10 +3187,9 @@ describe('codex-explore integration acceptance', () => {
     expect(skillArtifact).toMatchObject({
       state: 'present',
     });
-    expect(roleArtifact).toMatchObject({
-      state: 'present',
-      roleKey: 'codex-explore-agent',
-    });
+    for (const { role, artifact } of roleArtifacts) {
+      expect(artifact).toMatchObject({ state: 'present', roleKey: role.key });
+    }
     expect(findIssueCodes(location, 'dynamicContentDrift')).toHaveLength(0);
   });
 
@@ -3521,8 +3722,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.4',
-        modelReasoningEffort: 'medium',
+        minimumInitialWaitMinutes: 12,
+        convergenceWaitMinutes: 6,
       },
     });
     await writePluginConfigStore({
@@ -3531,8 +3732,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.5',
-        modelReasoningEffort: 'xhigh',
+        minimumInitialWaitMinutes: 20,
+        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -3556,7 +3757,7 @@ describe('codex-explore integration acceptance', () => {
     const userTrackingBefore = await readTrackingManifest(userPaths.trackingDir);
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '-s', 'project', '--json'],
+      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '-s', 'project', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -3571,7 +3772,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
         artifacts: expect.arrayContaining([
           expect.objectContaining({
             scope: 'project',
@@ -3598,8 +3799,8 @@ describe('codex-explore integration acceptance', () => {
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('`reasoning_effort`: `medium`');
-    expect(projectSkillContent).toContain('`reasoning_effort`: `low`');
+    expect(userSkillContent).toContain('首次最小等待为 `12` 分钟');
+    expect(projectSkillContent).toContain('催促后等待为 `5` 分钟');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3680,8 +3881,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.5',
-        modelReasoningEffort: 'xhigh',
+        minimumInitialWaitMinutes: 20,
+        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -3699,10 +3900,10 @@ describe('codex-explore integration acceptance', () => {
     const beforeSkillDigest = beforeTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-skill')?.configDigest;
     const beforeRoleDigest = beforeTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
-      artifact.id === 'codex-explore-agent-role')?.configDigest;
+      artifact.id === 'codex-explore-standard-role')?.configDigest;
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '-s', 'project', '--json'],
+      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '-s', 'project', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -3714,11 +3915,11 @@ describe('codex-explore integration acceptance', () => {
       ok: true,
       command: 'config:set',
       scope: 'project',
-      updatedKeys: ['modelReasoningEffort'],
+      updatedKeys: ['convergenceWaitMinutes'],
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
         artifacts: expect.arrayContaining([
           expect.objectContaining({
             scope: 'project',
@@ -3732,10 +3933,12 @@ describe('codex-explore integration acceptance', () => {
         scope: 'project',
         id: 'codex-explore-skill',
       }),
-      expect.objectContaining({
-        scope: 'project',
-        id: 'codex-explore-agent-role',
-      }),
+      ...[
+        'codex-explore-custom-role',
+        'codex-explore-deep-role',
+        'codex-explore-quick-role',
+        'codex-explore-standard-role',
+      ].map((id) => expect.objectContaining({ scope: 'project', id })),
     ]);
 
     const [skillContent, afterTracking, projectStatus] = await Promise.all([
@@ -3757,15 +3960,15 @@ describe('codex-explore integration acceptance', () => {
     const trackedSkill = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-skill');
     const trackedRole = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
-      artifact.id === 'codex-explore-agent-role');
+      artifact.id === 'codex-explore-standard-role');
 
-    expect(skillContent).toContain('`reasoning_effort`: `low`');
+    expect(skillContent).toContain('催促后等待为 `5` 分钟');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
         status: 'succeeded',
         event: 'refresh',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
       },
     });
     expect(trackedSkill?.configDigest).not.toBe(beforeSkillDigest);
@@ -3902,8 +4105,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.5',
-        modelReasoningEffort: 'xhigh',
+        minimumInitialWaitMinutes: 20,
+        convergenceWaitMinutes: 9,
       },
     });
     await installCommand(
@@ -3939,7 +4142,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['explorerModel', 'modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes', 'minimumInitialWaitMinutes'],
       },
     });
 
@@ -3968,7 +4171,7 @@ describe('codex-explore integration acceptance', () => {
       lastRefresh: {
         status: 'succeeded',
         event: 'refresh',
-        triggerKeys: ['explorerModel', 'modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes', 'minimumInitialWaitMinutes'],
       },
     });
     expect(trackedSkill?.configDigest).not.toBe(beforeSkillDigest);
@@ -4003,7 +4206,7 @@ describe('codex-explore integration acceptance', () => {
     installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
+      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -4017,7 +4220,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
       },
     });
     expect((await fs.readFile(lifecycleLogPath, 'utf8')).trim().split('\n').filter(Boolean)).toEqual(['install']);
@@ -4074,8 +4277,8 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.4',
-        modelReasoningEffort: 'medium',
+        minimumInitialWaitMinutes: 12,
+        convergenceWaitMinutes: 6,
       },
     });
     await writePluginConfigStore({
@@ -4084,7 +4287,7 @@ describe('codex-explore integration acceptance', () => {
       cwd: repoRoot,
       env: process.env,
       values: {
-        explorerModel: 'gpt-5.5',
+        minimumInitialWaitMinutes: 20,
       },
     });
     await installCommand(
@@ -4103,7 +4306,7 @@ describe('codex-explore integration acceptance', () => {
     installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'explorerModel', 'gpt-5.5', '--json'],
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '20', '--json'],
       {
         cwd: repoRoot,
         env: process.env,
@@ -4118,7 +4321,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['explorerModel'],
+        triggerKeys: ['minimumInitialWaitMinutes'],
       },
     });
     expect(result.parseJsonStdout<{ artifactRefresh: { artifacts: Array<{ scope: Scope }> } }>().artifactRefresh.artifacts.every((artifact) => artifact.scope === 'user')).toBe(true);
@@ -4238,7 +4441,7 @@ describe('codex-explore integration acceptance', () => {
     const repoBProjectPaths = resolveCodexPaths(repoB, 'project', process.env);
     const beforeRepoBTracking = await readTrackingManifest(repoBProjectPaths.trackingDir);
     const result = await runCliEntry(
-      ['config', 'set', 'codex-explore', 'modelReasoningEffort', 'low', '--json'],
+      ['config', 'set', 'codex-explore', 'convergenceWaitMinutes', '5', '--json'],
       {
         cwd: repoA,
         env: process.env,
@@ -4253,7 +4456,7 @@ describe('codex-explore integration acceptance', () => {
       artifactRefresh: {
         attempted: true,
         status: 'succeeded',
-        triggerKeys: ['modelReasoningEffort'],
+        triggerKeys: ['convergenceWaitMinutes'],
       },
     });
     expect(result.parseJsonStdout<{
