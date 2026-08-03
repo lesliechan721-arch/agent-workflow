@@ -99,6 +99,7 @@ describe('build smoke', () => {
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'codex-explore',
+      'codex-subagent-guide',
       'git-commit',
     ]);
     expect(codexMarketplace).toMatchObject({
@@ -112,7 +113,158 @@ describe('build smoke', () => {
             products: ['CODEX'],
           }),
         }),
+        expect.objectContaining({
+          name: 'codex-subagent-guide',
+          source: './plugins/codex-subagent-guide',
+          policy: expect.objectContaining({
+            products: ['CODEX'],
+          }),
+        }),
       ]),
+    });
+    await Promise.all([
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-subagent-guide',
+        '.codex-plugin',
+        'plugin.json',
+      ),
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-subagent-guide',
+        'codex',
+        'templates',
+        'codex-subagent-guide',
+        'SKILL.md',
+      ),
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-subagent-guide',
+        'codex',
+        'templates',
+        'codex-subagent-guide',
+        'agents',
+        'openai.yaml',
+      ),
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-subagent-guide',
+        'scripts',
+        'render-artifacts.mjs',
+      ),
+    ].map(async (requiredPath) => {
+      await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
+    }));
+    await expect(
+      fs.pathExists(
+        path.join(
+          outputRoot,
+          'plugins',
+          'codex-subagent-guide',
+          '.claude-plugin',
+          'plugin.json',
+        ),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      fs.readJson(
+        path.join(
+          outputRoot,
+          'plugins',
+          'codex-subagent-guide',
+          '.agents-plugin',
+          'plugin.json',
+        ),
+      ),
+    ).resolves.toMatchObject({
+      interface: {
+        capabilities: ['Skills', 'Agents'],
+      },
+      config: {
+        schema: {
+          simpleTaskModel: {
+            type: 'string',
+            default: 'gpt-5.6-luna',
+          },
+          simpleTaskReasoningEffort: {
+            type: 'enum',
+            default: 'high',
+          },
+          generalTaskModel: {
+            type: 'string',
+            default: 'gpt-5.6-luna',
+          },
+          generalTaskReasoningEffort: {
+            type: 'enum',
+            default: 'max',
+          },
+          complexTaskModel: {
+            type: 'string',
+            default: 'gpt-5.6-terra',
+          },
+          complexTaskReasoningEffort: {
+            type: 'enum',
+            default: 'max',
+          },
+          planningReviewTaskModel: {
+            type: 'string',
+            default: 'gpt-5.6-sol',
+          },
+          planningReviewTaskReasoningEffort: {
+            type: 'enum',
+            default: 'xhigh',
+          },
+        },
+      },
+      scripts: {
+        artifacts: {
+          render: {
+            runner: 'node',
+            path: './scripts/render-artifacts.mjs',
+          },
+        },
+      },
+      artifacts: {
+        targets: [
+          expect.objectContaining({
+            id: 'codex-subagent-guide-skill',
+            target: 'codex.skill',
+            skillKey: 'codex-subagent-guide',
+            refreshKeys: [],
+          }),
+          ...[
+            [
+              'codex-subagent-simple-role',
+              'codex-subagent-simple',
+              ['simpleTaskModel', 'simpleTaskReasoningEffort'],
+            ],
+            [
+              'codex-subagent-general-role',
+              'codex-subagent-general',
+              ['generalTaskModel', 'generalTaskReasoningEffort'],
+            ],
+            [
+              'codex-subagent-complex-role',
+              'codex-subagent-complex',
+              ['complexTaskModel', 'complexTaskReasoningEffort'],
+            ],
+            [
+              'codex-subagent-plan-review-role',
+              'codex-subagent-plan-review',
+              ['planningReviewTaskModel', 'planningReviewTaskReasoningEffort'],
+            ],
+          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
+            id,
+            target: 'codex.agentRole',
+            roleKey,
+            refreshKeys,
+          })),
+        ],
+      },
     });
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),

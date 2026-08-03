@@ -1,0 +1,74 @@
+export const trainCases = [
+  {
+    id: 'authorized_simple_lookup',
+    query: '这次已经明确允许使用子代理。请派一个子代理只读查看 src/simple.ts 和 docs/architecture.md，整理两条事实证据。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'authorized_general_delivery',
+    query: '项目 AGENTS.md 已要求这个任务用一个 agent 委派。请启动子代理，负责一个边界清晰的常规文档实现。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'authorized_complex_debug',
+    query: '我授权你使用子代理。把跨模块并发生命周期问题的根因调查与修复交给一个合适的 agent。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'authorized_review',
+    query: '请用子代理审核 changes/review.diff；委派已获批准，最终要给缺陷和风险结论。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'authorized_partial_custom',
+    query: '已允许委派。请启动一个子代理，只继承最近两轮，并按项目规则使用 model=gpt-5.6-terra 处理这个任务。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
+    id: 'decision_only_near_miss',
+    query: '你觉得这个小任务是否值得委派给子代理？只分析利弊，先不要启动任何 agent。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'concept_documentation_near_miss',
+    query: '解释 Codex 子代理、fork 和 reasoning effort 的概念，给我一段文档，不要实际委派。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'installation_near_miss',
+    query: 'codex-subagent-guide 插件怎么安装和配置？只给命令，不要使用子代理。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'explicit_no_subagents',
+    query: '请深入检查 docs/architecture.md，但明确不要使用子代理，也不要委派。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'research_without_authority',
+    query: '把这个仓库彻底研究一下，尽量全面和严谨；我没有要求并行 agent。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'explicit_skill_without_authority',
+    query: '$codex-subagent-guide 只说明这个技能的授权边界，不要启动或管理任何子代理。',
+    should_load_skill: true,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'manage_existing_agent',
+    query: '委派已经获准且 agent_alpha 正在运行。请按现有子代理工作流说明下一步怎样等待它；不要再启动新 agent。',
+    should_load_skill: true,
+    should_spawn_agent: false,
+  },
+];

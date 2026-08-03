@@ -388,6 +388,7 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 |--------|------|----------|
 | `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
+| `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、等待与 `close_agent` 清理 | Codex |
 
 > P0/P11 runtime contract：`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
@@ -398,6 +399,30 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 ```bash
 aw config set codex-explore minimumInitialWaitMinutes 15 -s user
 aw config set codex-explore convergenceWaitMinutes 5 -s user
+```
+
+`codex-subagent-guide` 只处理已经获准的委派，不把 skill 加载或插件安装视为使用子代理的授权。它兼容当前 Codex multi-agent V1/V2 工具合同，但不预判版本，而是按当前公开的工具和字段应用新上下文、事件等待与 `close_agent` 清理等纠错规则。
+
+插件按最终交付物区分四类任务，每类 model 和 reasoning effort 都能独立配置：
+
+| 任务类型 | model 配置与默认值 | effort 配置与默认值 |
+|---|---|---|
+| 简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=high` |
+| 通用任务 | `generalTaskModel=gpt-5.6-luna` | `generalTaskReasoningEffort=max` |
+| 复杂任务 | `complexTaskModel=gpt-5.6-terra` | `complexTaskReasoningEffort=max` |
+| 计划与审核 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
+
+effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。
+
+```bash
+aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
+aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
+```
+
+查看该插件的完整配置：
+
+```bash
+aw config list codex-subagent-guide -s user
 ```
 
 ---

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const SKILL_ID = 'codex-subagent-guide-skill';
 const SKILL_KEY = 'codex-subagent-guide';
+const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
 const TASK_TYPES = [
   {
     id: 'simple',
@@ -124,6 +125,10 @@ function renderSpawnParameterGuidance() {
   ].join('\n');
 }
 
+export function renderRoleDeveloperInstructions() {
+  return ROLE_DEVELOPER_INSTRUCTIONS;
+}
+
 function renderTemplate(template, replacements) {
   return Object.entries(replacements).reduce(
     (content, [key, value]) => content.split(`{{${key}}}`).join(value),
@@ -160,6 +165,7 @@ export async function renderArtifactPlan(context) {
           roleFile: {
             name: roleKey,
             description,
+            developer_instructions: renderRoleDeveloperInstructions(),
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { model_reasoning_effort: reasoningEffort } : {}),
           },

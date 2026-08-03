@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { renderArtifactPlan } from './render-artifacts.mjs';
+import {
+  renderArtifactPlan,
+  renderRoleDeveloperInstructions,
+} from './render-artifacts.mjs';
 
 const ROLE_EXPECTATIONS = [
   {
@@ -87,7 +90,10 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
     const role = roles.get(expected.roleKey);
     assert.equal(role.content.roleFile.model, expected.model);
     assert.equal(role.content.roleFile.model_reasoning_effort, expected.reasoningEffort);
-    assert.equal('developer_instructions' in role.content.roleFile, false);
+    assert.equal(
+      role.content.roleFile.developer_instructions,
+      renderRoleDeveloperInstructions(),
+    );
     assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
@@ -113,13 +119,14 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   );
   assert.match(
     skill.content.skillFile,
-    /不区分 `fork_turns: "all"`、正整数字符串或 `fork_context: true`/,
+    /正整数 `fork_turns` 表示部分历史，不等同于 `fork_turns: "all"`/,
   );
   assert.match(
     skill.content.skillFile,
-    /继承时不传 `model`、`reasoning_effort` 或 `agent_type`/,
+    /按当前 schema 对 `agent_type`、`model` 和 `reasoning_effort` 分别判断/,
   );
-  assert.match(skill.content.skillFile, /自定义规则同时要求继承和这些 override 时停止/);
+  assert.match(skill.content.skillFile, /全历史 fork 冲突时，优先满足 fork 并省略预设/);
+  assert.match(skill.content.skillFile, /同时显式要求互斥字段时停止并说明/);
 
   assert.match(skill.content.skillFile, /`wait_agent` 公开 `targets` 时/);
   assert.match(skill.content.skillFile, /`wait_agent` 未公开 `targets` 且描述为 mailbox wait 时/);

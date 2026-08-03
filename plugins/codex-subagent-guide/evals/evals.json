@@ -2,124 +2,145 @@
   "skill_name": "codex-subagent-guide",
   "evals": [
     {
-      "id": "simple_exploration_default",
-      "prompt": "已获准使用子代理。让子代理只读检索几个已知文件并给出事实证据。",
-      "expected_output": "归类为简单任务，使用 agent_type=codex-subagent-simple；不传 model 或 reasoning_effort。",
-      "files": []
+      "id": "simple_preset_fresh",
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读核对 src/simple.ts 的事实；上下文可以在 message 中完整说明。",
+      "expected_output": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "simple_verification_default",
-      "prompt": "已获准使用子代理。让子代理运行已有测试并确认结果，不修改源码。",
-      "expected_output": "归类为简单任务，使用 agent_type=codex-subagent-simple；不传 model 或 reasoning_effort。",
-      "files": []
+      "id": "general_preset_fresh",
+      "prompt": "$codex-subagent-guide 已批准委派。请启动一个子代理，完成边界清晰的常规文档实现；使用干净上下文。",
+      "expected_output": "使用通用任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "general_implementation_default",
-      "prompt": "已获准使用子代理。委派一个边界清晰、方案明确的常规功能实现。",
-      "expected_output": "归类为通用任务，使用 agent_type=codex-subagent-general；不传 model 或 reasoning_effort。",
-      "files": []
+      "id": "complex_preset_fresh",
+      "prompt": "$codex-subagent-guide 委派已获准。启动子代理调查并修复跨模块并发和生命周期问题，根因未知；不继承历史。",
+      "expected_output": "使用复杂任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "general_fallback_default",
-      "prompt": "已获准使用子代理。整理一份不涉及检索、复杂实现、审核或计划的协调说明。",
-      "expected_output": "归类为通用任务，使用 agent_type=codex-subagent-general；不传 model 或 reasoning_effort。",
-      "files": []
+      "id": "planning_review_preset_fresh",
+      "prompt": "$codex-subagent-guide 已授权使用子代理。启动一个 agent 审核 changes/review.diff 并给出缺陷结论；使用干净上下文。",
+      "expected_output": "最终交付物是审核，使用计划与审核 role。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-plan-review", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-plan-review", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "complex_task_default",
-      "prompt": "已获准使用子代理。调查并修复一个跨模块并发与生命周期问题，根因未知。",
-      "expected_output": "归类为复杂任务，使用 agent_type=codex-subagent-complex；不传 model 或 reasoning_effort。",
-      "files": []
-    },
-    {
-      "id": "review_precedence",
-      "prompt": "已获准使用子代理。审核一组改动并报告缺陷；审核前需要先探索相关调用链。",
-      "expected_output": "最终交付物是审核结论，因此归类为计划与审核，使用 agent_type=codex-subagent-plan-review。",
-      "files": []
-    },
-    {
-      "id": "planning_precedence",
-      "prompt": "已获准使用子代理。先调查当前架构，再产出决策完整的跨模块迁移计划。",
-      "expected_output": "最终交付物是实施计划，因此归类为计划与审核，使用 agent_type=codex-subagent-plan-review。",
-      "files": []
-    },
-    {
-      "id": "custom_model_and_effort_from_skill",
-      "prompt": "另一个适用技能明确要求本次子代理使用 model=research-specialist、reasoning_effort=high，但没有指定 agent_type。",
-      "expected_output": "整体作为自定义任务；只传自定义 model 和 reasoning_effort，不注入四类预设 agent_type。",
-      "files": []
-    },
-    {
-      "id": "custom_agent_type_from_user",
-      "prompt": "用户明确要求本次已获准的委派使用 agent_type=domain-expert，没有指定 model 或 effort。",
-      "expected_output": "整体作为自定义任务；只传 agent_type=domain-expert，未指定的 model 和 reasoning_effort 不补预设值。",
-      "files": []
+      "id": "custom_model_only",
+      "prompt": "$codex-subagent-guide 委派已获准。项目规则只指定 model=gpt-5.6-terra；立即启动子代理，未指定字段不要补预设，使用干净上下文。",
+      "expected_output": "只透传 model，不注入预设 agent_type 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
       "id": "custom_effort_only",
-      "prompt": "项目规则明确要求本次子代理使用 reasoning_effort=xhigh，没有指定 model 或 agent_type。",
-      "expected_output": "整体作为自定义任务；只传 reasoning_effort=xhigh，不注入预设 model 或 agent_type。",
-      "files": []
+      "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补 model 或 agent_type，使用干净上下文。",
+      "expected_output": "只透传 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "preset_role_missing",
-      "prompt": "一个简单探索任务已获准委派，但当前 spawn_agent schema 公开 agent_type 时没有提供 codex-subagent-simple。",
-      "expected_output": "停止调度并说明预设 role 不可用；不改传 model、reasoning_effort 或其它 agent_type。",
-      "files": []
+      "id": "custom_agent_type_only",
+      "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent-complex；立即启动，不传 model 或 effort，使用干净上下文。",
+      "expected_output": "只透传显式 agent_type。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "custom_locked_role_conflict",
-      "prompt": "用户要求 agent_type=domain-expert 且 model=custom-model，但 schema 描述明确说明该 role 固定为另一个模型。",
-      "expected_output": "停止调度并说明固定 role 与显式 model 冲突；不猜测哪一个可以忽略。",
-      "files": []
+      "id": "custom_model_and_effort",
+      "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，不补 agent_type，使用干净上下文。",
+      "expected_output": "透传两个显式字段，不注入预设 role。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": "xhigh", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": "xhigh", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "fork_defaults",
-      "prompt": "子任务的目标和必要事实已经能在 message 中完整说明。",
-      "expected_output": "默认使用干净上下文：公开 fork_turns 时传 fork_turns=none；仅公开 fork_context 时传 fork_context=false。预定义任务可同时传分类对应的 agent_type。",
-      "files": []
+      "id": "partial_preset",
+      "prompt": "$codex-subagent-guide 委派已获准。任务必须继承最近两轮，且最终交付物是只读事实核对。V2 立即启动；V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "full_history_fork_inherits",
-      "prompt": "用户明确要求子代理继承全部对话历史。",
-      "expected_output": "按 schema 选择全部历史继承；不传 model、reasoning_effort 或 agent_type，统一继承父代理设置。",
-      "files": []
+      "id": "partial_custom_model",
+      "prompt": "$codex-subagent-guide 已允许委派。必须继承最近三轮，并显式使用 model=gpt-5.6-terra。V2 立即启动；V1 若不能部分 fork 就停止说明。",
+      "expected_output": "V2 部分 fork 可与显式 model 组合；V1 停止。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": null, "fork_turns": "3" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "partial_history_fork_inherits",
-      "prompt": "任务无法自包含，必须继承最近两轮对话；当前 schema 支持 fork_turns=2。",
-      "expected_output": "使用 fork_turns=2，但按继承模式处理，不传 model、reasoning_effort 或 agent_type；不利用部分 fork 的 override 能力。",
-      "files": []
+      "id": "full_history",
+      "prompt": "$codex-subagent-guide 委派已获准，用户明确要求继承全部对话历史。立即启动子代理，并遵守全历史 fork 的继承约束。",
+      "expected_output": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "all" }, "present_arguments": ["message"] }
+      }
     },
     {
-      "id": "fork_custom_override_conflict",
-      "prompt": "用户同时明确要求 fork_turns=all 和 model=custom-model。",
-      "expected_output": "停止调度并说明继承上下文与 model override 冲突；不擅自忽略任一明确要求。",
-      "files": []
+      "id": "full_history_custom_override",
+      "prompt": "$codex-subagent-guide 委派已获准，但用户同时明确要求完整历史 fork 和 model=gpt-5.6-terra。不要忽略任何一项：当前 schema 允许时立即 spawn；判定互斥时不要 spawn，只说明冲突。",
+      "expected_output": "逐字段服从 schema：V1 允许完整历史与 model override，V2 阻断互斥组合。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] }
+      }
     },
     {
-      "id": "mailbox_wait",
-      "prompt": "子代理仍在运行，主任务已被它的结果阻塞。当前 wait_agent 不公开 targets，工具描述说明它等待 mailbox update；schema 公开了 min、default 和 max，任务预计还需数分钟。",
-      "expected_output": "根据 schema 边界和预计剩余工作选择一次长 timeout-only wait，随后从完成通知读取结果；不传 targets、不使用固定通用时长或短轮询。",
-      "files": []
+      "id": "missing_preset_role",
+      "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
+      "expected_output": "缺失预设 role 时 fail closed。",
+      "files": [],
+      "omit_roles": ["codex-subagent-simple"],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法"] },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法"] }
+      }
     },
     {
-      "id": "wait_with_targets_and_close",
-      "prompt": "当前 wait_agent 公开 targets，工具列表也公开 close_agent。两个子代理中有一个已经完成并返回结果，另一个仍在运行。",
-      "expected_output": "整合已完成结果并 close 不再需要的已完成 agent，只对剩余 target 继续等待。",
-      "files": []
-    },
-    {
-      "id": "unknown_fork_shape",
-      "prompt": "当前 spawn_agent 没有 fork_turns 或 fork_context，而是公开一个带有明确描述的新上下文字段。",
-      "expected_output": "不判断工具版本；按当前 schema 选择干净上下文。若只能继承，则不传 model、reasoning_effort 或 agent_type。",
-      "files": []
-    },
-    {
-      "id": "timeout_is_not_failure",
-      "prompt": "一次 wait_agent 返回 timed_out，但必需子代理仍显示 running。",
-      "expected_output": "继续使用相同或更长的 wait；不 sleep、不轮询文件或 list_agents、不重复 spawn。",
-      "files": []
+      "id": "fixed_role_custom_conflict",
+      "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent-complex 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+      "expected_output": "固定 role 与显式 model 冲突时停止。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] }
+      }
     }
   ]
 }

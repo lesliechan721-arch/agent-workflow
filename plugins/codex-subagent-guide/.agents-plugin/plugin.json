@@ -1,7 +1,7 @@
 {
   "name": "codex-subagent-guide",
   "version": "0.1.0",
-  "description": "在 Codex 已决定使用子代理后，按任务类型选择预设 agent type，并指导自定义参数、上下文 fork、事件等待和清理。",
+  "description": "在用户、项目规则或其它技能已明确要求使用子代理后，选择任务 role，并指导自定义参数、上下文 fork、事件等待和清理。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -36,7 +36,11 @@
       }
     },
     "tests": {
-      "node": ["./scripts/render-artifacts.test.mjs"]
+      "node": [
+        "./scripts/render-artifacts.test.mjs",
+        "./scripts/trigger-evals.test.mjs",
+        "./scripts/routing-evals.test.mjs"
+      ]
     }
   },
   "config": {
