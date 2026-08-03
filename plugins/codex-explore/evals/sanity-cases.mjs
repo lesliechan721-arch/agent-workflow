@@ -6,6 +6,12 @@ export const sanityCases = [
     should_spawn_agent: true,
   },
   {
+    id: 'typo_unknown_repo',
+    query: '这个陌生 monorepo 文件一堆，帮我跨网关、结算、任务和共享配置把 regional_checkout 的调用连路查清，出处别漏。',
+    should_load_skill: true,
+    should_spawn_agent: true,
+  },
+  {
     id: 'terse_long_logs',
     query: '日志太多了，帮我沿 req-9 把 reports/audit/ 里三天的链路捋出来，出处别漏。',
     should_load_skill: true,
@@ -38,6 +44,12 @@ export const sanityCases = [
   {
     id: 'casual_two_known_files',
     query: '就看 known/settings.ts 和 known/constants.ts，这俩 DEFAULT_REGION 对不对得上？',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
+    id: 'typo_known_file_near_miss',
+    query: '就看 known/constants.ts，查一下 RETRY_LIMT 的定义和值，不要读其他文件。',
     should_load_skill: false,
     should_spawn_agent: false,
   },

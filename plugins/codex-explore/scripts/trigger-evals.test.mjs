@@ -24,13 +24,13 @@ import {
 
 async function testEvalCorpus() {
   const cases = await loadEvalCases('all');
-  assert.equal(cases.length, 28);
+  assert.equal(cases.length, 30);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 18);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 15);
+  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 10);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 19);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 11);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 16);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
@@ -40,9 +40,11 @@ async function testEvalCorpus() {
     ['large_pr_review', [false, false]],
     ['official_docs_and_logs', [true, true]],
     ['casual_unknown_repo', [true, true]],
+    ['typo_unknown_repo', [true, true]],
     ['plain_name_small_request', [true, false]],
     ['composite_review_boundary', [true, true]],
     ['composite_write_boundary', [true, true]],
+    ['typo_known_file_near_miss', [false, false]],
   ]);
   for (const [id, [shouldLoad, shouldSpawn]] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);

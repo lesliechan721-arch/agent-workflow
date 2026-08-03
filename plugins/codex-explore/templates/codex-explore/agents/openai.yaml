@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex Explore"
-  short_description: "行为只读的大型证据探索与核验"
+  short_description: "从大型或边界不明的材料中进行行为只读的证据探索与核验"
   default_prompt: "使用 $codex-explore 从大量或边界不明的材料中检索并核验证据。"
 
 policy:

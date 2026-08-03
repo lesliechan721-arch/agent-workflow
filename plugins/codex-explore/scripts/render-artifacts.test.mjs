@@ -195,7 +195,10 @@ async function testRenderedArtifactsAndSkillContract() {
 
   assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
   assert.match(skill.content.openaiYaml, /使用 \$codex-explore/);
-  assert.match(skill.content.openaiYaml, /行为只读的大型证据探索与核验/);
+  assert.match(
+    skill.content.openaiYaml,
+    /从大型或边界不明的材料中进行行为只读的证据探索与核验/,
+  );
 }
 
 async function testConfigSourcesAndManifestDefaults() {
