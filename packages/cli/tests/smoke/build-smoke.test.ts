@@ -192,23 +192,23 @@ describe('build smoke', () => {
           },
           simpleTaskReasoningEffort: {
             type: 'enum',
-            default: 'high',
+            default: 'max',
           },
           generalTaskModel: {
             type: 'string',
-            default: 'gpt-5.6-luna',
+            default: 'gpt-5.6-sol',
           },
           generalTaskReasoningEffort: {
             type: 'enum',
-            default: 'max',
+            default: 'medium',
           },
           complexTaskModel: {
             type: 'string',
-            default: 'gpt-5.6-terra',
+            default: 'gpt-5.6-sol',
           },
           complexTaskReasoningEffort: {
             type: 'enum',
-            default: 'max',
+            default: 'high',
           },
           planningReviewTaskModel: {
             type: 'string',

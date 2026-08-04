@@ -10,7 +10,7 @@ const TASK_TYPES = [
   {
     id: 'simple',
     label: '简单任务',
-    description: '只读探索、事实检索、信息整理、运行已有检查或验证结果',
+    description: '只读探索、事实检索、信息整理、运行已有检查、边界清晰的简单代码及其他简单任务',
     roleId: 'codex-subagent-simple-role',
     roleKey: 'codex-subagent-simple',
     modelKey: 'simpleTaskModel',
@@ -19,7 +19,7 @@ const TASK_TYPES = [
   {
     id: 'general',
     label: '通用任务',
-    description: '常规代码或文档实现，以及写作、转换、协调等通用交付',
+    description: '超出简单任务范围的常规代码或文档实现，以及写作、转换、协调等通用交付',
     roleId: 'codex-subagent-general-role',
     roleKey: 'codex-subagent-general',
     modelKey: 'generalTaskModel',
@@ -128,7 +128,7 @@ function renderSpawnParameterGuidance() {
   });
 
   return [
-    '先判断是否为自定义任务，再按子任务最终交付物选择预定义任务。计划或审核优先于其前置探索；复杂实现与调试优先于通用；只读探索与验证使用简单任务。',
+    '先判断是否为自定义任务，再按子任务最终交付物选择预定义任务。计划或审核优先于其前置探索；复杂实现与调试优先于通用；只读探索、验证、边界清晰的简单代码及其他简单任务使用简单任务；超出简单任务范围的常规交付使用通用任务。',
     '',
     '| 任务类型 | 适用范围 | `agent_type` |',
     '| --- | --- | --- |',

@@ -414,12 +414,12 @@ aw config set codex-explore minimumInitialWaitMinutes 15 -s user
 
 插件按最终交付物区分四类任务，每类 model 和 reasoning effort 都能独立配置：
 
-| 任务类型 | model 配置与默认值 | effort 配置与默认值 |
-|---|---|---|
-| 简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=high` |
-| 通用任务 | `generalTaskModel=gpt-5.6-luna` | `generalTaskReasoningEffort=max` |
-| 复杂任务 | `complexTaskModel=gpt-5.6-terra` | `complexTaskReasoningEffort=max` |
-| 计划与审核 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
+| 任务类型 | 适用范围 | model 配置与默认值 | effort 配置与默认值 |
+|---|---|---|---|
+| 简单任务 | 只读探索、验证、边界清晰的简单代码及其他简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=max` |
+| 通用任务 | 超出简单任务范围的常规代码、文档或其他通用交付 | `generalTaskModel=gpt-5.6-sol` | `generalTaskReasoningEffort=medium` |
+| 复杂任务 | 跨模块实现、未知根因调试、并发、生命周期、性能或高风险修改 | `complexTaskModel=gpt-5.6-sol` | `complexTaskReasoningEffort=high` |
+| 计划与审核 | 代码、安全、质量或方案审核，以及架构设计和实施计划 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
 
 effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。
 

@@ -13,21 +13,21 @@ const ROLE_EXPECTATIONS = [
     roleKey: 'codex-subagent-simple',
     refreshKeys: ['simpleTaskModel', 'simpleTaskReasoningEffort'],
     model: 'gpt-5.6-luna',
-    reasoningEffort: 'high',
+    reasoningEffort: 'max',
   },
   {
     artifactId: 'codex-subagent-general-role',
     roleKey: 'codex-subagent-general',
     refreshKeys: ['generalTaskModel', 'generalTaskReasoningEffort'],
-    model: 'gpt-5.6-luna',
-    reasoningEffort: 'max',
+    model: 'gpt-5.6-sol',
+    reasoningEffort: 'medium',
   },
   {
     artifactId: 'codex-subagent-complex-role',
     roleKey: 'codex-subagent-complex',
     refreshKeys: ['complexTaskModel', 'complexTaskReasoningEffort'],
-    model: 'gpt-5.6-terra',
-    reasoningEffort: 'max',
+    model: 'gpt-5.6-sol',
+    reasoningEffort: 'high',
   },
   {
     artifactId: 'codex-subagent-plan-review-role',
@@ -109,6 +109,8 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /不与已经定义独立委派流程的专用 skill 叠加使用/);
   assert.match(skill.content.skillFile, /计划或审核优先于其前置探索/);
   assert.match(skill.content.skillFile, /复杂实现与调试优先于通用/);
+  assert.match(skill.content.skillFile, /边界清晰的简单代码及其他简单任务使用简单任务/);
+  assert.match(skill.content.skillFile, /超出简单任务范围的常规交付使用通用任务/);
   assert.match(skill.content.skillFile, /预定义任务只传表中的 `agent_type`/);
   assert.match(skill.content.skillFile, /不回退到动态 model override/);
   assert.match(skill.content.skillFile, /整体作为自定义任务/);
@@ -193,8 +195,8 @@ test('renders a configured role without changing the others', async () => {
   assert.equal(planningReview.content.roleFile.model_reasoning_effort, 'max');
 
   const complex = roles.get('codex-subagent-complex');
-  assert.equal(complex.content.roleFile.model, 'gpt-5.6-terra');
-  assert.equal(complex.content.roleFile.model_reasoning_effort, 'max');
+  assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');
+  assert.equal(complex.content.roleFile.model_reasoning_effort, 'high');
 });
 
 test('treats blank configured values as their task defaults', async () => {
@@ -209,7 +211,7 @@ test('treats blank configured values as their task defaults', async () => {
 
   const simple = roles.get('codex-subagent-simple');
   assert.equal(simple.content.roleFile.model, 'gpt-5.6-luna');
-  assert.equal(simple.content.roleFile.model_reasoning_effort, 'high');
+  assert.equal(simple.content.roleFile.model_reasoning_effort, 'max');
 });
 
 test('does not read legacy six-category config keys', async () => {
@@ -227,7 +229,7 @@ test('does not read legacy six-category config keys', async () => {
   assert.equal(roles.get('codex-subagent-plan-review').content.roleFile.model, 'gpt-5.6-sol');
   assert.equal(
     roles.get('codex-subagent-general').content.roleFile.model_reasoning_effort,
-    'max',
+    'medium',
   );
 });
 

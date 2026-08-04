@@ -1,6 +1,6 @@
 {
   "name": "codex-subagent-guide",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "在用户、项目规则或其它技能已明确要求使用子代理后，选择任务 role，并指导自定义参数、上下文 fork、事件等待和清理。",
   "compatibility": {
     "aw": {
@@ -49,39 +49,39 @@
         "type": "string",
         "title": "简单任务模型",
         "default": "gpt-5.6-luna",
-        "description": "简单任务 agent type 使用的模型，适用于探索、检索和结果验证。"
+        "description": "简单任务 agent type 使用的模型，适用于探索、检索、结果验证、边界清晰的简单代码及其他简单任务。"
       },
       "simpleTaskReasoningEffort": {
         "type": "enum",
         "title": "简单任务推理强度",
         "values": ["low", "medium", "high", "xhigh", "max"],
-        "default": "high",
+        "default": "max",
         "description": "简单任务 agent type 使用的 model_reasoning_effort。"
       },
       "generalTaskModel": {
         "type": "string",
         "title": "通用任务模型",
-        "default": "gpt-5.6-luna",
-        "description": "通用任务 agent type 使用的模型，适用于常规实现和其它通用交付。"
+        "default": "gpt-5.6-sol",
+        "description": "通用任务 agent type 使用的模型，适用于超出简单任务范围的常规实现和其它通用交付。"
       },
       "generalTaskReasoningEffort": {
         "type": "enum",
         "title": "通用任务推理强度",
         "values": ["low", "medium", "high", "xhigh", "max"],
-        "default": "max",
+        "default": "medium",
         "description": "通用任务 agent type 使用的 model_reasoning_effort。"
       },
       "complexTaskModel": {
         "type": "string",
         "title": "复杂任务模型",
-        "default": "gpt-5.6-terra",
+        "default": "gpt-5.6-sol",
         "description": "复杂任务 agent type 使用的模型，适用于复杂实现、未知根因和调试。"
       },
       "complexTaskReasoningEffort": {
         "type": "enum",
         "title": "复杂任务推理强度",
         "values": ["low", "medium", "high", "xhigh", "max"],
-        "default": "max",
+        "default": "high",
         "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
       },
       "planningReviewTaskModel": {
