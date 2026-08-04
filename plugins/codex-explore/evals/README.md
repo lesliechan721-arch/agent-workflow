@@ -2,7 +2,7 @@
 
 ## 触发与 Gate
 
-20 个固定用例分成 train（12）和 validation（8），另有 10 个不参与 description 优化的 sanity 用例，同时评测：
+21 个固定用例分成 train（13）和 validation（8），另有 10 个不参与 description 优化的 sanity 用例，同时评测：
 
 - `should_load_skill`：Codex 是否加载 `codex-explore`。
 - `should_spawn_agent`：skill 加载后，Gate 是否实际调用 `spawn_agent`。

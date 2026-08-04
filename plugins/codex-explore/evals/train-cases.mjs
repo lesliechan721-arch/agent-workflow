@@ -48,6 +48,12 @@ export const trainCases = [
     should_spawn_agent: false,
   },
   {
+    id: 'readonly_deep_code_review',
+    query: '请对这个陌生大型仓库做一次深入、只读的代码 review，全面找出真实 bug，判断严重性并给修改建议；不要修改代码。',
+    should_load_skill: false,
+    should_spawn_agent: false,
+  },
+  {
     id: 'two_known_files',
     query: '请对照 known/settings.ts 和 known/constants.ts，确认 DEFAULT_REGION 是否一致。',
     should_load_skill: false,

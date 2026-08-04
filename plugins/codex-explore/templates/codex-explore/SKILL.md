@@ -1,6 +1,6 @@
 ---
 name: codex-explore
-description: 当任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中搜索、筛选并核验可引用事实时使用；也适用于代码 review、缺陷分析、质量判断、修改或实现任务中可独立分离的大范围只读探索子任务。只负责事实探索，不负责最终判断、建议或写操作；不用于少量已知来源的定向读取。
+description: 当任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中搜索、筛选并核验可引用事实时使用；代码 review、缺陷分析、质量判断、修改或实现任务，只有在能明确拆出可独立完成的大范围只读事实探索子任务时才使用。不得把 review、缺陷判定、质量评价、严重性分级或修改建议本身交给子代理，即使任务只读、范围很大、要求深入分析或独立复核；也不用于少量已知来源的定向读取。
 compatibility: 仅适用于支持 spawn_agent.agent_type 的 Codex；需随插件安装 codex-explore-quick、codex-explore-standard、codex-explore-deep、codex-explore-custom roles；spawn_agent 不提供子代理只读 sandbox，“只读”仅是行为约束。
 metadata:
   short-description: 从大型或边界不明的材料中进行行为只读的证据探索与核验

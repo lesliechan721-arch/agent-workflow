@@ -139,8 +139,9 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
 
   const text = skill.content.skillFile;
-  assert.match(text, /也适用于代码 review、缺陷分析、质量判断、修改或实现任务中/);
-  assert.match(text, /只负责事实探索，不负责最终判断、建议或写操作/);
+  assert.match(text, /代码 review、缺陷分析、质量判断、修改或实现任务，只有在能明确拆出/);
+  assert.match(text, /不得把 review、缺陷判定、质量评价、严重性分级或修改建议本身交给子代理/);
+  assert.match(text, /即使任务只读、范围很大、要求深入分析或独立复核/);
   assert.match(text, /spawn_agent 不提供子代理只读 sandbox.*只读.*行为约束/);
   assert.match(text, /顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件/);
   assert.match(text, /Gate 只判断拟委派的子任务/);
@@ -246,7 +247,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.1');
+  assert.equal(manifest.version, '0.2.2');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',
