@@ -256,7 +256,21 @@ function testLifecycleAssertions() {
     waitEvent(),
     messageEvent(),
   ];
-  assertLifecycleFailure(duplicateProbe, 'one_pending_probe');
+  assertLifecycleFailure(duplicateProbe, 'one_probe_per_task_lifecycle');
+
+  const repeatedProbeAfterAnotherWait = [
+    spawnEvent(),
+    waitEvent({ timedOut: true }),
+    lifecycleEvent('send_message', { target: '/root/evidence' }),
+    waitEvent({ timedOut: true }),
+    lifecycleEvent('send_message', { target: '/root/evidence' }),
+    waitEvent(),
+    messageEvent(),
+  ];
+  assertLifecycleFailure(
+    repeatedProbeAfterAnotherWait,
+    'one_probe_per_task_lifecycle',
+  );
 
   const probeWithoutWait = duplicateProbe.slice(0, 3);
   probeWithoutWait.push(passingTimeline()[2]);

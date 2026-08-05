@@ -245,24 +245,25 @@ export function evaluateLifecycleTrace(calls, contract) {
   );
 
   let previousWaitIndex = null;
-  let probesSinceWait = 0;
   let probesFollowTimeout = true;
-  let onePendingProbe = true;
+  let oneProbePerTaskLifecycle = true;
+  const probeCountsByTarget = new Map();
   for (const [index, call] of timeline.entries()) {
     if (call?.tool === 'wait_agent') {
       previousWaitIndex = index;
-      probesSinceWait = 0;
       continue;
     }
     if (call?.tool !== 'send_message') {
       continue;
     }
-    probesSinceWait += 1;
+    const target = call.arguments?.target ?? '<unknown>';
+    const probeCount = (probeCountsByTarget.get(target) ?? 0) + 1;
+    probeCountsByTarget.set(target, probeCount);
     const previousWait = Number.isInteger(previousWaitIndex)
       ? timeline[previousWaitIndex]
       : null;
     probesFollowTimeout &&= waitTimedOut(previousWait);
-    onePendingProbe &&= probesSinceWait <= 1;
+    oneProbePerTaskLifecycle &&= probeCount <= 1;
   }
   add(
     'probe_only_after_timeout',
@@ -270,9 +271,9 @@ export function evaluateLifecycleTrace(calls, contract) {
     `probe_indexes=${JSON.stringify(probeIndexes)}`,
   );
   add(
-    'one_pending_probe',
-    onePendingProbe,
-    `probe_indexes=${JSON.stringify(probeIndexes)}`,
+    'one_probe_per_task_lifecycle',
+    oneProbePerTaskLifecycle,
+    `probe_counts=${JSON.stringify(Object.fromEntries(probeCountsByTarget))}`,
   );
   add(
     'probe_followed_by_wait',

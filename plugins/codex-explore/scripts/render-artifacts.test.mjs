@@ -105,7 +105,8 @@ function assertRoleArtifact(plan, expected) {
   assert.match(role.content.roleFile.developer_instructions, /Codex Explore 叶子代理/);
   assert.match(role.content.roleFile.developer_instructions, /不得读取或调用 `codex-explore` skill/);
   assert.match(role.content.roleFile.developer_instructions, /忽略其中的父代理编排规则/);
-  assert.match(role.content.roleFile.developer_instructions, /不得委派子代理，也不得调用代理管理工具/);
+  assert.match(role.content.roleFile.developer_instructions, /不得委派、等待、关闭、中断、恢复或重定向任何代理/);
+  assert.match(role.content.roleFile.developer_instructions, /除下述非中断存活状态回复外，不得主动进行代理间通信/);
   assert.match(role.content.roleFile.developer_instructions, /尤其不得调用 `wait_agent`/);
   assert.match(role.content.roleFile.developer_instructions, /不得.*等待父代理确认/);
   assert.match(role.content.roleFile.developer_instructions, /收到父代理明确的存活探测/);
@@ -118,13 +119,21 @@ function assertRoleArtifact(plan, expected) {
   assert.match(role.content.roleFile.developer_instructions, /保持只读/);
   assert.match(role.content.roleFile.developer_instructions, /绑定实际读取的来源定位/);
   assert.match(role.content.roleFile.developer_instructions, /时间敏感来源必须给出来源时间/);
+  assert.match(role.content.roleFile.developer_instructions, /`conflict` 至少列出两个相互冲突的 evidence 项/);
+  assert.match(role.content.roleFile.developer_instructions, /`inference` 必须列出形成推断所依赖的直接证据/);
   assert.match(role.content.roleFile.developer_instructions, /最小化并脱敏查询/);
   assert.match(role.content.roleFile.developer_instructions, /直接返回 final answer 并结束/);
+  assert.match(role.content.roleFile.developer_instructions, /`completed` 表示请求范围已完成且返回结论均有对应证据/);
+  assert.match(role.content.roleFile.developer_instructions, /`blocked` 表示因访问、授权、工具、来源不可用或缺少必要输入而无法继续/);
+  assert.match(role.content.roleFile.developer_instructions, /`insufficient` 表示已完成可行探索/);
   assert.match(role.content.roleFile.developer_instructions, /## Status/);
   assert.match(role.content.roleFile.developer_instructions, /`completed` \| `blocked` \| `insufficient`/);
   assert.match(role.content.roleFile.developer_instructions, /## Findings/);
   assert.match(role.content.roleFile.developer_instructions, /\*\*kind:\*\* `direct` \| `inference` \| `conflict`/);
+  assert.match(role.content.roleFile.developer_instructions, /\*\*evidence:\*\*/);
+  assert.match(role.content.roleFile.developer_instructions, /\*\*locator:\*\*/);
   assert.match(role.content.roleFile.developer_instructions, /\*\*source_time:\*\*/);
+  assert.match(role.content.roleFile.developer_instructions, /证据如何支持、限制或反驳 claim/);
   assert.match(role.content.roleFile.developer_instructions, /## Gaps/);
   assert.equal(role.content.roleFile.developer_instructions.includes('- 结论：'), false);
 }
@@ -159,7 +168,8 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /探索位于关键路径且没有其它可并行工作/);
   assert.match(text, /也可委派并等待/);
   assert.match(text, /拟委派的子任务本身要求缺陷判定/);
-  assert.match(text, /当前 turn 未明确具备且可由子代理继承该边界/);
+  assert.match(text, /向外部系统或人员发送消息/);
+  assert.match(text, /当前 turn 未明确具备该边界，或无法确认子代理会继承该边界/);
   assert.match(text, /选择优先级固定为/);
   assert.match(text, /无法明确分档时选择 standard/);
   assert.match(text, /`quick` → `codex-explore-quick`/);
@@ -181,28 +191,35 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /父 turn 可写时只能提供行为只读/);
   assert.match(text, /首次存活探测前给子任务至少 `12` 分钟的累计等待预算/);
   assert.match(text, /优先使用 `timeout_ms=720000`/);
-  assert.match(text, /等待因非超时事件提前返回且目标仍未终态时/);
-  assert.match(text, /再继续等待剩余预算/);
+  assert.match(text, /等待因非超时事件提前返回时/);
+  assert.match(text, /重新评估原子任务是否仍有效/);
+  assert.match(text, /用户未取消或改变相关目标/);
+  assert.match(text, /才继续剩余等待预算/);
   assert.match(text, /当前环境支持不会中断原调查的状态探测和回复/);
   assert.match(text, /不得用会中断、重定向或替换原调查的操作模拟探测/);
   assert.match(text, /仅当累计等待预算已满足、`wait_agent` 明确报告超时/);
-  assert.match(text, /同一子任务最多有一个未决探测/);
+  assert.match(text, /每个子任务在整个生命周期内最多发起一次存活探测/);
+  assert.match(text, /同一子任务任何时刻也不得存在多个未决探测/);
   assert.match(text, /暂未回复不能单独证明代理已经挂死/);
   assert.match(text, /是否请求部分结果或提前收敛由主代理/);
   assert.match(text, /不得使用短 wait 循环、周期性状态查询或重复进度询问/);
   assert.match(text, /每个子任务最多恢复一次/);
   assert.match(text, /用户明确要求使用 `codex-explore` 或隔离探索上下文时.*不由主代理接管该范围/s);
   assert.match(text, /本工作流自动触发时.*做一次最小、只读且任务相关的回退/s);
-  assert.match(text, /已终态或明确放弃且不再需要的代理/);
-  assert.match(text, /包括失败、无效、阻塞和恢复后仍不合格的代理/);
-  assert.match(text, /不要关闭仍在运行且结果或后代仍有必要的目标/);
-  assert.equal((text.match(/close_agent/g) ?? []).length, 1);
+  assert.match(text, /对已终态且不再需要的目标，有关闭或释放能力时执行/);
+  assert.match(text, /对已明确放弃但仍在运行的目标，有停止或中断当前工作的能力时执行/);
+  assert.match(text, /不得把操作前状态当作停止后状态/);
+  assert.match(text, /没有对应停止能力或停止未确认时，保留未解决标记/);
+  assert.match(text, /不得并行接管同一范围/);
+  assert.match(text, /不得停止结果仍有必要，或必要后代仍在工作的目标/);
+  assert.match(text, /未解决目标在最终整合前迟到返回终态结果时/);
   assert.match(text, /不得包含密钥、个人数据、私有代码或用户材料原文/);
   assert.match(text, /不得把指令约束描述为权限隔离/);
   assert.equal(text.includes('要求 `targets` 且返回 `status`'), false);
   assert.equal(text.includes('`timed_out: true`'), false);
   assert.equal(text.includes('公开 `interrupt` 参数时'), false);
   for (const toolName of [
+    'close_agent',
     'followup_task',
     'send_input',
     'send_message',
@@ -275,7 +292,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.5');
+  assert.equal(manifest.version, '0.2.6');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',

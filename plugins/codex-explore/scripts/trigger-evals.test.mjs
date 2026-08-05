@@ -143,7 +143,7 @@ async function testWorkspaceStaging() {
     ]);
     assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
     assert.match(skill, /spawn_agent 不提供独立于父 turn 的子代理只读权限参数/);
-    assert.match(skill, /当前 turn 未明确具备且可由子代理继承该边界/);
+    assert.match(skill, /当前 turn 未明确具备该边界，或无法确认子代理会继承该边界/);
     assert.match(skill, /上下文隔离本身构成委派价值/);
     assert.match(skill, /`message` 必须自包含所需的来源定位和最小上下文/);
     assert.match(skill, /累计等待预算/);
