@@ -55,11 +55,13 @@ async function testEvalSpec() {
     spec.evals.map((entry) => entry.id),
     [
       'simple_preset_fresh',
+      'readonly_complexity_not_simple',
       'general_preset_fresh',
       'complex_preset_fresh',
       'planning_review_preset_fresh',
       'custom_model_only',
       'custom_effort_only',
+      'custom_service_tier_only',
       'custom_agent_type_only',
       'custom_model_and_effort',
       'partial_preset',
@@ -73,6 +75,18 @@ async function testEvalSpec() {
       'fixed_role_custom_conflict',
     ],
   );
+  const readonlyComplex = spec.evals.find((entry) => entry.id === 'readonly_complexity_not_simple');
+  assert.equal(readonlyComplex.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
+  assert.equal(readonlyComplex.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
+  const serviceTier = spec.evals.find((entry) => entry.id === 'custom_service_tier_only');
+  assert.deepEqual(serviceTier.expectations.v2.arguments, {
+    agent_type: null,
+    model: null,
+    reasoning_effort: null,
+    service_tier: 'priority',
+    fork_context: null,
+    fork_turns: 'none',
+  });
   const partial = spec.evals.find((entry) => entry.id === 'partial_preset');
   assert.equal(partial.expectations.v1.spawn_calls.max, 0);
   assert.deepEqual(partial.expectations.v2.arguments, {

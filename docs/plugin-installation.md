@@ -414,18 +414,18 @@ aw config set codex-explore standardReasoningEffort max -s user
 aw config set codex-explore minimumInitialWaitMinutes 15 -s user
 ```
 
-`codex-subagent-guide` 只处理已经获准的委派，不把 skill 加载或插件安装视为使用子代理的授权。它兼容当前 Codex multi-agent V1/V2 工具合同，但不预判版本，而是按当前公开的工具和字段应用新上下文、事件等待与 `close_agent` 清理等纠错规则。
+`codex-subagent-guide` 只处理已经获准的委派，不把 skill 加载或插件安装视为使用子代理的授权。预设路由要求当前 Codex multi-agent V1/V2 `spawn_agent` 公开 `agent_type`，并已安装插件随附的四个 role；生命周期规则只使用当前 schema 明确公开的能力，不预判工具版本。
 
 插件按最终交付物区分四类任务，每类 model 和 reasoning effort 都能独立配置：
 
 | 任务类型 | 适用范围 | model 配置与默认值 | effort 配置与默认值 |
 |---|---|---|---|
-| 简单任务 | 只读探索、验证、边界清晰的简单代码及其他简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=max` |
+| 简单任务 | 低歧义、边界清晰、成功标准明确的只读探索、验证、简单代码及其他简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=max` |
 | 通用任务 | 超出简单任务范围的常规代码、文档或其他通用交付 | `generalTaskModel=gpt-5.6-sol` | `generalTaskReasoningEffort=medium` |
 | 复杂任务 | 跨模块实现、未知根因调试、并发、生命周期、性能或高风险修改 | `complexTaskModel=gpt-5.6-sol` | `complexTaskReasoningEffort=high` |
 | 计划与审核 | 代码、安全、质量或方案审核，以及架构设计和实施计划 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
 
-effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。
+effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。显式指定 `model`、`reasoning_effort`、`service_tier` 或 `agent_type` 时按自定义任务处理，不静默补入或覆盖预设值。
 
 ```bash
 aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user

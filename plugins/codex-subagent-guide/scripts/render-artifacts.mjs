@@ -5,12 +5,12 @@ import { fileURLToPath } from 'node:url';
 
 const SKILL_ID = 'codex-subagent-guide-skill';
 const SKILL_KEY = 'codex-subagent-guide';
-const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。仅在收到父代理显式存活探测时，可以只回复一次 `status=progress` 和必要进度，或 `status=blocked` 和阻塞原因；不得主动或例行汇报。回复 progress 后继续原任务，不要为探测缩减范围、提前收敛或结束当前 turn。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
+const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。仅在收到父代理显式存活探测时，可以只回复一次 `status=progress` 和必要进度，或 `status=blocked` 和阻塞原因；不得主动或例行汇报。回复 progress 后继续原任务，不要为探测缩减范围、提前收敛或结束当前 turn。回复 blocked 后停止无效推进，在 final answer 中返回当前可用结果、阻塞原因和所需输入，然后结束当前 turn；父代理解决阻塞后可复用原代理继续任务。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
 const TASK_TYPES = [
   {
     id: 'simple',
     label: '简单任务',
-    description: '只读探索、事实检索、信息整理、运行已有检查、边界清晰的简单代码及其他简单任务',
+    description: '低歧义、边界清晰、成功标准明确的只读探索、事实检索、信息整理、运行已有检查、简单代码及其他简单任务',
     roleId: 'codex-subagent-simple-role',
     roleKey: 'codex-subagent-simple',
     modelKey: 'simpleTaskModel',
@@ -128,17 +128,18 @@ function renderSpawnParameterGuidance() {
   });
 
   return [
-    '先判断是否为自定义任务，再按子任务最终交付物选择预定义任务。计划或审核优先于其前置探索；复杂实现与调试优先于通用；只读探索、验证、边界清晰的简单代码及其他简单任务使用简单任务；超出简单任务范围的常规交付使用通用任务。',
+    '先判断是否为自定义任务，再按子任务最终交付物选择预定义任务。计划或审核优先于其前置探索；复杂实现与调试优先于通用；低歧义、边界清晰且成功标准明确的只读探索、验证、简单代码及其他简单任务使用简单任务；超出简单任务范围的常规交付使用通用任务。',
     '',
     '| 任务类型 | 适用范围 | `agent_type` |',
     '| --- | --- | --- |',
     ...rows,
     '',
-    '- 预定义任务只传表中的 `agent_type`，不要同时传 `model` 或 `reasoning_effort`。',
+    '- 只读不自动等于简单。范围大、目标模糊、来源冲突明显、需要跨模块因果归纳、未知根因分析或高完整性核验的只读任务，按最终交付物和实际复杂度选择通用、复杂、计划与审核 role，或交给适用的专用 skill 管理。',
+    '- 预定义任务只传表中的 `agent_type`，不要同时传 `model`、`reasoning_effort` 或 `service_tier`。',
     '- 仅当当前 `spawn_agent` schema 公开 `agent_type` 且允许目标 role 时才使用；否则停止调度并说明，不回退到动态 model override。',
-    '- 用户当前请求、其它技能或适用规则显式指定任一 `model`、`reasoning_effort` 或 `agent_type` 时，整体作为自定义任务，跳过上表分类和全部预设。',
+    '- 用户当前请求、其它技能或适用规则显式指定任一 `model`、`reasoning_effort`、`service_tier` 或 `agent_type` 时，整体作为自定义任务，跳过上表分类和全部预设。',
     '- 自定义任务按适用指令优先级解析，只传自定义规则实际指定且当前 schema 支持的字段；未指定字段不补预设值。',
-    '- 自定义字段不可用或固定 role 与显式 model、effort 冲突时停止并说明，不猜测替代值。',
+    '- 自定义字段不可用或固定 role 与显式 `model`、`reasoning_effort`、`service_tier` 冲突时停止并说明，不猜测替代值。',
   ].join('\n');
 }
 

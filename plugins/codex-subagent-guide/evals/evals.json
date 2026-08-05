@@ -12,6 +12,16 @@
       }
     },
     {
+      "id": "readonly_complexity_not_simple",
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读调查 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md 中跨模块并发生命周期问题的未知根因，要求完整因果证据但不要修改文件；使用干净上下文。",
+      "expected_output": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
+    },
+    {
       "id": "general_preset_fresh",
       "prompt": "$codex-subagent-guide 已批准委派。请启动一个子代理，完成边界清晰的常规文档实现；使用干净上下文。",
       "expected_output": "使用通用任务 role，不直接传预设 model 或 effort。",
@@ -59,6 +69,16 @@
       "expectations": {
         "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
         "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
+    },
+    {
+      "id": "custom_service_tier_only",
+      "prompt": "$codex-subagent-guide 委派已获准。用户只明确指定 service_tier=priority；立即启动子代理，不补 model、reasoning_effort 或 agent_type，使用干净上下文。",
+      "expected_output": "只透传 service_tier，不注入预设 agent_type、model 或 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "service_tier": "priority", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "service_tier": "priority", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
       }
     },
     {

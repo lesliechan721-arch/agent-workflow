@@ -1,6 +1,6 @@
 {
   "name": "codex-subagent-guide",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "在用户、项目规则或其它技能已明确要求使用子代理后，选择任务 role，并指导自定义参数、上下文 fork、事件等待和清理。",
   "compatibility": {
     "aw": {
@@ -49,7 +49,7 @@
         "type": "string",
         "title": "简单任务模型",
         "default": "gpt-5.6-luna",
-        "description": "简单任务 agent type 使用的模型，适用于探索、检索、结果验证、边界清晰的简单代码及其他简单任务。"
+        "description": "简单任务 agent type 使用的模型，适用于低歧义、边界清晰、成功标准明确的探索、检索、结果验证、简单代码及其他简单任务。"
       },
       "simpleTaskReasoningEffort": {
         "type": "enum",
@@ -103,7 +103,7 @@
         "default": 10,
         "min": 1,
         "max": 60,
-        "description": "没有任务专用技能提供等待下限时，首次发起非中断存活探测前的最短等待时间。"
+        "description": "没有任务专用技能提供等待下限时，首次考虑符合当前通信能力条件的非中断存活探测前的最短等待时间。"
       }
     }
   },

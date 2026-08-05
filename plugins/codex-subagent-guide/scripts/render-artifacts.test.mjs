@@ -98,6 +98,8 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
     assert.match(role.content.roleFile.developer_instructions, /收到父代理显式存活探测时/);
     assert.match(role.content.roleFile.developer_instructions, /`status=progress`/);
     assert.match(role.content.roleFile.developer_instructions, /回复 progress 后继续原任务/);
+    assert.match(role.content.roleFile.developer_instructions, /回复 blocked 后停止无效推进/);
+    assert.match(role.content.roleFile.developer_instructions, /父代理解决阻塞后可复用原代理继续任务/);
     assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
@@ -109,18 +111,23 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /不与已经定义独立委派流程的专用 skill 叠加使用/);
   assert.match(skill.content.skillFile, /计划或审核优先于其前置探索/);
   assert.match(skill.content.skillFile, /复杂实现与调试优先于通用/);
-  assert.match(skill.content.skillFile, /边界清晰的简单代码及其他简单任务使用简单任务/);
+  assert.match(skill.content.skillFile, /低歧义、边界清晰且成功标准明确的只读探索/);
+  assert.match(skill.content.skillFile, /只读不自动等于简单/);
+  assert.match(skill.content.skillFile, /需要跨模块因果归纳、未知根因分析或高完整性核验的只读任务/);
   assert.match(skill.content.skillFile, /超出简单任务范围的常规交付使用通用任务/);
   assert.match(skill.content.skillFile, /预定义任务只传表中的 `agent_type`/);
+  assert.match(skill.content.skillFile, /不要同时传 `model`、`reasoning_effort` 或 `service_tier`/);
   assert.match(skill.content.skillFile, /不回退到动态 model override/);
+  assert.match(skill.content.skillFile, /`reasoning_effort`、`service_tier` 或 `agent_type`/);
   assert.match(skill.content.skillFile, /整体作为自定义任务/);
   assert.match(skill.content.skillFile, /未指定字段不补预设值/);
-  assert.match(skill.content.skillFile, /固定 role 与显式 model、effort 冲突时停止/);
+  assert.match(skill.content.skillFile, /固定 role 与显式 `model`、`reasoning_effort`、`service_tier` 冲突/);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-luna'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-terra'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-sol'), false);
 
   assert.match(skill.content.skillFile, /默认使用干净上下文/);
+  assert.match(skill.content.skillFile, /约束、成功标准、验证要求和预期输出/);
   assert.match(
     skill.content.skillFile,
     /按当前 `spawn_agent` schema 传表示“不继承”的值/,
@@ -140,19 +147,28 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /返回活动通知而非最终结果时，以完成通知为准/);
   assert.match(skill.content.skillFile, /其它已加载的任务专用 skill 明确提供首次存活探测下限时优先使用/);
   assert.match(skill.content.skillFile, /首次探测前至少等待 `10` 分钟（`timeout_ms=600000`）/);
-  assert.match(skill.content.skillFile, /只有 `wait_agent` 明确报告超时才发起存活探测/);
+  assert.match(skill.content.skillFile, /只有 `wait_agent` 明确报告超时才考虑存活探测/);
+  assert.match(skill.content.skillFile, /明确提供双向的非中断状态通信能力/);
+  assert.match(skill.content.skillFile, /仅把输入排队到后续 turn 的操作不构成存活探测能力/);
+  assert.match(skill.content.skillFile, /无法确认时跳过探测/);
+  assert.match(skill.content.skillFile, /不得为了探测而中断原任务/);
   assert.match(skill.content.skillFile, /同一子任务同时最多有一个未决探测/);
   assert.match(skill.content.skillFile, /暂未回复不能单独证明代理已经挂死/);
+  assert.match(skill.content.skillFile, /能促使原 agent 继续或重新答复的操作/);
+  assert.match(skill.content.skillFile, /不能触发或继续答复的操作不算有效 follow-up/);
   assert.match(skill.content.skillFile, /向原 agent 发送一次聚焦缺口的 follow-up/);
   assert.match(skill.content.skillFile, /收到结果后重新校验/);
   assert.match(skill.content.skillFile, /不要为可恢复缺口重复 spawn 相同任务/);
   assert.match(skill.content.skillFile, /不得把不合格结果当作任务完成/);
   assert.match(skill.content.skillFile, /是否请求部分结果或提前收敛由主代理/);
   assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
+  assert.match(skill.content.skillFile, /最终输出和必要证据已被父代理接收并保留/);
+  assert.match(skill.content.skillFile, /已完成必要校验、无需 follow-up/);
   assert.match(
     skill.content.skillFile,
-    /compatibility: Supports Codex multi-agent V1 and V2 collaboration tools with the bundled agent roles installed/,
+    /compatibility: Preset routing requires Codex multi-agent V1 or V2 spawn_agent with agent_type exposed and the four bundled agent roles installed/,
   );
+  assert.equal(skill.content.skillFile.includes('`followup_task`'), false);
   assert.equal(skill.content.skillFile.includes('时是 V1'), false);
   assert.equal(skill.content.skillFile.includes('时是 V2'), false);
   assert.equal(skill.content.skillFile.includes('催促后等待'), false);
