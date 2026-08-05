@@ -49,7 +49,7 @@ Gate 只判断拟委派的子任务，而不判断顶层任务类型。即使顶
 
 任务涉及网络、文档或时间敏感事实时，遵守当前会话的工具、联网、官方文档优先和上层安全策略。子代理继承当前会话可用的工具和权限；不能访问来源时说明限制，不能凭记忆补事实。
 
-按当前 `spawn_agent` schema 调用：始终传选定的 `agent_type` 和完整的 `message`；custom role 只透传用户显式指定且 schema 公开的模型字段；有 `task_name` 时使用语义化且唯一的名称；有 `fork_turns` 时传 `"none"`。不要传 schema 未公开的字段；role 不可用时按委派失败处理。
+按当前 `spawn_agent` schema 调用：始终传选定的 `agent_type` 和完整的 `message`；custom role 只透传用户显式指定且 schema 公开的模型字段；有 `task_name` 时使用语义化且唯一的名称；有 `fork_turns` 时传 `"none"`，有 `fork_context` 时传 `false`。不要传 schema 未公开的字段；role 不可用时按委派失败处理。
 
 除非用户另有要求，默认启动 1 个子代理。只有多个探索问题互不重叠、彼此能独立完成且确实值得拆分时，才启动 2 到 3 个；不得超过当前可用并发槽位，任何情况下最多 4 个。
 

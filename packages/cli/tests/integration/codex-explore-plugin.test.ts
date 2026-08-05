@@ -2721,6 +2721,7 @@ describe('codex-explore integration acceptance', () => {
     expect(skillContent).toContain('`deep` → `codex-explore-deep`');
     expect(skillContent).toContain('选择 `codex-explore-custom`');
     expect(skillContent).toContain('有 `fork_turns` 时传 `"none"`');
+    expect(skillContent).toContain('有 `fork_context` 时传 `false`');
     expect(skillContent).toContain('首次存活探测前至少等待 `20` 分钟');
     expect(skillContent).toContain('同一子任务同时最多有一个未决探测');
     expect(skillContent).not.toContain('催促后等待');

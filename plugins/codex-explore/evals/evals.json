@@ -54,6 +54,31 @@
       ]
     },
     {
+      "id": "v1_auto_standard",
+      "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+      "expected_output": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": false
+      },
+      "expected": {
+        "spawn_calls": { "min": 1, "max": 1 },
+        "arguments": {
+          "agent_type": "codex-explore-standard",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_context": false,
+          "fork_turns": null
+        },
+        "present_arguments": ["message"]
+      },
+      "assertions": [
+        "V1 常规跨模块追踪选择 codex-explore-standard",
+        "V1 传 fork_context: false 且不传 fork_turns"
+      ]
+    },
+    {
       "id": "auto_deep",
       "prompt": "$codex-explore materials/、docs/vendor/ 和 reports/audit/ 中材料很多、说法冲突且边界未知。请深入重建续费失败的复杂因果链，穷尽相互矛盾的证据并说明无法确认之处，完整性优先。",
       "expected_output": "自动选择 deep role，只传 agent_type。",

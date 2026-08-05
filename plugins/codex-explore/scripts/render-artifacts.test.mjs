@@ -160,6 +160,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /不得删除字段、切换预设或静默重试/);
   assert.match(text, /探索深度：只写 `quick`、`standard` 或 `deep`/);
   assert.match(text, /有 `fork_turns` 时传 `"none"`/);
+  assert.match(text, /有 `fork_context` 时传 `false`/);
   assert.match(text, /首次存活探测前至少等待 `12` 分钟（`timeout_ms=720000`）/);
   assert.match(text, /只有 `wait_agent` 明确报告超时才发起存活探测/);
   assert.match(text, /同一子任务同时最多有一个未决探测/);
@@ -247,7 +248,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.3');
+  assert.equal(manifest.version, '0.2.4');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',

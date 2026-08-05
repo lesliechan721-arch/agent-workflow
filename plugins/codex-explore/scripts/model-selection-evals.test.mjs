@@ -49,6 +49,7 @@ async function testEvalSpec() {
     [
       'auto_quick',
       'auto_standard',
+      'v1_auto_standard',
       'auto_deep',
       'custom_both_fields',
       'custom_model_only',
@@ -59,7 +60,10 @@ async function testEvalSpec() {
     ],
   );
   for (const entry of spec.evals) {
-    assert.equal(entry.codex_config['features.multi_agent_v2.enabled'], true);
+    assert.equal(
+      entry.codex_config['features.multi_agent_v2.enabled'],
+      entry.id !== 'v1_auto_standard',
+    );
     assert.equal(entry.assertions.length > 0, true);
   }
 
@@ -135,6 +139,33 @@ function testMechanicalAssertions() {
     },
   );
   assert.equal(preset.passed, true);
+
+  const v1Preset = evaluateModelSelectionRun(
+    {
+      execution_error: false,
+      termination: 'expected_outcome_observed',
+      exit_code: null,
+      spawn_calls: [{
+        arguments: {
+          agent_type: 'codex-explore-standard',
+          message: 'trace',
+          fork_context: false,
+        },
+      }],
+    },
+    {
+      spawn_calls: { min: 1, max: 1 },
+      arguments: {
+        agent_type: 'codex-explore-standard',
+        model: null,
+        reasoning_effort: null,
+        fork_context: false,
+        fork_turns: null,
+      },
+      present_arguments: ['message'],
+    },
+  );
+  assert.equal(v1Preset.passed, true);
 
   const wrongPresetOverride = evaluateModelSelectionRun(
     {
