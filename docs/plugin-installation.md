@@ -394,6 +394,10 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 
 `codex-explore` 提供 quick、standard 和 deep 三档预设探索 role；无法明确分档时使用 standard。每档 role 的 model 和 reasoning effort 都能独立配置；用户显式指定 model 或 reasoning effort 时使用不锁定参数的 custom role，并只透传显式字段。review、缺陷分析、质量判断、修改或实现任务中的独立大范围只读探索可以使用这些 role，最终判断、建议和写操作仍由主流程完成。
 
+上下文隔离本身是 `codex-explore` 的委派价值，不要求主代理同时存在其它可并行工作。即使大范围事实探索是主流程下一步的前置条件，只要能够独立定义来源、问题和证据合同，也可以先委派探索、等待结果，再由主流程做最小核验和后续判断。
+
+子代理继承当前 turn 的有效 permission profile、approval policy 和 sandbox。父 turn 已处于权限级只读状态时，子代理继承该限制；父 turn 可写时，`spawn_agent` 不提供把单个子代理独立降为只读的参数，此时插件提供的是行为只读约束。探索工作流完成或停止后，主流程可以继续用户已经授权的修改或实现。
+
 预设 role 的配置键与默认值：
 
 | 探索深度 | model 配置与默认值 | effort 配置与默认值 |
@@ -402,7 +406,7 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 | standard | `standardModel=gpt-5.6-luna` | `standardReasoningEffort=high` |
 | deep | `deepModel=gpt-5.6-luna` | `deepReasoningEffort=xhigh` |
 
-这些角色配置和首次存活探测前的最小等待都可以通过 `aw config` 调整：
+这些角色配置和首次存活探测前的累计等待预算都可以通过 `aw config` 调整：
 
 ```bash
 aw config set codex-explore standardModel gpt-5.6-terra -s user

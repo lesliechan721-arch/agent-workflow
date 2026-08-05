@@ -220,6 +220,13 @@ function testLifecycleAssertions() {
     evaluateLifecycleTrace(passingTimeline(), lifecycleContract).passed,
     true,
   );
+  assert.equal(
+    evaluateLifecycleTrace(
+      [...passingTimeline(), lifecycleEvent('close_agent', { target: '/root/evidence' })],
+      lifecycleContract,
+    ).passed,
+    true,
+  );
 
   const earlyProbe = [
     spawnEvent(),
@@ -228,6 +235,15 @@ function testLifecycleAssertions() {
     messageEvent(),
   ];
   assertLifecycleFailure(earlyProbe, 'probe_only_after_timeout');
+
+  const probeAfterNonTimeoutEvent = [
+    spawnEvent(),
+    waitEvent({ timedOut: false }),
+    lifecycleEvent('send_message', { target: '/root/evidence' }),
+    waitEvent(),
+    messageEvent(),
+  ];
+  assertLifecycleFailure(probeAfterNonTimeoutEvent, 'probe_only_after_timeout');
 
   const shortWait = [spawnEvent(), waitEvent({ timeoutMs: 599_999 }), messageEvent()];
   assertLifecycleFailure(shortWait, 'minimum_initial_wait');

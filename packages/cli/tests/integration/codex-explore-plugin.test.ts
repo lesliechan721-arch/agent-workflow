@@ -1706,7 +1706,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    expect(renderedMarketplaceSkill).toContain('首次存活探测前至少等待 `12` 分钟');
+    expect(renderedMarketplaceSkill).toContain('至少 `12` 分钟的累计等待预算');
     expect(renderedMarketplaceSkill).not.toContain('催促后等待');
     expect(renderedMarketplaceSkill).not.toContain('{{spawnModelGuidance}}');
 
@@ -1751,9 +1751,9 @@ describe('codex-explore integration acceptance', () => {
       fs.readJson(path.join(awHome, 'plugin-config', 'codex-explore', 'config.json')),
     ]);
 
-    expect(runtimeSkill).toContain('首次存活探测前至少等待 `15` 分钟');
+    expect(runtimeSkill).toContain('至少 `15` 分钟的累计等待预算');
     expect(runtimeSkill).not.toContain('催促后等待');
-    expect(cachedSkill).toContain('首次存活探测前至少等待 `15` 分钟');
+    expect(cachedSkill).toContain('至少 `15` 分钟的累计等待预算');
     expect(configStore).toMatchObject({
       minimumInitialWaitMinutes: 15,
       convergenceWaitMinutes: 6,
@@ -2722,12 +2722,12 @@ describe('codex-explore integration acceptance', () => {
     expect(skillContent).toContain('选择 `codex-explore-custom`');
     expect(skillContent).toContain('有 `fork_turns` 时传 `"none"`');
     expect(skillContent).toContain('有 `fork_context` 时传 `false`');
-    expect(skillContent).toContain('首次存活探测前至少等待 `20` 分钟');
-    expect(skillContent).toContain('同一子任务同时最多有一个未决探测');
+    expect(skillContent).toContain('至少 `20` 分钟的累计等待预算');
+    expect(skillContent).toContain('同一子任务最多有一个未决探测');
     expect(skillContent).not.toContain('催促后等待');
     expect(skillContent).toContain('调用预设 role 时不得传 `model` 或 `reasoning_effort`');
     expect(skillContent).toContain('只传用户实际指定且当前 schema 公开的字段');
-    expect(skillContent).toContain('只在当前工具提供 `close_agent` 时执行清理');
+    expect(skillContent).toContain('有 `close_agent` 时关闭本工作流启动');
     expect(skillContent).not.toContain('role 固定使用');
     expect(skillContent).not.toContain('gpt-5.6-luna');
     for (let index = 0; index < CURRENT_CODEX_EXPLORE_ROLES.length; index += 1) {
@@ -3824,8 +3824,8 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('首次存活探测前至少等待 `12` 分钟');
-    expect(projectSkillContent).toContain('首次存活探测前至少等待 `25` 分钟');
+    expect(userSkillContent).toContain('至少 `12` 分钟的累计等待预算');
+    expect(projectSkillContent).toContain('至少 `25` 分钟的累计等待预算');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3986,7 +3986,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     const trackedRole = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-standard-role');
 
-    expect(skillContent).toContain('首次存活探测前至少等待 `25` 分钟');
+    expect(skillContent).toContain('至少 `25` 分钟的累计等待预算');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {
