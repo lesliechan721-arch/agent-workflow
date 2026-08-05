@@ -2714,7 +2714,7 @@ describe('codex-explore integration acceptance', () => {
     );
     expect(skillContent).toContain('专用子代理');
     expect(skillContent).toContain('只使用 Codex Explore 自带的以下 role');
-    expect(skillContent).toContain('顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件');
+    expect(skillContent).toContain('即使顶层任务是 review、缺陷分析、质量判断、修改或实现');
     expect(skillContent).toContain('不得启动默认子代理或改用内置 `explorer`');
     expect(skillContent).toContain('`quick` → `codex-explore-quick`');
     expect(skillContent).toContain('`standard` → `codex-explore-standard`');

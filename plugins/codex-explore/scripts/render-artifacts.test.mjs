@@ -143,8 +143,8 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /不得把 review、缺陷判定、质量评价、严重性分级或修改建议本身交给子代理/);
   assert.match(text, /即使任务只读、范围很大、要求深入分析或独立复核/);
   assert.match(text, /spawn_agent 不提供子代理只读 sandbox.*只读.*行为约束/);
-  assert.match(text, /顶层任务是 review、缺陷分析、质量判断、修改或实现，不构成排除条件/);
-  assert.match(text, /Gate 只判断拟委派的子任务/);
+  assert.match(text, /Gate 只判断拟委派的子任务，而不判断顶层任务类型/);
+  assert.match(text, /即使顶层任务是 review、缺陷分析、质量判断、修改或实现/);
   assert.match(text, /拟委派的子任务本身要求缺陷判定/);
   assert.match(text, /用户把权限级只读作为继续条件/);
   assert.match(text, /本工作流无法满足该条件/);
@@ -247,7 +247,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.2');
+  assert.equal(manifest.version, '0.2.3');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',
