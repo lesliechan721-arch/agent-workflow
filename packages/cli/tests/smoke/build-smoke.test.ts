@@ -76,10 +76,29 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', '.claude-plugin', 'plugin.json')),
+    ).resolves.toBe(true);
+    await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       skillTriggers: {
         commit: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'plugins', 'ask-me', '.agents-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      marketplace: {
+        category: 'workflow',
+        policy: {
+          authentication: 'NONE',
+        },
+      },
+      skillTriggers: {
+        'ask-me': {
           defaultTrigger: 'auto',
           allowDynamicTrigger: true,
         },
@@ -95,9 +114,11 @@ describe('build smoke', () => {
       fs.readFile(path.join(outputRoot, '.catalog', 'full', 'catalog-manifest.json'), 'utf8'),
     ]);
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'ask-me',
       'git-commit',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'ask-me',
       'codex-explore',
       'codex-subagent-guide',
       'git-commit',
@@ -106,6 +127,13 @@ describe('build smoke', () => {
       owner: claudeMarketplace.owner,
       interface: claudeMarketplace.interface,
       plugins: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'ask-me',
+          source: './plugins/ask-me',
+          policy: expect.objectContaining({
+            authentication: 'NONE',
+          }),
+        }),
         expect.objectContaining({
           name: 'codex-explore',
           source: './plugins/codex-explore',
@@ -122,6 +150,50 @@ describe('build smoke', () => {
         }),
       ]),
     });
+    expect(claudeMarketplace.plugins).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'ask-me',
+        source: './plugins/ask-me',
+        policy: expect.objectContaining({
+          authentication: 'NONE',
+        }),
+      }),
+    ]));
+    const [askMeCodexSkill, askMeClaudeSkill, askMeOpenaiYaml] = await Promise.all([
+      fs.readFile(
+        path.join(outputRoot, 'plugins', 'ask-me', 'codex', 'skills', 'ask-me', 'SKILL.md'),
+        'utf8',
+      ),
+      fs.readFile(
+        path.join(outputRoot, 'plugins', 'ask-me', 'claude', 'skills', 'ask-me', 'SKILL.md'),
+        'utf8',
+      ),
+      fs.readFile(
+        path.join(
+          outputRoot,
+          'plugins',
+          'ask-me',
+          'codex',
+          'skills',
+          'ask-me',
+          'agents',
+          'openai.yaml',
+        ),
+        'utf8',
+      ),
+    ]);
+    for (const skill of [askMeCodexSkill, askMeClaudeSkill]) {
+      expect(skill).toContain('不得创建、修改或删除文件');
+      expect(skill).toContain('有依赖关系时，一次只问最关键的一题');
+      expect(skill).toContain('彼此独立时，一轮最多问三题');
+      expect(skill).not.toMatch(/^disable-model-invocation:\s*true$/m);
+    }
+    expect(askMeCodexSkill).toContain('优先使用 `request_user_input`');
+    expect(askMeCodexSkill).not.toContain('AskUserQuestion');
+    expect(askMeClaudeSkill).toContain('优先使用 `AskUserQuestion`');
+    expect(askMeClaudeSkill).not.toContain('request_user_input');
+    expect(askMeOpenaiYaml).toContain('default_prompt: "使用 $ask-me：');
+    expect(askMeOpenaiYaml).toContain('allow_implicit_invocation: true');
     await Promise.all([
       path.join(
         outputRoot,
@@ -363,6 +435,12 @@ describe('build smoke', () => {
         },
       },
       entries: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'ask-me',
+          source: './plugins/ask-me',
+          artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }),
         expect.objectContaining({
           name: 'git-commit',
           source: './plugins/git-commit',

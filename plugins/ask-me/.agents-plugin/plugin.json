@@ -1,0 +1,52 @@
+{
+  "name": "ask-me",
+  "version": "0.1.0",
+  "description": "在开发实现或设计讨论中先查明可发现事实，再围绕高风险未知项逐轮澄清需求与取舍。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "skillTriggers": {
+    "ask-me": {
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "NONE"
+    }
+  },
+  "interface": {
+    "displayName": "Ask Me",
+    "shortDescription": "先只读查明事实，再围绕高风险未知项逐轮澄清需求与取舍",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "buildConfig": {
+    "templates": {
+      "include": [
+        "skills/**/*.md"
+      ],
+      "vars": {
+        "questionTool": {
+          "claude": "`AskUserQuestion`",
+          "codex": "`request_user_input`"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  }
+}
