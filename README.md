@@ -86,6 +86,9 @@ make test
 
 - `make build`：编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle
 - `make test`：运行单元测试和集成测试
+- `pnpm plugin:test <plugin>`：运行插件确定性 Node 脚本测试，不调用模型
+- `pnpm plugin:eval <plugin> --materialize-only`：生成并核验 Codex project/user 最终 Skill 制品，不调用模型
+- `pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval`：本地显式运行该插件 release-required Codex eval；不进入常规 CI
 - `make verify-local`：校验 CLI 本地发布链路（常规测试、build smoke、CLI pack smoke、catalog fetch smoke）
 - `make verify-cli`：校验 CLI-only 发布链路
 - `make verify-catalog`：校验 catalog-only 发布链路
@@ -142,6 +145,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `plugins/`：插件源码，只维护 `.agents-plugin/plugin.json`、`marketplace-source.json` 和插件能力文件
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-agent-workflows-plugin/`：创建和维护插件的作者工具
+- `.agents/skills/skill-review/`：只读评审标准静态 Skill 或 AW 插件 Skill，并核对最终 Codex 制品和 eval 证据
 - `docs/`：公开架构、安装、测试和作者文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档
 

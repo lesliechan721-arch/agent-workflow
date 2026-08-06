@@ -1,317 +1,177 @@
 import assert from 'node:assert/strict';
-import {
-  lstat,
-  mkdtemp,
-  mkdir,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
   buildCodexArgs,
-  copyCodexAuthFiles,
   createEvalWorkspace,
-  executionErrorEvidence,
-  inspectExecEvent,
-  parseExecEventLine,
-  skillRequestedExplicitly,
+  readEvalResource,
 } from '../evals/eval-harness.mjs';
 import {
-  loadEvalCases,
-  parseArgs,
-  summarizeCase,
-} from '../evals/run-trigger-evals.mjs';
+  setupTriggerWorkspace,
+  TRIGGER_WORKSPACE_FIXTURES,
+} from '../evals/trigger-fixture.mjs';
+
+const ROLE_NAMES = [
+  'codex-subagent-simple',
+  'codex-subagent-general',
+  'codex-subagent-complex',
+  'codex-subagent-plan-review',
+];
 
 async function testEvalCorpus() {
-  const cases = await loadEvalCases('all');
+  const document = JSON.parse(await readEvalResource('trigger-cases.json'));
+  const { cases } = document;
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, 'codex-subagent-guide');
   assert.equal(cases.length, 30);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 14);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 9);
   assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 7);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 17);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 13);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 13);
-  assert.equal(
-    cases.filter((entry) => entry.should_load_skill && !entry.should_spawn_agent).length,
-    4,
-  );
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
+  assert.equal(cases.every((entry) => typeof entry.should_spawn_agent === 'boolean'), true);
+  assert.equal(
+    cases.filter((entry) => entry.workspace_fixture === 'project_authorization')
+      .every((entry) => entry.use_project_rules === true),
+    true,
+  );
 
-  const required = new Map([
+  const expectedContracts = new Map([
     ['authorized_simple_lookup', [true, true]],
-    ['authorization_only_requires_guide', [true, true]],
     ['specialized_workflow_owns_lifecycle', [false, false]],
-    ['decision_only_near_miss', [false, false]],
     ['explicit_skill_without_authority', [true, false]],
-    ['manage_existing_agent', [true, false]],
-    ['validation_specialized_workflow_owner', [false, false]],
-    ['validation_config_help', [false, false]],
-    ['sanity_specialized_owner_native', [false, false]],
+    ['validation_should_we_delegate', [false, false]],
     ['sanity_existing_cleanup', [true, false]],
   ]);
-  for (const [id, [shouldLoad, shouldSpawn]] of required) {
+  for (const [id, [shouldLoad, shouldSpawn]] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);
-    assert.ok(entry, `Missing required trigger case ${id}`);
+    assert.ok(entry, `Missing required eval case ${id}`);
     assert.equal(entry.should_load_skill, shouldLoad);
     assert.equal(entry.should_spawn_agent, shouldSpawn);
   }
-  assert.equal(
-    cases.find((entry) => entry.id === 'authorized_general_delivery').workspace_fixture,
-    'project_authorization',
-  );
-  assert.equal(
-    cases.find((entry) => entry.id === 'authorization_only_requires_guide').workspace_fixture,
-    'authorization_skill',
-  );
-  assert.equal(
-    cases.find((entry) => entry.id === 'specialized_workflow_owns_lifecycle').workspace_fixture,
-    'lifecycle_skill',
-  );
 }
 
-function testArguments() {
+async function testFixtureVariants() {
   assert.deepEqual(
-    parseArgs(['--split', 'validation', '--runs', '5', '--threshold', '0.6']),
-    {
-      split: 'validation',
-      runs: 5,
-      threshold: 0.6,
-      timeoutMs: 180_000,
-      codexBin: 'codex',
-      model: undefined,
-      output: undefined,
-      help: false,
-    },
+    [...TRIGGER_WORKSPACE_FIXTURES],
+    ['default', 'project_authorization', 'authorization_skill', 'lifecycle_skill'],
   );
-  assert.throws(() => parseArgs(['--split', 'unknown']), /train, validation, sanity, or all/);
-  assert.throws(() => parseArgs(['--runs', '0']), /positive integer/);
-  assert.throws(() => parseArgs(['--threshold', '1']), /less than 1/);
-}
-
-function testJsonlDetection() {
-  assert.equal(parseExecEventLine('not json'), null);
-  const loadEvent = parseExecEventLine(JSON.stringify({
-    type: 'item.started',
-    item: {
-      type: 'command_execution',
-      command: "sed -n '1,120p' .agents/skills/codex-subagent-guide/SKILL.md",
-    },
-  }));
-  assert.deepEqual(
-    inspectExecEvent(loadEvent, '/tmp/eval/.agents/skills/codex-subagent-guide/SKILL.md'),
-    {
-      loaded: true,
-      loadEvidence: "sed -n '1,120p' .agents/skills/codex-subagent-guide/SKILL.md",
-    },
-  );
-  const spawnEvent = parseExecEventLine(JSON.stringify({
-    type: 'item.started',
-    item: {
-      type: 'collab_tool_call',
-      tool: 'spawn_agent',
-      prompt: 'Review the change.',
-    },
-  }));
-  assert.deepEqual(
-    inspectExecEvent(spawnEvent, '/tmp/eval/.agents/skills/codex-subagent-guide/SKILL.md'),
-    { spawned: true, spawnEvidence: 'Review the change.' },
-  );
-  assert.equal(
-    skillRequestedExplicitly({ query: '$codex-subagent-guide explain the boundary' }),
-    true,
-  );
-  assert.equal(skillRequestedExplicitly({ query: 'delegate this task' }), false);
-}
-
-function testSummary() {
-  const summary = summarizeCase(
-    {
-      id: 'example',
-      split: 'train',
-      query: 'query',
-      should_load_skill: true,
-      should_spawn_agent: false,
-    },
-    [
-      {
-        loaded: true,
-        load_evidence: 'read SKILL.md',
-        spawned: false,
-        execution_error: false,
-      },
-      {
-        loaded: true,
-        load_evidence: 'read SKILL.md',
-        spawned: false,
-        execution_error: false,
-      },
-      { loaded: false, spawned: false, execution_error: false },
-    ],
-    0.5,
-  );
-  assert.equal(summary.observed.load_rate, 2 / 3);
-  assert.equal(summary.observed.spawn_rate, 0);
-  assert.equal(summary.observed.load_evidence_missing, 1);
-  assert.equal(summary.complete, false);
-  assert.equal(summary.passed, false);
-
-  const complete = summarizeCase(
-    {
-      id: 'complete',
-      split: 'train',
-      query: 'query',
-      should_load_skill: true,
-      should_spawn_agent: false,
-    },
-    [
-      {
-        loaded: true,
-        load_evidence: 'read SKILL.md',
-        spawned: false,
-        execution_error: false,
-      },
-    ],
-    0.5,
-  );
-  assert.equal(complete.observed.load_evidence_missing, 0);
-  assert.equal(complete.complete, true);
-  assert.equal(complete.passed, true);
-  assert.match(
-    executionErrorEvidence({
-      stderr: 'Reading additional input from stdin...',
-      event_trace: [{ type: 'error', message: 'spawn_agent must match the configured schema' }],
-    }),
-    /must match the configured schema/,
-  );
-}
-
-async function testWorkspaceStaging() {
-  const workspace = await createEvalWorkspace({ withSkill: true });
-  try {
-    const [skill, ...roleFiles] = await Promise.all([
-      readFile(workspace.skillPath, 'utf8'),
-      ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
-    ]);
-    assert.match(skill, /适用 AGENTS\.md 或其它技能已经授权 Codex 使用子代理/);
-    assert.match(skill, /且没有专用 skill 自行完整管理本次委派时使用/);
-    assert.match(skill, /不与已经定义独立委派流程的专用 skill 叠加使用/);
-    assert.match(skill, /具体模式和兼容性服从当前工具 schema/);
-    assert.deepEqual(
-      workspace.roles.map((role) => role.roleFile.name),
-      [
-        'codex-subagent-simple',
-        'codex-subagent-general',
-        'codex-subagent-complex',
-        'codex-subagent-plan-review',
-      ],
-    );
-    const instructions = new Set(
-      workspace.roles.map((role) => role.roleFile.developer_instructions),
-    );
-    assert.equal(instructions.size, 1);
-    for (const roleFile of roleFiles) {
-      assert.match(roleFile, /developer_instructions = "只完成父代理/);
-      assert.doesNotMatch(roleFile, /status=(?:progress|blocked)/);
+  for (const fixture of TRIGGER_WORKSPACE_FIXTURES) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `subagent-fixture-${fixture}-`));
+    try {
+      await setupTriggerWorkspace({
+        workspaceRoot: root,
+        evalCase: { workspace_fixture: fixture },
+      });
+      assert.match(await readFile(path.join(root, 'src', 'simple.ts'), 'utf8'), /retryLimit/);
+      if (fixture === 'project_authorization') {
+        assert.match(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), /authorized and required/);
+      }
+      if (fixture === 'authorization_skill') {
+        assert.match(
+          await readFile(
+            path.join(root, '.agents', 'skills', 'delegation-authorizer', 'SKILL.md'),
+            'utf8',
+          ),
+          /does not choose an agent type/,
+        );
+      }
+      if (fixture === 'lifecycle_skill') {
+        assert.match(
+          await readFile(
+            path.join(root, '.agents', 'skills', 'delegation-lifecycle-owner', 'SKILL.md'),
+            'utf8',
+          ),
+          /fully owns role selection/,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-
-    const v1Args = buildCodexArgs(
-      workspace,
-      { query: 'delegate', omit_roles: ['codex-subagent-simple'] },
-      { profile: 'v1', model: 'gpt-v1' },
-    );
-    assert.ok(v1Args.includes('--json'));
-    assert.ok(v1Args.includes('gpt-v1'));
-    assert.ok(v1Args.includes('features.multi_agent_v2.enabled=false'));
-    assert.equal(
-      v1Args.some((arg) => arg.includes('agents.codex-subagent-simple.description=')),
-      false,
-    );
-    const v2Args = buildCodexArgs(
-      workspace,
-      { query: 'delegate' },
-      { profile: 'v2' },
-    );
-    assert.ok(v2Args.includes('features.multi_agent_v2.enabled=true'));
-    assert.ok(v2Args.includes('features.multi_agent_v2.expose_spawn_agent_model_overrides=true'));
-    assert.ok(v2Args.includes('read-only'));
-    assert.ok(v2Args.includes('shell_environment_policy.exclude=["CODEX_HOME"]'));
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
   }
 }
 
-async function testNativeTriggerFixtures() {
-  const project = await createEvalWorkspace({
-    withSkill: true,
-    fixture: 'project_authorization',
-  });
-  const authorization = await createEvalWorkspace({
-    withSkill: true,
-    fixture: 'authorization_skill',
-  });
-  const lifecycle = await createEvalWorkspace({
-    withSkill: true,
-    fixture: 'lifecycle_skill',
-  });
+async function writeFinalSubject(root) {
+  const skillRoot = path.join(root, '.agents', 'skills', 'codex-subagent-guide');
+  const roleRoot = path.join(root, '.codex', 'agents');
+  await Promise.all([
+    mkdir(skillRoot, { recursive: true }),
+    mkdir(roleRoot, { recursive: true }),
+  ]);
+  await writeFile(path.join(skillRoot, 'SKILL.md'), '# Materialized Guide\n', 'utf8');
+  await writeFile(path.join(root, '.codex', 'config.toml'), '# materialized config\n', 'utf8');
+  await Promise.all(ROLE_NAMES.map((name) => writeFile(
+    path.join(roleRoot, `aw-guide-${name}.toml`),
+    [
+      `name = ${JSON.stringify(name)}`,
+      `description = ${JSON.stringify(`Role ${name}`)}`,
+      'developer_instructions = "Read-only role."',
+      '',
+    ].join('\n'),
+    'utf8',
+  )));
+}
+
+async function testSpecializedWorkspaceUsesFinalArtifact() {
+  const subject = await mkdtemp(path.join(os.tmpdir(), 'subagent-final-subject-'));
+  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
   try {
-    assert.match(await readFile(path.join(project.root, 'AGENTS.md'), 'utf8'), /authorized and required/);
-    const projectArgs = buildCodexArgs(project, { query: 'review the module' }, { profile: 'v2' });
-    assert.equal(projectArgs.includes('--ignore-rules'), false);
-
-    const authorizationSkill = await readFile(authorization.fixtureSkillPaths[0], 'utf8');
-    assert.match(authorizationSkill, /Delegation is authorized and required/);
-    assert.match(authorizationSkill, /does not choose an agent type/);
-    assert.equal(
-      buildCodexArgs(authorization, { query: 'review the module' }, { profile: 'v2' })
-        .includes('--ignore-rules'),
-      true,
-    );
-
-    const lifecycleSkill = await readFile(lifecycle.fixtureSkillPaths[0], 'utf8');
-    assert.match(lifecycleSkill, /fully owns role selection/);
-    assert.match(lifecycleSkill, /do not spawn a duplicate agent/i);
+    await writeFinalSubject(subject);
+    process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
+    const current = await createEvalWorkspace({ withSkill: true, fixture: 'project_authorization' });
+    const baseline = await createEvalWorkspace({ withSkill: false, fixture: 'default' });
+    try {
+      assert.equal(await readFile(current.skillPath, 'utf8'), '# Materialized Guide\n');
+      assert.deepEqual(current.roles.map((role) => role.roleFile.name).sort(), [...ROLE_NAMES].sort());
+      await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
+      await assert.rejects(readFile(path.join(current.root, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
+      const args = buildCodexArgs(
+        current,
+        { query: 'delegate', codex_config: {}, omit_roles: ['codex-subagent-simple'] },
+        { profile: 'v2', model: 'gpt-test' },
+      );
+      assert.ok(args.includes('multi_agent'));
+      assert.ok(args.includes('gpt-test'));
+      assert.equal(
+        args.some((arg) => arg.includes('agents.codex-subagent-simple.config_file=')),
+        false,
+      );
+      assert.equal(
+        args.some((arg) => arg.includes('agents.codex-subagent-general.config_file=')),
+        true,
+      );
+      assert.equal(args.includes('--ignore-rules'), false);
+    } finally {
+      await Promise.all([
+        rm(current.root, { recursive: true, force: true }),
+        rm(baseline.root, { recursive: true, force: true }),
+      ]);
+    }
   } finally {
-    await Promise.all([
-      rm(project.root, { recursive: true, force: true }),
-      rm(authorization.root, { recursive: true, force: true }),
-      rm(lifecycle.root, { recursive: true, force: true }),
-    ]);
+    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
+    await rm(subject, { recursive: true, force: true });
   }
 }
 
-async function testCredentialIsolation() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-auth-copy-'));
-  const sourceHome = path.join(root, 'source');
-  const targetHome = path.join(root, 'target');
+async function testMissingFinalArtifactFails() {
+  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+  delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
   try {
-    await Promise.all([
-      mkdir(sourceHome, { recursive: true }),
-      mkdir(targetHome, { recursive: true }),
-    ]);
-    await writeFile(path.join(sourceHome, 'auth.json'), '{"token":"test"}\n', 'utf8');
-    await copyCodexAuthFiles(targetHome, sourceHome);
-    const target = path.join(targetHome, 'auth.json');
-    assert.equal((await lstat(target)).isSymbolicLink(), false);
-    assert.equal((await stat(target)).mode & 0o777, 0o600);
-    assert.equal(await readFile(target, 'utf8'), '{"token":"test"}\n');
+    await assert.rejects(createEvalWorkspace(), /AW_PLUGIN_EVAL_PROJECT_ROOT is required/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
   }
 }
 
 async function main() {
   await testEvalCorpus();
-  testArguments();
-  testJsonlDetection();
-  testSummary();
-  await testWorkspaceStaging();
-  await testNativeTriggerFixtures();
-  await testCredentialIsolation();
-  console.log('trigger eval tests passed');
+  await testFixtureVariants();
+  await testSpecializedWorkspaceUsesFinalArtifact();
+  await testMissingFinalArtifactFails();
+  console.log('codex-subagent-guide trigger assets and specialized harness tests passed');
 }
 
 main().catch((error) => {

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
-const fs = require('node:fs');
-const path = require('node:path');
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function fail(message) {
   console.error(`[ERROR] ${message}`);
@@ -399,7 +402,7 @@ ${configTest}${lifecycleTest}`;
 
 function printUsage() {
   console.log(`Usage:
-  node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin_name> --description "..."
+  node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugin_name> --description "..."
 
 Options:
   --description <text>          Plugin description. Required.

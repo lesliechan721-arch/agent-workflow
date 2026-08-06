@@ -28,9 +28,19 @@
 - Claude 扩展包含 `user-invocable`、`disable-model-invocation`、`shell` 和数组形式 `allowed-tools`
 - Codex 平台 metadata 放在 `agents/openai.yaml`，其中 `policy.allow_implicit_invocation` 必须显式声明
 
-双平台源码可以使用已知平台扩展，但不能把它们描述成 Agent Skills portable core。`validate_plugin.js` 默认按 AW source profile 校验；需要检查严格 portable frontmatter 时使用 `--strict-agent-skills`。
+双平台源码可以使用已知平台扩展，但不能把它们描述成 Agent Skills portable core。`validate_plugin.mjs` 默认按 AW source profile 校验；需要检查严格 portable frontmatter 时使用 `--strict-agent-skills`。
 
 设计 skill 时先确定用户意图、输入输出、完成标准、相邻任务边界和真实失败案例。主 `SKILL.md` 只保留每次触发都需要的工作流与 gotcha，建议少于 500 行和 5,000 tokens；长规则放 `references/`，重复或脆弱逻辑放可测试的 `scripts/`，并明确说明何时读取或执行。允许自动发现的 skill 要用真实正例和 near-miss 负例验证 description；模型输出质量要与无 skill 或旧版本 baseline 比较，不能用 `pnpm plugin:test` 代替行为 eval。
+
+插件 Skill 的作者期语料、fixture 和可选领域 runner 统一放在插件根 `evals/`，不放进声明的 Skill 子树，也不进入 production runtime bundle。`evals/manifest.json` 声明 Codex project/user materialization profile 和模型 suite；自动触发优先使用中央原生 `kind: "trigger"`，插件不再重复实现 Codex 启动、事件识别、重复运行和评分。`command` 只保留给 routing/workflow 等领域专用检查，并且只能消费中央提供的 materialized 最终制品；`perRunTimeoutMs` 限制单次模型运行，独立的 `suiteTimeoutMs` 才限制整个 command runner。`validate_plugin.mjs` 在 manifest 存在时校验其路径、语料和引用。动态 Skill 的行为 eval 必须先经过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter，不能直接拿 template 代替最终制品。
+
+```bash
+pnpm plugin:eval <plugin> --materialize-only --output-dir /tmp/aw-eval
+pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-dir /tmp/aw-eval
+pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
+```
+
+eval v1 只支持 Codex：真实模型只运行 project profile；user profile 只生成确定性 materialized evidence，不声称经过 native cache 模型运行。无过滤参数时运行所有 release-required suite/split；真实模型命令只在本地显式执行，不进入常规 CI。规范结果写到 `<output-dir>/<plugin>/evaluation.json`，需要定性判断的 case 标为 `needs_review`，由 `.agents/skills/skill-review/` 读取 trace 后逐项判分，不额外调用 judge 模型。
 
 详细指南：
 
@@ -302,6 +312,8 @@ pnpm plugin:test --all
 它不会暴露为 `aw` 客户端子命令。runner 会先用 staging 模式准备临时 bundle，并从 build 后 staging manifest 解析最终支持平台。省略 `--platform` 时按 `both` 处理；`--platform auto` 无效并会失败；显式 `claude` 或 `codex` 遇到任一选中插件不支持该平台时会在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。
 
 测试会在隔离 `AW_HOME`、受管临时 project root 和平台 home/temp 环境中运行 `scripts.tests.node` 匹配到的 Node 测试。测试进程的 `cwd` 是临时 project root；`AW_PLUGIN_CONTEXT.sourceRoot` 指向原始插件源码根，适合测试需要读取源码 fixture 的场景，但运行时 import 仍应命中临时 bundle。没有匹配测试时是 skipped/no-op，退出码为 0；双平台插件使用 `--platform both` 时，Codex 和 Claude 两轮会分别复制独立可写 bundle。
+
+`pnpm plugin:test` 与 `pnpm plugin:eval` 是两条独立证据链：前者只跑确定性 Node 测试，后者才 materialize Codex 最终制品并可显式启动模型。任何发布评审都不能用前者替代后者。
 
 ## Hook Contract
 

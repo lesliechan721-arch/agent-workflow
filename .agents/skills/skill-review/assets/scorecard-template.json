@@ -1,0 +1,44 @@
+{
+  "review": {
+    "skill_name": "",
+    "mode": "full",
+    "direction": "aligned",
+    "notes": ""
+  },
+  "artifacts": {
+    "official_validation": false,
+    "trigger_eval_results": false,
+    "behavior_eval_results": false,
+    "regression_eval_results": false,
+    "runtime_traces": false,
+    "scripts_present": false,
+    "scripts_checked": false,
+    "compatibility_claims": false,
+    "compatibility_verified": false,
+    "previous_version": false
+  },
+  "dimensions": [
+    {"id": "specification", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "problem_value", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "triggering", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "scope_composition", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "instruction_design", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "context_disclosure", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "architecture", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "scripts", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "resources", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "evals", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "reliability", "score": null, "confidence": "unknown", "evidence": [], "summary": ""},
+    {"id": "maintainability", "score": null, "confidence": "unknown", "evidence": [], "summary": ""}
+  ],
+  "gates": [
+    {"id": "package-validity", "status": "unknown", "severity": "P0", "reason": ""},
+    {"id": "critical-artifacts", "status": "unknown", "severity": "P0", "reason": ""},
+    {"id": "goal-alignment", "status": "unknown", "severity": "P0", "reason": ""},
+    {"id": "capability-validity", "status": "unknown", "severity": "P0", "reason": ""},
+    {"id": "safety-permissions", "status": "unknown", "severity": "P0", "reason": ""},
+    {"id": "architecture-ownership", "status": "unknown", "severity": "P1", "reason": ""},
+    {"id": "release-evidence", "status": "unknown", "severity": "P1", "reason": ""}
+  ],
+  "findings": []
+}

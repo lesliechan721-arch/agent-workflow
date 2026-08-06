@@ -2,13 +2,12 @@ import { spawn } from 'node:child_process';
 import {
   access,
   chmod,
+  cp,
   copyFile,
   mkdtemp,
-  mkdir,
   readFile,
   readdir,
   rm,
-  writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,16 +15,14 @@ import process from 'node:process';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { renderArtifactPlan } from '../scripts/render-artifacts.mjs';
+import {
+  setupTriggerWorkspace,
+  TRIGGER_WORKSPACE_FIXTURES,
+} from './trigger-fixture.mjs';
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_KEY = 'codex-subagent-guide';
-export const TRIGGER_WORKSPACE_FIXTURES = new Set([
-  'default',
-  'project_authorization',
-  'authorization_skill',
-  'lifecycle_skill',
-]);
+export { TRIGGER_WORKSPACE_FIXTURES };
 const ROOT_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
   'Use spawn_agent only when the user, project instructions, or an applicable skill has already authorized delegation.',
@@ -35,27 +32,6 @@ const ROOT_DEVELOPER_INSTRUCTIONS = [
 
 function tomlString(value) {
   return JSON.stringify(value);
-}
-
-export function renderRoleToml(roleFile) {
-  const lines = [
-    `name = ${tomlString(roleFile.name)}`,
-    `description = ${tomlString(roleFile.description)}`,
-    `developer_instructions = ${tomlString(roleFile.developer_instructions)}`,
-  ];
-  if (typeof roleFile.model === 'string' && roleFile.model.trim() !== '') {
-    lines.push(`model = ${tomlString(roleFile.model)}`);
-  }
-  if (
-    typeof roleFile.model_reasoning_effort === 'string' &&
-    roleFile.model_reasoning_effort.trim() !== ''
-  ) {
-    lines.push(
-      `model_reasoning_effort = ${tomlString(roleFile.model_reasoning_effort)}`,
-    );
-  }
-  lines.push('');
-  return lines.join('\n');
 }
 
 export async function readEvalResource(relativePath) {
@@ -83,86 +59,30 @@ export async function readEvalResource(relativePath) {
   return readFile(path.join(context.sourceRoot, 'evals', normalized), 'utf8');
 }
 
-async function writeFixtureFiles(root) {
-  const files = {
-    'src/simple.ts': 'export const retryLimit = 3;\n',
-    'src/general.ts': 'export function formatResult(value) { return String(value); }\n',
-    'src/complex/a.ts': 'export async function acquire(lock) { return lock.acquire(); }\n',
-    'src/complex/b.ts': 'export async function release(lock) { return lock.release(); }\n',
-    'docs/architecture.md': '# Architecture\nRequests flow through gateway, queue, and worker.\n',
-    'changes/review.diff': 'diff --git a/src/simple.ts b/src/simple.ts\n-export const retryLimit = 3;\n+export const retryLimit = -1;\n',
-  };
-  await Promise.all(Object.entries(files).map(async ([relativePath, content]) => {
-    const target = path.join(root, relativePath);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, content, 'utf8');
+function parseTomlString(source, key, file) {
+  const match = source.match(new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*$`, 'm'));
+  if (!match) {
+    throw new Error(`${file} is missing ${key}.`);
+  }
+  return JSON.parse(match[1]);
+}
+
+async function readMaterializedRoles(root) {
+  const roleRoot = path.join(root, '.codex', 'agents');
+  const files = (await readdir(roleRoot)).filter((file) => file.endsWith('.toml')).sort();
+  if (files.length !== 4) {
+    throw new Error(`Materialized codex-subagent-guide must contain four roles, got ${files.length}.`);
+  }
+  return Promise.all(files.map(async (file) => {
+    const rolePath = path.join(roleRoot, file);
+    const source = await readFile(rolePath, 'utf8');
+    const name = parseTomlString(source, 'name', file);
+    return {
+      roleFile: { name },
+      roleDescription: parseTomlString(source, 'description', file),
+      rolePath,
+    };
   }));
-}
-
-async function writeSkillFixture(root, name, content) {
-  const skillPath = path.join(root, '.agents', 'skills', name, 'SKILL.md');
-  await mkdir(path.dirname(skillPath), { recursive: true });
-  await writeFile(skillPath, content, 'utf8');
-  return skillPath;
-}
-
-async function writeTriggerWorkspaceFixture(root, fixture) {
-  if (fixture === 'default') {
-    return [];
-  }
-  if (fixture === 'project_authorization') {
-    await writeFile(
-      path.join(root, 'AGENTS.md'),
-      [
-        '# Evaluation Instructions',
-        '',
-        'Delegation is authorized and required for the user task in this workspace.',
-        'This rule does not choose an agent type, spawn parameters, context inheritance, waiting, recovery, or cleanup.',
-        'Load applicable skills before managing the delegated work.',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    return [];
-  }
-  if (fixture === 'authorization_skill') {
-    return [await writeSkillFixture(
-      root,
-      'delegation-authorizer',
-      [
-        '---',
-        'name: delegation-authorizer',
-        'description: Use when explicitly invoked to authorize subagent delegation for the current task without defining how delegation is managed.',
-        '---',
-        '',
-        '# Delegation Authorizer',
-        '',
-        'Delegation is authorized and required for the current user task.',
-        'This skill does not choose an agent type, spawn parameters, context inheritance, waiting, recovery, or cleanup.',
-        '',
-      ].join('\n'),
-    )];
-  }
-  if (fixture === 'lifecycle_skill') {
-    return [await writeSkillFixture(
-      root,
-      'delegation-lifecycle-owner',
-      [
-        '---',
-        'name: delegation-lifecycle-owner',
-        'description: Use when explicitly invoked to continue a specialized delegation workflow that already owns role selection, spawning, waiting, recovery, and cleanup.',
-        '---',
-        '',
-        '# Delegation Lifecycle Owner',
-        '',
-        'Continue the already-running specialized delegation workflow.',
-        'This skill fully owns role selection, spawn parameters, waiting, result validation, recovery, and cleanup.',
-        'Do not load a general subagent-management skill and do not spawn a duplicate agent.',
-        '',
-      ].join('\n'),
-    )];
-  }
-  throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);
 }
 
 export async function createEvalWorkspace({ withSkill = true, fixture = 'default' } = {}) {
@@ -171,60 +91,29 @@ export async function createEvalWorkspace({ withSkill = true, fixture = 'default
   }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-eval-'));
   try {
-    const plan = await renderArtifactPlan({
-      event: 'install',
-      platform: 'codex',
-      scope: 'project',
-      config: { values: {} },
-    });
-    const skill = plan.artifacts.find(
-      (entry) => entry.id === 'codex-subagent-guide-skill',
-    );
-    const roleArtifacts = plan.artifacts.filter(
-      (entry) => entry.target === 'codex.agentRole',
-    );
-    if (
-      !skill?.content?.skillFile ||
-      !skill.content.openaiYaml ||
-      roleArtifacts.length !== 4 ||
-      roleArtifacts.some(
-        (role) =>
-          !role?.content?.roleFile?.developer_instructions ||
-          !role?.content?.registration?.description,
-      )
-    ) {
+    const materializedProjectRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    if (!materializedProjectRoot) {
       throw new Error(
-        'Renderer did not return the expected codex-subagent-guide skill and roles.',
+        'AW_PLUGIN_EVAL_PROJECT_ROOT is required; run this suite through pnpm plugin:eval.',
       );
     }
-
+    await cp(materializedProjectRoot, root, { recursive: true, force: true });
     const skillRoot = path.join(root, '.agents', 'skills', SKILL_KEY);
     const skillPath = path.join(skillRoot, 'SKILL.md');
-    const metadataPath = path.join(skillRoot, 'agents', 'openai.yaml');
-    const roleRoot = path.join(root, '.codex', 'agents');
-    const roles = roleArtifacts.map((role) => ({
-      roleFile: role.content.roleFile,
-      roleDescription: role.content.registration.description,
-      rolePath: path.join(roleRoot, `${role.content.roleFile.name}.toml`),
-    }));
-
-    await Promise.all([
-      mkdir(roleRoot, { recursive: true }),
-      writeFixtureFiles(root),
-      ...(withSkill ? [mkdir(path.dirname(metadataPath), { recursive: true })] : []),
-    ]);
-    await Promise.all([
-      ...roles.map((role) =>
-        writeFile(role.rolePath, renderRoleToml(role.roleFile), 'utf8')),
-      ...(withSkill
-        ? [
-            writeFile(skillPath, skill.content.skillFile, 'utf8'),
-            writeFile(metadataPath, skill.content.openaiYaml, 'utf8'),
-          ]
-        : []),
-    ]);
-
-    const fixtureSkillPaths = await writeTriggerWorkspaceFixture(root, fixture);
+    const roles = await readMaterializedRoles(root);
+    await rm(path.join(root, '.codex', 'config.toml'), { force: true });
+    if (!withSkill) {
+      await rm(skillRoot, { recursive: true, force: true });
+    }
+    await setupTriggerWorkspace({
+      workspaceRoot: root,
+      evalCase: { workspace_fixture: fixture },
+    });
+    const fixtureSkillPaths = fixture === 'authorization_skill'
+      ? [path.join(root, '.agents', 'skills', 'delegation-authorizer', 'SKILL.md')]
+      : fixture === 'lifecycle_skill'
+        ? [path.join(root, '.agents', 'skills', 'delegation-lifecycle-owner', 'SKILL.md')]
+        : [];
 
     return {
       root,

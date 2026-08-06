@@ -3,7 +3,7 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "使用 $create-agent-workflows-plugin 新建一个双平台 release-notes 插件。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
+      "prompt": "请在 agent-workflows 仓库新建一个双平台 release-notes 插件。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
       "expected_output": "创建最小插件源码，skill 的职责、description、触发策略和输出格式清楚，作者校验通过且没有修改 marketplace 或生成目录。",
       "files": []
     },

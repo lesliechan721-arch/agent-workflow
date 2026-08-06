@@ -1,0 +1,27 @@
+[
+  {
+    "id": "minimal-knowledge-skill",
+    "scenario": "目标清楚、description有trigger eval、正文简洁、无确定性逻辑，因此没有scripts或references。",
+    "expected": ["scripts和resources可得4-5分", "absence不视为缺陷", "总体可pass"]
+  },
+  {
+    "id": "invalid-frontmatter",
+    "scenario": "name含大写并且目录名不一致，但其它维度良好。",
+    "expected": ["package-validity fail", "release fail", "总分不能覆盖门禁"]
+  },
+  {
+    "id": "broad-description-no-eval",
+    "scenario": "description覆盖大量相邻任务，没有触发测试。",
+    "expected": ["triggering不高于3", "置信度low或medium", "建议near-miss eval"]
+  },
+  {
+    "id": "scripted-deterministic-logic",
+    "scenario": "复杂配置校验由非交互脚本完成，提供help、JSON、测试和安全默认值。",
+    "expected": ["scripts高分", "instruction和architecture维度受益但不重复加分"]
+  },
+  {
+    "id": "prose-runtime-state-machine",
+    "scenario": "跨agent timeout、retry、pending和close全部由自然语言维护。",
+    "expected": ["architecture低分", "architecture-ownership gate fail或P1", "建议架构性减法"]
+  }
+]

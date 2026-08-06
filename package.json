@@ -18,6 +18,7 @@
     "test:smoke:pack": "pnpm --filter @yiliang/aw test:smoke:pack",
     "test:smoke:fetch": "pnpm --filter @yiliang/aw test:smoke:fetch",
     "plugin:test": "pnpm --filter @yiliang/aw plugin:test --",
+    "plugin:eval": "pnpm --filter @yiliang/aw plugin:eval --",
     "test:smoke:plugin-scripts": "pnpm --filter @yiliang/aw test:smoke:plugin-scripts",
     "pack:cli": "pnpm --filter @yiliang/aw pack",
     "release:verify:cli": "pnpm test && pnpm test:smoke:build && pnpm test:smoke:pack:cli && pnpm test:smoke:fetch",

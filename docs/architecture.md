@@ -18,6 +18,7 @@ Source layer（仓库内）
   plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
+  plugins/<name>/evals/**              # 作者期输入，不进入 catalog runtime
 
           ↓ pnpm build / catalog staging
 
@@ -79,9 +80,12 @@ npm Registry
 - `package.json` — repo root 统一脚本入口，包含 `build`、`test`、`release:*`、`publish:cli`
 - `scripts/release/*.mjs` — 版本同步、tarball 打包、本地 `npm install -g` 和发布编排脚本
 - `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 catalog staging / runtime bundle
+- `packages/cli/scripts/eval-plugin-skills.ts`、`plugin-eval-contract.ts`、`plugin-eval-materializer.ts`、`codex-trigger-eval.ts` — Codex 插件 eval manifest、最终制品 materialization、中央 trigger 执行、suite 编排和 `EvaluationBundle`
+- `packages/cli/scripts/codex-eval-app-server.ts` — 需要 `request_user_input` 的 Codex 多轮行为 eval driver
 - `packages/cli/plugins-dist/`、catalog staging、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/tarballs/` — 产物目录，不手改；CLI tarball 不把 `plugins-dist/` 作为正式插件兜底发布
 - `plugins/git-commit/` — 真实样例插件，演示标准插件结构
 - `.agents/skills/create-agent-workflows-plugin/` — 插件作者工具（含 `SKILL.md`、`agents/openai.yaml`、脚手架/校验脚本和 `references/` 下的作者参考文档）
+- `.agents/skills/skill-review/` — 标准静态 Skill 与 AW 插件 Skill 的只读评分、证据复核和发布门禁
 - `docs/plugin-installation.md` — CLI 使用、scope/platform 行为和排障入口
 - `docs/plugin-authoring.md` — 插件源码 manifest、hook、skill trigger 与 scope 语义入口
 

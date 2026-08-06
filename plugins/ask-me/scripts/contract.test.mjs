@@ -123,41 +123,63 @@ test('source skill and Codex metadata preserve the clarification-only contract',
 });
 
 test('trigger corpus is balanced and split for author evaluation', async () => {
-  const cases = await readJson(
-    path.join(context.sourceRoot, 'evals', 'trigger-queries.json'),
+  const document = await readJson(
+    path.join(context.sourceRoot, 'evals', 'trigger-cases.json'),
   );
+  const { cases } = document;
 
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, 'ask-me');
   assert.equal(cases.length, 20);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, 20);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_trigger).length, 10);
-  assert.equal(cases.filter((entry) => !entry.should_trigger).length, 10);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
   assert.equal(
-    cases.filter((entry) => entry.split === 'train' && entry.should_trigger).length,
+    cases.filter((entry) => entry.split === 'train' && entry.should_load_skill).length,
     6,
   );
   assert.equal(
-    cases.filter((entry) => entry.split === 'validation' && entry.should_trigger).length,
+    cases.filter((entry) => entry.split === 'validation' && entry.should_load_skill).length,
     4,
   );
   assert.deepEqual(
-    new Set(cases.filter((entry) => entry.should_trigger).map((entry) => entry.kind)),
+    new Set(cases.filter((entry) => entry.should_load_skill).flatMap((entry) => entry.tags)),
     new Set(['ambiguous', 'conflict', 'infeasible', 'explicit']),
   );
   assert.deepEqual(
-    new Set(cases.filter((entry) => !entry.should_trigger).map((entry) => entry.kind)),
+    new Set(cases.filter((entry) => !entry.should_load_skill).flatMap((entry) => entry.tags)),
     new Set(['complete-spec', 'fact-question', 'low-risk']),
   );
   assert.equal(
-    cases.filter((entry) => entry.kind === 'explicit').every(
+    cases.filter((entry) => entry.tags.includes('explicit')).every(
       (entry) => entry.query.includes('$ask-me') || entry.query.includes('/ask-me'),
     ),
     true,
   );
 });
 
-test('behavior corpus covers the three cross-platform workflows without posing as model tests', async () => {
+test('trigger suite delegates execution to the central native driver', async () => {
+  const manifest = await readJson(path.join(context.sourceRoot, 'evals', 'manifest.json'));
+  const trigger = manifest.suites.find((suite) => suite.id === 'trigger');
+  assert.deepEqual(trigger, {
+    id: 'trigger',
+    kind: 'trigger',
+    skill: 'ask-me',
+    cases: './evals/trigger-cases.json',
+    observeSpawnAgent: false,
+    isolation: 'standard',
+    strictNegativeSplits: ['validation'],
+    profiles: ['project-default'],
+    defaultRuns: 3,
+    releaseSplits: ['validation'],
+    requiredForRelease: true,
+    perRunTimeoutMs: 180000,
+  });
+});
+
+test('behavior corpus stays cross-platform while exposing structured Codex v1 replies', async () => {
   const corpus = await readJson(path.join(context.sourceRoot, 'evals', 'evals.json'));
 
   assert.equal(corpus.skill_name, 'ask-me');
@@ -174,6 +196,14 @@ test('behavior corpus covers the three cross-platform workflows without posing a
     assert.ok(entry.expected_output.length > 0);
     assert.deepEqual(entry.files, []);
     assert.ok(entry.scripted_replies.length > 0);
+    for (const reply of entry.scripted_replies) {
+      assert.equal(Number.isInteger(reply.expected_question_count), true);
+      assert.equal(reply.expected_question_count >= 0, true);
+      assert.equal(Array.isArray(reply.answers_by_index), true);
+      assert.equal(reply.answers_by_index.every((answer) => typeof answer === 'string'), true);
+      assert.equal(typeof reply.unexpected_question_answer, 'string');
+      assert.ok(reply.unexpected_question_answer.length > 0);
+    }
     assert.deepEqual(entry.review.platforms, ['codex', 'claude']);
     assert.equal(entry.review.clean_session, true);
     assert.equal(entry.review.workspace_unchanged, true);
@@ -184,9 +214,10 @@ test('behavior corpus covers the three cross-platform workflows without posing a
     path.join(context.sourceRoot, 'evals', 'README.md'),
     'utf8',
   );
-  assert.match(readme, /不能替代这里的行为评测/);
-  assert.match(readme, /全新的 Codex 和 Claude Code 会话/);
-  assert.match(readme, /不要把 `pnpm plugin:test ask-me` 的通过结果报告成/);
+  assert.match(readme, /不能替代这里的 Codex 行为评测/);
+  assert.match(readme, /pnpm plugin:eval ask-me --materialize-only/);
+  assert.match(readme, /全新的 Codex app-server 会话/);
+  assert.match(readme, /Claude 模型行为暂不在 v1 范围内/);
 });
 
 test('prepared bundle exposes automatic and manual entry points on both platforms', async () => {

@@ -2,7 +2,6 @@
 name: create-agent-workflows-plugin
 description: 仅当用户明确要求在 `agent-workflows` 仓库创建或维护 `plugins/<name>/` 插件时使用；用于设计插件内 Agent Skill、编写或调整 manifest 与平台能力、运行作者校验并修复 bundle 问题。不用于安装或使用插件、仓库外的通用 Skill 编写，或单纯解释 CLI。
 compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.
-disable-model-invocation: true
 ---
 
 # Create Agent Workflows Plugin
@@ -10,6 +9,8 @@ disable-model-invocation: true
 在当前仓库创建或维护 agent-workflows 插件。插件默认同时支持 Codex 和 Claude Code，也可以通过 `marketplace.policy.products` 收窄到单个平台。
 
 这里描述的是源码层公共 contract，不是 Claude Code / Codex 原生插件 schema 的全集。作者只维护 `plugins/<name>/` 下的源码真值；runtime bundle、catalog manifest、本地 runtime view 和平台 manifest 由 CLI / 发布流程生成。
+
+本 Skill 负责创建和修复；独立只读评分、证据复核与发布门禁由 repo-local `skill-review` 负责，后者也能评审标准静态 Skill，避免作者工作流同时充当自己的 reviewer。
 
 ## 阅读路由
 
@@ -40,7 +41,7 @@ disable-model-invocation: true
    - 显式快捷入口 → 公共 `slashCommands`
    - 配置驱动的 Codex 产物 → dynamic artifact
 3. **创建骨架**
-   - 新插件可运行 `scripts/init_plugin.js`
+   - 新插件可运行 `scripts/init_plugin.mjs`
    - 只保留用户请求的能力，不预先生成 MCP、Apps、lifecycle 或 config
 4. **实现源码**
    - Skills → 编写 `SKILL.md`；面向 Codex 时同时提供 `agents/openai.yaml`
@@ -52,19 +53,20 @@ disable-model-invocation: true
 5. **构建**
    - 运行 `pnpm build` 生成本地 staging/runtime bundle
 6. **验证并修复**
-   - 运行 `scripts/validate_plugin.js`
+   - 运行 `scripts/validate_plugin.mjs`
    - 校验失败时按错误修复并重跑，直到通过
 7. **测试**
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
-   - skill 的模型行为另按 `references/skill-evaluation.md` 评估
+   - Skill 的作者期用例统一放在插件根 `evals/`，按 `references/skill-evaluation.md` 声明 `evals/manifest.json`
+   - 先运行 `pnpm plugin:eval <plugin> --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
 8. **交付**
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
 
 ## 脚手架
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin-name> \
+node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugin-name> \
   --description "插件描述" \
   --display-name "Display Name" \
   --short-description "简短 UI 描述" \
@@ -82,7 +84,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
   [--repo-root .]
 ```
 
-运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js --help` 查看完整参数。
+运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
 
 - 默认创建带 skill 的最小插件，并为该 skill 生成 fixed/manual 的 `skillTriggers` entry
 - `--skill-short-description` 只控制初始 skill 的 UI metadata，必须为 25–64 字符；省略时兼容回退到 `--skill-description`，再回退到插件 UI 摘要，回退值也必须满足同一长度约束
@@ -107,6 +109,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 - Agent Skills portable core 与 Claude/Codex 扩展要明确区分；默认 AW validator 接受目标平台的已知扩展，`--strict-agent-skills` 只接受 portable core。
 - `dependencies.plugins` 只指向当前 catalog 内插件；版本门槛使用 `minVersion`，不写 range 或外部来源。
 - lifecycle 和 renderer 要可重试、幂等；renderer 不直接写 `.agents/skills/**`、Codex runtime、config、install record 或 diagnostic cache。
+- 插件根 `evals/**` 是作者期材料，不放进 Skill 子树，也不进入 production runtime bundle；动态 Skill 的行为评测必须消费 materialized 最终制品。
+- `plugin:test` 只验证确定性脚本；`plugin:eval` v1 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。
 - `plugins/marketplace-source.json`、`packages/cli/plugins-dist/`、`~/.aw/` 和平台 manifest 都不是单插件作者手改入口。
 
@@ -115,22 +119,25 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js <plugin
 ## 验证入口
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js plugins/<name>
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js \
+node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs \
   plugins/<name> --strict-agent-skills
 pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
 pnpm plugin:test <dual-platform-plugin> --platform both --scope project
+pnpm plugin:eval <plugin> --materialize-only --output-dir /tmp/aw-eval
+pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-dir /tmp/aw-eval
 ```
 
-`validate_plugin.js` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建时 validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
+`validate_plugin.mjs` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建时 validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
 
 ## 完成条件
 
 - 只修改用户请求所需的插件源码和直接关联测试/文档
 - 没有手改生成目录、runtime cache 或 marketplace 产物
-- `validate_plugin.js` 通过，相关确定性测试通过
-- 新建或重大修改的 skill 有明确完成标准、验证循环和小型 eval 用例
+- `validate_plugin.mjs` 通过，相关确定性测试通过
+- 新建或重大修改的 Skill 有明确完成标准、验证循环、插件根 eval manifest 和小型用例
+- Codex 动态 Skill 的 default/non-default、project/user final artifacts 已 materialize；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
 
 ## 参考文档索引

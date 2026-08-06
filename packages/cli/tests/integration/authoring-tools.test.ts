@@ -87,7 +87,7 @@ function validatePluginScriptPath(): string {
     'skills',
     'create-agent-workflows-plugin',
     'scripts',
-    'validate_plugin.js',
+    'validate_plugin.mjs',
   );
 }
 
@@ -394,7 +394,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'init_plugin.js',
+      'init_plugin.mjs',
     );
 
     await expect(
@@ -550,7 +550,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'init_plugin.js',
+      'init_plugin.mjs',
     );
 
     await execFileAsync(
@@ -608,7 +608,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js rejects invalid authoring version contracts and catalog gates', async () => {
+  it('validate_plugin.mjs rejects invalid authoring version contracts and catalog gates', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-version-contracts-'));
     tempDirs.push(tempRoot);
     const pluginsRoot = path.join(tempRoot, 'plugins');
@@ -710,7 +710,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'init_plugin.js',
+      'init_plugin.mjs',
     );
 
     await execFileAsync(
@@ -1073,7 +1073,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'init_plugin.js',
+      'init_plugin.mjs',
     );
     const validateScriptPath = path.join(
       repoRoot(),
@@ -1081,7 +1081,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
 
     await execFileAsync(
@@ -1159,7 +1159,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'init_plugin.js',
+      'init_plugin.mjs',
     );
     const validateScriptPath = path.join(
       repoRoot(),
@@ -1167,7 +1167,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
 
     await execFileAsync(
@@ -1318,8 +1318,6 @@ describe('authoring tools', () => {
         refBase,
         '.examples',
         'code-review',
-        'review-skills',
-        'review-workflow',
         'evals',
         'evals.json',
       ),
@@ -1409,9 +1407,18 @@ describe('authoring tools', () => {
     expect(skillScriptsDoc).toContain('`skills/<skill>/scripts/`');
     expect(skillScriptsDoc).toContain('非交互');
     expect(skillEvaluationDoc).toContain('触发评估');
-    expect(skillEvaluationDoc).toContain('输出质量评估');
+    expect(skillEvaluationDoc).toContain('输出与多轮行为评估');
     expect(skillEvaluationDoc).toContain('`evals/evals.json`');
-    expect(skillEvaluationDoc).toContain('第一轮先不要固化 assertions');
+    expect(skillEvaluationDoc).toContain('`evals/manifest.json`');
+    expect(skillEvaluationDoc).toContain('`pnpm plugin:eval`');
+    expect(skillEvaluationDoc).toContain('`trigger` 由中央 `codex exec --json` driver 执行');
+    expect(skillEvaluationDoc).toContain('`fixtureModule`');
+    expect(skillEvaluationDoc).toContain('`AW_PLUGIN_EVAL_PROJECT_ROOT`');
+    expect(skillEvaluationDoc).not.toContain('run-trigger-evals.mjs');
+    expect(skillEvaluationDoc).toContain('真实模型只允许 `scope: "project"`');
+    expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
+    expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
+    expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
     const evalSuites = [
       {
         document: creatorEvalFixtures,
@@ -1422,13 +1429,7 @@ describe('authoring tools', () => {
       {
         document: exampleEvalFixtures,
         skillName: 'review-workflow',
-        skillRoot: path.join(
-          refBase,
-          '.examples',
-          'code-review',
-          'review-skills',
-          'review-workflow',
-        ),
+        skillRoot: path.join(refBase, '.examples', 'code-review'),
         caseCount: 2,
       },
     ];
@@ -1491,7 +1492,7 @@ describe('authoring tools', () => {
     expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
 
-  it('validate_plugin.js validates skillTriggers authoring contract', async () => {
+  it('validate_plugin.mjs validates skillTriggers authoring contract', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-triggers-authoring-'));
     tempDirs.push(tempRoot);
 
@@ -1547,7 +1548,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
 
     await expect(
@@ -1696,7 +1697,227 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js rejects bad scripts/config authoring contracts without package-manager staging', async () => {
+  it('validate_plugin.mjs validates optional plugin eval manifests', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-authoring-'));
+    tempDirs.push(tempRoot);
+    const pluginDir = path.join(tempRoot, 'eval-demo');
+    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginDir, 'skills', 'eval-demo', 'agents'));
+    await fs.ensureDir(path.join(pluginDir, 'evals'));
+    await fs.writeJson(
+      path.join(pluginDir, '.agents-plugin', 'plugin.json'),
+      withDefaultCompatibility({
+        name: 'eval-demo',
+        version: '0.1.0',
+        description: 'Test the plugin eval authoring contract.',
+        skills: './skills',
+        skillTriggers: {
+          'eval-demo': {
+            defaultTrigger: 'manual',
+            allowDynamicTrigger: false,
+          },
+        },
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        },
+      }),
+      { spaces: 2 },
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'eval-demo', 'SKILL.md'),
+      [
+        '---',
+        'name: eval-demo',
+        'description: Run the eval manifest authoring contract fixture.',
+        'user-invocable: true',
+        'disable-model-invocation: true',
+        '---',
+        '',
+        '# Eval Demo',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'eval-demo', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: false\n',
+      'utf8',
+    );
+    await fs.writeJson(path.join(pluginDir, 'evals', 'trigger-cases.json'), {
+      schemaVersion: 1,
+      skill: 'eval-demo',
+      cases: [{
+        id: 'explicit_eval_demo',
+        split: 'validation',
+        query: '$eval-demo inspect the fixture.',
+        should_load_skill: true,
+      }],
+    }, { spaces: 2 });
+
+    const evalManifestPath = path.join(pluginDir, 'evals', 'manifest.json');
+    const validEvalManifest = {
+      schemaVersion: 1,
+      plugin: 'eval-demo',
+      profiles: [
+        {
+          id: 'project-default',
+          scope: 'project',
+          config: {},
+          triggerPreference: 'default',
+          runModel: true,
+          requiredForRelease: true,
+        },
+        {
+          id: 'user-default',
+          scope: 'user',
+          config: {},
+          triggerPreference: 'default',
+          runModel: false,
+          requiredForRelease: true,
+        },
+      ],
+      suites: [
+        {
+          id: 'trigger',
+          kind: 'trigger',
+          skill: 'eval-demo',
+          cases: './evals/trigger-cases.json',
+          observeSpawnAgent: false,
+          isolation: 'standard',
+          strictNegativeSplits: ['validation'],
+          profiles: ['project-default'],
+          defaultRuns: 1,
+          releaseSplits: ['validation'],
+          requiredForRelease: true,
+          perRunTimeoutMs: 10_000,
+        },
+      ],
+    };
+    await fs.writeJson(evalManifestPath, validEvalManifest, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    if (process.platform !== 'win32') {
+      const casesPath = path.join(pluginDir, 'evals', 'trigger-cases.json');
+      const outsideCasesPath = path.join(tempRoot, 'outside-trigger-cases.json');
+      await fs.copyFile(casesPath, outsideCasesPath);
+      await fs.remove(casesPath);
+      await fs.symlink(outsideCasesPath, casesPath);
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('must stay inside the plugin root'),
+      });
+      await fs.remove(casesPath);
+      await fs.copyFile(outsideCasesPath, casesPath);
+    }
+
+    const conversationCasesPath = path.join(pluginDir, 'evals', 'conversation-cases.json');
+    const conversationSuite = {
+      id: 'behavior',
+      kind: 'conversation',
+      skill: 'eval-demo',
+      cases: './evals/conversation-cases.json',
+      profiles: ['project-default'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+    };
+    const conversationManifest = {
+      ...validEvalManifest,
+      suites: [conversationSuite],
+    };
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [{ id: 'behavior_case' }],
+    }, { spaces: 2 });
+    await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('evals must be a non-empty array'),
+    });
+
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'other-skill',
+      evals: [{ id: 'behavior_case' }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('skill_name must match "eval-demo"'),
+    });
+
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [{ id: 'behavior_case' }, { id: ' behavior_case ' }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate case id "behavior_case"'),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'evals', 'domain-runner.mjs'),
+      'process.stdout.write(JSON.stringify({ complete: true, passed: true }));\n',
+      'utf8',
+    );
+    const commandSuite = {
+      id: 'domain',
+      kind: 'command',
+      entry: './evals/domain-runner.mjs',
+      profiles: ['project-default'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+      suiteTimeoutMs: 30_000,
+      supports: [],
+    };
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      suites: [commandSuite],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      suites: [{ ...commandSuite, suiteTimeoutMs: 9_999 }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'suiteTimeoutMs must be greater than or equal to perRunTimeoutMs',
+      ),
+    });
+
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      profiles: validEvalManifest.profiles.map((profile) =>
+        profile.id === 'user-default' ? { ...profile, runModel: true } : profile),
+      suites: [{
+        ...validEvalManifest.suites[0],
+        cases: '../outside.json',
+        profiles: ['user-default', 'missing-profile'],
+      }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('does not allow real model execution for user scope'),
+    });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('references unknown profile "missing-profile"'),
+    });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('must stay inside the plugin root'),
+    });
+  });
+
+  it('validate_plugin.mjs rejects bad scripts/config authoring contracts without package-manager staging', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-scripts-authoring-'));
     tempDirs.push(tempRoot);
 
@@ -1706,7 +1927,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'script-contract-demo', {});
     await fs.ensureDir(path.join(pluginDir, 'scripts', 'pkg'));
@@ -1863,7 +2084,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js validates dynamic Codex artifact renderer contracts', async () => {
+  it('validate_plugin.mjs validates dynamic Codex artifact renderer contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifacts-'));
     tempDirs.push(tempRoot);
 
@@ -1920,7 +2141,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js validates artifact target platforms against supported products', async () => {
+  it('validate_plugin.mjs validates artifact target platforms against supported products', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
     tempDirs.push(tempRoot);
 
@@ -1951,7 +2172,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js rejects dynamic role metadata and skill trigger policy mistakes', async () => {
+  it('validate_plugin.mjs rejects dynamic role metadata and skill trigger policy mistakes', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-role-'));
     tempDirs.push(tempRoot);
 
@@ -1980,7 +2201,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js accepts native hooks and rejects hook contract mistakes', async () => {
+  it('validate_plugin.mjs accepts native hooks and rejects hook contract mistakes', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-hooks-authoring-'));
     tempDirs.push(tempRoot);
 
@@ -1990,7 +2211,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'native-hook-demo', {
       hooks: [
@@ -2118,7 +2339,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js enforces platform-scoped authoring contracts', async () => {
+  it('validate_plugin.mjs enforces platform-scoped authoring contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-platform-conflicts-'));
     tempDirs.push(tempRoot);
 
@@ -2261,14 +2482,14 @@ describe('authoring tools', () => {
     }
   });
 
-  it('validate_plugin.js passes on the reference code-review example', async () => {
+  it('validate_plugin.mjs passes on the reference code-review example', async () => {
     const scriptPath = path.join(
       repoRoot(),
       '.agents',
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     const pluginDir = path.join(
       repoRoot(),
@@ -2288,14 +2509,14 @@ describe('authoring tools', () => {
     ).resolves.toBeDefined();
   });
 
-  it('validate_plugin.js validates public slashCommands source contracts', async () => {
+  it('validate_plugin.mjs validates public slashCommands source contracts', async () => {
     const scriptPath = path.join(
       repoRoot(),
       '.agents',
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-authoring-'));
     tempDirs.push(tempRoot);
@@ -2383,7 +2604,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js scopes slashCommands validation to the final supported platforms', async () => {
+  it('validate_plugin.mjs scopes slashCommands validation to the final supported platforms', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-products-'));
     tempDirs.push(tempRoot);
 
@@ -2433,7 +2654,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js only validates slash command frontmatter for supported platforms', async () => {
+  it('validate_plugin.mjs only validates slash command frontmatter for supported platforms', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-frontmatter-'));
     tempDirs.push(tempRoot);
 
@@ -2470,7 +2691,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js enforces Codex skill metadata and YAML shape', async () => {
+  it('validate_plugin.mjs enforces Codex skill metadata and YAML shape', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-metadata-'));
     tempDirs.push(tempRoot);
 
@@ -2509,7 +2730,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -2674,7 +2895,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js validates manifest marketplace policy products', async () => {
+  it('validate_plugin.mjs validates manifest marketplace policy products', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-manifest-products-'));
     tempDirs.push(tempRoot);
 
@@ -2701,7 +2922,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
 
     await expect(
@@ -2730,7 +2951,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js accepts and validates Codex policy products', async () => {
+  it('validate_plugin.mjs accepts and validates Codex policy products', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-policy-products-'));
     tempDirs.push(tempRoot);
 
@@ -2775,7 +2996,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
 
     await fs.writeFile(
@@ -2820,7 +3041,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js accepts runtime-compatible YAML block scalars and tool commands', async () => {
+  it('validate_plugin.mjs accepts runtime-compatible YAML block scalars and tool commands', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-yaml-'));
     tempDirs.push(tempRoot);
 
@@ -2896,7 +3117,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -2909,7 +3130,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js validates rendered templated skill metadata', async () => {
+  it('validate_plugin.mjs validates rendered templated skill metadata', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-templated-metadata-'));
     tempDirs.push(tempRoot);
 
@@ -3002,7 +3223,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -3015,7 +3236,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js treats openai.yaml as optional for non-Codex skills', async () => {
+  it('validate_plugin.mjs treats openai.yaml as optional for non-Codex skills', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-skill-'));
     tempDirs.push(tempRoot);
 
@@ -3064,7 +3285,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -3077,7 +3298,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.js separates Agent Skills core fields from target platform extensions', async () => {
+  it('validate_plugin.mjs separates Agent Skills core fields from target platform extensions', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-frontmatter-'));
     tempDirs.push(tempRoot);
 
@@ -3141,7 +3362,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     let invalidFrontmatterStdout = '';
     try {
@@ -3380,7 +3601,7 @@ describe('authoring tools', () => {
     expect(helpResult.stdout).toContain('--json');
   });
 
-  it('validate_plugin.js rejects out-of-bounds skills path when CLI is built', async () => {
+  it('validate_plugin.mjs rejects out-of-bounds skills path when CLI is built', async () => {
     const distPath = path.join(repoRoot(), 'packages', 'cli', 'dist');
     if (!fs.existsSync(distPath)) return;
 
@@ -3408,7 +3629,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -3419,7 +3640,7 @@ describe('authoring tools', () => {
     ).rejects.toBeDefined();
   });
 
-  it('validate_plugin.js stays in parity with CLI dependency validation fixtures', async () => {
+  it('validate_plugin.mjs stays in parity with CLI dependency validation fixtures', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dependency-parity-'));
     tempDirs.push(tempRoot);
     const pluginsRoot = path.join(tempRoot, 'plugins');
@@ -3448,7 +3669,7 @@ describe('authoring tools', () => {
     }
   });
 
-  it('validate_plugin.js fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
+  it('validate_plugin.mjs fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
     tempDirs.push(tempRoot);
 
@@ -3458,7 +3679,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     const scriptPath = path.join(
       tempRoot,
@@ -3466,7 +3687,7 @@ describe('authoring tools', () => {
       'skills',
       'create-agent-workflows-plugin',
       'scripts',
-      'validate_plugin.js',
+      'validate_plugin.mjs',
     );
     await fs.ensureDir(path.dirname(scriptPath));
     await fs.copy(scriptSource, scriptPath);

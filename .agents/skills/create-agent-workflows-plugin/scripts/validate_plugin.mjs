@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { pathToFileURL } = require('node:url');
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const errors = [];
 const warnings = [];
@@ -152,6 +156,20 @@ const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PLUGIN_DEPENDENCY_PLATFORMS = new Set(['codex', 'claude']);
+const PLUGIN_EVAL_SCHEMA_VERSION = 1;
+const PLUGIN_EVAL_SCOPES = new Set(['user', 'project']);
+const PLUGIN_EVAL_TRIGGER_PREFERENCES = new Set(['default', 'auto', 'manual']);
+const PLUGIN_EVAL_SPLITS = new Set(['train', 'validation', 'sanity', 'all']);
+const PLUGIN_EVAL_TRIGGER_CASE_SPLITS = new Set(['train', 'validation', 'sanity']);
+const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
+  'split',
+  'runs',
+  'case',
+  'model',
+  'codexBin',
+  'timeout',
+  'allowEnvironmentSkips',
+]);
 let yamlParser = null;
 
 function error(msg) {
@@ -1013,6 +1031,375 @@ function validateNonEmptyString(value, fieldName, maxLength) {
     error(`${fieldName} must be <= ${maxLength} characters`);
   }
   return trimmed;
+}
+
+function isPathInsideOrEqual(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function validateRealPathBoundary(boundary, candidate, fieldName, boundaryName) {
+  const canonicalBoundary = fs.realpathSync(boundary);
+  const canonicalCandidate = fs.realpathSync(candidate);
+  if (!isPathInsideOrEqual(canonicalBoundary, canonicalCandidate)) {
+    error(`${fieldName} must stay inside the ${boundaryName}`);
+    return false;
+  }
+  return true;
+}
+
+function validateEvalRelativeFile(pluginDir, value, fieldName) {
+  const relativePath = validateNonEmptyString(value, fieldName);
+  if (!relativePath) return null;
+  const normalized = stripDotSlash(relativePath).split('\\').join('/');
+  if (path.isAbsolute(normalized) || normalized.split('/').includes('..')) {
+    error(`${fieldName} must stay inside the plugin root`);
+    return null;
+  }
+  const absolutePath = path.resolve(pluginDir, normalized);
+  const relativeToRoot = path.relative(pluginDir, absolutePath);
+  if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+    error(`${fieldName} must stay inside the plugin root`);
+    return null;
+  }
+  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+    error(`${fieldName} does not exist: ${normalized}`);
+    return null;
+  }
+  if (!validateRealPathBoundary(pluginDir, absolutePath, fieldName, 'plugin root')) {
+    return null;
+  }
+  return normalized;
+}
+
+function validateEvalAssetFile(pluginDir, value, fieldName) {
+  const normalized = validateEvalRelativeFile(pluginDir, value, fieldName);
+  if (normalized && !normalized.startsWith('evals/')) {
+    error(`${fieldName} must stay inside the plugin evals directory`);
+    return null;
+  }
+  if (
+    normalized &&
+    !validateRealPathBoundary(
+      path.join(pluginDir, 'evals'),
+      path.resolve(pluginDir, normalized),
+      fieldName,
+      'plugin evals directory',
+    )
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function validateConversationCaseCorpus(pluginDir, suite, fieldName) {
+  const casesPath = validateEvalAssetFile(pluginDir, suite.cases, `${fieldName}.cases`);
+  if (!casesPath) return;
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(path.join(pluginDir, casesPath), 'utf8'));
+  } catch (e) {
+    error(`${fieldName}.cases is not valid JSON: ${e.message}`);
+    return;
+  }
+  const corpus = expectRecord(document, `${fieldName}.cases document`);
+  if (!corpus) return;
+  const skillName = validateNonEmptyString(
+    corpus.skill_name,
+    `${fieldName}.cases.skill_name`,
+  );
+  if (skillName && skillName !== suite.skill) {
+    error(`${fieldName}.cases.skill_name must match ${JSON.stringify(suite.skill)}`);
+  }
+  if (!Array.isArray(corpus.evals) || corpus.evals.length === 0) {
+    error(`${fieldName}.cases.evals must be a non-empty array`);
+    return;
+  }
+  const ids = new Set();
+  corpus.evals.forEach((value, caseIndex) => {
+    const caseField = `${fieldName}.cases.evals[${caseIndex}]`;
+    const entry = expectRecord(value, caseField);
+    if (!entry) return;
+    const id = validateNonEmptyString(entry.id, `${caseField}.id`);
+    if (id && ids.has(id)) {
+      error(`${fieldName}.cases has duplicate case id ${JSON.stringify(id)}`);
+    } else if (id) {
+      ids.add(id);
+    }
+  });
+}
+
+function validateTriggerCaseCorpus(pluginDir, suite, fieldName) {
+  const casesPath = validateEvalAssetFile(pluginDir, suite.cases, `${fieldName}.cases`);
+  if (!casesPath) return;
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(path.join(pluginDir, casesPath), 'utf8'));
+  } catch (e) {
+    error(`${fieldName}.cases is not valid JSON: ${e.message}`);
+    return;
+  }
+  const corpus = expectRecord(document, `${fieldName}.cases document`);
+  if (!corpus) return;
+  if (corpus.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
+    error(`${fieldName}.cases.schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}`);
+  }
+  if (corpus.skill !== suite.skill) {
+    error(`${fieldName}.cases.skill must match ${JSON.stringify(suite.skill)}`);
+  }
+  if (!Array.isArray(corpus.cases) || corpus.cases.length === 0) {
+    error(`${fieldName}.cases.cases must be a non-empty array`);
+    return;
+  }
+  const ids = new Set();
+  const seenSplits = new Set();
+  let hasWorkspaceFixture = false;
+  corpus.cases.forEach((value, caseIndex) => {
+    const caseField = `${fieldName}.cases.cases[${caseIndex}]`;
+    const entry = expectRecord(value, caseField);
+    if (!entry) return;
+    const id = validateNonEmptyString(entry.id, `${caseField}.id`);
+    if (id && !/^[a-z0-9][a-z0-9_]*$/.test(id)) {
+      error(`${caseField}.id must use lowercase snake_case`);
+    } else if (id && ids.has(id)) {
+      error(`${fieldName}.cases has duplicate case id ${JSON.stringify(id)}`);
+    } else if (id) {
+      ids.add(id);
+    }
+    if (!PLUGIN_EVAL_TRIGGER_CASE_SPLITS.has(entry.split)) {
+      error(`${caseField}.split must be train, validation, or sanity`);
+    } else {
+      seenSplits.add(entry.split);
+    }
+    validateNonEmptyString(entry.query, `${caseField}.query`);
+    if (typeof entry.should_load_skill !== 'boolean') {
+      error(`${caseField}.should_load_skill must be boolean`);
+    }
+    if (suite.observeSpawnAgent === true) {
+      if (typeof entry.should_spawn_agent !== 'boolean') {
+        error(`${caseField}.should_spawn_agent is required when observeSpawnAgent=true`);
+      }
+    } else if (entry.should_spawn_agent !== undefined) {
+      error(`${caseField}.should_spawn_agent requires observeSpawnAgent=true`);
+    }
+    if (entry.workspace_fixture !== undefined) {
+      hasWorkspaceFixture = true;
+      validateNonEmptyString(entry.workspace_fixture, `${caseField}.workspace_fixture`);
+    }
+    if (
+      entry.use_project_rules !== undefined &&
+      typeof entry.use_project_rules !== 'boolean'
+    ) {
+      error(`${caseField}.use_project_rules must be boolean`);
+    }
+    if (entry.tags !== undefined) {
+      if (!Array.isArray(entry.tags) || entry.tags.length === 0) {
+        error(`${caseField}.tags must be a non-empty array`);
+      } else {
+        entry.tags.forEach((tag, tagIndex) => {
+          validateNonEmptyString(tag, `${caseField}.tags[${tagIndex}]`);
+        });
+      }
+    }
+  });
+  if (hasWorkspaceFixture && suite.fixtureModule === undefined) {
+    error(`${fieldName}.fixtureModule is required when cases declare workspace_fixture`);
+  }
+  if (Array.isArray(suite.releaseSplits)) {
+    suite.releaseSplits.forEach((split) => {
+      if (split !== 'all' && !seenSplits.has(split)) {
+        error(`${fieldName}.cases has no cases for release split ${JSON.stringify(split)}`);
+      }
+    });
+  }
+}
+
+function validatePluginEvalManifest(pluginDir, pluginManifest) {
+  const evalManifestPath = path.join(pluginDir, 'evals', 'manifest.json');
+  if (!fs.existsSync(evalManifestPath)) return;
+
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(evalManifestPath, 'utf8'));
+  } catch (e) {
+    error(`evals/manifest.json is not valid JSON: ${e.message}`);
+    return;
+  }
+  const manifest = expectRecord(document, 'evals/manifest.json');
+  if (!manifest) return;
+  if (manifest.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
+    error(`evals/manifest.json.schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}`);
+  }
+  if (manifest.plugin !== pluginManifest.name) {
+    error(
+      `evals/manifest.json.plugin must match plugin name ${JSON.stringify(pluginManifest.name)}`,
+    );
+  }
+
+  if (!Array.isArray(manifest.profiles) || manifest.profiles.length === 0) {
+    error('evals/manifest.json.profiles must be a non-empty array');
+    return;
+  }
+  const profilesById = new Map();
+  manifest.profiles.forEach((value, index) => {
+    const fieldName = `evals/manifest.json.profiles[${index}]`;
+    const profile = expectRecord(value, fieldName);
+    if (!profile) return;
+    const id = validateNonEmptyString(profile.id, `${fieldName}.id`);
+    if (id && !PLUGIN_NAME_PATTERN.test(id)) {
+      error(`${fieldName}.id must use lowercase kebab-case`);
+    } else if (id && profilesById.has(id)) {
+      error(`evals/manifest.json has duplicate profile id ${JSON.stringify(id)}`);
+    } else if (id) {
+      profilesById.set(id, profile);
+    }
+    if (!PLUGIN_EVAL_SCOPES.has(profile.scope)) {
+      error(`${fieldName}.scope must be user or project`);
+    }
+    if (profile.config !== undefined && !isRecord(profile.config)) {
+      error(`${fieldName}.config must be an object`);
+    }
+    const triggerPreference = profile.triggerPreference ?? 'default';
+    if (!PLUGIN_EVAL_TRIGGER_PREFERENCES.has(triggerPreference)) {
+      error(`${fieldName}.triggerPreference must be default, auto, or manual`);
+    }
+    if (typeof profile.runModel !== 'boolean') {
+      error(`${fieldName}.runModel must be boolean`);
+    }
+    if (typeof profile.requiredForRelease !== 'boolean') {
+      error(`${fieldName}.requiredForRelease must be boolean`);
+    }
+    if (profile.scope === 'user' && profile.runModel === true) {
+      error(`${fieldName}: eval schema v1 does not allow real model execution for user scope`);
+    }
+  });
+  if (!manifest.profiles.some((profile) =>
+    isRecord(profile) && profile.scope === 'project' && profile.runModel === true)) {
+    error('evals/manifest.json must define at least one project profile with runModel=true');
+  }
+
+  if (!Array.isArray(manifest.suites) || manifest.suites.length === 0) {
+    error('evals/manifest.json.suites must be a non-empty array');
+    return;
+  }
+  const suiteIds = new Set();
+  manifest.suites.forEach((value, index) => {
+    const fieldName = `evals/manifest.json.suites[${index}]`;
+    const suite = expectRecord(value, fieldName);
+    if (!suite) return;
+    const id = validateNonEmptyString(suite.id, `${fieldName}.id`);
+    if (id && !PLUGIN_NAME_PATTERN.test(id)) {
+      error(`${fieldName}.id must use lowercase kebab-case`);
+    } else if (id && suiteIds.has(id)) {
+      error(`evals/manifest.json has duplicate suite id ${JSON.stringify(id)}`);
+    } else if (id) {
+      suiteIds.add(id);
+    }
+    if (suite.kind !== 'command' && suite.kind !== 'conversation' && suite.kind !== 'trigger') {
+      error(`${fieldName}.kind must be command, conversation, or trigger`);
+    }
+    if (!Array.isArray(suite.profiles) || suite.profiles.length === 0) {
+      error(`${fieldName}.profiles must be a non-empty array`);
+    } else {
+      suite.profiles.forEach((profileId, profileIndex) => {
+        const profileField = `${fieldName}.profiles[${profileIndex}]`;
+        if (typeof profileId !== 'string' || profileId.trim() === '') {
+          error(`${profileField} must be a non-empty string`);
+          return;
+        }
+        const profile = profilesById.get(profileId);
+        if (!profile) {
+          error(`${fieldName} references unknown profile ${JSON.stringify(profileId)}`);
+        } else if (profile.runModel !== true) {
+          error(`${fieldName} cannot execute materialize-only profile ${JSON.stringify(profileId)}`);
+        }
+      });
+    }
+    if (!Number.isInteger(suite.defaultRuns) || suite.defaultRuns <= 0) {
+      error(`${fieldName}.defaultRuns must be a positive integer`);
+    }
+    if (!Number.isInteger(suite.perRunTimeoutMs) || suite.perRunTimeoutMs <= 0) {
+      error(`${fieldName}.perRunTimeoutMs must be a positive integer`);
+    }
+    if (typeof suite.requiredForRelease !== 'boolean') {
+      error(`${fieldName}.requiredForRelease must be boolean`);
+    }
+    if (!Array.isArray(suite.releaseSplits)) {
+      error(`${fieldName}.releaseSplits must be an array`);
+    } else {
+      suite.releaseSplits.forEach((split, splitIndex) => {
+        if (!PLUGIN_EVAL_SPLITS.has(split)) {
+          error(`${fieldName}.releaseSplits[${splitIndex}] is unsupported`);
+        }
+      });
+    }
+
+    if (suite.kind === 'command') {
+      validateEvalRelativeFile(pluginDir, suite.entry, `${fieldName}.entry`);
+      if (!Number.isInteger(suite.suiteTimeoutMs) || suite.suiteTimeoutMs <= 0) {
+        error(`${fieldName}.suiteTimeoutMs must be a positive integer`);
+      } else if (suite.suiteTimeoutMs < suite.perRunTimeoutMs) {
+        error(`${fieldName}.suiteTimeoutMs must be greater than or equal to perRunTimeoutMs`);
+      }
+      if (!Array.isArray(suite.supports)) {
+        error(`${fieldName}.supports must be an array`);
+      } else {
+        suite.supports.forEach((support, supportIndex) => {
+          if (!PLUGIN_EVAL_COMMAND_SUPPORTS.has(support)) {
+            error(`${fieldName}.supports[${supportIndex}] is unsupported`);
+          }
+        });
+        if (
+          Array.isArray(suite.releaseSplits) &&
+          suite.releaseSplits.length > 0 &&
+          !suite.supports.includes('split')
+        ) {
+          error(`${fieldName} declares releaseSplits but does not support split`);
+        }
+      }
+    } else if (suite.kind === 'conversation' || suite.kind === 'trigger') {
+      const skill = validateNonEmptyString(suite.skill, `${fieldName}.skill`);
+      if (skill && !PLUGIN_NAME_PATTERN.test(skill)) {
+        error(`${fieldName}.skill must use lowercase kebab-case`);
+      } else if (skill && !isRecord(pluginManifest.skillTriggers?.[skill])) {
+        error(`${fieldName}.skill must reference a declared skillTriggers entry`);
+      }
+      if (suite.kind === 'conversation') {
+        validateConversationCaseCorpus(pluginDir, suite, fieldName);
+      } else {
+        if (typeof suite.observeSpawnAgent !== 'boolean') {
+          error(`${fieldName}.observeSpawnAgent must be boolean`);
+        }
+        if (suite.isolation !== 'standard' && suite.isolation !== 'strict') {
+          error(`${fieldName}.isolation must be standard or strict`);
+        }
+        if (!Array.isArray(suite.strictNegativeSplits)) {
+          error(`${fieldName}.strictNegativeSplits must be an array`);
+        } else {
+          suite.strictNegativeSplits.forEach((split, splitIndex) => {
+            if (!PLUGIN_EVAL_TRIGGER_CASE_SPLITS.has(split)) {
+              error(`${fieldName}.strictNegativeSplits[${splitIndex}] is unsupported`);
+            }
+          });
+        }
+        if (suite.fixtureModule !== undefined) {
+          const fixturePath = validateEvalAssetFile(
+            pluginDir,
+            suite.fixtureModule,
+            `${fieldName}.fixtureModule`,
+          );
+          if (fixturePath && path.extname(fixturePath) !== '.mjs') {
+            error(`${fieldName}.fixtureModule must reference an .mjs file`);
+          }
+        }
+        validateTriggerCaseCorpus(pluginDir, suite, fieldName);
+      }
+    }
+  });
 }
 
 function countCharacters(value) {
@@ -3102,7 +3489,7 @@ function validateSlashCommands(pluginDir, manifest) {
 
 function printUsage() {
   console.log(`Usage:
-  node validate_plugin.js <plugin-directory> [options]
+  node validate_plugin.mjs <plugin-directory> [options]
 
 Options:
   --catalog-min-version <semver>
@@ -3165,6 +3552,7 @@ async function validatePluginDir(pluginDir, options) {
   validatePluginVersionContracts(manifest, options);
   validateCatalogDependencyReferences(pluginDir, manifest);
   validateSkillTriggers(pluginDir, manifest);
+  validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);
   validateMcpContent(pluginDir, manifest);

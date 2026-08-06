@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import {
-  createEvalWorkspace,
-  readSpawnCallsFromRollouts,
-} from '../evals/eval-harness.mjs';
+import { readSpawnCallsFromRollouts } from '../evals/eval-harness.mjs';
 import {
   evaluateRoutingRun,
   loadRoutingSpec,
@@ -294,31 +291,12 @@ function testReportStatus() {
   });
 }
 
-async function testBaselineStaging() {
-  const current = await createEvalWorkspace({ withSkill: true });
-  const baseline = await createEvalWorkspace({ withSkill: false });
-  try {
-    assert.equal(current.roles.length, 4);
-    assert.equal(baseline.roles.length, 4);
-    await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
-    const role = await readFile(baseline.roles[0].rolePath, 'utf8');
-    assert.match(role, /developer_instructions = "只完成父代理/);
-    assert.doesNotMatch(role, /status=(?:progress|blocked)/);
-  } finally {
-    await Promise.all([
-      rm(current.root, { recursive: true, force: true }),
-      rm(baseline.root, { recursive: true, force: true }),
-    ]);
-  }
-}
-
 async function main() {
   testArguments();
   await testEvalSpec();
   await testRolloutArgumentEvidence();
   testMechanicalAssertions();
   testReportStatus();
-  await testBaselineStaging();
   console.log('routing eval tests passed');
 }
 

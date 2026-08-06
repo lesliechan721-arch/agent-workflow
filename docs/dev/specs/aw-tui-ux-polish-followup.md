@@ -1914,7 +1914,7 @@ CLI 入口要求：
 - 新 manifest 中 `skillTriggers.<skill>` 只允许 `defaultTrigger` 和 `allowDynamicTrigger`。旧 manifest 中只表达安装期覆盖许可的 `skillTriggers.<skill>.allowInstallOverride` 不能继续作为新合同的长期语义。
 - 缺失 entry、未知 key、缺少 `defaultTrigger`、缺少 `allowDynamicTrigger`，或出现 `allowInstallOverride` 时，build/validate 必须失败。
 - 公共 `slashCommands` 生成的 Codex manual-only skill 不属于作者显式 `skillTriggers` 必填范围。AW 必须把它们视为隐式 fixed/manual built-in 字段：`defaultTrigger: "manual"`、`allowDynamicTrigger: false`；`aw config list/get` 和 TUI 配置页如展示这类字段，只能展示为固定只读值，不能提供保存新值入口。
-- `docs/plugin-authoring.md`、`.agents/skills/create-agent-workflows-plugin/` 的作者参考、`.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js` 和 `.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js` 都必须同步到这个作者合同；校验脚本不能继续生成或接受旧的 `allowInstallOverride` 示例，也不能接受静态 `skills/<skill>` 或动态 `codex.skill` 缺失 `skillTriggers` entry。
+- `docs/plugin-authoring.md`、`.agents/skills/create-agent-workflows-plugin/` 的作者参考、`.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs` 和 `.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs` 都必须同步到这个作者合同；校验脚本不能继续生成或接受旧的 `allowInstallOverride` 示例，也不能接受静态 `skills/<skill>` 或动态 `codex.skill` 缺失 `skillTriggers` entry。
 
 状态与刷新要求：
 
@@ -1942,7 +1942,7 @@ CLI 入口要求：
 - `docs/architecture.md` 同步命令边界、平台选择和 SkillTrigger 真值模型：不再把 `diagnose` 当作公开命令，不再写 `platform=auto` 默认，不再把 install record 的 `skillTriggerPreference`、shared runtime owner 的 `preference` 或 apply 阶段 preference patch 描述成当前架构真相，并说明配置驱动的 runtime drift 由 `aw repair` 提供脚本化恢复。
 - `docs/coding-conventions.md` 同步维护检查清单：SkillTrigger 的维护中心改为 manifest `defaultTrigger`、AW 内建配置 effective 值、built-in apply pipeline 和公开投影，不再要求围绕 install/upgrade/repair 的 `skillTriggerPreference` 传播检查。
 - `docs/plugin-authoring.md` 和 `.agents/skills/create-agent-workflows-plugin/` 同步升级 `skillTriggers` 作者合同、静态和动态受管 skill 必填声明、公共 `slashCommands` 生成 skill 的隐式 fixed/manual 规则、保留 `$aw` 配置 namespace 和 built-in config JSON 标记。
-- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js`、`.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.js` 和作者参考夹具同步校验静态 `skills/<skill>` 与动态 `codex.skill` 都声明 `defaultTrigger`、`allowDynamicTrigger`，不再生成或接受旧 `allowInstallOverride`；公共 `slashCommands` 生成物不要求作者补 `skillTriggers` entry。
+- `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs`、`.agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs` 和作者参考夹具同步校验静态 `skills/<skill>` 与动态 `codex.skill` 都声明 `defaultTrigger`、`allowDynamicTrigger`，不再生成或接受旧 `allowInstallOverride`；公共 `slashCommands` 生成物不要求作者补 `skillTriggers` entry。
 - `pnpm plugin:test` 跟随新的平台选择合同；runner、help、错误提示、smoke test、`docs/plugin-authoring.md`、`.agents/skills/create-agent-workflows-plugin/` 和作者参考夹具必须同步更新。
 - `pnpm plugin:test` 只接受 `--platform codex|claude|both`；传入 `--platform auto` 必须失败，并提示改用 `codex`、`claude` 或 `both`。
 - `pnpm plugin:test <plugin>` 或 `pnpm plugin:test --all` 未传 `--platform` 时按 `--platform both` 处理。
@@ -2187,4 +2187,4 @@ CLI 入口要求：
 - `docs/plugin-installation.md` 和技术细节文档把旧诊断场景改写到 `aw status --verbose`，把 dependency index 恢复链路改写到 `aw repair --dependency-index` / `aw cleanup --dependency-index --prune-stale <token> --yes`，把触发策略调整改写到 `aw config` / TUI 配置页，并把配置驱动 runtime drift 的脚本化恢复写成 `aw repair`。
 - `docs/architecture.md` 不再描述 `diagnose` 公开命令、写命令默认 `platform=auto`、install record `skillTriggerPreference` 真值、shared runtime owner `preference` 真值或 apply 阶段 preference patch，并记录 `aw repair` 是配置驱动 runtime drift 的 CLI 恢复入口。
 - `docs/coding-conventions.md` 的 SkillTrigger 检查清单改为覆盖 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。
-- `docs/plugin-authoring.md`、`.agents/skills/create-agent-workflows-plugin/`、作者参考夹具、`validate_plugin.js` 和 `init_plugin.js` 同步新 `skillTriggers` 合同，不再生成或接受 `allowInstallOverride`；公共 `slashCommands` 生成物按隐式 fixed/manual 规则处理，不要求作者补 `skillTriggers` entry。
+- `docs/plugin-authoring.md`、`.agents/skills/create-agent-workflows-plugin/`、作者参考夹具、`validate_plugin.mjs` 和 `init_plugin.mjs` 同步新 `skillTriggers` 合同，不再生成或接受 `allowInstallOverride`；公共 `slashCommands` 生成物按隐式 fixed/manual 规则处理，不要求作者补 `skillTriggers` entry。

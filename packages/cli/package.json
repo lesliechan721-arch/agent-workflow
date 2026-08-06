@@ -27,6 +27,7 @@
     "test:smoke:pack": "pnpm run test:smoke:pack:cli && pnpm run test:smoke:pack:catalog",
     "test:smoke:fetch": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
+    "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm build"
   },

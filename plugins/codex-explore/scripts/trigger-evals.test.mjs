@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   lstat,
-  mkdtemp,
   mkdir,
+  mkdtemp,
   readFile,
   rm,
   stat,
@@ -15,15 +15,15 @@ import {
   buildCodexArgs,
   copyCodexAuthFiles,
   createEvalWorkspace,
-  inspectExecEvent,
-  loadEvalCases,
-  parseArgs,
-  parseExecEventLine,
-  summarizeCase,
-} from '../evals/run-trigger-evals.mjs';
+  readEvalResource,
+} from '../evals/eval-harness.mjs';
+import { setupTriggerWorkspace } from '../evals/trigger-fixture.mjs';
 
 async function testEvalCorpus() {
-  const cases = await loadEvalCases('all');
+  const document = JSON.parse(await readEvalResource('trigger-cases.json'));
+  const { cases } = document;
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, 'codex-explore');
   assert.equal(cases.length, 31);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 13);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
@@ -37,13 +37,8 @@ async function testEvalCorpus() {
     ['cross_module_fact', [true, true]],
     ['explicit_known_file', [true, false]],
     ['skill_design_review', [false, false]],
-    ['large_pr_review', [false, false]],
     ['readonly_deep_code_review', [false, false]],
-    ['official_docs_and_logs', [true, true]],
-    ['casual_unknown_repo', [true, true]],
-    ['typo_unknown_repo', [true, true]],
     ['plain_name_small_request', [true, false]],
-    ['composite_review_boundary', [true, true]],
     ['composite_write_boundary', [true, true]],
     ['typo_known_file_near_miss', [false, false]],
   ]);
@@ -55,144 +50,75 @@ async function testEvalCorpus() {
   }
 }
 
-function testArguments() {
-  assert.deepEqual(
-    parseArgs(['--split', 'validation', '--runs', '5', '--threshold', '0.6']),
-    {
-      split: 'validation',
-      runs: 5,
-      threshold: 0.6,
-      timeoutMs: 180_000,
-      codexBin: 'codex',
-      model: undefined,
-      output: undefined,
-      help: false,
-    },
-  );
-  assert.throws(
-    () => parseArgs(['--split', 'unknown']),
-    /train, validation, sanity, or all/,
-  );
-  assert.throws(() => parseArgs(['--runs', '0']), /positive integer/);
-  assert.throws(() => parseArgs(['--threshold', '1']), /less than 1/);
-}
-
-function testJsonlDetection() {
-  assert.equal(parseExecEventLine('not json'), null);
-  const loadEvent = parseExecEventLine(JSON.stringify({
-    type: 'item.started',
-    item: {
-      id: 'item_1',
-      type: 'command_execution',
-      command: "sed -n '1,220p' .agents/skills/codex-explore/SKILL.md",
-    },
-  }));
-  assert.deepEqual(
-    inspectExecEvent(loadEvent, '/tmp/eval/.agents/skills/codex-explore/SKILL.md'),
-    {
-      loaded: true,
-      loadEvidence: "sed -n '1,220p' .agents/skills/codex-explore/SKILL.md",
-    },
-  );
-
-  const spawnEvent = parseExecEventLine(JSON.stringify({
-    type: 'item.started',
-    item: {
-      id: 'item_2',
-      type: 'collab_tool_call',
-      tool: 'spawn_agent',
-      prompt: 'Trace the cross-module fact.',
-    },
-  }));
-  assert.deepEqual(
-    inspectExecEvent(spawnEvent, '/tmp/eval/.agents/skills/codex-explore/SKILL.md'),
-    {
-      spawned: true,
-      spawnEvidence: 'Trace the cross-module fact.',
-    },
-  );
-}
-
-function testSummary() {
-  const summary = summarizeCase(
-    {
-      id: 'example',
-      split: 'train',
-      query: 'query',
-      should_load_skill: true,
-      should_spawn_agent: false,
-    },
-    [
-      { loaded: true, spawned: false, execution_error: false },
-      { loaded: true, spawned: false, execution_error: false },
-      { loaded: false, spawned: false, execution_error: false },
-    ],
-    0.5,
-  );
-  assert.equal(summary.observed.load_rate, 2 / 3);
-  assert.equal(summary.observed.spawn_rate, 0);
-  assert.equal(summary.passed, true);
-}
-
-async function testWorkspaceStaging() {
-  const workspace = await createEvalWorkspace();
+async function testFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-fixture-'));
   try {
-    const [skill, ...roles] = await Promise.all([
-      readFile(workspace.skillPath, 'utf8'),
-      ...workspace.roles.map((role) => readFile(role.rolePath, 'utf8')),
-    ]);
-    assert.match(skill, /compatibility: 仅适用于支持 spawn_agent\.agent_type 的 Codex/);
-    assert.match(skill, /spawn_agent 不提供独立于父 turn 的子代理只读权限参数/);
-    assert.match(skill, /权限级只读.*无法确认/s);
-    assert.match(skill, /上下文隔离本身构成委派价值/);
-    assert.match(skill, /`message` 必须自包含范围、来源、具体问题、探索深度/);
-    assert.match(skill, /累计等待预算/);
-    assert.equal(skill.includes('user-invocable:'), false);
-    assert.deepEqual(
-      workspace.roles.map((role) => role.roleFile.name),
-      [
-        'codex-explore-quick',
-        'codex-explore-standard',
-        'codex-explore-deep',
-        'codex-explore-custom',
-      ],
+    await setupTriggerWorkspace({ workspaceRoot: root });
+    assert.match(
+      await readFile(path.join(root, 'repo', 'shared', 'config.ts'), 'utf8'),
+      /regional_checkout/,
     );
-    for (const role of roles) {
-      assert.match(role, /`direct`.*`inference`.*`conflict`/s);
-      assert.match(role, /不得委派或管理代理/);
-      assert.match(role, /存活探测.*不打断调查/s);
-      assert.match(role, /## Status/);
-      assert.match(role, /## Findings/);
-      assert.match(role, /## Gaps/);
-    }
-    assert.match(roles[0], /model = "gpt-5\.6-luna"/);
-    assert.match(roles[0], /model_reasoning_effort = "medium"/);
-    assert.match(roles[1], /model_reasoning_effort = "high"/);
-    assert.match(roles[2], /model_reasoning_effort = "xhigh"/);
-    assert.equal(roles[3].includes('\nmodel = '), false);
-    assert.equal(roles[3].includes('\nmodel_reasoning_effort = '), false);
+    assert.match(
+      await readFile(path.join(root, 'docs', 'vendor', 'api-v2.md'), 'utf8'),
+      /45s/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'reports', 'audit', 'day-03.log'), 'utf8'),
+      /worker/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
-    const args = buildCodexArgs(
-      workspace,
-      { query: '$codex-explore read known/settings.ts' },
-      { model: 'gpt-test' },
-    );
-    assert.ok(args.includes('--json'));
-    assert.equal(args.includes('--ephemeral'), false);
-    assert.ok(args.includes('--ignore-rules'));
-    assert.ok(args.includes('read-only'));
-    assert.ok(args.includes('gpt-test'));
-    assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME"]'));
-    for (const roleName of [
-      'codex-explore-quick',
-      'codex-explore-standard',
-      'codex-explore-deep',
-      'codex-explore-custom',
-    ]) {
-      assert.ok(args.some((arg) => arg.includes(`agents.${roleName}.config_file=`)));
+async function testSpecializedWorkspaceRequiresFinalArtifact() {
+  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+  delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+  try {
+    await assert.rejects(createEvalWorkspace(), /AW_PLUGIN_EVAL_PROJECT_ROOT is required/);
+  } finally {
+    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
+  }
+}
+
+async function testSpecializedWorkspaceCopiesFinalArtifact() {
+  const subject = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-subject-'));
+  const skillPath = path.join(subject, '.agents', 'skills', 'codex-explore', 'SKILL.md');
+  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+  try {
+    await mkdir(path.dirname(skillPath), { recursive: true });
+    await mkdir(path.join(subject, '.codex'), { recursive: true });
+    await writeFile(skillPath, '# Materialized Explore\n', 'utf8');
+    await writeFile(path.join(subject, '.codex', 'config.toml'), '# final config\n', 'utf8');
+    process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
+    const workspace = await createEvalWorkspace();
+    try {
+      assert.equal(await readFile(workspace.skillPath, 'utf8'), '# Materialized Explore\n');
+      assert.equal(
+        await readFile(path.join(workspace.root, '.codex', 'config.toml'), 'utf8'),
+        '# final config\n',
+      );
+      assert.match(
+        await readFile(path.join(workspace.root, 'known', 'constants.ts'), 'utf8'),
+        /RETRY_LIMIT/,
+      );
+      const args = buildCodexArgs(
+        workspace,
+        { query: '$codex-explore inspect', codex_config: {} },
+        { model: 'gpt-test' },
+      );
+      assert.ok(args.includes('--enable'));
+      assert.ok(args.includes('multi_agent'));
+      assert.ok(args.includes('gpt-test'));
+      assert.equal(args.some((arg) => arg.startsWith('agents.codex-explore-')), false);
+    } finally {
+      await rm(workspace.root, { recursive: true, force: true });
     }
   } finally {
-    await rm(workspace.root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
+    await rm(subject, { recursive: true, force: true });
   }
 }
 
@@ -218,12 +144,11 @@ async function testCredentialIsolation() {
 
 async function main() {
   await testEvalCorpus();
-  testArguments();
-  testJsonlDetection();
-  testSummary();
-  await testWorkspaceStaging();
+  await testFixture();
+  await testSpecializedWorkspaceRequiresFinalArtifact();
+  await testSpecializedWorkspaceCopiesFinalArtifact();
   await testCredentialIsolation();
-  console.log('trigger eval tests passed');
+  console.log('codex-explore trigger assets and specialized harness tests passed');
 }
 
 main().catch((error) => {

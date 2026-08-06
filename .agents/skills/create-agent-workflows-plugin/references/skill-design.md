@@ -71,7 +71,7 @@ AW 的共享源码还允许目标平台需要的扩展：
 
 双平台源码可以保留这些已知扩展，但不能声称源码能严格通过只接受 portable core 的 validator。需要严格可移植时，使用字符串形式 `allowed-tools`，移除平台扩展，或通过模板生成分平台 frontmatter。
 
-仓库内 `validate_plugin.js --strict-agent-skills` 用于和 AW manifest、目标平台一起做 portable core 预检，不是上游 reference validator 的替代品。需要发布独立 portable skill 时，在 `skills-ref` 可用的环境额外运行：
+仓库内 `validate_plugin.mjs --strict-agent-skills` 用于和 AW manifest、目标平台一起做 portable core 预检，不是上游 reference validator 的替代品。需要发布独立 portable skill 时，在 `skills-ref` 可用的环境额外运行：
 
 ```bash
 skills-ref validate <skill-directory>
@@ -156,7 +156,8 @@ description: >
 | `references/` | 仅在特定分支需要的领域规则、schema 和长说明 |
 | `scripts/` | 可重复、可测试的确定性逻辑；规范见 `references/skill-scripts.md` |
 | `assets/` | 输出模板、图片、静态数据和其它无需作为指令阅读的资源 |
-| `evals/` | 作者期触发与输出质量用例；规范见 `references/skill-evaluation.md` |
+
+插件 Skill 的作者期评测放在 `plugins/<name>/evals/`，不放进 Skill 子树。这样 static 和 dynamic Skill 共用同一入口，也不会把语料、runner 或 trace 复制进 production runtime。规范见 `references/skill-evaluation.md`。
 
 ## 完成检查
 
@@ -168,7 +169,7 @@ description: >
 - [ ] 脆弱步骤有验证门，失败后会修复并重验
 - [ ] 输出格式在确有要求时给出短模板
 - [ ] scripts、references 和 assets 都有明确读取或执行条件
-- [ ] 已按 `references/skill-evaluation.md` 用真实任务检查结果
+- [ ] 已在插件根按 `references/skill-evaluation.md` materialize 最终制品，并用真实任务检查结果
 
 ## 上游参考
 

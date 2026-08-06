@@ -5,7 +5,13 @@
       "id": "inspect_then_adapt",
       "prompt": "请使用 ask-me 澄清：为这个仓库的 `aw install` 增加 dry-run。我还没决定 dry-run 是否允许运行 lifecycle scripts，也没决定 JSON receipt 如何表达；不要修改文件。",
       "scripted_replies": [
-        "dry-run 不能运行 lifecycle scripts，但需要显示本来会运行哪些脚本。"
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "dry-run 不能运行 lifecycle scripts，但需要显示本来会运行哪些脚本。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
       ],
       "expected_output": "先只读检查现有 install、lifecycle 和 receipt 合同，不向用户询问仓库中可发现的事实；先询问会阻塞下游设计的脚本语义，收到答复后重新计算前沿，再询问依赖该答案的 receipt 取舍。",
       "files": [],
@@ -25,7 +31,13 @@
       "id": "challenge_infeasible_requirement",
       "prompt": "请使用 ask-me 澄清：离线移动应用不允许账户、服务器或设备间通信，但多个设备上的数据必须实时强一致，任何一次编辑都不能冲突；不要制作原型或修改文件。",
       "scripted_replies": [
-        "离线是硬约束，实时同步可以让步。"
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "离线是硬约束，实时同步可以让步。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
       ],
       "expected_output": "具体说明无通信与跨设备实时强一致之间的冲突，不静默改写要求；给出保留离线约束所需的最小可行替代方向，再根据用户选择继续当前前沿。",
       "files": [],
@@ -45,7 +57,13 @@
       "id": "preserve_unknowns_on_stop",
       "prompt": "请使用 ask-me 澄清：我们准备把所有后台任务迁到一个新队列，但失败语义和兼容窗口还没定；不要修改文件。",
       "scripted_replies": [
-        "我不知道，先停在这里。"
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "我不知道，先停在这里。"
+          ],
+          "unexpected_question_answer": "我不知道，先停在这里。"
+        }
       ],
       "expected_output": "用户表示不知道并停止后，不再继续提问；指出尚未决定的失败语义、兼容窗口及其返工风险，然后交还控制，不声称需求已经稳定，也不强制摘要、确认或后续动作。",
       "files": [],

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "plugin": "ask-me",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-default",
+      "scope": "user",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": false,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skill": "ask-me",
+      "cases": "./evals/trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "standard",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skill": "ask-me",
+      "cases": "./evals/evals.json",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
+}

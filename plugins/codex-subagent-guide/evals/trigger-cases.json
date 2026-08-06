@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "skill": "codex-subagent-guide",
+  "cases": [
+    {
+      "id": "authorized_simple_lookup",
+      "split": "train",
+      "query": "这次已经明确允许使用子代理。请派一个子代理只读查看 src/simple.ts 和 docs/architecture.md，整理两条事实证据。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "authorized_general_delivery",
+      "split": "train",
+      "query": "请根据 docs/architecture.md 起草一段边界清晰的常规说明文档。",
+      "should_load_skill": true,
+      "should_spawn_agent": true,
+      "workspace_fixture": "project_authorization",
+      "use_project_rules": true
+    },
+    {
+      "id": "authorized_complex_debug",
+      "split": "train",
+      "query": "我授权你使用子代理。把跨模块并发生命周期问题的根因调查与修复交给一个合适的 agent。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "authorized_review",
+      "split": "train",
+      "query": "请用子代理审核 changes/review.diff；委派已获批准，最终要给缺陷和风险结论。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "authorized_partial_custom",
+      "split": "train",
+      "query": "已允许委派。请启动一个子代理，只继承最近两轮，并按项目规则使用 model=gpt-5.6-terra 处理这个任务。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "authorization_only_requires_guide",
+      "split": "train",
+      "query": "$delegation-authorizer 核对 src/simple.ts 的事实并整理证据。",
+      "should_load_skill": true,
+      "should_spawn_agent": true,
+      "workspace_fixture": "authorization_skill"
+    },
+    {
+      "id": "specialized_workflow_owns_lifecycle",
+      "split": "train",
+      "query": "$delegation-lifecycle-owner 继续现有的专用委派流程，等待已经运行的 agent_alpha。",
+      "should_load_skill": false,
+      "should_spawn_agent": false,
+      "workspace_fixture": "lifecycle_skill"
+    },
+    {
+      "id": "decision_only_near_miss",
+      "split": "train",
+      "query": "你觉得这个小任务是否值得委派给子代理？只分析利弊，先不要启动任何 agent。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "concept_documentation_near_miss",
+      "split": "train",
+      "query": "解释 Codex 子代理、fork 和 reasoning effort 的概念，给我一段文档，不要实际委派。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "installation_near_miss",
+      "split": "train",
+      "query": "codex-subagent-guide 插件怎么安装和配置？只给命令，不要使用子代理。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "explicit_no_subagents",
+      "split": "train",
+      "query": "请深入检查 docs/architecture.md，但明确不要使用子代理，也不要委派。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "research_without_authority",
+      "split": "train",
+      "query": "把这个仓库彻底研究一下，尽量全面和严谨；我没有要求并行 agent。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "explicit_skill_without_authority",
+      "split": "train",
+      "query": "$codex-subagent-guide 只说明这个技能的授权边界，不要启动或管理任何子代理。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "manage_existing_agent",
+      "split": "train",
+      "query": "委派已经获准且 agent_alpha 正在运行。请按现有子代理工作流说明下一步怎样等待它；不要再启动新 agent。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "validation_casual_simple",
+      "split": "validation",
+      "query": "子代理可以用，帮我叫一个 agent 跑现有检查并核对输出就行。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "validation_parallel_general",
+      "split": "validation",
+      "query": "请为现有模块起草一份简洁的常规说明文档。",
+      "should_load_skill": true,
+      "should_spawn_agent": true,
+      "workspace_fixture": "project_authorization",
+      "use_project_rules": true
+    },
+    {
+      "id": "validation_complex_long",
+      "split": "validation",
+      "query": "我们已经同意使用子代理；现在线索分散在多个模块，涉及性能、并发和生命周期，请启动一个合适的 agent 完成根因分析。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "validation_plan",
+      "split": "validation",
+      "query": "已授权委派。派子代理先看架构再产出决策完整的迁移计划。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "validation_specialized_workflow_owner",
+      "split": "validation",
+      "query": "$delegation-lifecycle-owner 继续安全审计的现有流程，等待已经运行的 agent_delta。",
+      "should_load_skill": false,
+      "should_spawn_agent": false,
+      "workspace_fixture": "lifecycle_skill"
+    },
+    {
+      "id": "validation_should_we_delegate",
+      "split": "validation",
+      "query": "先判断是否需要多 agent 并行，不要真的调用 spawn_agent。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "validation_config_help",
+      "split": "validation",
+      "query": "列出 codex-subagent-guide 的四类模型配置键，我只是维护插件配置。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "validation_thorough_only",
+      "split": "validation",
+      "query": "认真阅读 src/complex/a.ts 并详细回答，不能使用子代理。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "validation_explicit_boundary",
+      "split": "validation",
+      "query": "$codex-subagent-guide 我已经有一个运行中的 agent_beta；告诉我 timeout 后该怎么处理，但不要新建 agent。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "sanity_casual_delegate",
+      "split": "sanity",
+      "query": "可以开子代理，找个 agent 帮我把 simple.ts 的事实捋清楚。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "sanity_explicit_role_work",
+      "split": "sanity",
+      "query": "委派权限已给，请启动子代理做一次安全审核。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "sanity_parallel_phrase",
+      "split": "sanity",
+      "query": "调查 src/complex 下并发问题的根因并给出结论。",
+      "should_load_skill": true,
+      "should_spawn_agent": true,
+      "workspace_fixture": "project_authorization",
+      "use_project_rules": true
+    },
+    {
+      "id": "sanity_specialized_owner_native",
+      "split": "sanity",
+      "query": "$delegation-lifecycle-owner 继续现有工作流并等待已经运行的 agent，不要启动重复 agent。",
+      "should_load_skill": false,
+      "should_spawn_agent": false,
+      "workspace_fixture": "lifecycle_skill"
+    },
+    {
+      "id": "sanity_docs_only",
+      "split": "sanity",
+      "query": "帮我润色一段介绍 multi-agent 的 README，不使用任何 agent 工具。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "sanity_name_only",
+      "split": "sanity",
+      "query": "codex-subagent-guide 这个名字是什么意思？不要加载技能或委派。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "sanity_existing_cleanup",
+      "split": "sanity",
+      "query": "子代理工作已获授权且 agent_gamma 已完成。请说明如何整合并清理它，不要 spawn 新 agent。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    }
+  ]
+}

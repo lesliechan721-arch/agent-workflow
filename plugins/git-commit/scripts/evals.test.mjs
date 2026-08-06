@@ -15,17 +15,9 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import {
-  buildCodexArgs,
-  captureGitState,
-  createEvalWorkspace,
-  inspectExecEvent,
-  loadEvalCases,
-  parseArgs,
-  renderSkillTemplate,
-  resolveCodexExecutable,
-  runCodexOnce,
-  summarizeCase,
-} from '../evals/run-trigger-evals.mjs';
+  captureTriggerWorkspaceState,
+  setupTriggerWorkspace,
+} from '../evals/trigger-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -80,8 +72,14 @@ async function resolveTestContext() {
   };
 }
 
-async function testEvalCorpus() {
-  const cases = await loadEvalCases('all');
+async function testEvalCorpus(sourceRoot) {
+  const document = JSON.parse(await readFile(
+    path.join(sourceRoot, 'evals', 'trigger-cases.json'),
+    'utf8',
+  ));
+  const { cases } = document;
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, 'commit');
   assert.equal(cases.length, 20);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
@@ -105,37 +103,6 @@ async function testEvalCorpus() {
     assert.equal(entry.should_load_skill, shouldLoad);
   }
   assert.equal(cases.some((entry) => entry.query.includes('$commit')), false);
-}
-
-function testArguments() {
-  assert.deepEqual(
-    parseArgs(['--split', 'validation', '--runs', '5', '--threshold', '0.6']),
-    {
-      split: 'validation',
-      runs: 5,
-      threshold: 0.6,
-      timeoutMs: 120_000,
-      codexBin: 'codex',
-      model: undefined,
-      output: undefined,
-      help: false,
-    },
-  );
-  assert.throws(() => parseArgs(['--split', 'unknown']), /train, validation, or all/);
-  assert.throws(() => parseArgs(['--runs', '0']), /positive integer/);
-  assert.throws(() => parseArgs(['--threshold', '1']), /less than 1/);
-  assert.throws(
-    () => resolveCodexExecutable('codex', 'win32'),
-    /absolute path/,
-  );
-  assert.throws(
-    () => resolveCodexExecutable('codex.cmd', 'win32'),
-    /absolute path/,
-  );
-  assert.equal(
-    resolveCodexExecutable(String.raw`C:\tools\codex.exe`, 'win32'),
-    String.raw`C:\tools\codex.exe`,
-  );
 }
 
 function assertRenderedSkill(skill) {
@@ -210,212 +177,43 @@ async function testSkillRenders(context) {
     return;
   }
 
-  const codexSkill = renderSkillTemplate(source, false);
-  const claudeSkill = renderSkillTemplate(source, true);
-  assertCoreCommitContract(codexSkill);
-  assertCoreCommitContract(claudeSkill);
-  assertRenderedSkill(codexSkill);
-  assertRenderedSkill(claudeSkill);
+  assertCoreCommitContract(source);
+  assertRenderedSkill(source);
 }
 
-function testEventDetectionAndSummary() {
-  const skillPath = '/tmp/eval/.agents/skills/commit/SKILL.md';
-  const startedEvent = {
-    type: 'item.started',
-    item: {
-      type: 'command_execution',
-      command: "sed -n '1,180p' .agents/skills/commit/SKILL.md",
-      status: 'in_progress',
-    },
-  };
-  assert.deepEqual(inspectExecEvent(startedEvent, skillPath), {});
-
-  const failedEvent = {
-    type: 'item.completed',
-    item: {
-      type: 'command_execution',
-      command: "sed -n '1,180p' .agents/skills/commit/SKILL.md",
-      status: 'failed',
-      exit_code: 1,
-    },
-  };
-  assert.deepEqual(inspectExecEvent(failedEvent, skillPath), {});
-
-  const completedEvent = {
-    type: 'item.completed',
-    item: {
-      type: 'command_execution',
-      command: "sed -n '1,180p' ./.agents/skills/commit/SKILL.md",
-      status: 'completed',
-      exit_code: 0,
-    },
-  };
-  assert.deepEqual(inspectExecEvent(completedEvent, skillPath), {
-    loaded: true,
-    loadEvidence: "sed -n '1,180p' ./.agents/skills/commit/SKILL.md",
-  });
-
-  const changedDirectoryEvent = {
-    type: 'item.completed',
-    item: {
-      type: 'command_execution',
-      command: 'cd ./.agents/skills/commit && cat ./SKILL.md',
-      status: 'completed',
-      exit_code: 0,
-    },
-  };
-  assert.deepEqual(inspectExecEvent(changedDirectoryEvent, skillPath), {
-    loaded: true,
-    loadEvidence: 'cd ./.agents/skills/commit && cat ./SKILL.md',
-  });
-  for (const command of [
-    'Get-Content -LiteralPath .\\.agents\\skills\\commit\\SKILL.md',
-    'type .agents\\skills\\commit\\SKILL.md',
-  ]) {
-    assert.deepEqual(
-      inspectExecEvent(
-        {
-          type: 'item.completed',
-          item: {
-            type: 'command_execution',
-            command,
-            status: 'completed',
-            exit_code: 0,
-          },
-        },
-        skillPath,
-      ),
-      {
-        loaded: true,
-        loadEvidence: command,
-      },
-    );
-  }
-  assert.deepEqual(
-    inspectExecEvent(
-      {
-        ...completedEvent,
-        item: {
-          ...completedEvent.item,
-          command: 'echo .agents/skills/commit/SKILL.md',
-        },
-      },
-      skillPath,
-    ),
-    {},
-  );
-
-  const summary = summarizeCase(
-    {
-      id: 'example',
-      split: 'train',
-      query: 'query',
-      should_load_skill: true,
-    },
-    [
-      { loaded: true, execution_error: false },
-      { loaded: true, execution_error: false },
-      { loaded: false, execution_error: false },
-    ],
-    0.5,
-  );
-  assert.equal(summary.observed.load_rate, 2 / 3);
-  assert.equal(summary.passed, true);
-
-  const validationNegative = summarizeCase(
-    {
-      id: 'validation_negative',
-      split: 'validation',
-      query: 'query',
-      should_load_skill: false,
-    },
-    [
-      { loaded: true, execution_error: false },
-      { loaded: false, execution_error: false },
-      { loaded: false, execution_error: false },
-    ],
-    0.5,
-  );
-  assert.equal(validationNegative.passed, false);
-}
-
-async function testWorkspaceStaging(sourceRoot) {
-  const workspace = await createEvalWorkspace({ sourceRoot });
+async function testWorkspaceFixture() {
+  const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-commit-fixture-test-'));
+  const root = path.join(cleanupRoot, 'project');
+  const home = path.join(cleanupRoot, 'home');
+  await Promise.all([mkdir(root, { recursive: true }), mkdir(home, { recursive: true })]);
+  const context = { workspaceRoot: root, evalCase: {}, env: { ...process.env, HOME: home } };
   try {
-    const [skill, status] = await Promise.all([
-      readFile(workspace.skillPath, 'utf8'),
-      git(
-        workspace.root,
-        ['status', '--porcelain=v1', '--untracked-files=all'],
-        workspace.env,
-      ),
-    ]);
-    assert.equal(skill.includes('{{'), false);
-    assert.equal(skill.includes('## 当前 Git 快照'), false);
+    const setup = await setupTriggerWorkspace(context);
+    context.env = { ...context.env, ...setup.environment };
+    const status = await git(root, ['status', '--porcelain=v1', '--untracked-files=all'], context.env);
     assert.match(status.stdout, /^M  README\.md$/m);
     assert.match(status.stdout, /^ M src\/app\.ts$/m);
     assert.match(status.stdout, /^\?\? docs\/notes\.md$/m);
     assert.equal(status.stdout.includes('.agents/'), false);
-
-    const args = buildCodexArgs(
-      workspace,
-      { query: '提交一下' },
-      { model: 'gpt-test' },
-    );
-    assert.ok(args.includes('--json'));
-    assert.ok(args.includes('--ephemeral'));
-    assert.ok(args.includes('--ignore-rules'));
-    assert.ok(args.includes('--strict-config'));
-    assert.ok(args.includes('read-only'));
-    assert.ok(args.includes('gpt-test'));
-    assert.ok(args.includes('skills.bundled.enabled=false'));
-    assert.ok(args.includes('orchestrator.skills.enabled=false'));
-    assert.equal(args.includes('提交一下'), false);
-    assert.equal(workspace.env.HOME.startsWith(workspace.cleanupRoot), true);
-    assert.equal(workspace.env.CODEX_HOME.startsWith(workspace.cleanupRoot), true);
-    assert.equal(workspace.env.GIT_DIR, undefined);
-    assert.match(workspace.identity.plugin_version, /^0\.1\.6$/);
-    assert.match(workspace.identity.skill_sha256, /^[0-9a-f]{64}$/);
-
-    const initialState = await captureGitState(workspace);
+    const initialState = await captureTriggerWorkspaceState(context);
     await writeFile(
-      path.join(workspace.root, 'docs', 'notes.md'),
+      path.join(root, 'docs', 'notes.md'),
       '# Mutated untracked notes\n',
       'utf8',
     );
-    assert.notEqual(await captureGitState(workspace), initialState);
+    assert.notEqual(await captureTriggerWorkspaceState(context), initialState);
     await writeFile(
-      path.join(workspace.root, 'docs', 'notes.md'),
+      path.join(root, 'docs', 'notes.md'),
       '# Untracked notes\n',
       'utf8',
     );
-    assert.equal(await captureGitState(workspace), initialState);
-    if (process.platform !== 'win32') {
-      const result = await runCodexOnce(
-        workspace,
-        {
-          id: 'explicit_without_events',
-          split: 'train',
-          query: '$commit 检查当前改动并完成提交。',
-          should_load_skill: true,
-        },
-        {
-          codexBin: '/usr/bin/true',
-          model: undefined,
-          timeoutMs: 10_000,
-        },
-      );
-      assert.equal(result.loaded, false);
-      assert.equal(result.execution_error, false);
-      assert.equal(result.fixture_unchanged, true);
-      assert.equal(await captureGitState(workspace), initialState);
-    }
+    assert.equal(await captureTriggerWorkspaceState(context), initialState);
   } finally {
-    await rm(workspace.cleanupRoot, { recursive: true, force: true });
+    await rm(cleanupRoot, { recursive: true, force: true });
   }
 }
 
-async function testHostileGitConfigurationIsIgnored(sourceRoot) {
+async function testHostileGitConfigurationIsIgnored() {
   const hostileRoot = await mkdtemp(path.join(os.tmpdir(), 'git-commit-hostile-git-'));
   const hooksDir = path.join(hostileRoot, 'hooks');
   const sentinelPath = path.join(hostileRoot, 'hook-ran');
@@ -434,14 +232,19 @@ async function testHostileGitConfigurationIsIgnored(sourceRoot) {
     'utf8',
   );
 
-  let workspace;
   try {
-    workspace = await createEvalWorkspace({
-      sourceRoot,
-      sourceEnv: {
+    const workspaceRoot = path.join(hostileRoot, 'project');
+    const isolatedHome = path.join(hostileRoot, 'isolated-home');
+    await Promise.all([
+      mkdir(workspaceRoot, { recursive: true }),
+      mkdir(isolatedHome, { recursive: true }),
+    ]);
+    const setup = await setupTriggerWorkspace({
+      workspaceRoot,
+      evalCase: {},
+      env: {
         ...process.env,
-        HOME: hostileRoot,
-        CODEX_HOME: path.join(hostileRoot, 'codex-home'),
+        HOME: isolatedHome,
         GIT_CONFIG_GLOBAL: globalConfig,
         GIT_CONFIG_NOSYSTEM: '0',
         GIT_DIR: path.join(hostileRoot, 'redirected.git'),
@@ -451,15 +254,11 @@ async function testHostileGitConfigurationIsIgnored(sourceRoot) {
         GIT_CONFIG_VALUE_0: hooksDir,
       },
     });
-    assert.notEqual(workspace.env.HOME, hostileRoot);
-    assert.notEqual(workspace.env.GIT_CONFIG_GLOBAL, globalConfig);
-    assert.equal(workspace.env.GIT_DIR, undefined);
-    assert.equal(workspace.env.GIT_WORK_TREE, undefined);
+    assert.notEqual(setup.environment.GIT_CONFIG_GLOBAL, globalConfig);
+    assert.equal(setup.environment.GIT_DIR, undefined);
+    assert.equal(setup.environment.GIT_WORK_TREE, undefined);
     await assert.rejects(readFile(sentinelPath, 'utf8'), /ENOENT/);
   } finally {
-    if (workspace) {
-      await rm(workspace.cleanupRoot, { recursive: true, force: true });
-    }
     await rm(hostileRoot, { recursive: true, force: true });
   }
 }
@@ -559,12 +358,10 @@ async function testCherryPickConflictDetection() {
 
 async function main() {
   const context = await resolveTestContext();
-  await testEvalCorpus();
-  testArguments();
+  await testEvalCorpus(context.sourceRoot);
   await testSkillRenders(context);
-  testEventDetectionAndSummary();
-  await testWorkspaceStaging(context.sourceRoot);
-  await testHostileGitConfigurationIsIgnored(context.sourceRoot);
+  await testWorkspaceFixture();
+  await testHostileGitConfigurationIsIgnored();
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();

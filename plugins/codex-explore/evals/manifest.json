@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "plugin": "codex-explore",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-default",
+      "scope": "user",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": false,
+      "requiredForRelease": true
+    },
+    {
+      "id": "project-nondefault",
+      "scope": "project",
+      "config": {
+        "quickModel": "eval-quick-model",
+        "quickReasoningEffort": "high",
+        "standardModel": "eval-standard-model",
+        "standardReasoningEffort": "xhigh",
+        "deepModel": "eval-deep-model",
+        "deepReasoningEffort": "max",
+        "minimumInitialWaitMinutes": 2
+      },
+      "triggerPreference": "default",
+      "runModel": false,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-nondefault",
+      "scope": "user",
+      "config": {
+        "quickModel": "eval-quick-model",
+        "quickReasoningEffort": "high",
+        "standardModel": "eval-standard-model",
+        "standardReasoningEffort": "xhigh",
+        "deepModel": "eval-deep-model",
+        "deepReasoningEffort": "max",
+        "minimumInitialWaitMinutes": 2
+      },
+      "triggerPreference": "default",
+      "runModel": false,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skill": "codex-explore",
+      "cases": "./evals/trigger-cases.json",
+      "fixtureModule": "./evals/trigger-fixture.mjs",
+      "observeSpawnAgent": true,
+      "isolation": "standard",
+      "strictNegativeSplits": [],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation", "sanity"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "model-selection",
+      "kind": "command",
+      "entry": "./evals/run-model-selection-evals.mjs",
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000,
+      "suiteTimeoutMs": 7200000,
+      "supports": ["runs", "case", "model", "codexBin", "timeout", "allowEnvironmentSkips"]
+    },
+    {
+      "id": "workflow",
+      "kind": "command",
+      "entry": "./evals/run-workflow-evals.mjs",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 900000,
+      "suiteTimeoutMs": 3600000,
+      "supports": ["runs", "model", "codexBin", "timeout"]
+    }
+  ]
+}

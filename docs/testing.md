@@ -7,6 +7,7 @@
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
 - **`smoke/`** — 专门验证真实 `pnpm build`、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
+- **`pnpm plugin:eval <plugin>`** — Codex Skill 作者 eval 唯一入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 native trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
 - **`fixtures/repo-template/`** — 含 `.codex/`、`.claude/` 等完整项目结构示例
 - **`fixtures/codex-config/`** — Codex 配置示例
 - **`fixtures/codex-project-repo-managed/`** — Codex project scope repo-visible fixture 矩阵，覆盖 skills-only、mcp-only、slashCommands-only、skills+MCP、apps 拒绝、quoted-key MCP 和 project artifact identity
@@ -122,6 +123,8 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 `pnpm plugin:test <plugin>` 运行单个插件时不处理其它坏插件；`pnpm plugin:test --all` 才会被任一插件失败阻断。runner 会先准备 staging source，再从 build 后 staging manifest 解析最终支持平台：省略 `--platform` 时按 `both` 处理；`--platform auto` 必须失败并提示可选值是 `codex`、`claude` 或 `both`；显式 `claude` / `codex` 遇到任一选中插件最终不支持该平台时，必须在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。runner 在临时 bundle、隔离 `AW_HOME` 和受管临时 project root 中执行 Node 测试；无 `scripts.tests.node` 匹配时输出 skipped/no tests matched 并以 0 退出，不调用 Node 默认测试发现。双平台插件的 `--platform both` 要验证 Codex/Claude 两轮使用独立可写 bundle；测试入口从最终测试基准 manifest 的 glob 发现，test-only helper 由静态 import/require 递归复制，不能覆盖 runtime helper。
 
+`pnpm plugin:eval` v1 只提供 Codex 证据，不进入常规 Vitest/CI。真实模型仅允许 project profile；user 和 dynamic non-default profile 通过 `--materialize-only` 验证最终文件、配置与 digest。默认无过滤参数时 materialize 所有 profile，并运行全部 `requiredForRelease` suite/split；`--suite`、`--profile`、`--split`、`--case`、`--runs` 只用于局部调试。输出的 `EvaluationBundle` 用 `passed`、`failed`、`needs_review`、`incomplete` 区分机械通过、失败、待人工定性和证据缺失；environment skip 始终保持 incomplete。
+
 公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法双平台示例生成 Claude `commands/*.md` 与 Codex manual-only skill；单平台插件只生成支持平台的命令产物；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、支持 Codex 时 Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败，Claude-only 插件不受 Codex forbidden syntax 限制。
 
 `upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。稳定 code（`scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`projectArtifactIdentityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`、`dependencyIndexUntrusted`、`sharedRuntimeOwnerConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
@@ -132,6 +135,7 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 - 改 build 或 tarball 行为 → 补跑 `pnpm test:smoke:build`，必要时再跑 `pnpm test:smoke:pack`
 - 改 catalog 打包、sidecar/full manifest、history、selector/cache 或 fetch 行为 → 补跑 catalog pack/fetch smoke，以及相关 `plugin-catalog*`、`local-marketplace`、`command-options` 单测
 - 改 `scripts.node` staging、manifest build、runtime dependency closure 或 `pnpm plugin:test` → 补跑 `pnpm test:smoke:plugin-scripts`；维护具体插件脚本时可先跑 `pnpm plugin:test <plugin>`
+- 改 Skill、description、renderer/config 或 eval 基础设施 → 至少跑 `pnpm plugin:eval <plugin> --materialize-only`；真实 Codex suite 仅在需要行为或发布证据时本地显式运行
 - 本地开发验证安装链路 → 执行 `make local-install`；如需刷新本机 catalog/cache，再补 `aw init --force`
 - 测试版发包 → 执行 `make beta-release VERSION=x.y.z-beta.n`；它会分别验证 CLI 包和 beta catalog 包，catalog version / plugin prerelease 约束以发布脚本为准
 - 正式发包 → 优先执行 `make release VERSION=x.y.z`；它会分别验证 CLI 包和 latest catalog 包；latest catalog 不允许 prerelease catalog version 或 prerelease 插件 version

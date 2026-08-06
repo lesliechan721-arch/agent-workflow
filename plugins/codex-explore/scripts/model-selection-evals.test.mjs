@@ -11,10 +11,7 @@ import {
   parseModelEvalArgs,
   summarizeModelEval,
 } from '../evals/run-model-selection-evals.mjs';
-import {
-  createEvalWorkspace,
-  readSpawnCallsFromRollouts,
-} from '../evals/run-trigger-evals.mjs';
+import { readSpawnCallsFromRollouts } from '../evals/eval-harness.mjs';
 
 function testArguments() {
   assert.deepEqual(
@@ -250,38 +247,12 @@ function testEnvironmentSkipReportStatus() {
   assert.deepEqual(modelEvalReportStatus([result], true), { complete: false, passed: true });
 }
 
-async function testCurrentStaging() {
-  const current = await createEvalWorkspace();
-  try {
-    assert.equal(current.roles.length, 4);
-    assert.deepEqual(
-      current.roles.map((role) => role.roleFile.name),
-      [
-        'codex-explore-quick',
-        'codex-explore-standard',
-        'codex-explore-deep',
-        'codex-explore-custom',
-      ],
-    );
-    const [quick, standard, deep, custom] = current.roles;
-    assert.deepEqual(
-      [quick.roleFile.model_reasoning_effort, standard.roleFile.model_reasoning_effort, deep.roleFile.model_reasoning_effort],
-      ['medium', 'high', 'xhigh'],
-    );
-    assert.equal('model' in custom.roleFile, false);
-    assert.equal('model_reasoning_effort' in custom.roleFile, false);
-  } finally {
-    await rm(current.root, { recursive: true, force: true });
-  }
-}
-
 async function main() {
   testArguments();
   await testEvalSpec();
   await testRolloutArgumentEvidence();
   testMechanicalAssertions();
   testEnvironmentSkipReportStatus();
-  await testCurrentStaging();
   console.log('model selection eval tests passed');
 }
 

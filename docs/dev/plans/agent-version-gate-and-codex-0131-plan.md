@@ -470,7 +470,7 @@ graph TD
 - [x] `.agents/skills/create-agent-workflows-plugin/references/extensions-spec.md`
 - [x] `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`
 - [x] `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js`
+- [x] `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs`
 - [x] `packages/cli/tests/integration/authoring-tools.test.ts`
 - [x] `packages/cli/tests/unit/public-docs.test.ts`
 - [x] `packages/cli/tests/smoke/build-smoke.test.ts`

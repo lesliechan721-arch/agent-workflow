@@ -16,12 +16,12 @@ plugins/<name>/skills/
     │   └── *.md
     ├── scripts/                 # 可选：由 agent 执行的辅助脚本
     │   └── *.js | *.sh
-    ├── assets/                  # 可选：模板、图片和静态数据
-    └── evals/                   # 可选：作者期触发/输出质量用例
-        └── evals.json
+    └── assets/                  # 可选：模板、图片和静态数据
 ```
 
 一个插件可以包含多个 skill 子目录，每个子目录名即 skill 标识（小写短横线格式）。
+
+作者期触发/行为用例统一放在 `plugins/<name>/evals/`，由 `evals/manifest.json` 连接到对应 Skill/profile。它不是 Skill runtime 资源，不能放进上面的 Skill 子树。完整规则见 `references/skill-evaluation.md`。
 
 ## SKILL.md profile
 
@@ -30,7 +30,7 @@ AW 区分两层 frontmatter：
 - **Agent Skills portable core**：`name`、`description`，以及可选的 `license`、`compatibility`、`metadata`、字符串形式 `allowed-tools`
 - **AW 平台扩展**：Claude 的 `user-invocable`、`disable-model-invocation`、`shell` 和数组形式 `allowed-tools`；Codex 的 `agents/openai.yaml`
 
-完整约束和选择原则见 `references/skill-design.md`。默认 `validate_plugin.js` 接受 portable core 加目标平台的已知扩展；`--strict-agent-skills` 只接受 portable core。未知字段和旧式 `when_to_use` 会失败。
+完整约束和选择原则见 `references/skill-design.md`。默认 `validate_plugin.mjs` 接受 portable core 加目标平台的已知扩展；`--strict-agent-skills` 只接受 portable core。未知字段和旧式 `when_to_use` 会失败。
 
 双平台、可严格移植的基础 frontmatter：
 

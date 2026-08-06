@@ -15,7 +15,7 @@ import {
   createEvalWorkspace,
   readEvalResource,
   runCodexOnce,
-} from './run-trigger-evals.mjs';
+} from './eval-harness.mjs';
 
 const DEFAULT_OPTIONS = {
   runs: 1,

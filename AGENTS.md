@@ -6,7 +6,7 @@
 
 ## Overview
 
-`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@yiliang/aw`）；插件通过独立的 sidecar/full catalog 包 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
+`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@yiliang/aw`）；插件通过独立的 sidecar/full catalog 包 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`，标准静态/AW 插件 Skill 的只读评审工具在 `.agents/skills/skill-review/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
 ## Maintenance Principles
 
@@ -27,6 +27,7 @@
 - `pnpm test:smoke:pack` — 串行校验 CLI 与 catalog tarball
 - `pnpm test:smoke:fetch` — 校验 catalog fetch / selector / cache fallback 相关 smoke
 - `pnpm plugin:test <plugin>` — 运行单个插件的 Node 脚本测试；`--all` 才会让任一坏插件阻断整轮
+- `pnpm plugin:eval <plugin>` — 按插件根 `evals/manifest.json` materialize Codex 最终制品并运行本地显式模型 eval；`--materialize-only` 不调用模型
 - `pnpm test:smoke:plugin-scripts` — 校验真实插件脚本 staging、依赖闭包和 bundle 布局
 - `make verify-cli` / `make verify-catalog` / `make verify-release` — 分别校验 CLI-only、catalog-only、组合发布链路
 - `pnpm run release:pack:cli` / `make pack-cli` — 生成 CLI 本地 tarball

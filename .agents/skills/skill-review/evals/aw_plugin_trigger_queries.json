@@ -1,0 +1,22 @@
+[
+  {
+    "query": "帮我审核 plugins/codex-explore 里的 Skill，重点比较动态渲染前后的内容和 default/non-default 最终制品。",
+    "should_trigger": true,
+    "split": "train"
+  },
+  {
+    "query": "给 git-commit 插件做一次 Skill 发布检查，核对 manifest、materialized Codex Skill 和 eval 证据。",
+    "should_trigger": true,
+    "split": "validation"
+  },
+  {
+    "query": "修复 codex-explore 的 renderer 和 manifest，让插件能正确生成角色文件。",
+    "should_trigger": false,
+    "split": "train"
+  },
+  {
+    "query": "review plugins/codex-explore 的 TypeScript 实现质量和性能，不需要检查 Skill。",
+    "should_trigger": false,
+    "split": "validation"
+  }
+]

@@ -1,0 +1,107 @@
+[
+  {
+    "id": "full-multidimensional-review",
+    "prompt": "审核一个包含 SKILL.md、references、scripts、assets 和 evals 的完整技能包。",
+    "assertions": [
+      "使用全部12个评分维度",
+      "分数由scorecard脚本计算而非手算",
+      "单独报告发布门禁、覆盖率和置信度",
+      "提出缺陷与最小改进集"
+    ]
+  },
+  {
+    "id": "missing-artifacts",
+    "prompt": "只提供SKILL.md进行quick review。",
+    "assertions": [
+      "缺失组件标记为未评估而非猜测",
+      "结论为临时或provisional",
+      "不会把缺失scripts自动判为缺陷"
+    ]
+  },
+  {
+    "id": "optional-script-omission",
+    "prompt": "评审一个纯知识型skill，没有任何确定性重复逻辑，也没有scripts。",
+    "assertions": [
+      "scripts维度可获得高分",
+      "不为了完整性要求新增脚本"
+    ]
+  },
+  {
+    "id": "trigger-without-eval",
+    "prompt": "description静态看起来很好，但没有任何触发测试。",
+    "assertions": [
+      "触发维度置信度不高",
+      "通常不把triggering评为4或5",
+      "建议realistic near-miss和多次运行"
+    ]
+  },
+  {
+    "id": "hard-gate-overrides-score",
+    "prompt": "一个总体得分很高的skill引用了不存在的关键脚本。",
+    "assertions": [
+      "critical-artifacts门禁失败",
+      "高总分不覆盖发布失败"
+    ]
+  },
+  {
+    "id": "state-machine-drift",
+    "prompt": "skill用自然语言维护timeout、pending、retry quota和跨agent状态握手。",
+    "assertions": [
+      "识别架构职责错位",
+      "优先建议删除或runtime一等能力",
+      "不会继续补更多自然语言分支"
+    ]
+  },
+  {
+    "id": "no-double-penalty",
+    "prompt": "同一套父子生命周期协议同时导致正文变长、role重复和维护困难。",
+    "assertions": [
+      "选择architecture或maintainability作为主扣分维度",
+      "其它维度只说明影响而不重复处罚"
+    ]
+  },
+  {
+    "id": "inferred-severity",
+    "prompt": "reviewer推测未来可能出现一种罕见竞态，但没有trace或规范证据。",
+    "assertions": [
+      "finding标为inferred",
+      "严重性不高于P2，除非直接逻辑矛盾",
+      "优先放入eval或产品issue"
+    ]
+  },
+  {
+    "id": "delta-review-stop",
+    "prompt": "修订版关闭了旧P1，没有新trace，但reviewer还能想出很多理论边界。",
+    "assertions": [
+      "只检查旧问题、回归和复杂度delta",
+      "不扩张新的P0/P1",
+      "满足停止条件时明确通过"
+    ]
+  },
+  {
+    "id": "progressive-disclosure",
+    "prompt": "SKILL.md很短，但一个reference包含所有复杂状态机且每次都会被要求读取。",
+    "assertions": [
+      "不会仅因主文件短而给高分",
+      "指出这不是真正的渐进式披露",
+      "评估实际加载触发与总控制复杂度"
+    ]
+  },
+  {
+    "id": "script-quality",
+    "prompt": "skill包含会等待input()、无--help、输出自由文本的Python脚本。",
+    "assertions": [
+      "scripts维度明确扣分",
+      "指出非交互、help、结构化stdout/stderr要求",
+      "不自动执行未知有副作用脚本"
+    ]
+  },
+  {
+    "id": "scope-creep",
+    "prompt": "某工具新增了一个可选字段，reviewer想要求skill立即为其建立完整策略。",
+    "assertions": [
+      "先检查该字段是否属于原目标和真实失败",
+      "没有证据时不扩大skill范围"
+    ]
+  }
+]

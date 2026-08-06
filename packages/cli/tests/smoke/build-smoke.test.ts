@@ -104,6 +104,19 @@ describe('build smoke', () => {
         },
       },
     });
+    for (const pluginName of [
+      'ask-me',
+      'git-commit',
+      'codex-explore',
+      'codex-subagent-guide',
+    ]) {
+      await expect(
+        fs.pathExists(path.join(outputRoot, 'plugins', pluginName, 'evals')),
+      ).resolves.toBe(false);
+      await expect(
+        fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', pluginName, 'evals')),
+      ).resolves.toBe(false);
+    }
     const [claudeMarketplace, codexMarketplace] = await Promise.all([
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),

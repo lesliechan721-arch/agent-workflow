@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "plugin": "git-commit",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-default",
+      "scope": "user",
+      "config": {},
+      "triggerPreference": "default",
+      "runModel": false,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skill": "commit",
+      "cases": "./evals/trigger-cases.json",
+      "fixtureModule": "./evals/trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    }
+  ]
+}
