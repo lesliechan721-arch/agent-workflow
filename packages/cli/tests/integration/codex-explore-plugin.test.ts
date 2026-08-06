@@ -1706,7 +1706,7 @@ describe('codex-explore integration acceptance', () => {
     );
 
     const renderedMarketplaceSkill = await fs.readFile(userDynamicSkillPath(awHome), 'utf8');
-    expect(renderedMarketplaceSkill).toContain('至少 `12` 分钟的累计等待预算');
+    expect(renderedMarketplaceSkill).toContain('至少 `12` 分钟累计等待预算');
     expect(renderedMarketplaceSkill).not.toContain('催促后等待');
     expect(renderedMarketplaceSkill).not.toContain('{{spawnModelGuidance}}');
 
@@ -1751,9 +1751,9 @@ describe('codex-explore integration acceptance', () => {
       fs.readJson(path.join(awHome, 'plugin-config', 'codex-explore', 'config.json')),
     ]);
 
-    expect(runtimeSkill).toContain('至少 `15` 分钟的累计等待预算');
+    expect(runtimeSkill).toContain('至少 `15` 分钟累计等待预算');
     expect(runtimeSkill).not.toContain('催促后等待');
-    expect(cachedSkill).toContain('至少 `15` 分钟的累计等待预算');
+    expect(cachedSkill).toContain('至少 `15` 分钟累计等待预算');
     expect(configStore).toMatchObject({
       minimumInitialWaitMinutes: 15,
       convergenceWaitMinutes: 6,
@@ -2713,21 +2713,21 @@ describe('codex-explore integration acceptance', () => {
       'allow_implicit_invocation: true',
     );
     expect(skillContent).toContain('专用子代理');
-    expect(skillContent).toContain('只使用 Codex Explore 自带的以下 role');
-    expect(skillContent).toContain('即使顶层任务是 review、缺陷分析、质量判断、修改或实现');
-    expect(skillContent).toContain('不得启动默认子代理或改用内置 `explorer`');
+    expect(skillContent).toContain('只使用 Codex Explore 自带 role');
+    expect(skillContent).toContain('顶层 review、分析或实现任务只有在能分离');
+    expect(skillContent).toContain('不得改用默认子代理、内置 `explorer` 或其它 role');
     expect(skillContent).toContain('`quick` → `codex-explore-quick`');
     expect(skillContent).toContain('`standard` → `codex-explore-standard`');
     expect(skillContent).toContain('`deep` → `codex-explore-deep`');
     expect(skillContent).toContain('选择 `codex-explore-custom`');
     expect(skillContent).toContain('有 `fork_turns` 时传 `"none"`');
     expect(skillContent).toContain('有 `fork_context` 时传 `false`');
-    expect(skillContent).toContain('至少 `20` 分钟的累计等待预算');
-    expect(skillContent).toContain('同一子任务最多有一个未决探测');
+    expect(skillContent).toContain('至少 `20` 分钟累计等待预算');
+    expect(skillContent).toContain('只有累计预算满足、等待明确超时');
     expect(skillContent).not.toContain('催促后等待');
-    expect(skillContent).toContain('调用预设 role 时不得传 `model` 或 `reasoning_effort`');
-    expect(skillContent).toContain('只传用户实际指定且当前 schema 公开的字段');
-    expect(skillContent).toContain('有 `close_agent` 时关闭本工作流启动');
+    expect(skillContent).toContain('调用预设 role 时不传 `model` 或 `reasoning_effort`');
+    expect(skillContent).toContain('只透传用户显式指定且当前 schema 支持的字段');
+    expect(skillContent).toContain('按当前工具能力清理已终态或已放弃的目标');
     expect(skillContent).not.toContain('role 固定使用');
     expect(skillContent).not.toContain('gpt-5.6-luna');
     for (let index = 0; index < CURRENT_CODEX_EXPLORE_ROLES.length; index += 1) {
@@ -3824,8 +3824,8 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       readTrackingManifest(userPaths.trackingDir),
     ]);
 
-    expect(userSkillContent).toContain('至少 `12` 分钟的累计等待预算');
-    expect(projectSkillContent).toContain('至少 `25` 分钟的累计等待预算');
+    expect(userSkillContent).toContain('至少 `12` 分钟累计等待预算');
+    expect(projectSkillContent).toContain('至少 `25` 分钟累计等待预算');
     expect(userTrackingAfter.plugins['codex-explore']).toEqual(userTrackingBefore.plugins['codex-explore']);
     expect(findDynamicDiagnosticEntry(findStatusLocation(parseStatusPayload(userStatus.output), {
       plugin: 'codex-explore',
@@ -3986,7 +3986,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     const trackedRole = afterTracking.plugins['codex-explore']?.artifacts.find((artifact) =>
       artifact.id === 'codex-explore-standard-role');
 
-    expect(skillContent).toContain('至少 `25` 分钟的累计等待预算');
+    expect(skillContent).toContain('至少 `25` 分钟累计等待预算');
     expect(trackedSkill).toMatchObject({
       state: 'present',
       lastRefresh: {

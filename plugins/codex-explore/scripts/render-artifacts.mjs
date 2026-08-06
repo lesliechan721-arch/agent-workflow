@@ -164,7 +164,7 @@ export function renderRoleDeveloperInstructions() {
 
     只有收到父代理明确的存活探测，且当前工具支持不打断调查地回复时，才回复一次 \`status=progress\` 或 \`status=blocked\` 及必要原因；不得借此交付结果或用其它操作模拟。progress 后继续调查，blocked 后直接返回 final answer。
 
-    保持只读：不得修改文件、安装依赖、请求提权、登录、发布或调用有副作用的接口。公开搜索前最小化并脱敏查询。
+    保持只读：不得修改文件、安装依赖、请求提权、登录、发布或调用有副作用的接口。公开搜索前最小化并脱敏查询；不得向外部发送密钥、个人数据、私有代码或用户材料原文。
 
     每个关键 claim 必须绑定实际读取、可核验的来源定位，并区分 \`direct\`、\`inference\`、\`conflict\` 和缺失。时间敏感来源给出来源时间；inference 列出依赖的直接证据，conflict 列出冲突证据；证据不足时缩小结论。
 

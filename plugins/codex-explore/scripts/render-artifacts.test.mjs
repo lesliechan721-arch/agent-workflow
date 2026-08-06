@@ -111,6 +111,7 @@ function assertRoleArtifact(plan, expected) {
   assert.match(instructions, /存活探测.*不打断调查/s);
   assert.match(instructions, /`status=progress`.*`status=blocked`/s);
   assert.match(instructions, /保持只读/);
+  assert.match(instructions, /不得向外部发送密钥、个人数据、私有代码或用户材料原文/);
   assert.match(instructions, /关键 claim.*实际读取、可核验的来源定位/s);
   assert.match(instructions, /`direct`.*`inference`.*`conflict`/s);
   assert.match(instructions, /`completed`.*`blocked`.*`insufficient`/s);
@@ -258,7 +259,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.7');
+  assert.equal(manifest.version, '0.2.8');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',
