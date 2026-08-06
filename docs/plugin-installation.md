@@ -386,7 +386,7 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 
 | 插件名 | 描述 | 支持平台 |
 |--------|------|----------|
-| `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
+| `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
 | `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |
 

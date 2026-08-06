@@ -5,7 +5,7 @@
 - 正例覆盖自然语言提交、已暂存内容、指定文件、英文请求和“提交并推送”中的提交步骤。
 - 反例覆盖只拟写或评审 message、查看状态、暂存、推送已有提交、改写历史，以及非 Git 语义的 “commit”。
 - 不根据 validation 结果反向修改 description；先在 train 上迭代，最后只用 validation 检查泛化。
-- 显式 `$commit` 由 Codex 在模型运行前直接注入，不会产生本 runner 使用的 shell 读取事件，因此不放进隐式触发 corpus；常规插件测试改为验证其 `user-invocable` 与真实 Codex bundle 元数据。
+- 显式 `$commit` 由 Codex 在模型运行前直接注入，不会产生本 runner 使用的 shell 读取事件，因此不放进隐式触发 corpus；常规插件测试改为验证 portable frontmatter 与真实 Codex bundle 元数据。
 
 ## 运行真实触发评测
 

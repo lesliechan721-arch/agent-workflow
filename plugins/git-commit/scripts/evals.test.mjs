@@ -71,7 +71,7 @@ async function resolveTestContext() {
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.equal(context.plugin.name, 'git-commit');
-  assert.equal(context.plugin.version, '0.1.5');
+  assert.equal(context.plugin.version, '0.1.6');
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,
@@ -147,15 +147,18 @@ function assertRenderedSkill(skill) {
 
 function assertCoreCommitContract(skill) {
   assert.match(skill, /只有用户明确要求实际创建提交时，才可改变暂存区或创建 commit/);
-  assert.match(skill, /push 仍须来自同一用户请求的明确授权/);
+  assert.match(skill, /push 不属于本 skill 的职责/);
+  assert.match(skill, /后续 push 由外层任务依据同一用户请求中的明确授权处理/);
   assert.match(skill, /commit 必须只包含用户授权范围/);
   assert.match(skill, /无法精确隔离时停止并报告/);
+  assert.match(skill, /存在进行中的 Git 操作或未解决冲突时停止并报告/);
+  assert.match(skill, /本 skill 不继续对应操作/);
   assert.match(skill, /需要暂存时只操作已确认候选并使用精确路径/);
   assert.match(skill, /不使用 `git add \.`、`git add -A`/);
   assert.match(skill, /<type>: <中文描述>/);
-  assert.match(skill, /不绕过 hooks，不自动 amend、reset/);
+  assert.match(skill, /不绕过 hooks，不执行 amend、reset/);
   assert.match(skill, /不得主动改变范围外状态/);
-  assert.match(skill, /改写历史或重排范围外的暂存内容/);
+  assert.match(skill, /历史改写或范围外暂存重排/);
   assert.match(skill, /提交前重新核对完整候选/);
   assert.match(skill, /创建一次 commit/);
   assert.match(skill, /失败后不自动重试或回滚/);
@@ -169,8 +172,8 @@ async function testSkillRenders(context) {
     'utf8',
   );
 
-  assert.match(source, /当用户明确要求实际创建一次 Git commit 时必须使用/);
-  assert.match(source, /user-invocable: true/);
+  assert.match(source, /当用户明确要求实际创建一次新的本地 Git commit 时必须使用/);
+  assert.equal(source.includes('user-invocable:'), false);
 
   if (context.platform) {
     const [bundledSkill, bundledOpenai] = await Promise.all([
@@ -371,7 +374,7 @@ async function testWorkspaceStaging(sourceRoot) {
     assert.equal(workspace.env.HOME.startsWith(workspace.cleanupRoot), true);
     assert.equal(workspace.env.CODEX_HOME.startsWith(workspace.cleanupRoot), true);
     assert.equal(workspace.env.GIT_DIR, undefined);
-    assert.match(workspace.identity.plugin_version, /^0\.1\.5$/);
+    assert.match(workspace.identity.plugin_version, /^0\.1\.6$/);
     assert.match(workspace.identity.skill_sha256, /^[0-9a-f]{64}$/);
 
     const initialState = await captureGitState(workspace);
