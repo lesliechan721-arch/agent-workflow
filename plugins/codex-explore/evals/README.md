@@ -32,7 +32,7 @@ node plugins/codex-explore/evals/run-trigger-evals.mjs \
 
 runner 会在临时目录渲染当前 skill、专用 role 和合成材料，使用只读 sandbox 逐条执行。显式 `$codex-explore` 由宿主注入记为已加载；自动触发则通过 JSONL 中读取临时 `.agents/skills/codex-explore/SKILL.md` 的命令识别。`spawn_agent` 通过 `collab_tool_call` 或隔离 rollout 中的原始 function call 识别。正向 spawn 用例在两个事件都出现后立即结束，避免等待完整探索结果。
 
-默认每条运行 3 次，以 `0.5` 为分界：正例加载/调用率必须高于分界，反例必须低于分界。常规 `pnpm plugin:test codex-explore` 只验证用例、解析器和临时 staging，不会发起模型调用。
+默认每条运行 3 次，以 `0.5` 为分界：正例加载/调用率必须高于分界，反例必须低于分界。常规 `pnpm plugin:test codex-explore` 只验证用例、解析器、临时 staging、产物结构、上下文预算和关键不变量，不锁定完整自然语言文案，也不会发起模型调用。
 
 ## 完整结果 smoke
 
