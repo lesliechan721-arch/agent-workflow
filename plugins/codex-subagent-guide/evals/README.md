@@ -19,7 +19,7 @@ node plugins/codex-subagent-guide/evals/run-trigger-evals.mjs --split sanity --r
 
 ## Routing 参数评估
 
-`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、包括 `service_tier` 在内的逐字段自定义、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、同级 context 冲突、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；skill 加载只接受实际 `SKILL.md` 读取事件，spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。
+`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、同级 context 冲突、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；skill 加载只接受实际 `SKILL.md` 读取事件，spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。
 
 ```bash
 node plugins/codex-subagent-guide/evals/run-routing-evals.mjs --runs 3 --output /tmp/codex-subagent-guide-routing.json
@@ -35,4 +35,4 @@ runner 默认用 `gpt-5.6-luna` 运行 V1、`gpt-5.6-sol` 运行 V2，可用 `--
 
 如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
 
-渲染单测只验证等待、timeout、follow-up、close 和重复 spawn 等生命周期规则已进入最终 `SKILL.md`，不验证模型是否按这些规则行动。实时 routing eval 在 spawn 后停止，不启动长时间等待或 close 工作流；生命周期行为仍需要 workflow eval 或人工轨迹检查。
+渲染单测只验证响应式长等待、终态、一次 follow-up、条件清理和禁止重复 spawn 等等待与清理不变量已进入最终 `SKILL.md`，不验证模型是否按这些规则行动。实时 routing eval 在 spawn 后停止，不启动长时间等待或清理工作流；这些行为仍需要 workflow eval 或人工轨迹检查。

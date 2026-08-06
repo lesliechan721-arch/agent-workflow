@@ -49,6 +49,7 @@ aw config unset codex-explore minimumInitialWaitMinutes -s user
 aw config reset codex-explore -s user --yes
 aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
 aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
+aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
 aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
 
@@ -62,7 +63,7 @@ aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 |------|------|----------|
 | `git-commit` | 在用户请求提交时，按约定式提交规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
-| `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、等待与 `close_agent` 清理 | Codex |
+| `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |
 
 `codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
@@ -70,7 +71,7 @@ aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 
 代码 review、缺陷分析、质量判断、修改和实现任务只要能分离出值得隔离的大范围只读事实探索，也可以使用该 workflow；探索子代理不负责最终判断、建议或写操作。
 
-`codex-subagent-guide` 不决定是否应该使用子代理，也不授予委派权限；它同等兼容 Codex multi-agent V1/V2，但不预判工具版本，而是按当前公开的工具和 schema 应用 model/effort、fork、事件等待与 `close_agent` 清理规则。它按最终交付物区分简单、通用、复杂、计划与审核四类任务，并为每类分别生成可配置的默认 model 和 reasoning effort。
+`codex-subagent-guide` 不决定是否应该使用子代理，也不授予委派权限；它同等兼容 Codex multi-agent V1/V2，但不预判工具版本，而是按当前公开的工具和 schema 应用 model/effort、fork、响应式等待与条件清理原则。它按最终交付物区分简单、通用、复杂、计划与审核四类任务，并为每类分别生成可配置的默认 model 和 reasoning effort；`minimumInitialWaitMinutes` 可动态调整首次响应式等待窗口下限。
 
 ## 开发
 

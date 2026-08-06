@@ -6,7 +6,7 @@ import {
   renderRoleDeveloperInstructions,
 } from './render-artifacts.mjs';
 
-const SHORT_DESCRIPTION = '子代理任务分类、参数选择、上下文继承、等待与生命周期管理';
+const SHORT_DESCRIPTION = '子代理任务分类、参数选择、上下文继承、等待与清理原则';
 const ROLE_EXPECTATIONS = [
   {
     artifactId: 'codex-subagent-simple-role',
@@ -95,11 +95,11 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
       role.content.roleFile.developer_instructions,
       renderRoleDeveloperInstructions(),
     );
-    assert.match(role.content.roleFile.developer_instructions, /收到父代理显式存活探测时/);
-    assert.match(role.content.roleFile.developer_instructions, /`status=progress`/);
-    assert.match(role.content.roleFile.developer_instructions, /回复 progress 后继续原任务/);
-    assert.match(role.content.roleFile.developer_instructions, /回复 blocked 后停止无效推进/);
-    assert.match(role.content.roleFile.developer_instructions, /父代理解决阻塞后可复用原代理继续任务/);
+    assert.match(role.content.roleFile.developer_instructions, /完成或无法继续时直接返回/);
+    assert.match(role.content.roleFile.developer_instructions, /阻塞原因和未解决项/);
+    assert.equal(role.content.roleFile.developer_instructions.includes('存活探测'), false);
+    assert.equal(role.content.roleFile.developer_instructions.includes('status=progress'), false);
+    assert.equal(role.content.roleFile.developer_instructions.includes('status=blocked'), false);
     assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
@@ -116,12 +116,13 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /需要跨模块因果归纳、未知根因分析或高完整性核验的只读任务/);
   assert.match(skill.content.skillFile, /超出简单任务范围的常规交付使用通用任务/);
   assert.match(skill.content.skillFile, /预定义任务只传表中的 `agent_type`/);
-  assert.match(skill.content.skillFile, /不要同时传 `model`、`reasoning_effort` 或 `service_tier`/);
+  assert.match(skill.content.skillFile, /不要同时传 `model` 或 `reasoning_effort`/);
   assert.match(skill.content.skillFile, /不回退到动态 model override/);
-  assert.match(skill.content.skillFile, /`reasoning_effort`、`service_tier` 或 `agent_type`/);
+  assert.match(skill.content.skillFile, /`reasoning_effort` 或 `agent_type`/);
   assert.match(skill.content.skillFile, /整体作为自定义任务/);
   assert.match(skill.content.skillFile, /未指定字段不补预设值/);
-  assert.match(skill.content.skillFile, /固定 role 与显式 `model`、`reasoning_effort`、`service_tier` 冲突/);
+  assert.match(skill.content.skillFile, /字段组合与当前 schema 冲突/);
+  assert.equal(skill.content.skillFile.includes('service_tier'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-luna'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-terra'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-sol'), false);
@@ -132,38 +133,30 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
     skill.content.skillFile,
     /按当前 `spawn_agent` schema 传表示“不继承”的值/,
   );
-  assert.match(
-    skill.content.skillFile,
-    /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/,
-  );
-  assert.match(skill.content.skillFile, /具体参数和兼容性服从当前工具 schema/);
+  assert.match(skill.content.skillFile, /具体模式和兼容性服从当前工具 schema/);
   assert.match(skill.content.skillFile, /用户、适用规则或其它已加载 skill 明确要求继承/);
-  assert.match(skill.content.skillFile, /多个显式 context 要求按当前指令优先级解析/);
-  assert.match(skill.content.skillFile, /同级冲突无法消解/);
+  assert.match(skill.content.skillFile, /多个显式 context 要求按指令优先级解析/);
+  assert.match(skill.content.skillFile, /同级冲突或 schema 无法满足时停止并说明/);
   assert.match(skill.content.skillFile, /context 选择独立于预设或自定义任务分类/);
   assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
 
   assert.match(skill.content.skillFile, /调用时只等待尚未终态的 agent/);
-  assert.match(skill.content.skillFile, /返回活动通知而非最终结果时，以完成通知为准/);
-  assert.match(skill.content.skillFile, /其它已加载的任务专用 skill 明确提供首次存活探测下限时优先使用/);
-  assert.match(skill.content.skillFile, /首次探测前至少等待 `10` 分钟（`timeout_ms=600000`）/);
-  assert.match(skill.content.skillFile, /只有 `wait_agent` 明确报告超时才考虑存活探测/);
-  assert.match(skill.content.skillFile, /明确提供双向的非中断状态通信能力/);
-  assert.match(skill.content.skillFile, /仅把输入排队到后续 turn 的操作不构成存活探测能力/);
-  assert.match(skill.content.skillFile, /无法确认时跳过探测/);
-  assert.match(skill.content.skillFile, /不得为了探测而中断原任务/);
-  assert.match(skill.content.skillFile, /同一子任务同时最多有一个未决探测/);
-  assert.match(skill.content.skillFile, /暂未回复不能单独证明代理已经挂死/);
-  assert.match(skill.content.skillFile, /能促使原 agent 继续或重新答复的操作/);
-  assert.match(skill.content.skillFile, /不能触发或继续答复的操作不算有效 follow-up/);
-  assert.match(skill.content.skillFile, /向原 agent 发送一次聚焦缺口的 follow-up/);
-  assert.match(skill.content.skillFile, /收到结果后重新校验/);
-  assert.match(skill.content.skillFile, /不要为可恢复缺口重复 spawn 相同任务/);
-  assert.match(skill.content.skillFile, /不得把不合格结果当作任务完成/);
-  assert.match(skill.content.skillFile, /是否请求部分结果或提前收敛由主代理/);
+  assert.match(skill.content.skillFile, /活动通知不等于最终结果/);
+  assert.match(skill.content.skillFile, /用户或任务专用 skill 明确指定单次等待时优先遵守/);
+  assert.match(skill.content.skillFile, /至少使用 `10` 分钟的响应式窗口（`timeout_ms=600000`）/);
+  assert.match(skill.content.skillFile, /timeout 不是终态或失败/);
+  assert.match(skill.content.skillFile, /继续使用相同或更长且不超过当前 schema 上限的响应式等待窗口/);
+  assert.match(skill.content.skillFile, /只有工具结果或运行时通知明确表示终态时才视为完成/);
+  assert.match(skill.content.skillFile, /发送一次聚焦缺口的 follow-up 并重新校验/);
+  assert.match(skill.content.skillFile, /不要为相同任务重复 spawn/);
+  assert.match(skill.content.skillFile, /否则向用户说明未解决项/);
+  assert.match(skill.content.skillFile, /重复进度询问来监控子代理/);
   assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
   assert.match(skill.content.skillFile, /最终输出和必要证据已被父代理接收并保留/);
   assert.match(skill.content.skillFile, /已完成必要校验、无需 follow-up/);
+  assert.equal(skill.content.skillFile.includes('存活探测'), false);
+  assert.equal(skill.content.skillFile.includes('status=progress'), false);
+  assert.equal(skill.content.skillFile.includes('status=blocked'), false);
   assert.match(
     skill.content.skillFile,
     /compatibility: Preset routing requires Codex multi-agent V1 or V2 spawn_agent with agent_type exposed and the four bundled agent roles installed/,
@@ -185,14 +178,14 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.ok(Array.from(SHORT_DESCRIPTION).length <= 64);
 });
 
-test('renders a configured initial liveness probe delay', async () => {
+test('renders a configured minimum initial wait window', async () => {
   const { skill } = artifactsFrom(
     await renderArtifactPlan(createContext({ minimumInitialWaitMinutes: 15 })),
   );
 
   assert.match(
     skill.content.skillFile,
-    /首次探测前至少等待 `15` 分钟（`timeout_ms=900000`）/,
+    /至少使用 `15` 分钟的响应式窗口（`timeout_ms=900000`）/,
   );
 });
 

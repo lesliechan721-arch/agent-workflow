@@ -1,14 +1,14 @@
 ---
 name: codex-subagent-guide
-description: 当用户、适用 AGENTS.md 或其它技能已经授权 Codex 使用子代理、委派或并行 agent 工作，且没有专用 skill 自行完整管理本次委派时使用；提供通用的子代理调度与生命周期管理。不与已经定义独立委派流程的专用 skill 叠加使用，也不用于判断是否应该委派；技能加载本身不授予委派权限。
-compatibility: Preset routing requires Codex multi-agent V1 or V2 spawn_agent with agent_type exposed and the four bundled agent roles installed; lifecycle guidance uses only capabilities exposed by the current tool schema.
+description: 当用户、适用 AGENTS.md 或其它技能已经授权 Codex 使用子代理、委派或并行 agent 工作，且没有专用 skill 自行完整管理本次委派时使用；提供通用的子代理调度、上下文与等待清理原则。不与已经定义独立委派流程的专用 skill 叠加使用，也不用于判断是否应该委派；技能加载本身不授予委派权限。
+compatibility: Preset routing requires Codex multi-agent V1 or V2 spawn_agent with agent_type exposed and the four bundled agent roles installed; waiting and cleanup guidance uses only capabilities exposed by the current tool schema.
 metadata:
-  short-description: 子代理任务分类、参数选择、上下文继承、等待与生命周期管理
+  short-description: 子代理任务分类、参数选择、上下文继承、等待与清理原则
 ---
 
 # Codex Subagent Guide
 
-委派必须已经获准；本 skill 只指导参数和生命周期，不构成使用子代理的授权。
+委派必须已经获准；本 skill 只指导调度参数、上下文、等待和清理原则，不构成使用子代理的授权。
 
 始终以当前会话公开的工具名称、schema 和描述为准。以下规则只在相应工具和字段公开时适用；未公开时跳过，不先判断子代理工具版本，也不从一个工具推断其它工具存在。若当前 schema 与本 skill 冲突，以 schema 为准。不要把文件变化、Git diff 或测试输出当作完成信号。
 
@@ -23,22 +23,16 @@ metadata:
 
 默认使用干净上下文，并按当前 `spawn_agent` schema 传表示“不继承”的值，例如 `fork_turns: "none"` 或 `fork_context: false`。在 `message` 中写清目标、范围、必要事实、约束、成功标准、验证要求和预期输出。
 
-只有用户、适用规则或其它已加载 skill 明确要求继承，或任务无法通过完整 `message` 自包含必要上下文时，才使用非干净上下文。完整历史、按轮次继承或其它非干净模式都统一视为继承上下文，具体参数和兼容性服从当前工具 schema。包括干净、部分和完整历史在内的多个显式 context 要求按当前指令优先级解析；同级冲突无法消解，或显式要求与当前 schema 不能同时满足时，停止并说明。context 选择独立于预设或自定义任务分类；不要仅为了少写委派说明而继承。
+只有用户、适用规则或其它已加载 skill 明确要求继承，或任务无法通过完整 `message` 自包含必要上下文时，才使用非干净上下文。具体模式和兼容性服从当前工具 schema；多个显式 context 要求按指令优先级解析，同级冲突或 schema 无法满足时停止并说明。context 选择独立于预设或自定义任务分类；不要仅为了少写委派说明而继承。
 
 ## 等待与关闭
 
-只有下一步被必要结果阻塞时才调用 `wait_agent`。`timeout_ms` 是单次最长等待窗口，不是轮询周期。其它已加载的任务专用 skill 明确提供首次存活探测下限时优先使用；否则首次探测前至少等待 `{{minimumInitialWaitMinutes}}` 分钟（`timeout_ms={{minimumInitialWaitTimeoutMs}}`）。用户明确指定单次等待时优先遵守用户要求，并始终服从当前 schema 的上下限。调用时只等待尚未终态的 agent；返回活动通知而非最终结果时，以完成通知为准。
+只有下一步被必要结果阻塞时才调用 `wait_agent`。`timeout_ms` 是单次最长等待窗口，不是轮询周期。用户或任务专用 skill 明确指定单次等待时优先遵守；否则首次等待在当前 schema 允许时至少使用 `{{minimumInitialWaitMinutes}}` 分钟的响应式窗口（`timeout_ms={{minimumInitialWaitTimeoutMs}}`）。调用时只等待尚未终态的 agent；活动通知不等于最终结果。
 
-只有 `wait_agent` 明确报告超时才考虑存活探测；超时本身不代表失败。仅当当前运行环境明确提供双向的非中断状态通信能力时，才向每个未完成 agent 发送一次探测：消息必须能在目标原 turn 仍运行时及时送达，并允许目标在不结束或重定向原任务的情况下回复。仅把输入排队到后续 turn 的操作不构成存活探测能力；无法确认时跳过探测，继续按当前工具的等待、状态和通知能力处理，不得为了探测而中断原任务。
+timeout 不是终态或失败。结果仍必需时，继续使用相同或更长且不超过当前 schema 上限的响应式等待窗口；只有工具结果或运行时通知明确表示终态时才视为完成。
 
-启用探测时，询问 agent 处于正常推进还是阻塞状态及必要原因，并要求只回复一次 `status=progress` 或 `status=blocked`。同一子任务同时最多有一个未决探测。
+收到终态结果后按任务成功标准校验。存在可恢复缺口时，若当前工具支持复用仍可用的原 agent 继续或重新答复，发送一次聚焦缺口的 follow-up 并重新校验；不要为相同任务重复 spawn。结果仍不合格、原 agent 不可用或缺口需要新授权时，适用规则允许则由主代理补齐安全且范围内的缺口，否则向用户说明未解决项。
 
-- 回复正常推进时，继续等待；后续使用相同或更长的窗口并受当前 schema 最大值限制，具体长度按回复中的进度和任务需要判断。
-- 回复阻塞或需要输入时，处理可解决的阻塞；需要新授权、用户选择或范围变更时向用户说明。
-- 返回最终结果时，按任务成功标准校验。结果缺少可补充内容时，如果当前工具提供能促使原 agent 继续或重新答复的操作且原 agent 仍可用，向原 agent 发送一次聚焦缺口的 follow-up，收到结果后重新校验；单纯投递消息但不能触发或继续答复的操作不算有效 follow-up。不要为可恢复缺口重复 spawn 相同任务。
-- follow-up 后仍不合格、原 agent 不可用或缺口需要新授权时，适用规则允许则由主代理补齐安全且范围内的缺口，否则向用户说明未解决项。不得把不合格结果当作任务完成。
-- 暂未回复不能单独证明代理已经挂死；按当前工具说明判断探测是否仍待交付，再结合任务必要性、已有运行证据和用户要求决定继续等待、停止当前 turn 或标记未解决。
-
-是否请求部分结果或提前收敛由主代理根据状态回复、任务覆盖要求和用户目标判断，不设固定收敛阶段。不得使用 shell `sleep`、短 wait 循环、周期性状态查询、反复读取文件/Git/测试状态或重复进度询问来监控子代理。
+不得使用 shell `sleep`、短 wait 循环、周期性状态查询、反复读取文件、Git 或测试状态，以及重复进度询问来监控子代理。
 
 当前工具提供 `close_agent` 时，只在目标的最终输出和必要证据已被父代理接收并保留、已完成必要校验、无需 follow-up，且目标及必要后代都不再需要后调用；不要关闭仍有必要后代工作的目标。没有 `close_agent` 时无需额外清理。

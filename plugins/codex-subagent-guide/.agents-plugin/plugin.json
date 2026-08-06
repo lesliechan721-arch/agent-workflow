@@ -1,6 +1,6 @@
 {
   "name": "codex-subagent-guide",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "在用户、项目规则或其它技能已明确要求使用子代理后，选择任务 role，并指导自定义参数、上下文 fork、事件等待和清理。",
   "compatibility": {
     "aw": {
@@ -25,7 +25,7 @@
   },
   "interface": {
     "displayName": "Codex Subagent Guide",
-    "shortDescription": "子代理任务分类、参数选择、上下文继承、等待与生命周期管理",
+    "shortDescription": "子代理任务分类、参数选择、上下文继承、等待与清理原则",
     "capabilities": ["Skills", "Agents"]
   },
   "scripts": {
@@ -99,11 +99,11 @@
       },
       "minimumInitialWaitMinutes": {
         "type": "number",
-        "title": "首次存活探测前最小等待（分钟）",
+        "title": "首次等待最小窗口（分钟）",
         "default": 10,
         "min": 1,
         "max": 60,
-        "description": "没有任务专用技能提供等待下限时，首次考虑符合当前通信能力条件的非中断存活探测前的最短等待时间。"
+        "description": "用户或任务专用技能没有指定单次等待时，首次响应式 wait_agent 窗口的最短时间。"
       }
     }
   },

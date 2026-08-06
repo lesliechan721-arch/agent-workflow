@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Subagent Guide"
-  short_description: "子代理任务分类、参数选择、上下文继承、等待与生命周期管理"
-  default_prompt: "使用 $codex-subagent-guide 指导已经获准的子代理分类、参数、等待和 `close_agent` 清理。"
+  short_description: "子代理任务分类、参数选择、上下文继承、等待与清理原则"
+  default_prompt: "使用 $codex-subagent-guide 指导已经获准的子代理分类、参数、上下文、等待与条件清理。"
 
 policy:
   allow_implicit_invocation: true

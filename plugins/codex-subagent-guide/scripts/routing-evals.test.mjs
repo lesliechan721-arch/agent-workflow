@@ -61,7 +61,6 @@ async function testEvalSpec() {
       'planning_review_preset_fresh',
       'custom_model_only',
       'custom_effort_only',
-      'custom_service_tier_only',
       'custom_agent_type_only',
       'custom_model_and_effort',
       'partial_preset',
@@ -78,15 +77,6 @@ async function testEvalSpec() {
   const readonlyComplex = spec.evals.find((entry) => entry.id === 'readonly_complexity_not_simple');
   assert.equal(readonlyComplex.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
   assert.equal(readonlyComplex.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
-  const serviceTier = spec.evals.find((entry) => entry.id === 'custom_service_tier_only');
-  assert.deepEqual(serviceTier.expectations.v2.arguments, {
-    agent_type: null,
-    model: null,
-    reasoning_effort: null,
-    service_tier: 'priority',
-    fork_context: null,
-    fork_turns: 'none',
-  });
   const partial = spec.evals.find((entry) => entry.id === 'partial_preset');
   assert.equal(partial.expectations.v1.spawn_calls.max, 0);
   assert.deepEqual(partial.expectations.v2.arguments, {
@@ -310,7 +300,8 @@ async function testBaselineStaging() {
     assert.equal(baseline.roles.length, 4);
     await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
     const role = await readFile(baseline.roles[0].rolePath, 'utf8');
-    assert.match(role, /developer_instructions = "完成父代理/);
+    assert.match(role, /developer_instructions = "只完成父代理/);
+    assert.doesNotMatch(role, /status=(?:progress|blocked)/);
   } finally {
     await Promise.all([
       rm(current.root, { recursive: true, force: true }),

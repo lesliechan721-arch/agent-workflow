@@ -199,7 +199,7 @@ async function testWorkspaceStaging() {
     assert.match(skill, /适用 AGENTS\.md 或其它技能已经授权 Codex 使用子代理/);
     assert.match(skill, /且没有专用 skill 自行完整管理本次委派时使用/);
     assert.match(skill, /不与已经定义独立委派流程的专用 skill 叠加使用/);
-    assert.match(skill, /完整历史、按轮次继承或其它非干净模式都统一视为继承上下文/);
+    assert.match(skill, /具体模式和兼容性服从当前工具 schema/);
     assert.deepEqual(
       workspace.roles.map((role) => role.roleFile.name),
       [
@@ -214,7 +214,8 @@ async function testWorkspaceStaging() {
     );
     assert.equal(instructions.size, 1);
     for (const roleFile of roleFiles) {
-      assert.match(roleFile, /developer_instructions = "完成父代理/);
+      assert.match(roleFile, /developer_instructions = "只完成父代理/);
+      assert.doesNotMatch(roleFile, /status=(?:progress|blocked)/);
     }
 
     const v1Args = buildCodexArgs(

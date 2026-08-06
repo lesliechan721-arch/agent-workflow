@@ -12,7 +12,7 @@ import { readTrackingManifest } from '../../src/utils/tracking.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { createCliTestWorkspace } from '../helpers/workspace.js';
 
-const ROLE_DEVELOPER_INSTRUCTIONS = '完成父代理在初始 message 中委派的任务。严格遵守用户、项目、适用技能和当前工具 schema，保持在给定目标、范围与成功标准内；不要自行扩大任务或替父代理处理未委派工作。仅在收到父代理显式存活探测时，可以只回复一次 `status=progress` 和必要进度，或 `status=blocked` 和阻塞原因；不得主动或例行汇报。回复 progress 后继续原任务，不要为探测缩减范围、提前收敛或结束当前 turn。回复 blocked 后停止无效推进，在 final answer 中返回当前可用结果、阻塞原因和所需输入，然后结束当前 turn；父代理解决阻塞后可复用原代理继续任务。完成后返回可直接整合的结果、关键证据、已执行验证及仍未解决的问题。';
+const ROLE_DEVELOPER_INSTRUCTIONS = '只完成父代理在初始 message 中委派的任务，遵守其中的目标、范围、约束和成功标准；不得自行扩大任务或处理未委派工作。完成或无法继续时直接返回可整合的结果；适用时附关键证据、验证结果、阻塞原因和未解决项。';
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -103,15 +103,16 @@ describe('codex-subagent-guide dynamic artifacts', () => {
     const skill = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
     const metadata = await fs.readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8');
 
-    expect(skill).toContain('完整历史、按轮次继承或其它非干净模式都统一视为继承上下文');
-    expect(skill).toContain('首次探测前至少等待 `12` 分钟（`timeout_ms=720000`）');
-    expect(skill).toContain('任务专用 skill 明确提供首次存活探测下限时优先使用');
-    expect(skill).toContain('明确提供双向的非中断状态通信能力');
-    expect(skill).toContain('能促使原 agent 继续或重新答复的操作');
+    expect(skill).toContain('具体模式和兼容性服从当前工具 schema');
+    expect(skill).toContain('至少使用 `12` 分钟的响应式窗口（`timeout_ms=720000`）');
+    expect(skill).toContain('timeout 不是终态或失败');
+    expect(skill).toContain('发送一次聚焦缺口的 follow-up 并重新校验');
     expect(skill).toContain('最终输出和必要证据已被父代理接收并保留');
+    expect(skill).not.toContain('存活探测');
+    expect(skill).not.toContain('status=progress');
     expect(metadata).toContain('allow_implicit_invocation: true');
     expect(metadata).toContain(
-      'short_description: 子代理任务分类、参数选择、上下文继承、等待与生命周期管理',
+      'short_description: 子代理任务分类、参数选择、上下文继承、等待与清理原则',
     );
 
     const roleContents = new Map<string, string>();
@@ -189,7 +190,7 @@ describe('codex-subagent-guide dynamic artifacts', () => {
       },
     });
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toContain(
-      '首次探测前至少等待 `15` 分钟（`timeout_ms=900000`）',
+      '至少使用 `15` 分钟的响应式窗口（`timeout_ms=900000`）',
     );
     for (const role of ROLE_EXPECTATIONS) {
       await expect(fs.readFile(
