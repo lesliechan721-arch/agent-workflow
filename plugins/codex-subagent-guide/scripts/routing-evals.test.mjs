@@ -63,13 +63,13 @@ async function testEvalSpec() {
       'custom_effort_only',
       'custom_agent_type_only',
       'custom_model_and_effort',
+      'custom_override_scoped_to_subtask',
       'partial_preset',
       'partial_custom_model',
       'full_history',
       'full_history_custom_override',
       'project_rule_partial_context',
       'skill_rule_full_history_context',
-      'same_priority_context_conflict',
       'missing_preset_role',
       'fixed_role_custom_conflict',
     ],
@@ -77,6 +77,11 @@ async function testEvalSpec() {
   const readonlyComplex = spec.evals.find((entry) => entry.id === 'readonly_complexity_not_simple');
   assert.equal(readonlyComplex.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
   assert.equal(readonlyComplex.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
+  const scopedOverride = spec.evals.find((entry) => entry.id === 'custom_override_scoped_to_subtask');
+  assert.equal(scopedOverride.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
+  assert.equal(scopedOverride.expectations.v1.arguments.model, null);
+  assert.equal(scopedOverride.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
+  assert.equal(scopedOverride.expectations.v2.arguments.model, null);
   const partial = spec.evals.find((entry) => entry.id === 'partial_preset');
   assert.equal(partial.expectations.v1.spawn_calls.max, 0);
   assert.deepEqual(partial.expectations.v2.arguments, {
@@ -101,9 +106,6 @@ async function testEvalSpec() {
   const skillContext = spec.evals.find((entry) => entry.id === 'skill_rule_full_history_context');
   assert.equal(skillContext.expectations.v1.arguments.fork_context, true);
   assert.equal(skillContext.expectations.v2.arguments.fork_turns, 'all');
-  const contextConflict = spec.evals.find((entry) => entry.id === 'same_priority_context_conflict');
-  assert.equal(contextConflict.expectations.v1.spawn_calls.max, 0);
-  assert.equal(contextConflict.expectations.v2.spawn_calls.max, 0);
 }
 
 async function testRolloutArgumentEvidence() {

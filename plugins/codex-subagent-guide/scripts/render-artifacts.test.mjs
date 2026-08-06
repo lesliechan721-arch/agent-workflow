@@ -115,13 +115,16 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /只读不自动等于简单/);
   assert.match(skill.content.skillFile, /需要跨模块因果归纳、未知根因分析或高完整性核验的只读任务/);
   assert.match(skill.content.skillFile, /超出简单任务范围的常规交付使用通用任务/);
-  assert.match(skill.content.skillFile, /预定义任务只传表中的 `agent_type`/);
-  assert.match(skill.content.skillFile, /不要同时传 `model` 或 `reasoning_effort`/);
+  assert.match(skill.content.skillFile, /预定义任务使用表中的 `agent_type` 选择 preset/);
+  assert.match(skill.content.skillFile, /不额外传 `model` 或 `reasoning_effort`/);
   assert.match(skill.content.skillFile, /不回退到动态 model override/);
   assert.match(skill.content.skillFile, /`reasoning_effort` 或 `agent_type`/);
-  assert.match(skill.content.skillFile, /整体作为自定义任务/);
-  assert.match(skill.content.skillFile, /未指定字段不补预设值/);
-  assert.match(skill.content.skillFile, /字段组合与当前 schema 冲突/);
+  assert.match(skill.content.skillFile, /按显式指令的实际作用域逐个子任务判断/);
+  assert.match(skill.content.skillFile, /仅该子任务作为自定义任务并跳过 preset/);
+  assert.match(skill.content.skillFile, /未指定字段不补预设/);
+  assert.match(skill.content.skillFile, /字段或值不可用、组合冲突时停止并说明/);
+  assert.match(skill.content.skillFile, /不猜测、循环试探或降级/);
+  assert.equal(skill.content.skillFile.includes('整体作为自定义任务'), false);
   assert.equal(skill.content.skillFile.includes('service_tier'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-luna'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-terra'), false);
@@ -135,8 +138,11 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   );
   assert.match(skill.content.skillFile, /具体模式和兼容性服从当前工具 schema/);
   assert.match(skill.content.skillFile, /用户、适用规则或其它已加载 skill 明确要求继承/);
-  assert.match(skill.content.skillFile, /多个显式 context 要求按指令优先级解析/);
-  assert.match(skill.content.skillFile, /同级冲突或 schema 无法满足时停止并说明/);
+  assert.equal(skill.content.skillFile.includes('多个显式 context 要求'), false);
+  assert.equal(
+    skill.content.skillFile.includes('同级冲突或 schema 无法满足时停止并说明'),
+    false,
+  );
   assert.match(skill.content.skillFile, /context 选择独立于预设或自定义任务分类/);
   assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
 
@@ -152,8 +158,8 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /否则向用户说明未解决项/);
   assert.match(skill.content.skillFile, /重复进度询问来监控子代理/);
   assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
-  assert.match(skill.content.skillFile, /最终输出和必要证据已被父代理接收并保留/);
-  assert.match(skill.content.skillFile, /已完成必要校验、无需 follow-up/);
+  assert.match(skill.content.skillFile, /所需结果或终态信息已保留/);
+  assert.match(skill.content.skillFile, /目标及其后代均不再需要后续调用后，才关闭目标/);
   assert.equal(skill.content.skillFile.includes('存活探测'), false);
   assert.equal(skill.content.skillFile.includes('status=progress'), false);
   assert.equal(skill.content.skillFile.includes('status=blocked'), false);

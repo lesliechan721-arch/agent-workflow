@@ -19,7 +19,7 @@ node plugins/codex-subagent-guide/evals/run-trigger-evals.mjs --split sanity --r
 
 ## Routing 参数评估
 
-`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、同级 context 冲突、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；skill 加载只接受实际 `SKILL.md` 读取事件，spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。
+`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间的 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；skill 加载只接受实际 `SKILL.md` 读取事件，spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。
 
 ```bash
 node plugins/codex-subagent-guide/evals/run-routing-evals.mjs --runs 3 --output /tmp/codex-subagent-guide-routing.json

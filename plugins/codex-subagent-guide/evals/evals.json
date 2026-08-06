@@ -92,6 +92,16 @@
       }
     },
     {
+      "id": "custom_override_scoped_to_subtask",
+      "prompt": "$codex-subagent-guide 委派已获准。整个请求有两个子任务：A 明确使用 model=gpt-5.6-terra 核对格式；B 负责复杂跨模块实现。当前只启动 B，A 的显式 model 不应影响 B；使用干净上下文。",
+      "expected_output": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。",
+      "files": [],
+      "expectations": {
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+      }
+    },
+    {
       "id": "partial_preset",
       "prompt": "$codex-subagent-guide 委派已获准。任务必须继承最近两轮，且最终交付物是只读事实核对。V2 立即启动；V1 若没有部分历史字段则停止并说明。",
       "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
@@ -149,16 +159,6 @@
       "expectations": {
         "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
         "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "all" }, "present_arguments": ["message"] }
-      }
-    },
-    {
-      "id": "same_priority_context_conflict",
-      "prompt": "$codex-subagent-guide 委派已获准。两个同优先级的已加载 skill 给出互斥 context 要求：一个要求干净上下文，另一个要求完整历史；没有更高优先级指令可以消解。不要猜测或 spawn，只说明冲突。",
-      "expected_output": "同级 context 冲突无法消解时停止调度。",
-      "files": [],
-      "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "无法消解", "无法同时"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "无法消解", "无法同时"] }
       }
     },
     {

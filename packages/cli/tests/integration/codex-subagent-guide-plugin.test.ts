@@ -107,7 +107,7 @@ describe('codex-subagent-guide dynamic artifacts', () => {
     expect(skill).toContain('至少使用 `12` 分钟的响应式窗口（`timeout_ms=720000`）');
     expect(skill).toContain('timeout 不是终态或失败');
     expect(skill).toContain('发送一次聚焦缺口的 follow-up 并重新校验');
-    expect(skill).toContain('最终输出和必要证据已被父代理接收并保留');
+    expect(skill).toContain('所需结果或终态信息已保留');
     expect(skill).not.toContain('存活探测');
     expect(skill).not.toContain('status=progress');
     expect(metadata).toContain('allow_implicit_invocation: true');

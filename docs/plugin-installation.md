@@ -425,7 +425,7 @@ aw config set codex-explore minimumInitialWaitMinutes 15 -s user
 | 复杂任务 | 跨模块实现、未知根因调试、并发、生命周期、性能或高风险修改 | `complexTaskModel=gpt-5.6-sol` | `complexTaskReasoningEffort=high` |
 | 计划与审核 | 代码、安全、质量或方案审核，以及架构设计和实施计划 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
 
-effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。显式指定 `model`、`reasoning_effort` 或 `agent_type` 时按自定义任务处理，不静默补入或覆盖预设值。`minimumInitialWaitMinutes` 控制用户或任务专用 skill 没有指定单次等待时，首次响应式 `wait_agent` 窗口的最短时间。
+effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。显式指定 `model`、`reasoning_effort` 或 `agent_type` 时，按实际作用域仅将受影响的子任务作为自定义任务处理，不静默补入或覆盖预设值。`minimumInitialWaitMinutes` 控制用户或任务专用 skill 没有指定单次等待时，首次响应式 `wait_agent` 窗口的最短时间。
 
 ```bash
 aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
