@@ -1,6 +1,6 @@
 {
   "name": "git-commit",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "在用户明确要求创建 Git commit 时核对变更范围，优先遵守仓库规范并完成约定式提交。",
   "compatibility": {
     "aw": {
@@ -31,17 +31,6 @@
   "scripts": {
     "tests": {
       "node": ["./scripts/evals.test.mjs"]
-    }
-  },
-  "buildConfig": {
-    "templates": {
-      "include": ["skills/**/*.md"],
-      "vars": {
-        "claudeCommandOutputFill": {
-          "claude": true,
-          "codex": false
-        }
-      }
     }
   }
 }

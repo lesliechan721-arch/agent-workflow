@@ -4,71 +4,28 @@ description: 当用户明确要求实际创建一次 Git commit 时必须使用�
 user-invocable: true
 metadata:
   short-description: 核对变更范围、仓库规范与提交边界后创建可追溯的约定式 Git 提交
-{{#if claudeCommandOutputFill}}
-allowed-tools: "Bash(git status *) Bash(git diff *)"
-shell: bash
-{{/if}}
 ---
 
 # Commit
 
-目标：创建一次只包含用户所要求改动的约定式 Git 提交，同时保持范围外的工作区和暂存区状态不变。优先遵守仓库已有提交规范；没有明确规范时使用中文描述和本 skill 的默认约定。
+目标：创建一次只包含用户授权范围、目的连贯的约定式 Git 提交，并报告提交结果和剩余工作区状态。
 
-授权边界：自动触发只负责加载本 skill。只有用户明确要求实际创建提交时，才可改变暂存区或创建 commit；范围明确后直接完成，除非用户要求先确认。
+授权边界：自动触发只负责加载本 skill。只有用户明确要求实际创建提交时，才可改变暂存区或创建 commit；范围明确后直接完成，除非用户要求先确认。“提交并推送”请求中，本 skill 先完成并验证 commit；push 仍须来自同一用户请求的明确授权。
 
-成功意味着实际 commit 的内容和最终 message 均与提交前核对结果一致，并向用户报告提交结果和剩余工作区状态。无法安全完成时，保持现有状态并报告阻塞原因。
+成功意味着新 `HEAD` 的内容和最终 message 已经核对。无法安全完成或提交失败时，不保证自动恢复到操作前状态；不得主动改变范围外状态，并须报告实际的 `HEAD`、暂存区和工作区状态。
 
-{{#if claudeCommandOutputFill}}
-## 当前 Git 快照
+## 不变量
 
-以下轻量概览由 Claude Code 在加载 skill 时自动注入，只用于初步判断范围。确定候选范围后，仍须按需查看对应完整 diff。
+- commit 必须只包含用户授权范围；不得静默纳入、取消暂存或修改范围外内容。无法精确隔离时停止并报告。
+- 存在进行中的 Git 操作或未解决冲突时，只有用户明确要求继续对应操作且候选可安全提交才可继续；否则停止。
+- 需要暂存时只操作已确认候选并使用精确路径；不使用 `git add .`、`git add -A` 或等价的广泛暂存。无法在不改变范围外状态的前提下完成时停止。
+- 优先遵守用户和仓库明确提供的提交规范；没有明确规范时使用 `<type>: <中文描述>` 或 `<type>(<scope>): <中文描述>`，仅在需要时添加 body 或 footer。
+- 不绕过 hooks，不自动 amend、reset、改写历史或重排范围外的暂存内容来促成提交。
 
-当前状态：
+## Workflow
 
-```!
-git status --porcelain=v1 --untracked-files=all
-```
-
-未暂存 diff 统计：
-
-```!
-git diff --no-ext-diff --no-textconv --stat
-```
-
-已暂存 diff 统计：
-
-```!
-git diff --cached --no-ext-diff --no-textconv --stat
-```
-
-{{/if}}
-执行要求：
-
-1. 建立 Git 状态基线。
-   - 确认当前目录属于 Git worktree，并运行完整的 `git status` 判断是否存在 merge、rebase、cherry-pick、revert 或未解决冲突。
-   - 如果存在进行中的 Git 操作，除非用户明确要求继续该操作，否则保持状态不变并报告阻塞。
-   - 区分已暂存、未暂存和未跟踪内容；使用 diff 时加上 `--no-ext-diff --no-textconv`，避免运行外部 diff 或 textconv helper。
-2. 根据用户请求和 Git 证据确定本次提交的准确范围。
-   - 用户只要求提交已暂存内容时，不要再扩大暂存范围。
-   - 同一文件同时存在已暂存和未暂存 hunks 时，可以只提交已暂存部分；除非用户明确要求，不得把未暂存 hunks 扩入候选。
-   - 纳入未跟踪文件前先检查其内容。
-   - 暂存区已有范围外改动时，不要取消暂存或一并提交；暂停并说明冲突。
-   - 需要纳入未暂存内容时，只对确认全部属于本次范围的路径执行 `git add -- <paths>`；不要使用 `git add .`、`git add -A` 或其它会扩大范围的广泛暂存。
-   - 同一文件的未暂存内容混有范围外 hunks 时，只有用户明确要求纳入该文件全部改动才可暂存，否则停止。
-   - 不要默认查看提交历史；只有用户要求对齐近期历史时才查看。
-3. 生成 commit message。
-   - 优先遵守仓库通过 AGENTS.md、CONTRIBUTING、commitlint 配置或用户指令明确提供的提交规范。
-   - 仓库没有明确规范时，标题使用 `<type>: <description>` 或 `<type>(<scope>): <description>`；`description` 使用中文。
-   - 默认 `type` 从 `feat`、`fix`、`docs`、`refactor`、`test`、`chore` 中按主要变更结果选择，不做关键词映射。
-   - 只有存在清晰模块边界时才使用 `scope`，不确定时省略。
-   - 改动较多、动机不明显或包含行为变化时补充 body，重点说明为什么；列举多项内容时使用 `-`。
-   - 标题、body 和 footer 之间各保留一个空行。
-   - 不兼容变更使用 `BREAKING CHANGE: ...`；已知关联项使用 `Closes #N` 或 `See #N`。
-   - 如果改动目的彼此无关，无法由一次提交准确表达，暂停并说明范围冲突。
-4. 创建提交前核对完整候选内容。
-   - 查看最终的 `git diff --cached --no-ext-diff --no-textconv --stat` 和 `git diff --cached --no-ext-diff --no-textconv --`。
-   - 使用 `git commit --dry-run` 再确认将提交的路径。
-   - 没有候选内容、存在未解决冲突或候选仍含范围外改动时停止。
-5. 只创建一次 commit；不绕过 hooks，不自动 amend/reset，也不使用会扩大范围的广泛暂存。
-6. 提交失败后先判断当前状态是否改变。只有错误明确属于瞬时故障、未创建 commit 且候选内容未变时，才原样重试一次；否则停止并报告。
-7. 提交成功后验证新 `HEAD` 的实际内容和最终 message 与候选结果一致。发现差异时不要自动改写历史，直接报告；一致时反馈 hash、subject 和剩余改动摘要。
+1. 检查仓库状态和与用户请求相关的改动。
+2. 在改变暂存区前确定候选范围和 commit message；候选无法表达一个连贯目的时停止。
+3. 必要时精确暂存，并在提交前重新核对完整候选。候选与授权范围不一致时停止。
+4. 创建一次 commit。
+5. 失败后不自动重试或回滚；重新检查并报告实际状态。成功后核对新 `HEAD` 的内容和最终 message，报告 hash、subject 和剩余改动摘要；发现差异时不自动改写历史。

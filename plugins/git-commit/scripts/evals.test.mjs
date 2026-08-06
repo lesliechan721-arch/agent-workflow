@@ -71,7 +71,7 @@ async function resolveTestContext() {
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.equal(context.plugin.name, 'git-commit');
-  assert.equal(context.plugin.version, '0.1.4');
+  assert.equal(context.plugin.version, '0.1.5');
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,
@@ -138,25 +138,29 @@ function testArguments() {
   );
 }
 
-function assertCodexSkill(skill) {
+function assertRenderedSkill(skill) {
   assert.equal(skill.includes('{{'), false);
   assert.equal(skill.includes('allowed-tools:'), false);
   assert.equal(skill.includes('## 当前 Git 快照'), false);
+  assert.equal(skill.includes('```!'), false);
 }
 
-function assertClaudeSkill(skill) {
-  assert.equal(skill.includes('{{'), false);
-  assert.match(
-    skill,
-    /allowed-tools: "Bash\(git status \*\) Bash\(git diff \*\)"/,
-  );
-  const injectedCommands = [...skill.matchAll(/```!\n([\s\S]*?)\n```/g)]
-    .map((match) => match[1].trim());
-  assert.deepEqual(injectedCommands, [
-    'git status --porcelain=v1 --untracked-files=all',
-    'git diff --no-ext-diff --no-textconv --stat',
-    'git diff --cached --no-ext-diff --no-textconv --stat',
-  ]);
+function assertCoreCommitContract(skill) {
+  assert.match(skill, /只有用户明确要求实际创建提交时，才可改变暂存区或创建 commit/);
+  assert.match(skill, /push 仍须来自同一用户请求的明确授权/);
+  assert.match(skill, /commit 必须只包含用户授权范围/);
+  assert.match(skill, /无法精确隔离时停止并报告/);
+  assert.match(skill, /需要暂存时只操作已确认候选并使用精确路径/);
+  assert.match(skill, /不使用 `git add \.`、`git add -A`/);
+  assert.match(skill, /<type>: <中文描述>/);
+  assert.match(skill, /不绕过 hooks，不自动 amend、reset/);
+  assert.match(skill, /不得主动改变范围外状态/);
+  assert.match(skill, /改写历史或重排范围外的暂存内容/);
+  assert.match(skill, /提交前重新核对完整候选/);
+  assert.match(skill, /创建一次 commit/);
+  assert.match(skill, /失败后不自动重试或回滚/);
+  assert.match(skill, /核对新 `HEAD` 的内容和最终 message/);
+  assert.match(skill, /不保证自动恢复到操作前状态/);
 }
 
 async function testSkillRenders(context) {
@@ -167,11 +171,6 @@ async function testSkillRenders(context) {
 
   assert.match(source, /当用户明确要求实际创建一次 Git commit 时必须使用/);
   assert.match(source, /user-invocable: true/);
-  assert.match(source, /优先遵守仓库通过 AGENTS\.md、CONTRIBUTING、commitlint/);
-  assert.match(source, /同一文件同时存在已暂存和未暂存 hunks 时，可以只提交已暂存部分/);
-  assert.match(source, /merge、rebase、cherry-pick、revert/);
-  assert.match(source, /不要使用 `git add \.`、`git add -A`/);
-  assert.match(source, /git commit --dry-run/);
 
   if (context.platform) {
     const [bundledSkill, bundledOpenai] = await Promise.all([
@@ -202,17 +201,18 @@ async function testSkillRenders(context) {
       /default_prompt: "使用 \$commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
     );
     assert.match(bundledOpenai, /allow_implicit_invocation: true/);
-    if (context.platform === 'codex') {
-      assertCodexSkill(bundledSkill);
-    } else {
-      assert.equal(context.platform, 'claude');
-      assertClaudeSkill(bundledSkill);
-    }
+    assertCoreCommitContract(bundledSkill);
+    assert.ok(['codex', 'claude'].includes(context.platform));
+    assertRenderedSkill(bundledSkill);
     return;
   }
 
-  assertCodexSkill(renderSkillTemplate(source, false));
-  assertClaudeSkill(renderSkillTemplate(source, true));
+  const codexSkill = renderSkillTemplate(source, false);
+  const claudeSkill = renderSkillTemplate(source, true);
+  assertCoreCommitContract(codexSkill);
+  assertCoreCommitContract(claudeSkill);
+  assertRenderedSkill(codexSkill);
+  assertRenderedSkill(claudeSkill);
 }
 
 function testEventDetectionAndSummary() {
@@ -371,7 +371,7 @@ async function testWorkspaceStaging(sourceRoot) {
     assert.equal(workspace.env.HOME.startsWith(workspace.cleanupRoot), true);
     assert.equal(workspace.env.CODEX_HOME.startsWith(workspace.cleanupRoot), true);
     assert.equal(workspace.env.GIT_DIR, undefined);
-    assert.match(workspace.identity.plugin_version, /^0\.1\.4$/);
+    assert.match(workspace.identity.plugin_version, /^0\.1\.5$/);
     assert.match(workspace.identity.skill_sha256, /^[0-9a-f]{64}$/);
 
     const initialState = await captureGitState(workspace);
