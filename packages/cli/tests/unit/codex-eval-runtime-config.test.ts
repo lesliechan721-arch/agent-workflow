@@ -83,6 +83,61 @@ describe('Codex eval runtime config', () => {
     }
   });
 
+  it('inherits model settings from the active profile', async () => {
+    const root = await tempRoot();
+    await fs.writeFile(path.join(root, 'config.toml'), [
+      'profile = "work"',
+      'model = "default-model"',
+      'model_provider = "default-provider"',
+      'model_reasoning_summary = "concise"',
+      '',
+      '[profiles.work]',
+      'model = "work-model"',
+      'model_provider = "work-provider"',
+      'model_reasoning_effort = "high"',
+      '',
+      '[model_providers.default-provider]',
+      'name = "Default Provider"',
+      '',
+      '[model_providers.work-provider]',
+      'name = "Work Provider"',
+      'env_key = "WORK_API_KEY"',
+    ].join('\n'), 'utf8');
+
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root, WORK_API_KEY: 'work-key' },
+      inheritUserConfig: true,
+    });
+
+    expect(runtime).toMatchObject({
+      model: 'work-model',
+      modelProvider: 'work-provider',
+      credentialSource: 'environment',
+      providerEnvironment: { WORK_API_KEY: 'work-key' },
+    });
+    expect(runtime.configToml).toContain('model = "work-model"');
+    expect(runtime.configToml).toContain('model_reasoning_effort = "high"');
+    expect(runtime.configToml).toContain('model_reasoning_summary = "concise"');
+    expect(runtime.configToml).toContain('[model_providers.work-provider]');
+    expect(runtime.configToml).not.toContain('profile = "work"');
+    expect(runtime.configToml).not.toContain('[profiles.work]');
+    expect(runtime.configToml).not.toContain('[model_providers.default-provider]');
+
+    const overridden = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: true,
+      modelOverride: 'override-model',
+      modelProviderOverride: 'default-provider',
+    });
+    expect(overridden).toMatchObject({
+      model: 'override-model',
+      modelProvider: 'default-provider',
+    });
+    expect(overridden.configToml).toContain('model = "override-model"');
+    expect(overridden.configToml).toContain('[model_providers.default-provider]');
+    expect(overridden.configToml).not.toContain('[model_providers.work-provider]');
+  });
+
   it('passes only provider-declared environment variables and fails when one is missing', async () => {
     const root = await tempRoot();
     const configPath = path.join(root, 'config.toml');

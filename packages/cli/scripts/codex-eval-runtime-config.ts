@@ -140,6 +140,42 @@ function topLevelString(
   return entry ? scalarString(entry.value) : undefined;
 }
 
+function activeProfileTable(program: AST.TOMLProgram): AST.TOMLTable | undefined {
+  const profile = topLevelString(program, 'profile');
+  if (!profile) return undefined;
+  return topLevelEntries(program).find(
+    (entry): entry is AST.TOMLTable => {
+      if (entry.type !== 'TOMLTable') return false;
+      const segments = keySegments(entry.key);
+      return segments.length === 2 && segments[0] === 'profiles' && segments[1] === profile;
+    },
+  );
+}
+
+function effectiveModelEntries(
+  program: AST.TOMLProgram,
+): Map<string, AST.TOMLKeyValue> {
+  const entries = new Map<string, AST.TOMLKeyValue>();
+  for (const entry of topLevelEntries(program)) {
+    if (entry.type !== 'TOMLKeyValue') continue;
+    const key = keySegments(entry.key).join('.');
+    if (INHERITED_MODEL_KEYS.has(key)) entries.set(key, entry);
+  }
+  for (const entry of activeProfileTable(program)?.body ?? []) {
+    const key = keySegments(entry.key).join('.');
+    if (INHERITED_MODEL_KEYS.has(key)) entries.set(key, entry);
+  }
+  return entries;
+}
+
+function effectiveModelString(
+  program: AST.TOMLProgram,
+  key: string,
+): string | undefined {
+  const entry = effectiveModelEntries(program).get(key);
+  return entry ? scalarString(entry.value) : undefined;
+}
+
 function providerTables(
   program: AST.TOMLProgram,
   provider: string,
@@ -256,10 +292,7 @@ function renderFilteredConfig(options: {
   providerOverride?: string;
 }): string | null {
   const lines: string[] = [];
-  for (const entry of topLevelEntries(options.program)) {
-    if (entry.type !== 'TOMLKeyValue') continue;
-    const key = keySegments(entry.key).join('.');
-    if (!INHERITED_MODEL_KEYS.has(key)) continue;
+  for (const [key, entry] of effectiveModelEntries(options.program)) {
     if (key === 'model' && options.modelOverride) continue;
     if (key === 'model_provider') continue;
     lines.push(options.content.slice(entry.range[0], entry.range[1]));
@@ -345,14 +378,14 @@ export async function resolveCodexEvalRuntimeConfig(
     throw new Error(`Unable to parse Codex eval config ${configPath}: ${message}`);
   }
 
-  const provider = options.modelProviderOverride ?? topLevelString(program, 'model_provider') ?? 'openai';
+  const provider = options.modelProviderOverride ?? effectiveModelString(program, 'model_provider') ?? 'openai';
   const tables = providerTables(program, provider);
   if (provider !== 'openai' && tables.length === 0) {
     throw new Error(
       `Codex eval model provider ${JSON.stringify(provider)} is not defined in ${configPath}.`,
     );
   }
-  const model = options.modelOverride ?? topLevelString(program, 'model') ?? null;
+  const model = options.modelOverride ?? effectiveModelString(program, 'model') ?? null;
   const builtInOpenAiProvider = provider === 'openai' && tables.length === 0;
   const names = providerEnvironmentNames(tables);
   const providerEnvironment: Record<string, string> = {};

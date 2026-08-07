@@ -19,6 +19,26 @@ export interface DynamicSkillTree {
   files: Record<string, Buffer>;
 }
 
+function compareSkillPaths(left: string, right: string): number {
+  const byteOrder = Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+  if (byteOrder !== 0 || left === right) return byteOrder;
+  return left < right ? -1 : 1;
+}
+
+function assertWellFormedSkillPath(relativePath: string): void {
+  if (Buffer.from(relativePath, 'utf8').toString('utf8') !== relativePath) {
+    throw new Error(`Skill 文件路径必须是有效 Unicode：${JSON.stringify(relativePath)}`);
+  }
+}
+
+function sortedSkillFileEntries(
+  files: Record<string, Buffer>,
+): Array<[string, Buffer]> {
+  const entries = Object.entries(files);
+  for (const [relativePath] of entries) assertWellFormedSkillPath(relativePath);
+  return entries.sort(([left], [right]) => compareSkillPaths(left, right));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -102,7 +122,7 @@ function renderClaudeSkillWithPreference(options: {
 }
 
 function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {
-  const paths = Object.keys(files).sort();
+  const paths = sortedSkillFileEntries(files).map(([relativePath]) => relativePath);
   for (const [index, relativePath] of paths.entries()) {
     const prefix = paths.slice(0, index).find((candidate) =>
       relativePath.startsWith(`${candidate}/`));
@@ -117,7 +137,7 @@ async function collectDirectoryFiles(rootDir: string): Promise<Record<string, Bu
 
   const visit = async (currentDir: string, parentPath: string): Promise<void> => {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
       const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isSymbolicLink()) {
@@ -193,8 +213,7 @@ export async function createDynamicSkillExpectedTree(options: {
 
 export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): string {
   const hash = crypto.createHash('sha256');
-  for (const [relativePath, content] of Object.entries(tree.files).sort(([left], [right]) =>
-    left.localeCompare(right))) {
+  for (const [relativePath, content] of sortedSkillFileEntries(tree.files)) {
     const relativePathBytes = Buffer.from(relativePath, 'utf8');
     const pathLength = Buffer.alloc(8);
     const contentLength = Buffer.alloc(8);
@@ -208,10 +227,60 @@ export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): str
   return `sha256:${hash.digest('hex')}`;
 }
 
+async function createEmptyStagingTree(
+  stagingRoot: string,
+  relativePaths: string[],
+): Promise<void> {
+  interface StagingPathNode {
+    absolutePath: string;
+    children: Map<string, StagingPathNode> | null;
+  }
+  const root: StagingPathNode = {
+    absolutePath: stagingRoot,
+    children: new Map(),
+  };
+
+  for (const relativePath of relativePaths) {
+    const segments = relativePath.split('/');
+    let current = root;
+    for (const [index, segment] of segments.entries()) {
+      const isFile = index === segments.length - 1;
+      const exactNode = current.children?.get(segment);
+      if (exactNode) {
+        if (isFile || !exactNode.children) {
+          throw new Error(
+            `Skill 目标文件系统路径冲突："${relativePath}" 与已暂存路径不能同时存在。`,
+          );
+        }
+        current = exactNode;
+        continue;
+      }
+
+      const candidatePath = path.join(current.absolutePath, segment);
+      if (await fs.pathExists(candidatePath)) {
+        throw new Error(
+          `Skill 目标文件系统路径冲突："${relativePath}" 与已暂存路径不能同时存在。`,
+        );
+      }
+      let created: StagingPathNode;
+      if (isFile) {
+        await fs.writeFile(candidatePath, Buffer.alloc(0), { flag: 'wx' });
+        created = { absolutePath: candidatePath, children: null };
+      } else {
+        await fs.mkdir(candidatePath);
+        created = { absolutePath: candidatePath, children: new Map() };
+      }
+      current.children?.set(segment, created);
+      current = created;
+    }
+  }
+}
+
 export async function writeDynamicSkillTree(
   rootDir: string,
   tree: DynamicSkillTree,
 ): Promise<string[]> {
+  const entries = sortedSkillFileEntries(tree.files);
   await fs.ensureDir(path.dirname(rootDir));
   const stagingRoot = await fs.mkdtemp(path.join(path.dirname(rootDir), `.${path.basename(rootDir)}-staging-`));
   const backupRoot = `${stagingRoot}-backup`;
@@ -219,11 +288,10 @@ export async function writeDynamicSkillTree(
   let preserveBackup = false;
 
   try {
+    await createEmptyStagingTree(stagingRoot, entries.map(([relativePath]) => relativePath));
     const writtenPaths: string[] = [];
-    for (const [relativePath, content] of Object.entries(tree.files).sort(([left], [right]) =>
-      left.localeCompare(right))) {
+    for (const [relativePath, content] of entries) {
       const targetPath = path.join(stagingRoot, relativePath.split('/').join(path.sep));
-      await fs.ensureDir(path.dirname(targetPath));
       await fs.writeFile(targetPath, content);
       writtenPaths.push(path.join(rootDir, relativePath.split('/').join(path.sep)));
     }

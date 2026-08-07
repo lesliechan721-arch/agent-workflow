@@ -118,6 +118,35 @@ describe('dynamic skill tree', () => {
     })).rejects.toThrow('文件路径冲突');
   });
 
+  it('rejects paths that collide under the target file system rules before commit', async () => {
+    const root = await makeTempRoot();
+    const target = path.join(root, 'runtime', 'example');
+    await fs.outputFile(path.join(target, 'old.txt'), 'old\n');
+    const originalPathExists = fs.pathExists.bind(fs);
+    vi.spyOn(fs, 'pathExists').mockImplementation(async (candidate) => {
+      const candidatePath = String(candidate);
+      const name = path.basename(candidatePath);
+      if (name === 'Foo.txt' || name === 'foo.txt') {
+        const alias = path.join(
+          path.dirname(candidatePath),
+          name === 'Foo.txt' ? 'foo.txt' : 'Foo.txt',
+        );
+        if (await originalPathExists(alias)) return true;
+      }
+      return originalPathExists(candidate);
+    });
+
+    await expect(writeDynamicSkillTree(target, {
+      skillKey: 'example',
+      files: {
+        'refs/Foo.txt': Buffer.from('first\n'),
+        'refs/foo.txt': Buffer.from('second\n'),
+      },
+    })).rejects.toThrow('目标文件系统路径冲突');
+    await expect(fs.readFile(path.join(target, 'old.txt'), 'utf8')).resolves.toBe('old\n');
+    await expect(fs.readdir(path.dirname(target))).resolves.toEqual(['example']);
+  });
+
   it('uses length-prefixed digest inputs so file boundaries cannot collide', () => {
     const singleFile = createDynamicSkillTreeContentDigest({
       skillKey: 'example',
@@ -132,6 +161,45 @@ describe('dynamic skill tree', () => {
     });
 
     expect(singleFile).not.toBe(twoFiles);
+  });
+
+  it('creates a stable digest when distinct Unicode paths compare as locale-equal', () => {
+    const composed = '\u00e9.txt';
+    const decomposed = 'e\u0301.txt';
+    const first = createDynamicSkillTreeContentDigest({
+      skillKey: 'example',
+      files: {
+        [composed]: Buffer.from('composed'),
+        [decomposed]: Buffer.from('decomposed'),
+      },
+    });
+    const reversed = createDynamicSkillTreeContentDigest({
+      skillKey: 'example',
+      files: {
+        [decomposed]: Buffer.from('decomposed'),
+        [composed]: Buffer.from('composed'),
+      },
+    });
+
+    expect(first).toBe(reversed);
+  });
+
+  it('rejects non-well-formed Unicode paths before digest or write', async () => {
+    const root = await makeTempRoot();
+    const target = path.join(root, 'runtime', 'example');
+    const invalidPath = '\ud800.txt';
+    const tree = {
+      skillKey: 'example',
+      files: {
+        [invalidPath]: Buffer.from('invalid'),
+      },
+    };
+    await fs.outputFile(path.join(target, 'old.txt'), 'old\n');
+
+    expect(() => createDynamicSkillTreeContentDigest(tree)).toThrow('有效 Unicode');
+    await expect(writeDynamicSkillTree(target, tree)).rejects.toThrow('有效 Unicode');
+    await expect(fs.readFile(path.join(target, 'old.txt'), 'utf8')).resolves.toBe('old\n');
+    await expect(fs.readdir(path.dirname(target))).resolves.toEqual(['example']);
   });
 
   it('rejects a runtime root that is a symbolic link', async () => {
