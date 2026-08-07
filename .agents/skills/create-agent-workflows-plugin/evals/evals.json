@@ -2,22 +2,58 @@
   "skill_name": "create-agent-workflows-plugin",
   "evals": [
     {
-      "id": 1,
-      "prompt": "请在 agent-workflows 仓库新建一个双平台 release-notes 插件。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
-      "expected_output": "创建最小插件源码，skill 的职责、description、触发策略和输出格式清楚，作者校验通过且没有修改 marketplace 或生成目录。",
-      "files": []
+      "id": "plan-minimal-plugin",
+      "prompt": "使用 $create-agent-workflows-plugin，在不修改文件的前提下检查当前仓库，并给出新建双平台 release-notes 插件的最小实施方案。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
+      "expected_output": "只选择 skill 能力；读取 skill 设计、触发、manifest 与评估 reference；计划创建最小源码、skillTriggers 和作者期 eval，并列出 build、validator、materialization 与相关测试，不修改 marketplace 或生成目录。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "trace 读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
+          "方案只选择一个 skill，不增加 MCP、hooks、lifecycle 或其它未请求能力",
+          "方案包含 skillTriggers、作者校验、materialization 和相关测试",
+          "方案不修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache"
+        ]
+      }
     },
     {
-      "id": 2,
-      "prompt": "使用 $create-agent-workflows-plugin 给一个已经存在的双平台插件增加 skill 内的 JSON 校验脚本。只改这个 skill 及必要测试，不改变插件安装、scope 或 lifecycle 行为。",
-      "expected_output": "先读取现有 manifest 和 skill，再做局部修改；脚本非交互、支持 --help、输出可解析并有失败测试，范围外文件保持不变。",
-      "files": []
+      "id": "plan-surgical-skill-script",
+      "prompt": "使用 $create-agent-workflows-plugin，只读检查 plugins/code-review，并给 review-workflow 增加一个 skill 内 JSON 报告校验脚本的实施方案。只允许改这个 skill 及必要测试，不改变插件安装、scope、config 或 lifecycle 行为。",
+      "expected_output": "先读取现有 manifest、skill 和测试，再读取 skill-scripts 与 skill-evaluation；方案保持局部，脚本非交互、支持 --help、输出可解析、错误可操作，并覆盖成功、失败和重复运行。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "trace 先读取 plugins/code-review 的 manifest、目标 skill 和相关测试",
+          "trace 按路由读取 skill-scripts 和 skill-evaluation，而不是加载全部 references",
+          "方案只修改目标 skill、脚本和直接测试，不改变安装、scope、config 或 lifecycle",
+          "脚本合同包含非交互、--help、结构化输出、可操作错误和成功/失败/重试测试"
+        ]
+      }
     },
     {
-      "id": 3,
-      "prompt": "使用 $create-agent-workflows-plugin 检查一个 Claude-only skill 的 frontmatter。它使用 user-invocable 和数组形式 allowed-tools；请说明哪些是 Agent Skills core、哪些是平台扩展，并保持现有手动调用行为。",
-      "expected_output": "不会为了严格 core 静默删除 Claude 行为字段；会按 AW profile 校验并清楚报告 portable core 与平台扩展边界。",
-      "files": []
+      "id": "inspect-claude-frontmatter",
+      "prompt": "使用 $create-agent-workflows-plugin，只做只读分析：一个 Claude-only skill 的 frontmatter 使用 user-invocable、disable-model-invocation、shell 和数组形式 allowed-tools。请说明哪些属于 Agent Skills portable core、哪些属于 Claude 扩展，并说明如何在不改变现有手动调用行为的情况下校验。",
+      "expected_output": "读取 skill-design、skills-and-triggers 和 skill-evaluation；不会为了 strict portable core 静默删除 Claude 行为字段；按 AW source profile 校验，并把 --strict-agent-skills 或 skills-ref 作为额外 portable 检查。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "trace 读取 skill-design、skills-and-triggers 和 skill-evaluation",
+          "结论把 name、description、compatibility、metadata 和字符串 allowed-tools 归入 portable core",
+          "结论把 user-invocable、disable-model-invocation、shell 和数组 allowed-tools 归入 Claude 扩展",
+          "方案保留手动调用行为，并区分 AW source 校验与 strict portable 校验"
+        ]
+      }
     }
   ]
 }

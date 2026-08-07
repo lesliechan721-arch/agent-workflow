@@ -1252,15 +1252,18 @@ describe('authoring tools', () => {
 
   it('keeps authoring docs aligned with the build-bundle model', async () => {
     const root = repoRoot();
-    const refBase = path.join(
+    const creatorSkillRoot = path.join(
       root,
       '.agents',
       'skills',
       'create-agent-workflows-plugin',
+    );
+    const refBase = path.join(
+      creatorSkillRoot,
       'references',
     );
     const skillDoc = await fs.readFile(
-      path.join(root, '.agents', 'skills', 'create-agent-workflows-plugin', 'SKILL.md'),
+      path.join(creatorSkillRoot, 'SKILL.md'),
       'utf8',
     );
     const manifestSpecDoc = await fs.readFile(
@@ -1304,14 +1307,10 @@ describe('authoring tools', () => {
       'utf8',
     );
     const creatorEvalFixtures = await fs.readJson(
-      path.join(
-        root,
-        '.agents',
-        'skills',
-        'create-agent-workflows-plugin',
-        'evals',
-        'evals.json',
-      ),
+      path.join(creatorSkillRoot, 'evals', 'evals.json'),
+    );
+    const creatorTriggerFixtures = await fs.readJson(
+      path.join(creatorSkillRoot, 'evals', 'trigger_queries.json'),
     );
     const exampleEvalFixtures = await fs.readJson(
       path.join(
@@ -1350,6 +1349,9 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).toContain('`allowDynamicTrigger`');
     expect(manifestSpecDoc).toContain('禁止手改');
     expect(manifestSpecDoc).not.toContain('allowInstallOverride');
+    expect(manifestSpecDoc).not.toContain('按 skill 声明是否允许安装时覆盖触发策略');
+    expect(manifestSpecDoc).not.toContain('安装时覆盖许可');
+    expect(manifestSpecDoc).toContain('AW 受管 SkillTrigger 内建配置的长期真值');
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
     expect(manifestSpecDoc).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
@@ -1419,18 +1421,51 @@ describe('authoring tools', () => {
     expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
     expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
     expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
+    expect(creatorTriggerFixtures).toHaveLength(20);
+    expect(
+      creatorTriggerFixtures.filter(
+        (entry: { should_trigger: boolean }) => entry.should_trigger,
+      ),
+    ).toHaveLength(10);
+    expect(
+      creatorTriggerFixtures.filter(
+        (entry: { should_trigger: boolean }) => !entry.should_trigger,
+      ),
+    ).toHaveLength(10);
+    expect(
+      creatorTriggerFixtures.filter(
+        (entry: { split: string }) => entry.split === 'train',
+      ),
+    ).toHaveLength(12);
+    expect(
+      creatorTriggerFixtures.filter(
+        (entry: { split: string }) => entry.split === 'validation',
+      ),
+    ).toHaveLength(8);
+    const evalContractResult = await execFileAsync(
+      'node',
+      [path.join(creatorSkillRoot, 'evals', 'run-evals.mjs'), '--validate-only'],
+      { cwd: root, env: process.env },
+    );
+    expect(JSON.parse(evalContractResult.stdout)).toMatchObject({
+      ok: true,
+      triggerCases: 20,
+      behaviorCases: 3,
+    });
     const evalSuites = [
       {
         document: creatorEvalFixtures,
         skillName: 'create-agent-workflows-plugin',
-        skillRoot: path.join(root, '.agents', 'skills', 'create-agent-workflows-plugin'),
+        skillRoot: creatorSkillRoot,
         caseCount: 3,
+        idKind: 'string',
       },
       {
         document: exampleEvalFixtures,
         skillName: 'review-workflow',
         skillRoot: path.join(refBase, '.examples', 'code-review'),
         caseCount: 2,
+        idKind: 'number',
       },
     ];
     for (const suite of evalSuites) {
@@ -1440,8 +1475,20 @@ describe('authoring tools', () => {
       expect(new Set(ids).size).toBe(ids.length);
 
       for (const evalCase of suite.document.evals) {
-        expect(Number.isInteger(evalCase.id)).toBe(true);
-        expect(evalCase.id).toBeGreaterThan(0);
+        if (suite.idKind === 'string') {
+          expect(typeof evalCase.id).toBe('string');
+          expect(evalCase.id.trim().length).toBeGreaterThan(0);
+          expect(Array.isArray(evalCase.scripted_replies)).toBe(true);
+          expect(evalCase.review).toMatchObject({
+            platforms: ['codex'],
+            clean_session: true,
+            workspace_unchanged: true,
+          });
+          expect(evalCase.review.checks.length).toBeGreaterThanOrEqual(4);
+        } else {
+          expect(Number.isInteger(evalCase.id)).toBe(true);
+          expect(evalCase.id).toBeGreaterThan(0);
+        }
         expect(evalCase.prompt.trim().length).toBeGreaterThan(0);
         expect(evalCase.expected_output.trim().length).toBeGreaterThan(0);
         expect(Array.isArray(evalCase.files)).toBe(true);

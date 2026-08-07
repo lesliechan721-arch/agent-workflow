@@ -12,7 +12,7 @@
 | `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
-| `skillTriggers` | object | 否 | 按 skill 声明是否允许安装时覆盖触发策略 |
+| `skillTriggers` | object | 否 | 按 skill 声明 AW 内建默认触发策略，以及是否允许通过 AW config 动态调整 |
 | `mcpServers` | string | 否 | 单个路径，`./` 开头，指向 `.mcp.json` |
 | `apps` | string | 否 | 单个路径，`./` 开头，指向 `.app.json` |
 | `marketplace` | object | 是 | 见下方 marketplace block |
@@ -354,7 +354,7 @@ codex:
 
 ## skillTriggers block
 
-`skillTriggers` 是 agent-workflows 的安装时覆盖许可，不是平台默认触发策略。默认策略仍由 skill 文件自己定义：
+`skillTriggers` 是 AW 受管 SkillTrigger 内建配置的长期真值：`defaultTrigger` 声明默认策略，`allowDynamicTrigger` 决定用户能否通过 AW config 调整。平台文件提供 runtime 表达，并在 apply 时按当前 effective 值对齐：
 
 - Codex：`skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`
 - Claude Code：`skills/<skill>/SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`

@@ -1,0 +1,142 @@
+[
+  {
+    "id": "explicit_release_notes_plugin",
+    "split": "train",
+    "query": "$create-agent-workflows-plugin 在当前 agent-workflows 仓库新建一个双平台 release-notes 插件，只包含一个自动发现的 skill。",
+    "should_trigger": true,
+    "tags": ["explicit", "create"]
+  },
+  {
+    "id": "implicit_minimal_plugin",
+    "split": "train",
+    "query": "在这个仓库的 plugins/ 下加一个最小 changelog 插件，同时支持 Codex 和 Claude Code，不要预生成 MCP 或 lifecycle。",
+    "should_trigger": true,
+    "tags": ["implicit", "create"]
+  },
+  {
+    "id": "maintain_existing_skill_script",
+    "split": "train",
+    "query": "给 plugins/code-review 的 review-workflow 增加一个 skill 内 JSON 校验脚本，只改目标 skill 和直接测试。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "skill-script"]
+  },
+  {
+    "id": "add_dynamic_skill_artifact",
+    "split": "train",
+    "query": "维护 agent-workflows 的现有插件：新增一个由 AW config 控制内容的 Codex skill artifact，并按当前 renderer 合同实现。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "dynamic-artifact"]
+  },
+  {
+    "id": "fix_plugin_bundle_validation",
+    "split": "train",
+    "query": "plugins/audit-helper 的 bundle 作者校验失败了，请按当前 manifest 和平台裁剪规则修复这个插件。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "validation"]
+  },
+  {
+    "id": "add_public_slash_command",
+    "split": "train",
+    "query": "给 plugins/code-review 增加公共 /audit 快捷入口，同时生成 Claude command 和 Codex manual-only skill。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "slash-command"]
+  },
+  {
+    "id": "install_existing_plugin",
+    "split": "train",
+    "query": "把 codex-explore 插件安装到我当前项目，并把触发策略改成 auto。",
+    "should_trigger": false,
+    "tags": ["near-miss", "installation"]
+  },
+  {
+    "id": "use_installed_plugin",
+    "split": "train",
+    "query": "用已经安装的 git-commit 插件提交当前改动。",
+    "should_trigger": false,
+    "tags": ["near-miss", "plugin-use"]
+  },
+  {
+    "id": "generic_static_skill",
+    "split": "train",
+    "query": "帮我在另一个普通仓库写一个通用数据库排障 SKILL.md，不需要 AW 插件。",
+    "should_trigger": false,
+    "tags": ["near-miss", "generic-skill"]
+  },
+  {
+    "id": "explain_cli_command",
+    "split": "train",
+    "query": "解释一下 aw config set 和 aw config reset 的区别，不要修改任何插件。",
+    "should_trigger": false,
+    "tags": ["near-miss", "cli-explanation"]
+  },
+  {
+    "id": "review_skill_quality",
+    "split": "train",
+    "query": "给 .agents/skills/create-agent-workflows-plugin 做一次只读评分和发布门禁检查。",
+    "should_trigger": false,
+    "tags": ["near-miss", "review"]
+  },
+  {
+    "id": "diagnose_runtime_status",
+    "split": "train",
+    "query": "aw status 显示 codex-explore cleanupRequired，帮我排查本机 install record 和 native cache。",
+    "should_trigger": false,
+    "tags": ["near-miss", "runtime-diagnosis"]
+  },
+  {
+    "id": "colloquial_new_plugin",
+    "split": "validation",
+    "query": "给 agent-workflows 搞个双端 repo-health 插件吧，先做最小 skill，校验和测试也补上。",
+    "should_trigger": true,
+    "tags": ["implicit", "create", "colloquial"]
+  },
+  {
+    "id": "claude_only_plugin_capability",
+    "split": "validation",
+    "query": "把 plugins/code-review 收窄成 Claude-only，并增加 output style；同步调整 manifest、bundle 规则和必要测试。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "claude-only"]
+  },
+  {
+    "id": "migrate_plugin_trigger_contract",
+    "split": "validation",
+    "query": "维护 plugins/code-review：把 skill 触发声明迁移到当前 defaultTrigger 和 allowDynamicTrigger 合同，保留现有手动行为。",
+    "should_trigger": true,
+    "tags": ["implicit", "maintain", "trigger"]
+  },
+  {
+    "id": "nested_plugin_delivery",
+    "split": "validation",
+    "query": "实现一个 agent-workflows 插件来生成结构化迁移报告，并在交付前验证最终 Codex 制品；不要碰生成目录。",
+    "should_trigger": true,
+    "tags": ["implicit", "create", "nested"]
+  },
+  {
+    "id": "cli_schema_only",
+    "split": "validation",
+    "query": "只修改 packages/cli 的 manifest parser 和单元测试，这次不要调整任何 plugins/ 源码或作者 Skill。",
+    "should_trigger": false,
+    "tags": ["near-miss", "cli-implementation"]
+  },
+  {
+    "id": "repo_local_static_skill",
+    "split": "validation",
+    "query": "直接在当前项目 .agents/skills/ 下新增一个 repo-local Skill，不创建 plugins/<name>。",
+    "should_trigger": false,
+    "tags": ["near-miss", "generic-skill"]
+  },
+  {
+    "id": "external_claude_plugin",
+    "split": "validation",
+    "query": "在另一个仓库按 Claude Code 原生 schema 手写一个 .claude-plugin/plugin.json，不使用 agent-workflows。",
+    "should_trigger": false,
+    "tags": ["near-miss", "external-plugin"]
+  },
+  {
+    "id": "installation_docs_only",
+    "split": "validation",
+    "query": "只更新 docs/plugin-installation.md 的 aw install 排障说明，不改插件源码和作者合同。",
+    "should_trigger": false,
+    "tags": ["near-miss", "documentation"]
+  }
+]
