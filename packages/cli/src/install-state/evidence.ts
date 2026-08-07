@@ -25,6 +25,7 @@ import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import { createDynamicSkillTreeContentDigest } from '../utils/dynamic-skill-tree.js';
 import {
   inspectGlobalDependencyIndex,
   readDynamicArtifactDiagnosticCacheForLocation,
@@ -500,6 +501,28 @@ async function inspectDynamicSkillTree(rootPath: string): Promise<ArtifactFileEv
   return files;
 }
 
+async function inspectDynamicSkillTreeRoot(rootPath: string): Promise<ArtifactFileEvidence> {
+  const files = await inspectDynamicSkillTree(rootPath);
+  const root = files[0] ?? createMissingFileEvidence(rootPath);
+  if (!root.exists || files.some((file) => file.treeError)) {
+    return root;
+  }
+
+  const treeFiles = files
+    .filter((file) => file.path !== rootPath && file.exists && file.rawBytes !== null)
+    .map((file) => [
+      path.relative(rootPath, file.path).split(path.sep).join('/'),
+      file.rawBytes!,
+    ] as const);
+  return {
+    ...root,
+    contentDigest: createDynamicSkillTreeContentDigest({
+      skillKey: path.basename(rootPath),
+      files: Object.fromEntries(treeFiles),
+    }),
+  };
+}
+
 function resolveCatalogArtifactPath(
   artifactPath: string,
   location: PluginLocation,
@@ -549,7 +572,9 @@ async function inspectIdentityArtifacts(
     return {
       artifact,
       resolvedPath,
-      file: await inspectFile(resolvedPath),
+      file: artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
+        ? await inspectDynamicSkillTreeRoot(resolvedPath)
+        : await inspectFile(resolvedPath),
     };
   }));
 }

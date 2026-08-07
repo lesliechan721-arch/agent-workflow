@@ -54,9 +54,14 @@ import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
+import { createDynamicSkillTreeContentDigest } from '../../src/utils/dynamic-skill-tree.js';
 import * as pluginConfigModule from '../../src/utils/plugin-config.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
-import { resolveCodexPaths, resolveCodexProjectKey } from '../../src/utils/paths.js';
+import {
+  resolveClaudePaths,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+} from '../../src/utils/paths.js';
 import * as skillTriggerModule from '../../src/utils/skill-trigger-preferences.js';
 import { writeTrackingManifest } from '../../src/utils/tracking.js';
 import {
@@ -94,7 +99,11 @@ async function initRepo(repoRoot: string): Promise<void> {
 
 function createPlugin(
   pluginName = 'configurable-plugin',
-  options: { withProjectDynamicTarget?: boolean; withUserDynamicTarget?: boolean } = {},
+  options: {
+    withProjectDynamicTarget?: boolean;
+    withUserDynamicTarget?: boolean;
+    withClaudeProjectDynamicTarget?: boolean;
+  } = {},
 ): PluginMeta {
   const artifactTargets = [
     ...(options.withProjectDynamicTarget
@@ -116,6 +125,18 @@ function createPlugin(
           scopes: ['user' as const],
           states: ['present' as const],
           refreshKeys: ['mode'],
+        }]
+      : []),
+    ...(options.withClaudeProjectDynamicTarget
+      ? [{
+          id: 'project-claude-skill',
+          platform: 'claude' as const,
+          target: 'claude.skill' as const,
+          kind: 'skill' as const,
+          scopes: ['project' as const],
+          states: ['present' as const],
+          refreshKeys: ['mode'],
+          skillKey: 'configurable-claude',
         }]
       : []),
   ];
@@ -439,6 +460,59 @@ async function writeAdoptableProjectIdentityForConfigTest(options: {
       id: 'project-instructions',
       target: 'codex.developerInstructionsBlock',
       state: 'present',
+    }],
+  });
+}
+
+async function writeAdoptableClaudeProjectIdentityForConfigTest(options: {
+  cwd: string;
+  repoRoot: string;
+  plugin: PluginMeta;
+}): Promise<void> {
+  const skillKey = 'configurable-claude';
+  const skillRoot = path.join(resolveClaudePaths(options.cwd, 'project').configDir, 'skills', skillKey);
+  const skillFiles = {
+    'SKILL.md': Buffer.from(
+      '---\nname: configurable-claude\ndescription: Configurable Claude skill.\n---\nBody\n',
+      'utf8',
+    ),
+    'references/guide.md': Buffer.from('# Guide\n', 'utf8'),
+  };
+  for (const [relativePath, content] of Object.entries(skillFiles)) {
+    await fs.outputFile(path.join(skillRoot, relativePath), content);
+  }
+  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
+  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
+  const locator = createProjectArtifactSharedLocator({
+    plugin: options.plugin.manifest.name,
+    platform: 'claude',
+    repoRoot: options.repoRoot,
+    projectRoot: options.cwd,
+  });
+  const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot: options.repoRoot, locator });
+  await writeProjectArtifactIdentityFileAt(identityPath, {
+    version: 1,
+    sharedIdentityId: path.basename(identityPath, '.json'),
+    locator,
+    source: {
+      pluginVersion: options.plugin.manifest.version,
+      manifestDigest: sourceManifestDigest,
+      bundleFingerprint: sourceBundleFingerprint,
+    },
+    generatedAt: '2026-05-18T00:00:00.000Z',
+    artifacts: [{
+      kind: 'skill',
+      platform: 'claude',
+      path: path.relative(options.repoRoot, skillRoot).split(path.sep).join('/'),
+      artifactKey: skillKey,
+      id: 'project-claude-skill',
+      target: 'claude.skill',
+      ownershipMarker: skillKey,
+      state: 'present',
+      contentDigest: createDynamicSkillTreeContentDigest({
+        skillKey,
+        files: skillFiles,
+      }),
     }],
   });
 }
@@ -1587,6 +1661,104 @@ describe('plugin config write helper', () => {
     })).rejects.toThrow('aw install adoptable-refresh-plugin --platform codex --scope project --adopt-existing');
 
     expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    }))).resolves.toBe(false);
+  });
+
+  it('requires local adoption before refreshing a fresh clone Claude project skill', async () => {
+    const root = await makeTempRoot('aw-config-write-adoptable-claude-refresh-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('adoptable-claude-plugin', {
+      withClaudeProjectDynamicTarget: true,
+    }));
+    await writeAdoptableClaudeProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
+    const nativeCliRunner = vi.fn(createAgentVersionRunner({ claude: '2.1.88 (Claude Code)' }));
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      nativeCliRunner,
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow(
+      'aw install adoptable-claude-plugin --platform claude --scope project --adopt-existing',
+    );
+
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+    await expect(fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    }))).resolves.toBe(false);
+  });
+
+  it('does not use legacy Claude project tracking as a refresh target', async () => {
+    const root = await makeTempRoot('aw-config-write-legacy-claude-refresh-');
+    const repoRoot = path.join(root, 'repo');
+    const cwd = path.join(repoRoot, 'packages', 'app');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await initRepo(repoRoot);
+    await fs.ensureDir(cwd);
+    const plugin = await materializePlugin(root, createPlugin('legacy-claude-plugin', {
+      withClaudeProjectDynamicTarget: true,
+    }));
+    const claudePaths = resolveClaudePaths(cwd, 'project', env);
+    const skillRoot = path.join(claudePaths.configDir, 'skills', 'configurable-claude');
+    await fs.outputFile(
+      path.join(skillRoot, 'SKILL.md'),
+      '---\nname: configurable-claude\ndescription: Configurable Claude skill.\n---\nBody\n',
+    );
+    await writeTrackingManifest(claudePaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-05-18T00:00:00.000Z',
+          artifacts: [{
+            path: skillRoot,
+            paths: [path.join(skillRoot, 'SKILL.md')],
+            kind: 'skill',
+            platform: 'claude',
+            artifactKey: 'configurable-claude',
+            id: 'project-claude-skill',
+            target: 'claude.skill',
+            state: 'present',
+            refreshKeys: ['mode'],
+            contentDigest: 'sha256:legacy-content',
+            configDigest: 'sha256:legacy-config',
+          }],
+        },
+      },
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin,
+      scope: 'project',
+      cwd,
+      env,
+      request: {
+        updates: {
+          mode: 'fast',
+        },
+      },
+    })).rejects.toThrow('存在未认领或无法验证的残留状态');
+
     expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
     await expect(fs.pathExists(resolvePluginConfigStorePath({
       pluginName: plugin.manifest.name,

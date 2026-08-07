@@ -45,7 +45,10 @@ import { reapplyConfigRefresh } from '../../src/utils/artifact-refresh.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
 import type { GeneratedArtifact, PluginMeta, SkillTriggerPreference } from '../../src/types.js';
 import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
-import { getInstallRecordPath } from '../../src/install-state/paths.js';
+import {
+  getDiagnosticCachePath,
+  getInstallRecordPath,
+} from '../../src/install-state/paths.js';
 import { stageHistoricalLifecycleRuntime } from '../../src/install-state/runtime-state.js';
 import {
   resolveClaudePaths,
@@ -1511,6 +1514,23 @@ describe('artifact refresh reapply helper', () => {
     };
     const record = await fs.readJson(getInstallRecordPath(repoRoot, location, env)) as InstallRecordFile;
     expect(record.record.artifacts[0]?.contentDigest).toBe('sha256:old-content');
+    const diagnosticCache = await fs.readJson(getDiagnosticCachePath(repoRoot, location, env)) as {
+      artifacts: Array<{
+        contentDigest?: string;
+        lastRefresh?: { status: string; event: string; error?: string };
+      }>;
+    };
+    expect(diagnosticCache.artifacts[0]).toMatchObject({
+      contentDigest: 'sha256:old-content',
+      lastRefresh: {
+        status: 'failed',
+        event: 'config',
+        error: expect.stringContaining(error),
+      },
+    });
+    if (surface === 'install-state') {
+      expect(transactions.runInstallStateTransaction).toHaveBeenCalledTimes(2);
+    }
   });
 
   it('reapplies tracked codex.skill artifacts through the same refresh path', async () => {

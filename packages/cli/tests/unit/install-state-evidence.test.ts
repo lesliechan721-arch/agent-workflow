@@ -21,6 +21,7 @@ import {
   writeMinimalPluginInstallStateFixture,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
+import { createDynamicSkillTreeContentDigest } from '../../src/utils/dynamic-skill-tree.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
 import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
@@ -361,6 +362,80 @@ describe('collectInstallEvidence', () => {
     expect(evidence.projectSharedIdentity.sourceDrift).toBe(true);
     expect(evidence.adoptable.possible).toBe(true);
     expect(evidence.adoptable.source).toBe('identity');
+  });
+
+  it('verifies a fresh clone Claude dynamic skill identity with the complete tree digest', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-evidence-claude-skill-adoptable-'),
+    );
+    const target = builder.createTarget({
+      pluginName: 'dynamic-claude',
+      platform: 'claude',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const skillRelativePath = '.claude/skills/dynamic-claude';
+    const skillRoot = path.join(builder.paths.repoRoot, skillRelativePath);
+    const skillFiles = {
+      'SKILL.md': Buffer.from(
+        '---\nname: dynamic-claude\ndescription: Dynamic Claude skill.\n---\nBody\n',
+        'utf8',
+      ),
+      'references/guide.md': Buffer.from('# Guide\n', 'utf8'),
+    };
+    for (const [relativePath, content] of Object.entries(skillFiles)) {
+      await fs.outputFile(path.join(skillRoot, relativePath), content);
+    }
+    const contentDigest = createDynamicSkillTreeContentDigest({
+      skillKey: 'dynamic-claude',
+      files: skillFiles,
+    });
+    await builder.writeProjectIdentity(target, {
+      version: 1,
+      sharedIdentityId: target.sharedIdentityId,
+      locator: target.locator,
+      source: target.source,
+      generatedAt: target.timestamps.updatedAt,
+      artifacts: [{
+        kind: 'skill',
+        platform: 'claude',
+        path: skillRelativePath,
+        artifactKey: 'dynamic-claude',
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
+        ownershipMarker: 'dynamic-claude',
+        state: 'present',
+        contentDigest,
+      }],
+    });
+
+    const evidence = await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog: {
+        source: target.source,
+        artifacts: [],
+        dynamicArtifacts: [{
+          id: 'dynamic-claude-skill',
+          target: 'claude.skill',
+          state: 'present',
+          artifactKey: 'dynamic-claude',
+          contentDigest,
+        }],
+      },
+    });
+
+    expect(evidence.projectSharedIdentity.artifacts[0]?.file.contentDigest).toBe(contentDigest);
+    expect(evidence.adoptable).toMatchObject({
+      possible: true,
+      source: 'identity',
+      blockers: [],
+    });
+    expect(projectInstallState(evidence)).toMatchObject({
+      kind: 'external',
+      reasonCodes: ['claimableProjectArtifacts'],
+    });
   });
 
   it('does not treat path-only current-catalog matches as adoptable when project identity is missing', async () => {

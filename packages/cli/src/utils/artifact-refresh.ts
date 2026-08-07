@@ -1069,7 +1069,36 @@ async function finalizeExecutedRefreshUnits(options: {
             : String(trackingRollbackError)}`,
         );
       }
-      const message = errors.join('；');
+      let message = errors.join('；');
+      const failedArtifacts = withRefreshMetadata(
+        unit.dynamicArtifacts,
+        buildLastRefresh({
+          status: 'failed',
+          triggerKeys: unit.triggerKeys,
+          error: message,
+        }),
+        refreshReach,
+      );
+      try {
+        await syncInstallStateAfterRefresh({
+          plugin: options.plugin,
+          cwd: options.cwd,
+          env: options.env,
+          unit: {
+            ...unit,
+            status: 'failed',
+            error: message,
+          },
+          artifacts: failedArtifacts,
+        });
+      } catch (diagnosticError) {
+        errors.push(
+          `dynamic diagnostic cache 写入失败：${diagnosticError instanceof Error
+            ? diagnosticError.message
+            : String(diagnosticError)}`,
+        );
+        message = errors.join('；');
+      }
       result = {
         status: 'failed',
         error: message,

@@ -911,6 +911,7 @@ async function buildCurrentCatalogSource(
 
 async function buildDynamicCatalogArtifacts(
   plugin: PluginMeta,
+  platform: PlatformName,
   scope: Scope,
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -924,7 +925,7 @@ async function buildDynamicCatalogArtifacts(
   });
   const digestSalt = target.rendererDigest ?? target.manifestDigest ?? await calculateFileDigest(plugin.manifestPath);
   return (plugin.manifest.artifacts?.targets ?? [])
-    .filter((artifact) => artifact.platform === 'codex' && artifact.scopes.includes(scope))
+    .filter((artifact) => artifact.platform === platform && artifact.scopes.includes(scope))
     .map((artifact) => ({
       id: artifact.id,
       target: artifact.target,
@@ -945,6 +946,7 @@ async function buildDynamicCatalogArtifacts(
 
 async function buildBaseCurrentCatalog(options: {
   plugin: PluginMeta;
+  platform: PlatformName;
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -954,6 +956,7 @@ async function buildBaseCurrentCatalog(options: {
     artifacts: [],
     dynamicArtifacts: await buildDynamicCatalogArtifacts(
       options.plugin,
+      options.platform,
       options.scope,
       options.cwd,
       options.env,
@@ -1151,6 +1154,7 @@ async function resolveCodexDynamicRefreshImpact(options: {
 
     const currentCatalog = await buildBaseCurrentCatalog({
       plugin: options.plugin,
+      platform: 'codex',
       scope: 'project',
       cwd: options.cwd,
       env: options.env,
@@ -1196,6 +1200,7 @@ async function resolveCodexDynamicRefreshImpact(options: {
   ) {
     const currentCatalog = await buildBaseCurrentCatalog({
       plugin: options.plugin,
+      platform: 'codex',
       scope: 'project',
       cwd: options.cwd,
       env: options.env,
@@ -1231,13 +1236,19 @@ async function resolveClaudeDynamicRefreshImpact(options: {
   env: NodeJS.ProcessEnv;
   changedKeys: string[];
   resetAllTrackedKeys?: boolean;
-}): Promise<ReceiptTargetIdentity[]> {
+}): Promise<{
+  targets: ReceiptTargetIdentity[];
+  configRefreshSkippedReason?: ConfigRuntimeImpact['configRefreshSkippedReason'];
+}> {
   if (options.projectLayer === 'local') {
-    return [];
+    return { targets: [], configRefreshSkippedReason: 'projectLocalOverride' };
   }
 
   const targets: ReceiptTargetIdentity[] = [];
   const projectKey = await resolveClaudeProjectKey(options.cwd).catch(() => undefined);
+  let sawClaudeRefreshableSurface = false;
+  let adoptExistingRequired = false;
+  let cleanPrewrite = false;
   for (const scope of configScopeCandidates(options.scope)) {
     const refreshKeys = collectRefreshKeysForScope(options.plugin.manifest, 'claude', scope);
     if (
@@ -1249,6 +1260,7 @@ async function resolveClaudeDynamicRefreshImpact(options: {
     ) {
       continue;
     }
+    sawClaudeRefreshableSurface = true;
 
     const location: PluginLocation = scope === 'project'
       ? {
@@ -1279,31 +1291,115 @@ async function resolveClaudeDynamicRefreshImpact(options: {
         changedKeys: options.changedKeys,
         resetAllTrackedKeys: options.resetAllTrackedKeys,
       })) ?? false;
-    if (recordRead.status === 'ok' || hasTrackedDynamicSkill) {
+    if (recordRead.status === 'ok') {
       targets.push({
         pluginName: options.plugin.manifest.name,
         platform: 'claude',
         scope,
         ...(scope === 'project' && projectKey ? { projectKey } : {}),
       });
+      continue;
+    }
+
+    if (scope !== 'project') {
+      if (hasTrackedDynamicSkill) {
+        targets.push({
+          pluginName: options.plugin.manifest.name,
+          platform: 'claude',
+          scope: 'user',
+        });
+      }
+      continue;
+    }
+
+    const currentCatalog = await buildBaseCurrentCatalog({
+      plugin: options.plugin,
+      platform: 'claude',
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const evidence = await collectInstallEvidence({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+      currentCatalog,
+    });
+    if (evidence.adoptable.possible) {
+      adoptExistingRequired = true;
+    } else if (!evidence.legacyTracking.present && isCleanProjectPrewriteCandidate(evidence)) {
+      cleanPrewrite = true;
+    } else {
+      throw new Error(
+        `当前项目里的 ${options.plugin.manifest.name} 存在未认领或无法验证的残留状态，不能直接刷新共享 artifacts。` +
+        `请先运行 \`aw status --verbose\` 查看状态，再选择 \`aw install ${options.plugin.manifest.name} --platform claude --scope project --adopt-existing\`、\`aw cleanup\` 或 \`aw reinstall\`。`,
+      );
     }
   }
-  return targets;
+
+  if (adoptExistingRequired) {
+    throw new Error(
+      `当前项目里的 ${options.plugin.manifest.name} 共享产物尚未被本机认领；这次写入会影响 repo-visible artifacts。` +
+      `请先运行 \`aw install ${options.plugin.manifest.name} --platform claude --scope project --adopt-existing\`，再重试 config write。`,
+    );
+  }
+
+  if (targets.length > 0) {
+    return { targets: dedupeReceiptTargets(targets) };
+  }
+
+  if (
+    options.changedKeys.length > 0 &&
+    configScopeCandidates(options.scope).includes('project')
+  ) {
+    const currentCatalog = await buildBaseCurrentCatalog({
+      plugin: options.plugin,
+      platform: 'claude',
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const evidence = await collectInstallEvidence({
+      cwd: options.cwd,
+      location: {
+        plugin: options.plugin.manifest.name,
+        platform: 'claude',
+        scope: 'project',
+        ...(projectKey ? { projectKey } : {}),
+      },
+      env: options.env,
+      currentCatalog,
+    });
+    if (!evidence.installRecord.present && evidence.adoptable.possible) {
+      return { targets: [], configRefreshSkippedReason: 'adoptExistingRequired' };
+    }
+  }
+
+  if (sawClaudeRefreshableSurface || cleanPrewrite) {
+    return { targets: [], configRefreshSkippedReason: 'noRefreshTarget' };
+  }
+
+  return { targets: [] };
 }
 
 async function resolveDynamicRefreshImpact(options: Parameters<typeof resolveCodexDynamicRefreshImpact>[0]): Promise<{
   targets: ReceiptTargetIdentity[];
   configRefreshSkippedReason?: ConfigRuntimeImpact['configRefreshSkippedReason'];
 }> {
-  const [codex, claudeTargets] = await Promise.all([
+  const [codex, claude] = await Promise.all([
     resolveCodexDynamicRefreshImpact(options),
     resolveClaudeDynamicRefreshImpact(options),
   ]);
+  const targets = dedupeReceiptTargets([...codex.targets, ...claude.targets]);
+  const configRefreshSkippedReason = targets.length === 0
+    ? codex.configRefreshSkippedReason === 'adoptExistingRequired' ||
+      claude.configRefreshSkippedReason === 'adoptExistingRequired'
+      ? 'adoptExistingRequired' as const
+      : codex.configRefreshSkippedReason ?? claude.configRefreshSkippedReason
+    : undefined;
   return {
-    targets: dedupeReceiptTargets([...codex.targets, ...claudeTargets]),
-    ...(codex.configRefreshSkippedReason && claudeTargets.length === 0
-      ? { configRefreshSkippedReason: codex.configRefreshSkippedReason }
-      : {}),
+    targets,
+    ...(configRefreshSkippedReason ? { configRefreshSkippedReason } : {}),
   };
 }
 
