@@ -10,6 +10,13 @@ import fs from 'fs-extra';
 import { discoverPlugins, readPluginManifest } from '../src/utils/manifest.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import { runCodexConversationSuite } from './codex-eval-app-server.js';
+import {
+  createCodexEvalRuntimeCapsule,
+  redactCodexEvalText,
+  redactCodexEvalValue,
+  resolveCodexEvalRuntimeConfig,
+  type CodexEvalRuntimeConfig,
+} from './codex-eval-runtime-config.js';
 import { runCodexTriggerSuite } from './codex-trigger-eval.js';
 import {
   combinePluginEvalOutcome,
@@ -41,6 +48,9 @@ interface ParsedArgs {
   caseId?: string;
   runs?: number;
   model?: string;
+  modelProvider?: string;
+  codexConfig?: string;
+  inheritCodexConfig: boolean;
   codexBin: string;
   outputDir?: string;
   materializeOnly: boolean;
@@ -95,6 +105,9 @@ function usage(): string {
     '  --case <id>                   Run one case (requires --suite)',
     '  --runs <count>                Override repetitions per case',
     '  --model <model>               Override the parent Codex model',
+    '  --model-provider <id>         Override the inherited Codex model provider',
+    '  --codex-config <path>         Read model/provider config from this config.toml',
+    '  --no-inherit-codex-config     Use a clean official Codex provider config',
     '  --codex-bin <path>            Codex executable (default: codex)',
     '  --output-dir <path>           Persist subjects and reports',
     '  --materialize-only            Do not start real Codex model sessions',
@@ -106,6 +119,7 @@ function parseArgs(args: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     all: false,
     codexBin: 'codex',
+    inheritCodexConfig: true,
     materializeOnly: false,
     allowEnvironmentSkips: false,
   };
@@ -125,6 +139,10 @@ function parseArgs(args: string[]): ParsedArgs {
     }
     if (arg === '--allow-environment-skips') {
       parsed.allowEnvironmentSkips = true;
+      continue;
+    }
+    if (arg === '--no-inherit-codex-config') {
+      parsed.inheritCodexConfig = false;
       continue;
     }
     if (arg === '-h' || arg === '--help') {
@@ -164,6 +182,16 @@ function parseArgs(args: string[]): ParsedArgs {
       index += 1;
       continue;
     }
+    if (arg === '--model-provider') {
+      parsed.modelProvider = optionValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--codex-config') {
+      parsed.codexConfig = path.resolve(optionValue(args, index, arg));
+      index += 1;
+      continue;
+    }
     if (arg === '--codex-bin') {
       parsed.codexBin = optionValue(args, index, arg);
       index += 1;
@@ -188,6 +216,11 @@ function parseArgs(args: string[]): ParsedArgs {
   if (parsed.caseId && !parsed.suite) {
     throw new Error('--case requires --suite.');
   }
+  if (!parsed.inheritCodexConfig && (parsed.codexConfig || parsed.modelProvider)) {
+    throw new Error(
+      '--no-inherit-codex-config cannot be combined with --codex-config or --model-provider.',
+    );
+  }
   if (
     parsed.materializeOnly &&
     (
@@ -196,6 +229,9 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.caseId !== undefined ||
       parsed.runs !== undefined ||
       parsed.model !== undefined ||
+      parsed.modelProvider !== undefined ||
+      parsed.codexConfig !== undefined ||
+      parsed.inheritCodexConfig === false ||
       parsed.allowEnvironmentSkips
     )
   ) {
@@ -204,6 +240,9 @@ function parseArgs(args: string[]): ParsedArgs {
     );
   }
   parsed.pluginName = positional[0];
+  if (parsed.pluginName && !/^[a-z0-9][a-z0-9-]*$/u.test(parsed.pluginName)) {
+    throw new Error('Plugin name must use lowercase kebab-case without path separators.');
+  }
   return parsed;
 }
 
@@ -214,6 +253,7 @@ export async function runChild(
     cwd: string;
     env: NodeJS.ProcessEnv;
     stderr: (text: string) => void;
+    redact?: (text: string) => string;
     timeoutMs: number;
   },
 ): Promise<ChildResult> {
@@ -234,7 +274,6 @@ export async function runChild(
       timedOut = true;
       const message = `Suite exceeded central timeout of ${options.timeoutMs}ms.`;
       stderr += `${message}\n`;
-      options.stderr(`${message}\n`);
       child.kill('SIGTERM');
       forceKillTimer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -255,6 +294,10 @@ export async function runChild(
       if (settled) return;
       settled = true;
       cleanup();
+      if (stderr) {
+        const rendered = options.redact ? options.redact(stderr) : stderr;
+        options.stderr(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
+      }
       resolve({ exitCode, signal, stdout, stderr, timedOut });
     };
     child.stdout.setEncoding('utf8');
@@ -264,7 +307,6 @@ export async function runChild(
     });
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
-      options.stderr(chunk);
     });
     child.once('error', (error) => {
       if (timedOut) {
@@ -313,13 +355,23 @@ async function runCommandSuite(options: {
   outputRoot: string;
   parsed: ParsedArgs;
   env: NodeJS.ProcessEnv;
+  codexRuntime: CodexEvalRuntimeConfig;
+  codexRuntimeHome: string;
   stderr: (text: string) => void;
 }): Promise<PluginEvalSuiteReport> {
+  const sanitize = (report: PluginEvalSuiteReport): PluginEvalSuiteReport =>
+    redactCodexEvalValue(report, options.codexRuntime);
   const reportName = [options.suite.id, options.split, options.profile]
     .filter(Boolean)
     .join('-');
   const reportPath = path.join(options.outputRoot, 'reports', `${reportName}.json`);
+  const rawReportPath = path.join(
+    options.codexRuntimeHome,
+    'command-reports',
+    `${reportName}.json`,
+  );
   await fs.ensureDir(path.dirname(reportPath));
+  await fs.ensureDir(path.dirname(rawReportPath));
   const args = [path.resolve(options.pluginRoot, options.suite.entry.replace(/^\.\//u, ''))];
   if (options.split && supports(options.suite, 'split')) {
     args.push('--split', options.split);
@@ -345,20 +397,27 @@ async function runCommandSuite(options: {
   ) {
     args.push('--allow-environment-skips');
   }
-  args.push('--output', reportPath);
+  args.push('--output', rawReportPath);
 
   const result = await runChild(process.execPath, args, {
     cwd: options.subjectRoot,
     env: {
       ...options.env,
+      CODEX_HOME: options.codexRuntimeHome,
+      AW_CODEX_EVAL_RUNTIME_HOME: options.codexRuntimeHome,
+      AW_CODEX_EVAL_MODEL_PROVIDER: options.codexRuntime.modelProvider,
+      AW_CODEX_EVAL_SENSITIVE_ENV_NAMES: JSON.stringify(
+        options.codexRuntime.sensitiveEnvironmentNames,
+      ),
       AW_PLUGIN_EVAL_PROJECT_ROOT: options.subjectRoot,
       AW_PLUGIN_EVAL_PROFILE: options.profile,
     },
     stderr: options.stderr,
+    redact: (value) => redactCodexEvalText(value, options.codexRuntime),
     timeoutMs: options.suite.suiteTimeoutMs,
   });
   if (result.timedOut) {
-    return {
+    return sanitize({
       id: options.suite.id,
       kind: 'command',
       profile: options.profile,
@@ -373,10 +432,14 @@ async function runCommandSuite(options: {
         `exitCode=${result.exitCode}, signal=${result.signal}`,
         ...(result.stderr.trim() ? [result.stderr.trim()] : []),
       ],
-    };
+    });
   }
   try {
-    const report = parseCommandReport(result.stdout, reportPath);
+    const report = redactCodexEvalValue(
+      parseCommandReport(result.stdout, rawReportPath),
+      options.codexRuntime,
+    );
+    await fs.writeJson(reportPath, report, { spaces: 2 });
     const complete = report.complete !== false;
     const passed = report.passed === true && result.exitCode === 0;
     const outcome: PluginEvalOutcome = !complete
@@ -384,7 +447,7 @@ async function runCommandSuite(options: {
       : passed
         ? 'passed'
         : 'failed';
-    return {
+    return sanitize({
       id: options.suite.id,
       kind: 'command',
       profile: options.profile,
@@ -401,9 +464,9 @@ async function runCommandSuite(options: {
         ...(result.signal ? [`Suite terminated by ${result.signal}.`] : []),
         ...(report.environment_error ? [String(report.environment_error)] : []),
       ],
-    };
+    });
   } catch (error) {
-    return {
+    return sanitize({
       id: options.suite.id,
       kind: 'command',
       profile: options.profile,
@@ -418,7 +481,7 @@ async function runCommandSuite(options: {
         `exitCode=${result.exitCode}, signal=${result.signal}`,
         ...(result.stderr.trim() ? [result.stderr.trim()] : []),
       ],
-    };
+    });
   }
 }
 
@@ -512,6 +575,9 @@ async function runOnePlugin(options: {
   parsed: ParsedArgs;
   rootOutput: string;
   env: NodeJS.ProcessEnv;
+  modelEnv: NodeJS.ProcessEnv;
+  codexRuntime?: CodexEvalRuntimeConfig;
+  codexRuntimeHome?: string;
   stderr: (text: string) => void;
 }): Promise<PluginEvaluationBundle> {
   const sourcePlugin = await readPluginManifest(
@@ -576,8 +642,9 @@ async function runOnePlugin(options: {
               caseId: options.parsed.caseId,
               codexBin: options.parsed.codexBin,
               model: options.parsed.model,
+              codexRuntime: options.codexRuntime,
               timeoutMs: suite.perRunTimeoutMs,
-              sourceEnv: options.env,
+              sourceEnv: options.modelEnv,
               reportPath,
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
@@ -599,7 +666,8 @@ async function runOnePlugin(options: {
               caseId: options.parsed.caseId,
               codexBin: options.parsed.codexBin,
               model: options.parsed.model,
-              sourceEnv: options.env,
+              codexRuntime: options.codexRuntime,
+              sourceEnv: options.modelEnv,
               reportPath,
               stderr: options.stderr,
             });
@@ -614,7 +682,9 @@ async function runOnePlugin(options: {
               pluginRoot: sourcePlugin.rootDir,
               outputRoot,
               parsed: options.parsed,
-              env: options.env,
+              env: options.modelEnv,
+              codexRuntime: options.codexRuntime!,
+              codexRuntimeHome: options.codexRuntimeHome!,
               stderr: options.stderr,
             }));
           }
@@ -623,7 +693,7 @@ async function runOnePlugin(options: {
     }
   }
   const outcome = options.parsed.materializeOnly ? 'passed' : combinePluginEvalOutcome(reports);
-  const bundle: PluginEvaluationBundle = {
+  const unredactedBundle: PluginEvaluationBundle = {
     schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     plugin: sourcePlugin.manifest.name,
@@ -631,8 +701,11 @@ async function runOnePlugin(options: {
     platform: 'codex',
     codexVersion: options.parsed.materializeOnly
       ? null
-      : await readCodexVersion(options.parsed.codexBin, options.env),
-    model: options.parsed.model ?? null,
+      : await readCodexVersion(options.parsed.codexBin, options.modelEnv),
+    model: options.parsed.model ?? options.codexRuntime?.model ?? null,
+    modelProvider: options.codexRuntime?.modelProvider ?? null,
+    credentialSource: options.codexRuntime?.credentialSource ?? null,
+    codexConfigDigest: options.codexRuntime?.evidenceDigest ?? null,
     outcome,
     complete: options.parsed.materializeOnly || reports.every((report) => report.complete),
     mechanicalPassed: options.parsed.materializeOnly || reports.every(
@@ -642,6 +715,9 @@ async function runOnePlugin(options: {
     suites: reports,
     diagnostics: [],
   };
+  const bundle = options.codexRuntime
+    ? redactCodexEvalValue(unredactedBundle, options.codexRuntime)
+    : unredactedBundle;
   await fs.writeJson(path.join(outputRoot, 'evaluation.json'), bundle, { spaces: 2 });
   return bundle;
 }
@@ -669,7 +745,26 @@ export async function runPluginEvals(
   );
   const temporaryOutput = parsed.outputDir === undefined;
   const rootOutput = parsed.outputDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-'));
+  let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
   try {
+    let codexRuntime: CodexEvalRuntimeConfig | undefined;
+    try {
+      codexRuntime = parsed.materializeOnly
+        ? undefined
+        : await resolveCodexEvalRuntimeConfig({
+            sourceEnv: env,
+            inheritUserConfig: parsed.inheritCodexConfig,
+            configPath: parsed.codexConfig,
+            modelOverride: parsed.model,
+            modelProviderOverride: parsed.modelProvider,
+          });
+    } catch (error) {
+      stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 2;
+    }
+    runtimeCapsule = codexRuntime
+      ? await createCodexEvalRuntimeCapsule(codexRuntime, env)
+      : undefined;
     const pluginNames = parsed.all
       ? (await discoverPlugins(repoRoot)).map((plugin) => plugin.manifest.name)
       : [parsed.pluginName!];
@@ -683,6 +778,9 @@ export async function runPluginEvals(
           parsed,
           rootOutput,
           env,
+          modelEnv: runtimeCapsule?.env ?? env,
+          codexRuntime,
+          codexRuntimeHome: runtimeCapsule?.home,
           stderr,
         }));
       } catch (error) {
@@ -701,6 +799,7 @@ export async function runPluginEvals(
     }
     return 0;
   } finally {
+    await runtimeCapsule?.cleanup();
     if (temporaryOutput) {
       await fs.remove(rootOutput);
     }

@@ -129,10 +129,18 @@ async function testSpecializedWorkspaceUsesFinalArtifact() {
       const args = buildCodexArgs(
         current,
         { query: 'delegate', codex_config: {}, omit_roles: ['codex-subagent-simple'] },
-        { profile: 'v2', model: 'gpt-test' },
+        {
+          profile: 'v2',
+          model: 'gpt-test',
+          modelProvider: 'fixture-provider',
+          sensitiveEnvironmentNames: ['CUSTOM_TOKEN'],
+        },
       );
       assert.ok(args.includes('multi_agent'));
       assert.ok(args.includes('gpt-test'));
+      assert.ok(args.includes('model_provider="fixture-provider"'));
+      assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));
+      assert.equal(args.includes('--ignore-user-config'), false);
       assert.equal(
         args.some((arg) => arg.includes('agents.codex-subagent-simple.config_file=')),
         false,

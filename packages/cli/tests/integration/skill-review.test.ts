@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,6 +23,10 @@ function repoRoot(): string {
 
 function skillScript(name: string): string {
   return path.join(repoRoot(), '.agents', 'skills', 'skill-review', 'scripts', name);
+}
+
+function staticEvalRunner(): string {
+  return skillScript('run_static_skill_evals.mjs');
 }
 
 function contentDigest(content: string): string {
@@ -114,12 +118,336 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(12);
+        expect(report.evals.behavior_cases).toBe(16);
         expect(report.evals.scoring_cases).toBe(5);
-        expect(report.scripts.count).toBe(2);
+        expect(report.scripts.count).toBe(3);
         expect(report.references.missing).toEqual([]);
       }
     }
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'runs and consumes a static Skill evaluation bundle',
+    async () => {
+      const root = repoRoot();
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-skill-eval-'));
+      const outputRoot = path.join(tempRoot, 'output');
+      const codexBin = path.join(tempRoot, 'fake-codex');
+      const sourceCodexHome = path.join(tempRoot, 'source-codex-home');
+      tempDirs.push(tempRoot);
+      await fs.ensureDir(sourceCodexHome);
+      await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), [
+        'model = "fixture-model"',
+        'model_provider = "fixture-provider"',
+        '[model_providers.fixture-provider]',
+        'name = "Fixture"',
+        'wire_api = "responses"',
+        'experimental_bearer_token = "fixture-secret"',
+        '[plugins."do-not-copy@local"]',
+        'enabled = true',
+      ].join('\n'), 'utf8');
+      await fs.writeFile(codexBin, [
+        '#!/usr/bin/env node',
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "if (process.argv[2] === '--version') { process.stdout.write('fixture-secret\\n'); process.exit(0); }",
+        "if (process.argv.includes('--ignore-user-config')) process.exit(9);",
+        "const config = fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
+        "if (!config.includes('model_provider = \"fixture-provider\"') || config.includes('[plugins.')) process.exit(10);",
+        'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
+        'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/skill-review/SKILL.md" } });',
+        'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+        'process.on("SIGTERM", () => process.exit(0));',
+        'setTimeout(() => process.exit(0), 100);',
+      ].join('\n'), 'utf8');
+      await fs.chmod(codexBin, 0o755);
+
+      const execution = await execFileAsync('node', [
+        staticEvalRunner(),
+        'skill-review',
+        '--suite',
+        'trigger',
+        '--case',
+        'full_skill_package',
+        '--runs',
+        '1',
+        '--codex-bin',
+        codexBin,
+        '--output-dir',
+        outputRoot,
+      ], {
+        cwd: root,
+        env: { ...process.env, CODEX_HOME: sourceCodexHome },
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      expect(JSON.parse(execution.stdout)).toMatchObject({ ok: true, outcome: 'passed' });
+
+      const evaluationPath = path.join(outputRoot, 'evaluation.json');
+      expect(await fs.readFile(evaluationPath, 'utf8')).not.toContain('fixture-secret');
+      const result = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        evaluationPath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+      const report = JSON.parse(result.stdout);
+      expect(report.target).toMatchObject({ kind: 'static-skill', name: 'skill-review' });
+      expect(report.evaluation).toMatchObject({
+        target: { kind: 'static-skill', name: 'skill-review' },
+        outcome: 'passed',
+        model_provider: 'fixture-provider',
+        credential_source: 'embedded',
+      });
+      expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
+
+      const validEvaluation = await fs.readJson(evaluationPath);
+      const failedEvidencePath = path.join(outputRoot, 'failed-evidence.json');
+      await fs.writeJson(failedEvidencePath, {
+        ...validEvaluation,
+        outcome: 'failed',
+        mechanicalPassed: false,
+      });
+      const failedEvidence = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        failedEvidencePath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(failedEvidence?.stdout).toBeTruthy();
+      expect(JSON.parse(failedEvidence!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.failed', level: 'error' }),
+      ]));
+
+      const malformedSuitePath = path.join(outputRoot, 'malformed-suite.json');
+      await fs.writeJson(malformedSuitePath, { ...validEvaluation, suites: [{}] });
+      const malformedSuite = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        malformedSuitePath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(malformedSuite?.stdout).toBeTruthy();
+      expect(JSON.parse(malformedSuite!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.suite-contract', level: 'error' }),
+      ]));
+
+      const inconsistentSuitePath = path.join(outputRoot, 'inconsistent-suite.json');
+      await fs.writeJson(inconsistentSuitePath, {
+        ...validEvaluation,
+        suites: [{
+          ...validEvaluation.suites[0],
+          outcome: 'failed',
+          complete: true,
+          mechanicalPassed: false,
+        }],
+      });
+      const inconsistentSuite = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        inconsistentSuitePath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(inconsistentSuite?.stdout).toBeTruthy();
+      expect(JSON.parse(inconsistentSuite!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.suite-summary', level: 'error' }),
+      ]));
+
+      for (const qualitativeReview of ['required', 'failed']) {
+        const qualitativePath = path.join(outputRoot, `qualitative-${qualitativeReview}.json`);
+        await fs.writeJson(qualitativePath, {
+          ...validEvaluation,
+          suites: [{ ...validEvaluation.suites[0], qualitativeReview }],
+        });
+        const qualitative = await execFileAsync('node', [
+          skillScript('inspect_skill_target.mjs'),
+          'skill-review',
+          '--evaluation',
+          qualitativePath,
+          '--format',
+          'json',
+        ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+          () => null,
+          (error: { stdout?: string }) => error,
+        );
+        expect(qualitative?.stdout).toBeTruthy();
+        expect(JSON.parse(qualitative!.stdout!).issues).toEqual(expect.arrayContaining([
+          expect.objectContaining({ code: 'evaluation.suite-contract', level: 'error' }),
+        ]));
+      }
+
+      const swappedKindsPath = path.join(outputRoot, 'swapped-suite-kinds.json');
+      await fs.writeJson(swappedKindsPath, {
+        ...validEvaluation,
+        suites: [
+          { ...validEvaluation.suites[0], id: 'trigger', kind: 'conversation' },
+          { ...validEvaluation.suites[0], id: 'behavior', kind: 'trigger' },
+        ],
+      });
+      const swappedKinds = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        swappedKindsPath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(swappedKinds?.stdout).toBeTruthy();
+      expect(JSON.parse(swappedKinds!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.suite-manifest', level: 'error' }),
+      ]));
+
+      const missingEvidencePath = path.join(outputRoot, 'missing-evidence.json');
+      await fs.writeJson(missingEvidencePath, {
+        ...validEvaluation,
+        subjects: [],
+        suites: [],
+      });
+      const missingEvidence = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        missingEvidencePath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(missingEvidence?.stdout).toBeTruthy();
+      expect(JSON.parse(missingEvidence!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.static-subject', level: 'error' }),
+        expect.objectContaining({ code: 'evaluation.static-package-evidence', level: 'error' }),
+        expect.objectContaining({ code: 'evaluation.suites-missing', level: 'error' }),
+      ]));
+
+      const subjectReference = path.join(
+        outputRoot,
+        'subject',
+        '.agents',
+        'skills',
+        'skill-review',
+        'references',
+        'static-skill-evaluation.md',
+      );
+      await fs.appendFile(subjectReference, '\nTampered after evaluation.\n');
+      const tampered = await execFileAsync('node', [
+        skillScript('inspect_skill_target.mjs'),
+        'skill-review',
+        '--evaluation',
+        evaluationPath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 }).then(
+        () => null,
+        (error: { stdout?: string }) => error,
+      );
+      expect(tampered?.stdout).toBeTruthy();
+      expect(JSON.parse(tampered!.stdout!).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'evaluation.package-digest', level: 'error' }),
+      ]));
+    },
+  );
+
+  it('rejects nested static targets, protected workspace destinations, symlinks, and invalid behavior cases', async () => {
+    const root = repoRoot();
+    const nestedTarget = path.join(
+      root,
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'references',
+      '.examples',
+      'code-review',
+      'review-skills',
+      'review-workflow',
+    );
+    await expect(execFileAsync('node', [
+      staticEvalRunner(),
+      nestedTarget,
+      '--validate-only',
+    ], { cwd: root, env: process.env })).rejects.toMatchObject({
+      stderr: expect.stringContaining('direct .agents/skills/<name> directory'),
+    });
+
+    const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-eval-contract-'));
+    tempDirs.push(fixtureRoot);
+    await fs.ensureDir(path.join(fixtureRoot, 'evals'));
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'cases.json'), {
+      skill_name: 'fixture',
+      evals: [{
+        id: 'invalid',
+        prompt: 42,
+        scripted_replies: [],
+        expected_output: 'Expected.',
+        review: { checks: ['Check.'] },
+      }],
+    });
+    const baseManifest = {
+      schemaVersion: 1,
+      skill: 'fixture',
+      suites: [{
+        id: 'behavior',
+        kind: 'conversation',
+        skill: 'fixture',
+        cases: './evals/cases.json',
+        defaultRuns: 1,
+        releaseSplits: [],
+        requiredForRelease: true,
+        perRunTimeoutMs: 1_000,
+      }],
+    };
+    const runner = await import(pathToFileURL(staticEvalRunner()).href);
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), baseManifest);
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'behavior.evals[0].prompt must be a non-empty string',
+    );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'cases.json'), {
+      skill_name: 'fixture',
+      evals: [{
+        id: 'valid',
+        prompt: 'Prompt.',
+        scripted_replies: [],
+        expected_output: 'Expected.',
+        review: { checks: ['Check.'] },
+      }],
+    });
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      ...baseManifest,
+      workspace: { copy: [{ from: 'package.json', to: './.codex/config.toml' }] },
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'cannot replace Codex config or the target Skill',
+    );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      ...baseManifest,
+      workspace: { copy: [{ from: 'CLAUDE.md', to: 'fixture.md' }] },
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'cannot contain symlinks',
+    );
   });
 
   it('reports standard static Skill contract errors without promoting nested fixture Skills', async () => {
@@ -265,7 +593,7 @@ describe('skill-review author tools', () => {
       'assets/scorecard-template.json': 'f3d5a76e6433ff4cccf18ee1a6b2966962fd15ef747269e4abe8c78a01718394',
       'evals/behavior_cases.json': '97e25eb610d7340241a5e547cd2e0db6043e80339a61746a0551e8ec1226f3ed',
       'evals/scoring_cases.json': '051eea73afb9ae69997092e9f1b3f2a18a166e2178c45a02a12916a5b29647df',
-      'evals/trigger_queries.json': '8dfb320d3cc5d2e9bc4b69302f300e410a6667d16885e598896307017df131e4',
+      'evals/trigger-cases.json': 'a3372fb3665299517d4777bad775452d415202553585011109d3158d07d0168c',
       'references/architecture-boundaries.md': 'ce8bdd8039a4677fcd4b91562456c2d45f886ede8480745c784b63c46f799285',
       'references/delta-review.md': '57615d644f21362a43f758d85fbb758147c78862a2da17542f1e885ed58c6361',
       'references/evals-and-triggering.md': '9a764f102e4f687c8504f1c9af1a4ad7c65b69a04e3cc0322e86d7716af6b81e',
@@ -276,13 +604,11 @@ describe('skill-review author tools', () => {
     for (const [relative, expected] of Object.entries(exactHashes)) {
       expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
     }
-    const awTriggerCorpus = await fs.readJson(
-      path.join(skillRoot, 'evals', 'aw_plugin_trigger_queries.json'),
-    );
-    expect(awTriggerCorpus).toHaveLength(4);
-    expect(awTriggerCorpus.filter((entry: { should_trigger: boolean }) =>
-      entry.should_trigger)).toHaveLength(2);
-    expect(new Set(awTriggerCorpus.map((entry: { split: string }) => entry.split))).toEqual(
+    const triggerCorpus = await fs.readJson(path.join(skillRoot, 'evals', 'trigger-cases.json'));
+    expect(triggerCorpus.cases).toHaveLength(24);
+    expect(triggerCorpus.cases.filter((entry: { should_load_skill: boolean }) =>
+      entry.should_load_skill)).toHaveLength(12);
+    expect(new Set(triggerCorpus.cases.map((entry: { split: string }) => entry.split))).toEqual(
       new Set(['train', 'validation']),
     );
 
@@ -290,7 +616,7 @@ describe('skill-review author tools', () => {
       .replace('node scripts/inspect_skill_target.mjs', 'python3 scripts/inspect_skill.py')
       .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py');
     expect(contentDigest(readme)).toBe(
-      '67c4ccea1a46c89d795ae7df8026888e0943acff1c02169d08b5b031a4f723bb',
+      'ef56afa6f4eccf1ceef807bf794eab662394f816cacf17870fade9fd185c0ecf',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
@@ -312,7 +638,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(skill)).toBe(
-      'e22280736b484b54d1ca59a33b9eeb03571b42b9929bc3eb93a52c9725484944',
+      'cb7bc251f6a2fe5f0ebbff802587d4783755338b80f73332c9289d0fbb7effc0',
     );
 
     const scoringModel = (

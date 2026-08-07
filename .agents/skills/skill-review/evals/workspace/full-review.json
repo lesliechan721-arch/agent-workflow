@@ -1,0 +1,13 @@
+{
+  "target": { "kind": "static-skill", "name": "report-checker" },
+  "mode": "full",
+  "artifacts": { "skill_md": true, "references": true, "scripts": true, "evals": true },
+  "static_diagnostics": {
+    "frontmatter_valid": true,
+    "script": { "non_interactive": true, "help": true, "json_stdout": true, "tests": true },
+    "trigger_cases": { "positive": 10, "negative": 10 },
+    "behavior_evidence": null,
+    "issues": []
+  },
+  "evidence": ["Trigger corpus is balanced.", "No real behavior trace was supplied."]
+}

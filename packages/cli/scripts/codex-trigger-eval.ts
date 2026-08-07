@@ -10,6 +10,15 @@ import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 
 import {
+  applyCodexEvalProviderEnvironment,
+  cleanCodexEvalRuntimeConfig,
+  codexEvalRuntimeEvidence,
+  materializeCodexEvalRuntimeHome,
+  redactCodexEvalValue,
+  registerCodexEvalTemporaryRoot,
+  type CodexEvalRuntimeConfig,
+} from './codex-eval-runtime-config.js';
+import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   readPluginEvalTriggerCases,
   type PluginEvalSplit,
@@ -24,7 +33,6 @@ const PASSTHROUGH_ENV = new Set([
   'PATH',
   'LANG',
   'LC_ALL',
-  'OPENAI_API_KEY',
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
@@ -130,32 +138,11 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function sourceCodexHome(sourceEnv: NodeJS.ProcessEnv): string {
-  return path.resolve(
-    sourceEnv.CODEX_HOME ?? path.join(sourceEnv.HOME ?? os.homedir(), '.codex'),
-  );
-}
-
-async function copyCodexAuthFiles(
-  destination: string,
-  sourceEnv: NodeJS.ProcessEnv,
-): Promise<void> {
-  await fs.ensureDir(destination);
-  for (const name of ['auth.json', '.credentials.json']) {
-    const source = path.join(sourceCodexHome(sourceEnv), name);
-    if (!(await fs.pathExists(source))) {
-      continue;
-    }
-    const target = path.join(destination, name);
-    await fs.copyFile(source, target);
-    await fs.chmod(target, 0o600).catch(() => undefined);
-  }
-}
-
 function buildIsolatedEnv(
   sourceEnv: NodeJS.ProcessEnv,
   runRoot: string,
   codexHome: string,
+  runtime: CodexEvalRuntimeConfig,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of PASSTHROUGH_ENV) {
@@ -165,7 +152,7 @@ function buildIsolatedEnv(
   }
   const home = path.join(runRoot, 'home');
   const temp = path.join(runRoot, 'tmp');
-  return {
+  return applyCodexEvalProviderEnvironment({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -177,7 +164,7 @@ function buildIsolatedEnv(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
-  };
+  }, runtime);
 }
 
 async function snapshotWorkspace(root: string): Promise<Record<string, string>> {
@@ -370,12 +357,13 @@ function buildCodexArgs(options: {
   evalCase: PluginEvalTriggerCase;
   workspaceRoot: string;
   model?: string;
+  modelProvider: string;
+  sensitiveEnvironmentNames: string[];
 }): string[] {
   const args = ['exec', '--json'];
   if (options.suite.isolation === 'strict') {
     args.push('--ephemeral', '--strict-config');
   }
-  args.push('--ignore-user-config');
   if (!options.evalCase.use_project_rules) {
     args.push('--ignore-rules');
   }
@@ -390,7 +378,12 @@ function buildCodexArgs(options: {
     '--config',
     'skills.include_instructions=true',
     '--config',
-    'shell_environment_policy.exclude=["CODEX_HOME"]',
+    `shell_environment_policy.exclude=${JSON.stringify([
+      'CODEX_HOME',
+      ...options.sensitiveEnvironmentNames,
+    ])}`,
+    '--config',
+    `model_provider=${JSON.stringify(options.modelProvider)}`,
   );
   if (options.suite.isolation === 'strict') {
     args.push(
@@ -550,10 +543,12 @@ async function runTriggerOnce(options: {
   fixture: TriggerFixtureModule | null;
   codexBin: string;
   model?: string;
+  codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
 }): Promise<TriggerRunEvidence> {
   const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-eval-'));
+  const unregisterRunRoot = registerCodexEvalTemporaryRoot(runRoot);
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const startedAt = Date.now();
@@ -574,11 +569,16 @@ async function runTriggerOnce(options: {
       throw new Error(`Materialized trigger skill is missing: ${skillPath}`);
     }
     const skillDigest = sha256(await fs.readFile(skillPath));
-    let env = buildIsolatedEnv(options.sourceEnv, runRoot, codexHome);
+    let env = buildIsolatedEnv(
+      options.sourceEnv,
+      runRoot,
+      codexHome,
+      options.codexRuntime,
+    );
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
-      copyCodexAuthFiles(codexHome, options.sourceEnv),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
     ]);
     const initialContext: TriggerFixtureContext = {
       workspaceRoot,
@@ -612,6 +612,8 @@ async function runTriggerOnce(options: {
       evalCase: options.evalCase,
       workspaceRoot,
       model: options.model,
+      modelProvider: options.codexRuntime.modelProvider,
+      sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
     });
     const executable = resolveCodexExecutable(options.codexBin);
     const processResult = await new Promise<{
@@ -825,7 +827,11 @@ async function runTriggerOnce(options: {
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
     };
   } finally {
-    await fs.remove(runRoot);
+    try {
+      await fs.remove(runRoot);
+    } finally {
+      unregisterRunRoot();
+    }
   }
 }
 
@@ -899,11 +905,14 @@ export async function runCodexTriggerSuite(options: {
   caseId?: string;
   codexBin: string;
   model?: string;
+  codexRuntime?: CodexEvalRuntimeConfig;
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
   stderr?: (text: string) => void;
 }): Promise<PluginEvalSuiteReport> {
   const sourceEnv = options.sourceEnv ?? process.env;
+  const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
+  const model = options.model ?? codexRuntime.model ?? undefined;
   const corpus = await readPluginEvalTriggerCases(options.pluginRoot, options.suite);
   let cases = options.split === 'all'
     ? corpus.cases
@@ -924,7 +933,7 @@ export async function runCodexTriggerSuite(options: {
     fixture = await loadFixtureModule(options.pluginRoot, options.suite);
   } catch (error) {
     const diagnostic = error instanceof Error ? error.stack ?? error.message : String(error);
-    const report = {
+    const report = redactCodexEvalValue({
       schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
       generated_at: new Date().toISOString(),
       suite: options.suite.id,
@@ -935,12 +944,12 @@ export async function runCodexTriggerSuite(options: {
       environment_error: diagnostic,
       summary: { cases: cases.length, passed: 0, failed: 0 },
       results: [],
-    };
+    }, codexRuntime);
     if (options.reportPath) {
       await fs.ensureDir(path.dirname(options.reportPath));
       await fs.writeJson(options.reportPath, report, { spaces: 2 });
     }
-    return {
+    return redactCodexEvalValue({
       id: options.suite.id,
       kind: 'trigger',
       profile: options.profile,
@@ -952,7 +961,7 @@ export async function runCodexTriggerSuite(options: {
       ...(options.reportPath ? { reportPath: options.reportPath } : {}),
       summary: report.summary,
       diagnostics: [diagnostic],
-    };
+    }, codexRuntime);
   }
   const results: TriggerCaseSummary[] = [];
   for (const evalCase of cases) {
@@ -967,7 +976,8 @@ export async function runCodexTriggerSuite(options: {
         subjectRoot: options.subjectRoot,
         fixture,
         codexBin: options.codexBin,
-        model: options.model,
+        model,
+        codexRuntime,
         timeoutMs: options.suite.perRunTimeoutMs,
         sourceEnv,
       }));
@@ -983,7 +993,7 @@ export async function runCodexTriggerSuite(options: {
     options.suite.skill,
     'SKILL.md',
   );
-  const report = {
+  const report = redactCodexEvalValue({
     schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
     suite: options.suite.id,
@@ -991,7 +1001,7 @@ export async function runCodexTriggerSuite(options: {
     split: options.split,
     runs_per_case: options.runs,
     threshold: PASS_THRESHOLD,
-    model: options.model ?? null,
+    model: model ?? null,
     complete,
     passed,
     environment: {
@@ -999,11 +1009,12 @@ export async function runCodexTriggerSuite(options: {
       isolation: {
         mode: options.suite.isolation,
         isolated_home: true,
-        user_config_ignored: true,
+        source_user_config_filtered: true,
         project_rules_ignored_by_default: true,
         bundled_surfaces_disabled: options.suite.isolation === 'strict',
         system_cloud_and_managed_layers_disabled: false,
       },
+      codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
       skill_sha256: sha256(await fs.readFile(skillPath)),
       corpus_sha256: sha256(stableJson(corpus)),
     },
@@ -1013,12 +1024,12 @@ export async function runCodexTriggerSuite(options: {
       failed: results.filter((result) => !result.passed).length,
     },
     results,
-  };
+  }, codexRuntime);
   if (options.reportPath) {
     await fs.ensureDir(path.dirname(options.reportPath));
     await fs.writeJson(options.reportPath, report, { spaces: 2 });
   }
-  return {
+  return redactCodexEvalValue({
     id: options.suite.id,
     kind: 'trigger',
     profile: options.profile,
@@ -1031,5 +1042,5 @@ export async function runCodexTriggerSuite(options: {
     summary: report.summary,
     diagnostics: results.flatMap((result) =>
       result.runs.flatMap((run) => run.diagnostics)),
-  };
+  }, codexRuntime);
 }

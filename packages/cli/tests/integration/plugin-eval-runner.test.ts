@@ -40,6 +40,29 @@ async function writeFakeCodex(root: string, skillName: string): Promise<string> 
   return codexBin;
 }
 
+async function writeProviderCheckingFakeCodex(root: string, skillName: string): Promise<string> {
+  const codexBin = path.join(root, 'fake-provider-codex');
+  await fs.writeFile(codexBin, [
+    '#!/usr/bin/env node',
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "if (process.argv[2] === '--version') { process.stdout.write('fixture-secret https://example.invalid/v1\\n'); process.exit(0); }",
+    "if (process.argv.includes('--ignore-user-config')) { process.stderr.write('user config was ignored\\n'); process.exit(9); }",
+    "const config = fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
+    "if (!config.includes('model_provider = \"fixture-provider\"')) { process.stderr.write('provider missing\\n'); process.exit(10); }",
+    "if (config.includes('[plugins.') || config.includes('[mcp_servers.')) { process.stderr.write('unsafe config copied\\n'); process.exit(11); }",
+    "if (fs.existsSync(path.join(process.env.CODEX_HOME, 'auth.json'))) { process.stderr.write('official auth copied\\n'); process.exit(12); }",
+    "if (process.env.OPENAI_API_KEY || process.env.UNRELATED_SECRET) { process.stderr.write('unrelated environment copied\\n'); process.exit(13); }",
+    'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
+    `send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/${skillName}/SKILL.md" } });`,
+    'send({ type: "item.completed", item: { type: "agent_message", text: "fixture-secret https://example.invalid/v1" } });',
+    "process.stderr.write('fixture-secret https://example.invalid/v1\\n');",
+    'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+  ].join('\n'), 'utf8');
+  await fs.chmod(codexBin, 0o755);
+  return codexBin;
+}
+
 async function writeCommandPlugin(
   repo: string,
   options: {
@@ -133,6 +156,20 @@ describe('plugin eval runner', () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain('Usage: pnpm plugin:eval');
     expect(stdout).toContain('--materialize-only');
+    expect(stdout).toContain('--model-provider');
+    expect(stdout).toContain('--codex-config');
+    expect(stdout).toContain('--no-inherit-codex-config');
+  });
+
+  it('rejects plugin path traversal before resolving a manifest', async () => {
+    let stderr = '';
+    const exitCode = await runPluginEvals(['../skill-review', '--materialize-only'], {
+      repoRoot: repoRoot(),
+      stderr: (text) => { stderr += text; },
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('without path separators');
   });
 
   it('materializes every Codex profile through the real staging and renderer paths', async () => {
@@ -223,6 +260,7 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'ask-me',
+      '--no-inherit-codex-config',
       '--suite',
       'behavior',
       '--split',
@@ -254,6 +292,7 @@ describe('plugin eval runner', () => {
 
       const exitCode = await runPluginEvals([
         'codex-explore',
+        '--no-inherit-codex-config',
         '--suite',
         'trigger',
         '--case',
@@ -282,6 +321,154 @@ describe('plugin eval runner', () => {
   );
 
   it.runIf(process.platform !== 'win32')(
+    'inherits only the selected Codex provider and keeps embedded credentials out of reports',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-provider-'));
+      const sourceCodexHome = path.join(root, 'source-codex-home');
+      const outputRoot = path.join(root, 'output');
+      tempDirs.push(root);
+      await fs.ensureDir(sourceCodexHome);
+      await fs.writeFile(path.join(sourceCodexHome, 'auth.json'), '{"token":"official"}\n', 'utf8');
+      await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), [
+        'model = "fixture-model"',
+        'model_provider = "fixture-provider"',
+        '',
+        '[model_providers.fixture-provider]',
+        'name = "Fixture"',
+        'base_url = "https://example.invalid/v1"',
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'experimental_bearer_token = "fixture-secret"',
+        '',
+        '[plugins."do-not-copy@local"]',
+        'enabled = true',
+      ].join('\n'), 'utf8');
+      const codexBin = await writeProviderCheckingFakeCodex(root, 'ask-me');
+      let stdout = '';
+      let stderr = '';
+
+      const exitCode = await runPluginEvals([
+        'ask-me',
+        '--suite',
+        'trigger',
+        '--case',
+        'explicit_hidden_assumptions',
+        '--runs',
+        '1',
+        '--codex-bin',
+        codexBin,
+        '--output-dir',
+        outputRoot,
+      ], {
+        repoRoot: repoRoot(),
+        env: {
+          ...process.env,
+          CODEX_HOME: sourceCodexHome,
+          OPENAI_API_KEY: 'official-api-key',
+          UNRELATED_SECRET: 'unrelated-secret',
+        },
+        stdout: (text) => { stdout += text; },
+        stderr: (text) => { stderr += text; },
+      });
+
+      expect(exitCode, stderr).toBe(0);
+      const commandReport = JSON.parse(stdout);
+      expect(commandReport.bundles[0]).toMatchObject({
+        model: 'fixture-model',
+        modelProvider: 'fixture-provider',
+        credentialSource: 'embedded',
+        outcome: 'passed',
+      });
+      expect(stdout).not.toContain('fixture-secret');
+      expect(stdout).not.toContain('https://example.invalid/v1');
+      expect(stderr).not.toContain('fixture-secret');
+      expect(stderr).not.toContain('https://example.invalid/v1');
+      expect(
+        await fs.readFile(path.join(outputRoot, 'ask-me', 'evaluation.json'), 'utf8'),
+      ).not.toContain('fixture-secret');
+      expect(
+        await fs.readFile(path.join(outputRoot, 'ask-me', 'reports', 'trigger-all-project-default.json'), 'utf8'),
+      ).not.toContain('https://example.invalid/v1');
+    },
+  );
+
+  it('redacts command-suite provider values and excludes unrelated host secrets', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-command-redaction-'));
+    const outputRoot = path.join(root, 'output');
+    const sourceCodexHome = path.join(root, 'source-codex-home');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'redaction-demo',
+      script: [
+        "import { readFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        "if (process.env.UNRELATED_SECRET || process.env.OPENAI_API_KEY) process.exit(9);",
+        "const config = await readFile(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
+        "const endpoint = config.match(/base_url = \\\"([^\\\"]+)/)?.[1];",
+        "process.stderr.write(`${process.env.CUSTOM_TOKEN} ${endpoint}\\n`);",
+        "process.stdout.write(JSON.stringify({ complete: true, passed: true, summary: { token: process.env.CUSTOM_TOKEN, endpoint } }));",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['codexBin'],
+    });
+    await fs.ensureDir(sourceCodexHome);
+    await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      'base_url = "https://private.invalid/v1"',
+      'env_key = "CUSTOM_TOKEN"',
+    ].join('\n'), 'utf8');
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      'redaction-demo',
+      '--suite',
+      'command',
+      '--codex-bin',
+      process.execPath,
+      '--output-dir',
+      outputRoot,
+    ], {
+      repoRoot: root,
+      env: {
+        ...process.env,
+        CODEX_HOME: sourceCodexHome,
+        CUSTOM_TOKEN: 'command-token',
+        OPENAI_API_KEY: 'official-api-key',
+        UNRELATED_SECRET: 'unrelated-secret',
+      },
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).not.toContain('command-token');
+    expect(stdout).not.toContain('https://private.invalid/v1');
+    expect(stderr).toContain('[redacted] [redacted]\n');
+    expect(stderr).not.toContain('command-token');
+    expect(stderr).not.toContain('https://private.invalid/v1');
+    const evaluation = await fs.readFile(
+      path.join(outputRoot, 'redaction-demo', 'evaluation.json'),
+      'utf8',
+    );
+    expect(evaluation).not.toContain('command-token');
+    expect(evaluation).not.toContain('https://private.invalid/v1');
+    const persistedReport = await fs.readFile(
+      path.join(outputRoot, 'redaction-demo', 'reports', 'command-project-default.json'),
+      'utf8',
+    );
+    expect(persistedReport).not.toContain('command-token');
+    expect(persistedReport).not.toContain('https://private.invalid/v1');
+    expect(persistedReport).toContain('[redacted]');
+  });
+
+  it.runIf(process.platform !== 'win32')(
     'reports an incomplete suite after force-killing a timed-out command',
     async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-timeout-'));
@@ -303,6 +490,7 @@ describe('plugin eval runner', () => {
 
       const exitCode = await runPluginEvals([
         'timeout-demo',
+        '--no-inherit-codex-config',
         '--suite',
         'command',
         '--codex-bin',
@@ -358,6 +546,7 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'multi-run-demo',
+      '--no-inherit-codex-config',
       '--suite',
       'command',
       '--codex-bin',

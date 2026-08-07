@@ -5,8 +5,20 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { runCodexConversationSuite } from '../../scripts/codex-eval-app-server.js';
+import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
 
 const tempDirs: string[] = [];
+
+function behaviorCase(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    prompt: 'Prompt.',
+    scripted_replies: [],
+    expected_output: 'Expected.',
+    review: { checks: ['Check.'], workspace_unchanged: true },
+    ...overrides,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -115,6 +127,83 @@ describe('Codex app-server eval driver', () => {
     expect(run.with_skill.workspaceChanges).toEqual([]);
   });
 
+  it('excludes provider credentials from the model shell and redacts echoed values', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-redaction-'));
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-redaction-report-'));
+    const sourceCodexHome = path.join(subjectRoot, 'source-codex-home');
+    tempDirs.push(subjectRoot, outputRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'ask-me'));
+    await fs.ensureDir(sourceCodexHome);
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'ask-me', 'SKILL.md'),
+      '# Ask Me\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      'base_url = "https://private.invalid/v1"',
+      'env_key = "CUSTOM_TOKEN"',
+    ].join('\n'), 'utf8');
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const readline = require('node:readline');",
+      "if (process.env.UNRELATED_SECRET || process.env.OPENAI_API_KEY) process.exit(9);",
+      "if (!process.argv.some((value) => value.includes('CUSTOM_TOKEN'))) process.exit(10);",
+      "process.stderr.write(`${process.env.CUSTOM_TOKEN} https://private.invalid/v1\\n`);",
+      "const input = readline.createInterface({ input: process.stdin });",
+      "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+      "input.on('line', (line) => {",
+      "  const frame = JSON.parse(line);",
+      "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+      "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+      "  else if (frame.method === 'turn/start') {",
+      "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+      "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', text: `${process.env.CUSTOM_TOKEN} https://private.invalid/v1` } } });",
+      "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+      "  }",
+      "});",
+    ].join('\n'), 'utf8');
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [behaviorCase('redaction')],
+    });
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: {
+        CODEX_HOME: sourceCodexHome,
+        CUSTOM_TOKEN: 'conversation-token',
+        OPENAI_API_KEY: 'official-key',
+        UNRELATED_SECRET: 'unrelated-secret',
+      },
+      inheritUserConfig: true,
+    });
+    const reportPath = path.join(outputRoot, 'behavior.json');
+
+    const report = await runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      codexRuntime: runtime,
+      timeoutMs: 10_000,
+      sourceEnv: {
+        PATH: process.env.PATH,
+        CUSTOM_TOKEN: 'conversation-token',
+      },
+      reportPath,
+    });
+
+    expect(JSON.stringify(report)).not.toContain('conversation-token');
+    const persisted = await fs.readFile(reportPath, 'utf8');
+    expect(persisted).not.toContain('conversation-token');
+    expect(persisted).not.toContain('https://private.invalid/v1');
+    expect(persisted).toContain('[redacted]');
+  });
+
   it.each([
     {
       name: 'an empty eval list',
@@ -123,18 +212,23 @@ describe('Codex app-server eval driver', () => {
     },
     {
       name: 'a mismatched skill name',
-      document: { skill_name: 'other-skill', evals: [{ id: 'one' }] },
+      document: { skill_name: 'other-skill', evals: [behaviorCase('one')] },
       message: 'does not match suite skill "ask-me"',
     },
     {
       name: 'a blank case id',
-      document: { skill_name: 'ask-me', evals: [{ id: '  ' }] },
+      document: { skill_name: 'ask-me', evals: [behaviorCase('  ')] },
       message: 'evals[0].id must be a non-empty string',
     },
     {
       name: 'duplicate case ids after trimming',
-      document: { skill_name: 'ask-me', evals: [{ id: 'one' }, { id: ' one ' }] },
+      document: { skill_name: 'ask-me', evals: [behaviorCase('one'), behaviorCase(' one ')] },
       message: 'duplicate case id "one"',
+    },
+    {
+      name: 'a non-string prompt',
+      document: { skill_name: 'ask-me', evals: [behaviorCase('one', { prompt: 42 })] },
+      message: 'evals[0].prompt must be a non-empty string',
     },
   ])('rejects $name before starting Codex', async ({ document, message }) => {
     const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-invalid-'));

@@ -62,6 +62,38 @@ function sha256(content) {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 
+function isPathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+async function digestDirectoryTree(root) {
+  const hash = createHash('sha256');
+  async function visit(current, prefix = '') {
+    const entries = await readdir(current, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const absolute = path.join(current, entry.name);
+      const relative = path.join(prefix, entry.name);
+      if (entry.isDirectory()) await visit(absolute, relative);
+      else if (entry.isFile()) {
+        hash.update(normalizeRelative(relative));
+        hash.update('\0');
+        hash.update(await readFile(absolute));
+        hash.update('\0');
+      } else if (entry.isSymbolicLink()) {
+        throw new Error(`Skill package cannot contain symlink: ${normalizeRelative(relative)}`);
+      }
+    }
+  }
+  await visit(root);
+  return `sha256:${hash.digest('hex')}`;
+}
+
 async function pathExists(candidate) {
   try {
     await stat(candidate);
@@ -372,11 +404,41 @@ async function evalDiagnostics(skillRoot, files) {
   let triggerNegative = 0;
   let behaviorCases = 0;
   let scoringCases = 0;
-  for (const entry of files.filter((file) => file.path.startsWith('evals/') && file.path.endsWith('.json'))) {
+  for (const entry of files.filter((file) =>
+    file.path.startsWith('evals/') &&
+    !file.path.startsWith('evals/workspace/') &&
+    file.path.endsWith('.json'))) {
     try {
       const data = JSON.parse(await readFile(path.join(skillRoot, entry.path), 'utf8'));
       if (isRecord(data) && typeof data.skill_name === 'string' && Array.isArray(data.evals)) {
         parsed.push({ path: entry.path, kind: 'agent-skill', cases: data.evals.length });
+        behaviorCases += data.evals.length;
+        continue;
+      }
+      if (
+        isRecord(data) &&
+        data.schemaVersion === 1 &&
+        typeof data.skill === 'string' &&
+        Array.isArray(data.cases)
+      ) {
+        const cases = data.cases.filter(isRecord);
+        if (cases.length !== data.cases.length || cases.some((item) =>
+          typeof item.query !== 'string' || typeof item.should_load_skill !== 'boolean')) {
+          throw new Error('trigger case document contains invalid cases');
+        }
+        parsed.push({ path: entry.path, kind: 'trigger', cases: cases.length });
+        triggerTotal += cases.length;
+        triggerPositive += cases.filter((item) => item.should_load_skill === true).length;
+        triggerNegative += cases.filter((item) => item.should_load_skill === false).length;
+        continue;
+      }
+      if (
+        isRecord(data) &&
+        data.schemaVersion === 1 &&
+        typeof data.skill === 'string' &&
+        Array.isArray(data.suites)
+      ) {
+        parsed.push({ path: entry.path, kind: 'manifest', cases: data.suites.length });
         continue;
       }
       if (!Array.isArray(data)) throw new Error('top-level JSON must be a list or an Agent Skill eval document');
@@ -638,6 +700,7 @@ async function inspectStaticSkill(skillRoot, options = {}) {
       category_sizes: categorySizes,
       total_files: files.length,
       total_bytes: files.reduce((total, entry) => total + entry.bytes, 0),
+      content_digest: await digestDirectoryTree(skillRoot),
     },
     references,
     scripts,
@@ -657,35 +720,69 @@ async function readJson(candidate, label) {
   }
 }
 
-async function inspectEvaluation(evaluationPath, expectedPlugin) {
+async function inspectEvaluation(evaluationPath, expectedTarget) {
   if (!evaluationPath) return { evaluation: null, issues: [], finalSkillTargets: [], rolePaths: [] };
   const value = await readJson(evaluationPath, 'EvaluationBundle');
   if (!isRecord(value) || value.schemaVersion !== 1 || value.platform !== 'codex') {
     throw new Error('EvaluationBundle must use schemaVersion=1 and platform=codex.');
   }
   const issues = [];
-  if (value.plugin !== expectedPlugin) {
-    issues.push(issue('error', 'evaluation.plugin-mismatch', `EvaluationBundle plugin '${value.plugin}' does not match '${expectedPlugin}'.`, evaluationPath));
+  const evaluationTarget = isRecord(value.target)
+    ? { kind: value.target.kind, name: value.target.name }
+    : { kind: 'aw-plugin', name: value.plugin };
+  if (
+    evaluationTarget.kind !== expectedTarget.kind ||
+    evaluationTarget.name !== expectedTarget.name
+  ) {
+    issues.push(issue(
+      'error',
+      'evaluation.target-mismatch',
+      `EvaluationBundle target '${String(evaluationTarget.kind)}:${String(evaluationTarget.name)}' ` +
+        `does not match '${expectedTarget.kind}:${expectedTarget.name}'.`,
+      evaluationPath,
+    ));
+  }
+  if (
+    expectedTarget.kind === 'static-skill' &&
+    expectedTarget.sourceDigest &&
+    isRecord(value.target) &&
+    value.target.sourceDigest !== expectedTarget.sourceDigest
+  ) {
+    issues.push(issue(
+      'error',
+      'evaluation.source-digest',
+      'EvaluationBundle source digest does not match the current static Skill package.',
+      evaluationPath,
+    ));
   }
   if (value.outcome === 'incomplete' || value.complete !== true) {
     issues.push(issue('warning', 'evaluation.incomplete', 'EvaluationBundle is incomplete.', evaluationPath));
+  }
+  if (value.outcome === 'failed' || value.mechanicalPassed === false) {
+    issues.push(issue('error', 'evaluation.failed', 'EvaluationBundle reports a failed evaluation.', evaluationPath));
   }
   const finalSkillTargets = [];
   const rolePaths = [];
   const subjects = [];
   for (const subject of Array.isArray(value.subjects) ? value.subjects.filter(isRecord) : []) {
-    const root = typeof subject.root === 'string'
-      ? path.resolve(path.dirname(evaluationPath), subject.root)
+    const evaluationRoot = path.dirname(evaluationPath);
+    const resolvedRoot = typeof subject.root === 'string' && !path.isAbsolute(subject.root)
+      ? path.resolve(evaluationRoot, subject.root)
+      : null;
+    const root = resolvedRoot && isPathInside(evaluationRoot, resolvedRoot)
+      ? resolvedRoot
       : null;
     const artifacts = [];
     if (!root || !(await pathExists(root))) {
       issues.push(issue('error', 'evaluation.subject-root', `Materialized subject root is missing for profile '${subject.profile}'.`, evaluationPath));
     }
     for (const artifact of Array.isArray(subject.artifacts) ? subject.artifacts.filter(isRecord) : []) {
-      const absolute = root && typeof artifact.path === 'string' ? path.join(root, artifact.path) : null;
+      const absolute = root && typeof artifact.path === 'string'
+        ? path.resolve(root, artifact.path)
+        : null;
       let exists = false;
       let digestMatches = null;
-      if (absolute) {
+      if (absolute && isPathInside(root, absolute)) {
         exists = await isFile(absolute);
         if (exists && typeof artifact.contentDigest === 'string') {
           digestMatches = sha256(await readFile(absolute)) === artifact.contentDigest;
@@ -696,6 +793,22 @@ async function inspectEvaluation(evaluationPath, expectedPlugin) {
       } else if (digestMatches === false) {
         issues.push(issue('error', 'evaluation.artifact-digest', `Artifact '${artifact.path}' digest differs for profile '${subject.profile}'.`, evaluationPath));
       }
+      let packageDigestMatches = null;
+      if (
+        root &&
+        typeof artifact.packagePath === 'string' &&
+        typeof artifact.packageContentDigest === 'string'
+      ) {
+        const packageRoot = path.resolve(root, artifact.packagePath);
+        if (!isPathInside(root, packageRoot) || !(await pathExists(packageRoot))) {
+          packageDigestMatches = false;
+        } else {
+          packageDigestMatches = await digestDirectoryTree(packageRoot) === artifact.packageContentDigest;
+        }
+        if (!packageDigestMatches) {
+          issues.push(issue('error', 'evaluation.package-digest', `Skill package digest differs for profile '${subject.profile}'.`, evaluationPath));
+        }
+      }
       const normalized = {
         kind: artifact.kind,
         key: artifact.key ?? null,
@@ -704,6 +817,9 @@ async function inspectEvaluation(evaluationPath, expectedPlugin) {
         content_digest: artifact.contentDigest,
         exists,
         digest_matches: digestMatches,
+        package_path: artifact.packagePath ?? null,
+        package_content_digest: artifact.packageContentDigest ?? null,
+        package_digest_matches: packageDigestMatches,
       };
       artifacts.push(normalized);
       if (exists && artifact.kind === 'skill' && path.basename(artifact.path) === 'SKILL.md') {
@@ -722,27 +838,173 @@ async function inspectEvaluation(evaluationPath, expectedPlugin) {
       artifacts,
     });
   }
-  const suites = (Array.isArray(value.suites) ? value.suites : []).filter(isRecord).map((suite) => ({
+  const rawSuites = Array.isArray(value.suites) ? value.suites : [];
+  const suites = rawSuites.filter(isRecord).map((suite) => ({
     id: suite.id,
+    kind: suite.kind,
     profile: suite.profile,
     split: suite.split,
     outcome: suite.outcome,
     complete: suite.complete,
+    mechanical_passed: suite.mechanicalPassed,
     qualitative_review: suite.qualitativeReview,
+    summary: suite.summary,
+    diagnostics: suite.diagnostics,
   }));
+  if (expectedTarget.kind === 'static-skill') {
+    const staticSubjects = subjects.filter((subject) =>
+      subject.scope === 'project' && subject.model_execution === true);
+    if (staticSubjects.length === 0) {
+      issues.push(issue(
+        'error',
+        'evaluation.static-subject',
+        'Static Skill evaluation must contain a project subject with model execution evidence.',
+        evaluationPath,
+      ));
+    }
+    const expectedArtifactPath = `.agents/skills/${expectedTarget.name}/SKILL.md`;
+    const matchingArtifacts = staticSubjects.flatMap((subject) => subject.artifacts).filter(
+      (artifact) =>
+        artifact.kind === 'skill' &&
+        artifact.key === expectedTarget.name &&
+        artifact.path === expectedArtifactPath,
+    );
+    if (
+      matchingArtifacts.length === 0 ||
+      matchingArtifacts.some((artifact) =>
+        artifact.exists !== true ||
+        artifact.digest_matches !== true ||
+        artifact.package_path !== `.agents/skills/${expectedTarget.name}` ||
+        typeof artifact.package_content_digest !== 'string' ||
+        artifact.package_digest_matches !== true)
+    ) {
+      issues.push(issue(
+        'error',
+        'evaluation.static-package-evidence',
+        'Static Skill evaluation is missing verified Skill artifact and package digest evidence.',
+        evaluationPath,
+      ));
+    }
+    if (suites.length === 0) {
+      issues.push(issue(
+        'error',
+        'evaluation.suites-missing',
+        'Static Skill evaluation must contain at least one suite result.',
+        evaluationPath,
+      ));
+    }
+    const validOutcomes = new Set(['passed', 'failed', 'needs_review', 'incomplete']);
+    const validQualitative = new Set(['not_required', 'required', 'passed', 'failed']);
+    const invalidSuites = suites.filter((suite) => {
+      if (
+        typeof suite.id !== 'string' || suite.id.trim() === '' ||
+        !['trigger', 'conversation'].includes(suite.kind) ||
+        suite.profile !== 'project-default' ||
+        !(suite.split === null || ['train', 'validation', 'sanity', 'all'].includes(suite.split)) ||
+        !validOutcomes.has(suite.outcome) ||
+        typeof suite.complete !== 'boolean' ||
+        typeof suite.mechanical_passed !== 'boolean' ||
+        !validQualitative.has(suite.qualitative_review) ||
+        !isRecord(suite.summary) ||
+        !Array.isArray(suite.diagnostics) ||
+        suite.diagnostics.some((entry) => typeof entry !== 'string')
+      ) {
+        return true;
+      }
+      if (suite.outcome === 'passed') {
+        return suite.complete !== true || suite.mechanical_passed !== true ||
+          !['not_required', 'passed'].includes(suite.qualitative_review);
+      }
+      if (suite.outcome === 'needs_review') {
+        return suite.complete !== true || suite.mechanical_passed !== true ||
+          suite.qualitative_review !== 'required';
+      }
+      if (suite.outcome === 'failed') {
+        return suite.complete !== true || suite.mechanical_passed !== false ||
+          suite.qualitative_review === 'passed';
+      }
+      return suite.complete !== false || suite.mechanical_passed !== false ||
+        ['passed', 'failed'].includes(suite.qualitative_review);
+    });
+    if (rawSuites.length !== suites.length || invalidSuites.length > 0) {
+      issues.push(issue(
+        'error',
+        'evaluation.suite-contract',
+        'Static Skill evaluation contains an invalid suite report.',
+        evaluationPath,
+      ));
+    }
+    const suiteOutcomes = suites.map((suite) => suite.outcome);
+    const combinedOutcome = suiteOutcomes.includes('incomplete')
+      ? 'incomplete'
+      : suiteOutcomes.includes('failed')
+        ? 'failed'
+        : suiteOutcomes.includes('needs_review')
+          ? 'needs_review'
+          : 'passed';
+    if (
+      suites.length > 0 &&
+      (
+        !validOutcomes.has(value.outcome) ||
+        typeof value.complete !== 'boolean' ||
+        typeof value.mechanicalPassed !== 'boolean' ||
+        (value.outcome !== combinedOutcome && value.outcome !== 'incomplete') ||
+        (value.complete === true && suites.some((suite) => suite.complete !== true)) ||
+        (value.mechanicalPassed === true && suites.some(
+          (suite) => suite.mechanical_passed !== true,
+        ))
+      )
+    ) {
+      issues.push(issue(
+        'error',
+        'evaluation.suite-summary',
+        'EvaluationBundle top-level result is inconsistent with its suite reports.',
+        evaluationPath,
+      ));
+    }
+    const suiteContracts = expectedTarget.suiteContracts ?? [];
+    const contractById = new Map(suiteContracts.map((suite) => [suite.id, suite]));
+    if (suites.some((suite) => {
+      const contract = contractById.get(suite.id);
+      return !contract || contract.kind !== suite.kind;
+    })) {
+      issues.push(issue(
+        'error',
+        'evaluation.suite-manifest',
+        'EvaluationBundle suite id/kind does not match the static eval manifest.',
+        evaluationPath,
+      ));
+    }
+    const suiteIds = new Set(suites.map((suite) => suite.id));
+    const missingRequiredSuites = suiteContracts.filter(
+      (suite) => suite.requiredForRelease && !suiteIds.has(suite.id),
+    );
+    if (missingRequiredSuites.length > 0) {
+      issues.push(issue(
+        'warning',
+        'evaluation.required-suites',
+        `EvaluationBundle is missing required suites: ${missingRequiredSuites.map((suite) => suite.id).join(', ')}.`,
+        evaluationPath,
+      ));
+    }
+  }
   if (suites.some((suite) => suite.qualitative_review === 'required')) {
     issues.push(issue('warning', 'evaluation.qualitative-review', 'One or more suites require qualitative trace review.', evaluationPath));
   }
   return {
     evaluation: {
       path: evaluationPath,
-      plugin: value.plugin,
+      target: evaluationTarget,
+      plugin: value.plugin ?? null,
       version: value.pluginVersion,
       outcome: value.outcome,
       complete: value.complete,
       mechanical_passed: value.mechanicalPassed,
       codex_version: value.codexVersion ?? null,
       model: value.model ?? null,
+      model_provider: value.modelProvider ?? null,
+      credential_source: value.credentialSource ?? null,
+      codex_config_digest: value.codexConfigDigest ?? null,
       profiles: subjects,
       suites,
     },
@@ -801,7 +1063,10 @@ async function inspectPlugin(root, options) {
     : null;
   if (!evalManifest) issues.push(issue('warning', 'eval.manifest-missing', 'Plugin has no evaluation manifest.', evalManifestPath));
 
-  const inspectedEvaluation = await inspectEvaluation(options.evaluation, manifest.name);
+  const inspectedEvaluation = await inspectEvaluation(options.evaluation, {
+    kind: 'aw-plugin',
+    name: manifest.name,
+  });
   issues.push(...inspectedEvaluation.issues);
   const finalSkills = [];
   for (const target of inspectedEvaluation.finalSkillTargets) {
@@ -850,17 +1115,43 @@ async function inspectPlugin(root, options) {
 async function buildReport(options) {
   const resolved = await resolveReviewTarget(options.target);
   if (resolved.kind === 'aw-plugin') return inspectPlugin(resolved.root, options);
-  if (options.evaluation) throw new Error('--evaluation is only valid for an AW plugin target.');
   const report = await inspectStaticSkill(resolved.root, options);
+  const targetName = report.skill.frontmatter.name ?? path.basename(resolved.root);
+  const evalManifestPath = path.join(resolved.root, 'evals', 'manifest.json');
+  let suiteContracts = [];
+  if (await pathExists(evalManifestPath)) {
+    const evalManifest = await readJson(evalManifestPath, 'static eval manifest');
+    if (isRecord(evalManifest) && Array.isArray(evalManifest.suites)) {
+      suiteContracts = evalManifest.suites.filter(
+        (suite) =>
+          isRecord(suite) &&
+          typeof suite.id === 'string' &&
+          ['trigger', 'conversation'].includes(suite.kind) &&
+          typeof suite.requiredForRelease === 'boolean',
+      ).map((suite) => ({
+        id: suite.id,
+        kind: suite.kind,
+        requiredForRelease: suite.requiredForRelease,
+      }));
+    }
+  }
+  const inspectedEvaluation = await inspectEvaluation(options.evaluation, {
+    kind: 'static-skill',
+    name: targetName,
+    sourceDigest: report.package.content_digest,
+    suiteContracts,
+  });
   return {
     schema_version: 1,
     target: {
       kind: 'static-skill',
       root: path.resolve(resolved.root),
-      name: report.skill.frontmatter.name ?? path.basename(resolved.root),
+      name: targetName,
       version: null,
     },
     ...report,
+    evaluation: inspectedEvaluation.evaluation,
+    issues: [...report.issues, ...inspectedEvaluation.issues],
   };
 }
 
@@ -888,6 +1179,7 @@ function renderText(report) {
     `Scripts: ${report.scripts.count} (not executed)`,
     `Trigger eval cases: ${report.evals.trigger.total} (${report.evals.trigger.positive} positive / ${report.evals.trigger.negative} negative)`,
     `Behavior eval cases: ${report.evals.behavior_cases}`,
+    `Evaluation: ${report.evaluation?.outcome ?? 'not supplied'}`,
   ];
   if (report.previous_comparison) {
     const delta = report.previous_comparison.delta;

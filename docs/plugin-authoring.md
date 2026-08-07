@@ -40,6 +40,8 @@ pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-d
 pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
 ```
 
+真实模型默认安全继承当前 Codex model/provider；只提取对应 provider 配置，不继承用户 plugins、skills 或 MCP。需要固定来源时使用 `--codex-config <path>` / `--model-provider <id>`，诊断官方默认路径时使用 `--no-inherit-codex-config`。
+
 eval v1 只支持 Codex：真实模型只运行 project profile；user profile 只生成确定性 materialized evidence，不声称经过 native cache 模型运行。无过滤参数时运行所有 release-required suite/split；真实模型命令只在本地显式执行，不进入常规 CI。规范结果写到 `<output-dir>/<plugin>/evaluation.json`，需要定性判断的 case 标为 `needs_review`，由 `.agents/skills/skill-review/` 读取 trace 后逐项判分，不额外调用 judge 模型。
 
 详细指南：

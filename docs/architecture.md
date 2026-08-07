@@ -80,7 +80,7 @@ npm Registry
 - `package.json` — repo root 统一脚本入口，包含 `build`、`test`、`release:*`、`publish:cli`
 - `scripts/release/*.mjs` — 版本同步、tarball 打包、本地 `npm install -g` 和发布编排脚本
 - `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 catalog staging / runtime bundle
-- `packages/cli/scripts/eval-plugin-skills.ts`、`plugin-eval-contract.ts`、`plugin-eval-materializer.ts`、`codex-trigger-eval.ts` — Codex 插件 eval manifest、最终制品 materialization、中央 trigger 执行、suite 编排和 `EvaluationBundle`
+- `packages/cli/scripts/eval-plugin-skills.ts`、`plugin-eval-contract.ts`、`plugin-eval-materializer.ts`、`codex-eval-runtime-config.ts`、`codex-trigger-eval.ts` — Codex 插件 eval manifest、最终制品 materialization、过滤后的 model/provider runtime capsule、中央 suite 执行和 `EvaluationBundle`
 - `packages/cli/scripts/codex-eval-app-server.ts` — 需要 `request_user_input` 的 Codex 多轮行为 eval driver
 - `packages/cli/plugins-dist/`、catalog staging、`packages/cli/dist/`、`packages/cli/coverage/`、`.release/tarballs/` — 产物目录，不手改；CLI tarball 不把 `plugins-dist/` 作为正式插件兜底发布
 - `plugins/git-commit/` — 真实样例插件，演示标准插件结构

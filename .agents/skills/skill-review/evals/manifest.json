@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "skill": "skill-review",
+  "workspace": {
+    "copy": [
+      {
+        "from": ".agents/skills/skill-review/evals/workspace",
+        "to": "fixtures"
+      }
+    ]
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skill": "skill-review",
+      "cases": "./evals/trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "standard",
+      "strictNegativeSplits": ["validation"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skill": "skill-review",
+      "cases": "./evals/evals.json",
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
+}

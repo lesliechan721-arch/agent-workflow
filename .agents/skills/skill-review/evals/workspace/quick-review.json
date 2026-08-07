@@ -1,0 +1,7 @@
+{
+  "target": { "kind": "static-skill", "name": "minimal-helper" },
+  "mode": "quick",
+  "artifacts": { "skill_md": true, "references": null, "scripts": null, "evals": null },
+  "static_diagnostics": { "frontmatter_valid": true, "issues": [] },
+  "evidence": ["Only SKILL.md was supplied; omitted package components are unknown."]
+}

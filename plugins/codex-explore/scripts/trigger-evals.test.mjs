@@ -13,7 +13,7 @@ import path from 'node:path';
 
 import {
   buildCodexArgs,
-  copyCodexAuthFiles,
+  copyCodexRuntimeFiles,
   createEvalWorkspace,
   readEvalResource,
 } from '../evals/eval-harness.mjs';
@@ -106,11 +106,18 @@ async function testSpecializedWorkspaceCopiesFinalArtifact() {
       const args = buildCodexArgs(
         workspace,
         { query: '$codex-explore inspect', codex_config: {} },
-        { model: 'gpt-test' },
+        {
+          model: 'gpt-test',
+          modelProvider: 'fixture-provider',
+          sensitiveEnvironmentNames: ['CUSTOM_TOKEN'],
+        },
       );
       assert.ok(args.includes('--enable'));
       assert.ok(args.includes('multi_agent'));
       assert.ok(args.includes('gpt-test'));
+      assert.ok(args.includes('model_provider="fixture-provider"'));
+      assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));
+      assert.equal(args.includes('--ignore-user-config'), false);
       assert.equal(args.some((arg) => arg.startsWith('agents.codex-explore-')), false);
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
@@ -132,11 +139,16 @@ async function testCredentialIsolation() {
       mkdir(targetHome, { recursive: true }),
     ]);
     await writeFile(path.join(sourceHome, 'auth.json'), '{"token":"test"}\n', 'utf8');
-    await copyCodexAuthFiles(targetHome, sourceHome);
+    await writeFile(path.join(sourceHome, 'config.toml'), 'model_provider = "fixture"\n', 'utf8');
+    await copyCodexRuntimeFiles(targetHome, sourceHome);
     const target = path.join(targetHome, 'auth.json');
     assert.equal((await lstat(target)).isSymbolicLink(), false);
     assert.equal((await stat(target)).mode & 0o777, 0o600);
     assert.equal(await readFile(target, 'utf8'), '{"token":"test"}\n');
+    assert.equal(
+      await readFile(path.join(targetHome, 'config.toml'), 'utf8'),
+      'model_provider = "fixture"\n',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

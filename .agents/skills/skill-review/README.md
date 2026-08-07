@@ -16,6 +16,7 @@
 ```bash
 node scripts/inspect_skill_target.mjs /path/to/skill --format json
 node scripts/validate_scorecard.mjs /path/to/scorecard.json --format json
+node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only
 ```
 
-先复制 `assets/scorecard-template.json`，由 reviewer 填分和证据，再用脚本计算总分与发布结论。
+静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。先复制 `assets/scorecard-template.json`，由 reviewer 填分和证据，再用脚本计算总分与发布结论。

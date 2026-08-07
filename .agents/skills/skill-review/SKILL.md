@@ -37,20 +37,25 @@ metadata:
    node scripts/inspect_skill_target.mjs <skill-dir-or-SKILL.md-or-plugin> --format json
    ```
    修订版增加 `--previous <old-SKILL.md>`；相关 TOML 用可重复的 `--related '<glob>'`。脚本输出是证据和提示，不是自动缺陷判定。
-3. 任何计分评审都读取 `references/scoring-model.md`。full/release 读取 `references/review-dimensions.md`。
-4. 根据对象按需读取：
+3. repo-local 静态 Skill 的 release 评审或用户明确要求真实 eval 时，读取 `references/static-skill-evaluation.md`。先运行：
+   ```bash
+   node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only
+   ```
+   真实模型结果通过 `--evaluation <output>/evaluation.json` 交回静态诊断；普通 quick/full 评审只消费已有证据，不自动调用模型。
+4. 任何计分评审都读取 `references/scoring-model.md`。full/release 读取 `references/review-dimensions.md`。
+5. 根据对象按需读取：
    - 生命周期、跨 agent 协议、重试或复杂分支：`references/architecture-boundaries.md`
    - 有 scripts、references 或 assets：`references/scripts-and-resources.md`
    - 审核 description、触发或 eval：`references/evals-and-triggering.md`
    - 修订版：`references/delta-review.md`
    - 需要核对 Agent Skills 标准：`references/official-agent-skills-basis.md`；release 评审还应验证当前官方文档。
    - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`
-5. 使用 `assets/scorecard-template.json` 填写维度分数、证据、门禁和 findings，再运行：
+6. 使用 `assets/scorecard-template.json` 填写维度分数、证据、门禁和 findings，再运行：
    ```bash
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
    ```
    采用脚本计算的总分、覆盖率、置信度和发布结论，不手算。
-6. 按 `assets/report-template.md` 输出。先给方向、门禁和总分，再列优势、缺陷和最小改进集。
+7. 按 `assets/report-template.md` 输出。先给方向、门禁和总分，再列优势、缺陷和最小改进集。
 
 ## 评分纪律
 

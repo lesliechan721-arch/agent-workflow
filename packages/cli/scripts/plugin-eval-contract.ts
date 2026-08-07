@@ -140,6 +140,9 @@ export interface PluginEvaluationBundle {
   platform: 'codex';
   codexVersion: string | null;
   model: string | null;
+  modelProvider: string | null;
+  credentialSource: 'embedded' | 'environment' | 'openai-auth' | 'none' | null;
+  codexConfigDigest: string | null;
   outcome: PluginEvalOutcome;
   complete: boolean;
   mechanicalPassed: boolean;
@@ -253,6 +256,24 @@ function assertUniqueIds(values: Array<{ id: string }>, label: string): void {
   }
 }
 
+function validateConversationReply(value: unknown, label: string): void {
+  if (typeof value === 'string') return;
+  const reply = expectRecord(value, label);
+  if (!Array.isArray(reply.answers_by_index) || reply.answers_by_index.some(
+    (entry) => typeof entry !== 'string',
+  )) {
+    throw new Error(`${label}.answers_by_index must be an array of strings.`);
+  }
+  if (
+    reply.expected_question_count !== undefined &&
+    (!Number.isInteger(reply.expected_question_count) ||
+      (reply.expected_question_count as number) < 0)
+  ) {
+    throw new Error(`${label}.expected_question_count must be a non-negative integer.`);
+  }
+  expectString(reply.unexpected_question_answer, `${label}.unexpected_question_answer`);
+}
+
 export function validatePluginEvalConversationCaseDocument(
   value: unknown,
   expectedSkill: string,
@@ -276,6 +297,24 @@ export function validatePluginEvalConversationCaseDocument(
       throw new Error(`${label} has duplicate case id "${id}".`);
     }
     ids.add(id);
+    expectString(row.prompt, `${label}.evals[${index}].prompt`);
+    if (!Array.isArray(row.scripted_replies)) {
+      throw new Error(`${label}.evals[${index}].scripted_replies must be an array.`);
+    }
+    row.scripted_replies.forEach((reply, replyIndex) =>
+      validateConversationReply(
+        reply,
+        `${label}.evals[${index}].scripted_replies[${replyIndex}]`,
+      ));
+    expectString(row.expected_output, `${label}.evals[${index}].expected_output`);
+    const review = expectRecord(row.review, `${label}.evals[${index}].review`);
+    parseStringArray(review.checks, `${label}.evals[${index}].review.checks`);
+    if (review.workspace_unchanged !== undefined) {
+      expectBoolean(
+        review.workspace_unchanged,
+        `${label}.evals[${index}].review.workspace_unchanged`,
+      );
+    }
     return row;
   });
 }

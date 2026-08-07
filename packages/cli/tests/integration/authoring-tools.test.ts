@@ -1310,7 +1310,7 @@ describe('authoring tools', () => {
       path.join(creatorSkillRoot, 'evals', 'evals.json'),
     );
     const creatorTriggerFixtures = await fs.readJson(
-      path.join(creatorSkillRoot, 'evals', 'trigger_queries.json'),
+      path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'),
     );
     const exampleEvalFixtures = await fs.readJson(
       path.join(
@@ -1421,36 +1421,45 @@ describe('authoring tools', () => {
     expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
     expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
     expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
-    expect(creatorTriggerFixtures).toHaveLength(20);
+    expect(creatorTriggerFixtures).toMatchObject({
+      schemaVersion: 1,
+      skill: 'create-agent-workflows-plugin',
+    });
+    expect(creatorTriggerFixtures.cases).toHaveLength(20);
     expect(
-      creatorTriggerFixtures.filter(
-        (entry: { should_trigger: boolean }) => entry.should_trigger,
+      creatorTriggerFixtures.cases.filter(
+        (entry: { should_load_skill: boolean }) => entry.should_load_skill,
       ),
     ).toHaveLength(10);
     expect(
-      creatorTriggerFixtures.filter(
-        (entry: { should_trigger: boolean }) => !entry.should_trigger,
+      creatorTriggerFixtures.cases.filter(
+        (entry: { should_load_skill: boolean }) => !entry.should_load_skill,
       ),
     ).toHaveLength(10);
     expect(
-      creatorTriggerFixtures.filter(
+      creatorTriggerFixtures.cases.filter(
         (entry: { split: string }) => entry.split === 'train',
       ),
     ).toHaveLength(12);
     expect(
-      creatorTriggerFixtures.filter(
+      creatorTriggerFixtures.cases.filter(
         (entry: { split: string }) => entry.split === 'validation',
       ),
     ).toHaveLength(8);
     const evalContractResult = await execFileAsync(
       'node',
-      [path.join(creatorSkillRoot, 'evals', 'run-evals.mjs'), '--validate-only'],
+      [
+        path.join(root, '.agents', 'skills', 'skill-review', 'scripts', 'run_static_skill_evals.mjs'),
+        'create-agent-workflows-plugin',
+        '--validate-only',
+      ],
       { cwd: root, env: process.env },
     );
     expect(JSON.parse(evalContractResult.stdout)).toMatchObject({
       ok: true,
-      triggerCases: 20,
-      behaviorCases: 3,
+      skill: 'create-agent-workflows-plugin',
+      suites: ['trigger', 'behavior'],
+      centralContract: true,
     });
     const evalSuites = [
       {
@@ -1875,9 +1884,16 @@ describe('authoring tools', () => {
       ...validEvalManifest,
       suites: [conversationSuite],
     };
+    const validConversationCase = {
+      id: 'behavior_case',
+      prompt: 'Review the fixture.',
+      scripted_replies: [],
+      expected_output: 'Return a review.',
+      review: { checks: ['Reviews the fixture.'], workspace_unchanged: true },
+    };
     await fs.writeJson(conversationCasesPath, {
       skill_name: 'eval-demo',
-      evals: [{ id: 'behavior_case' }],
+      evals: [validConversationCase],
     }, { spaces: 2 });
     await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
@@ -1894,7 +1910,7 @@ describe('authoring tools', () => {
 
     await fs.writeJson(conversationCasesPath, {
       skill_name: 'other-skill',
-      evals: [{ id: 'behavior_case' }],
+      evals: [validConversationCase],
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('skill_name must match "eval-demo"'),
@@ -1902,10 +1918,18 @@ describe('authoring tools', () => {
 
     await fs.writeJson(conversationCasesPath, {
       skill_name: 'eval-demo',
-      evals: [{ id: 'behavior_case' }, { id: ' behavior_case ' }],
+      evals: [validConversationCase, { ...validConversationCase, id: ' behavior_case ' }],
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('duplicate case id "behavior_case"'),
+    });
+
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [{ ...validConversationCase, prompt: 42 }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('prompt must be a string'),
     });
 
     await fs.writeFile(

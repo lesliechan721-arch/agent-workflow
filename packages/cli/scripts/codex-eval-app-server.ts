@@ -7,6 +7,15 @@ import type { Readable, Writable } from 'node:stream';
 import fs from 'fs-extra';
 
 import {
+  applyCodexEvalProviderEnvironment,
+  cleanCodexEvalRuntimeConfig,
+  codexEvalRuntimeEvidence,
+  materializeCodexEvalRuntimeHome,
+  redactCodexEvalValue,
+  registerCodexEvalTemporaryRoot,
+  type CodexEvalRuntimeConfig,
+} from './codex-eval-runtime-config.js';
+import {
   validatePluginEvalConversationCaseDocument,
   type PluginEvalSuiteReport,
 } from './plugin-eval-contract.js';
@@ -79,7 +88,6 @@ const PASSTHROUGH_ENV = new Set([
   'PATH',
   'LANG',
   'LC_ALL',
-  'OPENAI_API_KEY',
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
@@ -100,32 +108,11 @@ function requestId(value: unknown): string | undefined {
   return undefined;
 }
 
-function sourceCodexHome(sourceEnv: NodeJS.ProcessEnv): string {
-  return path.resolve(
-    sourceEnv.CODEX_HOME ?? path.join(sourceEnv.HOME ?? os.homedir(), '.codex'),
-  );
-}
-
-async function copyCodexAuthFiles(
-  destination: string,
-  sourceEnv: NodeJS.ProcessEnv,
-): Promise<void> {
-  await fs.ensureDir(destination);
-  for (const name of ['auth.json', '.credentials.json']) {
-    const source = path.join(sourceCodexHome(sourceEnv), name);
-    if (!(await fs.pathExists(source))) {
-      continue;
-    }
-    const target = path.join(destination, name);
-    await fs.copyFile(source, target);
-    await fs.chmod(target, 0o600).catch(() => undefined);
-  }
-}
-
 function buildIsolatedEnv(
   sourceEnv: NodeJS.ProcessEnv,
   root: string,
   codexHome: string,
+  runtime: CodexEvalRuntimeConfig,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of PASSTHROUGH_ENV) {
@@ -135,7 +122,7 @@ function buildIsolatedEnv(
   }
   const home = path.join(root, 'home');
   const temp = path.join(root, 'tmp');
-  return {
+  return applyCodexEvalProviderEnvironment({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -147,7 +134,7 @@ function buildIsolatedEnv(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
-  };
+  }, runtime);
 }
 
 async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
@@ -196,6 +183,8 @@ class EvalAppServerSession {
     codexBin: string;
     cwd: string;
     env: NodeJS.ProcessEnv;
+    modelProvider: string;
+    sensitiveEnvironmentNames: string[];
   }) {
     this.process = spawn(options.codexBin, [
       'app-server',
@@ -204,7 +193,12 @@ class EvalAppServerSession {
       '--config',
       'skills.include_instructions=true',
       '--config',
-      'shell_environment_policy.exclude=["CODEX_HOME"]',
+      `shell_environment_policy.exclude=${JSON.stringify([
+        'CODEX_HOME',
+        ...options.sensitiveEnvironmentNames,
+      ])}`,
+      '--config',
+      `model_provider=${JSON.stringify(options.modelProvider)}`,
     ], {
       cwd: options.cwd,
       env: options.env,
@@ -454,10 +448,12 @@ async function runConversationOnce(options: {
   skillName: string;
   codexBin: string;
   model?: string;
+  codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
 }): Promise<AppServerRunEvidence> {
   const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-ask-me-eval-'));
+  const unregisterRunRoot = registerCodexEvalTemporaryRoot(runRoot);
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const diagnostics: string[] = [];
@@ -475,17 +471,24 @@ async function runConversationOnce(options: {
     if (options.variant === 'without_skill') {
       await fs.remove(path.join(workspaceRoot, '.agents', 'skills', options.skillName));
     }
-    const env = buildIsolatedEnv(options.sourceEnv, runRoot, codexHome);
+    const env = buildIsolatedEnv(
+      options.sourceEnv,
+      runRoot,
+      codexHome,
+      options.codexRuntime,
+    );
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
-      copyCodexAuthFiles(codexHome, options.sourceEnv),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
     ]);
     const before = await snapshotWorkspace(workspaceRoot);
     session = new EvalAppServerSession({
       codexBin: options.codexBin,
       cwd: workspaceRoot,
       env,
+      modelProvider: options.codexRuntime.modelProvider,
+      sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
     });
     let replyStep = 0;
     let turnResolve: ((value: { complete: boolean }) => void) | undefined;
@@ -639,7 +642,11 @@ async function runConversationOnce(options: {
     removeHandler?.();
     removeFailureHandler?.();
     await session?.cleanup().catch(() => undefined);
-    await fs.remove(runRoot);
+    try {
+      await fs.remove(runRoot);
+    } finally {
+      unregisterRunRoot();
+    }
   }
 }
 
@@ -653,10 +660,14 @@ export async function runCodexConversationSuite(options: {
   caseId?: string;
   codexBin: string;
   model?: string;
+  codexRuntime?: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
 }): Promise<PluginEvalSuiteReport> {
+  const sourceEnv = options.sourceEnv ?? process.env;
+  const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
+  const model = options.model ?? codexRuntime.model ?? undefined;
   let cases = await readConversationCases(options.casesPath, options.skillName);
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
@@ -674,9 +685,10 @@ export async function runCodexConversationSuite(options: {
         variant: 'with_skill',
         skillName: options.skillName,
         codexBin: options.codexBin,
-        model: options.model,
+        model,
+        codexRuntime,
         timeoutMs: options.timeoutMs,
-        sourceEnv: options.sourceEnv ?? process.env,
+        sourceEnv,
       });
       const withoutSkill = await runConversationOnce({
         sourceProjectRoot: options.subjectRoot,
@@ -684,9 +696,10 @@ export async function runCodexConversationSuite(options: {
         variant: 'without_skill',
         skillName: options.skillName,
         codexBin: options.codexBin,
-        model: options.model,
+        model,
+        codexRuntime,
         timeoutMs: options.timeoutMs,
-        sourceEnv: options.sourceEnv ?? process.env,
+        sourceEnv,
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
     }
@@ -704,7 +717,7 @@ export async function runCodexConversationSuite(options: {
   ]);
   const complete = allRuns.every((run) => run.complete);
   const mechanicalPassed = complete && allRuns.every((run) => run.mechanicalPassed);
-  const report = {
+  const report = redactCodexEvalValue({
     schema_version: 1,
     generated_at: new Date().toISOString(),
     suite: options.suiteId,
@@ -712,13 +725,16 @@ export async function runCodexConversationSuite(options: {
     complete,
     mechanical_passed: mechanicalPassed,
     qualitative_review: 'required',
+    environment: {
+      codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+    },
     results,
-  };
+  }, codexRuntime);
   if (options.reportPath) {
     await fs.ensureDir(path.dirname(options.reportPath));
     await fs.writeJson(options.reportPath, report, { spaces: 2 });
   }
-  return {
+  return redactCodexEvalValue({
     id: options.suiteId,
     kind: 'conversation',
     profile: options.profile,
@@ -733,5 +749,5 @@ export async function runCodexConversationSuite(options: {
       runs: allRuns.length,
     },
     diagnostics: allRuns.flatMap((run) => run.diagnostics),
-  };
+  }, codexRuntime);
 }

@@ -4,6 +4,7 @@ import {
   chmod,
   cp,
   copyFile,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -175,6 +176,18 @@ function codexConfigValue(value) {
   return typeof value === 'string' ? tomlString(value) : JSON.stringify(value);
 }
 
+function sensitiveEnvironmentNames(options) {
+  if (Array.isArray(options.sensitiveEnvironmentNames)) {
+    return options.sensitiveEnvironmentNames.filter((name) => typeof name === 'string');
+  }
+  try {
+    const names = JSON.parse(process.env.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES ?? '[]');
+    return Array.isArray(names) ? names.filter((name) => typeof name === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export function buildCodexArgs(workspace, evalCase, options) {
   const profile = options.profile ?? 'v2';
   if (!['v1', 'v2'].includes(profile)) {
@@ -183,7 +196,6 @@ export function buildCodexArgs(workspace, evalCase, options) {
   const args = [
     'exec',
     '--json',
-    '--ignore-user-config',
   ];
   if (!workspace.useProjectRules) {
     args.push('--ignore-rules');
@@ -201,12 +213,19 @@ export function buildCodexArgs(workspace, evalCase, options) {
     '--config',
     'skills.include_instructions=true',
     '--config',
-    'shell_environment_policy.exclude=["CODEX_HOME"]',
+    `shell_environment_policy.exclude=${codexConfigValue([
+      'CODEX_HOME',
+      ...sensitiveEnvironmentNames(options),
+    ])}`,
     '--config',
     `developer_instructions=${tomlString(ROOT_DEVELOPER_INSTRUCTIONS)}`,
     '--config',
     `features.multi_agent_v2.enabled=${profile === 'v2' ? 'true' : 'false'}`,
   );
+  const modelProvider = options.modelProvider ?? process.env.AW_CODEX_EVAL_MODEL_PROVIDER;
+  if (modelProvider) {
+    args.push('--config', `model_provider=${codexConfigValue(modelProvider)}`);
+  }
   if (profile === 'v2') {
     args.push(
       '--config',
@@ -309,11 +328,13 @@ async function pathExists(candidate) {
   }
 }
 
-export async function copyCodexAuthFiles(
+export async function copyCodexRuntimeFiles(
   codexHome,
-  sourceHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  sourceHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME ||
+    process.env.CODEX_HOME ||
+    path.join(os.homedir(), '.codex'),
 ) {
-  for (const name of ['auth.json', '.credentials.json']) {
+  for (const name of ['config.toml', 'auth.json', '.credentials.json']) {
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) {
       continue;
@@ -355,8 +376,13 @@ export function skillRequestedExplicitly(evalCase) {
 }
 
 export async function runCodexOnce(workspace, evalCase, options) {
-  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-home-'));
-  await copyCodexAuthFiles(codexHome).catch(async (error) => {
+  const runtimeHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME;
+  const runHomeRoot = runtimeHome
+    ? path.join(runtimeHome, '.eval-runs')
+    : os.tmpdir();
+  await mkdir(runHomeRoot, { recursive: true });
+  const codexHome = await mkdtemp(path.join(runHomeRoot, 'codex-subagent-guide-home-'));
+  await copyCodexRuntimeFiles(codexHome).catch(async (error) => {
     await rm(codexHome, { recursive: true, force: true });
     throw error;
   });
@@ -365,9 +391,13 @@ export async function runCodexOnce(workspace, evalCase, options) {
 
   try {
     return await new Promise((resolve, reject) => {
+      const childEnv = { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' };
+      delete childEnv.AW_CODEX_EVAL_RUNTIME_HOME;
+      delete childEnv.AW_CODEX_EVAL_MODEL_PROVIDER;
+      delete childEnv.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES;
       const child = spawn(options.codexBin, args, {
         cwd: workspace.root,
-        env: { ...process.env, CODEX_HOME: codexHome, NO_COLOR: '1' },
+        env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.end();

@@ -11,6 +11,7 @@ import {
   summarizeTriggerCase,
   type TriggerRunEvidence,
 } from '../../scripts/codex-trigger-eval.js';
+import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
 import type {
   PluginEvalTriggerCase,
   PluginEvalTriggerSuite,
@@ -250,4 +251,45 @@ describe('Codex native trigger eval driver', () => {
       );
     },
   );
+
+  it('redacts provider values when fixture loading fails', async () => {
+    const fixture = await createFixture();
+    const codexHome = path.join(fixture.pluginRoot, 'codex-home');
+    const reportPath = path.join(fixture.pluginRoot, 'fixture-error-report.json');
+    await fs.ensureDir(codexHome);
+    await fs.writeFile(path.join(codexHome, 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      'base_url = "https://private.invalid/v1"',
+      'experimental_bearer_token = "fixture-secret"',
+    ].join('\n'), 'utf8');
+    await fs.writeFile(
+      path.join(fixture.pluginRoot, 'evals', 'fixture.mjs'),
+      'throw new Error("fixture-secret https://private.invalid/v1");\n',
+      'utf8',
+    );
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: codexHome },
+      inheritUserConfig: true,
+    });
+
+    const report = await runCodexTriggerSuite({
+      suite: suite({ fixtureModule: './evals/fixture.mjs' }),
+      split: 'validation',
+      subjectRoot: fixture.subjectRoot,
+      pluginRoot: fixture.pluginRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: fixture.codexBin,
+      codexRuntime: runtime,
+      reportPath,
+    });
+
+    expect(report.outcome).toBe('incomplete');
+    expect(JSON.stringify(report)).not.toContain('fixture-secret');
+    const persisted = await fs.readFile(reportPath, 'utf8');
+    expect(persisted).not.toContain('fixture-secret');
+    expect(persisted).not.toContain('https://private.invalid/v1');
+  });
 });

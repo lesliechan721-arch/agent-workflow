@@ -1,0 +1,10 @@
+{
+  "target": { "kind": "static-skill", "name": "delegation-controller" },
+  "mode": "full",
+  "static_diagnostics": {
+    "state_machine_risk": "high",
+    "markers": ["timeout", "pending", "retry quota", "cross-agent handshake", "late completion", "cancel"],
+    "duplicated_role_protocols": 3
+  },
+  "evidence": ["All lifecycle state is maintained in natural-language instructions."]
+}

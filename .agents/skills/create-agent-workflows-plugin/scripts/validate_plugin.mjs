@@ -1130,6 +1130,48 @@ function validateConversationCaseCorpus(pluginDir, suite, fieldName) {
     } else if (id) {
       ids.add(id);
     }
+    validateNonEmptyString(entry.prompt, `${caseField}.prompt`);
+    if (!Array.isArray(entry.scripted_replies)) {
+      error(`${caseField}.scripted_replies must be an array`);
+    } else {
+      entry.scripted_replies.forEach((reply, replyIndex) => {
+        const replyField = `${caseField}.scripted_replies[${replyIndex}]`;
+        if (typeof reply === 'string') return;
+        const replyEntry = expectRecord(reply, replyField);
+        if (!replyEntry) return;
+        if (!Array.isArray(replyEntry.answers_by_index) || replyEntry.answers_by_index.some(
+          (answer) => typeof answer !== 'string',
+        )) {
+          error(`${replyField}.answers_by_index must be an array of strings`);
+        }
+        if (
+          replyEntry.expected_question_count !== undefined &&
+          (!Number.isInteger(replyEntry.expected_question_count) ||
+            replyEntry.expected_question_count < 0)
+        ) {
+          error(`${replyField}.expected_question_count must be a non-negative integer`);
+        }
+        validateNonEmptyString(
+          replyEntry.unexpected_question_answer,
+          `${replyField}.unexpected_question_answer`,
+        );
+      });
+    }
+    validateNonEmptyString(entry.expected_output, `${caseField}.expected_output`);
+    const review = expectRecord(entry.review, `${caseField}.review`);
+    if (review) {
+      if (!Array.isArray(review.checks) || review.checks.length === 0 || review.checks.some(
+        (check) => typeof check !== 'string' || check.trim() === '',
+      )) {
+        error(`${caseField}.review.checks must be a non-empty array of strings`);
+      }
+      if (
+        review.workspace_unchanged !== undefined &&
+        typeof review.workspace_unchanged !== 'boolean'
+      ) {
+        error(`${caseField}.review.workspace_unchanged must be boolean`);
+      }
+    }
   });
 }
 
