@@ -244,6 +244,7 @@ function validateAndCalculate(data) {
   let release;
   if (hasP0Gate || hasP0Finding) release = 'fail';
   else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
+  else if (mode === 'quick') release = 'provisional';
   else if (mode === 'release' && (coverage < 100 || criticalUnknown)) release = 'provisional';
   else if (totalScore === null) release = 'provisional';
   else if (totalScore >= 85) release = 'pass';

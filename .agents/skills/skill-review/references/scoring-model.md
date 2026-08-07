@@ -105,7 +105,8 @@
 
 1. 任一 P0 gate/finding → `fail`。
 2. 任一 P1 gate/finding → `pass-after-fixes`。
-3. release 模式 coverage 不足或关键 gate 为 unknown → `provisional`。
-4. 无阻断时：score ≥85 → `pass`；70–84.5 → `pass-after-fixes`；<70 → `redesign`。
+3. quick 模式无阻断时 → `provisional`，不作发布通过结论。
+4. release 模式 coverage 不足或关键 gate 为 unknown → `provisional`。
+5. 无阻断时：score ≥85 → `pass`；70–84.5 → `pass-after-fixes`；<70 → `redesign`。
 
 方向判断独立于发布结论：`aligned`、`at-risk` 或 `drifted`。

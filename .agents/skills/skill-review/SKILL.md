@@ -1,6 +1,7 @@
 ---
 name: skill-review
 description: 当用户要求审核、评分、发布检查、精简、重构、比较或迭代 Agent Skill、SKILL.md、description、references、scripts、assets、evals、角色配置、完整技能包或当前 agent-workflows 项目的插件 Skill 时使用；从规范有效性、目标价值、触发准确性、范围与组合、指令质量、上下文与渐进式披露、架构职责、脚本、资源、评测、可靠性和维护性等维度进行证据化评分，给出发布门禁、缺陷和最小改进集。不要用于普通代码或文档 review，除非评审对象本身是 Agent Skill。
+compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.
 metadata:
   short-description: 多维度、证据化、可计算的 Agent Skill 质量评审
 ---

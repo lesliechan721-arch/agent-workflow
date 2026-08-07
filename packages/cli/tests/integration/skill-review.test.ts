@@ -177,7 +177,7 @@ describe('skill-review author tools', () => {
     );
   });
 
-  it('computes release gates without letting a score override P0', async () => {
+  it('computes release gates without score overrides or quick-mode passes', async () => {
     const root = repoRoot();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-review-scorecard-'));
     tempDirs.push(tempRoot);
@@ -238,6 +238,24 @@ describe('skill-review author tools', () => {
       },
       valid: true,
     });
+
+    template.review.mode = 'quick';
+    template.gates[0].status = 'pass';
+    template.gates[0].reason = '';
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const quick = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(quick.stdout)).toMatchObject({
+      score: {
+        weighted_score: 100,
+        release: 'provisional',
+      },
+      valid: true,
+    });
   });
 
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
@@ -277,6 +295,10 @@ describe('skill-review author tools', () => {
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
       .replace(
+        'compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.\n',
+        '',
+      )
+      .replace(
         '角色配置、完整技能包或当前 agent-workflows 项目的插件 Skill 时使用',
         '角色配置或完整技能包时使用',
       )
@@ -297,7 +319,7 @@ describe('skill-review author tools', () => {
       await fs.readFile(path.join(skillRoot, 'references', 'scoring-model.md'), 'utf8')
     ).replace('validate_scorecard.mjs', 'validate_scorecard.py');
     expect(contentDigest(scoringModel)).toBe(
-      '40252cf854daaf4a54c71882481828912d875d9da35fb83d0e1d85e51236808b',
+      'c1dff4c6c8316197c6b2127ff29c7da1c73a54cece5eb58234871ff5aac0a0d7',
     );
   });
 });
