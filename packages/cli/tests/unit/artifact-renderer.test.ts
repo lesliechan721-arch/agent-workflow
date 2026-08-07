@@ -114,7 +114,7 @@ async function writePlugin(
       'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
       'console.error(`renderer token=${context.config.values.token ?? ""}`);',
       'console.log(JSON.stringify({',
-      '  version: 1,',
+      '  version: 2,',
       '  artifacts: [',
       '    {',
       '      id: "lightweight-instruction",',
@@ -281,7 +281,7 @@ describe('artifact renderer runtime', () => {
       commandEnv: env,
     });
     expect(upgradeResult.context.changedConfigKeys).toEqual([]);
-    expect(upgradeResult.plan.version).toBe(1);
+    expect(upgradeResult.plan.version).toBe(2);
 
     const refreshResult = await runArtifactRenderer({
       event: 'refresh',
@@ -293,7 +293,7 @@ describe('artifact renderer runtime', () => {
       changedConfigKeys: ['explorerModel'],
     });
     expect(refreshResult.context.changedConfigKeys).toEqual(['explorerModel']);
-    expect(refreshResult.plan.version).toBe(1);
+    expect(refreshResult.plan.version).toBe(2);
 
     await expect(runArtifactRenderer({
       event: 'refresh',
@@ -388,7 +388,7 @@ describe('artifact renderer runtime', () => {
           return {
             exitCode: 0,
             signal: null,
-            stdout: JSON.stringify({ version: 2, artifacts: [] }),
+            stdout: JSON.stringify({ version: 1, artifacts: [] }),
             stderr: 'unknown-version secret-token',
             timedOut: false,
           };

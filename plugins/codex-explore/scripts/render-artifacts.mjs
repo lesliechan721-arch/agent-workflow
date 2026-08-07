@@ -41,11 +41,6 @@ const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
 const skillTemplatePaths = [
   path.resolve(pluginRoot, 'templates', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
-  path.resolve(pluginRoot, 'codex', 'templates', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
-];
-const openaiTemplatePaths = [
-  path.resolve(pluginRoot, 'templates', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
-  path.resolve(pluginRoot, 'codex', 'templates', CODEX_EXPLORE_SKILL_KEY, 'agents', 'openai.yaml'),
 ];
 
 function isRecord(value) {
@@ -231,13 +226,14 @@ async function readFirstExisting(paths) {
   throw lastError;
 }
 
-async function readSkillTemplates() {
-  const [skillTemplate, openaiTemplate] = await Promise.all([
-    readFirstExisting(skillTemplatePaths),
-    readFirstExisting(openaiTemplatePaths),
+async function readSkillTemplate(context) {
+  const sourceDirs = context?.artifactSources?.find(
+    (entry) => entry.id === CODEX_EXPLORE_SKILL_ID && entry.target === 'codex.skill',
+  )?.sourceDirs ?? [];
+  return readFirstExisting([
+    ...sourceDirs.map((sourceDir) => path.join(sourceDir, 'SKILL.md')),
+    ...skillTemplatePaths,
   ]);
-
-  return { skillTemplate, openaiTemplate };
 }
 
 export async function readArtifactRenderContext() {
@@ -261,7 +257,7 @@ export async function renderArtifactPlan(context) {
     throw new Error(`Unsupported platform: ${platform}`);
   }
 
-  const { skillTemplate, openaiTemplate } = await readSkillTemplates();
+  const skillTemplate = await readSkillTemplate(context);
   const replacements = {
     quickRoleKey: CODEX_EXPLORE_ROLES[0].key,
     standardRoleKey: CODEX_EXPLORE_ROLES[1].key,
@@ -273,7 +269,7 @@ export async function renderArtifactPlan(context) {
   const developerInstructions = renderRoleDeveloperInstructions();
 
   return {
-    version: 1,
+    version: 2,
     artifacts: [
       {
         id: CODEX_EXPLORE_SKILL_ID,
@@ -284,8 +280,9 @@ export async function renderArtifactPlan(context) {
         skillKey: CODEX_EXPLORE_SKILL_KEY,
         refreshKeys: SKILL_REFRESH_KEYS,
         content: {
-          skillFile: renderTemplate(skillTemplate, replacements),
-          openaiYaml: renderTemplate(openaiTemplate, replacements),
+          files: {
+            'SKILL.md': renderTemplate(skillTemplate, replacements),
+          },
         },
       },
       ...CODEX_EXPLORE_ROLES.map((role) =>

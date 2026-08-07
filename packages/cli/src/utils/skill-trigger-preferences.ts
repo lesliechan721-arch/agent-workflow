@@ -267,6 +267,7 @@ export interface SharedSkillTriggerRuntimeSemanticsAssessment {
   semanticDelta: 'change' | 'noChange' | 'unknown';
   currentRuntimeSignature: SkillTriggerSignatureResult | null;
   plannedRuntimeSignature: SkillTriggerSignatureResult | null;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
 }
 
 export interface SkillTriggerMaterializationRollbackHandle {
@@ -320,6 +321,7 @@ export interface SkillTriggerStatusReportFields {
   skillTriggerApplicability: SkillTriggerApplicability;
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerPreference?: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
   skillTriggerRuntimeMatches?: SkillTriggerPreference[];
   skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
   skillTriggerDrift?: 'yes' | 'no' | 'unknown';
@@ -631,28 +633,25 @@ function mergeSkillTriggerApplicability(
   return 'none';
 }
 
-function getDeclaredDynamicCodexSkillKeys(options: {
+function getDeclaredDynamicSkillKeys(options: {
   manifest: PluginMeta['manifest'];
   platform: PlatformName;
 }): Set<string> {
-  if (options.platform !== 'codex') {
-    return new Set();
-  }
-
   return new Set(
     (options.manifest.artifacts?.targets ?? [])
-      .filter((target) => target.platform === 'codex')
-      .filter((target) => target.target === 'codex.skill')
+      .filter((target) => target.platform === options.platform)
+      .filter((target) =>
+        target.target === (options.platform === 'codex' ? 'codex.skill' : 'claude.skill'))
       .map((target) => target.skillKey?.trim())
       .filter((skillKey): skillKey is string => Boolean(skillKey)),
   );
 }
 
-function getDynamicCodexSkillTriggerApplicability(options: {
+function getDynamicSkillTriggerApplicability(options: {
   manifest: PluginMeta['manifest'];
   platform: PlatformName;
 }): SkillTriggerApplicability {
-  const skillKeys = [...getDeclaredDynamicCodexSkillKeys(options)];
+  const skillKeys = [...getDeclaredDynamicSkillKeys(options)];
   if (skillKeys.length === 0) {
     return 'none';
   }
@@ -693,7 +692,7 @@ async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
   platform: PlatformName;
 }): Promise<SkillTriggerPolicyResolution> {
   const manifestPolicies = options.manifest.skillTriggers ?? {};
-  const dynamicCodexSkillKeys = getDeclaredDynamicCodexSkillKeys({
+  const dynamicSkillKeys = getDeclaredDynamicSkillKeys({
     manifest: options.manifest,
     platform: options.platform,
   });
@@ -718,7 +717,7 @@ async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
     }
   }
   const policies = skillNames
-    .filter((skillName) => !dynamicCodexSkillKeys.has(skillName))
+    .filter((skillName) => !dynamicSkillKeys.has(skillName))
     .map((skillName) => {
       const declaredPolicy = manifestPolicies[skillName];
       const policy: SkillTriggerPolicy | undefined = declaredPolicy ?? (
@@ -783,7 +782,7 @@ export async function resolveSkillTriggerApplicabilityForPlugin(
   });
   return mergeSkillTriggerApplicability([
     resolution.applicability,
-    getDynamicCodexSkillTriggerApplicability({
+    getDynamicSkillTriggerApplicability({
       manifest: plugin.manifest,
       platform,
     }),
@@ -834,7 +833,11 @@ export async function resolveSkillTriggerConfigEntries(
       defaultTrigger: policy.defaultTrigger,
       allowDynamicTrigger: policy.allowDynamicTrigger,
       source: 'declared',
-      platforms: ['codex'],
+      platforms: [...new Set(
+        (plugin.manifest.artifacts?.targets ?? [])
+          .filter((target) => target.skillKey === skillName)
+          .map((target) => target.platform),
+      )].sort(),
     });
   }
 
@@ -1131,6 +1134,7 @@ async function readEmbeddedSignatureEntries(
   pluginName: string,
   platform: PlatformName,
   preference: SkillTriggerPreference,
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>,
 ): Promise<SkillTriggerSignatureResult> {
   const resolution = await resolveSkillTriggerPolicies({
     embeddedRoot,
@@ -1146,7 +1150,7 @@ async function readEmbeddedSignatureEntries(
         const skill = await parseCodexSkillMetadata(policy.codexFilePath);
         const applied = applyPreferenceToCodexSkill(
           skill,
-          preference,
+          skillTriggerPreferences?.[policy.skillName] ?? preference,
           policy,
         );
         entries.push({
@@ -1194,7 +1198,7 @@ async function readEmbeddedSignatureEntries(
       const skill = await parseClaudeSkillMetadata(policy.claudeFilePath);
       const applied = applyPreferenceToClaudeSkill(
         skill,
-        preference,
+        skillTriggerPreferences?.[policy.skillName] ?? preference,
         policy,
       );
       entries.push({
@@ -1351,6 +1355,7 @@ export async function buildSkillTriggerMaterializationSignature(options: {
   pluginName: string;
   platform: PlatformName;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   embeddedRoot: string;
 }): Promise<SkillTriggerSignatureResult> {
   return readEmbeddedSignatureEntries(
@@ -1358,6 +1363,7 @@ export async function buildSkillTriggerMaterializationSignature(options: {
     options.pluginName,
     options.platform,
     options.preference,
+    options.skillTriggerPreferences,
   );
 }
 
@@ -1393,6 +1399,7 @@ export async function assessSharedSkillTriggerRuntimeSemantics(options: {
   platform: PlatformName;
   locationScope: Scope;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   embeddedRoot: string;
   target: SkillTriggerMaterializationTarget;
 }): Promise<SharedSkillTriggerRuntimeSemanticsAssessment> {
@@ -1407,6 +1414,9 @@ export async function assessSharedSkillTriggerRuntimeSemantics(options: {
       semanticDelta: 'noChange',
       currentRuntimeSignature: null,
       plannedRuntimeSignature: null,
+      ...(options.skillTriggerPreferences
+        ? { skillTriggerPreferences: options.skillTriggerPreferences }
+        : {}),
     };
   }
 
@@ -1415,6 +1425,7 @@ export async function assessSharedSkillTriggerRuntimeSemantics(options: {
       pluginName: options.pluginName,
       platform: options.platform,
       preference: options.preference,
+      skillTriggerPreferences: options.skillTriggerPreferences,
       embeddedRoot: options.embeddedRoot,
     }),
     readCurrentSkillTriggerRuntimeSignature({
@@ -1442,6 +1453,9 @@ export async function assessSharedSkillTriggerRuntimeSemantics(options: {
     semanticDelta,
     currentRuntimeSignature,
     plannedRuntimeSignature,
+    ...(options.skillTriggerPreferences
+      ? { skillTriggerPreferences: options.skillTriggerPreferences }
+      : {}),
   };
 }
 
@@ -1530,6 +1544,7 @@ export async function resolveSkillTriggerStatusReportFields(options: {
   currentCatalogAvailable: boolean;
   embeddedRoot: string;
   runtimeTarget?: SkillTriggerMaterializationTarget;
+  skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
 }): Promise<SkillTriggerStatusReportFields | null> {
   const scopeRecord = getSkillTriggerScopeRecord({
     ledger: options.ledger,
@@ -1567,10 +1582,20 @@ export async function resolveSkillTriggerStatusReportFields(options: {
 
   const base: SkillTriggerStatusReportFields = {
     skillTriggerApplicability: policyResolution.applicability,
+    ...(options.skillTriggerPreferences && Object.keys(options.skillTriggerPreferences).length > 0
+      ? { skillTriggerPreferences: options.skillTriggerPreferences }
+      : {}),
     warnings: [],
   };
+  const effectivePreferenceValues = new Set(Object.values(options.skillTriggerPreferences ?? {}));
   const ledgerPreference = scopeRecord?.installOptions?.skillTriggerPreference;
-  if (policyResolution.applicability === 'overridable' && ledgerPreference) {
+  if (effectivePreferenceValues.size === 1) {
+    base.skillTriggerPreference = [...effectivePreferenceValues][0]!;
+  } else if (
+    effectivePreferenceValues.size === 0 &&
+    policyResolution.applicability === 'overridable' &&
+    ledgerPreference
+  ) {
     base.installOptions = {
       skillTriggerPreference: ledgerPreference,
     };
@@ -1607,7 +1632,7 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     options.ledger.ledgerState.status !== 'available' &&
     (
       options.runtimeTarget?.kind !== 'repoSkill' ||
-      !ledgerPreference
+      (!ledgerPreference && Object.keys(options.skillTriggerPreferences ?? {}).length === 0)
     )
   ) {
     return {
@@ -1639,6 +1664,15 @@ export async function resolveSkillTriggerStatusReportFields(options: {
       }),
     })),
   );
+  const effectiveCandidate = options.skillTriggerPreferences && Object.keys(options.skillTriggerPreferences).length > 0
+    ? await buildSkillTriggerMaterializationSignature({
+        pluginName: options.pluginName,
+        platform: options.platform,
+        preference: 'default',
+        skillTriggerPreferences: options.skillTriggerPreferences,
+        embeddedRoot: options.embeddedRoot,
+      })
+    : null;
   const unknownCandidate = candidateEntries.find((entry) => entry.signature.status === 'unknown');
   if (unknownCandidate?.signature.status === 'unknown') {
     return {
@@ -1648,6 +1682,17 @@ export async function resolveSkillTriggerStatusReportFields(options: {
       warnings: [
         ...warnings,
         `skill trigger 候选签名无法确定：${formatSignatureDiagnostics(unknownCandidate.signature.diagnostics)}`,
+      ],
+    };
+  }
+  if (effectiveCandidate?.status === 'unknown') {
+    return {
+      ...base,
+      skillTriggerRuntimeState: 'unknown',
+      skillTriggerDrift: 'unknown',
+      warnings: [
+        ...warnings,
+        `skill trigger effective 签名无法确定：${formatSignatureDiagnostics(effectiveCandidate.diagnostics)}`,
       ],
     };
   }
@@ -1679,16 +1724,20 @@ export async function resolveSkillTriggerStatusReportFields(options: {
   const matches = knownCandidates
     .filter((entry) => entry.signature.signature === runtimeSignature.signature)
     .map((entry) => entry.preference);
-  const runtimeState = matches.length > 0 ? 'matched' : 'mixed';
+  const effectiveMatches = effectiveCandidate?.status === 'known' &&
+    effectiveCandidate.signature === runtimeSignature.signature;
+  const runtimeState = effectiveMatches || matches.length > 0 ? 'matched' : 'mixed';
   const expectedPreference = policyResolution.applicability === 'overridable'
     ? ledgerPreference
     : 'default';
-  const expectedSignature = knownCandidates.find((entry) => entry.preference === expectedPreference)?.signature;
+  const expectedSignature = effectiveCandidate?.status === 'known'
+    ? effectiveCandidate
+    : knownCandidates.find((entry) => entry.preference === expectedPreference)?.signature;
   const drift = expectedSignature?.signature === runtimeSignature.signature ? 'no' : 'yes';
 
-  if (drift === 'yes' && ledgerPreference) {
+  if (drift === 'yes' && (ledgerPreference || effectiveCandidate)) {
     warnings.push(
-      `skill trigger runtime 与当前 scope ledger 偏好不一致（skillTriggerLedger=${ledgerPreference}, skillTriggerRuntime=${formatRuntimeMatches(runtimeState, matches)}）。`,
+      `skill trigger runtime 与当前 scope effective 偏好不一致（skillTriggerRuntime=${formatRuntimeMatches(runtimeState, matches)}）。`,
     );
   }
 
@@ -1704,7 +1753,10 @@ export async function resolveSkillTriggerStatusReportFields(options: {
 export async function materializeSkillTriggerPreference(options: {
   pluginName: string;
   platform: PlatformName;
-  resolvedOptions: { skillTriggerPreference: SkillTriggerPreference };
+  resolvedOptions: {
+    skillTriggerPreference: SkillTriggerPreference;
+    skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
+  };
   embeddedRoot: string;
   policyPlugin?: PluginMeta;
   sourcePluginRoot?: string;
@@ -1759,7 +1811,10 @@ export async function materializeSkillTriggerPreference(options: {
   }
 
   const patchSkill = async (skillRoot: string, policy: SkillTriggerPolicyEntry): Promise<void> => {
-    const effectivePreference = resolveEffectiveSkillTriggerPreference(policy, preference);
+    const effectivePreference = resolveEffectiveSkillTriggerPreference(
+      policy,
+      options.resolvedOptions.skillTriggerPreferences?.[policy.skillName] ?? preference,
+    );
     if (effectivePreference === policy.defaultTrigger) {
       skippedSkills.push(policy.skillName);
       return;
@@ -2184,6 +2239,11 @@ export async function replaySkillTriggerPreferencesFromLedger(options: {
   embeddedRoot: string;
   previousMarketplaceRoot?: string;
   warnOnDegraded?: boolean;
+  resolveSkillTriggerPreferences?: (options: {
+    pluginName: string;
+    platform: PlatformName;
+    effectiveRecord: EffectiveSkillTriggerRecord;
+  }) => Promise<Record<string, SkillTriggerPreference>>;
 }): Promise<SkillTriggerReplayResult> {
   if (options.ledger.ledgerState.status !== 'available') {
     return {
@@ -2213,6 +2273,9 @@ export async function replaySkillTriggerPreferencesFromLedger(options: {
       if (!(await embeddedPlatformSkillsRootExists(options.embeddedRoot, pluginName, platform))) {
         continue;
       }
+      const skillTriggerPreferences = options.resolveSkillTriggerPreferences
+        ? await options.resolveSkillTriggerPreferences({ pluginName, platform, effectiveRecord })
+        : {};
 
       let runtimeSignatureBefore: SkillTriggerSignatureResult | undefined;
       if (
@@ -2232,6 +2295,7 @@ export async function replaySkillTriggerPreferencesFromLedger(options: {
         platform,
         resolvedOptions: {
           skillTriggerPreference: effectiveRecord.preference,
+          skillTriggerPreferences,
         },
         embeddedRoot: options.embeddedRoot,
         marketplaceRootOrStagingRoot: options.marketplaceRoot,
@@ -2285,6 +2349,7 @@ export async function rematerializeSkillTriggerPreferenceAfterUninstall(options:
   marketplaceRoot: string;
   policyPlugin?: PluginMeta;
   fallbackSourcePluginRoot?: string;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   force?: boolean;
 }): Promise<SkillTriggerPostUninstallMaterializationResult> {
   if (options.ledgerAfterUninstall.ledgerState.status !== 'available') {
@@ -2371,6 +2436,9 @@ export async function rematerializeSkillTriggerPreferenceAfterUninstall(options:
     platform: options.platform,
     resolvedOptions: {
       skillTriggerPreference: effectiveRecord?.preference ?? 'default',
+      ...(options.skillTriggerPreferences
+        ? { skillTriggerPreferences: options.skillTriggerPreferences }
+        : {}),
     },
     embeddedRoot: options.embeddedRoot,
     policyPlugin: embeddedSourceAvailable ? options.policyPlugin : undefined,

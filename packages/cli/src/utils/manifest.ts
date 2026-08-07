@@ -1625,11 +1625,12 @@ const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
   'codex.skill',
+  'claude.skill',
 ]);
 
 const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const DYNAMIC_ARTIFACT_KINDS = new Set<DynamicArtifactKind>(['instruction', 'codexRole', 'skill']);
-const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET: Record<ArtifactTarget, CodexProjectManagedKind> = {
+const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET: Partial<Record<ArtifactTarget, CodexProjectManagedKind>> = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'agent',
   'codex.skill': 'skill',
@@ -1638,6 +1639,7 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, DynamicArtifactKind> = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
   'codex.skill': 'skill',
+  'claude.skill': 'skill',
 };
 
 function normalizePlatformName(value: unknown, fieldName: string): PlatformName {
@@ -1754,6 +1756,7 @@ function validateCodexSkillKey(value: string, fieldName: string): void {
 }
 
 function normalizeArtifactTargetEntry(
+  pluginRoot: string,
   entry: unknown,
   fieldName: string,
   schema: PluginConfigSchema | undefined,
@@ -1771,6 +1774,7 @@ function normalizeArtifactTargetEntry(
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
+    'sourceDirs',
   ]);
 
   const id = ensureString(input.id, `${fieldName}.id`);
@@ -1778,8 +1782,11 @@ function normalizeArtifactTargetEntry(
 
   const platform = normalizePlatformName(input.platform, `${fieldName}.platform`);
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
-  if (platform !== 'codex') {
-    throw new Error(`Invalid ${fieldName}.platform: target "${target}" is only supported on "codex".`);
+  const expectedPlatform: PlatformName = target === 'claude.skill' ? 'claude' : 'codex';
+  if (platform !== expectedPlatform) {
+    throw new Error(
+      `Invalid ${fieldName}.platform: target "${target}" is only supported on "${expectedPlatform}".`,
+    );
   }
 
   const expectedKind = ARTIFACT_KIND_BY_TARGET[target];
@@ -1796,7 +1803,9 @@ function normalizeArtifactTargetEntry(
     : normalizeProjectManagedKind(input.projectManagedKind, `${fieldName}.projectManagedKind`);
   if (projectManagedKind !== expectedProjectManagedKind) {
     throw new Error(
-      `Invalid ${fieldName}.projectManagedKind: target "${target}" must map to "${expectedProjectManagedKind}".`,
+      expectedProjectManagedKind
+        ? `Invalid ${fieldName}.projectManagedKind: target "${target}" must map to "${expectedProjectManagedKind}".`
+        : `Invalid ${fieldName}.projectManagedKind: target "${target}" does not support projectManagedKind.`,
     );
   }
 
@@ -1817,13 +1826,26 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets.`);
   }
 
-  if (target === 'codex.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill') {
     if (!skillKey) {
-      throw new Error(`Invalid ${fieldName}.skillKey: codex.skill targets must declare a static skillKey.`);
+      throw new Error(`Invalid ${fieldName}.skillKey: ${target} targets must declare a static skillKey.`);
     }
     validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
   } else if (skillKey !== undefined) {
-    throw new Error(`Invalid ${fieldName}.skillKey: skillKey is only supported for codex.skill targets.`);
+    throw new Error(`Invalid ${fieldName}.skillKey: skillKey is only supported for skill targets.`);
+  }
+
+  const sourceDirs = normalizePathArray(pluginRoot, input.sourceDirs, `${fieldName}.sourceDirs`);
+  if (sourceDirs && target !== 'codex.skill' && target !== 'claude.skill') {
+    throw new Error(`Invalid ${fieldName}.sourceDirs: sourceDirs are only supported for skill targets.`);
+  }
+  if (sourceDirs && new Set(sourceDirs).size !== sourceDirs.length) {
+    throw new Error(`Invalid ${fieldName}.sourceDirs: duplicate source directory.`);
+  }
+  if (platform === 'claude' && input.requiresCodexProjectConfig !== undefined) {
+    throw new Error(
+      `Invalid ${fieldName}.requiresCodexProjectConfig: Claude targets do not support requiresCodexProjectConfig.`,
+    );
   }
 
   return {
@@ -1841,10 +1863,12 @@ function normalizeArtifactTargetEntry(
         : ensureBoolean(input.requiresCodexProjectConfig, `${fieldName}.requiresCodexProjectConfig`),
     roleKey,
     skillKey,
+    sourceDirs,
   };
 }
 
 function normalizeArtifacts(
+  pluginRoot: string,
   value: unknown,
   fieldName: string,
   schema: PluginConfigSchema | undefined,
@@ -1861,13 +1885,30 @@ function normalizeArtifacts(
         }
 
         const seen = new Set<string>();
+        const seenSkillOwners = new Set<string>();
         return targetsInput.map((entry, index) => {
-          const target = normalizeArtifactTargetEntry(entry, `${fieldName}.targets[${index}]`, schema);
+          const target = normalizeArtifactTargetEntry(
+            pluginRoot,
+            entry,
+            `${fieldName}.targets[${index}]`,
+            schema,
+          );
           const key = `${target.id}:${target.target}`;
           if (seen.has(key)) {
             throw new Error(`Invalid ${fieldName}.targets[${index}]: duplicate artifact id + target "${key}".`);
           }
           seen.add(key);
+          if ((target.target === 'codex.skill' || target.target === 'claude.skill') && target.skillKey) {
+            for (const scope of target.scopes) {
+              const ownerKey = `${target.platform}:${scope}:${target.skillKey}`;
+              if (seenSkillOwners.has(ownerKey)) {
+                throw new Error(
+                  `Invalid ${fieldName}.targets[${index}]: duplicate dynamic skill owner "${ownerKey}".`,
+                );
+              }
+              seenSkillOwners.add(ownerKey);
+            }
+          }
           return target;
         });
       })();
@@ -2369,16 +2410,16 @@ export function validatePluginManifest(
   }
 
   if (input.artifacts !== undefined) {
-    manifest.artifacts = normalizeArtifacts(input.artifacts, 'artifacts', manifest.config);
+    manifest.artifacts = normalizeArtifacts(pluginRoot, input.artifacts, 'artifacts', manifest.config);
   }
 
   if (input.skillTriggers !== undefined) {
-    const hasDynamicCodexSkill = manifest.artifacts?.targets?.some(
-      (target) => target.platform === 'codex' && target.target === 'codex.skill',
+    const hasDynamicSkill = manifest.artifacts?.targets?.some(
+      (target) => target.target === 'codex.skill' || target.target === 'claude.skill',
     ) ?? false;
-    if (manifest.skills === undefined && !hasDynamicCodexSkill) {
+    if (manifest.skills === undefined && !hasDynamicSkill) {
       throw new Error(
-        'Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory or codex.skill artifact.',
+        'Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory or dynamic skill artifact.',
       );
     }
 
@@ -2437,6 +2478,21 @@ async function validateDeclaredAssetPathsExist(
       }
     }),
   );
+
+  await Promise.all(
+    (manifest.artifacts?.targets ?? []).flatMap((target, targetIndex) =>
+      (target.sourceDirs ?? []).map(async (sourceDir, sourceIndex) => {
+        const absolutePath = path.join(pluginRoot, stripDotSlash(sourceDir));
+        const stats = await fs.lstat(absolutePath).catch(() => null);
+        if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+          throw new Error(
+            `Invalid artifacts.targets[${targetIndex}].sourceDirs[${sourceIndex}]: ` +
+              `expected a directory at "${sourceDir}".`,
+          );
+        }
+      }),
+    ),
+  );
 }
 
 async function validateSourceSkillTriggerPolicies(
@@ -2452,14 +2508,14 @@ async function validateSourceSkillTriggerPolicies(
     .map((entry) => entry.name)
     .sort();
   const staticSkillNameSet = new Set(staticSkillNames);
-  const dynamicCodexSkillNames = (manifest.artifacts?.targets ?? [])
-    .filter((target) => target.platform === 'codex' && target.target === 'codex.skill')
+  const dynamicSkillNames = (manifest.artifacts?.targets ?? [])
+    .filter((target) => target.target === 'codex.skill' || target.target === 'claude.skill')
     .map((target) => target.skillKey?.trim())
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
-  const dynamicCodexSkillNameSet = new Set(dynamicCodexSkillNames);
+  const dynamicSkillNameSet = new Set(dynamicSkillNames);
 
-  for (const skillName of dynamicCodexSkillNames) {
+  for (const skillName of dynamicSkillNames) {
     if (staticSkillNameSet.has(skillName)) {
       throw new Error(
         `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a codex.skill artifact.`,
@@ -2484,9 +2540,9 @@ async function validateSourceSkillTriggerPolicies(
         `Invalid skillTriggers.${skillName}: slashCommands "${skillName}" uses an implicit fixed/manual trigger entry and must not be declared explicitly.`,
       );
     }
-    if (!staticSkillNameSet.has(skillName) && !dynamicCodexSkillNameSet.has(skillName)) {
+    if (!staticSkillNameSet.has(skillName) && !dynamicSkillNameSet.has(skillName)) {
       throw new Error(
-        `Invalid skillTriggers.${skillName}: expected a declared static skill or codex.skill artifact.`,
+        `Invalid skillTriggers.${skillName}: expected a declared static skill or dynamic skill artifact.`,
       );
     }
   }
@@ -2499,10 +2555,10 @@ async function validateSourceSkillTriggerPolicies(
     }
   }
 
-  for (const skillName of dynamicCodexSkillNames) {
+  for (const skillName of dynamicSkillNames) {
     if (!Object.hasOwn(explicitSkillTriggers, skillName)) {
       throw new Error(
-        `Invalid plugin manifest: codex.skill "${skillName}" must declare skillTriggers.${skillName}.`,
+        `Invalid plugin manifest: dynamic skill "${skillName}" must declare skillTriggers.${skillName}.`,
       );
     }
   }

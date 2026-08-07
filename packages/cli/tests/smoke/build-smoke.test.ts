@@ -219,18 +219,22 @@ describe('build smoke', () => {
         outputRoot,
         'plugins',
         'codex-subagent-guide',
+        '.agents-plugin',
+        'artifact-sources',
         'codex',
-        'templates',
-        'codex-subagent-guide',
+        'codex-subagent-guide-skill',
+        '0',
         'SKILL.md',
       ),
       path.join(
         outputRoot,
         'plugins',
         'codex-subagent-guide',
+        '.agents-plugin',
+        'artifact-sources',
         'codex',
-        'templates',
-        'codex-subagent-guide',
+        'codex-subagent-guide-skill',
+        '0',
         'agents',
         'openai.yaml',
       ),
@@ -415,8 +419,8 @@ describe('build smoke', () => {
     });
     await Promise.all([
       path.join(outputRoot, 'plugins', 'codex-explore', 'scripts', 'render-artifacts.mjs'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'templates', 'codex-explore', 'SKILL.md'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'templates', 'codex-explore', 'agents', 'openai.yaml'),
+      path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'artifact-sources', 'codex', 'codex-explore-skill', '0', 'SKILL.md'),
+      path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'artifact-sources', 'codex', 'codex-explore-skill', '0', 'agents', 'openai.yaml'),
     ].map(async (requiredPath) => {
       await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
     }));

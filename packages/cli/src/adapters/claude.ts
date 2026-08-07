@@ -20,6 +20,7 @@ import type {
   SkillTriggerPreference,
   StatusReport,
 } from '../types.js';
+import type { ValidatedArtifactPlanArtifact } from '../utils/artifact-plan.js';
 import { detectEnvironment } from '../utils/detect.js';
 import {
   ensureLocalMarketplace,
@@ -37,14 +38,27 @@ import {
 import { validateRenderedClaudePermissions } from '../utils/rendered-contract.js';
 import {
   attachGeneratedArtifactsToError,
+  hasSameGeneratedArtifactDesiredIdentity,
   mergeGeneratedArtifacts,
 } from '../utils/generated-artifacts.js';
 import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
+import {
+  resolveArtifactRenderConfig,
+  runArtifactRenderer,
+} from '../utils/artifact-renderer.js';
+import { validateArtifactPlan } from '../utils/artifact-plan.js';
+import {
+  createDynamicSkillExpectedTree,
+  createDynamicSkillTreeContentDigest,
+  readDynamicSkillTree,
+  writeDynamicSkillTree,
+} from '../utils/dynamic-skill-tree.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import {
   getNextSkillTriggerWriteOrder,
   resolveSkillTriggerStatusReportFields,
@@ -93,6 +107,9 @@ function getClaudeManagedExtensions(plugin: PluginMeta): string[] {
   }
   if (resolvePlatformHookDefinitions(plugin.manifest, 'claude').length > 0) {
     managedExtensions.push('hooks');
+  }
+  if ((plugin.manifest.artifacts?.targets ?? []).some((target) => target.target === 'claude.skill')) {
+    managedExtensions.push('skills');
   }
   return managedExtensions;
 }
@@ -360,6 +377,52 @@ export async function applyClaudeUninstallLedger(
   return removeClaudeScopeLedger(ledger, pluginName, scope, projectKey);
 }
 
+export async function pruneClaudeTrackedArtifacts(options: {
+  configDir: string;
+  artifacts: GeneratedArtifact[];
+  preservedArtifacts?: GeneratedArtifact[];
+}): Promise<void> {
+  const preservedSkills = (options.preservedArtifacts ?? []).filter(
+    (artifact) => artifact.kind === 'skill' && artifact.target === 'claude.skill',
+  );
+
+  for (const artifact of options.artifacts) {
+    if (artifact.kind !== 'skill' || artifact.target !== 'claude.skill') {
+      continue;
+    }
+    if (artifact.state === 'disabled') {
+      continue;
+    }
+    if (!artifact.artifactKey) {
+      throw new Error(
+        `tracking manifest 中的 skill 缺少 artifactKey，不能对 ${artifact.path} 执行 path-only 删除。`,
+      );
+    }
+    const expectedPath = getClaudeDynamicSkillPath(options.configDir, artifact.artifactKey);
+    if (path.normalize(artifact.path) !== path.normalize(expectedPath)) {
+      throw new Error(
+        `tracking manifest 中的 claude.skill 路径与 artifactKey 不一致，不能删除 ${artifact.path}。`,
+      );
+    }
+
+    const overlappingPreservedSkill = preservedSkills.find((preserved) =>
+      path.normalize(preserved.path) === path.normalize(artifact.path) ||
+      preserved.artifactKey === artifact.artifactKey);
+    if (overlappingPreservedSkill) {
+      if (hasSameGeneratedArtifactDesiredIdentity(artifact, overlappingPreservedSkill)) {
+        continue;
+      }
+      throw new Error(
+        `tracking manifest 中的 claude.skill "${artifact.id ?? artifact.artifactKey}" ` +
+          `与当前声明的 "${overlappingPreservedSkill.id ?? overlappingPreservedSkill.artifactKey}" ` +
+          '共享同一路径或 artifactKey，CLI 不会按 path-only 清理旧 identity；请先清理旧 tracking 后再升级。',
+      );
+    }
+
+    await fs.remove(artifact.path);
+  }
+}
+
 async function collectGeneratedArtifacts(
   pluginName: string,
   trackingDir: string,
@@ -371,13 +434,67 @@ async function collectGeneratedArtifacts(
   }
 
   return Promise.all(
-    trackingRecord.artifacts.map(async (artifact) => ({
-      path: artifact.path,
-      exists: await fs.pathExists(artifact.path),
-      kind: artifact.kind,
-      ...(artifact.artifactKey === undefined ? {} : { artifactKey: artifact.artifactKey }),
-    })),
+    trackingRecord.artifacts.map(async (artifact) => {
+      if (artifact.state === 'disabled') {
+        return {
+          ...artifact,
+          exists: false,
+        };
+      }
+      const exists = await fs.pathExists(artifact.path);
+      let runtimeTree = null;
+      if (exists && artifact.target === 'claude.skill') {
+        try {
+          runtimeTree = await readDynamicSkillTree(artifact.path, 'claude.skill');
+        } catch {
+          runtimeTree = null;
+        }
+      }
+      return {
+        ...artifact,
+        exists,
+        ...(runtimeTree
+          ? { currentContentDigest: createDynamicSkillTreeContentDigest(runtimeTree) }
+          : {}),
+      };
+    }),
   );
+}
+
+function getClaudeDynamicSkillPath(configDir: string, skillKey: string): string {
+  return path.join(configDir, 'skills', skillKey);
+}
+
+async function assertClaudeDynamicSkillPathOwnedByAw(options: {
+  skillPath: string;
+  skillKey: string;
+  pluginName: string;
+  trackingManifest: Awaited<ReturnType<typeof readTrackingManifest>>;
+}): Promise<void> {
+  if (!(await fs.pathExists(options.skillPath))) {
+    return;
+  }
+
+  const normalizedPath = path.normalize(options.skillPath);
+  const owner = Object.entries(options.trackingManifest.plugins).find(([, record]) =>
+    record.artifacts.some((artifact) =>
+      artifact.platform === 'claude' &&
+      artifact.kind === 'skill' &&
+      artifact.target === 'claude.skill' &&
+      artifact.state !== 'disabled' &&
+      artifact.artifactKey === options.skillKey &&
+      path.normalize(artifact.path) === normalizedPath),
+  );
+  if (!owner) {
+    throw new Error(
+      `Claude skill "${options.skillKey}" 已存在于 ${options.skillPath}，但不由 AW 管理。`,
+    );
+  }
+  if (owner[0] !== options.pluginName) {
+    throw new Error(
+      `Claude skill "${options.skillKey}" 已由插件 "${owner[0]}" 管理。`,
+    );
+  }
 }
 
 export class ClaudeAdapter implements PlatformAdapter {
@@ -470,45 +587,150 @@ export class ClaudeAdapter implements PlatformAdapter {
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
       skillTriggerPreference?: SkillTriggerPreference;
+      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
 
     try {
-      for (const artifact of generateInstructionArtifacts(
-        plugin.manifest.name,
-        resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'claude'),
-        'claude',
-      )) {
-        const artifactPath = path.join(paths.configDir, artifact.relativePath);
-        await fs.ensureDir(path.dirname(artifactPath));
-        await fs.writeFile(artifactPath, artifact.content, 'utf8');
-        artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
-      }
-
-      const settings = await readClaudeSettings(paths.settingsPath);
-      const manualPermissions = subtractClaudePermissions(
-        settings.permissions,
-        aggregateGeneratedClaudePermissions(settings),
+      const trackingManifest = await readTrackingManifest(paths.trackingDir);
+      const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+      const event = _options?.event ?? 'install';
+      const dynamicOnly = _options?.dynamicOnly === true;
+      const declaredDynamicTargets = (plugin.manifest.artifacts?.targets ?? []).filter(
+        (target) => target.platform === 'claude' && target.scopes.includes(scope),
       );
-      settings.awGenerated ??= {};
+      const renderResult = declaredDynamicTargets.length > 0
+        ? await runArtifactRenderer({
+            event,
+            plugin,
+            platform: 'claude',
+            scope,
+            cwd: this.cwd,
+            commandEnv: this.env,
+            changedConfigKeys: _options?.changedConfigKeys,
+            previousArtifacts: trackingRecord?.artifacts ?? [],
+          })
+        : undefined;
+      const renderConfig = declaredDynamicTargets.length > 0
+        ? await resolveArtifactRenderConfig({
+            pluginName: plugin.manifest.name,
+            manifest: plugin.manifest,
+            scope,
+            cwd: this.cwd,
+            env: this.env,
+          })
+        : undefined;
+      const dynamicArtifacts = declaredDynamicTargets.length > 0
+        ? validateArtifactPlan({
+            manifest: plugin.manifest,
+            plan: renderResult!.plan,
+            platform: 'claude',
+            scope,
+            renderConfig: renderConfig!,
+            rendererDigest: renderResult!.target.rendererDigest,
+            manifestDigest: renderResult!.target.manifestDigest,
+          }).artifacts.filter((artifact) => artifact.target === 'claude.skill')
+        : [];
 
-      const permissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude');
-      if (permissions.length > 0) {
-        const renderedPermissions = mergeClaudePermissions(permissions);
-        validateRenderedClaudePermissions(renderedPermissions);
-        settings.awGenerated.permissions ??= {};
-        settings.awGenerated.permissions[plugin.manifest.name] = renderedPermissions;
-      } else if (settings.awGenerated.permissions) {
-        delete settings.awGenerated.permissions[plugin.manifest.name];
+      const ledger = await readInstalledLedger(this.env);
+      const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
+      const installedPreference = scope === 'user'
+        ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.userScope?.installOptions?.skillTriggerPreference
+        : projectKey
+          ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.projectScopes?.[projectKey]?.installOptions?.skillTriggerPreference
+          : undefined;
+      const skillTriggerPreference = _options?.skillTriggerPreference ?? installedPreference ?? 'default';
+      const sourceDirsFor = (artifact: ValidatedArtifactPlanArtifact): string[] =>
+        renderResult?.context.artifactSources.find((entry) =>
+          entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
+
+      for (const artifact of dynamicArtifacts) {
+        const skillKey = artifact.skillKey?.trim();
+        if (!skillKey) {
+          throw new Error(`Artifact "${artifact.id}" 的 claude.skill 必须声明 skillKey。`);
+        }
+        const skillPath = getClaudeDynamicSkillPath(paths.configDir, skillKey);
+        const expectedTree = await createDynamicSkillExpectedTree({
+          artifact,
+          sourceDirs: sourceDirsFor(artifact),
+          preference: _options?.skillTriggerPreferences?.[skillKey] ?? skillTriggerPreference,
+          policy: plugin.manifest.skillTriggers?.[skillKey],
+        });
+        let writtenPaths: string[] = [];
+        if (artifact.state === 'disabled') {
+          const owned = trackingRecord?.artifacts.some((tracked) =>
+            tracked.target === 'claude.skill' &&
+            tracked.state !== 'disabled' &&
+            tracked.id === artifact.id &&
+            tracked.artifactKey === skillKey &&
+            path.normalize(tracked.path) === path.normalize(skillPath));
+          if (owned) {
+            await fs.remove(skillPath);
+          }
+        } else {
+          await assertClaudeDynamicSkillPathOwnedByAw({
+            skillPath,
+            skillKey,
+            pluginName: plugin.manifest.name,
+            trackingManifest,
+          });
+          writtenPaths = await writeDynamicSkillTree(skillPath, expectedTree);
+        }
+        artifacts.push({
+          path: skillPath,
+          ...(writtenPaths.length > 0 ? { paths: writtenPaths } : {}),
+          kind: 'skill',
+          platform: 'claude',
+          artifactKey: skillKey,
+          id: artifact.id,
+          target: artifact.target,
+          state: artifact.state,
+          ...(artifact.disabledReason === undefined ? {} : { disabledReason: artifact.disabledReason }),
+          refreshKeys: [...artifact.refreshKeys],
+          configDigest: artifact.configDigest,
+          contentDigest: createDynamicSkillTreeContentDigest(expectedTree),
+        });
       }
 
-      rebuildClaudePermissionState(settings, manualPermissions);
-      await writeClaudeSettings(paths.settingsPath, settings);
+      if (!dynamicOnly) {
+        for (const artifact of generateInstructionArtifacts(
+          plugin.manifest.name,
+          resolvePlatformEntries(plugin.manifest.extensions?.instructions, 'claude'),
+          'claude',
+        )) {
+          const artifactPath = path.join(paths.configDir, artifact.relativePath);
+          await fs.ensureDir(path.dirname(artifactPath));
+          await fs.writeFile(artifactPath, artifact.content, 'utf8');
+          artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
+        }
+      }
 
-      if (permissions.length > 0) {
-        artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
+      if (!dynamicOnly) {
+        const settings = await readClaudeSettings(paths.settingsPath);
+        const manualPermissions = subtractClaudePermissions(
+          settings.permissions,
+          aggregateGeneratedClaudePermissions(settings),
+        );
+        settings.awGenerated ??= {};
+
+        const permissions = resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'claude');
+        if (permissions.length > 0) {
+          const renderedPermissions = mergeClaudePermissions(permissions);
+          validateRenderedClaudePermissions(renderedPermissions);
+          settings.awGenerated.permissions ??= {};
+          settings.awGenerated.permissions[plugin.manifest.name] = renderedPermissions;
+        } else if (settings.awGenerated.permissions) {
+          delete settings.awGenerated.permissions[plugin.manifest.name];
+        }
+
+        rebuildClaudePermissionState(settings, manualPermissions);
+        await writeClaudeSettings(paths.settingsPath, settings);
+
+        if (permissions.length > 0) {
+          artifacts.push({ path: paths.settingsPath, kind: 'permission', platform: 'claude' });
+        }
       }
 
       return artifacts;
@@ -529,6 +751,21 @@ export class ClaudeAdapter implements PlatformAdapter {
 
     for (const artifact of artifacts) {
       if (artifact.kind === 'instruction') {
+        await fs.remove(artifact.path);
+      } else if (artifact.kind === 'skill' && artifact.target === 'claude.skill') {
+        if (artifact.state === 'disabled') {
+          continue;
+        }
+        if (
+          !artifact.artifactKey ||
+          path.normalize(artifact.path) !== path.normalize(
+            getClaudeDynamicSkillPath(paths.configDir, artifact.artifactKey),
+          )
+        ) {
+          throw new Error(
+            `tracking manifest 中的 claude.skill 路径与 artifactKey 不一致，不能删除 ${artifact.path}。`,
+          );
+        }
         await fs.remove(artifact.path);
       }
     }
@@ -645,7 +882,21 @@ export class ClaudeAdapter implements PlatformAdapter {
     const permissionManaged = Boolean(
       settings.awGenerated?.permissions?.[plugin.manifest.name],
     );
-    const artifactsInitialized = generatedArtifacts.every((artifact) => artifact.exists) &&
+    const artifactsInitialized = generatedArtifacts.every((artifact) => {
+      if (artifact.state === 'disabled') {
+        return !artifact.exists;
+      }
+      if (!artifact.exists) {
+        return false;
+      }
+      if (artifact.target !== 'claude.skill') {
+        return true;
+      }
+      return Boolean(
+        artifact.currentContentDigest &&
+        (!artifact.contentDigest || artifact.contentDigest === artifact.currentContentDigest),
+      );
+    }) &&
       (
         !trackingRecord?.artifacts.some((artifact) => artifact.kind === 'permission') ||
         permissionManaged
@@ -656,8 +907,22 @@ export class ClaudeAdapter implements PlatformAdapter {
     const normalizedDeclaredSource = normalizeLocalPath(declaredSource);
     const normalizedMaterializedInstallLocation = normalizeLocalPath(materializedInstallLocation);
 
-    if (generatedArtifacts.some((artifact) => !artifact.exists)) {
+    if (generatedArtifacts.some((artifact) => artifact.state !== 'disabled' && !artifact.exists)) {
       driftWarnings.push('tracking manifest 记录的 Claude 受管产物存在缺失。');
+    }
+    if (generatedArtifacts.some((artifact) =>
+      artifact.target === 'claude.skill' &&
+      artifact.state !== 'disabled' &&
+      artifact.exists &&
+      !artifact.currentContentDigest)) {
+      driftWarnings.push('Claude 动态 skill 缺少 SKILL.md 或包含无法读取的文件树。');
+    }
+    if (generatedArtifacts.some((artifact) =>
+      artifact.target === 'claude.skill' &&
+      artifact.contentDigest &&
+      artifact.currentContentDigest &&
+      artifact.contentDigest !== artifact.currentContentDigest)) {
+      driftWarnings.push('Claude 动态 skill 文件树与 tracking contentDigest 不一致。');
     }
     if (declaredSource && normalizedDeclaredSource !== expectedAwHome) {
       driftWarnings.push('marketplace 已声明，但 declared source 已漂移。');
@@ -684,6 +949,13 @@ export class ClaudeAdapter implements PlatformAdapter {
     ) {
       driftWarnings.push('currentCatalog 与 activeLocalBundle 指向的 bundle 不一致。');
     }
+    const effectiveSkillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
+      plugin,
+      platform: 'claude',
+      scope,
+      cwd: this.cwd,
+      env: this.env,
+    }).catch(() => ({}));
     const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
       pluginName: plugin.manifest.name,
       platform: 'claude',
@@ -693,6 +965,7 @@ export class ClaudeAdapter implements PlatformAdapter {
       currentCatalog,
       currentCatalogAvailable,
       embeddedRoot: currentCatalog.rootDir,
+      skillTriggerPreferences: effectiveSkillTriggerPreferences,
     });
     if (skillTriggerStatus) {
       driftWarnings.push(...skillTriggerStatus.warnings);
@@ -763,6 +1036,7 @@ export class ClaudeAdapter implements PlatformAdapter {
             skillTriggerApplicability: skillTriggerStatus.skillTriggerApplicability,
             installOptions: skillTriggerStatus.installOptions,
             skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
+            skillTriggerPreferences: skillTriggerStatus.skillTriggerPreferences,
             skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
             skillTriggerRuntimeState: skillTriggerStatus.skillTriggerRuntimeState,
             skillTriggerDrift: skillTriggerStatus.skillTriggerDrift,

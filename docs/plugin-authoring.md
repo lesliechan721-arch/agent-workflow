@@ -7,7 +7,7 @@
 - `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明简单静态产物，不新增顶层 `claude` block
 - 路径字段（`skills`、`slashCommands`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`
-- `skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`；静态 `skills/<skill>` 和动态 `codex.skill` 必须有对应 entry，公共 `slashCommands` 生成的 Codex manual-only skill 由 AW 注入 fixed/manual 字段
+- `skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`；静态 `skills/<skill>` 以及动态 `codex.skill` / `claude.skill` 必须有对应 entry，公共 `slashCommands` 生成的 Codex manual-only skill 由 AW 注入 fixed/manual 字段
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema；没有声明 `scripts.lifecycle` 或 `config.schema` 只是表示插件没有这些能力，不会被 status 当作默认问题
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值；没有声明动态 target 的静态插件不会因此产生 artifact 缺失或刷新失败诊断
@@ -185,9 +185,9 @@ Node 脚本默认只能使用 `node:` 内置模块和插件内相对 import。�
 
 `scripts.timeoutMs` 是插件默认脚本超时；用户可在 `aw install`、`aw upgrade`、`aw uninstall` 上用 `--script-timeout <ms>` 覆盖。有效范围是 `1000..300000` 毫秒。
 
-`scripts.artifacts.render` 用于动态生成 AW 管理的 artifact plan。它只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行；`aw status` 不会执行 renderer，也不会执行 lifecycle。首版 renderer 入口使用 `runner = "node"`，`path` 必须是插件包内的 `./` 相对路径，可选 `args` 会传给脚本。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 context JSON 文件；context 包含 event、platform、scope、插件名/版本/rootDir、artifact render config、changedConfigKeys、previousArtifacts、AW/Codex/Claude home、manifestPath、renderer digest 等信息。install/upgrade 时 `plugin.rootDir` 是本次安装解析出的 bundle；config refresh 和 refresh-only 时它是 install record 引用的 historical bundle，不能假设会读取当前 local marketplace。
+`scripts.artifacts.render` 用于动态生成 AW 管理的 artifact plan。它只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行；`aw status` 不会执行 renderer，也不会执行 lifecycle。renderer 入口使用 `runner = "node"`，`path` 必须是插件包内的 `./` 相对路径，可选 `args` 会传给脚本。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 context JSON 文件；context 包含 event、platform、scope、插件名/版本/rootDir、artifact render config、changedConfigKeys、previousArtifacts、`artifactSources`、AW/Codex/Claude home、manifestPath、renderer digest 等信息。`artifactSources` 给出当前 target 已暂存的只读 `sourceDirs` 绝对路径。install/upgrade 时 `plugin.rootDir` 是本次安装解析出的 bundle；config refresh 和 refresh-only 时它是 install record 引用的 historical bundle，不能假设会读取当前 local marketplace。
 
-renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败诊断摘要。renderer 不能直接写 `.agents/skills/**`、Codex user runtime skill、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件；它只能返回 plan。AW 会先按 manifest 校验 plan，再由对应 target runtime 统一写盘、回滚、诊断缓存、status 和 uninstall。
+renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败诊断摘要。renderer 不能直接写 Codex/Claude Skill runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件；它只能返回 plan。AW 会先按 manifest 校验 plan，再由对应 target runtime 统一写盘、回滚、诊断缓存、status 和 uninstall。
 
 示例：
 
@@ -226,7 +226,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 动态 artifact 适合“内容由配置决定，但写盘仍必须由 AW 管理”的场景。插件用 manifest 的 `artifacts.targets` 声明安装前能力真值，再用 `scripts.artifacts.render` 返回当前 scope 的 `ArtifactPlan`。安装、升级、交互式候选、project write safety preflight、status current catalog 和 install record artifact identity 都读取 `artifacts.targets`，不能等 renderer 执行后才推断插件能力。
 
-首版动态 artifact target 只支持 Codex。声明 `artifacts.targets` 的插件必须支持 Codex，可以是 Codex-only，也可以是双平台插件中的 Codex target；Claude-only 插件声明动态 target 会在 manifest/build 校验时失败。
+动态 Skill target 支持 `codex.skill` 和 `claude.skill`。target 的 `platform` 必须与 target 名称一致。一个双平台插件可以为两个平台声明独立 target；Claude-only 插件只能声明 `claude.skill`。
 
 ```json
 {
@@ -248,30 +248,33 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
         "projectManagedKind": "skill",
         "states": ["present"],
         "refreshKeys": ["minimumInitialWaitMinutes"],
-        "skillKey": "codex-explore"
+        "skillKey": "codex-explore",
+        "sourceDirs": ["./templates/common", "./templates/codex"]
       }
     ]
   }
 }
 ```
 
-`ArtifactPlan` 顶层格式为 `{ "version": 1, "artifacts": [...] }`。每个 artifact 的关键字段：
+`ArtifactPlan` 顶层格式为 `{ "version": 2, "artifacts": [...] }`。V1 不再受支持；旧插件必须升级或重新安装。每个 artifact 的关键字段：
 
 - `id`：插件内稳定 id，只能使用安全字符；`pluginName + id + target` 是 AW 受管 artifact 的逻辑身份
-- `target`：首版支持 `codex.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`
-- `state`：首版支持 `present` 和 `disabled`；当前 platform/scope 在 manifest 中声明过的动态 artifact 必须返回其中一种状态，不能省略
+- `target`：支持 `codex.skill`、`claude.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`
+- `state`：支持 `present` 和 `disabled`；当前 platform/scope 在 manifest 中声明过的动态 artifact 必须返回其中一种状态，不能省略
 - `refreshKeys`：必须完整保留 manifest 中该 artifact 声明的 config key，且 key 必须存在于 `config.schema`
 - `disabledReason`：`state = "disabled"` 时可写，例如 `config`；disabled artifact 可以没有 content，但仍要保留 `refreshKeys`
 
-`codex.skill` 管理 Codex skill 目录。manifest target 必须静态声明 `skillKey`，用于安装前路径冲突检查、install record artifact identity、project artifact shared identity 和后续 stale prune；renderer plan 里的 `skillKey` 必须完全匹配。`present` content 是对象，必须包含 `skillFile`（写成运行时 `SKILL.md`）和 `openaiYaml`（写成运行时 `agents/openai.yaml`）。`SKILL.md` 是模型会读取的指令体；`agents/openai.yaml` 是 Codex 产品元数据和触发策略，`interface.default_prompt` 只放包含 `$skillKey` 的起手句。renderer 不能提供任意路径，也不能自己写 `.agents/skills/<skillKey>` 或用户级 Codex runtime。project scope 下它的 `projectManagedKind` 应声明为 `skill`，且不要求 `requiresCodexProjectConfig: true`，因为它不依赖 `.codex/config.toml`。
+`codex.skill` 和 `claude.skill` 都管理完整 Skill 目录。manifest target 必须静态声明 `skillKey`。`sourceDirs` 是可选的插件内相对目录数组。AW 按声明顺序合并目录，后面的目录覆盖前面的同名文件。静态文件按字节保留，因此可以包含图片和其它二进制资源。符号链接、非普通文件，以及文件与目录前缀冲突会失败。
 
-`codex.skill` 的内容真值来自“静态模板 + 当前 artifact render config + 当前 effective SkillTrigger 配置 patch”。插件通常把 `skills/<skillKey>/SKILL.md` 和 `skills/<skillKey>/agents/openai.yaml` 作为静态模板，由 renderer 读取模板并插入配置值；config refresh 时这些模板应来自 install record 的 historical bundle，而不是当前可变 runtime。AW apply 阶段再按 `defaultTrigger` 和用户写入的 `aw.skillTriggers.<skill>.trigger` effective 值 patch `openaiYaml`。`auto` 会让 Codex `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。重复 install、upgrade、reinstall 或 config refresh 不会因为 renderer 输出默认值而重置用户配置。
+renderer 用 `content.files` 返回需要动态生成或覆盖的 UTF-8 文本。key 是 Skill 根目录内的 POSIX 相对文件路径；不接受绝对路径、反斜杠、`.`、`..` 或路径前缀冲突。AW 在所有 `sourceDirs` 合并后覆盖这些文件。renderer 不需要重复返回未变化的静态文件。
+
+最终 `codex.skill` 必须有 `SKILL.md` 和 `agents/openai.yaml`。AW 会按 effective SkillTrigger 配置 patch `agents/openai.yaml`：`auto` 设置 `policy.allow_implicit_invocation: true`，`manual` 设置为 `false`。project scope 写 `.agents/skills/<skillKey>`；user scope 写 Codex 用户 Skill runtime。最终 `claude.skill` 必须有 `SKILL.md`。AW 会 patch `SKILL.md` frontmatter 中的 Claude 调用策略，并写入 `~/.claude/skills/<skillKey>` 或项目 `.claude/skills/<skillKey>`。Claude Skill 不使用插件 namespace；同名未受管目录会阻断写入。
 
 renderer plan 示例：
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "artifacts": [
     {
       "id": "codex-explore-skill",
@@ -282,8 +285,10 @@ renderer plan 示例：
       "skillKey": "codex-explore",
       "refreshKeys": ["minimumInitialWaitMinutes"],
       "content": {
-        "skillFile": "---\nname: codex-explore\n---\n# Codex Explore\n",
-        "openaiYaml": "policy:\n  allow_implicit_invocation: true\n"
+        "files": {
+          "SKILL.md": "---\nname: codex-explore\n---\n# Codex Explore\n",
+          "references/config.md": "Minimum wait: 5 minutes.\n"
+        }
       }
     }
   ]
@@ -294,7 +299,7 @@ renderer plan 示例：
 
 `codex.agentRole` 管理 Codex agent role 注册项和 role layer 文件。manifest target 必须静态声明 `roleKey`，用于安装前 role namespace 冲突检查；renderer plan 里的 `roleKey` 必须完全匹配。`present` content 包含 `registration.description` 和 `roleFile`；`registration.config_file` 由 AW 生成，renderer 不能提供。`roleFile.name` 必须等于 `roleKey`，可包含 Codex-only 的 `model` 和 `model_reasoning_effort`。project scope 下它的 `projectManagedKind` 应声明为 `agent`，不要把内部 `kind = "codexRole"` 写入 install record artifact identity。
 
-动态 `codex.skill` 适合配置驱动的 skill。不要用 lifecycle 直接改 `.agents/skills/**`、`~/.codex/**` 或 `~/.aw/plugins/**` 来“刷新 skill”；那会绕过 install record、trigger preference、diagnostic cache，以及 `aw status --verbose`、`aw cleanup`、`aw reinstall` 和 uninstall/stale prune 依赖的状态链路。固定不随配置变化的 skill 仍放在 `skills/` 静态目录即可。
+动态 `codex.skill` / `claude.skill` 适合配置驱动的 Skill。不要用 lifecycle 直接改平台 Skill 目录来“刷新 Skill”；那会绕过 install record、trigger preference、diagnostic cache，以及 status、cleanup、reinstall 和 stale prune 依赖的状态链路。固定不随配置变化的 Skill 仍放在 `skills/` 静态目录即可。
 
 > P0/P11 runtime contract：`codex-explore` 以 `codex.skill` 形态发布通用只读探索 workflow。它可以覆盖代码库、文档、网络资料、日志和用户材料；公开文档和 release 说明需要同时写清，具体来源访问取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
@@ -350,7 +355,7 @@ pnpm plugin:test --all
 
 `defaultTrigger` 只允许 `manual` 或 `auto`。`manual` 禁止模型自动触发但保留显式调用入口；`auto` 允许模型自动触发。`allowDynamicTrigger: true` 表示用户可以通过 `aw config set <plugin> aw.skillTriggers.<skill>.trigger manual|auto` 或主控制台配置页修改该 skill；`allowDynamicTrigger: false` 表示字段固定只读，effective 值永远等于 `defaultTrigger`。旧的安装期覆盖字段不再是有效合同，新 manifest 中不能继续使用。
 
-静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 的 `skillKey` 必须有 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。SkillTrigger 内建配置存储在 AW 保留 namespace `$aw.skillTriggers` 下，不进入插件作者的普通 `config.schema`，JSON 读命令会把字段标记为 `kind: "builtIn"`、`reserved: true`。
+静态 `skills/<skill>` 子目录以及动态 `codex.skill` / `claude.skill` 的 `skillKey` 必须有 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。SkillTrigger 内建配置存储在 AW 保留 namespace `$aw.skillTriggers` 下，不进入插件作者的普通 `config.schema`，JSON 读命令会把字段标记为 `kind: "builtIn"`、`reserved: true`。
 
 详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 

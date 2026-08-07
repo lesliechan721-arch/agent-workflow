@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   renderArtifactPlan,
@@ -7,6 +9,10 @@ import {
 } from './render-artifacts.mjs';
 
 const SHORT_DESCRIPTION = '子代理任务分类、参数选择、上下文继承、等待与清理原则';
+const artifactSourcePath = fileURLToPath(new URL(
+  '../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/',
+  import.meta.url,
+));
 const ROLE_EXPECTATIONS = [
   {
     artifactId: 'codex-subagent-simple-role',
@@ -47,6 +53,11 @@ function createContext(values = {}) {
       name: 'codex-subagent-guide',
       version: '0.1.0',
     },
+    artifactSources: [{
+      id: 'codex-subagent-guide-skill',
+      target: 'codex.skill',
+      sourceDirs: [artifactSourcePath],
+    }],
     config: {
       mode: 'artifact-render',
       targetScope: 'user',
@@ -56,7 +67,7 @@ function createContext(values = {}) {
 }
 
 function artifactsFrom(plan) {
-  assert.equal(plan.version, 1);
+  assert.equal(plan.version, 2);
   assert.equal(plan.artifacts.length, 5);
 
   const skill = plan.artifacts.find((artifact) => artifact.id === 'codex-subagent-guide-skill');
@@ -66,6 +77,10 @@ function artifactsFrom(plan) {
   assert.equal(skill.skillKey, 'codex-subagent-guide');
   assert.deepEqual(skill.refreshKeys, ['minimumInitialWaitMinutes']);
   assert.equal(skill.state, 'present');
+  assert.equal('skillFile' in skill.content, false);
+  assert.equal('openaiYaml' in skill.content, false);
+  assert.equal(typeof skill.content.files['SKILL.md'], 'string');
+  assert.equal(skill.content.files['agents/openai.yaml'], undefined);
 
   const roles = new Map();
   for (const expected of ROLE_EXPECTATIONS) {
@@ -81,11 +96,24 @@ function artifactsFrom(plan) {
     roles.set(expected.roleKey, role);
   }
 
-  return { skill, roles };
+  return {
+    skill: {
+      ...skill,
+      content: {
+        ...skill.content,
+        skillFile: skill.content.files['SKILL.md'],
+      },
+    },
+    roles,
+  };
 }
 
 test('renders four task roles and agent-type-only preset guidance', async () => {
   const { skill, roles } = artifactsFrom(await renderArtifactPlan(createContext()));
+  const openaiYaml = await readFile(
+    new URL('../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/agents/openai.yaml', import.meta.url),
+    'utf8',
+  );
 
   for (const expected of ROLE_EXPECTATIONS) {
     const role = roles.get(expected.roleKey);
@@ -177,9 +205,9 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.ok(skill.content.skillFile.split('\n').length <= 80);
   assert.equal(skill.content.skillFile.includes('{{spawnParameterGuidance}}'), false);
   assert.equal(skill.content.skillFile.includes('{{minimumInitialWaitMinutes}}'), false);
-  assert.match(skill.content.openaiYaml, /allow_implicit_invocation: true/);
+  assert.match(openaiYaml, /allow_implicit_invocation: true/);
   assert.match(skill.content.skillFile, new RegExp(`short-description: ${SHORT_DESCRIPTION}`));
-  assert.match(skill.content.openaiYaml, new RegExp(`short_description: "${SHORT_DESCRIPTION}"`));
+  assert.match(openaiYaml, new RegExp(`short_description: "${SHORT_DESCRIPTION}"`));
   assert.ok(Array.from(SHORT_DESCRIPTION).length >= 25);
   assert.ok(Array.from(SHORT_DESCRIPTION).length <= 64);
 });

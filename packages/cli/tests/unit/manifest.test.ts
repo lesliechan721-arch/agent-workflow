@@ -1123,7 +1123,7 @@ describe('manifest utils', () => {
       ],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('skillKey is only supported for codex.skill targets');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('skillKey is only supported for skill targets');
 
     manifest.artifacts = {
       targets: [
@@ -1136,6 +1136,53 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('duplicate artifact id + target');
+
+    manifest.artifacts = {
+      targets: [
+        {
+          id: 'claude-skill-one',
+          platform: 'claude',
+          scopes: ['project'],
+          target: 'claude.skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'codex-explore',
+        },
+        {
+          id: 'claude-skill-two',
+          platform: 'claude',
+          scopes: ['user', 'project'],
+          target: 'claude.skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'codex-explore',
+        },
+      ],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'duplicate dynamic skill owner "claude:project:codex-explore"',
+    );
+
+    await fs.ensureDir(path.join(pluginRoot, 'templates', 'real'));
+    await fs.symlink('real', path.join(pluginRoot, 'templates', 'source-link'));
+    manifest.artifacts = {
+      targets: [{
+        id: 'codex-explore-skill',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'codex-explore',
+        sourceDirs: ['./templates/source-link'],
+      }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'expected a directory at "./templates/source-link"',
+    );
   });
 
   it('rejects unsupported platform build fields and apps declarations', async () => {
@@ -1310,7 +1357,7 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      '"skillTriggers" requires a declared "skills" directory or codex.skill artifact',
+      '"skillTriggers" requires a declared "skills" directory or dynamic skill artifact',
     );
 
     manifest.skills = './skills';
@@ -1393,7 +1440,7 @@ describe('manifest utils', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid skillTriggers.missing: expected a declared static skill or codex.skill artifact.',
+      'Invalid skillTriggers.missing: expected a declared static skill or dynamic skill artifact.',
     );
   });
 

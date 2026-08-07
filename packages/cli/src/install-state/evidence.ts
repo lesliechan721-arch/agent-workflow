@@ -141,6 +141,8 @@ export interface ArtifactFileEvidence {
   exists: boolean;
   contentDigest: string | null;
   rawContent: string | null;
+  rawBytes: Buffer | null;
+  treeError?: 'symbolicLink' | 'unsupportedFileType' | 'unreadableDirectory';
 }
 
 export interface CatalogArtifactEvidence extends CurrentCatalogArtifact {
@@ -405,6 +407,7 @@ async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
       exists: false,
       contentDigest: null,
       rawContent: null,
+      rawBytes: null,
     };
   }
 
@@ -415,16 +418,86 @@ async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
       exists: true,
       contentDigest: null,
       rawContent: null,
+      rawBytes: null,
     };
   }
 
-  const rawContent = await fs.readFile(filePath, 'utf8');
+  const rawBytes = await fs.readFile(filePath);
   return {
     path: filePath,
     exists: true,
-    contentDigest: sha256Hex(Buffer.from(rawContent, 'utf8')),
-    rawContent,
+    contentDigest: sha256Hex(rawBytes),
+    rawContent: rawBytes.toString('utf8'),
+    rawBytes,
   };
+}
+
+function createMissingFileEvidence(filePath: string): ArtifactFileEvidence {
+  return {
+    path: filePath,
+    exists: false,
+    contentDigest: null,
+    rawContent: null,
+    rawBytes: null,
+  };
+}
+
+function createUnsafeTreeEvidence(
+  filePath: string,
+  treeError: NonNullable<ArtifactFileEvidence['treeError']>,
+): ArtifactFileEvidence {
+  return {
+    path: filePath,
+    exists: true,
+    contentDigest: null,
+    rawContent: null,
+    rawBytes: null,
+    treeError,
+  };
+}
+
+async function inspectDynamicSkillTree(rootPath: string): Promise<ArtifactFileEvidence[]> {
+  const rootStats = await fs.lstat(rootPath).catch(() => null);
+  if (!rootStats) {
+    return [createMissingFileEvidence(rootPath)];
+  }
+  if (rootStats.isSymbolicLink()) {
+    return [createUnsafeTreeEvidence(rootPath, 'symbolicLink')];
+  }
+  if (!rootStats.isDirectory()) {
+    return [createUnsafeTreeEvidence(rootPath, 'unsupportedFileType')];
+  }
+
+  const files: ArtifactFileEvidence[] = [{
+    path: rootPath,
+    exists: true,
+    contentDigest: null,
+    rawContent: null,
+    rawBytes: null,
+  }];
+  const visit = async (currentDir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      files.push(createUnsafeTreeEvidence(currentDir, 'unreadableDirectory'));
+      return;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        files.push(createUnsafeTreeEvidence(entryPath, 'symbolicLink'));
+      } else if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        files.push(await inspectFile(entryPath));
+      } else {
+        files.push(createUnsafeTreeEvidence(entryPath, 'unsupportedFileType'));
+      }
+    }
+  };
+  await visit(rootPath);
+  return files;
 }
 
 function resolveCatalogArtifactPath(
@@ -496,9 +569,13 @@ async function inspectRecordArtifacts(
   const dynamicByKey = new Map(dynamicEntries.map((artifact) => [makeDynamicArtifactKey(artifact), artifact]));
 
   return Promise.all(record.record.artifacts.map(async (artifact) => {
-    const files = await Promise.all(
-      [artifact.path, ...(artifact.paths ?? [])].map((entryPath) => inspectFile(entryPath)),
-    );
+    const files = artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
+      ? artifact.state === 'disabled'
+        ? [createMissingFileEvidence(artifact.path)]
+        : await inspectDynamicSkillTree(artifact.path)
+      : await Promise.all(
+          [artifact.path, ...(artifact.paths ?? [])].map((entryPath) => inspectFile(entryPath)),
+        );
     return {
       artifact,
       files,

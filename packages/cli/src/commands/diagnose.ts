@@ -37,6 +37,7 @@ import type {
   PluginStatusDependencies,
   PlatformName,
   Scope,
+  SkillTriggerPolicy,
   SkillTriggerPreference,
   StatusCommandOptions,
 } from '../types.js';
@@ -77,9 +78,10 @@ import {
 } from '../utils/artifact-renderer.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
 import {
-  createCodexSkillExpectedTree,
-  createCodexSkillStagingTreeContentDigest,
-} from '../utils/codex-skill-staging.js';
+  createDynamicSkillExpectedTree,
+  createDynamicSkillTreeContentDigest,
+} from '../utils/dynamic-skill-tree.js';
+import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import type { CodexAppServerProcessRunner } from '../utils/codex-app-server-client.js';
 
 export interface RawDiagnoseCommandOptions extends RawStatusCommandOptions {
@@ -169,6 +171,7 @@ export interface CollectedLocationState {
     required: boolean;
     backupItems: ForceCleanupBackupItem[];
   };
+  effectiveSkillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
 }
 
 export interface StatusJsonLocation {
@@ -204,6 +207,7 @@ export interface StatusJsonLocation {
     unavailableReason: string | null;
     unavailable: boolean;
     triggerPreference: SkillTriggerPreference | null;
+    skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
     entries: DynamicArtifactDiagnosticEntry[];
   };
   legacyDynamicTracking: Array<{
@@ -790,7 +794,7 @@ async function buildDynamicCatalogArtifacts(
             artifactKey: artifact.roleKey,
           }
         : {}),
-      ...(artifact.target === 'codex.skill' && artifact.skillKey
+      ...((artifact.target === 'codex.skill' || artifact.target === 'claude.skill') && artifact.skillKey
         ? { artifactKey: artifact.skillKey }
         : {}),
       configDigest: createArtifactConfigDigest({
@@ -832,14 +836,18 @@ async function buildBaseCurrentCatalog(
   };
 }
 
-function mapArtifactContentDigest(
+async function mapArtifactContentDigest(
   artifact: ValidatedArtifactPlanArtifact,
   preference: 'default' | 'manual' | 'auto',
-): string {
-  if (artifact.target === 'codex.skill') {
-    return createCodexSkillStagingTreeContentDigest(createCodexSkillExpectedTree({
+  sourceDirs: string[],
+  policy: SkillTriggerPolicy | undefined,
+): Promise<string> {
+  if (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') {
+    return createDynamicSkillTreeContentDigest(await createDynamicSkillExpectedTree({
       artifact,
+      sourceDirs,
       preference,
+      policy,
     }));
   }
 
@@ -865,29 +873,36 @@ function mapActualArtifactDigest(
   if (!matchedRecordArtifact) {
     return null;
   }
-  if (matchedRecordArtifact.artifact.target !== 'codex.skill') {
+  if (
+    matchedRecordArtifact.artifact.target !== 'codex.skill' &&
+    matchedRecordArtifact.artifact.target !== 'claude.skill'
+  ) {
     return matchedRecordArtifact.files[0]?.contentDigest ?? null;
   }
 
   const rootPath = matchedRecordArtifact.artifact.path;
   const files = matchedRecordArtifact.files
-    .filter((file) => file.path !== rootPath && file.exists && file.rawContent !== null)
+    .filter((file) => file.path !== rootPath && file.exists && file.rawBytes !== null)
     .map((file) => [
       path.relative(rootPath, file.path).split(path.sep).join('/'),
-      file.rawContent,
+      file.rawBytes!,
     ] as const)
     .sort(([left], [right]) => left.localeCompare(right));
   return files.length > 0
-    ? createGeneratedArtifactContentDigest(Object.fromEntries(files))
+    ? createDynamicSkillTreeContentDigest({
+        skillKey: matchedRecordArtifact.artifact.artifactKey ?? path.basename(rootPath),
+        files: Object.fromEntries(files),
+      })
     : null;
 }
 
-async function collectSkillTreeFileContents(rootDir: string): Promise<Record<string, string>> {
-  if (!(await fs.pathExists(rootDir))) {
+async function collectSkillTreeFileContents(rootDir: string): Promise<Record<string, Buffer>> {
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     return {};
   }
 
-  const output = new Map<string, string>();
+  const output = new Map<string, Buffer>();
   const visit = async (currentDir: string): Promise<void> => {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -901,7 +916,7 @@ async function collectSkillTreeFileContents(rootDir: string): Promise<Record<str
       }
       output.set(
         path.relative(rootDir, entryPath).split(path.sep).join('/'),
-        await fs.readFile(entryPath, 'utf8'),
+        await fs.readFile(entryPath),
       );
     }
   };
@@ -911,8 +926,8 @@ async function collectSkillTreeFileContents(rootDir: string): Promise<Record<str
 }
 
 function diffSkillTrees(options: {
-  expectedFiles: Record<string, string>;
-  actualFiles: Record<string, string>;
+  expectedFiles: Record<string, Buffer>;
+  actualFiles: Record<string, Buffer>;
 }): {
   drift: boolean;
   driftReasons: string[];
@@ -944,7 +959,7 @@ function diffSkillTrees(options: {
       driftReasons.push(`缺少文件 ${relativePath}`);
       continue;
     }
-    if (actual !== expected) {
+    if (!actual.equals(expected)) {
       fileDiffs.push({ path: relativePath, reason: 'contentMismatch' });
       driftReasons.push(`文件内容已漂移 ${relativePath}`);
     }
@@ -988,10 +1003,8 @@ async function buildDeepDiagnoseResult(options: {
   evidence: InstallEvidence;
   currentCatalog: CurrentCatalogEvidenceInput | null;
   runtime: P7RuntimeOverrides;
+  effectiveSkillTriggerPreferences: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
 }): Promise<DeepDiagnoseResult> {
-  const triggerPreference: SkillTriggerPreference = options.evidence.installRecord.read.status === 'ok'
-    ? options.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? 'default'
-    : 'default';
   if (!options.currentPlugin) {
     return {
       attempted: true,
@@ -1000,7 +1013,8 @@ async function buildDeepDiagnoseResult(options: {
       artifacts: [],
     };
   }
-  if (!options.currentPlugin.manifest.scripts?.artifacts?.render) {
+  const currentPlugin = options.currentPlugin;
+  if (!currentPlugin.manifest.scripts?.artifacts?.render) {
     return {
       attempted: true,
       rendered: false,
@@ -1019,7 +1033,7 @@ async function buildDeepDiagnoseResult(options: {
 
   const result = await runArtifactRenderer({
     event: 'install',
-    plugin: options.currentPlugin,
+    plugin: currentPlugin,
     platform: options.location.platform,
     scope: options.location.scope,
     cwd: options.cwd,
@@ -1027,8 +1041,8 @@ async function buildDeepDiagnoseResult(options: {
     runner: options.runtime.p7ArtifactRendererRunner,
   });
   const validated = validateArtifactPlan({
-    pluginName: options.currentPlugin.manifest.name,
-    manifest: options.currentPlugin.manifest,
+    pluginName: currentPlugin.manifest.name,
+    manifest: currentPlugin.manifest,
     plan: result.plan,
     platform: options.location.platform,
     scope: options.location.scope,
@@ -1040,31 +1054,51 @@ async function buildDeepDiagnoseResult(options: {
   });
 
   const artifacts = await Promise.all(validated.artifacts.map(async (artifact) => {
+    const skillKey = artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
+      ? artifact.skillKey
+      : undefined;
+    const triggerPreference: SkillTriggerPreference = skillKey
+      ? options.effectiveSkillTriggerPreferences[skillKey] ?? 'default'
+      : 'default';
     const matchedRecordArtifact = options.evidence.installRecord.artifacts.find((entry) =>
       entry.artifact.id === artifact.id
       && entry.artifact.target === artifact.target,
     );
-    const contentDigest = mapArtifactContentDigest(
+    const sourceDirs = result.context.artifactSources.find((entry) =>
+      entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
+    const contentDigest = await mapArtifactContentDigest(
       artifact,
       triggerPreference,
+      sourceDirs,
+      artifact.declaration.skillKey
+        ? currentPlugin.manifest.skillTriggers?.[artifact.declaration.skillKey]
+        : undefined,
     );
     let actualDigest = mapActualArtifactDigest(matchedRecordArtifact);
     let drift = actualDigest !== null && actualDigest !== contentDigest;
     let driftReasons: string[] = [];
     let fileDiffs: DeepDiagnoseResult['artifacts'][number]['fileDiffs'];
 
-    if (artifact.target === 'codex.skill') {
+    if (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') {
       const actualFiles = matchedRecordArtifact
         ? await collectSkillTreeFileContents(matchedRecordArtifact.artifact.path)
         : {};
       actualDigest = Object.keys(actualFiles).length > 0
-        ? createGeneratedArtifactContentDigest(actualFiles)
+        ? createDynamicSkillTreeContentDigest({
+            skillKey: artifact.skillKey ?? path.basename(matchedRecordArtifact?.artifact.path ?? ''),
+            files: actualFiles,
+          })
         : null;
+      const expectedTree = await createDynamicSkillExpectedTree({
+        artifact,
+        sourceDirs,
+        preference: triggerPreference,
+        policy: artifact.skillKey
+          ? currentPlugin.manifest.skillTriggers?.[artifact.skillKey]
+          : undefined,
+      });
       const comparison = diffSkillTrees({
-        expectedFiles: createCodexSkillExpectedTree({
-          artifact,
-          preference: triggerPreference,
-        }).files,
+        expectedFiles: expectedTree.files,
         actualFiles,
       });
       drift = comparison.drift;
@@ -1081,14 +1115,18 @@ async function buildDeepDiagnoseResult(options: {
       target: artifact.target,
       state: artifact.state,
       ...(roleKey ? { roleKey } : {}),
-      ...(artifact.target === 'codex.skill' && artifact.skillKey ? { artifactKey: artifact.skillKey } : {}),
+      ...((artifact.target === 'codex.skill' || artifact.target === 'claude.skill') && artifact.skillKey
+        ? { artifactKey: artifact.skillKey }
+        : {}),
       ...(artifact.state === 'disabled' && artifact.disabledReason
         ? { disabledReason: artifact.disabledReason }
         : {}),
       configDigest: artifact.configDigest,
       contentDigest,
       ...(matchedRecordArtifact?.files[0]?.path ? { artifactPath: matchedRecordArtifact.files[0].path } : {}),
-      ...(artifact.target === 'codex.skill' ? { triggerPreference } : {}),
+      ...(artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
+        ? { triggerPreference }
+        : {}),
       actualDigest,
       drift,
       ...(driftReasons.length > 0 ? { driftReasons } : {}),
@@ -1159,6 +1197,15 @@ async function collectWithDefaultEvidence(options: {
   });
   const dependencyIndexActions = await collectDependencyIndexActions(evidence);
   const forceCleanup = createForceCleanupHint(evidence, projection);
+  const effectiveSkillTriggerPreferences = options.target.currentPlugin
+    ? await resolveEffectiveSkillTriggerPreferences({
+      plugin: options.target.currentPlugin,
+      platform: location.platform,
+      scope: location.scope,
+      cwd: options.cwd,
+      env: options.env,
+    })
+    : {};
   const deepDiagnose = options.deep
     ? await buildDeepDiagnoseResult({
       currentPlugin: options.target.currentPlugin,
@@ -1168,6 +1215,7 @@ async function collectWithDefaultEvidence(options: {
       evidence,
       currentCatalog,
       runtime: options.runtime,
+      effectiveSkillTriggerPreferences,
     })
     : {
       attempted: false,
@@ -1206,6 +1254,7 @@ async function collectWithDefaultEvidence(options: {
     findings,
     dependencyIndexActions,
     forceCleanup,
+    effectiveSkillTriggerPreferences,
   };
 }
 
@@ -1284,8 +1333,9 @@ function createSummaryText(options: {
 }): string {
   const { evidence, projection, target } = options;
   const legacyDynamicTracking = collectLegacyDynamicTracking(evidence);
-  const disabledCodexSkillEntries = evidence.dynamicDiagnostic.entries.filter((entry) =>
-    entry.entry.target === 'codex.skill' && entry.entry.state === 'disabled');
+  const disabledSkillEntries = evidence.dynamicDiagnostic.entries.filter((entry) =>
+    (entry.entry.target === 'codex.skill' || entry.entry.target === 'claude.skill') &&
+    entry.entry.state === 'disabled');
   if (projection.nativeTransactionKind === 'recordInstallResidual') {
     return '安装记录还在，但原生安装收尾没有完成。';
   }
@@ -1336,8 +1386,8 @@ function createSummaryText(options: {
   if (projection.catalogLatestBlockedByCli) {
     return '当前 catalog 更新受 CLI 版本限制；先升级 aw，再决定是否升级插件。';
   }
-  if (disabledCodexSkillEntries.length > 0) {
-    return '当前安装状态正常，且 codex.skill 已按配置禁用。';
+  if (disabledSkillEntries.length > 0) {
+    return '当前安装状态正常，且动态 Skill 已按配置禁用。';
   }
   return evidence.installRecord.present ? '当前安装状态正常。' : '当前没有可处理的安装状态。';
 }
@@ -1370,8 +1420,8 @@ function createFindings(options: {
   const { evidence, projection, dependencyIndexActions, deepDiagnose } = options;
   const findings: string[] = [];
   const legacyDynamicTracking = collectLegacyDynamicTracking(evidence);
-  const codexSkillEntries = evidence.dynamicDiagnostic.entries
-    .filter((entry) => entry.entry.target === 'codex.skill')
+  const skillEntries = evidence.dynamicDiagnostic.entries
+    .filter((entry) => entry.entry.target === 'codex.skill' || entry.entry.target === 'claude.skill')
     .map((entry) => entry.entry);
   if (projection.nativeTransactionKind === 'recordInstallResidual') {
     findings.push('安装记录存在，且还保留着 install marker 残留。');
@@ -1394,20 +1444,20 @@ function createFindings(options: {
   }
   if (projection.dynamicDiagnosticUnavailable) {
     findings.push('动态诊断信息目前不可用；只读模式不会补写本地诊断数据。');
-    for (const entry of codexSkillEntries) {
-      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的诊断缓存目前不可用。`);
+    for (const entry of skillEntries) {
+      findings.push(`${entry.target} "${entry.artifactKey ?? entry.id}" 的诊断缓存目前不可用。`);
     }
   }
   if (hasIssue(projection, 'dynamicContentDrift')) {
     findings.push('动态内容与已接受摘要不一致。');
-    for (const entry of codexSkillEntries) {
-      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的运行时内容与诊断缓存记录不一致。`);
+    for (const entry of skillEntries) {
+      findings.push(`${entry.target} "${entry.artifactKey ?? entry.id}" 的运行时内容与诊断缓存记录不一致。`);
     }
   }
   if (hasIssue(projection, 'dynamicConfigStale')) {
     findings.push('共享渲染配置摘要已经变化，当前内容还没刷新。');
-    for (const entry of codexSkillEntries) {
-      findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 的配置摘要已经过期。`);
+    for (const entry of skillEntries) {
+      findings.push(`${entry.target} "${entry.artifactKey ?? entry.id}" 的配置摘要已经过期。`);
     }
   }
   if (hasIssue(projection, 'dynamicRefreshFailed')) {
@@ -1417,20 +1467,20 @@ function createFindings(options: {
         ? `最近一次动态刷新失败：${failed.detail}`
         : '最近一次动态刷新失败。',
     );
-    for (const entry of codexSkillEntries.filter((current) => current.lastRefresh?.status === 'failed')) {
+    for (const entry of skillEntries.filter((current) => current.lastRefresh?.status === 'failed')) {
       findings.push(
         entry.lastRefresh?.error
-          ? `codex.skill "${entry.artifactKey ?? entry.id}" 最近一次刷新失败：${entry.lastRefresh.error}`
-          : `codex.skill "${entry.artifactKey ?? entry.id}" 最近一次刷新失败。`,
+          ? `${entry.target} "${entry.artifactKey ?? entry.id}" 最近一次刷新失败：${entry.lastRefresh.error}`
+          : `${entry.target} "${entry.artifactKey ?? entry.id}" 最近一次刷新失败。`,
       );
     }
   }
   if (hasIssue(projection, 'artifactMissing')) {
     findings.push('记录里的目标文件有缺失。');
     for (const artifact of evidence.installRecord.artifacts.filter((recordArtifact) =>
-      recordArtifact.artifact.target === 'codex.skill' &&
+      (recordArtifact.artifact.target === 'codex.skill' || recordArtifact.artifact.target === 'claude.skill') &&
       recordArtifact.files.some((file) => !file.exists))) {
-      findings.push(`codex.skill "${artifact.artifact.artifactKey ?? artifact.artifact.id}" 缺少运行时文件。`);
+      findings.push(`${artifact.artifact.target} "${artifact.artifact.artifactKey ?? artifact.artifact.id}" 缺少运行时文件。`);
     }
   }
   if (hasIssue(projection, 'historicalLifecycleUnavailable')) {
@@ -1463,8 +1513,8 @@ function createFindings(options: {
   if (evidence.adoptable.possible) {
     findings.push('项目文件与共享身份可以对齐，具备认领条件。');
   }
-  for (const entry of codexSkillEntries.filter((current) => current.state === 'disabled')) {
-    findings.push(`codex.skill "${entry.artifactKey ?? entry.id}" 当前按配置禁用。`);
+  for (const entry of skillEntries.filter((current) => current.state === 'disabled')) {
+    findings.push(`${entry.target} "${entry.artifactKey ?? entry.id}" 当前按配置禁用。`);
   }
   if (legacyDynamicTracking.length > 0) {
     findings.push(
@@ -1478,9 +1528,12 @@ function createFindings(options: {
     if (drifted.length > 0) {
       findings.push(`deep 诊断下发现 ${drifted.length} 个动态内容与当前 renderer 结果不一致。`);
       for (const artifact of drifted) {
-        if (artifact.target === 'codex.skill' && artifact.driftReasons?.length) {
+        if (
+          (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') &&
+          artifact.driftReasons?.length
+        ) {
           findings.push(
-            `deep 诊断显示 codex.skill "${artifact.artifactKey ?? artifact.id}" 与当前 expected tree 不一致：${artifact.driftReasons.join('；')}`,
+            `deep 诊断显示 ${artifact.target} "${artifact.artifactKey ?? artifact.id}" 与当前 expected tree 不一致：${artifact.driftReasons.join('；')}`,
           );
         }
       }
@@ -1828,6 +1881,8 @@ function toStatusJsonLocation(
     ? false
     : state.evidence.sharedRuntimeOwner.needsTakeover;
   const dependencyIndexRecoveryMessage = buildDependencyIndexRecoveryMessage(state.projection);
+  const effectiveSkillTriggerPreferences = state.effectiveSkillTriggerPreferences ?? {};
+  const effectiveTriggerValues = new Set(Object.values(effectiveSkillTriggerPreferences));
 
   return {
     plugin: state.location.plugin,
@@ -1859,9 +1914,10 @@ function toStatusJsonLocation(
       available: state.evidence.dynamicDiagnostic.available,
       unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
       unavailable: state.projection.dynamicDiagnosticUnavailable,
-      triggerPreference: state.evidence.installRecord.read.status === 'ok'
-        ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
+      triggerPreference: effectiveTriggerValues.size === 1
+        ? [...effectiveTriggerValues][0]!
         : null,
+      skillTriggerPreferences: effectiveSkillTriggerPreferences,
       entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
     },
     legacyDynamicTracking: collectLegacyDynamicTracking(state.evidence),

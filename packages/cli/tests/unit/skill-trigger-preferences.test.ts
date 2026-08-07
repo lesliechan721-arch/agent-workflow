@@ -20,10 +20,12 @@ import {
   patchCodexOpenAiYaml,
   readCurrentSkillTriggerRuntimeSignature,
   rematerializeSkillTriggerPreferenceAfterUninstall,
+  resolveSkillTriggerStatusReportFields,
   resolveSkillTriggerPolicies,
   rollbackMaterializedSkillTriggerPreference,
   selectEffectiveSkillTriggerPreference,
   selectEffectiveSkillTriggerRecord,
+  type SkillTriggerMaterializationTarget,
 } from '../../src/utils/skill-trigger-preferences.js';
 
 const tempDirs: string[] = [];
@@ -203,6 +205,79 @@ afterEach(async () => {
 });
 
 describe('skill trigger preferences', () => {
+  it('reports a materialized mixed per-skill runtime as healthy', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-mixed-status-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      skillTriggers: {
+        commit: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+        review: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+      skills: {
+        commit: {
+          claude: CLAUDE_SKILL_AUTO_TRUE,
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+        review: {
+          claude: CLAUDE_SKILL_AUTO_TRUE.replaceAll('commit', 'review'),
+          codex: CODEX_SKILL_AUTO_TRUE,
+        },
+      },
+    });
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+    const target: SkillTriggerMaterializationTarget = {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+    const skillTriggerPreferences = {
+      commit: 'manual' as const,
+      review: 'auto' as const,
+    };
+    const materialization = await materializeSkillTriggerPreference({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      resolvedOptions: {
+        skillTriggerPreference: 'default',
+        skillTriggerPreferences,
+      },
+      embeddedRoot,
+      target,
+      mode: 'bestEffortReplay',
+    });
+    await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle);
+
+    const status = await resolveSkillTriggerStatusReportFields({
+      pluginName: 'git-commit',
+      platform: 'codex',
+      scope: 'user',
+      ledger: createAvailableLedger(),
+      currentCatalog: {
+        rootDir: marketplaceRoot,
+        source: 'local',
+      } as never,
+      currentCatalogAvailable: true,
+      embeddedRoot,
+      runtimeTarget: target,
+      skillTriggerPreferences,
+    });
+
+    expect(status).toMatchObject({
+      skillTriggerPreferences,
+      skillTriggerRuntimeState: 'matched',
+      skillTriggerDrift: 'no',
+      warnings: [],
+    });
+    expect(status?.skillTriggerPreference).toBeUndefined();
+  });
+
   it('materializes Codex manual/auto/default and ignores tampered local manifests', async () => {
     const embeddedRoot = await makeTempDir('aw-skill-trigger-embedded-');
     await writeBundlePlugin({

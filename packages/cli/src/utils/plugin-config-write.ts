@@ -22,7 +22,7 @@ import {
   readPluginConfigStore,
   resolveAwProjectRoot,
   resolvePluginConfigSchemaAccess,
-  resolveUniformSkillTriggerPreference,
+  resolveEffectiveSkillTriggerPreferences,
   resetPluginConfigStore,
   resolveEffectivePluginConfig,
   resolveProjectArtifactRenderConfig,
@@ -88,7 +88,12 @@ import type {
 } from '../types.js';
 import type { NativeCliRunner } from './native-cli.js';
 import { readInstalledLedger } from './local-marketplace.js';
-import { resolveCodexPaths, resolveCodexProjectKey } from './paths.js';
+import {
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+} from './paths.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 
 export interface PluginConfigWriteRequest {
@@ -295,10 +300,14 @@ async function resolveDefaultConfigApplyTargets(options: {
   return dedupeReceiptTargets(targets);
 }
 
-function collectCodexRefreshKeysForScope(manifest: PluginManifestSource, scope: Scope): string[] {
+function collectRefreshKeysForScope(
+  manifest: PluginManifestSource,
+  platform: PlatformName,
+  scope: Scope,
+): string[] {
   return uniqueSorted(
     (manifest.artifacts?.targets ?? [])
-      .filter((artifact) => artifact.platform === 'codex' && artifact.scopes.includes(scope))
+      .filter((artifact) => artifact.platform === platform && artifact.scopes.includes(scope))
       .flatMap((artifact) => artifact.refreshKeys),
   );
 }
@@ -353,14 +362,14 @@ function resolveProjectCodexSkillRuntimeRoot(cwd: string): string {
 }
 
 function buildDynamicRefreshRawTargetResults(options: {
-  pluginName: string;
+  plugin: PluginMeta;
   scope: Scope;
   artifactRefresh: ArtifactRefreshReceipt;
   applyTargets: ReceiptTargetIdentity[];
 }): ReceiptTargetResult[] {
   const message = artifactRefreshTargetMessage(options.artifactRefresh);
   return dedupeReceiptTargets(options.applyTargets).map((target) => {
-    if (target.platform !== 'codex' || target.scope !== options.scope) {
+    if (target.scope !== options.scope) {
       return {
         target,
         action: 'dynamicArtifactRefresh',
@@ -368,14 +377,32 @@ function buildDynamicRefreshRawTargetResults(options: {
         message: '当前 target 没有可重放的 dynamic artifact。',
       } satisfies ReceiptTargetResult;
     }
-    if (options.artifactRefresh.status === 'succeeded') {
+    const declaresDynamicTarget = (options.plugin.manifest.artifacts?.targets ?? []).some((artifact) =>
+      artifact.platform === target.platform && artifact.scopes.includes(target.scope));
+    if (!declaresDynamicTarget) {
+      return {
+        target,
+        action: 'dynamicArtifactRefresh',
+        state: 'notRun',
+        message: '当前 target 没有可重放的 dynamic artifact。',
+      } satisfies ReceiptTargetResult;
+    }
+    const targetArtifacts = options.artifactRefresh.artifacts.filter((artifact) =>
+      artifact.platform === target.platform && artifact.scope === target.scope);
+    if (
+      targetArtifacts.some((artifact) => artifact.status === 'succeeded') ||
+      (targetArtifacts.length === 0 && options.artifactRefresh.status === 'succeeded')
+    ) {
       return {
         target,
         action: 'dynamicArtifactRefresh',
         state: 'completed',
       } satisfies ReceiptTargetResult;
     }
-    if (options.artifactRefresh.status === 'failed') {
+    if (
+      targetArtifacts.some((artifact) => artifact.status === 'failed') ||
+      (targetArtifacts.length === 0 && options.artifactRefresh.status === 'failed')
+    ) {
       return {
         target,
         action: 'dynamicArtifactRefresh',
@@ -533,7 +560,7 @@ async function applyBuiltInSkillTriggerRuntime(options: {
 
   for (const { platform, scope, projectKey } of runtimeTargets) {
     try {
-      const preference = await resolveUniformSkillTriggerPreference({
+      const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
         plugin: options.plugin,
         platform,
         scope,
@@ -544,7 +571,8 @@ async function applyBuiltInSkillTriggerRuntime(options: {
         pluginName: options.plugin.manifest.name,
         platform,
         resolvedOptions: {
-          skillTriggerPreference: preference,
+          skillTriggerPreference: 'default',
+          skillTriggerPreferences,
         },
         embeddedRoot: path.dirname(path.dirname(options.plugin.rootDir)),
         policyPlugin: options.plugin,
@@ -664,7 +692,7 @@ export async function replayConfigRuntimeWrites(options: {
   const dynamicRawResults = options.includeDynamicArtifacts === false
     ? []
     : buildDynamicRefreshRawTargetResults({
-        pluginName: options.plugin.manifest.name,
+        plugin: options.plugin,
         scope: options.scope,
         artifactRefresh,
         applyTargets,
@@ -936,7 +964,7 @@ async function buildBaseCurrentCatalog(options: {
 function collectProjectRefreshKeys(manifest: PluginManifestSource): string[] {
   return uniqueSorted(
     (manifest.artifacts?.targets ?? [])
-      .filter((artifact) => artifact.platform === 'codex' && artifact.scopes.includes('project'))
+      .filter((artifact) => artifact.scopes.includes('project'))
       .flatMap((artifact) => artifact.refreshKeys),
   );
 }
@@ -946,17 +974,17 @@ function hasIntersectingKeys(left: readonly string[], right: readonly string[]):
   return left.some((value) => rightSet.has(value));
 }
 
-function isCodexDynamicRefreshEntry(
+function isDynamicRefreshEntry(
   artifact: Pick<GeneratedArtifact, 'id' | 'platform' | 'target' | 'state' | 'refreshKeys'>
     | (DynamicArtifactDiagnosticEntry & { platform?: PlatformName }),
 ): boolean {
   return (
-    (artifact.platform === undefined || artifact.platform === 'codex') &&
     typeof artifact.id === 'string' &&
     (
       artifact.target === 'codex.developerInstructionsBlock' ||
       artifact.target === 'codex.agentRole' ||
-      artifact.target === 'codex.skill'
+      artifact.target === 'codex.skill' ||
+      artifact.target === 'claude.skill'
     ) &&
     (artifact.state === 'present' || artifact.state === 'disabled') &&
     (artifact.refreshKeys?.length ?? 0) > 0
@@ -969,7 +997,7 @@ function dynamicRefreshEntryTouchesKeys(options: {
   changedKeys: string[];
   resetAllTrackedKeys?: boolean;
 }): boolean {
-  if (!isCodexDynamicRefreshEntry(options.artifact)) {
+  if (!isDynamicRefreshEntry(options.artifact)) {
     return false;
   }
   if (options.resetAllTrackedKeys === true) {
@@ -1055,7 +1083,7 @@ async function resolveCodexDynamicRefreshImpact(options: {
   let cleanPrewrite = false;
 
   for (const scope of configScopeCandidates(options.scope)) {
-    const refreshKeys = collectCodexRefreshKeysForScope(options.plugin.manifest, scope);
+    const refreshKeys = collectRefreshKeysForScope(options.plugin.manifest, 'codex', scope);
     let touchesScope = refreshKeys.length > 0 && (
       options.resetAllTrackedKeys === true ||
       hasIntersectingKeys(options.changedKeys, refreshKeys)
@@ -1195,6 +1223,90 @@ async function resolveCodexDynamicRefreshImpact(options: {
   return { targets: [] };
 }
 
+async function resolveClaudeDynamicRefreshImpact(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  changedKeys: string[];
+  resetAllTrackedKeys?: boolean;
+}): Promise<ReceiptTargetIdentity[]> {
+  if (options.projectLayer === 'local') {
+    return [];
+  }
+
+  const targets: ReceiptTargetIdentity[] = [];
+  const projectKey = await resolveClaudeProjectKey(options.cwd).catch(() => undefined);
+  for (const scope of configScopeCandidates(options.scope)) {
+    const refreshKeys = collectRefreshKeysForScope(options.plugin.manifest, 'claude', scope);
+    if (
+      refreshKeys.length === 0 ||
+      (
+        options.resetAllTrackedKeys !== true &&
+        !hasIntersectingKeys(options.changedKeys, refreshKeys)
+      )
+    ) {
+      continue;
+    }
+
+    const location: PluginLocation = scope === 'project'
+      ? {
+          plugin: options.plugin.manifest.name,
+          platform: 'claude',
+          scope: 'project',
+          ...(projectKey ? { projectKey } : {}),
+        }
+      : {
+          plugin: options.plugin.manifest.name,
+          platform: 'claude',
+          scope: 'user',
+        };
+    const recordRead = await readInstallRecordForLocation({
+      cwd: options.cwd,
+      location,
+      env: options.env,
+    });
+    const trackingManifest = await readTrackingManifest(
+      resolveClaudePaths(options.cwd, scope, options.env).trackingDir,
+    );
+    const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+    const hasTrackedDynamicSkill = trackingRecord?.artifacts.some((artifact) =>
+      artifact.platform === 'claude' &&
+      artifact.target === 'claude.skill' &&
+      dynamicRefreshEntryTouchesKeys({
+        artifact,
+        changedKeys: options.changedKeys,
+        resetAllTrackedKeys: options.resetAllTrackedKeys,
+      })) ?? false;
+    if (recordRead.status === 'ok' || hasTrackedDynamicSkill) {
+      targets.push({
+        pluginName: options.plugin.manifest.name,
+        platform: 'claude',
+        scope,
+        ...(scope === 'project' && projectKey ? { projectKey } : {}),
+      });
+    }
+  }
+  return targets;
+}
+
+async function resolveDynamicRefreshImpact(options: Parameters<typeof resolveCodexDynamicRefreshImpact>[0]): Promise<{
+  targets: ReceiptTargetIdentity[];
+  configRefreshSkippedReason?: ConfigRuntimeImpact['configRefreshSkippedReason'];
+}> {
+  const [codex, claudeTargets] = await Promise.all([
+    resolveCodexDynamicRefreshImpact(options),
+    resolveClaudeDynamicRefreshImpact(options),
+  ]);
+  return {
+    targets: dedupeReceiptTargets([...codex.targets, ...claudeTargets]),
+    ...(codex.configRefreshSkippedReason && claudeTargets.length === 0
+      ? { configRefreshSkippedReason: codex.configRefreshSkippedReason }
+      : {}),
+  };
+}
+
 async function filterBuiltInApplyTargets(options: {
   plugin: PluginMeta;
   targets: ReceiptTargetIdentity[];
@@ -1240,7 +1352,7 @@ async function analyzeConfigRuntimeImpact(options: {
         env: options.env,
       });
   const dynamicRefresh = options.includeDynamicArtifacts
-    ? await resolveCodexDynamicRefreshImpact({
+    ? await resolveDynamicRefreshImpact({
         plugin: options.plugin,
         scope: options.scope,
         projectLayer: options.projectLayer,
@@ -1284,39 +1396,62 @@ async function analyzeConfigRuntimeImpact(options: {
   };
 }
 
-async function syncCodexInstallStateAfterConfigRefresh(options: {
+async function syncInstallStateAfterConfigRefresh(options: {
   plugin: PluginMeta;
   commandScope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
   artifactRefresh: ArtifactRefreshReceipt;
 }): Promise<void> {
-  const scopeStatuses = new Map<Scope, 'succeeded' | 'failed'>();
+  const scopeStatuses = new Map<string, {
+    platform: PlatformName;
+    scope: Scope;
+    status: 'succeeded' | 'failed';
+  }>();
   for (const artifact of options.artifactRefresh.artifacts) {
-    const current = scopeStatuses.get(artifact.scope);
-    if (current === 'failed') {
+    const key = `${artifact.platform}:${artifact.scope}`;
+    const current = scopeStatuses.get(key);
+    if (current?.status === 'failed') {
       continue;
     }
-    scopeStatuses.set(artifact.scope, artifact.status);
+    scopeStatuses.set(key, {
+      platform: artifact.platform,
+      scope: artifact.scope,
+      status: artifact.status,
+    });
   }
   if (scopeStatuses.size === 0) {
     if (options.artifactRefresh.status === 'skipped') {
       return;
     }
-    scopeStatuses.set(options.commandScope, options.artifactRefresh.status);
+    for (const target of options.plugin.manifest.artifacts?.targets ?? []) {
+      for (const scope of configScopeCandidates(options.commandScope)) {
+        if (!target.scopes.includes(scope)) {
+          continue;
+        }
+        const key = `${target.platform}:${scope}`;
+        scopeStatuses.set(key, {
+          platform: target.platform,
+          scope,
+          status: options.artifactRefresh.status,
+        });
+      }
+    }
   }
 
-  for (const [scope, refreshStatus] of scopeStatuses.entries()) {
+  for (const { platform, scope, status: refreshStatus } of scopeStatuses.values()) {
     const location: PluginLocation = scope === 'project'
       ? {
           plugin: options.plugin.manifest.name,
-          platform: 'codex',
+          platform,
           scope: 'project',
-          projectKey: await resolveCodexProjectKey(options.cwd),
+          projectKey: platform === 'codex'
+            ? await resolveCodexProjectKey(options.cwd)
+            : await resolveClaudeProjectKey(options.cwd),
         }
       : {
           plugin: options.plugin.manifest.name,
-          platform: 'codex',
+          platform,
           scope: 'user',
         };
     const recordRead = await readInstallRecordForLocation({
@@ -1329,7 +1464,9 @@ async function syncCodexInstallStateAfterConfigRefresh(options: {
     }
 
     const trackingManifest = await readTrackingManifest(
-      resolveCodexPaths(options.cwd, scope, options.env).trackingDir,
+      platform === 'codex'
+        ? resolveCodexPaths(options.cwd, scope, options.env).trackingDir
+        : resolveClaudePaths(options.cwd, scope, options.env).trackingDir,
     );
     const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
     if (!trackingRecord) {
@@ -1369,7 +1506,7 @@ async function syncCodexInstallStateAfterConfigRefresh(options: {
         const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, artifacts);
         const locator = createProjectArtifactSharedLocator({
           plugin: options.plugin.manifest.name,
-          platform: 'codex',
+          platform,
           repoRoot,
           projectRoot,
         });
@@ -1593,7 +1730,7 @@ export async function applyPluginConfigWrite(options: {
       changedKeys: triggerKeys,
     });
     if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
-      await syncCodexInstallStateAfterConfigRefresh({
+      await syncInstallStateAfterConfigRefresh({
         plugin: schemaPlugin,
         commandScope: options.scope,
         cwd: options.cwd,
@@ -1619,7 +1756,7 @@ export async function applyPluginConfigWrite(options: {
     pluginName,
     applyTargets,
     rawTargetResults: buildDynamicRefreshRawTargetResults({
-      pluginName,
+      plugin: schemaPlugin,
       scope: options.scope,
       artifactRefresh,
       applyTargets,
@@ -1749,7 +1886,7 @@ export async function resetPluginConfigWithHelper(options: {
       changedKeys: removedKeys,
     });
     if (artifactRefresh.attempted && (artifactRefresh.status === 'succeeded' || artifactRefresh.status === 'failed')) {
-      await syncCodexInstallStateAfterConfigRefresh({
+      await syncInstallStateAfterConfigRefresh({
         plugin: schemaAccess.plugin,
         commandScope: options.scope,
         cwd: options.cwd,
@@ -1787,7 +1924,7 @@ export async function resetPluginConfigWithHelper(options: {
       rawTargetResults: [
         ...builtInRawResults,
         ...buildDynamicRefreshRawTargetResults({
-          pluginName,
+          plugin: schemaAccess.plugin,
           scope: options.scope,
           artifactRefresh,
           applyTargets,
@@ -1899,7 +2036,7 @@ export async function applyBuiltInConfigWrite(options: {
       env,
       changedKeys: [options.key],
       includeBuiltIn: true,
-      includeDynamicArtifacts: false,
+      includeDynamicArtifacts: true,
       applyTargets: options.applyTargets,
     });
     await assertConfigRuntimeImpactAgentVersions({
@@ -1952,7 +2089,7 @@ export async function applyBuiltInConfigWrite(options: {
         env,
         applyTargets,
         includeBuiltIn: true,
-        includeDynamicArtifacts: false,
+        includeDynamicArtifacts: true,
         nativeCliRunner: options.nativeCliRunner,
       })).targetResults
     : [];

@@ -317,7 +317,7 @@ function inferDynamicManagedKind(target: ArtifactTarget): DynamicArtifactKind {
   if (target === 'codex.agentRole') {
     return 'codexRole';
   }
-  if (target === 'codex.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill') {
     return 'skill';
   }
   return 'instruction';
@@ -327,7 +327,7 @@ function inferProjectManagedKind(target: ArtifactTarget): CodexProjectManagedKin
   if (target === 'codex.agentRole') {
     return 'agent';
   }
-  if (target === 'codex.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill') {
     return 'skill';
   }
   return 'instruction';
@@ -339,7 +339,7 @@ function inferHistoricalExtensionKindFromDynamicTarget(
   if (target === 'codex.agentRole') {
     return 'agent';
   }
-  if (target === 'codex.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill') {
     return 'skill';
   }
   return 'instruction';
@@ -374,10 +374,7 @@ function appendHistoricalTrackingArtifacts(
 
     const artifactId = normalizedArtifact.id;
     const artifactTarget = normalizedArtifact.target;
-    const dynamicTarget =
-      normalizedArtifact.platform === 'codex' &&
-      artifactId !== undefined &&
-      artifactTarget !== undefined;
+    const dynamicTarget = artifactId !== undefined && artifactTarget !== undefined;
     if (!dynamicTarget) {
       summary.trackedStaticKindsByPlatform[normalizedArtifact.platform].add(normalizedArtifact.kind);
       summary.historicalArtifacts.push(structuredClone(normalizedArtifact));
@@ -403,16 +400,22 @@ function appendHistoricalTrackingArtifacts(
       scopes: [scope],
       target: artifactTarget,
       kind: inferDynamicManagedKind(artifactTarget),
-      projectManagedKind: inferProjectManagedKind(artifactTarget),
+      ...(normalizedArtifact.platform === 'codex'
+        ? { projectManagedKind: inferProjectManagedKind(artifactTarget) }
+        : {}),
       states,
       refreshKeys: normalizedArtifact.refreshKeys ? [...normalizedArtifact.refreshKeys] : [],
-      requiresCodexProjectConfig: codexDynamicArtifactTargetRequiresProjectConfig({
-        target: artifactTarget,
-      }),
+      ...(normalizedArtifact.platform === 'codex'
+        ? {
+            requiresCodexProjectConfig: codexDynamicArtifactTargetRequiresProjectConfig({
+              target: artifactTarget,
+            }),
+          }
+        : {}),
       ...(artifactTarget === 'codex.agentRole' && resolvedRoleKey
         ? { roleKey: resolvedRoleKey }
         : {}),
-      ...(artifactTarget === 'codex.skill' && normalizedArtifact.artifactKey
+      ...((artifactTarget === 'codex.skill' || artifactTarget === 'claude.skill') && normalizedArtifact.artifactKey
         ? { skillKey: normalizedArtifact.artifactKey }
         : {}),
     });
@@ -504,9 +507,14 @@ function createHistoricalExtensionKinds(
 function createHistoricalArtifactTargets(
   summary: HistoricalTrackingSummary,
 ): PluginArtifactTargetDefinition[] | undefined {
-  const targets = [...summary.dynamicTargetsByPlatform.codex.values()]
+  const targets = [
+    ...summary.dynamicTargetsByPlatform.codex.values(),
+    ...summary.dynamicTargetsByPlatform.claude.values(),
+  ]
     .sort((left, right) =>
-      left.target.localeCompare(right.target) || left.id.localeCompare(right.id),
+      left.platform.localeCompare(right.platform) ||
+      left.target.localeCompare(right.target) ||
+      left.id.localeCompare(right.id),
     );
   return targets.length > 0 ? targets : undefined;
 }

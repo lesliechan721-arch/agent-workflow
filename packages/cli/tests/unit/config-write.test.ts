@@ -13,9 +13,18 @@ vi.mock('../../src/utils/artifact-refresh.js', () => ({
     triggerKeys: [...(options.changedKeys ?? [])],
     artifacts: [],
   })),
+  reapplyConfigRefresh: vi.fn(async () => ({
+    attempted: false,
+    status: 'skipped' as const,
+    triggerKeys: [],
+    artifacts: [],
+  })),
 }));
 
-import { refreshArtifactsAfterConfigWrite } from '../../src/utils/artifact-refresh.js';
+import {
+  reapplyConfigRefresh,
+  refreshArtifactsAfterConfigWrite,
+} from '../../src/utils/artifact-refresh.js';
 import type { PluginMeta } from '../../src/types.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
@@ -518,15 +527,40 @@ describe('plugin config write helper', () => {
             defaultTrigger: 'auto',
             allowDynamicTrigger: true,
           },
+          review: {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
         },
         config: undefined,
       },
     } as PluginMeta);
-    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), '# commit\n');
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'),
+      '---\nname: commit\ndescription: Commit skill.\ndisable-model-invocation: false\n---\nCommit\n',
+    );
     await fs.outputFile(
       path.join(plugin.rootDir, 'skills', 'commit', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'review', 'SKILL.md'),
+      '---\nname: review\ndescription: Review skill.\ndisable-model-invocation: false\n---\nReview\n',
+    );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'review', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    for (const skillName of ['commit', 'review']) {
+      await fs.outputFile(
+        path.join(plugin.rootDir, 'codex', 'skills', skillName, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      );
+      await fs.outputFile(
+        path.join(plugin.rootDir, 'claude', 'skills', skillName, 'SKILL.md'),
+        `---\nname: ${skillName}\ndescription: ${skillName} skill.\ndisable-model-invocation: false\n---\n${skillName}\n`,
+      );
+    }
 
     vi.spyOn(localMarketplaceModule, 'readInstalledLedger').mockResolvedValue({
       ledgerState: { status: 'available' },
@@ -547,7 +581,7 @@ describe('plugin config write helper', () => {
         },
       },
     } as never);
-    vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
+    const materializeSpy = vi.spyOn(skillTriggerModule, 'materializeSkillTriggerPreference').mockResolvedValue({
       committed: false,
       warnings: [],
       summary: {
@@ -603,6 +637,16 @@ describe('plugin config write helper', () => {
         state: 'completed',
       }),
     ]));
+    expect(materializeSpy).toHaveBeenCalledTimes(2);
+    for (const [call] of materializeSpy.mock.calls) {
+      expect(call.resolvedOptions).toEqual({
+        skillTriggerPreference: 'default',
+        skillTriggerPreferences: {
+          commit: 'manual',
+          review: 'auto',
+        },
+      });
+    }
     await expect(readPluginConfigStore({
       pluginName: plugin.manifest.name,
       scope: 'user',
@@ -1290,6 +1334,7 @@ describe('plugin config write helper', () => {
       marketplaceRootOrStagingRoot: env.AW_HOME,
     }));
     expect(materializeSpy.mock.calls[0]?.[0]).not.toHaveProperty('target');
+    expect(reapplyConfigRefresh).toHaveBeenCalled();
   });
 
   it('fails config writes before touching the store when user tracking-only dynamic refresh target fails agent version gate', async () => {

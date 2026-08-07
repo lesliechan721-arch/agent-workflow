@@ -9,6 +9,7 @@ import {
   ClaudeAdapter,
   applyClaudeInstallLedger,
   applyClaudeUninstallLedger,
+  pruneClaudeTrackedArtifacts,
 } from '../../src/adapters/claude.js';
 import type { InstalledLedger, PluginMeta, StatusReport } from '../../src/types.js';
 import {
@@ -17,6 +18,7 @@ import {
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import {
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -83,6 +85,95 @@ async function removePluginFromLocalMarketplace(
   }
 }
 
+async function createDynamicClaudePlugin(
+  root: string,
+  state: 'present' | 'disabled' = 'present',
+): Promise<PluginMeta> {
+  const sourceRoot = path.join(root, 'dynamic-claude-source');
+  const bundleRoot = path.join(root, 'dynamic-claude-bundle');
+  await fs.outputJson(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), {
+    name: 'dynamic-claude',
+    version: '0.1.0',
+    compatibility: { aw: { minVersion: '1.0.0-beta.30' } },
+    description: 'Dynamic Claude skill fixture',
+    marketplace: {
+      category: 'test',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NONE',
+        products: ['CLAUDE'],
+      },
+    },
+    skillTriggers: {
+      'dynamic-claude': {
+        defaultTrigger: 'auto',
+        allowDynamicTrigger: true,
+      },
+    },
+    scripts: {
+      artifacts: {
+        render: {
+          runner: 'node',
+          path: './scripts/render-artifacts.mjs',
+        },
+      },
+    },
+    artifacts: {
+      targets: [{
+        id: 'dynamic-claude-skill',
+        platform: 'claude',
+        scopes: ['user', 'project'],
+        target: 'claude.skill',
+        states: [state],
+        refreshKeys: [],
+        skillKey: 'dynamic-claude',
+        sourceDirs: ['./templates/common', './templates/claude'],
+      }],
+    },
+  }, { spaces: 2 });
+  await fs.outputFile(
+    path.join(sourceRoot, 'scripts', 'render-artifacts.mjs'),
+    [
+      'console.log(JSON.stringify({',
+      '  version: 2,',
+      '  artifacts: [{',
+      '    id: "dynamic-claude-skill",',
+      '    platform: "claude",',
+      '    target: "claude.skill",',
+      '    kind: "skill",',
+      `    state: ${JSON.stringify(state)},`,
+      '    skillKey: "dynamic-claude",',
+      '    refreshKeys: [],',
+      ...(state === 'present'
+        ? ['    content: { files: { "references/dynamic.md": "dynamic\\n" } }']
+        : ['    disabledReason: "config"']),
+      '  }]',
+      '}));',
+    ].join('\n'),
+  );
+  await fs.outputFile(
+    path.join(sourceRoot, 'templates', 'common', 'SKILL.md'),
+    '---\nname: dynamic-claude\ndescription: Dynamic Claude skill\n---\nCommon\n',
+  );
+  await fs.outputFile(
+    path.join(sourceRoot, 'templates', 'common', 'references', 'shared.md'),
+    'common\n',
+  );
+  await fs.outputFile(
+    path.join(sourceRoot, 'templates', 'common', 'assets', 'icon.bin'),
+    Buffer.from([0, 255, 1]),
+  );
+  await fs.outputFile(
+    path.join(sourceRoot, 'templates', 'claude', 'references', 'shared.md'),
+    'claude\n',
+  );
+
+  const sourcePlugin = await readPluginManifest(sourceRoot);
+  await bundleLocalPlugin(sourcePlugin, bundleRoot);
+  return readPluginManifest(bundleRoot, { mode: 'bundle' });
+}
+
 function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capabilityChanged'): StatusReport {
   return {
     platform: 'claude',
@@ -132,6 +223,142 @@ function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capa
 }
 
 describe('ClaudeAdapter', () => {
+  it('materializes project dynamic skills from ordered static sources and renderer overrides', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const paths = resolveClaudePaths(repoRoot, 'project', env);
+
+    const artifacts = await adapter.installExtensions(plugin, 'project', {
+      skillTriggerPreference: 'manual',
+    });
+    const skill = artifacts.find((artifact) => artifact.target === 'claude.skill');
+    expect(skill).toMatchObject({
+      platform: 'claude',
+      kind: 'skill',
+      artifactKey: 'dynamic-claude',
+      state: 'present',
+    });
+    const skillRoot = path.join(paths.configDir, 'skills', 'dynamic-claude');
+    await expect(fs.readFile(path.join(skillRoot, 'references', 'shared.md'), 'utf8'))
+      .resolves.toBe('claude\n');
+    await expect(fs.readFile(path.join(skillRoot, 'references', 'dynamic.md'), 'utf8'))
+      .resolves.toBe('dynamic\n');
+    await expect(fs.readFile(path.join(skillRoot, 'assets', 'icon.bin')))
+      .resolves.toEqual(Buffer.from([0, 255, 1]));
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('disable-model-invocation: true');
+
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    await setupLocalMarketplace(repoRoot, env);
+    await fs.symlink('../SKILL.md', path.join(skillRoot, 'assets', 'skill-link'));
+    const symlinkStatus = await adapter.status(plugin, 'project');
+    const symlinkArtifact = symlinkStatus.plugins[0]?.generatedArtifacts.find((entry) =>
+      entry.target === 'claude.skill');
+    expect(symlinkArtifact).toMatchObject({
+      target: 'claude.skill',
+      exists: true,
+    });
+    expect(symlinkArtifact).not.toHaveProperty('currentContentDigest');
+    expect(symlinkStatus.plugins[0]?.driftWarnings.join('\n')).toContain(
+      '包含无法读取的文件树',
+    );
+    await fs.remove(path.join(skillRoot, 'assets', 'skill-link'));
+    await adapter.uninstallExtensions(plugin, 'project');
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+  });
+
+  it('refuses to overwrite an unmanaged Claude skill directory', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const skillRoot = path.join(
+      resolveClaudePaths(repoRoot, 'user', env).configDir,
+      'skills',
+      'dynamic-claude',
+    );
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# unmanaged\n');
+
+    await expect(adapter.installExtensions(plugin, 'user')).rejects.toThrow('不由 AW 管理');
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+  });
+
+  it('does not claim or remove an unmanaged Claude directory for a disabled artifact', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const pluginRoot = path.dirname(repoRoot);
+    const disabledPlugin = await createDynamicClaudePlugin(pluginRoot, 'disabled');
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const paths = resolveClaudePaths(repoRoot, 'project', env);
+    const skillRoot = path.join(paths.configDir, 'skills', 'dynamic-claude');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# unmanaged\n');
+
+    const artifacts = await adapter.installExtensions(disabledPlugin, 'project');
+    expect(artifacts).toContainEqual(expect.objectContaining({
+      target: 'claude.skill',
+      state: 'disabled',
+    }));
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+
+    await upsertTrackingRecord(paths.trackingDir, disabledPlugin.manifest.name, artifacts);
+    await setupLocalMarketplace(repoRoot, env);
+    const disabledStatus = await adapter.status(disabledPlugin, 'project');
+    expect(disabledStatus.plugins[0]?.generatedArtifacts).toContainEqual(expect.objectContaining({
+      target: 'claude.skill',
+      state: 'disabled',
+      exists: false,
+    }));
+    expect(disabledStatus.plugins[0]?.driftWarnings.join('\n')).not.toContain('disabled');
+    await adapter.uninstallExtensions(disabledPlugin, 'project');
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+
+    const presentPlugin = await createDynamicClaudePlugin(pluginRoot, 'present');
+    await expect(adapter.installExtensions(presentPlugin, 'project')).rejects.toThrow('不由 AW 管理');
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+  });
+
+  it('prunes only stale tracked Claude dynamic skill directories', async () => {
+    const { repoRoot } = await makeWorkspace();
+    const stalePath = path.join(repoRoot, '.claude', 'skills', 'old-skill');
+    const preservedPath = path.join(repoRoot, '.claude', 'skills', 'new-skill');
+    const disabledPath = path.join(repoRoot, '.claude', 'skills', 'disabled-skill');
+    await fs.outputFile(path.join(stalePath, 'SKILL.md'), '# old\n');
+    await fs.outputFile(path.join(preservedPath, 'SKILL.md'), '# new\n');
+    await fs.outputFile(path.join(disabledPath, 'SKILL.md'), '# disabled unmanaged\n');
+
+    await pruneClaudeTrackedArtifacts({
+      configDir: path.join(repoRoot, '.claude'),
+      artifacts: [{
+        path: stalePath,
+        kind: 'skill',
+        platform: 'claude',
+        target: 'claude.skill',
+        id: 'old',
+        artifactKey: 'old-skill',
+        state: 'present',
+      }, {
+        path: disabledPath,
+        kind: 'skill',
+        platform: 'claude',
+        target: 'claude.skill',
+        id: 'disabled',
+        artifactKey: 'disabled-skill',
+        state: 'disabled',
+      }],
+      preservedArtifacts: [{
+        path: preservedPath,
+        kind: 'skill',
+        platform: 'claude',
+        target: 'claude.skill',
+        id: 'new',
+        artifactKey: 'new-skill',
+      }],
+    });
+
+    await expect(fs.pathExists(stalePath)).resolves.toBe(false);
+    await expect(fs.pathExists(preservedPath)).resolves.toBe(true);
+    await expect(fs.pathExists(disabledPath)).resolves.toBe(true);
+  });
+
   it('tracks Claude hook-only capabilities in the ledger without emitting hook artifacts', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const basePlugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

@@ -139,6 +139,7 @@ const ARTIFACT_TARGETS = new Set([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
   'codex.skill',
+  'claude.skill',
 ]);
 const ARTIFACT_STATES = new Set(['present', 'disabled']);
 const ARTIFACT_SCOPES = new Set(['user', 'project']);
@@ -148,6 +149,7 @@ const ARTIFACT_KIND_BY_TARGET = {
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
   'codex.skill': 'skill',
+  'claude.skill': 'skill',
 };
 const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
   'codex.developerInstructionsBlock': 'instruction',
@@ -1849,18 +1851,17 @@ function validateSkillTriggers(pluginDir, manifest) {
   const artifactTargets = Array.isArray(manifest.artifacts?.targets)
     ? manifest.artifacts.targets
     : [];
-  const dynamicCodexSkillNames = artifactTargets
+  const dynamicSkillNames = artifactTargets
     .filter((target) =>
       target
       && typeof target === 'object'
-      && target.platform === 'codex'
-      && target.target === 'codex.skill'
+      && (target.target === 'codex.skill' || target.target === 'claude.skill')
       && typeof target.skillKey === 'string'
       && target.skillKey.trim() !== '',
     )
     .map((target) => target.skillKey.trim())
     .sort();
-  const dynamicCodexSkillNameSet = new Set(dynamicCodexSkillNames);
+  const dynamicSkillNameSet = new Set(dynamicSkillNames);
 
   const slashCommandNames = [];
   if (typeof manifest.slashCommands === 'string') {
@@ -1887,15 +1888,15 @@ function validateSkillTriggers(pluginDir, manifest) {
   if (
     manifest.skillTriggers !== undefined
     && staticSkillNames.length === 0
-    && dynamicCodexSkillNames.length === 0
+    && dynamicSkillNames.length === 0
   ) {
-    error('skillTriggers requires a declared "skills" directory or codex.skill artifact');
+    error('skillTriggers requires a declared "skills" directory or dynamic skill artifact');
   }
 
-  for (const skillName of dynamicCodexSkillNames) {
+  for (const skillName of dynamicSkillNames) {
     if (staticSkillNameSet.has(skillName)) {
       error(
-        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a codex.skill artifact.`,
+        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
       );
     }
   }
@@ -1908,8 +1909,8 @@ function validateSkillTriggers(pluginDir, manifest) {
       );
       continue;
     }
-    if (!staticSkillNameSet.has(skillName) && !dynamicCodexSkillNameSet.has(skillName)) {
-      error(`Invalid ${fieldName}: expected a declared static skill or codex.skill artifact.`);
+    if (!staticSkillNameSet.has(skillName) && !dynamicSkillNameSet.has(skillName)) {
+      error(`Invalid ${fieldName}: expected a declared static skill or dynamic skill artifact.`);
       continue;
     }
 
@@ -1931,9 +1932,9 @@ function validateSkillTriggers(pluginDir, manifest) {
     }
   }
 
-  for (const skillName of dynamicCodexSkillNames) {
+  for (const skillName of dynamicSkillNames) {
     if (!Object.prototype.hasOwnProperty.call(explicitSkillTriggers, skillName)) {
-      error(`Invalid plugin manifest: codex.skill "${skillName}" must declare skillTriggers.${skillName}.`);
+      error(`Invalid plugin manifest: dynamic skill "${skillName}" must declare skillTriggers.${skillName}.`);
     }
   }
 }
@@ -2426,7 +2427,7 @@ function validateStringArray(value, fieldName, options = {}) {
   return output;
 }
 
-function validateArtifactTargetEntry(entry, index, manifest, seen) {
+function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
   const fieldName = `artifacts.targets[${index}]`;
   const target = expectRecord(entry, fieldName);
   if (!target) return null;
@@ -2443,16 +2444,18 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
+    'sourceDirs',
   ]);
 
   const id = validateArtifactId(target.id, `${fieldName}.id`);
   const platform = validateManifestString(target.platform, `${fieldName}.platform`);
   const artifactTarget = validateManifestString(target.target, `${fieldName}.target`);
-  if (platform && platform !== 'codex') {
-    error(`${fieldName}.platform: dynamic Codex artifacts must use "codex"`);
-  }
   if (artifactTarget && !ARTIFACT_TARGETS.has(artifactTarget)) {
     error(`${fieldName}.target: unsupported artifact target "${artifactTarget}"`);
+  }
+  const expectedPlatform = artifactTarget === 'claude.skill' ? 'claude' : 'codex';
+  if (platform && artifactTarget && platform !== expectedPlatform) {
+    error(`${fieldName}.platform: target "${artifactTarget}" must use "${expectedPlatform}"`);
   }
 
   const key = id && artifactTarget ? `${id}:${artifactTarget}` : null;
@@ -2490,6 +2493,9 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
       `${fieldName}.projectManagedKind: target "${artifactTarget}" must map to "${expectedProjectManagedKind}"`,
     );
   }
+  if (!expectedProjectManagedKind && projectManagedKind) {
+    error(`${fieldName}.projectManagedKind: target "${artifactTarget}" does not support projectManagedKind`);
+  }
 
   const scopes = validateStringArray(target.scopes, `${fieldName}.scopes`, {
     allowed: ARTIFACT_SCOPES,
@@ -2526,6 +2532,9 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
   if (artifactTarget === 'codex.skill' && target.requiresCodexProjectConfig === true) {
     error(`${fieldName}.requiresCodexProjectConfig: codex.skill writes the skill runtime and must not require Codex project config preflight`);
   }
+  if (platform === 'claude' && target.requiresCodexProjectConfig !== undefined) {
+    error(`${fieldName}.requiresCodexProjectConfig: Claude targets do not support this field`);
+  }
 
   let roleKey;
   let skillKey;
@@ -2537,13 +2546,44 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
   } else if (target.roleKey !== undefined) {
     error(`${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets`);
   }
-  if (artifactTarget === 'codex.skill') {
+  if (artifactTarget === 'codex.skill' || artifactTarget === 'claude.skill') {
     skillKey = validateCodexSkillKey(target.skillKey, `${fieldName}.skillKey`);
     if (!skillKey) {
-      error(`${fieldName}.skillKey: codex.skill targets must declare a static skillKey`);
+      error(`${fieldName}.skillKey: ${artifactTarget} targets must declare a static skillKey`);
     }
   } else if (target.skillKey !== undefined) {
-    error(`${fieldName}.skillKey: skillKey is only supported for codex.skill targets`);
+    error(`${fieldName}.skillKey: skillKey is only supported for skill targets`);
+  }
+
+  const normalizedSourceDirs = Array.isArray(target.sourceDirs)
+    ? target.sourceDirs
+      .filter((sourceDir) => typeof sourceDir === 'string' && sourceDir.trim() !== '')
+      .map((sourceDir) => path.posix.normalize(sourceDir))
+    : [];
+  if (new Set(normalizedSourceDirs).size !== normalizedSourceDirs.length) {
+    error(`${fieldName}.sourceDirs must not contain duplicate directories`);
+  }
+  const sourceDirs = target.sourceDirs === undefined
+    ? []
+    : validateStringArray(target.sourceDirs, `${fieldName}.sourceDirs`);
+  if (sourceDirs.length > 0 && artifactTarget !== 'codex.skill' && artifactTarget !== 'claude.skill') {
+    error(`${fieldName}.sourceDirs: sourceDirs are only supported for skill targets`);
+  }
+  for (const [sourceIndex, sourceDir] of sourceDirs.entries()) {
+    const sourceField = `${fieldName}.sourceDirs[${sourceIndex}]`;
+    if (!sourceDir.startsWith('./') || path.posix.isAbsolute(sourceDir)) {
+      error(`${sourceField} must start with "./" and stay inside the plugin root`);
+      continue;
+    }
+    const normalized = path.posix.normalize(sourceDir);
+    if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+      error(`${sourceField} must stay inside the plugin root`);
+      continue;
+    }
+    const stats = fs.lstatSync(path.join(pluginDir, normalized), { throwIfNoEntry: false });
+    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+      error(`${sourceField} must point to an existing directory`);
+    }
   }
 
   return {
@@ -2557,10 +2597,11 @@ function validateArtifactTargetEntry(entry, index, manifest, seen) {
     refreshKeys,
     roleKey,
     skillKey,
+    sourceDirs,
   };
 }
 
-function validateArtifactsConfigLightweight(manifest) {
+function validateArtifactsConfigLightweight(pluginDir, manifest) {
   if (manifest.artifacts === undefined) return [];
   const artifacts = expectRecord(manifest.artifacts, 'artifacts');
   if (!artifacts) return [];
@@ -2572,9 +2613,30 @@ function validateArtifactsConfigLightweight(manifest) {
   }
 
   const seen = new Set();
-  return artifacts.targets
-    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen))
+  const declarations = artifacts.targets
+    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir))
     .filter(Boolean);
+  const owners = new Map();
+  for (const declaration of declarations) {
+    if (
+      (declaration.target !== 'codex.skill' && declaration.target !== 'claude.skill') ||
+      !declaration.skillKey
+    ) {
+      continue;
+    }
+    for (const scope of declaration.scopes) {
+      const ownerKey = `${declaration.platform}:${scope}:${declaration.skillKey}`;
+      const existing = owners.get(ownerKey);
+      if (existing) {
+        error(
+          `artifacts.targets has duplicate skill ownership "${ownerKey}" in artifacts "${existing}" and "${declaration.id}"`,
+        );
+      } else {
+        owners.set(ownerKey, declaration.id);
+      }
+    }
+  }
+  return declarations;
 }
 
 function validateArtifactPlanRefreshKeys(refreshKeys, declaration, fieldName) {
@@ -2591,13 +2653,132 @@ function validateArtifactPlanRefreshKeys(refreshKeys, declaration, fieldName) {
   }
 }
 
-function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
+function isValidArtifactFilePath(relativePath) {
+  return (
+    relativePath.trim() !== '' &&
+    !relativePath.includes('\\') &&
+    !relativePath.startsWith('/') &&
+    path.posix.normalize(relativePath) === relativePath &&
+    !relativePath.split('/').some((segment) =>
+      segment === '' || segment === '.' || segment === '..')
+  );
+}
+
+function collectArtifactSourceFiles(rootDir, fieldName, files) {
+  const rootStats = fs.lstatSync(rootDir, { throwIfNoEntry: false });
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return;
+
+  const visit = (currentDir, parentPath) => {
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+      const absolutePath = path.join(currentDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        error(`${fieldName} contains unsupported symbolic link "${relativePath}"`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(absolutePath, relativePath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        error(`${fieldName} contains unsupported non-regular file "${relativePath}"`);
+        continue;
+      }
+      files.set(relativePath, fs.readFileSync(absolutePath));
+    }
+  };
+
+  visit(rootDir, '');
+}
+
+function findArtifactFilePrefixConflict(files) {
+  const paths = [...files.keys()].sort();
+  for (const [index, relativePath] of paths.entries()) {
+    const prefix = paths.slice(0, index).find((candidate) =>
+      relativePath.startsWith(`${candidate}/`));
+    if (prefix) return [prefix, relativePath];
+  }
+  return null;
+}
+
+function validateRenderedSkillTree(options) {
+  const { entry, declaration, fieldName, pluginDir, manifest, materializedRoot } = options;
+  if (entry.state !== 'present' || !isRecord(entry.content) || !isRecord(entry.content.files)) {
+    return;
+  }
+
+  const files = new Map();
+  declaration.sourceDirs.forEach((sourceDir, index) => {
+    collectArtifactSourceFiles(
+      path.join(pluginDir, normalizeRelativePath(sourceDir)),
+      `artifacts.targets sourceDirs[${index}] for artifact "${declaration.id}"`,
+      files,
+    );
+  });
+  for (const [relativePath, content] of Object.entries(entry.content.files)) {
+    if (isValidArtifactFilePath(relativePath) && typeof content === 'string') {
+      files.set(relativePath, Buffer.from(content, 'utf8'));
+    }
+  }
+
+  const conflict = findArtifactFilePrefixConflict(files);
+  if (conflict) {
+    error(`${fieldName} final file tree path "${conflict[0]}" conflicts with "${conflict[1]}"`);
+    return;
+  }
+
+  const skillFile = files.get('SKILL.md');
+  if (!skillFile || skillFile.toString('utf8').trim() === '') {
+    error(`${fieldName} final file tree must contain a non-empty SKILL.md`);
+  } else {
+    try {
+      const frontmatter = parseFrontmatter(skillFile.toString('utf8'), `${fieldName} final SKILL.md`);
+      if (!frontmatter) {
+        error(`${fieldName} final SKILL.md must contain YAML frontmatter`);
+      } else {
+        validateSkillFrontmatter(frontmatter, declaration.skillKey, {
+          strictAgentSkills: false,
+          targetsClaude: declaration.platform === 'claude',
+        });
+      }
+    } catch (e) {
+      error(`${fieldName} final SKILL.md frontmatter is not valid YAML: ${e.message}`);
+    }
+  }
+
+  if (declaration.target === 'codex.skill') {
+    const openAiYaml = files.get('agents/openai.yaml');
+    if (!openAiYaml || openAiYaml.toString('utf8').trim() === '') {
+      error(`${fieldName} final file tree must contain a non-empty agents/openai.yaml`);
+    }
+  }
+
+  fs.rmSync(materializedRoot, { recursive: true, force: true });
+  for (const [relativePath, content] of files) {
+    const targetPath = path.join(materializedRoot, ...relativePath.split('/'));
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, content);
+  }
+  if (declaration.target === 'codex.skill' && files.has('agents/openai.yaml')) {
+    validateOpenAiYaml(
+      path.join(materializedRoot, 'agents', 'openai.yaml'),
+      declaration.skillKey,
+      true,
+      manifest,
+      materializedRoot,
+    );
+  }
+}
+
+function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   const planField = `scripts.artifacts.render fixture (${scopeLabel})`;
   const root = expectRecord(plan, planField);
   if (!root) return;
   validateAllowedKeys(root, planField, ['version', 'artifacts']);
-  if (root.version !== 1) {
-    error(`${planField}.version must be 1`);
+  if (root.version !== 2) {
+    error(`${planField}.version must be 2`);
   }
   if (!Array.isArray(root.artifacts)) {
     error(`${planField}.artifacts must be an array`);
@@ -2672,25 +2853,46 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
     } else if (entry.roleKey !== undefined) {
       error(`${fieldName}.roleKey is only supported for codex.agentRole artifacts`);
     }
-    if (declaration.target === 'codex.skill') {
+    if (declaration.target === 'codex.skill' || declaration.target === 'claude.skill') {
       if (entry.skillKey !== declaration.skillKey) {
         error(`${fieldName}.skillKey: expected "${declaration.skillKey}" from static metadata`);
       }
       if (entry.state === 'present') {
         if (!isRecord(entry.content)) {
-          error(`${fieldName}.content must be an object for codex.skill artifacts`);
+          error(`${fieldName}.content must be an object for dynamic skill artifacts`);
         } else {
-          validateAllowedKeys(entry.content, `${fieldName}.content`, ['skillFile', 'openaiYaml']);
-          if (typeof entry.content.skillFile !== 'string' || entry.content.skillFile.trim() === '') {
-            error(`${fieldName}.content.skillFile must be a non-empty string`);
-          }
-          if (typeof entry.content.openaiYaml !== 'string' || entry.content.openaiYaml.trim() === '') {
-            error(`${fieldName}.content.openaiYaml must be a non-empty string`);
+          validateAllowedKeys(entry.content, `${fieldName}.content`, ['files']);
+          const files = expectRecord(entry.content.files, `${fieldName}.content.files`);
+          if (files) {
+            const filePaths = Object.keys(files).sort();
+            for (const [relativePath, content] of Object.entries(files)) {
+              if (!isValidArtifactFilePath(relativePath)) {
+                error(`${fieldName}.content.files path "${relativePath}" must be a normalized POSIX relative path`);
+              }
+              if (typeof content !== 'string') {
+                error(`${fieldName}.content.files.${relativePath} must be a string`);
+              }
+            }
+            for (const [pathIndex, relativePath] of filePaths.entries()) {
+              const conflict = filePaths.slice(0, pathIndex).find((candidate) =>
+                relativePath.startsWith(`${candidate}/`));
+              if (conflict) {
+                error(`${fieldName}.content.files path "${conflict}" conflicts with "${relativePath}"`);
+              }
+            }
           }
         }
+        validateRenderedSkillTree({
+          entry,
+          declaration,
+          fieldName,
+          pluginDir: options.pluginDir,
+          manifest: options.manifest,
+          materializedRoot: path.join(options.tempRoot, `${declaration.platform}-${scopeLabel.split('/')[1]}-${index}`),
+        });
       }
     } else if (entry.skillKey !== undefined) {
-      error(`${fieldName}.skillKey is only supported for codex.skill artifacts`);
+      error(`${fieldName}.skillKey is only supported for dynamic skill artifacts`);
     }
   });
 
@@ -2705,18 +2907,21 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel) {
 function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations) {
   if (!renderEntry || declarations.length === 0) return;
 
-  const scopes = [...new Set(declarations.flatMap((target) => target.scopes))];
+  const platformScopes = [...new Set(declarations.flatMap((target) =>
+    target.scopes.map((scope) => `${target.platform}:${scope}`)))];
   const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
   try {
-    for (const scope of scopes) {
-      const scopedDeclarations = declarations.filter((target) => target.scopes.includes(scope));
-      const contextPath = path.join(tempRoot, `context-${scope}.json`);
+    for (const platformScope of platformScopes) {
+      const [platform, scope] = platformScope.split(':');
+      const scopedDeclarations = declarations.filter((target) =>
+        target.platform === platform && target.scopes.includes(scope));
+      const contextPath = path.join(tempRoot, `context-${platform}-${scope}.json`);
       fs.writeFileSync(
         contextPath,
         JSON.stringify({
           event: 'install',
-          platform: 'codex',
+          platform,
           scope,
           plugin: {
             name: manifest.name,
@@ -2730,6 +2935,12 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
           artifactRenderConfig: { values },
           changedConfigKeys: [],
           previousArtifacts: [],
+          artifactSources: scopedDeclarations.map((target) => ({
+            id: target.id,
+            target: target.target,
+            sourceDirs: target.sourceDirs.map((sourceDir) =>
+              path.join(pluginDir, normalizeRelativePath(sourceDir))),
+          })),
           awHome: path.join(tempRoot, 'aw-home'),
           codexHome: path.join(tempRoot, 'codex-home'),
           claudeHome: path.join(tempRoot, 'claude-home'),
@@ -2747,7 +2958,7 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
           maxBuffer: 1024 * 1024,
         },
       );
-      const fieldName = `scripts.artifacts.render fixture (${scope})`;
+      const fieldName = `scripts.artifacts.render fixture (${platform}/${scope})`;
       if (result.error) {
         error(`${fieldName} failed: ${result.error.message}`);
         continue;
@@ -2764,7 +2975,11 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
         error(`${fieldName} stdout must be JSON ArtifactPlan: ${e.message}`);
         continue;
       }
-      validateRenderedArtifactPlan(plan, scopedDeclarations, scope);
+      validateRenderedArtifactPlan(plan, scopedDeclarations, `${platform}/${scope}`, {
+        pluginDir,
+        manifest,
+        tempRoot,
+      });
     }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -2772,7 +2987,7 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
 }
 
 function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry) {
-  const declarations = validateArtifactsConfigLightweight(manifest);
+  const declarations = validateArtifactsConfigLightweight(pluginDir, manifest);
   const hasTargets = declarations.length > 0;
   const hasRenderer = Boolean(manifest.scripts?.artifacts?.render);
 
@@ -2956,6 +3171,13 @@ function validateAppsContent(pluginDir, manifest) {
 
 function hasCodexRepoManagedSurface(manifest) {
   if (manifest.skills || manifest.slashCommands || manifest.mcpServers) {
+    return true;
+  }
+  if ((manifest.artifacts?.targets ?? []).some((target) =>
+    target?.platform === 'codex' &&
+    Array.isArray(target.scopes) &&
+    target.scopes.includes('project') &&
+    typeof target.projectManagedKind === 'string')) {
     return true;
   }
   const extensions = manifest.extensions;

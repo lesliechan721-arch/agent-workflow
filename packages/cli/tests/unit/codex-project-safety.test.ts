@@ -218,7 +218,7 @@ async function writeFixtureArtifactRenderer(
 function renderInvalidDynamicArtifactsPlan(): string {
   return [
     'console.log(JSON.stringify({',
-    '  version: 1,',
+    '  version: 2,',
     '  artifacts: [',
     '    {',
     '      id: "codex-explorer-role",',
@@ -245,7 +245,7 @@ function renderInvalidDynamicArtifactsPlan(): string {
 function renderValidDynamicArtifactsPlan(): string {
   return [
     'console.log(JSON.stringify({',
-    '  version: 1,',
+    '  version: 2,',
     '  artifacts: [',
     '    {',
     '      id: "lightweight-instruction",',
@@ -314,7 +314,7 @@ function renderDynamicSkillPlan(options: {
       '',
     ].join('\n'))};`,
     'console.log(JSON.stringify({',
-    '  version: 1,',
+    '  version: 2,',
     '  artifacts: [',
     '    {',
     '      id: "repo-check-skill",',
@@ -324,7 +324,7 @@ function renderDynamicSkillPlan(options: {
     '      state: "present",',
     `      skillKey: ${JSON.stringify(skillKey)},`,
     '      refreshKeys: ["explorerModel", "modelReasoningEffort"],',
-    '      content: { skillFile, openaiYaml }',
+    '      content: { files: { "SKILL.md": skillFile, "agents/openai.yaml": openaiYaml } }',
     '    }',
     '  ]',
     '}));',

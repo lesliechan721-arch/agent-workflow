@@ -25,6 +25,7 @@ import type {
   Scope,
 } from '../types.js';
 import {
+  getLocalMarketplaceCodexSkillRoot,
   getInstalledLedgerPath,
   readInstalledLedger,
   writeInstalledLedger,
@@ -67,11 +68,13 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
+  resolveRepoRoot,
 } from '../utils/paths.js';
 import {
   commitMaterializedSkillTriggerPreference,
   rematerializeSkillTriggerPreferenceAfterUninstall,
   rollbackMaterializedSkillTriggerPreference,
+  selectEffectiveSkillTriggerRecord,
   type SkillTriggerMaterializationRollbackHandle,
 } from '../utils/skill-trigger-preferences.js';
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
@@ -111,7 +114,13 @@ import {
   type UninstallCommandOptions,
 } from './options.js';
 import { readInstallStateProjection, tryUninstallUsingInstallState } from './install-state-removal.js';
-import { resetPluginConfigStore, resolvePluginConfigStorePath } from '../utils/plugin-config.js';
+import {
+  resetPluginConfigStore,
+  resolveEffectiveSkillTriggerPreferences,
+  resolvePluginConfigStorePath,
+} from '../utils/plugin-config.js';
+import { buildGeneratedName } from '../generators/shared.js';
+import { assertCanonicalTrackedCodexArtifactMainPaths } from '../utils/codex-artifact-paths.js';
 
 type UninstallCommandRuntime = CommandExecutionContextInput & {
   skipLifecycle?: boolean;
@@ -219,8 +228,20 @@ async function hasProjectSharedIdentityForTrackedCodexSkills(options: {
   trackedArtifacts: GeneratedArtifact[];
 }): Promise<boolean> {
   const trackedSkillArtifacts = options.trackedArtifacts.filter((artifact) =>
-    artifact.kind === 'skill' && artifact.target === 'codex.skill');
+    artifact.kind === 'skill' && artifact.target === 'codex.skill' && artifact.state !== 'disabled');
   if (trackedSkillArtifacts.length === 0) {
+    return false;
+  }
+
+  try {
+    await assertCanonicalTrackedCodexArtifactMainPaths({
+      cwd: options.cwd,
+      scope: 'project',
+      env: options.env,
+      pluginName: options.pluginName,
+      artifacts: trackedSkillArtifacts,
+    });
+  } catch {
     return false;
   }
 
@@ -246,13 +267,20 @@ async function hasProjectSharedIdentityForTrackedCodexSkills(options: {
     return false;
   }
 
-  return trackedSkillArtifacts.every((artifact) =>
+  return trackedSkillArtifacts.every((artifact) => {
+    const canonicalRelativePath = path
+      .relative(repoRoot, path.join(repoRoot, '.agents', 'skills', artifact.artifactKey!))
+      .split(path.sep)
+      .join('/');
+    return (
     identityRead.value.artifacts.some((identityArtifact) =>
       identityArtifact.kind === 'skill' &&
       identityArtifact.platform === 'codex' &&
       identityArtifact.target === 'codex.skill' &&
-      identityArtifact.artifactKey === artifact.artifactKey),
-  );
+      identityArtifact.artifactKey === artifact.artifactKey &&
+      identityArtifact.path === canonicalRelativePath)
+    );
+  });
 }
 
 function appendRollbackIssue(
@@ -307,14 +335,13 @@ async function capturePathRollbackState(
   index: number,
 ): Promise<PathRollbackState> {
   const normalizedPath = path.normalize(pathname);
-  if (!(await fs.pathExists(normalizedPath))) {
+  const stats = await fs.lstat(normalizedPath).catch(() => null);
+  if (!stats) {
     return {
       path: normalizedPath,
       state: 'absent',
     };
   }
-
-  const stats = await fs.lstat(normalizedPath);
   if (stats.isSymbolicLink()) {
     return {
       path: normalizedPath,
@@ -337,6 +364,25 @@ async function capturePathRollbackState(
     state: stats.isDirectory() ? 'directory' : 'file',
     backupPath,
   };
+}
+
+async function resolveOwnedOrAbsentRollbackPaths(options: {
+  trackedArtifacts: GeneratedArtifact[];
+  declaredPaths: string[];
+}): Promise<string[]> {
+  const paths: string[] = [];
+  for (const artifact of options.trackedArtifacts) {
+    const exists = Boolean(await fs.lstat(artifact.path).catch(() => null));
+    if (artifact.state !== 'disabled' || !exists) {
+      paths.push(artifact.path);
+    }
+  }
+  for (const declaredPath of options.declaredPaths) {
+    if (!(await fs.lstat(declaredPath).catch(() => null))) {
+      paths.push(declaredPath);
+    }
+  }
+  return uniqueArtifactPaths(paths);
 }
 
 async function restorePathRollbackState(snapshot: PathRollbackState): Promise<void> {
@@ -919,12 +965,74 @@ export async function captureArtifactRollbackState(
     const paths = resolveCodexPaths(cwd, scope, env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
+    const trackedSkillArtifacts = (trackingRecord?.artifacts ?? []).filter((artifact) =>
+      artifact.kind === 'skill' && artifact.target === 'codex.skill');
+    const trackedAgentArtifacts = (trackingRecord?.artifacts ?? []).filter((artifact) =>
+      artifact.kind === 'agent');
+    await assertCanonicalTrackedCodexArtifactMainPaths({
+      cwd,
+      scope,
+      env,
+      pluginName: target.pluginName,
+      artifacts: [
+        ...trackedSkillArtifacts,
+        ...trackedAgentArtifacts,
+      ],
+    });
+    const repoRoot = scope === 'project' ? await resolveRepoRoot(cwd) : undefined;
+    const declaredSkillPaths = ((target.currentPlugin ?? target.plugin).manifest.artifacts?.targets ?? [])
+      .filter((artifact) =>
+        artifact.platform === 'codex' &&
+        artifact.target === 'codex.skill' &&
+        artifact.scopes.includes(scope) &&
+        Boolean(artifact.skillKey))
+      .map((artifact) => scope === 'user'
+        ? getLocalMarketplaceCodexSkillRoot(resolveAwHome(env), target.pluginName, artifact.skillKey!)
+        : path.join(repoRoot!, '.agents', 'skills', artifact.skillKey!));
+    const skillRollbackPaths = await resolveOwnedOrAbsentRollbackPaths({
+      trackedArtifacts: trackedSkillArtifacts,
+      declaredPaths: declaredSkillPaths,
+    });
+    const declaredRolePaths = ((target.currentPlugin ?? target.plugin).manifest.artifacts?.targets ?? [])
+      .filter((artifact) =>
+        artifact.platform === 'codex' &&
+        artifact.target === 'codex.agentRole' &&
+        artifact.scopes.includes(scope) &&
+        Boolean(artifact.roleKey))
+      .map((artifact) => path.join(
+        paths.configDir,
+        'agents',
+        `${buildGeneratedName(target.pluginName, artifact.roleKey!)}.toml`,
+      ));
+    const agentRollbackPaths = await resolveOwnedOrAbsentRollbackPaths({
+      trackedArtifacts: trackedAgentArtifacts,
+      declaredPaths: declaredRolePaths,
+    });
+    for (const artifact of trackedAgentArtifacts) {
+      const invalidAuxiliaryPath = (artifact.paths ?? []).find((artifactPath) =>
+        path.normalize(artifactPath) !== path.normalize(artifact.path) &&
+        path.normalize(artifactPath) !== path.normalize(paths.configTomlPath));
+      if (invalidAuxiliaryPath) {
+        throw new Error(
+          `tracking manifest 中的 agent auxiliary path 不是当前 scope 的 canonical config.toml：${invalidAuxiliaryPath}`,
+        );
+      }
+    }
+    const declaredConfigTargets = ((target.currentPlugin ?? target.plugin).manifest.artifacts?.targets ?? [])
+      .some((artifact) =>
+        artifact.platform === 'codex' &&
+        artifact.scopes.includes(scope) &&
+        (artifact.target === 'codex.developerInstructionsBlock' || artifact.target === 'codex.agentRole'));
     const rollbackPaths = uniqueArtifactPaths([
       ...(trackingRecord?.artifacts
-        .filter((artifact) => artifact.kind === 'permission' || artifact.kind === 'agent' || artifact.kind === 'skill')
+        .filter((artifact) => artifact.kind === 'permission')
         .map((artifact) => artifact.path) ?? []),
+      ...skillRollbackPaths,
+      ...agentRollbackPaths,
       ...((trackingRecord?.artifacts ?? []).some((artifact) =>
-        artifact.kind === 'instruction' || artifact.kind === 'mcpServer')
+        artifact.kind === 'instruction' || artifact.kind === 'mcpServer') ||
+        trackedAgentArtifacts.length > 0 ||
+        declaredConfigTargets
         ? [paths.configTomlPath]
         : []),
       ...((trackingRecord?.artifacts ?? []).some((artifact) => artifact.kind === 'hook')
@@ -955,6 +1063,25 @@ export async function captureArtifactRollbackState(
   const trackingManifest = await readTrackingManifest(paths.trackingDir);
   const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
   const settings = await readClaudeSettings(paths.settingsPath);
+  const skillPaths = await resolveOwnedOrAbsentRollbackPaths({
+    trackedArtifacts: (trackingRecord?.artifacts ?? []).filter((artifact) =>
+      artifact.kind === 'skill' && artifact.target === 'claude.skill'),
+    declaredPaths: ((target.currentPlugin ?? target.plugin).manifest.artifacts?.targets ?? [])
+      .filter((artifact) =>
+        artifact.platform === 'claude' &&
+        artifact.target === 'claude.skill' &&
+        artifact.scopes.includes(scope) &&
+        Boolean(artifact.skillKey))
+      .map((artifact) => path.join(paths.configDir, 'skills', artifact.skillKey!)),
+  });
+  const cleanupRoot = skillPaths.length > 0
+    ? await fs.mkdtemp(
+      assertUninstallRollbackPathForTests(
+        path.join(os.tmpdir(), 'aw-uninstall-rollback-'),
+        'uninstall rollback staging root',
+      ),
+    )
+    : undefined;
 
   return {
     files: await Promise.all(
@@ -962,8 +1089,13 @@ export async function captureArtifactRollbackState(
         .filter((artifact) => artifact.kind === 'instruction')
         .map((artifact) => captureTextFile(artifact.path)),
     ),
-    pathSnapshots: [],
-    cleanupRoots: [],
+    pathSnapshots: cleanupRoot
+      ? await Promise.all(
+        skillPaths.map((artifactPath, index) =>
+          capturePathRollbackState(artifactPath, cleanupRoot, index)),
+      )
+      : [],
+    cleanupRoots: cleanupRoot ? [cleanupRoot] : [],
     claudePermissions: {
       topLevelPermissions: cloneClaudePermissionState(settings.permissions),
       generatedPermissions: cloneClaudePermissionState(
@@ -1144,7 +1276,10 @@ async function uninstallTargetOnPlatform(
   if (
     platform === 'codex' &&
     options.scope === 'project' &&
-    trackedArtifacts.some((artifact) => artifact.kind === 'skill' && artifact.target === 'codex.skill') &&
+    trackedArtifacts.some((artifact) =>
+      artifact.kind === 'skill' &&
+      artifact.target === 'codex.skill' &&
+      artifact.state !== 'disabled') &&
     !(await hasProjectSharedIdentityForTrackedCodexSkills({
       cwd: options.cwd,
       env,
@@ -1207,14 +1342,34 @@ async function uninstallTargetOnPlatform(
         await applyUninstallLedger(platform, baselineLedger, target, options),
       );
       if (shouldRematerializeSkillTriggersAfterUninstall(platform, options.scope, target)) {
+        const effectiveRecord = selectEffectiveSkillTriggerRecord({
+          ledger: nextLedger,
+          pluginName: target.pluginName,
+          platform,
+        });
+        const policyPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
+        const effectiveScope = effectiveRecord?.scopeIdentity === 'user' ? 'user' : 'project';
+        const effectiveCwd = effectiveScope === 'project'
+          ? effectiveRecord?.scopeIdentity.slice('project:'.length) || options.cwd
+          : options.cwd;
+        const skillTriggerPreferences = effectiveRecord
+          ? await resolveEffectiveSkillTriggerPreferences({
+              plugin: policyPlugin,
+              platform,
+              scope: effectiveScope,
+              cwd: effectiveCwd,
+              env,
+            })
+          : {};
         const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
           pluginName: target.pluginName,
           platform,
           ledgerAfterUninstall: nextLedger,
           embeddedRoot: getEmbeddedPluginsRootCandidate(),
           marketplaceRoot: resolveAwHome(env),
-          policyPlugin: target.embeddedPlugin ?? target.currentPlugin ?? target.plugin,
+          policyPlugin,
           fallbackSourcePluginRoot: target.currentPlugin?.rootDir,
+          skillTriggerPreferences,
           force: options.force === true,
         });
         warnings.push(...rematerialization.warnings);

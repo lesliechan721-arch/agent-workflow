@@ -1,10 +1,10 @@
 {
   "name": "codex-subagent-guide",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "在用户、项目规则或其它技能已明确要求使用子代理后，选择任务 role，并指导自定义参数、上下文 fork、事件等待和清理。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "1.0.0-beta.30"
     }
   },
   "skillTriggers": {
@@ -107,14 +107,6 @@
       }
     }
   },
-  "buildConfig": {
-    "fileRules": {
-      "codex": {
-        "include": ["templates/**"],
-        "exclude": []
-      }
-    }
-  },
   "artifacts": {
     "targets": [
       {
@@ -125,7 +117,8 @@
         "projectManagedKind": "skill",
         "states": ["present"],
         "refreshKeys": ["minimumInitialWaitMinutes"],
-        "skillKey": "codex-subagent-guide"
+        "skillKey": "codex-subagent-guide",
+        "sourceDirs": ["./templates/codex-subagent-guide"]
       },
       {
         "id": "codex-subagent-simple-role",

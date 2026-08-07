@@ -375,6 +375,48 @@ describe('adapter status helpers', () => {
     expect(getCodexProjectManagedKinds(target.plugin)).toEqual(['instruction', 'agent']);
   });
 
+  it('recovers tracked Claude dynamic skill identities when the current catalog is missing', async () => {
+    const { repoRoot, env } = await createHistoricalWorkspace('aw-claude-dynamic-history-');
+    const claudePaths = resolveClaudePaths(repoRoot, 'project', env);
+    const skillPath = path.join(claudePaths.configDir, 'skills', 'dynamic-claude');
+    await upsertTrackingRecord(claudePaths.trackingDir, 'dynamic-claude-history', [{
+      path: skillPath,
+      kind: 'skill',
+      platform: 'claude',
+      artifactKey: 'dynamic-claude',
+      id: 'dynamic-claude-skill',
+      target: 'claude.skill',
+      state: 'present',
+      refreshKeys: ['mode'],
+    }]);
+
+    const [target] = await loadPluginTargetsForCommand(
+      repoRoot,
+      'project',
+      ['dynamic-claude-history'],
+      { allowHistoricalFallback: true, env },
+    );
+
+    expect(target.source).toBe('historical');
+    expect(target.historicalArtifacts).toContainEqual(expect.objectContaining({
+      platform: 'claude',
+      target: 'claude.skill',
+      artifactKey: 'dynamic-claude',
+      state: 'present',
+    }));
+    expect(target.plugin.manifest.artifacts?.targets).toEqual([expect.objectContaining({
+      id: 'dynamic-claude-skill',
+      platform: 'claude',
+      target: 'claude.skill',
+      kind: 'skill',
+      skillKey: 'dynamic-claude',
+      scopes: ['project'],
+      states: ['present'],
+    })]);
+    expect(target.plugin.manifest.artifacts?.targets?.[0]).not.toHaveProperty('projectManagedKind');
+    expect(target.plugin.manifest.artifacts?.targets?.[0]).not.toHaveProperty('requiresCodexProjectConfig');
+  });
+
   it('recovers Claude hook-only historical plugins from ledger snapshots without tracking artifacts', async () => {
     const { repoRoot, env } = await createHistoricalWorkspace('aw-claude-hook-history-');
 

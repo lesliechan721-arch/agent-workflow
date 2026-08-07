@@ -88,7 +88,11 @@ async function prepareEvalBundle(plugin: PluginMeta): Promise<PreparedEvalBundle
       sourceRoot: plugin.rootDir,
       stagingRoot: prepared.plugin.rootDir,
       bundleRoot,
-      plugin: prepared.plugin,
+      plugin: {
+        ...prepared.plugin,
+        rootDir: bundleRoot,
+        manifestPath: path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
+      },
       cleanup: async () => {
         await prepared.cleanup();
         await fs.remove(tempRoot);

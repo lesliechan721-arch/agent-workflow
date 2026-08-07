@@ -82,7 +82,7 @@ export interface InstallRecordArtifact {
   artifactKey?: string;
   hookGroups?: Array<{ id: string; event: string }>;
   id?: string;
-  target?: 'codex.developerInstructionsBlock' | 'codex.agentRole';
+  target?: 'codex.developerInstructionsBlock' | 'codex.agentRole' | 'codex.skill' | 'claude.skill';
   roleKey?: string;
   ownershipMarker?: string;
   state?: 'present' | 'disabled';

@@ -274,7 +274,13 @@ function toGeneratedArtifact(
     ...(artifact.id ? { id: artifact.id } : {}),
     ...(artifact.target ? { target: artifact.target } : {}),
     ...(artifact.roleKey ? { roleKey: artifact.roleKey } : {}),
-    ...(artifact.ownershipMarker ? { contentDigest: artifact.ownershipMarker } : {}),
+    ...(artifact.state ? { state: artifact.state } : {}),
+    ...(artifact.configDigest ? { configDigest: artifact.configDigest } : {}),
+    ...(artifact.contentDigest
+      ? { contentDigest: artifact.contentDigest }
+      : artifact.ownershipMarker
+        ? { contentDigest: artifact.ownershipMarker }
+        : {}),
   };
 }
 
@@ -1458,7 +1464,7 @@ export async function cleanupInstallStateTarget(options: {
 
   if (!skipClaimableProjectArtifacts) {
     for (const artifact of evidence.projectSharedIdentity.artifacts) {
-      if (!artifact.file.exists) {
+      if (artifact.artifact.state === 'disabled' || !artifact.file.exists) {
         continue;
       }
       deleteGroups.push({
@@ -1480,6 +1486,9 @@ export async function cleanupInstallStateTarget(options: {
 
   const trackedArtifactPaths = new Set<string>();
   for (const artifact of evidence.installRecord.artifacts) {
+    if (artifact.artifact.state === 'disabled') {
+      continue;
+    }
     for (const file of artifact.files) {
       if (!file.exists || trackedArtifactPaths.has(file.path)) {
         continue;

@@ -25,6 +25,7 @@ import {
   validateRenderedCodexHooksContent,
 } from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
+import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 export const CATALOG_STAGING_DIRNAME = '.catalog';
@@ -528,6 +529,36 @@ async function validateAwRuntimeLayout(
     const filePath = stripDotSlash(configHelper);
     runtimeFiles.add(filePath);
     nodeEntries.add(filePath);
+  }
+
+  const artifactRenderer = manifest.scripts?.artifacts?.render;
+  if (artifactRenderer) {
+    await assertBundlePathExists(
+      pluginRoot,
+      artifactRenderer.path,
+      'scripts.artifacts.render.path',
+      './',
+    );
+    const filePath = stripDotSlash(artifactRenderer.path);
+    runtimeFiles.add(filePath);
+    nodeEntries.add(filePath);
+  }
+
+  for (const [targetIndex, target] of (manifest.artifacts?.targets ?? []).entries()) {
+    for (const [sourceIndex] of (target.sourceDirs ?? []).entries()) {
+      const relativePath = getArtifactSourceBundleRelativePath({
+        platform: target.platform,
+        artifactId: target.id,
+        index: sourceIndex,
+      });
+      const stats = await fs.lstat(path.join(pluginRoot, relativePath)).catch(() => null);
+      if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+        throw new Error(
+          `Invalid artifacts.targets[${targetIndex}].sourceDirs[${sourceIndex}]: ` +
+            `missing bundled artifact source directory "${relativePath}".`,
+        );
+      }
+    }
   }
 
   const packageRoot = manifest.scripts?.node?.packageRoot;

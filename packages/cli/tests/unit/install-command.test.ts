@@ -60,7 +60,11 @@ import { createCliTestWorkspace, registerCliEmbeddedRoot, registerCliTempRoot } 
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { resolveSafeCliEnv } from '../helpers/cli-runtime.js';
 import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
-import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
+import { createDynamicSkillTreeContentDigest } from '../../src/utils/dynamic-skill-tree.js';
 import {
   createDependencyPluginManifest,
   createPluginDependencyScenarioFixtures,
@@ -446,7 +450,11 @@ class FakeCodexAdapter implements PlatformAdapter {
     private readonly env: NodeJS.ProcessEnv,
     private readonly options: {
       onInstallPlugin?: (plugin: PluginMeta) => Promise<void> | void;
-      onInstallExtensions?: (plugin: PluginMeta) => Promise<GeneratedArtifact[]> | GeneratedArtifact[];
+      onInstallExtensions?: (
+        plugin: PluginMeta,
+        scope: Scope,
+        options?: Parameters<PlatformAdapter['installExtensions']>[2],
+      ) => Promise<GeneratedArtifact[]> | GeneratedArtifact[];
     } = {},
   ) {}
 
@@ -461,8 +469,12 @@ class FakeCodexAdapter implements PlatformAdapter {
 
   async uninstallPlugin(): Promise<void> {}
 
-  async installExtensions(plugin: PluginMeta): Promise<GeneratedArtifact[]> {
-    return await this.options.onInstallExtensions?.(plugin) ?? [];
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['installExtensions']>[2],
+  ): Promise<GeneratedArtifact[]> {
+    return await this.options.onInstallExtensions?.(plugin, scope, options) ?? [];
   }
 
   async uninstallExtensions(): Promise<void> {}
@@ -604,6 +616,99 @@ afterEach(async () => {
 });
 
 describe('install command P6 install-state semantics', () => {
+  it('applies prewritten mixed SkillTrigger config during install and upgrade', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const sourceManifestPath = path.join(
+      repoRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const sourceManifest = await fs.readJson(sourceManifestPath);
+    sourceManifest.skillTriggers.review = {
+      defaultTrigger: 'auto',
+      allowDynamicTrigger: true,
+    };
+    await fs.writeJson(sourceManifestPath, sourceManifest, { spaces: 2 });
+    const reviewSource = path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'review');
+    await fs.outputFile(
+      path.join(reviewSource, 'SKILL.md'),
+      '---\nname: review\ndescription: Review changes.\n---\nReview\n',
+    );
+    await fs.outputFile(
+      path.join(reviewSource, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    registerCliEmbeddedRoot(embeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+    const plugin = await readPluginManifest(
+      path.join(embeddedRoot, 'plugins', 'git-commit'),
+      { mode: 'bundle' },
+    );
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: repoRoot,
+      env,
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: { trigger: 'manual' },
+            review: { trigger: 'auto' },
+          },
+        },
+      },
+    });
+    const receivedPreferences: Array<Record<string, string> | undefined> = [];
+    const codex = new FakeCodexAdapter(env, {
+      onInstallExtensions: async (_currentPlugin, _scope, options) => {
+        receivedPreferences.push(options?.skillTriggerPreferences);
+        return [];
+      },
+    });
+    const runtime = {
+      env,
+      adapters: {
+        codex,
+        claude: new FakeClaudeAdapter(),
+      },
+      resolveInstallOptions: () => ({
+        applicability: 'overridable' as const,
+        ledgerTrust: 'available' as const,
+        skillTriggerPreference: 'default' as const,
+        skillTriggerSource: 'default' as const,
+      }),
+      skipConfigPreflight: true,
+      skipWriteSafetyPreflight: true,
+    };
+    const target = createResolvedTarget(plugin);
+    const commandOptions = {
+      cwd: repoRoot,
+      scope: 'user' as const,
+      platform: 'codex' as const,
+    };
+
+    await installTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      commandOptions,
+      runtime,
+    );
+    await installTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      commandOptions,
+      { ...runtime, operation: 'upgrade' },
+    );
+
+    expect(receivedPreferences).toEqual([
+      { commit: 'manual', review: 'auto' },
+      { commit: 'manual', review: 'auto' },
+    ]);
+  });
+
   it('pins only the selected current catalog plugins for local marketplace rebuilds', async () => {
     const { env } = await makeWorkspace();
     const sourceCatalogRoot = path.join(
@@ -2044,7 +2149,7 @@ describe('install command P6 install-state semantics', () => {
     expect(identityRead.value.sharedIdentityId).not.toBe(recordRead.value.recordId);
   });
 
-  it('writes Claude subdirectory project shared identity for repo-visible artifacts alongside the per-plugin install record', async () => {
+  it('commits a Claude dynamic skill to the install record and subdirectory shared identity', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const projectRoot = path.join(repoRoot, 'packages', 'a');
     await fs.ensureDir(projectRoot);
@@ -2054,16 +2159,28 @@ describe('install command P6 install-state semantics', () => {
     }));
     await writeInstalledLedger(createAvailableLedger(), env);
 
-    const repoVisibleArtifactPath = path.join(projectRoot, 'docs', 'claude.instructions.md');
+    const repoVisibleArtifactPath = path.join(projectRoot, '.claude', 'skills', 'dynamic-claude');
+    const skillFilePath = path.join(repoVisibleArtifactPath, 'SKILL.md');
+    const skillContent = Buffer.from(
+      '---\nname: dynamic-claude\ndescription: Dynamic Claude skill.\n---\nBody\n',
+    );
+    const contentDigest = createDynamicSkillTreeContentDigest({
+      skillKey: 'dynamic-claude',
+      files: { 'SKILL.md': skillContent },
+    });
     const claude = new FakeClaudeAdapter({
       onInstallExtensions: async () => {
-        await fs.ensureDir(path.dirname(repoVisibleArtifactPath));
-        await fs.writeFile(repoVisibleArtifactPath, '# claude install artifact\n', 'utf8');
+        await fs.outputFile(skillFilePath, skillContent);
         return [{
           path: repoVisibleArtifactPath,
-          kind: 'instruction',
+          paths: [skillFilePath],
+          kind: 'skill',
           platform: 'claude',
-          artifactKey: `${plugin.manifest.name}.project-doc`,
+          artifactKey: 'dynamic-claude',
+          id: 'dynamic-claude-skill',
+          target: 'claude.skill',
+          state: 'present',
+          contentDigest,
         }];
       },
     });
@@ -2112,6 +2229,11 @@ describe('install command P6 install-state semantics', () => {
           pluginName: plugin.manifest.name,
           scope: 'project',
           projectKey,
+          artifacts: [expect.objectContaining({
+            kind: 'skill',
+            target: 'claude.skill',
+            artifactKey: 'dynamic-claude',
+          })],
         },
       },
     });
@@ -2136,10 +2258,11 @@ describe('install command P6 install-state semantics', () => {
         locator,
         artifacts: [
           expect.objectContaining({
-            kind: 'instruction',
+            kind: 'skill',
             platform: 'claude',
-            path: 'packages/a/docs/claude.instructions.md',
-            artifactKey: `${plugin.manifest.name}.project-doc`,
+            path: 'packages/a/.claude/skills/dynamic-claude',
+            target: 'claude.skill',
+            artifactKey: 'dynamic-claude',
           }),
         ],
       },

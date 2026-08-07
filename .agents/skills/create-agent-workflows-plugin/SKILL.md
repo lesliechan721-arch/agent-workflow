@@ -105,10 +105,10 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
-- 每个静态 skill 和动态 `codex.skill` 都必须有对应 `skillTriggers` entry；公共 `slashCommands` 生成的 manual-only skill 不需要作者声明。
+- 每个静态 skill 以及动态 `codex.skill` / `claude.skill` 都必须有对应 `skillTriggers` entry；公共 `slashCommands` 生成的 manual-only skill 不需要作者声明。
 - Agent Skills portable core 与 Claude/Codex 扩展要明确区分；默认 AW validator 接受目标平台的已知扩展，`--strict-agent-skills` 只接受 portable core。
 - `dependencies.plugins` 只指向当前 catalog 内插件；版本门槛使用 `minVersion`，不写 range 或外部来源。
-- lifecycle 和 renderer 要可重试、幂等；renderer 不直接写 `.agents/skills/**`、Codex runtime、config、install record 或 diagnostic cache。
+- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime、config、install record 或 diagnostic cache。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
 - 插件根 `evals/**` 是作者期材料，不放进 Skill 子树，也不进入 production runtime bundle；动态 Skill 的行为评测必须消费 materialized 最终制品。
 - `plugin:test` 只验证确定性脚本；`plugin:eval` v1 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。
@@ -137,7 +137,7 @@ pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-d
 - 没有手改生成目录、runtime cache 或 marketplace 产物
 - `validate_plugin.mjs` 通过，相关确定性测试通过
 - 新建或重大修改的 Skill 有明确完成标准、验证循环、插件根 eval manifest 和小型用例
-- Codex 动态 Skill 的 default/non-default、project/user final artifacts 已 materialize；真实模型未运行时明确列为未验证
+- Codex/Claude 动态 Skill 的 default/non-default、project/user final artifacts 已 materialize；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
 
 ## 参考文档索引

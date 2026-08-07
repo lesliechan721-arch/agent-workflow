@@ -30,6 +30,7 @@ import {
   readCurrentSkillTriggerRuntimeSignature,
   type SkillTriggerMaterializationTarget,
 } from '../../src/utils/skill-trigger-preferences.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
 
@@ -435,6 +436,19 @@ describe('install-state shared runtime owner', () => {
     const siblingRecordPath = path.join(root, 'records', `${siblingRecord.recordId}.json`);
 
     await writeBundlePlugin({ rootDir: embeddedRoot });
+    await writePluginConfigStore({
+      pluginName: siblingLocation.plugin,
+      scope: 'user',
+      cwd: root,
+      env,
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: { trigger: 'manual' },
+          },
+        },
+      },
+    });
     await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
     await fs.outputJson(siblingRecordPath, siblingRecord, { spaces: 2 });
     await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
@@ -706,6 +720,100 @@ describe('install-state shared runtime owner', () => {
       platform: 'claude',
       preference: 'manual',
     });
+  });
+
+  it('replays mixed effective SkillTrigger config from the shared runtime owner', async () => {
+    const embeddedRoot = await makeTempDir('aw-shared-owner-mixed-embedded-');
+    const marketplaceRoot = await makeTempDir('aw-shared-owner-mixed-marketplace-');
+    const root = await makeTempDir('aw-shared-owner-mixed-root-');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const ownerLocation = makeLocation({ platform: 'codex', scope: 'user' });
+    const ownerRecord = makeRecord(ownerLocation, 'default');
+    const ownerRecordPath = path.join(root, 'records', `${ownerRecord.recordId}.json`);
+    await writeBundlePlugin({ rootDir: embeddedRoot });
+    const manifestPath = path.join(
+      embeddedRoot,
+      'plugins',
+      ownerLocation.plugin,
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skillTriggers.review = {
+      defaultTrigger: 'auto',
+      allowDynamicTrigger: true,
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.outputFile(
+      path.join(embeddedRoot, 'plugins', ownerLocation.plugin, 'codex', 'skills', 'review', 'agents', 'openai.yaml'),
+      CODEX_SKILL,
+    );
+    await fs.outputFile(
+      path.join(embeddedRoot, 'plugins', ownerLocation.plugin, 'claude', 'skills', 'review', 'SKILL.md'),
+      CLAUDE_SKILL.replaceAll('commit', 'review'),
+    );
+    await fs.copy(embeddedRoot, marketplaceRoot);
+    await fs.outputJson(ownerRecordPath, ownerRecord, { spaces: 2 });
+    await writeOwnerFile({ env, location: ownerLocation, recordFile: ownerRecord, recordPath: ownerRecordPath });
+    await writePluginConfigStore({
+      pluginName: ownerLocation.plugin,
+      scope: 'user',
+      cwd: root,
+      env,
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: { trigger: 'manual' },
+            review: { trigger: 'auto' },
+          },
+        },
+      },
+    });
+    const target: SkillTriggerMaterializationTarget = {
+      platform: 'codex',
+      scope: 'user',
+      kind: 'localMarketplaceRuntime',
+      root: marketplaceRoot,
+    };
+
+    const replay = await replaySharedSkillTriggerRuntimeFromOwner({
+      pluginName: ownerLocation.plugin,
+      platform: 'codex',
+      embeddedRoot,
+      target,
+      env,
+    });
+
+    expect(replay).toMatchObject({
+      status: 'replayed',
+      skillTriggerPreferences: {
+        commit: 'manual',
+        review: 'auto',
+      },
+    });
+    const [runtime, expected] = await Promise.all([
+      readCurrentSkillTriggerRuntimeSignature({
+        pluginName: ownerLocation.plugin,
+        platform: 'codex',
+        embeddedRoot,
+        target,
+      }),
+      buildSkillTriggerMaterializationSignature({
+        pluginName: ownerLocation.plugin,
+        platform: 'codex',
+        preference: 'default',
+        skillTriggerPreferences: {
+          commit: 'manual',
+          review: 'auto',
+        },
+        embeddedRoot,
+      }),
+    ]);
+    expect(runtime.status).toBe('known');
+    expect(expected.status).toBe('known');
+    if (runtime.status === 'known' && expected.status === 'known') {
+      expect(runtime.signature).toBe(expected.signature);
+    }
   });
 
   it('does not replay manifest-declared codex.skill entries through shared runtime owner replay', async () => {

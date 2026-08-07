@@ -95,7 +95,7 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
 
 function createPresentPlan() {
   return {
-    version: 1,
+    version: 2,
     artifacts: [
       {
         id: 'codex-explorer-role',
@@ -174,7 +174,7 @@ function createSkillManifest(): PluginManifestSource {
 
 function createSkillPlan() {
   return {
-    version: 1,
+    version: 2,
     artifacts: [
       {
         id: 'codex-explore-skill',
@@ -185,8 +185,10 @@ function createSkillPlan() {
         skillKey: 'codex-explore',
         refreshKeys: ['explorerModel', 'modelReasoningEffort'],
         content: {
-          skillFile: '# Codex Explore\n',
-          openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
+          files: {
+            'SKILL.md': '# Codex Explore\n',
+            'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+          },
         },
       },
     ],
@@ -269,7 +271,7 @@ describe('artifact plan validation', () => {
     const validatedClaude = validateArtifactPlan({
       manifest,
       plan: {
-        version: 1,
+        version: 2,
         artifacts: [],
       },
       platform: 'claude',
@@ -510,7 +512,7 @@ describe('artifact plan validation', () => {
     })).toThrow('unexpected field "path"');
   });
 
-  it('accepts codex.skill plans and rejects missing skill identity or required files', () => {
+  it('accepts codex.skill file maps and rejects invalid skill identity or file maps', () => {
     const manifest = createSkillManifest();
 
     const validated = validateArtifactPlan({
@@ -572,49 +574,51 @@ describe('artifact plan validation', () => {
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('unexpected field "path"');
 
-    const missingSkillFilePlan = createSkillPlan();
-    missingSkillFilePlan.artifacts[0] = {
-      ...missingSkillFilePlan.artifacts[0],
-      content: {
-        openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
-      },
-    } as typeof missingSkillFilePlan.artifacts[number];
+    const missingFilesPlan = createSkillPlan();
+    missingFilesPlan.artifacts[0] = {
+      ...missingFilesPlan.artifacts[0],
+      content: {},
+    } as typeof missingFilesPlan.artifacts[number];
     expect(() => validateArtifactPlan({
       manifest,
-      plan: missingSkillFilePlan,
+      plan: missingFilesPlan,
       platform: 'codex',
       scope: 'project',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
-    })).toThrow('skillFile');
+    })).toThrow('content.files');
 
-    const missingOpenaiYamlPlan = createSkillPlan();
-    missingOpenaiYamlPlan.artifacts[0] = {
-      ...missingOpenaiYamlPlan.artifacts[0],
+    const invalidFileContentPlan = createSkillPlan();
+    invalidFileContentPlan.artifacts[0] = {
+      ...invalidFileContentPlan.artifacts[0],
       content: {
-        skillFile: '# Codex Explore\n',
+        files: {
+          'SKILL.md': 42,
+        },
       },
-    } as typeof missingOpenaiYamlPlan.artifacts[number];
+    } as typeof invalidFileContentPlan.artifacts[number];
     expect(() => validateArtifactPlan({
       manifest,
-      plan: missingOpenaiYamlPlan,
+      plan: invalidFileContentPlan,
       platform: 'codex',
       scope: 'project',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
-    })).toThrow('openaiYaml');
+    })).toThrow('expected a string');
   });
 
-  it('builds codex.skill expected trees from renderer content plus trigger preference patch', () => {
+  it('builds codex.skill expected trees from renderer content plus trigger preference patch', async () => {
     const validated = validateArtifactPlan({
       manifest: createSkillManifest(),
       plan: {
-        version: 1,
+        version: 2,
         artifacts: [{
           ...createSkillPlan().artifacts[0],
           content: {
-            skillFile: '# Codex Explore\n',
-            openaiYaml: 'policy:\n  allow_implicit_invocation: false\n',
+            files: {
+              'SKILL.md': '# Codex Explore\n',
+              'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: false\n',
+            },
           },
         }],
       },
@@ -625,23 +629,23 @@ describe('artifact plan validation', () => {
     });
     const artifact = validated.artifacts[0]!;
 
-    const defaultTree = createCodexSkillExpectedTree({
+    const defaultTree = await createCodexSkillExpectedTree({
       artifact,
       preference: 'default',
     });
-    const autoTree = createCodexSkillExpectedTree({
+    const autoTree = await createCodexSkillExpectedTree({
       artifact,
       preference: 'auto',
     });
-    const manualTree = createCodexSkillExpectedTree({
+    const manualTree = await createCodexSkillExpectedTree({
       artifact,
       preference: 'manual',
     });
 
-    expect(defaultTree.files['SKILL.md']).toBe('# Codex Explore\n');
-    expect(defaultTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: true');
-    expect(autoTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: true');
-    expect(manualTree.files['agents/openai.yaml']).toContain('allow_implicit_invocation: false');
+    expect(defaultTree.files['SKILL.md']?.toString('utf8')).toBe('# Codex Explore\n');
+    expect(defaultTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: true');
+    expect(autoTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: true');
+    expect(manualTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: false');
     expect(createCodexSkillStagingTreeContentDigest(defaultTree)).toBe(
       createCodexSkillStagingTreeContentDigest(autoTree),
     );
@@ -664,12 +668,12 @@ describe('artifact plan validation', () => {
     const embeddedSkillPath = path.join(root, 'plugins', 'dynamic-artifacts', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml');
     await fs.outputFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: false\n', 'utf8');
 
-    const beforeTree = createCodexSkillExpectedTree({
+    const beforeTree = await createCodexSkillExpectedTree({
       artifact,
       preference: 'manual',
     });
     await fs.writeFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: true\n', 'utf8');
-    const afterTree = createCodexSkillExpectedTree({
+    const afterTree = await createCodexSkillExpectedTree({
       artifact,
       preference: 'manual',
     });

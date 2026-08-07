@@ -33,6 +33,7 @@ import {
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import { readJsonFile } from '../../src/utils/json.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
@@ -128,6 +129,25 @@ function createStaticCatalogPackageSource(options: {
       dispose: async () => {},
     }),
   };
+}
+
+async function writeUserSkillTriggerConfig(
+  awHome: string,
+  trigger: 'manual' | 'auto' = 'manual',
+): Promise<void> {
+  await writePluginConfigStore({
+    pluginName: 'git-commit',
+    scope: 'user',
+    cwd: process.cwd(),
+    env: { ...process.env, AW_HOME: awHome },
+    values: {
+      $aw: {
+        skillTriggers: {
+          commit: { trigger },
+        },
+      },
+    },
+  });
 }
 
 function codexOpenAiYamlPath(rootDir: string, pluginName = 'git-commit'): string {
@@ -1564,6 +1584,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
@@ -1629,6 +1650,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
@@ -2344,6 +2366,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
@@ -2393,6 +2416,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
@@ -2479,6 +2503,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',
@@ -2590,6 +2615,7 @@ describe('local marketplace', () => {
     setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
 
     await initializeLocalMarketplace({ force: true, env: process.env });
+    await writeUserSkillTriggerConfig(awHome);
     const ledger = createAvailableLedger();
     ledger.plugins['git-commit'] = {
       lastResolvedVersion: '0.1.0',

@@ -9,7 +9,7 @@ import type {
   SkillTriggerPreference,
 } from '../types.js';
 import { readPluginManifest } from '../utils/manifest.js';
-import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
+import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
@@ -18,6 +18,7 @@ import {
   assessSharedSkillTriggerRuntimeSemantics,
   commitMaterializedSkillTriggerPreference,
   materializeSkillTriggerPreference,
+  resolveSkillTriggerPolicies,
   rollbackMaterializedSkillTriggerPreference,
   type SharedSkillTriggerRuntimeSemanticsAssessment,
   type SkillTriggerMaterializationMode,
@@ -115,6 +116,7 @@ export type SharedSkillTriggerRuntimeReplayResult =
     status: 'replayed';
     source: 'owner';
     preference: SkillTriggerPreference;
+    skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
     ownerInspection: SharedSkillTriggerRuntimeOwnerInspection;
     warnings: string[];
     materialization: SkillTriggerMaterializationResult;
@@ -530,6 +532,7 @@ export async function createSharedSkillTriggerRuntimeMaterializationStage(option
   pluginName: string;
   platform: PlatformName;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   embeddedRoot: string;
   sourcePluginRoot?: string;
   policyPlugin?: PluginMeta;
@@ -541,6 +544,9 @@ export async function createSharedSkillTriggerRuntimeMaterializationStage(option
     platform: options.platform,
     resolvedOptions: {
       skillTriggerPreference: options.preference,
+      ...(options.skillTriggerPreferences
+        ? { skillTriggerPreferences: options.skillTriggerPreferences }
+        : {}),
     },
     embeddedRoot: options.embeddedRoot,
     sourcePluginRoot: options.sourcePluginRoot,
@@ -637,6 +643,7 @@ export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {
   embeddedRoot: string;
   target: SkillTriggerMaterializationTarget;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   command: 'install' | 'repair' | 'upgrade';
   targetCount?: number;
   env?: NodeJS.ProcessEnv;
@@ -651,6 +658,7 @@ export async function preflightSharedSkillTriggerRuntimeOwnerUpsert(options: {
     platform: options.location.platform,
     locationScope: options.location.scope,
     preference: options.preference,
+    skillTriggerPreferences: options.skillTriggerPreferences,
     embeddedRoot: options.embeddedRoot,
     target: options.target,
   });
@@ -832,6 +840,7 @@ export async function createSharedSkillTriggerRuntimeUpsertStages(options: {
       pluginName: options.recordFile.record.pluginName,
       platform: options.recordFile.record.platform,
       preference: preferenceFromRecord(options.recordFile),
+      skillTriggerPreferences: options.plan.assessment.skillTriggerPreferences,
       embeddedRoot: options.embeddedRoot,
       target: options.target,
       mode: options.mode ?? 'strictExplicit',
@@ -879,10 +888,26 @@ export async function createSharedSkillTriggerRuntimeRemovalStages(options: {
   }
 
   if (options.plan.shouldMaterializeRuntime) {
+    const nextOwnerPlugin = await readPluginManifest(
+      path.join(options.embeddedRoot, 'plugins', options.pluginName),
+      { mode: 'bundle' },
+    );
+    const nextOwnerPreferences = options.plan.nextOwner
+      ? await resolveEffectiveSkillTriggerPreferences({
+          plugin: nextOwnerPlugin,
+          platform: options.plan.nextOwner.location.platform,
+          scope: options.plan.nextOwner.location.scope,
+          cwd: options.plan.nextOwner.location.scope === 'project'
+            ? options.plan.nextOwner.location.projectKey ?? process.cwd()
+            : process.cwd(),
+          env: options.env,
+        })
+      : {};
     const materialization = await createSharedSkillTriggerRuntimeMaterializationStage({
       pluginName: options.pluginName,
       platform: options.platform,
       preference: options.plan.nextOwner?.preference ?? 'default',
+      skillTriggerPreferences: nextOwnerPreferences,
       embeddedRoot: options.embeddedRoot,
       target: options.target,
       mode: 'bestEffortReplay',
@@ -960,12 +985,13 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
   }
 
   let preference: SkillTriggerPreference;
+  let skillTriggerPreferences: Record<string, SkillTriggerPreference> = {};
   try {
     const plugin = await readPluginManifest(
       path.join(options.embeddedRoot, 'plugins', options.pluginName),
       { mode: 'bundle' },
     );
-    preference = await resolveUniformSkillTriggerPreference({
+    skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
       plugin,
       platform: ownerLocation.platform,
       scope: ownerLocation.scope,
@@ -974,6 +1000,22 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
         : process.cwd(),
       env: options.env,
     });
+    const policyResolution = await resolveSkillTriggerPolicies({
+      embeddedRoot: options.embeddedRoot,
+      pluginName: options.pluginName,
+      platform: options.platform,
+    });
+    const effectiveValues = new Set(policyResolution.policies.map((policy) =>
+      skillTriggerPreferences[policy.skillName] ?? policy.defaultTrigger));
+    const ownerRecordRead = ownerInspection.ownerRecordRead;
+    if (!ownerRecordRead || ownerRecordRead.status !== 'ok') {
+      throw new Error('owner install record 不可读');
+    }
+    preference = effectiveValues.size === 1
+      ? [...effectiveValues][0]!
+      : effectiveValues.size === 0
+        ? 'default'
+        : preferenceFromRecord(ownerRecordRead.value);
   } catch (error) {
     const failClosedReason = buildReplayFailClosedMessage({
       pluginName: options.pluginName,
@@ -998,6 +1040,7 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     platform: options.platform,
     resolvedOptions: {
       skillTriggerPreference: preference,
+      skillTriggerPreferences,
     },
     embeddedRoot: options.embeddedRoot,
     target: options.target,
@@ -1017,6 +1060,7 @@ export async function replaySharedSkillTriggerRuntimeFromOwner(options: {
     status: 'replayed',
     source: 'owner',
     preference,
+    skillTriggerPreferences,
     ownerInspection,
     warnings,
     materialization,

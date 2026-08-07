@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { PluginLocation } from './types.js';
 import type { InstallEvidence, RecordArtifactEvidence } from './evidence.js';
 import { parseCodexConfig } from '../utils/codex-config.js';
+import { createDynamicSkillTreeContentDigest } from '../utils/dynamic-skill-tree.js';
 import { createGeneratedArtifactContentDigest } from '../utils/generated-artifacts.js';
 import { compareStrictSemVerFields } from '../utils/manifest.js';
 
@@ -143,19 +144,34 @@ function addArtifactIssue(
   });
 }
 
-function computeCodexSkillTreeDigest(
+function computeDynamicSkillTreeDigest(
   artifact: RecordArtifactEvidence,
 ): string | null {
-  if (artifact.artifact.target !== 'codex.skill') {
+  if (artifact.artifact.target !== 'codex.skill' && artifact.artifact.target !== 'claude.skill') {
     return artifact.files[0]?.contentDigest ?? null;
   }
 
   const rootPath = artifact.artifact.path;
+  const treeErrors = artifact.files
+    .filter((file) => file.treeError)
+    .map((file) => ({
+      path: path.relative(rootPath, file.path).split(path.sep).join('/') || '.',
+      error: file.treeError,
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  if (treeErrors.length > 0) {
+    return createDynamicSkillTreeContentDigest({
+      skillKey: artifact.artifact.artifactKey ?? path.basename(rootPath),
+      files: {
+        '__aw_invalid_skill_tree__': Buffer.from(JSON.stringify(treeErrors), 'utf8'),
+      },
+    });
+  }
   const files = artifact.files
-    .filter((file) => file.path !== rootPath && file.exists && file.rawContent !== null)
+    .filter((file) => file.path !== rootPath && file.exists && file.rawBytes !== null)
     .map((file) => [
       path.relative(rootPath, file.path).split(path.sep).join('/'),
-      file.rawContent,
+      file.rawBytes!,
     ] as const)
     .sort(([left], [right]) => left.localeCompare(right));
 
@@ -163,7 +179,10 @@ function computeCodexSkillTreeDigest(
     return null;
   }
 
-  return createGeneratedArtifactContentDigest(Object.fromEntries(files));
+  return createDynamicSkillTreeContentDigest({
+    skillKey: artifact.artifact.artifactKey ?? path.basename(rootPath),
+    files: Object.fromEntries(files),
+  });
 }
 
 function findRawArtifactFile(
@@ -277,7 +296,10 @@ function computeDynamicArtifactDigest(
   artifact: RecordArtifactEvidence,
 ): string | null {
   if (artifact.artifact.target === 'codex.skill') {
-    return computeCodexSkillTreeDigest(artifact);
+    return computeDynamicSkillTreeDigest(artifact);
+  }
+  if (artifact.artifact.target === 'claude.skill') {
+    return computeDynamicSkillTreeDigest(artifact);
   }
   if (artifact.artifact.target === 'codex.agentRole') {
     return computeCodexAgentRoleDigest(artifact);
@@ -369,8 +391,8 @@ function collectRecordIssues(evidence: InstallEvidence): ProjectInstallIssue[] {
       continue;
     }
 
-    const actualDigest = artifact.artifact.target === 'codex.skill'
-      ? computeCodexSkillTreeDigest(artifact)
+    const actualDigest = artifact.artifact.target === 'codex.skill' || artifact.artifact.target === 'claude.skill'
+      ? computeDynamicSkillTreeDigest(artifact)
       : artifact.files[0]?.contentDigest ?? null;
     const staticDigest =
       (evidence.installRecord.sameBundleAsCatalog

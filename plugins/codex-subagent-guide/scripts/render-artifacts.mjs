@@ -49,11 +49,6 @@ const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
 const skillTemplatePaths = [
   path.join(pluginRoot, 'templates', SKILL_KEY, 'SKILL.md'),
-  path.join(pluginRoot, 'codex', 'templates', SKILL_KEY, 'SKILL.md'),
-];
-const openaiTemplatePaths = [
-  path.join(pluginRoot, 'templates', SKILL_KEY, 'agents', 'openai.yaml'),
-  path.join(pluginRoot, 'codex', 'templates', SKILL_KEY, 'agents', 'openai.yaml'),
 ];
 
 function isRecord(value) {
@@ -161,9 +156,12 @@ export async function renderArtifactPlan(context) {
 
   const defaults = await readDefaults();
   const config = resolveConfig(context, defaults);
-  const [skillTemplate, openaiTemplate] = await Promise.all([
-    readFirstExisting(skillTemplatePaths),
-    readFirstExisting(openaiTemplatePaths),
+  const sourceDirs = context?.artifactSources?.find(
+    (entry) => entry.id === SKILL_ID && entry.target === 'codex.skill',
+  )?.sourceDirs ?? [];
+  const skillTemplate = await readFirstExisting([
+    ...sourceDirs.map((sourceDir) => path.join(sourceDir, 'SKILL.md')),
+    ...skillTemplatePaths,
   ]);
 
   const roleArtifacts = TASK_TYPES.map(
@@ -192,7 +190,7 @@ export async function renderArtifactPlan(context) {
   );
 
   return {
-    version: 1,
+    version: 2,
     artifacts: [
       {
         id: SKILL_ID,
@@ -203,14 +201,15 @@ export async function renderArtifactPlan(context) {
         skillKey: SKILL_KEY,
         refreshKeys: ['minimumInitialWaitMinutes'],
         content: {
-          skillFile: renderTemplate(skillTemplate, {
-            spawnParameterGuidance: renderSpawnParameterGuidance(),
-            minimumInitialWaitMinutes: config.minimumInitialWaitMinutes,
-            minimumInitialWaitTimeoutMs: minutesToMilliseconds(
-              config.minimumInitialWaitMinutes,
-            ),
-          }),
-          openaiYaml: openaiTemplate,
+          files: {
+            'SKILL.md': renderTemplate(skillTemplate, {
+              spawnParameterGuidance: renderSpawnParameterGuidance(),
+              minimumInitialWaitMinutes: config.minimumInitialWaitMinutes,
+              minimumInitialWaitTimeoutMs: minutesToMilliseconds(
+                config.minimumInitialWaitMinutes,
+              ),
+            }),
+          },
         },
       },
       ...roleArtifacts,

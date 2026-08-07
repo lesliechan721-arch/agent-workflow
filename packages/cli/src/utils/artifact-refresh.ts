@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { CodexAdapter } from '../adapters/codex.js';
+import { ClaudeAdapter } from '../adapters/claude.js';
 import { preflightCodexProjectWriteSafety } from '../commands/codex-project-safety.js';
 import type { ResolvedPluginTarget } from '../commands/common.js';
 import {
@@ -23,6 +24,7 @@ import type {
   GeneratedArtifact,
   MarketplaceManifest,
   PluginMeta,
+  PlatformName,
   Scope,
   SkillTriggerPreference,
   TrackingManifest,
@@ -69,7 +71,14 @@ import type {
   ProjectArtifactIdentityArtifact,
   ProjectArtifactIdentityFile,
 } from '../install-state/types.js';
-import { resolveAwHome, resolveCodexPaths, resolveCodexProjectKey } from './paths.js';
+import {
+  resolveAwHome,
+  resolveClaudePaths,
+  resolveClaudeProjectKey,
+  resolveCodexPaths,
+  resolveCodexProjectKey,
+} from './paths.js';
+import { resolveEffectiveSkillTriggerPreferences } from './plugin-config.js';
 import { readPluginManifest } from './manifest.js';
 import {
   calculateFileDigest,
@@ -84,7 +93,7 @@ import {
 import { assertTestWritablePath } from './test-path-fence.js';
 
 export interface ArtifactRefreshReceiptArtifact {
-  platform: 'codex';
+  platform: PlatformName;
   scope: Scope;
   id: string;
   target: ArtifactTarget;
@@ -105,6 +114,7 @@ export interface ArtifactRefreshReceipt {
 }
 
 interface RefreshUnit {
+  platform: PlatformName;
   scope: Scope;
   triggerKeys: string[];
   trackingDir: string;
@@ -118,18 +128,26 @@ interface ExecutedRefreshUnit extends RefreshUnit {
   status: 'succeeded' | 'failed';
   refreshedArtifacts?: Array<GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState }>;
   error?: string;
+  artifactRollbackState?: Awaited<ReturnType<typeof captureArtifactRollbackState>>;
+  nativeRollbackBaseline?: Awaited<ReturnType<typeof captureCodexNativePluginRollbackBaseline>>;
 }
 
-function isTrackedCodexDynamicArtifact(
+interface WrittenRefreshResult {
+  status: ExecutedRefreshUnit['status'];
+  error?: string;
+  artifacts: Array<GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState }>;
+}
+
+function isTrackedDynamicArtifact(
   artifact: GeneratedArtifact,
 ): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } {
   return (
-    artifact.platform === 'codex' &&
     typeof artifact.id === 'string' &&
     (
       artifact.target === 'codex.developerInstructionsBlock' ||
       artifact.target === 'codex.agentRole' ||
-      artifact.target === 'codex.skill'
+      artifact.target === 'codex.skill' ||
+      artifact.target === 'claude.skill'
     ) &&
     (artifact.state === 'present' || artifact.state === 'disabled')
   );
@@ -177,12 +195,13 @@ async function inferCodexUserDynamicSkillPreferenceFromRuntime(options: {
 }
 
 function summarizeArtifacts(
+  platform: PlatformName,
   scope: Scope,
   status: 'succeeded' | 'failed',
   artifacts: Array<GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState }>,
 ): ArtifactRefreshReceiptArtifact[] {
   return artifacts.map((artifact) => ({
-    platform: 'codex',
+    platform,
     scope,
     id: artifact.id,
     target: artifact.target,
@@ -251,17 +270,19 @@ function formatInstallRecordReadFailure(
 
 function createHistoricalRefreshBundleError(options: {
   pluginName: string;
+  platform: PlatformName;
   scope: Scope;
   reason: string;
 }): Error {
   return new Error(
     `无法使用 ${options.pluginName} (${options.scope}) 的 historical lifecycle bundle 刷新 dynamic artifacts：${options.reason}。` +
-      `请先运行 \`aw reinstall ${options.pluginName} --platform codex --scope ${options.scope}\` 保留配置重建后再试。`,
+      `请先运行 \`aw reinstall ${options.pluginName} --platform ${options.platform} --scope ${options.scope}\` 保留配置重建后再试。`,
   );
 }
 
 async function resolveHistoricalRefreshPlugin(options: {
   currentPlugin: PluginMeta;
+  platform: PlatformName;
   scope: Scope;
   recordRead: InstallStateReadResult<InstallRecordFile>;
 }): Promise<PluginMeta> {
@@ -269,6 +290,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   if (options.recordRead.status !== 'ok') {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason: `install record 不可用（${formatInstallRecordReadFailure(options.recordRead)}）`,
     });
@@ -278,6 +300,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   if (!lifecycle) {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason: 'install record 缺少 historical lifecycle runtime',
     });
@@ -286,6 +309,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   if (!(await fs.pathExists(lifecycle.bundleRoot))) {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason: `historical bundle 不存在：${lifecycle.bundleRoot}`,
     });
@@ -298,6 +322,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   if (manifestDigest !== lifecycle.sourceManifestDigest) {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason: `historical manifest digest 不匹配：expected ${lifecycle.sourceManifestDigest}, got ${manifestDigest}`,
     });
@@ -305,6 +330,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   if (bundleFingerprint !== lifecycle.bundleFingerprint) {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason: `historical bundle fingerprint 不匹配：expected ${lifecycle.bundleFingerprint}, got ${bundleFingerprint}`,
     });
@@ -317,6 +343,7 @@ async function resolveHistoricalRefreshPlugin(options: {
   ) {
     throw createHistoricalRefreshBundleError({
       pluginName,
+      platform: options.platform,
       scope: options.scope,
       reason:
         `historical manifest 身份不匹配：expected ${pluginName}@${lifecycle.pluginVersion}, ` +
@@ -357,6 +384,7 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
   refreshedArtifacts: readonly GeneratedArtifact[];
   previousArtifacts?: readonly InstallRecordArtifact[];
   skillTriggerPreference?: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   env: NodeJS.ProcessEnv;
 }): Promise<{ rootDir: string; marketplacePath: string }> {
   const stagingRoot = await fs.mkdtemp(
@@ -376,12 +404,15 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
       errorOnExist: false,
     });
 
-    if (options.skillTriggerPreference) {
+    if (options.skillTriggerPreference || options.skillTriggerPreferences) {
       const materialization = await materializeSkillTriggerPreference({
         pluginName,
         platform: 'codex',
         resolvedOptions: {
-          skillTriggerPreference: options.skillTriggerPreference,
+          skillTriggerPreference: options.skillTriggerPreference ?? 'default',
+          ...(options.skillTriggerPreferences
+            ? { skillTriggerPreferences: options.skillTriggerPreferences }
+            : {}),
         },
         embeddedRoot: stagingRoot,
         marketplaceRootOrStagingRoot: stagingRoot,
@@ -474,38 +505,47 @@ async function collectRefreshUnits(options: {
     : [options.commandScope];
   const units: RefreshUnit[] = [];
 
-  for (const scope of candidateScopes) {
-    const trackingDir = resolveCodexPaths(options.cwd, scope, options.env).trackingDir;
-    const trackingManifest = await readTrackingManifest(trackingDir);
-    const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
-    if (!trackingRecord) {
-      continue;
-    }
+  for (const platform of ['codex', 'claude'] as const) {
+    for (const scope of candidateScopes) {
+      const trackingDir = platform === 'codex'
+        ? resolveCodexPaths(options.cwd, scope, options.env).trackingDir
+        : resolveClaudePaths(options.cwd, scope, options.env).trackingDir;
+      const trackingManifest = await readTrackingManifest(trackingDir);
+      const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+      if (!trackingRecord) {
+        continue;
+      }
 
-    const dynamicArtifacts = trackingRecord.artifacts.filter(isTrackedCodexDynamicArtifact);
-    if (dynamicArtifacts.length === 0) {
-      continue;
-    }
+      const dynamicArtifacts = trackingRecord.artifacts.filter(
+        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+      );
+      if (dynamicArtifacts.length === 0) {
+        continue;
+      }
 
-    const trackedRefreshKeys = uniqueSorted(
-      dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
-    );
-    const triggerKeys = options.resetAllTrackedKeys
-      ? trackedRefreshKeys
-      : options.changedKeys.filter((key) => trackedRefreshKeys.includes(key));
-    if (triggerKeys.length === 0) {
-      continue;
-    }
+      const trackedRefreshKeys = uniqueSorted(
+        dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
+      );
+      const triggerKeys = options.resetAllTrackedKeys
+        ? trackedRefreshKeys
+        : options.changedKeys.filter((key) => trackedRefreshKeys.includes(key));
+      if (triggerKeys.length === 0) {
+        continue;
+      }
 
-    units.push({
-      scope,
-      triggerKeys: uniqueSorted(triggerKeys),
-      trackingDir,
-      trackingManifest,
-      trackingRecord,
-      dynamicArtifacts,
-      staticArtifacts: trackingRecord.artifacts.filter((artifact) => !isTrackedCodexDynamicArtifact(artifact)),
-    });
+      units.push({
+        platform,
+        scope,
+        triggerKeys: uniqueSorted(triggerKeys),
+        trackingDir,
+        trackingManifest,
+        trackingRecord,
+        dynamicArtifacts,
+        staticArtifacts: trackingRecord.artifacts.filter((artifact) =>
+          artifact.platform !== platform || !isTrackedDynamicArtifact(artifact)),
+      });
+    }
   }
 
   return units;
@@ -526,41 +566,57 @@ async function collectRefreshUnitsForReapply(options: {
   const units: RefreshUnit[] = [];
   let sawTrackedDynamicArtifact = false;
 
-  for (const scope of candidateScopes) {
-    const trackingDir = resolveCodexPaths(options.cwd, scope, options.env).trackingDir;
-    const trackingManifest = await readTrackingManifest(trackingDir);
-    const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
-    if (!trackingRecord) {
-      continue;
-    }
+  for (const platform of ['codex', 'claude'] as const) {
+    for (const scope of candidateScopes) {
+      const trackingDir = platform === 'codex'
+        ? resolveCodexPaths(options.cwd, scope, options.env).trackingDir
+        : resolveClaudePaths(options.cwd, scope, options.env).trackingDir;
+      const trackingManifest = await readTrackingManifest(trackingDir);
+      const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+      if (!trackingRecord) {
+        continue;
+      }
 
-    const dynamicArtifacts = trackingRecord.artifacts.filter(isTrackedCodexDynamicArtifact);
-    if (dynamicArtifacts.length === 0) {
-      continue;
-    }
-    sawTrackedDynamicArtifact = true;
+      const dynamicArtifacts = trackingRecord.artifacts.filter(
+        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+      );
+      if (dynamicArtifacts.length === 0) {
+        continue;
+      }
+      sawTrackedDynamicArtifact = true;
 
-    const failedRefreshKeys = uniqueSorted(
-      dynamicArtifacts.flatMap((artifact) =>
-        artifact.lastRefresh?.status === 'failed' ? artifact.lastRefresh.triggerKeys ?? [] : []),
-    );
-    const trackedRefreshKeys = uniqueSorted(
-      dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
-    );
-    const triggerKeys = failedRefreshKeys.length > 0 ? failedRefreshKeys : trackedRefreshKeys;
-    if (triggerKeys.length === 0) {
-      continue;
-    }
+      const failedRefreshKeys = uniqueSorted(
+        dynamicArtifacts.flatMap((artifact) =>
+          artifact.lastRefresh?.status === 'failed' ? artifact.lastRefresh.triggerKeys ?? [] : []),
+      );
+      const trackedRefreshKeys = uniqueSorted(
+        dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
+      );
+      let triggerKeys = failedRefreshKeys.length > 0 ? failedRefreshKeys : trackedRefreshKeys;
+      if (triggerKeys.length === 0) {
+        triggerKeys = uniqueSorted(dynamicArtifacts
+          .filter((artifact) =>
+            (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') &&
+            Boolean(artifact.artifactKey))
+          .map((artifact) => `aw.skillTriggers.${artifact.artifactKey}.trigger`));
+      }
+      if (triggerKeys.length === 0) {
+        continue;
+      }
 
-    units.push({
-      scope,
-      triggerKeys,
-      trackingDir,
-      trackingManifest,
-      trackingRecord,
-      dynamicArtifacts,
-      staticArtifacts: trackingRecord.artifacts.filter((artifact) => !isTrackedCodexDynamicArtifact(artifact)),
-    });
+      units.push({
+        platform,
+        scope,
+        triggerKeys,
+        trackingDir,
+        trackingManifest,
+        trackingRecord,
+        dynamicArtifacts,
+        staticArtifacts: trackingRecord.artifacts.filter((artifact) =>
+          artifact.platform !== platform || !isTrackedDynamicArtifact(artifact)),
+      });
+    }
   }
 
   if (units.length > 0) {
@@ -575,12 +631,38 @@ async function collectRefreshUnitsForReapply(options: {
 
 async function preflightDynamicArtifactRefresh(options: {
   plugin: PluginMeta;
+  platform: PlatformName;
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const adapter = new CodexAdapter(options.cwd, undefined, options.env);
+  const adapter = options.platform === 'codex'
+    ? new CodexAdapter(options.cwd, undefined, options.env)
+    : new ClaudeAdapter(options.cwd, undefined, options.env);
   const status = await adapter.status(options.plugin, options.scope);
+  if (options.platform === 'claude') {
+    const drifted = status.plugins[0]?.generatedArtifacts.filter((artifact) =>
+      artifact.target === 'claude.skill' &&
+      (
+        (artifact.state === 'disabled' && artifact.exists) ||
+        (artifact.state !== 'disabled' && !artifact.exists) ||
+        (
+          artifact.state !== 'disabled' &&
+          artifact.exists &&
+          !artifact.currentContentDigest
+        ) ||
+        (
+          artifact.contentDigest &&
+          artifact.currentContentDigest &&
+          artifact.contentDigest !== artifact.currentContentDigest
+        )
+      ),
+    ) ?? [];
+    if (drifted.length > 0) {
+      throw new Error('Claude 动态 skill runtime 已漂移；请先运行 status 或 cleanup。');
+    }
+    return;
+  }
   const managedArtifacts = status.plugins[0]?.managedArtifacts ?? [];
   const blockers = managedArtifacts.filter((artifact) =>
     artifact.health === 'registrationDrift' || artifact.health === 'contentDrift',
@@ -598,7 +680,9 @@ async function executeRefreshUnit(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<ExecutedRefreshUnit> {
+  const platform = options.unit.platform;
   const refreshesCodexUserDynamicSkill =
+    platform === 'codex' &&
     options.unit.scope === 'user' &&
     options.unit.dynamicArtifacts.some((artifact) => artifact.target === 'codex.skill');
   let artifactRollbackState:
@@ -612,22 +696,27 @@ async function executeRefreshUnit(options: {
       cwd: options.cwd,
       location: {
         plugin: options.plugin.manifest.name,
-        platform: 'codex',
+        platform,
         scope: options.unit.scope,
         ...(options.unit.scope === 'project'
-          ? { projectKey: await resolveCodexProjectKey(options.cwd) }
+          ? {
+              projectKey: platform === 'codex'
+                ? await resolveCodexProjectKey(options.cwd)
+                : await resolveClaudeProjectKey(options.cwd),
+            }
           : {}),
       },
       env: options.env,
     });
     const refreshPlugin = await resolveHistoricalRefreshPlugin({
       currentPlugin: options.plugin,
+      platform,
       scope: options.unit.scope,
       recordRead: installRecordRead,
     });
     const refreshTarget = createHistoricalRefreshTarget(options.plugin, refreshPlugin);
 
-    if (options.unit.scope === 'project') {
+    if (platform === 'codex' && options.unit.scope === 'project') {
       await preflightCodexProjectWriteSafety({
         targets: [refreshTarget],
         platforms: ['codex'],
@@ -640,20 +729,25 @@ async function executeRefreshUnit(options: {
 
     await preflightDynamicArtifactRefresh({
       plugin: refreshPlugin,
+      platform,
       scope: options.unit.scope,
       cwd: options.cwd,
       env: options.env,
     });
 
-    const adapter = new CodexAdapter(options.cwd, undefined, options.env);
-    if (refreshesCodexUserDynamicSkill) {
+    const adapter = platform === 'codex'
+      ? new CodexAdapter(options.cwd, undefined, options.env)
+      : new ClaudeAdapter(options.cwd, undefined, options.env);
+    if (options.unit.dynamicArtifacts.length > 0) {
       artifactRollbackState = await captureArtifactRollbackState(
-        'codex',
+        platform,
         createResolvedTarget(options.plugin),
         options.unit.scope,
         options.cwd,
         options.env,
       );
+    }
+    if (refreshesCodexUserDynamicSkill) {
       nativeRollbackBaseline = await captureCodexNativePluginRollbackBaseline(
         options.plugin.manifest.name,
         options.env,
@@ -663,8 +757,24 @@ async function executeRefreshUnit(options: {
     let skillTriggerPreference =
       installRecordRead.status === 'ok'
         ? installRecordRead.value.record.options?.skillTriggerPreference
-        : ledger.plugins[options.plugin.manifest.name]?.platforms.codex?.userScope?.installOptions?.skillTriggerPreference;
-    if (refreshesCodexUserDynamicSkill) {
+        : options.unit.scope === 'user'
+          ? ledger.plugins[options.plugin.manifest.name]?.platforms[platform]?.userScope?.installOptions?.skillTriggerPreference
+          : undefined;
+    const refreshesDynamicSkill = options.unit.dynamicArtifacts.some((artifact) =>
+      artifact.target === 'codex.skill' || artifact.target === 'claude.skill');
+    const skillTriggerPreferences = refreshesDynamicSkill
+      ? await resolveEffectiveSkillTriggerPreferences({
+        plugin: refreshPlugin,
+        platform,
+        scope: options.unit.scope,
+        cwd: options.cwd,
+        env: options.env,
+      })
+      : {};
+    if (Object.keys(skillTriggerPreferences).length > 0) {
+      skillTriggerPreference = 'default';
+    }
+    if (refreshesCodexUserDynamicSkill && Object.keys(skillTriggerPreferences).length === 0) {
       const runtimeSkillTriggerPreference = await inferCodexUserDynamicSkillPreferenceFromRuntime({
         pluginName: options.plugin.manifest.name,
         artifactKeys: uniqueSorted(
@@ -688,14 +798,21 @@ async function executeRefreshUnit(options: {
       changedConfigKeys: options.unit.triggerKeys,
       dynamicOnly: true,
       skillTriggerPreference,
-    })).filter(isTrackedCodexDynamicArtifact);
-    if (
-      refreshesCodexUserDynamicSkill &&
-      skillTriggerPreference &&
-      skillTriggerPreference !== 'default'
-    ) {
+      skillTriggerPreferences,
+    })).filter((artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+      artifact.platform === platform && isTrackedDynamicArtifact(artifact));
+    if (refreshesCodexUserDynamicSkill) {
       for (const artifact of refreshedArtifacts) {
         if (artifact.target !== 'codex.skill' || !artifact.artifactKey || artifact.state !== 'present') {
+          continue;
+        }
+        const artifactPreference: SkillTriggerPreference | undefined = Object.hasOwn(
+          skillTriggerPreferences,
+          artifact.artifactKey,
+        )
+          ? skillTriggerPreferences[artifact.artifactKey]
+          : skillTriggerPreference;
+        if (!artifactPreference || artifactPreference === 'default') {
           continue;
         }
         await patchCodexOpenAiYaml(
@@ -704,7 +821,7 @@ async function executeRefreshUnit(options: {
             options.plugin.manifest.name,
             artifact.artifactKey,
           )}/agents/openai.yaml`,
-          skillTriggerPreference,
+          artifactPreference,
         );
       }
     }
@@ -716,30 +833,28 @@ async function executeRefreshUnit(options: {
           ? installRecordRead.value.record.artifacts
           : [],
         ...(skillTriggerPreference ? { skillTriggerPreference } : {}),
+        ...(Object.keys(skillTriggerPreferences).length > 0 ? { skillTriggerPreferences } : {}),
         env: options.env,
       });
       try {
-        await adapter.installPluginFromMarketplace(refreshPlugin, 'user', {
+        await new CodexAdapter(options.cwd, undefined, options.env).installPluginFromMarketplace(refreshPlugin, 'user', {
           marketplacePath: stagedMarketplace.marketplacePath,
         });
       } finally {
         await fs.remove(stagedMarketplace.rootDir).catch(() => undefined);
       }
     }
-    if (artifactRollbackState) {
-      await disposeArtifactRollbackState(artifactRollbackState).catch(() => undefined);
-    }
-    await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
-
     return {
       ...options.unit,
       status: 'succeeded',
       refreshedArtifacts,
+      ...(artifactRollbackState ? { artifactRollbackState } : {}),
+      ...(nativeRollbackBaseline ? { nativeRollbackBaseline } : {}),
     };
   } catch (error) {
     if (artifactRollbackState) {
       await restoreTrackedArtifactRollbackState(
-        'codex',
+        platform,
         createResolvedTarget(options.plugin),
         options.unit.scope,
         options.cwd,
@@ -760,8 +875,50 @@ async function executeRefreshUnit(options: {
   }
 }
 
+async function disposeExecutedRefreshRollback(unit: ExecutedRefreshUnit): Promise<void> {
+  await disposeArtifactRollbackState(unit.artifactRollbackState).catch(() => undefined);
+  await disposeCodexNativePluginRollbackBaseline(unit.nativeRollbackBaseline).catch(() => undefined);
+  unit.artifactRollbackState = undefined;
+  unit.nativeRollbackBaseline = undefined;
+}
+
+async function rollbackExecutedRefreshUnit(options: {
+  unit: ExecutedRefreshUnit;
+  plugin: PluginMeta;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const errors: string[] = [];
+  if (options.unit.artifactRollbackState) {
+    try {
+      await restoreTrackedArtifactRollbackState(
+        options.unit.platform,
+        createResolvedTarget(options.plugin),
+        options.unit.scope,
+        options.cwd,
+        options.env,
+        options.unit.artifactRollbackState,
+      );
+    } catch (error) {
+      errors.push(`artifact runtime 回滚失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (options.unit.nativeRollbackBaseline) {
+    try {
+      await restoreCodexNativePluginRollbackBaseline(options.unit.nativeRollbackBaseline);
+    } catch (error) {
+      errors.push(`Codex native runtime 回滚失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await disposeExecutedRefreshRollback(options.unit);
+  if (errors.length > 0) {
+    throw new Error(errors.join('；'));
+  }
+}
+
 async function createRefreshReach(options: {
   pluginName: string;
+  platform: PlatformName;
   commandScope: Scope;
   refreshedScopes: Scope[];
   cwd: string;
@@ -769,10 +926,12 @@ async function createRefreshReach(options: {
 }): Promise<ArtifactRefreshReach> {
   let knownProjectTargetsOutsideReach: string[] = [];
   try {
-    const projectKey = await resolveCodexProjectKey(options.cwd);
+    const projectKey = options.platform === 'codex'
+      ? await resolveCodexProjectKey(options.cwd)
+      : await resolveClaudeProjectKey(options.cwd);
     const ledger = await readInstalledLedger(options.env);
     knownProjectTargetsOutsideReach = uniqueSorted(
-      Object.keys(ledger.plugins[options.pluginName]?.platforms.codex?.projectScopes ?? {})
+      Object.keys(ledger.plugins[options.pluginName]?.platforms[options.platform]?.projectScopes ?? {})
         .filter((key) => key !== projectKey)
         .map((key) => `project:${key}`),
     );
@@ -793,11 +952,7 @@ async function createRefreshReach(options: {
 async function writeRefreshTrackingResult(options: {
   unit: ExecutedRefreshUnit;
   refreshReach: ArtifactRefreshReach;
-}): Promise<{
-  status: ExecutedRefreshUnit['status'];
-  error?: string;
-  artifacts: Array<GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState }>;
-}> {
+}): Promise<WrittenRefreshResult> {
   const artifactsWithRefresh = options.unit.status === 'succeeded'
     ? withRefreshMetadata(
         options.unit.refreshedArtifacts ?? [],
@@ -833,12 +988,105 @@ async function writeRefreshTrackingResult(options: {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const refreshError = options.unit.error
+      ? `${options.unit.error}；tracking 写入失败：${message}`
+      : `tracking 写入失败：${message}`;
     return {
       status: 'failed',
-      error: options.unit.error ? `${options.unit.error}；tracking 写入失败：${message}` : `tracking 写入失败：${message}`,
-      artifacts: artifactsWithRefresh,
+      error: refreshError,
+      artifacts: withRefreshMetadata(
+        options.unit.dynamicArtifacts,
+        buildLastRefresh({
+          status: 'failed',
+          triggerKeys: options.unit.triggerKeys,
+          error: refreshError,
+        }),
+        options.refreshReach,
+      ),
     };
   }
+}
+
+async function finalizeExecutedRefreshUnits(options: {
+  units: ExecutedRefreshUnit[];
+  plugin: PluginMeta;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  refreshReachByPlatform: Map<PlatformName, ArtifactRefreshReach>;
+  fallbackRefreshReach: ArtifactRefreshReach;
+}): Promise<WrittenRefreshResult[]> {
+  const results: WrittenRefreshResult[] = [];
+  for (const unit of options.units) {
+    const refreshReach = options.refreshReachByPlatform.get(unit.platform) ?? options.fallbackRefreshReach;
+    let result = await writeRefreshTrackingResult({ unit, refreshReach });
+    let runtimeRolledBack = false;
+    const effectiveUnit: ExecutedRefreshUnit = {
+      ...unit,
+      status: result.status,
+      ...(result.error ? { error: result.error } : {}),
+    };
+
+    try {
+      if (unit.status === 'succeeded' && result.status === 'failed') {
+        await rollbackExecutedRefreshUnit({
+          unit,
+          plugin: options.plugin,
+          cwd: options.cwd,
+          env: options.env,
+        });
+        runtimeRolledBack = true;
+      }
+      await syncInstallStateAfterRefresh({
+        plugin: options.plugin,
+        cwd: options.cwd,
+        env: options.env,
+        unit: effectiveUnit,
+        artifacts: result.artifacts,
+      });
+      await disposeExecutedRefreshRollback(unit);
+    } catch (error) {
+      const errors = [error instanceof Error ? error.message : String(error)];
+      if (unit.status === 'succeeded' && !runtimeRolledBack) {
+        try {
+          await rollbackExecutedRefreshUnit({
+            unit,
+            plugin: options.plugin,
+            cwd: options.cwd,
+            env: options.env,
+          });
+        } catch (rollbackError) {
+          errors.push(rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
+        }
+      } else {
+        await disposeExecutedRefreshRollback(unit);
+      }
+      try {
+        await writeTrackingManifest(unit.trackingDir, unit.trackingManifest);
+      } catch (trackingRollbackError) {
+        errors.push(
+          `tracking 回滚失败：${trackingRollbackError instanceof Error
+            ? trackingRollbackError.message
+            : String(trackingRollbackError)}`,
+        );
+      }
+      const message = errors.join('；');
+      result = {
+        status: 'failed',
+        error: message,
+        artifacts: withRefreshMetadata(
+          unit.dynamicArtifacts,
+          buildLastRefresh({
+            status: 'failed',
+            triggerKeys: unit.triggerKeys,
+            error: message,
+          }),
+          refreshReach,
+        ),
+      };
+    }
+    results.push(result);
+  }
+  return results;
 }
 
 function toInstallRecordArtifacts(
@@ -981,13 +1229,15 @@ async function syncInstallStateAfterRefresh(options: {
   const location: PluginLocation = options.unit.scope === 'project'
     ? {
         plugin: options.plugin.manifest.name,
-        platform: 'codex',
+        platform: options.unit.platform,
         scope: 'project',
-        projectKey: await resolveCodexProjectKey(options.cwd),
+        projectKey: options.unit.platform === 'codex'
+          ? await resolveCodexProjectKey(options.cwd)
+          : await resolveClaudeProjectKey(options.cwd),
       }
     : {
         plugin: options.plugin.manifest.name,
-        platform: 'codex',
+        platform: options.unit.platform,
         scope: 'user',
       };
   const recordRead = await readInstallRecordForLocation({
@@ -1032,7 +1282,7 @@ async function syncInstallStateAfterRefresh(options: {
       const repoVisibleArtifacts = collectRepoVisibleProjectArtifacts(repoRoot, mergedArtifacts);
       const locator = createProjectArtifactSharedLocator({
         plugin: options.plugin.manifest.name,
-        platform: 'codex',
+        platform: options.unit.platform,
         repoRoot,
         projectRoot,
       });
@@ -1084,7 +1334,7 @@ function createRefreshNextSteps(pluginName: string, units: ExecutedRefreshUnit[]
   return uniqueSorted(
     units
       .filter((unit) => unit.status === 'failed')
-      .map((unit) => `aw status ${pluginName} -p codex -s ${unit.scope}`),
+      .map((unit) => `aw status ${pluginName} -p ${unit.platform} -s ${unit.scope}`),
   );
 }
 
@@ -1127,41 +1377,59 @@ export async function refreshArtifactsAfterConfigWrite(options: {
       }));
     }
 
-    const refreshedScopes = executedUnits
-      .filter((unit) => unit.status === 'succeeded')
-      .map((unit) => unit.scope);
-    const refreshReach = await createRefreshReach({
-      pluginName: options.plugin.manifest.name,
-      commandScope: options.commandScope,
-      refreshedScopes,
-      cwd: options.cwd,
-      env,
-    });
-
-    const writtenResults = [];
-    for (const unit of executedUnits) {
-      writtenResults.push(await writeRefreshTrackingResult({
-        unit,
-        refreshReach,
-      }));
-    }
-    for (const [index, unit] of executedUnits.entries()) {
-      await syncInstallStateAfterRefresh({
-        plugin: options.plugin,
+    const refreshReachByPlatform = new Map<PlatformName, ArtifactRefreshReach>();
+    for (const platform of uniqueSorted(executedUnits.map((unit) => unit.platform)) as PlatformName[]) {
+      refreshReachByPlatform.set(platform, await createRefreshReach({
+        pluginName: options.plugin.manifest.name,
+        platform,
+        commandScope: options.commandScope,
+        refreshedScopes: executedUnits
+          .filter((unit) => unit.platform === platform && unit.status === 'succeeded')
+          .map((unit) => unit.scope),
         cwd: options.cwd,
         env,
-        unit,
-        artifacts: writtenResults[index]?.artifacts ?? [],
-      });
+      }));
     }
+    const refreshReachValues = [...refreshReachByPlatform.values()];
+    const refreshReach: ArtifactRefreshReach = {
+      commandScope: options.commandScope,
+      refreshedUserTarget: refreshReachValues.some((entry) => entry.refreshedUserTarget),
+      refreshedCurrentProjectTarget: refreshReachValues.some((entry) => entry.refreshedCurrentProjectTarget),
+      scannedHistoricalProjects: false,
+      historicalProjectTargetsMayBeStale: refreshReachValues.some(
+        (entry) => entry.historicalProjectTargetsMayBeStale),
+      knownProjectTargetsOutsideReach: uniqueSorted(refreshReachValues.flatMap(
+        (entry) => entry.knownProjectTargetsOutsideReach ?? [])),
+    };
+
+    const writtenResults = await finalizeExecutedRefreshUnits({
+      units: executedUnits,
+      plugin: options.plugin,
+      cwd: options.cwd,
+      env,
+      refreshReachByPlatform,
+      fallbackRefreshReach: refreshReach,
+    });
 
     const artifacts = writtenResults.flatMap((result, index) =>
-      summarizeArtifacts(executedUnits[index].scope, result.status, result.artifacts),
+      summarizeArtifacts(
+        executedUnits[index].platform,
+        executedUnits[index].scope,
+        result.status,
+        result.artifacts,
+      ),
     );
     const errors = writtenResults
       .map((result) => result.error)
       .filter((error): error is string => Boolean(error));
-    const nextSteps = createRefreshNextSteps(options.plugin.manifest.name, executedUnits);
+    const nextSteps = createRefreshNextSteps(
+      options.plugin.manifest.name,
+      executedUnits.map((unit, index) => ({
+        ...unit,
+        status: writtenResults[index]?.status ?? 'failed',
+        ...(writtenResults[index]?.error ? { error: writtenResults[index].error } : {}),
+      })),
+    );
 
     return {
       attempted: true,
@@ -1219,41 +1487,59 @@ export async function reapplyConfigRefresh(options: {
       }));
     }
 
-    const refreshedScopes = executedUnits
-      .filter((unit) => unit.status === 'succeeded')
-      .map((unit) => unit.scope);
-    const refreshReach = await createRefreshReach({
-      pluginName: options.plugin.manifest.name,
-      commandScope: options.commandScope,
-      refreshedScopes,
-      cwd: options.cwd,
-      env,
-    });
-
-    const writtenResults = [];
-    for (const unit of executedUnits) {
-      writtenResults.push(await writeRefreshTrackingResult({
-        unit,
-        refreshReach,
-      }));
-    }
-    for (const [index, unit] of executedUnits.entries()) {
-      await syncInstallStateAfterRefresh({
-        plugin: options.plugin,
+    const refreshReachByPlatform = new Map<PlatformName, ArtifactRefreshReach>();
+    for (const platform of uniqueSorted(executedUnits.map((unit) => unit.platform)) as PlatformName[]) {
+      refreshReachByPlatform.set(platform, await createRefreshReach({
+        pluginName: options.plugin.manifest.name,
+        platform,
+        commandScope: options.commandScope,
+        refreshedScopes: executedUnits
+          .filter((unit) => unit.platform === platform && unit.status === 'succeeded')
+          .map((unit) => unit.scope),
         cwd: options.cwd,
         env,
-        unit,
-        artifacts: writtenResults[index]?.artifacts ?? [],
-      });
+      }));
     }
+    const refreshReachValues = [...refreshReachByPlatform.values()];
+    const refreshReach: ArtifactRefreshReach = {
+      commandScope: options.commandScope,
+      refreshedUserTarget: refreshReachValues.some((entry) => entry.refreshedUserTarget),
+      refreshedCurrentProjectTarget: refreshReachValues.some((entry) => entry.refreshedCurrentProjectTarget),
+      scannedHistoricalProjects: false,
+      historicalProjectTargetsMayBeStale: refreshReachValues.some(
+        (entry) => entry.historicalProjectTargetsMayBeStale),
+      knownProjectTargetsOutsideReach: uniqueSorted(refreshReachValues.flatMap(
+        (entry) => entry.knownProjectTargetsOutsideReach ?? [])),
+    };
+
+    const writtenResults = await finalizeExecutedRefreshUnits({
+      units: executedUnits,
+      plugin: options.plugin,
+      cwd: options.cwd,
+      env,
+      refreshReachByPlatform,
+      fallbackRefreshReach: refreshReach,
+    });
 
     const artifacts = writtenResults.flatMap((result, index) =>
-      summarizeArtifacts(executedUnits[index].scope, result.status, result.artifacts),
+      summarizeArtifacts(
+        executedUnits[index].platform,
+        executedUnits[index].scope,
+        result.status,
+        result.artifacts,
+      ),
     );
     const errors = writtenResults
       .map((result) => result.error)
       .filter((error): error is string => Boolean(error));
-    const nextSteps = createRefreshNextSteps(options.plugin.manifest.name, executedUnits);
+    const nextSteps = createRefreshNextSteps(
+      options.plugin.manifest.name,
+      executedUnits.map((unit, index) => ({
+        ...unit,
+        status: writtenResults[index]?.status ?? 'failed',
+        ...(writtenResults[index]?.error ? { error: writtenResults[index].error } : {}),
+      })),
+    );
 
     return {
       attempted: true,

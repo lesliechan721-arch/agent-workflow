@@ -104,7 +104,8 @@ export function isGeneratedArtifact(value: unknown): value is GeneratedArtifact 
       candidate.target === undefined ||
       candidate.target === 'codex.developerInstructionsBlock' ||
       candidate.target === 'codex.agentRole' ||
-      candidate.target === 'codex.skill'
+      candidate.target === 'codex.skill' ||
+      candidate.target === 'claude.skill'
     ) &&
     (
       candidate.state === undefined ||

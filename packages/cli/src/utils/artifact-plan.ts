@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 
 import type {
   ArtifactPlan,
   ArtifactPlanArtifact,
   ArtifactState,
   ArtifactTarget,
+  ClaudeSkillArtifact,
   CodexAgentRoleArtifact,
   CodexSkillArtifact,
   DeveloperInstructionsBlockArtifact,
@@ -20,10 +22,12 @@ const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
   'codex.skill',
+  'claude.skill',
 ]);
 const SUPPORTED_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const TARGET_ORDER: ArtifactTarget[] = [
   'codex.skill',
+  'claude.skill',
   'codex.developerInstructionsBlock',
   'codex.agentRole',
 ];
@@ -31,6 +35,7 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, ArtifactPlanArtifact['kind
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'codexRole',
   'codex.skill': 'skill',
+  'claude.skill': 'skill',
 };
 
 export type ValidatedArtifactPlanArtifact = ArtifactPlanArtifact & {
@@ -40,7 +45,7 @@ export type ValidatedArtifactPlanArtifact = ArtifactPlanArtifact & {
 };
 
 export interface ValidatedArtifactPlan {
-  version: 1;
+  version: 2;
   artifacts: ValidatedArtifactPlanArtifact[];
 }
 
@@ -110,7 +115,7 @@ function resolvePlanObject(plan: unknown): ArtifactPlan {
     throw new Error('Invalid artifact plan: expected a JSON object.');
   }
   assertAllowedObjectKeys(plan, 'artifact plan', ['version', 'artifacts']);
-  if (plan.version !== 1) {
+  if (plan.version !== 2) {
     throw new Error(`Invalid artifact plan version "${String(plan.version)}".`);
   }
   if (!Array.isArray(plan.artifacts)) {
@@ -287,11 +292,44 @@ function validateSkillArtifactContent(
   if (!isRecord(value)) {
     throw new Error(`Invalid ${fieldName}: expected an object.`);
   }
-  assertAllowedObjectKeys(value, fieldName, ['skillFile', 'openaiYaml']);
+  assertAllowedObjectKeys(value, fieldName, ['files']);
+  if (!isRecord(value.files)) {
+    throw new Error(`Invalid ${fieldName}.files: expected an object.`);
+  }
+
+  const files: Record<string, string> = {};
+  for (const [relativePath, content] of Object.entries(value.files)) {
+    if (
+      relativePath.trim() === '' ||
+      relativePath.includes('\\') ||
+      relativePath.startsWith('/') ||
+      path.posix.normalize(relativePath) !== relativePath ||
+      relativePath.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+    ) {
+      throw new Error(
+        `Invalid ${fieldName}.files: "${relativePath}" must be a normalized POSIX path inside the skill root.`,
+      );
+    }
+    if (typeof content !== 'string') {
+      throw new Error(`Invalid ${fieldName}.files.${relativePath}: expected a string.`);
+    }
+    files[relativePath] = content;
+  }
+
+  const paths = Object.keys(files).sort();
+  for (const [index, relativePath] of paths.entries()) {
+    const conflictingPrefix = paths
+      .slice(0, index)
+      .find((candidate) => relativePath.startsWith(`${candidate}/`));
+    if (conflictingPrefix) {
+      throw new Error(
+        `Invalid ${fieldName}.files: file path "${conflictingPrefix}" conflicts with "${relativePath}".`,
+      );
+    }
+  }
 
   return {
-    skillFile: ensureNonEmptyString(value.skillFile, `${fieldName}.skillFile`),
-    openaiYaml: ensureNonEmptyString(value.openaiYaml, `${fieldName}.openaiYaml`),
+    files,
   };
 }
 
@@ -402,7 +440,7 @@ function normalizeArtifact(options: {
     };
   }
 
-  if (target === 'codex.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill') {
     const skillKey = ensureNonEmptyString(options.artifact.skillKey, `${fieldName}.skillKey`);
     validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
     if (skillKey !== declaration.skillKey) {
@@ -413,7 +451,7 @@ function normalizeArtifact(options: {
     const content = state === 'present'
       ? validateSkillArtifactContent(options.artifact.content, `${fieldName}.content`)
       : undefined;
-    const normalized: CodexSkillArtifact = {
+    const normalized: CodexSkillArtifact | ClaudeSkillArtifact = {
       id,
       kind: 'skill',
       platform,
@@ -569,7 +607,7 @@ export function validateArtifactPlan(options: {
   });
 
   return {
-    version: 1,
+    version: 2,
     artifacts,
   };
 }

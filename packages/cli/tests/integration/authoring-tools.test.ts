@@ -251,7 +251,7 @@ async function writeDynamicArtifactPlugin(
     [
       'const roleKey = process.env.TEST_RENDERER_ROLE_KEY ?? ' + JSON.stringify(rendererRoleKey) + ';',
       'process.stdout.write(JSON.stringify({',
-      '  version: 1,',
+      '  version: 2,',
       '  artifacts: [',
       '    {',
       '      id: "lightweight-instruction",',
@@ -1652,7 +1652,7 @@ describe('authoring tools', () => {
       {
         'scripts/render-artifacts.mjs': [
           'process.stdout.write(JSON.stringify({',
-          '  version: 1,',
+          '  version: 2,',
           '  artifacts: [',
           '    {',
           '      id: "dynamic-trigger-demo",',
@@ -1663,8 +1663,10 @@ describe('authoring tools', () => {
           '      refreshKeys: [],',
           '      skillKey: "dynamic-trigger-demo",',
           '      content: {',
-          '        skillFile: "---\\nname: dynamic-trigger-demo\\ndescription: Dynamic trigger demo.\\n---\\n\\n# Dynamic Trigger Demo\\n",',
-          '        openaiYaml: "policy:\\n  allow_implicit_invocation: false\\n"',
+          '        files: {',
+          '          "SKILL.md": "---\\nname: dynamic-trigger-demo\\ndescription: Dynamic trigger demo.\\n---\\n\\n# Dynamic Trigger Demo\\n",',
+          '          "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: false\\n"',
+          '        }',
           '      }',
           '    }',
           '  ]',
@@ -1698,7 +1700,7 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'Invalid skillTriggers.missing: expected a declared static skill or codex.skill artifact.',
+        'Invalid skillTriggers.missing: expected a declared static skill or dynamic skill artifact.',
       ),
     });
 
@@ -2240,6 +2242,149 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining(
         'artifacts.targets[0].platform requires CODEX support',
       ),
+    });
+
+    const dynamicClaude = await writeSourcePlugin(
+      path.join(tempRoot, 'claude-dynamic'),
+      'claude-dynamic',
+      createBaseManifest('claude-dynamic', {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+            products: ['CLAUDE'],
+          },
+        },
+        skillTriggers: {
+          'claude-dynamic': {
+            defaultTrigger: 'auto',
+            allowDynamicTrigger: true,
+          },
+        },
+        scripts: {
+          artifacts: {
+            render: {
+              runner: 'node',
+              path: './scripts/render-artifacts.mjs',
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'claude-dynamic-skill',
+            platform: 'claude',
+            scopes: ['user', 'project'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'claude-dynamic',
+            sourceDirs: ['./templates/claude-dynamic'],
+          }],
+        },
+      }),
+      {
+        'templates/claude-dynamic/SKILL.md': '---\nname: claude-dynamic\ndescription: Dynamic Claude skill.\n---\n\n# Dynamic Claude\n',
+        'scripts/render-artifacts.mjs': [
+          'const context = JSON.parse(await (await import("node:fs/promises")).readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "claude-dynamic-skill", platform: "claude", target: "claude.skill", kind: "skill",',
+          '  state: "present", refreshKeys: [], skillKey: "claude-dynamic",',
+          '  content: { files: { "references/runtime.md": `scope=${context.scope}\\n` } }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+    await fs.outputFile(
+      path.join(dynamicClaude.pluginDir, 'templates', 'claude-dynamic', 'assets', 'icon.bin'),
+      Buffer.from([0, 255, 1]),
+    );
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const dynamicClaudeManifest = await fs.readJson(dynamicClaude.manifestPath);
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: [
+            './templates/claude-dynamic',
+            './templates/claude-dynamic',
+          ],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('sourceDirs must not contain duplicate directories'),
+    });
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: [
+            './templates/claude-dynamic',
+            './templates/claude-dynamic/../claude-dynamic',
+          ],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('sourceDirs must not contain duplicate directories'),
+    });
+    await fs.writeJson(dynamicClaude.manifestPath, dynamicClaudeManifest, { spaces: 2 });
+
+    const dynamicClaudeSource = path.join(
+      dynamicClaude.pluginDir,
+      'templates',
+      'claude-dynamic',
+    );
+    const skillPath = path.join(dynamicClaudeSource, 'SKILL.md');
+    const skillContent = await fs.readFile(skillPath);
+    await fs.remove(skillPath);
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree must contain a non-empty SKILL.md'),
+    });
+
+    await fs.writeFile(skillPath, skillContent);
+    await fs.outputFile(path.join(dynamicClaudeSource, 'references'), 'static file\n');
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree path "references" conflicts with "references/runtime.md"'),
+    });
+    await fs.remove(path.join(dynamicClaudeSource, 'references'));
+
+    const sourceLink = path.join(dynamicClaude.pluginDir, 'templates', 'source-link');
+    await fs.symlink('claude-dynamic', sourceLink);
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: ['./templates/source-link'],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('sourceDirs[0] must point to an existing directory'),
+    });
+
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [
+          dynamicClaudeManifest.artifacts.targets[0],
+          {
+            ...dynamicClaudeManifest.artifacts.targets[0],
+            id: 'claude-dynamic-skill-copy',
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate skill ownership "claude:user:claude-dynamic"'),
     });
   });
 

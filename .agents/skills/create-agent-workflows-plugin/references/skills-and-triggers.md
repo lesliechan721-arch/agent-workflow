@@ -209,7 +209,7 @@ manifest 中的每个显式受管 skill 都必须声明默认策略和是否允�
 
 `defaultTrigger` 只允许 `manual` 或 `auto`。未写入内建配置时，effective 值等于 `defaultTrigger`；清空字段或 reset 配置层后也回到该默认值。`allowDynamicTrigger: true` 表示用户可以修改 `aw.skillTriggers.<skill>.trigger`；`allowDynamicTrigger: false` 表示字段固定只读，历史 `$aw.skillTriggers` 覆盖值会作为 ignored 旧配置展示，不参与 runtime、status 或 drift 判断。新 manifest 中只允许 `defaultTrigger` 和 `allowDynamicTrigger`，不能再写旧的安装期覆盖字段。
 
-静态 `skills/<skill>` 子目录和动态 `artifacts.targets[].target = "codex.skill"` 声明的 `skillKey` 都必须有对应 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。
+静态 `skills/<skill>` 子目录以及动态 `codex.skill` / `claude.skill` 声明的 `skillKey` 都必须有对应 `skillTriggers.<skill>` entry。动态 Skill 的最终文件由 AW patch 同一套 effective trigger：Codex 修改 `agents/openai.yaml`，Claude 修改 `SKILL.md` frontmatter。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者手写 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。
 
 本地 `~/.aw` 是共享 marketplace。Codex user scope 和 Claude native runtime 中，同一个用户、同名插件、同一平台只能有一份当前生效的 runtime skill 触发策略；AW 用 shared runtime owner 记录当前 owner 身份和完整性证据。owner 文件不保存 SkillTrigger 真值；`aw init` replay、marketplace refresh、卸载后 rematerialize 和重新应用配置都从 owner location 的 current effective built-in config 重新计算。owner 冲突只作为 blocker、diagnostic 或状态详情，解决方式是卸载、cleanup 或调整 owner 对应的有效安装后重试原写命令。Codex project scope 不改共享 runtime，只改当前仓库 `.agents/skills/<skill>/agents/openai.yaml`，也不参与 `aw init` replay 或 local marketplace rebuild replay。
 

@@ -2159,10 +2159,30 @@ export async function resolveUniformSkillTriggerPreference(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<SkillTriggerPreference> {
+  const preferences = await resolveEffectiveSkillTriggerPreferences(options);
+  const effectivePreferences = new Set(Object.values(preferences));
+  if (effectivePreferences.size === 1) {
+    return [...effectivePreferences][0]!;
+  }
+  if (effectivePreferences.size === 0) {
+    return 'default';
+  }
+  throw new Error(
+    `${options.plugin.manifest.name} 在 ${options.platform}/${options.scope} 下包含多个不同的 SkillTrigger effective 值，当前调用方要求单一偏好。`,
+  );
+}
+
+export async function resolveEffectiveSkillTriggerPreferences(options: {
+  plugin: PluginMeta;
+  platform: 'codex' | 'claude';
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<Record<string, Exclude<SkillTriggerPreference, 'default'>>> {
   const entries = (await resolveSkillTriggerConfigEntries(options.plugin))
     .filter((entry) => entry.platforms.includes(options.platform));
   if (entries.length === 0) {
-    return 'default';
+    return {};
   }
 
   const store = await readPluginConfigStore({
@@ -2175,24 +2195,12 @@ export async function resolveUniformSkillTriggerPreference(options: {
   const stored = new Map(
     readStoredSkillTriggers(store.values).map((entry) => [entry.skillName, entry.trigger]),
   );
-  const effectivePreferences = new Set<Exclude<SkillTriggerPreference, 'default'>>();
-  for (const entry of entries) {
-    effectivePreferences.add(
-      entry.allowDynamicTrigger
-        ? (stored.get(entry.skillName) ?? entry.defaultTrigger)
-        : entry.defaultTrigger,
-    );
-  }
-
-  if (effectivePreferences.size === 1) {
-    return [...effectivePreferences][0]!;
-  }
-  if (effectivePreferences.size === 0) {
-    return 'default';
-  }
-  throw new Error(
-    `${options.plugin.manifest.name} 在 ${options.platform}/${options.scope} 下包含多个不同的 SkillTrigger effective 值，当前 apply pipeline 还不能把它们合并成单一偏好。`,
-  );
+  return Object.fromEntries(entries.map((entry) => [
+    entry.skillName,
+    entry.allowDynamicTrigger
+      ? (stored.get(entry.skillName) ?? entry.defaultTrigger)
+      : entry.defaultTrigger,
+  ]));
 }
 
 export function summarizeEffectivePluginConfig(

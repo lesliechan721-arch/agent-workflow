@@ -327,7 +327,7 @@ function createRendererRunner() {
     run: vi.fn(async () => ({
       exitCode: 0,
       signal: null,
-      stdout: JSON.stringify({ version: 1, artifacts: [] }),
+      stdout: JSON.stringify({ version: 2, artifacts: [] }),
       stderr: '',
       timedOut: false,
     })),
@@ -1179,7 +1179,7 @@ describe('diagnose P7', () => {
         exitCode: 0,
         signal: null,
         stdout: JSON.stringify({
-          version: 1,
+          version: 2,
           artifacts: [{
             id: `${fixture.target.location.plugin}-instruction`,
             platform: 'codex',
@@ -1254,6 +1254,9 @@ describe('diagnose P7', () => {
         skillKey: 'codex-explore',
       }],
     };
+    currentPlugin.manifest.skillTriggers = {
+      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
+    };
     await fs.writeJson(currentPlugin.manifestPath, currentPlugin.manifest, { spaces: 2 });
     await alignFixtureSourceToPlugin({ fixture, currentPlugin });
     await stripFixtureLifecycle(fixture);
@@ -1319,7 +1322,7 @@ describe('diagnose P7', () => {
         exitCode: 0,
         signal: null,
         stdout: JSON.stringify({
-          version: 1,
+          version: 2,
           artifacts: [{
             id: 'codex-explore-skill',
             platform: 'codex',
@@ -1329,8 +1332,10 @@ describe('diagnose P7', () => {
             skillKey: 'codex-explore',
             refreshKeys: ['sharedFlag'],
             content: {
-              skillFile: '# expected skill\n',
-              openaiYaml: 'policy:\n  allow_implicit_invocation: true\n',
+              files: {
+                'SKILL.md': '# expected skill\n',
+                'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+              },
             },
           }],
         }),
@@ -1359,6 +1364,10 @@ describe('diagnose P7', () => {
     const payload = JSON.parse(result.output) as {
       locations: Array<{
         findings: string[];
+        dynamicDiagnostic: {
+          triggerPreference: string | null;
+          skillTriggerPreferences?: Record<string, string>;
+        };
         deepDiagnose: {
           artifacts: Array<{
             id: string;
@@ -1379,7 +1388,13 @@ describe('diagnose P7', () => {
       artifactKey: 'codex-explore',
       drift: true,
     });
-    expect(artifact?.triggerPreference).toEqual(expect.any(String));
+    expect(artifact?.triggerPreference).toBe('auto');
+    expect(payload.locations[0]?.dynamicDiagnostic).toMatchObject({
+      triggerPreference: 'auto',
+      skillTriggerPreferences: {
+        'codex-explore': 'auto',
+      },
+    });
     expect(artifact?.driftReasons?.some((reason) => reason.includes('SKILL.md'))).toBe(true);
     expect(artifact?.fileDiffs?.some((entry) => entry.path === 'SKILL.md')).toBe(true);
     expect(payload.locations[0]?.findings.join('\n')).toContain('expected tree');

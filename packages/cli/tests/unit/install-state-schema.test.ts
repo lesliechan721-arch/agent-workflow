@@ -494,13 +494,14 @@ describe('install-state schema', () => {
 
   it('accepts dynamic skill identities in install records and diagnostic cache', () => {
     const record = makeInstallRecordFile({
+      platform: 'claude',
       artifacts: [{
         kind: 'skill',
-        platform: 'codex',
-        path: '/tmp/repo/.agents/skills/codex-explore',
-        artifactKey: 'codex-explore',
-        id: 'codex-explore-skill',
-        target: 'codex.skill',
+        platform: 'claude',
+        path: '/tmp/repo/.claude/skills/dynamic-claude',
+        artifactKey: 'dynamic-claude',
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
       }],
     });
 
@@ -517,10 +518,10 @@ describe('install-state schema', () => {
       },
       updatedAt: '2026-05-07T00:00:01.000Z',
       artifacts: [{
-        id: 'codex-explore-skill',
-        target: 'codex.skill',
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
         state: 'present',
-        artifactKey: 'codex-explore',
+        artifactKey: 'dynamic-claude',
         configDigest: 'sha256:cfg',
         contentDigest: 'sha256:content',
       }],

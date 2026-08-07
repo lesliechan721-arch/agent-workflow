@@ -2103,6 +2103,7 @@ async function resolveSharedRuntimeAssessmentForState(options: {
   executionCwd: string;
   currentPlugin?: PluginMeta;
   recordPreference?: string;
+  skillTriggerPreferences?: Record<string, 'manual' | 'auto'>;
   env: NodeJS.ProcessEnv;
 }): Promise<SharedSkillTriggerRuntimeSemanticsAssessment | null> {
   if (!options.currentPlugin) {
@@ -2117,6 +2118,7 @@ async function resolveSharedRuntimeAssessmentForState(options: {
       preference: options.recordPreference === 'manual' || options.recordPreference === 'auto'
         ? options.recordPreference
         : 'default',
+      skillTriggerPreferences: options.skillTriggerPreferences,
       embeddedRoot: path.dirname(options.currentPlugin.rootDir),
       target: createSkillTriggerMaterializationTargetForStatus({
         platform: options.location.platform,
@@ -2149,6 +2151,7 @@ async function createInstallStateForCell(options: {
     executionCwd: state.target.executionCwd,
     currentPlugin: state.target.currentPlugin,
     recordPreference,
+    skillTriggerPreferences: state.effectiveSkillTriggerPreferences,
     env,
   });
   const sharedRuntimeOwnerConflict = Boolean(
@@ -3453,9 +3456,11 @@ export async function statusCommand(
         available: state.evidence.dynamicDiagnostic.available,
         unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
         unavailable: state.projection.dynamicDiagnosticUnavailable,
-        triggerPreference: state.evidence.installRecord.read.status === 'ok'
-          ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
-          : null,
+        triggerPreference: (() => {
+          const values = new Set(Object.values(state.effectiveSkillTriggerPreferences ?? {}));
+          return values.size === 1 ? [...values][0]! : null;
+        })(),
+        skillTriggerPreferences: state.effectiveSkillTriggerPreferences ?? {},
         entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
       },
       legacyDynamicTracking: state.evidence.installRecord.artifacts

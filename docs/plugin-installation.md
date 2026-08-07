@@ -22,7 +22,7 @@ aw status
 
 `aw install` 和 `aw upgrade` 会先解析 current catalog。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装前预热远程 catalog/cache，或验证当前网络、selector 和本地 fallback 状态。纯 `Codex + project scope` 安装走当前仓库的 repo-visible artifacts，只读使用 current catalog，不会为了当前项目写入去初始化、修复或注册用户级 Codex marketplace。
 
-带动态 `codex.skill` 的插件也由 AW 统一安装和刷新：renderer 只返回 `ArtifactPlan`，AW 再把 skill 写到 user 或 project runtime，并按 AW 内建 SkillTrigger 配置 patch `agents/openai.yaml`。配置变化命中 `refreshKeys` 后，同一条 apply 路径会重新生成 skill、更新 dynamic diagnostic cache，并按当前 effective 触发策略重新应用 runtime。
+带动态 `codex.skill` 或 `claude.skill` 的插件也由 AW 统一安装和刷新。manifest `sourceDirs` 可以提供任意目录文件，包括二进制资源；多个源按顺序合并。renderer 只返回 ArtifactPlan V2，并用 `content.files` 提供 UTF-8 动态覆盖。AW 合并并验证最终文件树，再原子写入 user 或 project runtime，并按 AW 内建 SkillTrigger 配置 patch Codex `agents/openai.yaml` 或 Claude `SKILL.md` frontmatter。配置变化命中 `refreshKeys` 后，同一条 apply 路径会重新生成完整 Skill、更新 dynamic diagnostic cache，并重新应用当前 effective 触发策略。
 
 ---
 
@@ -202,7 +202,7 @@ aw config reset <插件名> [-s project|user] [-y] [-j]
 
 插件名会先经过 config store 路径段安全校验：只允许非空单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
 
-带动态 artifact 的插件会在配置写入后按需刷新已安装产物。刷新只在写入的 key 命中已安装 artifact 的 `refreshKeys` 时触发；未命中时只保存配置。SkillTrigger 内建字段不依赖 `refreshKeys`，保存后走 AW built-in apply pipeline，把当前 effective 触发策略应用到静态 skill、动态 `codex.skill` 和公共 `slashCommands` 生成的固定手动 skill。user 配置写入会刷新 user scope artifact，并在当前仓库也安装了 project artifact 时一并刷新当前仓库；project 配置写入只刷新当前仓库 project artifact，不会改写 user artifact。CLI 不会扫描所有历史项目。刷新执行 renderer 时使用当前 location 的 install record 所引用的 historical bundle，而不是可能已被运行时产物覆盖的本地 marketplace 当前副本；historical bundle 缺失或校验失败时，本次刷新会失败并留下诊断。
+带动态 artifact 的插件会在配置写入后按需刷新已安装产物。刷新只在写入的 key 命中已安装 artifact 的 `refreshKeys` 时触发；未命中时只保存配置。SkillTrigger 内建字段不依赖 `refreshKeys`，保存后走 AW built-in apply pipeline，把当前 effective 触发策略应用到静态 Skill、动态 `codex.skill` / `claude.skill` 和公共 `slashCommands` 生成的固定手动 Skill。user 配置写入会刷新 user scope artifact，并在当前仓库也安装了 project artifact 时一并刷新当前仓库；project 配置写入只刷新当前仓库 project artifact，不会改写 user artifact。CLI 不会扫描所有历史项目。刷新执行 renderer 时使用当前 location 的 install record 所引用的 historical bundle，而不是可能已被运行时产物覆盖的本地 marketplace 当前副本；historical bundle 缺失或校验失败时，本次刷新会失败并留下诊断。
 
 刷新使用 artifact render config，而不是 `get/list` 的 effective config：user artifact 只看 `default < user store`，project repo-visible artifact 只看 `default < project shared store` 中可共享的键。user / project local 覆盖不会改变 project artifact identity、config digest 或 stale 判断。如果 renderer、project preflight 或写盘失败，已经写入的 config store 会保留，受影响 artifact 会在 dynamic diagnostic cache 中标记为最近刷新失败，`aw status` 可继续诊断。`aw config ... --json` 会在 receipt 中包含 `artifactRefresh.attempted`、`status`、`triggerKeys`、`artifacts[]`，失败时还会有稳定的 `error` 摘要。
 
@@ -251,6 +251,8 @@ aw config unset git-commit aw.skillTriggers.commit.trigger -s user
 `defaultTrigger` 是默认真值；未写入内建配置时，effective 值等于 `defaultTrigger`。恢复默认通过 `aw config unset` 或 `aw config reset` 清空覆盖值完成，不能写入 `default` 作为配置值。`allowDynamicTrigger: false` 的字段只读展示默认策略，历史 `$aw.skillTriggers` 覆盖值会被标记为 ignored，不参与 effective、runtime patch、status 或 drift 判断。
 
 对动态 `codex.skill`，AW apply 阶段按当前 effective 触发策略 patch `agents/openai.yaml`：`auto` 会让 `policy.allow_implicit_invocation` 为 `true`，`manual` 会改为 `false`。renderer 输出的模板不是最终触发真值；配置保存和主控制台“重新应用配置”都复用同一套 resolver 与 built-in apply pipeline。
+
+对动态 `claude.skill`，AW apply 阶段 patch `SKILL.md` frontmatter：`manual` 写入 `disable-model-invocation: true` 和 `user-invocable: true`，`auto` 写入 `disable-model-invocation: false`。renderer 输出和静态源都不是最终触发真值。
 
 `~/.aw` 是本机共享 marketplace。Codex user scope 和 Claude native runtime 仍共享同一用户下同名插件的 runtime skill 文件；同一 plugin/platform 同一时间只有一个 shared runtime owner 可以控制这份 runtime。shared runtime owner 文件只保存 owner 身份和完整性证据，不保存触发策略真值；owner 冲突只作为 blocker、diagnostic 或状态详情展示。解决方式是卸载、cleanup 或调整 owner 对应的有效安装后重试原写命令。Codex project scope 例外：它只改当前仓库的 `.agents/skills/<skill>/agents/openai.yaml`，不参与 shared runtime owner 合同、`aw init` replay 或本地 marketplace rebuild replay。
 
@@ -344,6 +346,7 @@ Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled
 安装成功后，CLI 会在对应目录写入以下产物：
 
 **Claude**
+- `.claude/skills/<skill>/` — 动态 `claude.skill` 的完整目录树；project scope 写当前项目，user scope 写 Claude home。AW 只覆盖有 present ownership evidence 的目录，disabled target 不会取得或删除同名外部目录
 - `.claude/rules/aw-<名称>.md` — instructions 文件
 - `.claude/settings.json` — 合并 permissions 配置，并在 `awGenerated` 下记录 CLI 生成部分，尽量保留手写权限
 - Claude hooks 来自插件 bundle 内的 `claude/hooks/hooks.json`，由 Claude Code 原生插件加载；CLI 不会把它作为额外 repo-visible hook 文件写入项目目录

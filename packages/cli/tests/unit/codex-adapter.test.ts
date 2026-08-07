@@ -52,6 +52,7 @@ import {
 } from '../../src/utils/paths.js';
 import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { patchCodexOpenAiYaml } from '../../src/utils/skill-trigger-preferences.js';
 import {
   removeTrackingRecordFromManifest,
   readTrackingManifest,
@@ -259,7 +260,7 @@ function renderDynamicArtifactsFixture(options?: {
 
   return [
     'console.log(JSON.stringify({',
-    '  version: 1,',
+    '  version: 2,',
     '  artifacts: [',
     ...instructionBody,
     ...roleBody,
@@ -821,6 +822,7 @@ describe('CodexAdapter', () => {
       path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only', 'codex', 'skills', 'repo-check'),
       skillPath,
     );
+    await patchCodexOpenAiYaml(path.join(skillPath, 'agents', 'openai.yaml'), 'auto');
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [{
       path: skillPath,
       kind: 'skill',
@@ -857,7 +859,28 @@ describe('CodexAdapter', () => {
     let report = await adapter.status(plugin, 'project');
     expect(
       report.plugins[0].driftWarnings.some((warning) => warning.includes('Codex repo skill "repo-check"')),
+      report.plugins[0].driftWarnings.join('\n'),
     ).toBe(false);
+
+    const externalSkillRoot = path.join(repoRoot, 'external-repo-check');
+    await fs.copy(skillPath, externalSkillRoot);
+    await fs.remove(skillPath);
+    await fs.symlink(externalSkillRoot, skillPath);
+    report = await adapter.status(plugin, 'project');
+    expect(
+      report.plugins[0].driftWarnings.some((warning) => warning.includes('Codex repo skill "repo-check" 已漂移。')),
+    ).toBe(true);
+
+    await fs.remove(skillPath);
+    await fs.copy(externalSkillRoot, skillPath);
+    await fs.symlink(
+      path.join(externalSkillRoot, 'SKILL.md'),
+      path.join(skillPath, 'linked-skill.md'),
+    );
+    report = await adapter.status(plugin, 'project');
+    expect(
+      report.plugins[0].driftWarnings.some((warning) => warning.includes('Codex repo skill "repo-check" 已漂移。')),
+    ).toBe(true);
 
     await fs.remove(skillPath);
     report = await adapter.status(plugin, 'project');
@@ -884,6 +907,115 @@ describe('CodexAdapter', () => {
     );
   });
 
+  it('does not delete or claim existing external paths for disabled Codex skills', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await copyRepoManagedFixturePlugin(repoRoot, 'skills-only');
+    const refreshedEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(refreshedEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
+    const plugin = await readPluginManifest(
+      path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only'),
+      { mode: 'bundle' },
+    );
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+    const externalDirectory = path.join(repoRoot, '.agents', 'skills', 'disabled-directory');
+    const externalTarget = path.join(repoRoot, 'external-disabled-target');
+    const externalSymlink = path.join(repoRoot, '.agents', 'skills', 'disabled-symlink');
+    await fs.outputFile(path.join(externalDirectory, 'SKILL.md'), '# external directory\n');
+    await fs.outputFile(path.join(externalTarget, 'SKILL.md'), '# external target\n');
+    await fs.ensureDir(path.dirname(externalSymlink));
+    await fs.symlink(externalTarget, externalSymlink);
+    const disabledArtifacts: GeneratedArtifact[] = [
+      {
+        path: externalDirectory,
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'disabled-directory',
+        id: 'disabled-directory',
+        target: 'codex.skill',
+        state: 'disabled',
+      },
+      {
+        path: externalSymlink,
+        kind: 'skill',
+        platform: 'codex',
+        artifactKey: 'disabled-symlink',
+        id: 'disabled-symlink',
+        target: 'codex.skill',
+        state: 'disabled',
+      },
+    ];
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, disabledArtifacts);
+
+    await pruneCodexTrackedArtifacts({
+      cwd,
+      scope: 'project',
+      env,
+      pluginName: plugin.manifest.name,
+      artifacts: disabledArtifacts,
+    });
+
+    await expect(fs.readFile(path.join(externalDirectory, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('# external directory\n');
+    expect((await fs.lstat(externalSymlink)).isSymbolicLink()).toBe(true);
+    await expect(fs.readFile(path.join(externalTarget, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('# external target\n');
+    const report = await adapter.status(plugin, 'project');
+    expect(report.plugins[0].generatedArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ artifactKey: 'disabled-directory', state: 'disabled', exists: false }),
+      expect.objectContaining({ artifactKey: 'disabled-symlink', state: 'disabled', exists: false }),
+    ]));
+    expect(report.plugins[0].driftWarnings.join('\n')).not.toContain('缺失');
+  });
+
+  it.each(['file', 'directory', 'symlink'] as const)(
+    'rejects a non-canonical Codex skill %s main path without touching it',
+    async (entryType) => {
+      const { repoRoot, cwd, env } = await makeWorkspace();
+      const externalPath = path.join(repoRoot, `external-skill-${entryType}`);
+      const externalTarget = path.join(repoRoot, `external-skill-${entryType}-target.txt`);
+      if (entryType === 'file') {
+        await fs.outputFile(externalPath, 'external file\n');
+      } else if (entryType === 'directory') {
+        await fs.outputFile(path.join(externalPath, 'content.txt'), 'external directory\n');
+      } else {
+        await fs.outputFile(externalTarget, 'external symlink target\n');
+        await fs.symlink(externalTarget, externalPath);
+      }
+      const before = await fs.lstat(externalPath);
+      const linkTargetBefore = entryType === 'symlink' ? await fs.readlink(externalPath) : undefined;
+
+      await expect(pruneCodexTrackedArtifacts({
+        cwd,
+        scope: 'project',
+        env,
+        pluginName: 'git-commit',
+        artifacts: [{
+          path: externalPath,
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: 'commit',
+          target: 'codex.skill',
+          state: 'present',
+        }],
+      })).rejects.toThrow('main path 不是当前 scope 的 canonical 路径');
+
+      const after = await fs.lstat(externalPath);
+      expect(after.ino).toBe(before.ino);
+      if (entryType === 'file') {
+        await expect(fs.readFile(externalPath, 'utf8')).resolves.toBe('external file\n');
+      } else if (entryType === 'directory') {
+        await expect(fs.readFile(path.join(externalPath, 'content.txt'), 'utf8'))
+          .resolves.toBe('external directory\n');
+      } else {
+        expect(after.isSymbolicLink()).toBe(true);
+        await expect(fs.readlink(externalPath)).resolves.toBe(linkTargetBefore);
+        await expect(fs.readFile(externalTarget, 'utf8')).resolves.toBe('external symlink target\n');
+      }
+    },
+  );
+
   it('renders and applies Codex instruction and role artifacts before writing static outputs', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await copyRepoManagedFixturePlugin(repoRoot, 'dynamic-artifacts');
@@ -893,7 +1025,7 @@ describe('CodexAdapter', () => {
         'import { readFileSync } from "node:fs";',
         'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "codex-explorer-role",',
@@ -1008,7 +1140,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',
@@ -1297,7 +1429,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "legacy-instruction",',
@@ -1340,7 +1472,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',
@@ -1802,7 +1934,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',
@@ -1852,7 +1984,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',
@@ -1912,7 +2044,7 @@ describe('CodexAdapter', () => {
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',

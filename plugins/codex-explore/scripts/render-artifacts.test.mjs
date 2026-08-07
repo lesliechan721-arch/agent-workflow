@@ -10,6 +10,9 @@ const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(new URL('./render-artifacts.mjs', import.meta.url));
 const scriptModuleUrl = pathToFileURL(scriptPath).href;
 const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
+const artifactSourcePath = fileURLToPath(
+  new URL('../.agents-plugin/artifact-sources/codex/codex-explore-skill/0/', import.meta.url),
+);
 const expectedRoles = [
   {
     id: 'codex-explore-quick-role',
@@ -50,6 +53,11 @@ function createContext(overrides = {}) {
       name: 'codex-explore',
       version: '0.2.0',
     },
+    artifactSources: [{
+      id: 'codex-explore-skill',
+      target: 'codex.skill',
+      sourceDirs: [artifactSourcePath],
+    }],
     config: {
       mode: 'artifact-render',
       targetScope: 'user',
@@ -127,7 +135,7 @@ async function testRenderedArtifactsAndSkillContract() {
   const plan = await runRenderer(createContext());
   const skill = findArtifact(plan, 'codex-explore-skill');
 
-  assert.equal(plan.version, 1);
+  assert.equal(plan.version, 2);
   assert.equal(plan.artifacts.length, 5);
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
@@ -147,7 +155,12 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal('model' in custom.content.roleFile, false);
   assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
 
-  const text = skill.content.skillFile;
+  const text = skill.content.files['SKILL.md'];
+  const openaiYaml = await readFile(
+    path.join(artifactSourcePath, 'agents', 'openai.yaml'),
+    'utf8',
+  );
+  assert.equal('agents/openai.yaml' in skill.content.files, false);
   assert.ok([...text].length <= 4_000);
   assert.ok(text.split('\n').length <= 80);
   for (const heading of ['## Gate', '## 委派', '## 不变量', '## 等待与整合']) {
@@ -204,10 +217,10 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal(text.includes('催促后等待'), false);
   assert.equal(text.includes('非中断收敛请求'), false);
 
-  assert.match(skill.content.openaiYaml, /allow_implicit_invocation:\s*true/);
-  assert.match(skill.content.openaiYaml, /使用 \$codex-explore/);
+  assert.match(openaiYaml, /allow_implicit_invocation:\s*true/);
+  assert.match(openaiYaml, /使用 \$codex-explore/);
   assert.match(
-    skill.content.openaiYaml,
+    openaiYaml,
     /从大型或边界不明的材料中进行行为只读的证据探索与核验/,
   );
 }
@@ -228,8 +241,8 @@ async function testConfigSourcesAndManifestDefaults() {
   const configuredSkill = findArtifact(configured, 'codex-explore-skill');
   const configuredStandard = findArtifact(configured, 'codex-explore-standard-role');
   const configuredQuick = findArtifact(configured, 'codex-explore-quick-role');
-  assert.match(configuredSkill.content.skillFile, /至少 `20` 分钟累计等待预算/);
-  assert.match(configuredSkill.content.skillFile, /优先使用 `timeout_ms=1200000`/);
+  assert.match(configuredSkill.content.files['SKILL.md'], /至少 `20` 分钟累计等待预算/);
+  assert.match(configuredSkill.content.files['SKILL.md'], /优先使用 `timeout_ms=1200000`/);
   assert.equal(configuredStandard.content.roleFile.model, 'configured-standard');
   assert.equal(configuredStandard.content.roleFile.model_reasoning_effort, 'max');
   assert.equal(configuredQuick.content.roleFile.model, 'gpt-5.6-luna');
@@ -246,8 +259,8 @@ async function testConfigSourcesAndManifestDefaults() {
   );
   const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
   const defaultStandard = findArtifact(defaults, 'codex-explore-standard-role');
-  assert.match(defaultSkill.content.skillFile, /至少 `10` 分钟累计等待预算/);
-  assert.match(defaultSkill.content.skillFile, /优先使用 `timeout_ms=600000`/);
+  assert.match(defaultSkill.content.files['SKILL.md'], /至少 `10` 分钟累计等待预算/);
+  assert.match(defaultSkill.content.files['SKILL.md'], /优先使用 `timeout_ms=600000`/);
   assert.equal(defaultStandard.content.roleFile.model, 'gpt-5.6-luna');
   assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
 }
@@ -259,7 +272,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.8');
+  assert.equal(manifest.version, '0.2.9');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',

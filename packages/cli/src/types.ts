@@ -375,7 +375,8 @@ export type ArtifactState = 'present' | 'disabled';
 export type ArtifactTarget =
   | 'codex.developerInstructionsBlock'
   | 'codex.agentRole'
-  | 'codex.skill';
+  | 'codex.skill'
+  | 'claude.skill';
 export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill';
 export type ManagedArtifactId = string;
 
@@ -391,6 +392,7 @@ export interface PluginArtifactTargetDefinition {
   requiresCodexProjectConfig?: boolean;
   roleKey?: string;
   skillKey?: string;
+  sourceDirs?: string[];
 }
 
 export interface PluginArtifactsConfig {
@@ -398,7 +400,7 @@ export interface PluginArtifactsConfig {
 }
 
 export interface ArtifactPlanBase {
-  version: 1;
+  version: 2;
   artifacts: ArtifactPlanArtifact[];
 }
 
@@ -443,15 +445,24 @@ export interface CodexSkillArtifact extends ArtifactPlanArtifactBase {
   kind: 'skill';
   skillKey?: string;
   content?: {
-    skillFile?: string;
-    openaiYaml?: string;
+    files?: Record<string, string>;
+  };
+}
+
+export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
+  target: 'claude.skill';
+  kind: 'skill';
+  skillKey?: string;
+  content?: {
+    files?: Record<string, string>;
   };
 }
 
 export type ArtifactPlanArtifact =
   | DeveloperInstructionsBlockArtifact
   | CodexAgentRoleArtifact
-  | CodexSkillArtifact;
+  | CodexSkillArtifact
+  | ClaudeSkillArtifact;
 
 export interface SkillTriggerPolicy {
   defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
@@ -1014,6 +1025,7 @@ export interface PluginStatusReport {
   installOptions?: InstalledScopeInstallOptions;
   skillTriggerApplicability?: SkillTriggerApplicability;
   skillTriggerPreference?: SkillTriggerPreference;
+  skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
   skillTriggerRuntimeMatches?: SkillTriggerPreference[];
   skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
   skillTriggerDrift?: 'yes' | 'no' | 'unknown';
@@ -1242,6 +1254,7 @@ export interface PlatformAdapter {
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
       skillTriggerPreference?: SkillTriggerPreference;
+      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
     },
   ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(

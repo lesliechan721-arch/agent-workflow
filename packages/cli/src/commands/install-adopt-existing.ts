@@ -83,7 +83,7 @@ import type {
   SkillTriggerPreference,
 } from '../types.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
-import { resolveUniformSkillTriggerPreference } from '../utils/plugin-config.js';
+import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScript } from '../utils/plugin-scripts.js';
 import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
 import { resolveAwHome, resolveEmbeddedPluginsRoot } from '../utils/paths.js';
@@ -1370,6 +1370,7 @@ async function maybeCreateSharedRuntimeOwnerStage(options: {
   recordFile: InstallRecordFile;
   recordPath: string;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
   repairOptions: RepairCommandOptions;
   env: NodeJS.ProcessEnv;
 }): Promise<Awaited<ReturnType<typeof createSharedRuntimeOwnerWriteStage>> | null> {
@@ -1383,6 +1384,7 @@ async function maybeCreateSharedRuntimeOwnerStage(options: {
       options.env,
     ),
     preference: options.preference,
+    skillTriggerPreferences: options.skillTriggerPreferences,
     command: 'install',
     targetCount: 1,
     env: options.env,
@@ -1403,6 +1405,7 @@ async function maybeCreateSharedRuntimeOwnerStage(options: {
 async function preflightRepairSharedRuntimeOwner(options: {
   location: PluginLocation;
   preference: SkillTriggerPreference;
+  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
   repairOptions: RepairCommandOptions;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
@@ -1416,6 +1419,7 @@ async function preflightRepairSharedRuntimeOwner(options: {
       options.env,
     ),
     preference: options.preference,
+    skillTriggerPreferences: options.skillTriggerPreferences,
     command: 'install',
     targetCount: 1,
     env: options.env,
@@ -1423,6 +1427,37 @@ async function preflightRepairSharedRuntimeOwner(options: {
   if (plan.status !== 'ok') {
     throw new Error(plan.takeoverRequired.message);
   }
+}
+
+async function resolveRepairSkillTriggerOptions(options: {
+  plugin: PluginMeta;
+  location: PluginLocation;
+  repairOptions: RepairCommandOptions;
+  env: NodeJS.ProcessEnv;
+}): Promise<{
+  preference: SkillTriggerPreference;
+  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
+}> {
+  const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
+    plugin: options.plugin,
+    platform: options.location.platform,
+    scope: options.location.scope,
+    cwd: options.repairOptions.cwd,
+    env: options.env,
+  });
+  const requested = options.repairOptions.requestedSkillTrigger;
+  if (requested === 'manual' || requested === 'auto') {
+    for (const skillKey of Object.keys(skillTriggerPreferences)) {
+      if (options.plugin.manifest.skillTriggers?.[skillKey]?.allowDynamicTrigger === true) {
+        skillTriggerPreferences[skillKey] = requested;
+      }
+    }
+  }
+  const effectiveValues = new Set(Object.values(skillTriggerPreferences));
+  return {
+    preference: requested ?? (effectiveValues.size === 1 ? [...effectiveValues][0]! : 'default'),
+    skillTriggerPreferences,
+  };
 }
 
 async function repairInstalledLocation(options: {
@@ -1565,17 +1600,17 @@ async function repairInstalledLocation(options: {
   if (needsNativeInstall) {
     await adapters.codex.installPlugin(repairPlugin, location.scope);
   }
-  const effectiveSkillTriggerPreference = options.repairOptions.requestedSkillTrigger
-    ?? await resolveUniformSkillTriggerPreference({
-      plugin: repairPlugin,
-      platform: location.platform,
-      scope: location.scope,
-      cwd: options.repairOptions.cwd,
-      env: options.env,
-    });
+  const triggerOptions = await resolveRepairSkillTriggerOptions({
+    plugin: repairPlugin,
+    location,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  const effectiveSkillTriggerPreference = triggerOptions.preference;
   await preflightRepairSharedRuntimeOwner({
     location,
     preference: effectiveSkillTriggerPreference,
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });
@@ -1585,6 +1620,7 @@ async function repairInstalledLocation(options: {
     {
       event: 'upgrade',
       skillTriggerPreference: effectiveSkillTriggerPreference,
+      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
   let nativeInstallReplayed = needsNativeInstall;
@@ -1660,6 +1696,7 @@ async function repairInstalledLocation(options: {
     recordFile: nextRecord,
     recordPath,
     preference: effectiveSkillTriggerPreference,
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });
@@ -1731,10 +1768,17 @@ async function repairMarkerOnlyLocation(options: {
   if (!nativeSatisfied) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
-  const requestedPreference = options.repairOptions.requestedSkillTrigger ?? 'default';
+  const triggerOptions = await resolveRepairSkillTriggerOptions({
+    plugin: currentPlugin,
+    location,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  const requestedPreference = triggerOptions.preference;
   await preflightRepairSharedRuntimeOwner({
     location,
     preference: requestedPreference,
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });
@@ -1744,6 +1788,7 @@ async function repairMarkerOnlyLocation(options: {
     {
       event: 'install',
       skillTriggerPreference: requestedPreference,
+      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
   let nativeInstallReplayed = !nativeSatisfied;
@@ -1800,6 +1845,7 @@ async function repairMarkerOnlyLocation(options: {
     recordFile,
     recordPath,
     preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });
@@ -1898,10 +1944,17 @@ async function adoptExistingLocation(options: {
     options.repairOptions.cwd,
     createCommandExecutionContext(options.runtime),
   );
-  const requestedPreference = options.repairOptions.requestedSkillTrigger ?? 'default';
+  const triggerOptions = await resolveRepairSkillTriggerOptions({
+    plugin: currentPlugin,
+    location,
+    repairOptions: options.repairOptions,
+    env: options.env,
+  });
+  const requestedPreference = triggerOptions.preference;
   await preflightRepairSharedRuntimeOwner({
     location,
     preference: requestedPreference,
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });
@@ -1911,6 +1964,7 @@ async function adoptExistingLocation(options: {
     {
       event: 'install',
       skillTriggerPreference: requestedPreference,
+      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
   const lifecycleResult = await maybeExecuteInstallLifecycle({
@@ -1988,6 +2042,7 @@ async function adoptExistingLocation(options: {
     recordFile,
     recordPath,
     preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
+    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     repairOptions: options.repairOptions,
     env: options.env,
   });

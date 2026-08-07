@@ -1,1 +1,1 @@
-console.log(JSON.stringify({ version: 1, artifacts: [] }));
+console.log(JSON.stringify({ version: 2, artifacts: [] }));

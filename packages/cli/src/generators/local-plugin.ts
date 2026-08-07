@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
 import { applyFileRules } from '../utils/file-rules.js';
+import { getArtifactSourceBundleRelativePath } from '../utils/artifact-sources.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   assertManifestPlatformSupport,
@@ -233,6 +234,51 @@ async function copyBundleRootFile(
   const targetPath = path.join(outputRoot, normalized);
   await fs.ensureDir(path.dirname(targetPath));
   await fs.copyFile(sourcePath, targetPath);
+}
+
+async function assertArtifactSourceTreePortable(rootDir: string, fieldName: string): Promise<void> {
+  const rootStats = await fs.lstat(rootDir);
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`Invalid ${fieldName}: source root must be a regular directory.`);
+  }
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Invalid ${fieldName}: symbolic links are not supported (${entry.name}).`);
+    }
+    if (entry.isDirectory()) {
+      await assertArtifactSourceTreePortable(entryPath, fieldName);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`Invalid ${fieldName}: only regular files and directories are supported (${entry.name}).`);
+    }
+  }
+}
+
+async function copyArtifactSourceDirectories(
+  plugin: PluginMeta,
+  outputRoot: string,
+): Promise<void> {
+  for (const [targetIndex, target] of (plugin.manifest.artifacts?.targets ?? []).entries()) {
+    for (const [sourceIndex, sourceDir] of (target.sourceDirs ?? []).entries()) {
+      const sourcePath = path.join(plugin.rootDir, stripDotSlash(sourceDir));
+      await assertArtifactSourceTreePortable(
+        sourcePath,
+        `artifacts.targets[${targetIndex}].sourceDirs[${sourceIndex}]`,
+      );
+      await fs.copy(
+        sourcePath,
+        path.join(outputRoot, getArtifactSourceBundleRelativePath({
+          platform: target.platform,
+          artifactId: target.id,
+          index: sourceIndex,
+        })),
+        { overwrite: true, dereference: false },
+      );
+    }
+  }
 }
 
 async function copySlashCommandAsset(
@@ -960,6 +1006,7 @@ export async function bundleLocalPlugin(
     for (const filePath of await collectAwRuntimeFiles(plugin)) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, filePath);
     }
+    await copyArtifactSourceDirectories(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
 
     await writeJsonFile(

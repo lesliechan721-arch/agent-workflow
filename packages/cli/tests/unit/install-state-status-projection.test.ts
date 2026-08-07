@@ -15,6 +15,7 @@ import {
 import type { InstallRecordFile } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
 import { createGeneratedArtifactContentDigest } from '../../src/utils/generated-artifacts.js';
+import { createDynamicSkillTreeContentDigest } from '../../src/utils/dynamic-skill-tree.js';
 import {
   createCurrentCatalogForTarget,
   createInstallStateFixtureEnv,
@@ -863,6 +864,124 @@ describe('projectInstallState phase 1 four-state projection', () => {
 
     expect(projection.kind).toBe('installed');
     expect(projection.diagnostics.map((issue) => issue.code)).not.toContain('dynamicContentDrift');
+  });
+
+  it('detects whole-tree content drift for dynamic Claude skills', async () => {
+    const builder = await createMinimalPluginInstallStateFixtureBuilder(
+      await makeTempDir('aw-install-state-dynamic-claude-skill-'),
+    );
+    const target = builder.createTarget({
+      pluginName: 'dynamic-claude',
+      platform: 'claude',
+      scope: 'project',
+    });
+    const skillKey = 'dynamic-claude';
+    const skillRoot = path.join(builder.paths.repoRoot, '.claude', 'skills', skillKey);
+    const skillContent = Buffer.from(
+      '---\nname: dynamic-claude\ndescription: Dynamic Claude skill.\n---\nBody\n',
+    );
+    const binaryContent = Buffer.from([0, 255, 1]);
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), skillContent);
+    await fs.outputFile(path.join(skillRoot, 'assets', 'icon.bin'), binaryContent);
+    const contentDigest = createDynamicSkillTreeContentDigest({
+      skillKey,
+      files: {
+        'SKILL.md': skillContent,
+        'assets/icon.bin': binaryContent,
+      },
+    });
+
+    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
+    const record = sanitizeInstallRecordForP2(await builder.writeInstallRecord(target, lifecycle));
+    record.record.artifacts = [{
+      kind: 'skill',
+      platform: 'claude',
+      path: skillRoot,
+      paths: [
+        path.join(skillRoot, 'SKILL.md'),
+        path.join(skillRoot, 'assets', 'icon.bin'),
+      ],
+      artifactKey: skillKey,
+      id: 'dynamic-claude-skill',
+      target: 'claude.skill',
+      state: 'present',
+      configDigest: 'sha256:config',
+      contentDigest,
+    }];
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'claude',
+      scope: 'project',
+    });
+    const recordPath = scopedRecords.successes.find((entry) => entry.recordId === target.recordId)?.path;
+    if (!recordPath) throw new Error('missing Claude fixture install record');
+    await fs.writeJson(recordPath, record, { spaces: 2 });
+    await builder.writeProjectIdentity(target, {
+      version: 1,
+      sharedIdentityId: target.sharedIdentityId,
+      locator: target.locator,
+      source: { ...target.source },
+      generatedAt: target.timestamps.updatedAt,
+      artifacts: [{
+        kind: 'skill',
+        platform: 'claude',
+        path: '.claude/skills/dynamic-claude',
+        artifactKey: skillKey,
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
+        state: 'present',
+        contentDigest,
+      }],
+    });
+    await builder.writeDiagnosticCache(target, {
+      version: 1,
+      recordId: target.recordId,
+      location: target.location,
+      updatedAt: target.timestamps.updatedAt,
+      artifacts: [{
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
+        state: 'present',
+        artifactKey: skillKey,
+        configDigest: 'sha256:config',
+        contentDigest,
+      }],
+    });
+    await builder.writeDependencyIndex([{ target, record }]);
+    const currentCatalog: CurrentCatalogEvidenceInput = {
+      ...createCurrentCatalogForTarget(target),
+      artifacts: [],
+      dynamicArtifacts: [{
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
+        state: 'present',
+        artifactKey: skillKey,
+        configDigest: 'sha256:config',
+        contentDigest,
+      }],
+    };
+    const project = async () => projectInstallState(await collectInstallEvidence({
+      cwd: builder.paths.repoRoot,
+      location: target.location,
+      env: createInstallStateFixtureEnv(builder.paths),
+      currentCatalog,
+    }));
+
+    expect((await project()).diagnostics.map((issue) => issue.code))
+      .not.toContain('dynamicContentDrift');
+    await fs.outputFile(path.join(skillRoot, 'references', 'foreign.md'), 'extra\n');
+    expect((await project()).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
+    await fs.remove(path.join(skillRoot, 'references'));
+    await fs.writeFile(path.join(skillRoot, 'assets', 'icon.bin'), Buffer.from([0, 254, 1]));
+    expect((await project()).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
+    await fs.writeFile(path.join(skillRoot, 'assets', 'icon.bin'), binaryContent);
+    await fs.symlink('../SKILL.md', path.join(skillRoot, 'assets', 'skill-link'));
+    expect((await project()).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
   });
 
   it.each([

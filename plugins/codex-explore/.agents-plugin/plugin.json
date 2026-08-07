@@ -1,10 +1,10 @@
 {
   "name": "codex-explore",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "1.0.0-beta.30"
     }
   },
   "skillTriggers": {
@@ -104,14 +104,6 @@
       }
     }
   },
-  "buildConfig": {
-    "fileRules": {
-      "codex": {
-        "include": ["templates/**"],
-        "exclude": []
-      }
-    }
-  },
   "artifacts": {
     "targets": [
       {
@@ -122,7 +114,8 @@
         "projectManagedKind": "skill",
         "states": ["present"],
         "refreshKeys": ["minimumInitialWaitMinutes"],
-        "skillKey": "codex-explore"
+        "skillKey": "codex-explore",
+        "sourceDirs": ["./templates/codex-explore"]
       },
       {
         "id": "codex-explore-quick-role",

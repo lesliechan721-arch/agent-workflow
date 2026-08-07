@@ -10,6 +10,7 @@ import {
   uninstallCommand,
   uninstallTargetsOnPlatforms,
 } from '../../src/commands/uninstall.js';
+import { buildGeneratedName } from '../../src/generators/shared.js';
 import {
   createMinimalPluginInstallStateFixtureBuilder,
 } from '../helpers/minimal-plugin-install-state-fixtures.js';
@@ -31,11 +32,15 @@ import {
   calculatePluginBundleFingerprint,
 } from '../../src/utils/plugin-scripts.js';
 import {
+  resolveClaudePaths,
   resolveCodexPaths,
   resolveClaudeProjectKey,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
-import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 import { writeTrackingManifest } from '../../src/utils/tracking.js';
 import type {
   GeneratedArtifact,
@@ -171,6 +176,7 @@ async function createLifecycleSnapshotMetadata(options: {
 class FakeAdapter implements PlatformAdapter {
   readonly uninstallPluginCalls: string[] = [];
   readonly uninstallExtensionsCalls: string[] = [];
+  readonly uninstallExtensionArtifacts: GeneratedArtifact[][] = [];
 
   async detect(): Promise<boolean> {
     return true;
@@ -186,8 +192,13 @@ class FakeAdapter implements PlatformAdapter {
     return [];
   }
 
-  async uninstallExtensions(plugin: PluginMeta): Promise<void> {
+  async uninstallExtensions(
+    plugin: PluginMeta,
+    _scope: Scope,
+    generatedArtifacts: GeneratedArtifact[] = [],
+  ): Promise<void> {
     this.uninstallExtensionsCalls.push(plugin.manifest.name);
+    this.uninstallExtensionArtifacts.push(structuredClone(generatedArtifacts));
   }
 
   async upgradePlugin(): Promise<void> {}
@@ -351,6 +362,160 @@ describe('uninstall command (P9 install-state path)', () => {
     }
   });
 
+  it('does not snapshot an existing external Claude skill for a disabled artifact', async () => {
+    const builder = await makeBuilder();
+    const env = createBuilderEnv(builder.paths);
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'disabled-rollback-skill');
+    plugin.manifest.artifacts = {
+      targets: [{
+        id: 'disabled-skill',
+        platform: 'claude',
+        scopes: ['project'],
+        target: 'claude.skill',
+        kind: 'skill',
+        states: ['present', 'disabled'],
+        refreshKeys: [],
+        skillKey: 'disabled-rollback-skill',
+      }],
+    };
+    const skillRoot = path.join(
+      builder.paths.repoRoot,
+      '.claude',
+      'skills',
+      'disabled-rollback-skill',
+    );
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# external\n');
+    const claudePaths = resolveClaudePaths(builder.paths.repoRoot, 'project', env);
+    await writeTrackingManifest(claudePaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-08-07T00:00:00.000Z',
+          artifacts: [{
+            path: skillRoot,
+            kind: 'skill',
+            platform: 'claude',
+            artifactKey: 'disabled-rollback-skill',
+            id: 'disabled-skill',
+            target: 'claude.skill',
+            state: 'disabled',
+          }],
+        },
+      },
+    });
+
+    const rollbackState = await captureArtifactRollbackState(
+      'claude',
+      makeTarget(plugin),
+      'project',
+      builder.paths.repoRoot,
+      env,
+    );
+
+    expect(rollbackState.pathSnapshots).toEqual([]);
+    expect(rollbackState.cleanupRoots).toEqual([]);
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# external\n');
+  });
+
+  it('rejects non-canonical Codex agent auxiliary paths without touching the external entry', async () => {
+    const builder = await makeBuilder();
+    const env = createBuilderEnv(builder.paths);
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'agent-rollback-guard');
+    const codexPaths = resolveCodexPaths(builder.paths.repoRoot, 'project', env);
+    const rolePath = path.join(
+      codexPaths.configDir,
+      'agents',
+      `${buildGeneratedName(plugin.manifest.name, 'review')}.toml`,
+    );
+    const externalTarget = path.join(builder.paths.repoRoot, 'external-agent-target.txt');
+    const externalLink = path.join(builder.paths.repoRoot, 'external-agent-link');
+    await fs.outputFile(rolePath, 'name = "review"\n');
+    await fs.outputFile(externalTarget, 'external\n');
+    await fs.symlink(externalTarget, externalLink);
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-08-07T00:00:00.000Z',
+          artifacts: [{
+            path: rolePath,
+            paths: [codexPaths.configTomlPath, rolePath, externalLink],
+            kind: 'agent',
+            platform: 'codex',
+            artifactKey: 'review',
+            roleKey: 'review',
+            id: 'review-role',
+            target: 'codex.agentRole',
+            state: 'present',
+          }],
+        },
+      },
+    });
+    const before = await fs.lstat(externalLink);
+
+    await expect(captureArtifactRollbackState(
+      'codex',
+      makeTarget(plugin),
+      'project',
+      builder.paths.repoRoot,
+      env,
+    )).rejects.toThrow('不是当前 scope 的 canonical config.toml');
+
+    const after = await fs.lstat(externalLink);
+    expect(after.isSymbolicLink()).toBe(true);
+    expect(after.ino).toBe(before.ino);
+    await expect(fs.readFile(externalTarget, 'utf8')).resolves.toBe('external\n');
+  });
+
+  it('rejects a non-canonical Codex role main path without touching the external symlink', async () => {
+    const builder = await makeBuilder();
+    const env = createBuilderEnv(builder.paths);
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'role-main-path-guard');
+    const codexPaths = resolveCodexPaths(builder.paths.repoRoot, 'project', env);
+    const externalTarget = path.join(builder.paths.repoRoot, 'external-role-target.txt');
+    const externalLink = path.join(builder.paths.repoRoot, 'external-role-link');
+    await fs.outputFile(externalTarget, 'external role\n');
+    await fs.symlink(externalTarget, externalLink);
+    await writeTrackingManifest(codexPaths.trackingDir, {
+      version: 1,
+      plugins: {
+        [plugin.manifest.name]: {
+          name: plugin.manifest.name,
+          generatedAt: '2026-08-07T00:00:00.000Z',
+          artifacts: [{
+            path: externalLink,
+            paths: [codexPaths.configTomlPath, externalLink],
+            kind: 'agent',
+            platform: 'codex',
+            artifactKey: 'review',
+            roleKey: 'review',
+            id: 'review-role',
+            target: 'codex.agentRole',
+            state: 'present',
+          }],
+        },
+      },
+    });
+    const before = await fs.lstat(externalLink);
+    const linkTargetBefore = await fs.readlink(externalLink);
+
+    await expect(captureArtifactRollbackState(
+      'codex',
+      makeTarget(plugin),
+      'project',
+      builder.paths.repoRoot,
+      env,
+    )).rejects.toThrow('main path 不是当前 scope 的 canonical 路径');
+
+    const after = await fs.lstat(externalLink);
+    expect(after.isSymbolicLink()).toBe(true);
+    expect(after.ino).toBe(before.ino);
+    await expect(fs.readlink(externalLink)).resolves.toBe(linkTargetBefore);
+    await expect(fs.readFile(externalTarget, 'utf8')).resolves.toBe('external role\n');
+  });
+
   it('fails before deletion when the target needs cleanup instead of standard uninstall', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
@@ -380,6 +545,73 @@ describe('uninstall command (P9 install-state path)', () => {
         makeRuntime(createBuilderEnv(builder.paths)),
       ),
     ).rejects.toThrow(/\[reason=historicalRuntimeUnavailable\].*historical runtime/);
+  });
+
+  it('preserves disabled Claude artifact state when tracking is missing during uninstall', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({
+      pluginName: 'disabled-claude-skill',
+      platform: 'claude',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const skillRoot = path.join(builder.paths.repoRoot, '.claude', 'skills', 'disabled-claude-skill');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# unmanaged\n');
+    const record = await builder.writeInstallRecord(target);
+    record.record.artifacts = [{
+      kind: 'skill',
+      platform: 'claude',
+      path: skillRoot,
+      artifactKey: 'disabled-claude-skill',
+      id: 'disabled-claude-skill',
+      target: 'claude.skill',
+      state: 'disabled',
+      contentDigest: 'sha256:disabled',
+    }];
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'claude',
+      scope: 'project',
+    });
+    const recordPath = scopedRecords.successes.find((entry) => entry.recordId === target.recordId)?.path;
+    if (!recordPath) throw new Error('missing disabled Claude install record fixture');
+    await fs.writeJson(recordPath, record, { spaces: 2 });
+    await builder.writeDependencyIndex([{ target, record }]);
+    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
+    const plugin = await ensureRepoPlugin(builder.paths.repoRoot, 'disabled-claude-skill');
+    await fs.copy(
+      path.join(fixturePath('repo-template'), 'plugins', 'marketplace-source.json'),
+      path.join(builder.paths.repoRoot, 'plugins', 'marketplace-source.json'),
+    );
+    setEmbeddedPluginsRootOverrideForTests(
+      await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
+    );
+    const claude = new FakeAdapter();
+
+    await uninstallTargetsOnPlatforms(
+      [makeTarget(plugin)],
+      ['claude'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        env: createBuilderEnv(builder.paths),
+        adapters: {
+          codex: new FakeAdapter(),
+          claude,
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    expect(claude.uninstallExtensionArtifacts).toEqual([
+      [expect.objectContaining({
+        target: 'claude.skill',
+        artifactKey: 'disabled-claude-skill',
+        state: 'disabled',
+      })],
+    ]);
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
   });
 
   it('blocks uninstall when a verified dependent still references the target', async () => {
@@ -948,6 +1180,20 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
     };
     const env = createBuilderEnv(builder.paths);
     await writeInstalledLedger(ledger, env);
+    await writePluginConfigStore({
+      pluginName: 'git-commit',
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: builder.paths.repoRoot,
+      env,
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: { trigger: 'manual' },
+          },
+        },
+      },
+    });
 
     const brokenEmbeddedRoot = registerCurrentTestWritableStateRoot(
       await createSyntheticEmbeddedRoot(builder.paths.repoRoot),
@@ -1053,6 +1299,20 @@ describe('uninstall command (legacy shared-runtime replay)', () => {
     };
     const env = createBuilderEnv(builder.paths);
     await writeInstalledLedger(ledger, env);
+    await writePluginConfigStore({
+      pluginName: 'git-commit',
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: builder.paths.repoRoot,
+      env,
+      values: {
+        $aw: {
+          skillTriggers: {
+            commit: { trigger: 'manual' },
+          },
+        },
+      },
+    });
 
     setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
 

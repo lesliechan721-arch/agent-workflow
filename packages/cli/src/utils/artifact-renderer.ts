@@ -37,6 +37,7 @@ import {
   type LifecycleScriptInvocation,
 } from './plugin-scripts.js';
 import { resolveAwHome } from './paths.js';
+import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 
 export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh';
 
@@ -69,6 +70,11 @@ export interface ArtifactRendererContext {
   };
   changedConfigKeys: string[];
   previousArtifacts: unknown[];
+  artifactSources: Array<{
+    id: string;
+    target: string;
+    sourceDirs: string[];
+  }>;
   paths: {
     awHome: string;
     codexHome: string;
@@ -370,6 +376,29 @@ export async function writeArtifactRendererContext(options: {
     env: options.commandEnv,
   });
 
+  const artifactSources = await Promise.all(
+    (options.target.sourceManifest.artifacts?.targets ?? [])
+      .filter((target) =>
+        target.platform === options.platform && target.scopes.includes(options.scope))
+      .map(async (target) => ({
+        id: target.id,
+        target: target.target,
+        sourceDirs: await Promise.all(
+          (target.sourceDirs ?? []).map((_, index) =>
+            resolveBundledPluginFilePath({
+              bundleRoot: options.target.bundleRoot!,
+              pluginRelativePath: `./${getArtifactSourceBundleRelativePath({
+                platform: target.platform,
+                artifactId: target.id,
+                index,
+              })}`,
+              fieldName: `Artifact source ${target.id}[${index}]`,
+            }),
+          ),
+        ),
+      })),
+  );
+
   const context: ArtifactRendererContext = {
     event,
     platform: options.platform,
@@ -389,6 +418,7 @@ export async function writeArtifactRendererContext(options: {
     },
     changedConfigKeys: options.changedConfigKeys ?? [],
     previousArtifacts: options.previousArtifacts ?? [],
+    artifactSources,
     paths: {
       awHome: resolveAwHome(options.commandEnv),
       codexHome: artifactRendererCodexHome(options.commandEnv),
@@ -447,9 +477,12 @@ function assertArtifactPlanEnvelope(
       `Artifact renderer must write a JSON object to stdout. stdout: ${output.stdoutSummary}. stderr: ${output.stderrSummary}`,
     );
   }
-  if (value.version !== 1) {
+  if (value.version !== 2) {
+    const migrationHint = value.version === 1
+      ? ' ArtifactPlan V1 is not supported by AW 1.0.0-beta.30; upgrade or reinstall the plugin.'
+      : '';
     throw new Error(
-      `Artifact renderer returned unsupported plan version "${String(value.version)}". stderr: ${output.stderrSummary}`,
+      `Artifact renderer returned unsupported plan version "${String(value.version)}".${migrationHint} stderr: ${output.stderrSummary}`,
     );
   }
   if (!Array.isArray(value.artifacts)) {

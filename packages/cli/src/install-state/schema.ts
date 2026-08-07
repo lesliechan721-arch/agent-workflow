@@ -54,6 +54,7 @@ const VALID_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
   'codex.skill',
+  'claude.skill',
 ]);
 const VALID_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const VALID_REPO_MANAGED_ARTIFACT_KINDS = new Set<RepoManagedArtifactKind>([
@@ -97,6 +98,7 @@ const INSTALL_STATE_ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, RepoManagedA
   'codex.developerInstructionsBlock': 'instruction',
   'codex.agentRole': 'agent',
   'codex.skill': 'skill',
+  'claude.skill': 'skill',
 };
 
 function validateStrictSemVerString(

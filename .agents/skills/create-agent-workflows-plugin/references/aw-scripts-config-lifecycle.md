@@ -141,9 +141,10 @@ helper 的读取路径分两种：
 
 ## 动态 Artifact Renderer
 
-动态 artifact 用于“产物内容或启用状态由 AW config 决定，但写盘必须由 AW 管理”的 Codex 能力。当前 target 包括：
+动态 artifact 用于“产物内容或启用状态由 AW config 决定，但写盘必须由 AW 管理”的平台能力。当前 target 包括：
 
 - `codex.skill`：写入 Codex skill 目录。配置驱动的 skill 优先使用它，而不是 lifecycle 直接改 `.agents/skills/**` 或用户级 Codex runtime。
+- `claude.skill`：写入独立的 Claude user/project skill 目录，不使用插件 namespace。
 - `codex.developerInstructionsBlock`：写入当前 scope 的 Codex AW managed developer instructions block。
 - `codex.agentRole`：写入 role layer 文件，并在当前 scope Codex config 中注册 `[agents.<roleKey>]`。
 
@@ -166,6 +167,7 @@ renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路�
 
 - `event`、`platform`、`scope`
 - 插件 `name`、`version`、`rootDir`、`manifestPath`
+- `artifactSources`，包含 target 的已暂存 `sourceDirs` 绝对路径；renderer 只能读取这些目录
 - `artifactRenderConfig.values`，以及兼容字段 `renderConfig.values`
 - `changedConfigKeys`，仅 refresh 事件表示本次命中的配置 key
 - `previousArtifacts`、AW/Codex/Claude home 和 renderer digest 等诊断信息
@@ -181,7 +183,7 @@ renderer stdout 必须只输出 JSON：
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "artifacts": [
     {
       "id": "codex-explore-skill",
@@ -192,17 +194,21 @@ renderer stdout 必须只输出 JSON：
       "skillKey": "codex-explore",
       "refreshKeys": ["explorerModel", "modelReasoningEffort"],
       "content": {
-        "skillFile": "---\nname: codex-explore\n---\n# Codex Explore\n",
-        "openaiYaml": "policy:\n  allow_implicit_invocation: true\n"
+        "files": {
+          "SKILL.md": "---\nname: codex-explore\n---\n# Codex Explore\n",
+          "references/config.md": "Model: gpt-5.6-terra\n"
+        }
       }
     }
   ]
 }
 ```
 
-`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。`codex.skill` 必须在 manifest 静态声明 `skillKey`，renderer plan 的 `skillKey` 必须完全一致；`present` content 只能包含 `skillFile` 和 `openaiYaml`，不能携带任意落盘路径。AW apply 阶段会按当前 effective SkillTrigger built-in config patch `openaiYaml`：`auto` 让 `policy.allow_implicit_invocation` 为 `true`，`manual` 改为 `false`。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+`ArtifactPlan` 只接受 V2。V1 会失败，并要求用户升级或重新安装插件。`disabled` artifact 可以省略 `content`，但必须保留声明过的 `refreshKeys`，并建议写 `disabledReason: "config"`。
 
-renderer 不能直接写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
+`codex.skill` / `claude.skill` 必须在 manifest 静态声明 `skillKey`。静态完整目录来自 `sourceDirs`：AW 按声明顺序做字节级合并，后面的目录覆盖前面的文件。renderer 的 `content.files` 再覆盖静态树，只接受 UTF-8 字符串和安全的 POSIX 相对路径。最终 Codex tree 必须有 `SKILL.md` 与 `agents/openai.yaml`；最终 Claude tree 必须有 `SKILL.md`。AW apply 阶段 patch 对应平台的触发字段。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
+
+renderer 不能直接写 Codex/Claude Skill runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
 
 配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示查看 status 详情；artifact drift 或 missing 在 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
 

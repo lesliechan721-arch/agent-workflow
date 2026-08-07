@@ -260,7 +260,7 @@ const roles = [
 ];
 
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'codex-explore-skill',
@@ -271,8 +271,10 @@ const plan = {
       skillKey: 'codex-explore',
       refreshKeys: ${JSON.stringify(CURRENT_CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
-        skillFile: \`# Recorded Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
-        openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
+        files: {
+          'SKILL.md': \`# Recorded Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
+          'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',
+        },
       },
     },
     ...roles.map(([id, roleKey, modelKey, effortKey, defaultModel, defaultEffort]) => ({
@@ -427,7 +429,7 @@ const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
 
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'codex-explore-skill',
@@ -438,8 +440,10 @@ const plan = {
       skillKey: 'codex-explore',
       refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
-        skillFile: \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
-        openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
+        files: {
+          'SKILL.md': \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
+          'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',
+        },
       },
     },
   ],
@@ -478,7 +482,7 @@ const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
 
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'codex-explore-skill',
@@ -489,8 +493,10 @@ const plan = {
       skillKey: 'codex-explore',
       refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
-        skillFile: \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
-        openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
+        files: {
+          'SKILL.md': \`# Dynamic Explore\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
+          'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',
+        },
       },
     },
   ],
@@ -530,7 +536,7 @@ const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
 
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: ${JSON.stringify(options.id)},
@@ -541,8 +547,10 @@ const plan = {
       skillKey: ${JSON.stringify(options.skillKey)},
       refreshKeys: ${JSON.stringify(CODEX_EXPLORE_SKILL_REFRESH_KEYS)},
       content: {
-        skillFile: \`# ${options.title}\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
-        openaiYaml: 'policy:\\n  allow_implicit_invocation: true\\n',
+        files: {
+          'SKILL.md': \`# ${options.title}\\nmodel=\${explorerModel}\\nreasoning=\${modelReasoningEffort}\\n\`,
+          'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',
+        },
       },
     },
   ],
@@ -575,7 +583,7 @@ const explorerModel = values.explorerModel ?? 'gpt-5.4-mini';
 const modelReasoningEffort = values.modelReasoningEffort ?? 'medium';
 
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'lightweight-instruction',
@@ -2810,7 +2818,7 @@ describe('codex-explore integration acceptance', () => {
       repoRoot,
       `
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'codex-explore-skill',
@@ -2821,8 +2829,10 @@ const plan = {
       skillKey: 'codex-explore',
       refreshKeys: ['minimumInitialWaitMinutes'],
       content: {
-        skillFile: '---\\nname: codex-explore\\ndescription: Legacy explore.\\n---\\n\\n# Legacy Explore\\n',
-        openaiYaml: 'interface:\\n  display_name: "Codex Explore"\\n  short_description: "Legacy explore"\\n  default_prompt: "Use $codex-explore."\\npolicy:\\n  allow_implicit_invocation: true\\n',
+        files: {
+          'SKILL.md': '---\\nname: codex-explore\\ndescription: Legacy explore.\\n---\\n\\n# Legacy Explore\\n',
+          'agents/openai.yaml': 'interface:\\n  display_name: "Codex Explore"\\n  short_description: "Legacy explore"\\n  default_prompt: "Use $codex-explore."\\npolicy:\\n  allow_implicit_invocation: true\\n',
+        },
       },
     },
     {
@@ -2991,7 +3001,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "lightweight-instruction",',
@@ -5097,7 +5107,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       repoRoot,
       `
 const plan = {
-  version: 1,
+  version: 2,
   artifacts: [
     {
       id: 'lightweight-instruction',
@@ -5389,7 +5399,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       repoRoot,
       [
         'console.log(JSON.stringify({',
-        '  version: 1,',
+        '  version: 2,',
         '  artifacts: [',
         '    {',
         '      id: "repo-lightweight-instruction-v2",',

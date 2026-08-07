@@ -1577,6 +1577,9 @@ async function executeUpgradeGraphPlan(options: {
           platform: node.location.platform,
           scope: node.location.scope,
           scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
+          requestedSkillTrigger: node.requested
+            ? options.commandOptions.requestedSkillTrigger
+            : undefined,
         },
         {
           ...context,

@@ -39,8 +39,10 @@ import { validateBundleLayout } from './bundle-layout.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
+  readPluginManifest,
   tryParseStrictSemVer,
 } from './manifest.js';
+import { resolveEffectiveSkillTriggerPreferences } from './plugin-config.js';
 import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 
@@ -1781,6 +1783,22 @@ export async function initializeLocalMarketplace(
       embeddedRoot: inspection.embeddedRoot,
       previousMarketplaceRoot: inspection.awHome,
       warnOnDegraded: ledgerFileExists,
+      resolveSkillTriggerPreferences: async ({ pluginName, platform, effectiveRecord }) => {
+        const plugin = await readPluginManifest(
+          path.join(inspection.embeddedRoot, 'plugins', pluginName),
+          { mode: 'bundle' },
+        );
+        const scope = effectiveRecord.scopeIdentity === 'user' ? 'user' : 'project';
+        return resolveEffectiveSkillTriggerPreferences({
+          plugin,
+          platform,
+          scope,
+          cwd: scope === 'project'
+            ? effectiveRecord.scopeIdentity.slice('project:'.length)
+            : process.cwd(),
+          env,
+        });
+      },
     });
     warnings.push(...replay.warnings);
     const dynamicSkillReplay = await replayCodexUserDynamicSkillsToMarketplace({

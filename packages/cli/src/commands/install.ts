@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import {
   applyClaudeInstallLedger,
   applyClaudeUninstallLedger,
+  pruneClaudeTrackedArtifacts,
 } from '../adapters/claude.js';
 import {
   applyCodexInstallLedger,
@@ -69,6 +70,7 @@ import {
 import {
   createPluginConfigSchemaIdentity,
   preflightRequiredPluginConfigs,
+  resolveEffectiveSkillTriggerPreferences,
 } from '../utils/plugin-config.js';
 import {
   buildSkillTriggerMaterializationSignature,
@@ -757,6 +759,21 @@ function hasCodexUserDynamicSkillTarget(
     artifact.platform === 'codex' &&
     artifact.scopes.includes('user') &&
     artifact.target === 'codex.skill',
+  );
+}
+
+function hasClaudeDynamicSkillTarget(
+  target: ResolvedPluginTarget,
+  platform: PlatformName,
+  scope: Scope,
+): boolean {
+  if (platform !== 'claude' || !target.currentPlugin) {
+    return false;
+  }
+  return (target.currentPlugin.manifest.artifacts?.targets ?? []).some((artifact) =>
+    artifact.platform === 'claude' &&
+    artifact.scopes.includes(scope) &&
+    artifact.target === 'claude.skill',
   );
 }
 
@@ -1499,6 +1516,20 @@ async function installTargetOnPlatform(
       baselineLedger,
     )
   ).values().next().value as ResolvedInstallOptions;
+  const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
+    plugin: target.currentPlugin,
+    platform,
+    scope: options.scope,
+    cwd: options.cwd,
+    env,
+  });
+  if (options.requestedSkillTrigger === 'manual' || options.requestedSkillTrigger === 'auto') {
+    for (const skillKey of Object.keys(skillTriggerPreferences)) {
+      if (target.currentPlugin.manifest.skillTriggers?.[skillKey]?.allowDynamicTrigger === true) {
+        skillTriggerPreferences[skillKey] = options.requestedSkillTrigger;
+      }
+    }
+  }
   const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
   const baselineTracking = await readTrackingManifest(trackingDir);
   const previousTrackedArtifacts =
@@ -1508,13 +1539,15 @@ async function installTargetOnPlatform(
     platform,
     options.scope,
   );
-  const isCodexUpgradeWithStalePrune =
+  const usesDynamicSkillFlow = usesCodexUserDynamicSkillFlow || hasClaudeDynamicSkillTarget(
+    target,
+    platform,
+    options.scope,
+  );
+  const isUpgradeWithStalePrune =
     operation === 'upgrade' &&
-    platform === 'codex' &&
-    (
-      options.scope === 'project' ||
-      usesCodexUserDynamicSkillFlow
-    );
+    ((platform === 'codex' && (options.scope === 'project' || usesCodexUserDynamicSkillFlow)) ||
+      (platform === 'claude' && usesDynamicSkillFlow));
   const upgradeRollbackBaselineKey = createUpgradeRollbackBaselineKey(
     platform,
     target.pluginName,
@@ -1584,9 +1617,11 @@ async function installTargetOnPlatform(
     trackingWriteAttempted: false,
     ledgerWriteAttempted: false,
   };
-  const pruneCodexUpgradeStaleArtifacts = async (): Promise<void> => {
+  const pruneUpgradeStaleArtifacts = async (): Promise<void> => {
+    const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts)
+      .filter((artifact) => platform !== 'claude' || artifact.target === 'claude.skill');
     const previousIdentityRefusal = createArtifactIdentityRefusal(
-      previousTrackedArtifacts,
+      staleArtifacts,
       'previousArtifacts',
     );
     if (previousIdentityRefusal) {
@@ -1601,19 +1636,26 @@ async function installTargetOnPlatform(
       throw new Error(desiredIdentityRefusal);
     }
 
-    const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts);
     if (staleArtifacts.length === 0) {
       return;
     }
 
-    await pruneCodexTrackedArtifacts({
-      cwd: options.cwd,
-      scope: options.scope,
-      env,
-      pluginName: currentPlugin.manifest.name,
-      artifacts: staleArtifacts,
-      preservedArtifacts: trackedArtifacts,
-    });
+    if (platform === 'codex') {
+      await pruneCodexTrackedArtifacts({
+        cwd: options.cwd,
+        scope: options.scope,
+        env,
+        pluginName: currentPlugin.manifest.name,
+        artifacts: staleArtifacts,
+        preservedArtifacts: trackedArtifacts,
+      });
+    } else {
+      await pruneClaudeTrackedArtifacts({
+        configDir: resolveClaudePaths(options.cwd, options.scope, env).configDir,
+        artifacts: staleArtifacts,
+        preservedArtifacts: trackedArtifacts,
+      });
+    }
     await emitCommandEvent(context, {
       type: 'artifacts:pruned',
       data: {
@@ -1639,7 +1681,7 @@ async function installTargetOnPlatform(
     });
 
     if (
-      usesCodexUserDynamicSkillFlow &&
+      usesDynamicSkillFlow &&
       (
         pluginStatus?.scopeManagedEvidence?.ledger ||
         pluginStatus?.scopeManagedEvidence?.tracking ||
@@ -1696,6 +1738,7 @@ async function installTargetOnPlatform(
         platform,
         resolvedOptions: {
           skillTriggerPreference: materializationPreference,
+          skillTriggerPreferences,
         },
         embeddedRoot: sourceCatalogRoot,
         ...(materializationTarget
@@ -1717,6 +1760,7 @@ async function installTargetOnPlatform(
           pluginName: target.pluginName,
           platform,
           preference: materializationPreference,
+          skillTriggerPreferences,
           embeddedRoot: sourceCatalogRoot,
         });
       }
@@ -1796,6 +1840,7 @@ async function installTargetOnPlatform(
     generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope, {
       event: operation,
       skillTriggerPreference: options.requestedSkillTrigger ?? resolveMaterializationPreference(resolvedInstallOptions),
+      skillTriggerPreferences,
     });
     trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
     repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
@@ -1813,8 +1858,8 @@ async function installTargetOnPlatform(
       },
     });
 
-    if (isCodexUpgradeWithStalePrune && usesCodexUserDynamicSkillFlow) {
-      await pruneCodexUpgradeStaleArtifacts();
+    if (isUpgradeWithStalePrune && usesCodexUserDynamicSkillFlow) {
+      await pruneUpgradeStaleArtifacts();
     }
 
     if (plannedNativeWrite && usesCodexUserDynamicSkillFlow) {
@@ -1853,8 +1898,8 @@ async function installTargetOnPlatform(
       scriptTimeoutMs: options.scriptTimeoutMs,
     });
 
-    if (isCodexUpgradeWithStalePrune && !usesCodexUserDynamicSkillFlow) {
-      await pruneCodexUpgradeStaleArtifacts();
+    if (isUpgradeWithStalePrune && !usesCodexUserDynamicSkillFlow) {
+      await pruneUpgradeStaleArtifacts();
     }
 
     trackingWriteAttempted = true;
@@ -2068,6 +2113,7 @@ async function installTargetOnPlatform(
         embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
         target: createSkillTriggerMaterializationTarget(platform, options.scope, options.cwd, env),
         preference: materializationPreference,
+        skillTriggerPreferences,
         command: operation === 'upgrade' ? 'upgrade' : 'install',
         targetCount: 1,
         env,
@@ -2203,7 +2249,7 @@ async function installTargetOnPlatform(
 
     if (artifactsWritten) {
       try {
-        if (usesCodexUserDynamicSkillFlow && dynamicSkillArtifactRollbackState) {
+        if (usesDynamicSkillFlow && dynamicSkillArtifactRollbackState) {
           await restoreTrackedArtifactRollbackState(
             platform,
             target,
@@ -3486,6 +3532,13 @@ async function preflightInstallGraphWrites(options: {
     }
 
     if (resolvedInstallOptions && shouldMaterializeSkillTriggers(location.platform, location.scope, resolvedInstallOptions)) {
+      const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
+        plugin: target.currentPlugin!,
+        platform: location.platform,
+        scope: location.scope,
+        cwd: options.commandOptions.cwd,
+        env: options.env,
+      });
       const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
         location: toInstallStateLocation(location),
         embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
@@ -3496,6 +3549,7 @@ async function preflightInstallGraphWrites(options: {
           options.env,
         ),
         preference: resolveMaterializationPreference(resolvedInstallOptions),
+        skillTriggerPreferences,
         command: 'install',
         targetCount: options.plan.requestedRoots.length,
         env: options.env,

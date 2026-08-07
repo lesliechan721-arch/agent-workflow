@@ -456,6 +456,85 @@ describe('cleanup command (P9)', () => {
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'fallback-cleanup-should-not-run.txt'))).resolves.toBe(false);
   });
 
+  it('does not delete an existing Claude skill directory recorded only by a disabled artifact', async () => {
+    const builder = await makeBuilder();
+    const target = builder.createTarget({
+      pluginName: 'disabled-claude-skill',
+      platform: 'claude',
+      scope: 'project',
+      projectKey: builder.paths.repoRoot,
+    });
+    const skillRoot = path.join(builder.paths.repoRoot, '.claude', 'skills', 'disabled-claude-skill');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# unmanaged\n');
+    const record = await builder.writeInstallRecord(target);
+    record.record.artifacts = [{
+      kind: 'skill',
+      platform: 'claude',
+      path: skillRoot,
+      artifactKey: 'disabled-claude-skill',
+      id: 'disabled-claude-skill',
+      target: 'claude.skill',
+      state: 'disabled',
+      contentDigest: 'sha256:disabled',
+    }];
+    const scopedRecords = await builder.readScopedInstallRecordDirectory({
+      platform: 'claude',
+      scope: 'project',
+    });
+    const recordPath = scopedRecords.successes.find((entry) => entry.recordId === target.recordId)?.path;
+    if (!recordPath) throw new Error('missing disabled Claude install record fixture');
+    await fs.writeJson(recordPath, record, { spaces: 2 });
+    await builder.writeProjectIdentity(target, {
+      version: 1,
+      sharedIdentityId: target.sharedIdentityId,
+      locator: target.locator,
+      source: { ...target.source },
+      generatedAt: target.timestamps.updatedAt,
+      artifacts: [{
+        kind: 'skill',
+        platform: 'claude',
+        path: '.claude/skills/disabled-claude-skill',
+        artifactKey: 'disabled-claude-skill',
+        id: 'disabled-claude-skill',
+        target: 'claude.skill',
+        state: 'disabled',
+        contentDigest: 'sha256:disabled',
+      }],
+    });
+    await builder.writeDependencyIndex([{ target, record }]);
+
+    const result = await cleanupCommand(
+      ['disabled-claude-skill'],
+      {
+        cwd: builder.paths.repoRoot,
+        scope: 'project',
+        platform: 'claude',
+        force: true,
+      },
+      {
+        env: {
+          ...process.env,
+          AW_HOME: builder.paths.awHome,
+          AW_CODEX_HOME: builder.paths.codexHome,
+          AW_CLAUDE_HOME: builder.paths.claudeHome,
+        },
+        nativeCliRunner: createAgentVersionRunner(),
+        p9TargetResolver: async () => {
+          throw new Error('synthetic target resolution failure');
+        },
+        adapters: {
+          codex: new FakeAdapter(),
+          claude: new FakeAdapter(),
+        } satisfies Record<PlatformName, PlatformAdapter>,
+      },
+    );
+
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+    expect(result.payload.deletedItems).toContainEqual(
+      expect.objectContaining({ kind: 'project-artifact-identity' }),
+    );
+  });
+
   it('cleans record plus install-marker residuals without running uninstall lifecycle', async () => {
     const builder = await makeBuilder();
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
