@@ -38,6 +38,20 @@ afterEach(async () => {
 });
 
 describe('skill-review author tools', () => {
+  it('parses a quoted YAML Skill name as its scalar value', async () => {
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?quoted-name`);
+    const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'quoted-skill');
+
+    expect(runner.parseSkillName([
+      '---',
+      'name: "quoted-skill"',
+      'description: Quoted YAML scalar fixture.',
+      '---',
+      '',
+      '# Quoted Skill',
+    ].join('\n'), skillRoot)).toBe('quoted-skill');
+  });
+
   it('inspects dynamic source and materialized final artifacts together', async () => {
     const root = repoRoot();
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-review-inspect-'));

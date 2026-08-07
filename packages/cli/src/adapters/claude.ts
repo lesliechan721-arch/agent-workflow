@@ -64,6 +64,15 @@ import {
   resolveSkillTriggerStatusReportFields,
 } from '../utils/skill-trigger-preferences.js';
 import {
+  readInstallRecordForLocation,
+  readProjectArtifactIdentityForLocator,
+} from '../install-state/facade.js';
+import {
+  createProjectArtifactSharedLocator,
+  resolveProjectArtifactProjectRoot,
+  resolveProjectScopeRepoRoot,
+} from '../install-state/paths.js';
+import {
   type ClaudeSettings,
   detectClaudeExternalOwnership,
   getClaudeMarketplaceSource,
@@ -465,16 +474,15 @@ function getClaudeDynamicSkillPath(configDir: string, skillKey: string): string 
   return path.join(configDir, 'skills', skillKey);
 }
 
-async function assertClaudeDynamicSkillPathOwnedByAw(options: {
+async function findClaudeDynamicSkillPathOwner(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  scope: Scope;
   skillPath: string;
   skillKey: string;
   pluginName: string;
   trackingManifest: Awaited<ReturnType<typeof readTrackingManifest>>;
-}): Promise<void> {
-  if (!(await fs.pathExists(options.skillPath))) {
-    return;
-  }
-
+}): Promise<string | null> {
   const normalizedPath = path.normalize(options.skillPath);
   const owner = Object.entries(options.trackingManifest.plugins).find(([, record]) =>
     record.artifacts.some((artifact) =>
@@ -485,14 +493,83 @@ async function assertClaudeDynamicSkillPathOwnedByAw(options: {
       artifact.artifactKey === options.skillKey &&
       path.normalize(artifact.path) === normalizedPath),
   );
+  if (owner) {
+    return owner[0];
+  }
+
+  const projectKey = options.scope === 'project'
+    ? await resolveClaudeProjectKey(options.cwd)
+    : undefined;
+  const installRecordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location: {
+      plugin: options.pluginName,
+      platform: 'claude',
+      scope: options.scope,
+      ...(projectKey ? { projectKey } : {}),
+    },
+    env: options.env,
+  });
+  const installRecordOwnsPath = installRecordRead.status === 'ok' &&
+    installRecordRead.value.record.artifacts.some((artifact) =>
+      artifact.kind === 'skill' &&
+      artifact.platform === 'claude' &&
+      artifact.target === 'claude.skill' &&
+      artifact.state !== 'disabled' &&
+      artifact.artifactKey === options.skillKey &&
+      path.normalize(artifact.path) === normalizedPath);
+  if (installRecordOwnsPath) {
+    return options.pluginName;
+  }
+  if (options.scope === 'project') {
+    const repoRoot = resolveProjectScopeRepoRoot(options.cwd);
+    const locator = createProjectArtifactSharedLocator({
+      plugin: options.pluginName,
+      platform: 'claude',
+      repoRoot,
+      projectRoot: resolveProjectArtifactProjectRoot(options.cwd, {
+        platform: 'claude',
+        scope: 'project',
+        projectKey,
+      }),
+    });
+    const identityRead = await readProjectArtifactIdentityForLocator({
+      repoRoot,
+      locator,
+      projectKey,
+      cwd: options.cwd,
+      homeDir: options.env.HOME,
+    });
+    const projectIdentityOwnsPath = identityRead.status === 'ok' &&
+      identityRead.value.artifacts.some((artifact) =>
+        artifact.kind === 'skill' &&
+        artifact.platform === 'claude' &&
+        artifact.target === 'claude.skill' &&
+        artifact.state !== 'disabled' &&
+        artifact.artifactKey === options.skillKey &&
+        path.normalize(path.resolve(repoRoot, artifact.path)) === normalizedPath);
+    if (projectIdentityOwnsPath) {
+      return options.pluginName;
+    }
+  }
+  return null;
+}
+
+async function assertClaudeDynamicSkillPathOwnedByAw(options: Parameters<
+  typeof findClaudeDynamicSkillPathOwner
+>[0]): Promise<void> {
+  if (!(await fs.pathExists(options.skillPath))) {
+    return;
+  }
+  const owner = await findClaudeDynamicSkillPathOwner(options);
   if (!owner) {
     throw new Error(
       `Claude skill "${options.skillKey}" 已存在于 ${options.skillPath}，但不由 AW 管理。`,
     );
   }
-  if (owner[0] !== options.pluginName) {
+  if (owner !== options.pluginName) {
     throw new Error(
-      `Claude skill "${options.skillKey}" 已由插件 "${owner[0]}" 管理。`,
+      `Claude skill "${options.skillKey}" 已由插件 "${owner}" 管理。`,
     );
   }
 }
@@ -660,17 +737,23 @@ export class ClaudeAdapter implements PlatformAdapter {
         });
         let writtenPaths: string[] = [];
         if (artifact.state === 'disabled') {
-          const owned = trackingRecord?.artifacts.some((tracked) =>
-            tracked.target === 'claude.skill' &&
-            tracked.state !== 'disabled' &&
-            tracked.id === artifact.id &&
-            tracked.artifactKey === skillKey &&
-            path.normalize(tracked.path) === path.normalize(skillPath));
-          if (owned) {
+          const owner = await findClaudeDynamicSkillPathOwner({
+            cwd: this.cwd,
+            env: this.env,
+            scope,
+            skillPath,
+            skillKey,
+            pluginName: plugin.manifest.name,
+            trackingManifest,
+          });
+          if (owner === plugin.manifest.name) {
             await fs.remove(skillPath);
           }
         } else {
           await assertClaudeDynamicSkillPathOwnedByAw({
+            cwd: this.cwd,
+            env: this.env,
+            scope,
             skillPath,
             skillKey,
             pluginName: plugin.manifest.name,

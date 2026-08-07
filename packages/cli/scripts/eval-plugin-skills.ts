@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -73,6 +72,249 @@ interface ChildResult {
 }
 
 const COMMAND_TIMEOUT_GRACE_MS = 1_000;
+const PROCESS_TREE_POLL_MS = 25;
+
+interface PosixProcessEntry {
+  ppid: number;
+  state: string;
+  startTime: string;
+}
+
+interface PosixProcessIdentity {
+  pid: number;
+  startTime: string;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function readPosixProcessTable(): Promise<Map<number, PosixProcessEntry>> {
+  const result = await execFileAsync('/bin/ps', ['-Ao', 'pid=,ppid=,state=,lstart='], {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: COMMAND_TIMEOUT_GRACE_MS,
+  });
+  const table = new Map<number, PosixProcessEntry>();
+  for (const line of result.stdout.split('\n')) {
+    const [pidText, ppidText, state, ...startTimeParts] = line.trim().split(/\s+/u);
+    const pid = Number(pidText);
+    const ppid = Number(ppidText);
+    const startTime = startTimeParts.join(' ');
+    if (Number.isInteger(pid) && Number.isInteger(ppid) && state && startTime) {
+      table.set(pid, { ppid, state, startTime });
+    }
+  }
+  return table;
+}
+
+async function refreshKnownDescendants(
+  root: PosixProcessIdentity,
+  knownDescendants: Map<number, PosixProcessIdentity>,
+): Promise<Map<number, PosixProcessEntry>> {
+  const table = await readPosixProcessTable();
+  const childrenByParent = new Map<number, number[]>();
+  for (const [pid, entry] of table) {
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(pid);
+    childrenByParent.set(entry.ppid, children);
+  }
+  const roots = [root, ...knownDescendants.values()].filter((identity) =>
+    table.get(identity.pid)?.startTime === identity.startTime
+  );
+  const queue = roots.map((identity) => identity.pid);
+  const visited = new Set(queue);
+  while (queue.length > 0) {
+    const parent = queue.shift()!;
+    for (const childPid of childrenByParent.get(parent) ?? []) {
+      if (visited.has(childPid)) continue;
+      visited.add(childPid);
+      knownDescendants.set(childPid, {
+        pid: childPid,
+        startTime: table.get(childPid)!.startTime,
+      });
+      queue.push(childPid);
+    }
+  }
+  return table;
+}
+
+function processIsRunning(
+  table: Map<number, PosixProcessEntry>,
+  identity: PosixProcessIdentity,
+): boolean {
+  const entry = table.get(identity.pid);
+  return entry !== undefined &&
+    entry.startTime === identity.startTime &&
+    !entry.state.startsWith('Z');
+}
+
+function signalPosixPidAndGroup(pid: number, signal: NodeJS.Signals): void {
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
+}
+
+function signalKnownPosixTree(
+  root: PosixProcessIdentity,
+  knownDescendants: ReadonlyMap<number, PosixProcessIdentity>,
+  table: Map<number, PosixProcessEntry>,
+  signal: NodeJS.Signals,
+): void {
+  for (const identity of [...knownDescendants.values()].reverse()) {
+    if (processIsRunning(table, identity)) signalPosixPidAndGroup(identity.pid, signal);
+  }
+  if (processIsRunning(table, root)) signalPosixPidAndGroup(root.pid, signal);
+}
+
+function signalPosixProcessGroup(rootPid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-rootPid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
+function posixProcessGroupIsRunning(rootPid: number): boolean {
+  try {
+    process.kill(-rootPid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function terminatePosixProcessTree(rootPid: number): Promise<string[]> {
+  const diagnostics: string[] = [];
+  const knownDescendants = new Map<number, PosixProcessIdentity>();
+  let table: Map<number, PosixProcessEntry> | null = null;
+  let root: PosixProcessIdentity | null = null;
+  try {
+    table = await readPosixProcessTable();
+    const rootEntry = table.get(rootPid);
+    if (rootEntry) {
+      root = { pid: rootPid, startTime: rootEntry.startTime };
+      table = await refreshKnownDescendants(root, knownDescendants);
+      signalKnownPosixTree(root, knownDescendants, table, 'SIGTERM');
+    }
+  } catch (error) {
+    diagnostics.push(
+      `Could not inspect the POSIX process tree; used process-group fallback: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    table = null;
+  }
+  signalPosixProcessGroup(rootPid, 'SIGTERM');
+
+  const graceDeadline = Date.now() + COMMAND_TIMEOUT_GRACE_MS;
+  while (Date.now() < graceDeadline) {
+    await delay(PROCESS_TREE_POLL_MS);
+    if (root && table) {
+      try {
+        table = await refreshKnownDescendants(root, knownDescendants);
+        signalKnownPosixTree(root, knownDescendants, table, 'SIGTERM');
+      } catch (error) {
+        diagnostics.push(
+          `Could not refresh the POSIX process tree; continued with process-group fallback: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        table = null;
+      }
+    }
+    signalPosixProcessGroup(rootPid, 'SIGTERM');
+    const knownRunning = root && table
+      ? [root, ...knownDescendants.values()].some((identity) =>
+          processIsRunning(table!, identity)
+        )
+      : false;
+    if (!knownRunning && !posixProcessGroupIsRunning(rootPid)) return diagnostics;
+  }
+
+  while (true) {
+    if (root && table) {
+      try {
+        table = await refreshKnownDescendants(root, knownDescendants);
+        signalKnownPosixTree(root, knownDescendants, table, 'SIGKILL');
+      } catch (error) {
+        diagnostics.push(
+          `Could not verify the POSIX descendant set after SIGKILL: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        table = null;
+      }
+    }
+    signalPosixProcessGroup(rootPid, 'SIGKILL');
+    const knownRunning = root && table
+      ? [root, ...knownDescendants.values()].some((identity) =>
+          processIsRunning(table!, identity)
+        )
+      : false;
+    if (!knownRunning && !posixProcessGroupIsRunning(rootPid)) return diagnostics;
+    await delay(PROCESS_TREE_POLL_MS);
+  }
+}
+
+async function waitForChildClose(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    child.once('close', () => resolve());
+  });
+}
+
+async function terminateWindowsProcessTree(child: ChildProcess): Promise<string[]> {
+  if (child.pid === undefined) return [];
+  try {
+    await execFileAsync(
+      'taskkill.exe',
+      ['/pid', String(child.pid), '/t', '/f'],
+      {
+        encoding: 'utf8',
+        timeout: COMMAND_TIMEOUT_GRACE_MS * 5,
+        windowsHide: true,
+      },
+    );
+    await waitForChildClose(child);
+    return [];
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await waitForChildClose(child);
+    }
+    return [
+      `Could not verify Windows process-tree termination after taskkill failure: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
+  }
+}
+
+async function terminateChildProcessTree(child: ChildProcess): Promise<string[]> {
+  if (child.pid === undefined) return [];
+  if (process.platform === 'win32') {
+    return terminateWindowsProcessTree(child);
+  }
+  return terminatePosixProcessTree(child.pid);
+}
+
+async function assertProcessTreeInspectionAvailable(): Promise<void> {
+  if (process.platform === 'win32') return;
+  try {
+    await readPosixProcessTable();
+  } catch (error) {
+    throw new Error(
+      `Cannot start a command suite because POSIX process-tree inspection is unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
 
 function resolveRepoRoot(): string {
   return path.resolve(resolveCliPackageRoot(), '..', '..');
@@ -257,35 +499,41 @@ export async function runChild(
     timeoutMs: number;
   },
 ): Promise<ChildResult> {
+  await assertProcessTreeInspectionAvailable();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       shell: false,
+      detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     let settled = false;
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    let finalTimer: ReturnType<typeof setTimeout> | undefined;
+    let closeResult: Pick<ChildResult, 'exitCode' | 'signal'> | undefined;
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
       const message = `Suite exceeded central timeout of ${options.timeoutMs}ms.`;
       stderr += `${message}\n`;
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, COMMAND_TIMEOUT_GRACE_MS);
-      finalTimer = setTimeout(() => {
+      void terminateChildProcessTree(child).then((terminationDiagnostics) => {
+        if (terminationDiagnostics.length > 0) {
+          stderr += `${terminationDiagnostics.join('\n')}\n`;
+        }
+        finish(
+          closeResult?.exitCode ?? child.exitCode,
+          closeResult?.signal ?? child.signalCode ?? 'SIGKILL',
+        );
+      }, (error: unknown) => {
+        stderr += `Failed to terminate command suite process tree: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`;
         finish(child.exitCode, child.signalCode ?? 'SIGKILL');
-      }, COMMAND_TIMEOUT_GRACE_MS * 2);
+      });
     }, options.timeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeoutTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      if (finalTimer) clearTimeout(finalTimer);
     };
     const finish = (
       exitCode: number | null,
@@ -311,14 +559,14 @@ export async function runChild(
     child.once('error', (error) => {
       if (timedOut) {
         stderr += `${error.message}\n`;
-        finish(child.exitCode, child.signalCode);
         return;
       }
       cleanup();
       reject(error);
     });
     child.once('close', (exitCode, signal) => {
-      finish(exitCode, signal);
+      closeResult = { exitCode, signal };
+      if (!timedOut) finish(exitCode, signal);
     });
   });
 }
@@ -493,6 +741,36 @@ function selectedSuites(manifest: PluginEvalManifest, parsed: ParsedArgs): Plugi
     throw new Error(`Unknown or non-release suite: ${parsed.suite ?? '(none)'}`);
   }
   return suites;
+}
+
+function collectCoverageDiagnostics(
+  manifest: PluginEvalManifest,
+  parsed: ParsedArgs,
+): string[] {
+  const diagnostics: string[] = [];
+  if (parsed.suite) {
+    diagnostics.push('--suite selected a debug subset of release-required suites.');
+  }
+  if (parsed.profile) {
+    diagnostics.push('--profile selected a debug subset of required materialization profiles.');
+  }
+  if (parsed.split) {
+    diagnostics.push('--split selected a debug subset of release-required splits.');
+  }
+  if (parsed.caseId) {
+    diagnostics.push('--case selected a debug subset of suite cases.');
+  }
+  if (parsed.runs !== undefined) {
+    const reducedSuites = selectedSuites(manifest, parsed).filter(
+      (suite) => parsed.runs! < suite.defaultRuns,
+    );
+    if (reducedSuites.length > 0) {
+      diagnostics.push(
+        `--runs is below the declared default for suites: ${reducedSuites.map((suite) => suite.id).join(', ')}.`,
+      );
+    }
+  }
+  return diagnostics;
 }
 
 function assertSuiteSupportsRequestedOptions(
@@ -692,7 +970,13 @@ async function runOnePlugin(options: {
       }
     }
   }
-  const outcome = options.parsed.materializeOnly ? 'passed' : combinePluginEvalOutcome(reports);
+  const reportOutcome = options.parsed.materializeOnly
+    ? 'passed'
+    : combinePluginEvalOutcome(reports);
+  const coverageDiagnostics = collectCoverageDiagnostics(manifest, options.parsed);
+  const coverageComplete = coverageDiagnostics.length === 0;
+  const reportsComplete = options.parsed.materializeOnly ||
+    reports.every((report) => report.complete);
   const unredactedBundle: PluginEvaluationBundle = {
     schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
@@ -706,14 +990,14 @@ async function runOnePlugin(options: {
     modelProvider: options.codexRuntime?.modelProvider ?? null,
     credentialSource: options.codexRuntime?.credentialSource ?? null,
     codexConfigDigest: options.codexRuntime?.evidenceDigest ?? null,
-    outcome,
-    complete: options.parsed.materializeOnly || reports.every((report) => report.complete),
+    outcome: coverageComplete ? reportOutcome : 'incomplete',
+    complete: coverageComplete && reportsComplete,
     mechanicalPassed: options.parsed.materializeOnly || reports.every(
       (report) => report.mechanicalPassed,
     ),
     subjects,
     suites: reports,
-    diagnostics: [],
+    diagnostics: coverageDiagnostics,
   };
   const bundle = options.codexRuntime
     ? redactCodexEvalValue(unredactedBundle, options.codexRuntime)

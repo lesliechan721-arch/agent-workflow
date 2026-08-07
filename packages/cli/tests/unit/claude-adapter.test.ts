@@ -25,6 +25,19 @@ import {
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import { upsertTrackingRecord } from '../../src/utils/tracking.js';
+import {
+  writeInstallRecordFileAt,
+  writeProjectArtifactIdentityFileAt,
+} from '../../src/install-state/facade.js';
+import { createRecordId, createSharedIdentityId } from '../../src/install-state/ids.js';
+import {
+  createProjectArtifactSharedLocator,
+  getInstallRecordPath,
+  getProjectArtifactSharedIdentityPath,
+  resolveProjectArtifactProjectRoot,
+  resolveProjectScopeRepoRoot,
+} from '../../src/install-state/paths.js';
+import type { PluginLocation } from '../../src/install-state/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
@@ -281,6 +294,121 @@ describe('ClaudeAdapter', () => {
 
     await expect(adapter.installExtensions(plugin, 'user')).rejects.toThrow('不由 AW 管理');
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# unmanaged\n');
+  });
+
+  it('accepts project identity or an install record when Claude skill tracking is missing', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const artifacts = await adapter.installExtensions(plugin, 'project');
+    const skill = artifacts.find((artifact) => artifact.target === 'claude.skill');
+    if (!skill?.artifactKey || !skill.id || !skill.contentDigest) {
+      throw new Error('expected a complete Claude dynamic skill artifact');
+    }
+
+    const projectKey = await resolveClaudeProjectKey(repoRoot);
+    const location: PluginLocation = {
+      plugin: plugin.manifest.name,
+      platform: 'claude',
+      scope: 'project',
+      projectKey,
+    };
+    const scopedRepoRoot = resolveProjectScopeRepoRoot(repoRoot);
+    const locator = createProjectArtifactSharedLocator({
+      plugin: plugin.manifest.name,
+      platform: 'claude',
+      repoRoot: scopedRepoRoot,
+      projectRoot: resolveProjectArtifactProjectRoot(repoRoot, location),
+    });
+    const identityPath = getProjectArtifactSharedIdentityPath({
+      repoRoot: scopedRepoRoot,
+      locator,
+      access: 'write',
+    });
+    const source = {
+      pluginVersion: plugin.manifest.version,
+      manifestDigest: 'test-manifest-digest',
+      bundleFingerprint: 'test-bundle-fingerprint',
+    };
+    await writeProjectArtifactIdentityFileAt(identityPath, {
+      version: 1,
+      sharedIdentityId: createSharedIdentityId(locator),
+      locator,
+      source,
+      generatedAt: '2026-08-08T00:00:00.000Z',
+      artifacts: [{
+        kind: 'skill',
+        platform: 'claude',
+        path: path.relative(scopedRepoRoot, skill.path),
+        artifactKey: skill.artifactKey,
+        id: skill.id,
+        target: 'claude.skill',
+        state: 'present',
+        ownershipMarker: skill.artifactKey,
+        contentDigest: skill.contentDigest,
+      }],
+    });
+
+    await expect(adapter.installExtensions(plugin, 'project')).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ target: 'claude.skill' })]),
+    );
+
+    const disabledPlugin = await createDynamicClaudePlugin(
+      path.join(path.dirname(repoRoot), 'disabled-owner'),
+      'disabled',
+    );
+    await expect(adapter.installExtensions(disabledPlugin, 'project')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: 'claude.skill', state: 'disabled' }),
+      ]),
+    );
+    await expect(fs.pathExists(skill.path)).resolves.toBe(false);
+    await adapter.installExtensions(plugin, 'project');
+
+    await fs.remove(identityPath);
+    const recordPath = getInstallRecordPath(repoRoot, location, env, 'write');
+    await writeInstallRecordFileAt(recordPath, {
+      version: 2,
+      recordId: createRecordId(location),
+      record: {
+        pluginName: plugin.manifest.name,
+        platform: 'claude',
+        scope: 'project',
+        projectKey,
+        installedAt: '2026-08-08T00:00:00.000Z',
+        updatedAt: '2026-08-08T00:00:00.000Z',
+        source,
+        installSource: {
+          kind: 'explicit',
+          explicitlyRequested: true,
+        },
+        options: {
+          skillTriggerPreference: 'default',
+        },
+        artifacts: [{
+          kind: 'skill',
+          platform: 'claude',
+          path: skill.path,
+          artifactKey: skill.artifactKey,
+          id: skill.id,
+          target: 'claude.skill',
+          state: 'present',
+          ownershipMarker: skill.artifactKey,
+          contentDigest: skill.contentDigest,
+        }],
+        dependencyEdges: [],
+      },
+    }, { env });
+
+    await expect(adapter.installExtensions(plugin, 'project')).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ target: 'claude.skill' })]),
+    );
+    await expect(adapter.installExtensions(disabledPlugin, 'project')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: 'claude.skill', state: 'disabled' }),
+      ]),
+    );
+    await expect(fs.pathExists(skill.path)).resolves.toBe(false);
   });
 
   it('does not claim or remove an unmanaged Claude directory for a disabled artifact', async () => {

@@ -17,6 +17,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import YAML from 'yaml';
+
 const execFileAsync = promisify(execFile);
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REVIEW_SKILL_ROOT = path.dirname(SCRIPT_ROOT);
@@ -445,11 +447,16 @@ async function readManifest(skillRoot, skillName) {
   };
 }
 
-function parseSkillName(content, skillRoot) {
+export function parseSkillName(content, skillRoot) {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/u);
   if (!match) fail(`SKILL.md has no valid frontmatter: ${skillRoot}`);
-  const name = match[1].match(/^name:\s*([^\n]+)\s*$/mu)?.[1]?.trim();
-  if (!name) fail(`SKILL.md frontmatter has no name: ${skillRoot}`);
+  let frontmatter;
+  try {
+    frontmatter = record(YAML.parse(match[1]), 'SKILL.md frontmatter');
+  } catch (error) {
+    fail(`SKILL.md has invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const name = nonEmptyString(frontmatter.name, 'SKILL.md frontmatter.name');
   if (name !== path.basename(skillRoot)) fail(`Skill name ${JSON.stringify(name)} must match its directory.`);
   return name;
 }

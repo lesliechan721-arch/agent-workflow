@@ -310,10 +310,20 @@ describe('plugin eval runner', () => {
         stderr: (text) => { stderr += text; },
       });
 
-      expect(exitCode, stderr).toBe(0);
+      expect(exitCode, stderr).toBe(1);
       expect(stderr).toContain('codex-explore/trigger/all');
       expect(stderr).not.toContain('codex-explore/trigger/validation');
       const commandReport = JSON.parse(stdout);
+      expect(commandReport.bundles[0]).toMatchObject({
+        outcome: 'incomplete',
+        complete: false,
+        mechanicalPassed: true,
+        diagnostics: expect.arrayContaining([
+          expect.stringContaining('--suite'),
+          expect.stringContaining('--case'),
+          expect.stringContaining('--runs'),
+        ]),
+      });
       expect(commandReport.bundles[0].suites).toEqual([
         expect.objectContaining({ split: 'all', outcome: 'passed' }),
       ]);
@@ -371,13 +381,14 @@ describe('plugin eval runner', () => {
         stderr: (text) => { stderr += text; },
       });
 
-      expect(exitCode, stderr).toBe(0);
+      expect(exitCode, stderr).toBe(1);
       const commandReport = JSON.parse(stdout);
       expect(commandReport.bundles[0]).toMatchObject({
         model: 'fixture-model',
         modelProvider: 'fixture-provider',
         credentialSource: 'embedded',
-        outcome: 'passed',
+        outcome: 'incomplete',
+        complete: false,
       });
       expect(stdout).not.toContain('fixture-secret');
       expect(stdout).not.toContain('https://example.invalid/v1');
@@ -428,8 +439,6 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'redaction-demo',
-      '--suite',
-      'command',
       '--codex-bin',
       process.execPath,
       '--output-dir',
@@ -469,14 +478,25 @@ describe('plugin eval runner', () => {
   });
 
   it.runIf(process.platform !== 'win32')(
-    'reports an incomplete suite after force-killing a timed-out command',
+    'reports an incomplete suite and kills descendants of a timed-out command',
     async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-timeout-'));
       const outputRoot = path.join(root, 'output');
+      const descendantMarker = path.join(root, 'descendant-finished');
       tempDirs.push(root);
+      const descendantScript = [
+        "const fs = require('node:fs');",
+        'process.on("SIGTERM", () => {});',
+        `setTimeout(() => { fs.writeFileSync(${JSON.stringify(descendantMarker)}, 'alive'); process.exit(0); }, 1800);`,
+      ].join('\n');
       await writeCommandPlugin(root, {
         name: 'timeout-demo',
-        script: 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n',
+        script: [
+          "import { spawn } from 'node:child_process';",
+          `spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { detached: true, stdio: 'ignore' });`,
+          'process.on("SIGTERM", () => {});',
+          'setInterval(() => {}, 1000);',
+        ].join('\n'),
         defaultRuns: 1,
         perRunTimeoutMs: 100,
         suiteTimeoutMs: 500,
@@ -516,8 +536,71 @@ describe('plugin eval runner', () => {
         }),
       ]);
       expect(Date.now() - startedAt).toBeLessThan(5_000);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await expect(fs.pathExists(descendantMarker)).resolves.toBe(false);
     },
   );
+
+  it('marks every debug coverage selector as incomplete evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-coverage-'));
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'coverage-demo',
+      script: 'process.stdout.write(JSON.stringify({ complete: true, passed: true }));\n',
+      defaultRuns: 2,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['split', 'case', 'runs', 'codexBin'],
+    });
+    registerCurrentTestReadonlyFixtureRoot(root);
+
+    const cases = [
+      { name: 'suite', args: ['--suite', 'command'], diagnostic: '--suite' },
+      { name: 'profile', args: ['--profile', 'project-default'], diagnostic: '--profile' },
+      { name: 'split', args: ['--split', 'validation'], diagnostic: '--split' },
+      {
+        name: 'case',
+        args: ['--suite', 'command', '--case', 'selected-case'],
+        diagnostic: '--case',
+      },
+      { name: 'runs', args: ['--runs', '1'], diagnostic: '--runs' },
+    ];
+
+    for (const testCase of cases) {
+      const outputRoot = path.join(root, `output-${testCase.name}`);
+      registerCurrentTestWritableStateRoot(outputRoot);
+      let stdout = '';
+      let stderr = '';
+      const exitCode = await runPluginEvals([
+        'coverage-demo',
+        '--no-inherit-codex-config',
+        ...testCase.args,
+        '--codex-bin',
+        process.execPath,
+        '--output-dir',
+        outputRoot,
+      ], {
+        repoRoot: root,
+        env: process.env,
+        stdout: (text) => { stdout += text; },
+        stderr: (text) => { stderr += text; },
+      });
+
+      expect(exitCode, stderr).toBe(1);
+      const bundle = JSON.parse(stdout).bundles[0];
+      expect(bundle).toMatchObject({
+        outcome: 'incomplete',
+        complete: false,
+        mechanicalPassed: true,
+        diagnostics: expect.arrayContaining([
+          expect.stringContaining(testCase.diagnostic),
+        ]),
+      });
+      expect(bundle.suites).toEqual([
+        expect.objectContaining({ outcome: 'passed', complete: true }),
+      ]);
+    }
+  });
 
   it('allows multiple legal runs to exceed the per-run timeout in aggregate', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-multi-run-'));
@@ -547,8 +630,6 @@ describe('plugin eval runner', () => {
     const exitCode = await runPluginEvals([
       'multi-run-demo',
       '--no-inherit-codex-config',
-      '--suite',
-      'command',
       '--codex-bin',
       process.execPath,
       '--output-dir',
