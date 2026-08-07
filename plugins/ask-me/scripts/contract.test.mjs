@@ -189,13 +189,14 @@ test('behavior corpus stays cross-platform while exposing structured Codex v1 re
       'inspect_then_adapt',
       'challenge_infeasible_requirement',
       'preserve_unknowns_on_stop',
+      'explicit_complete_spec_no_question',
     ],
   );
   for (const entry of corpus.evals) {
     assert.ok(entry.prompt.length > 0);
     assert.ok(entry.expected_output.length > 0);
     assert.deepEqual(entry.files, []);
-    assert.ok(entry.scripted_replies.length > 0);
+    assert.equal(Array.isArray(entry.scripted_replies), true);
     for (const reply of entry.scripted_replies) {
       assert.equal(Number.isInteger(reply.expected_question_count), true);
       assert.equal(reply.expected_question_count >= 0, true);
@@ -209,6 +210,21 @@ test('behavior corpus stays cross-platform while exposing structured Codex v1 re
     assert.equal(entry.review.workspace_unchanged, true);
     assert.ok(entry.review.checks.length >= 4);
   }
+
+  const inspectThenAdapt = corpus.evals.find((entry) => entry.id === 'inspect_then_adapt');
+  assert.equal(inspectThenAdapt.scripted_replies.length, 2);
+  assert.deepEqual(
+    inspectThenAdapt.scripted_replies.map((reply) => reply.expected_question_count),
+    [1, 1],
+  );
+  assert.match(inspectThenAdapt.expected_output, /第二轮得到答复后结束澄清/);
+
+  const explicitComplete = corpus.evals.find(
+    (entry) => entry.id === 'explicit_complete_spec_no_question',
+  );
+  assert.match(explicitComplete.prompt, /^\$ask-me /);
+  assert.deepEqual(explicitComplete.scripted_replies, []);
+  assert.match(explicitComplete.expected_output, /不调用提问工具/);
 
   const readme = await readFile(
     path.join(context.sourceRoot, 'evals', 'README.md'),

@@ -11,9 +11,16 @@
             "dry-run 不能运行 lifecycle scripts，但需要显示本来会运行哪些脚本。"
           ],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "JSON receipt 增加 planned_lifecycle_scripts 数组，每项包含脚本名称和 would-run 状态，不复用 executed 语义。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
-      "expected_output": "先只读检查现有 install、lifecycle 和 receipt 合同，不向用户询问仓库中可发现的事实；先询问会阻塞下游设计的脚本语义，收到答复后重新计算前沿，再询问依赖该答案的 receipt 取舍。",
+      "expected_output": "先只读检查现有 install、lifecycle 和 receipt 合同，不向用户询问仓库中可发现的事实；先询问会阻塞下游设计的脚本语义，收到答复后重新计算前沿，再询问依赖该答案的 receipt 取舍；第二轮得到答复后结束澄清并交还控制。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
@@ -23,6 +30,8 @@
           "提问前有只读仓库探索证据",
           "首轮没有询问可由仓库查明的事实",
           "有依赖的问题没有在同一轮提前提出",
+          "收到首轮回答后才在第二轮询问 receipt 表达",
+          "第二轮回答后没有继续制造问题",
           "每轮不超过三个问题"
         ]
       }
@@ -76,6 +85,25 @@
           "保留具体未决项与返工风险",
           "没有声称需求完整或稳定",
           "没有规定后续规划或实现动作"
+        ]
+      }
+    },
+    {
+      "id": "explicit_complete_spec_no_question",
+      "prompt": "$ask-me 请对这个完整规格执行一次隐藏假设压力测试；如果没有会显著改变结果的未知项就直接结束，不要修改文件：实现 webhook 重试，仅对 429 和 5xx 重试，指数退避 1/2/4 秒，共三次；每次写 attempt 记录，最终失败进入 dead-letter，现有 2xx 行为不变，并补齐单元和集成测试。",
+      "scripted_replies": [],
+      "expected_output": "即使规格看起来完整，也执行显式调用要求的隐藏假设压力测试；确认没有会显著改变目标、范围、行为、接口、数据、兼容性、约束、验收或可行性的未知项后，不调用提问工具、不制造低风险问题，直接结束澄清并交还控制，也不开始实施。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "显式调用没有被当作普通完整规格而跳过",
+          "没有调用 request_user_input 或提出文本问题",
+          "没有把低风险实现细节扩张为产品决策",
+          "没有开始实施、创建或修改文件",
+          "结束澄清后明确交还控制"
         ]
       }
     }
