@@ -1,7 +1,7 @@
 {
   "name": "ask-me",
-  "version": "0.1.0",
-  "description": "在开发实现或设计讨论中先查明可发现事实，再围绕高风险未知项逐轮澄清需求与取舍。",
+  "version": "0.2.0",
+  "description": "在具体实施前澄清重大用户决策，并对计划、方案和重大决策进行压力测试。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -9,7 +9,11 @@
   },
   "skills": "./skills",
   "skillTriggers": {
-    "ask-me": {
+    "requirements-clarifier": {
+      "defaultTrigger": "auto",
+      "allowDynamicTrigger": true
+    },
+    "decision-grill": {
       "defaultTrigger": "auto",
       "allowDynamicTrigger": true
     }
@@ -24,9 +28,19 @@
   },
   "interface": {
     "displayName": "Ask Me",
-    "shortDescription": "先只读查明事实，再围绕高风险未知项逐轮澄清需求与取舍",
+    "shortDescription": "实施前澄清重大阻塞项，并压力测试计划、方案和重大决策",
     "capabilities": [
-      "Skills"
+      "Skills",
+      "Instructions"
+    ]
+  },
+  "extensions": {
+    "instructions": [
+      {
+        "name": "quality-gate",
+        "title": "需求与决策质量门禁",
+        "content": "开始非平凡实施前，先检查现有上下文。若仍有必须由用户决定、且会实质改变行为、接口或数据、兼容迁移、安全合规或验收的阻塞项，使用 `requirements-clarifier`；可查事实、可逆实现细节和已授权默认不阻塞。当前任务若是形成或压力测试计划、想法、方案或重大决策，使用 `decision-grill`。"
+      }
     ]
   },
   "buildConfig": {

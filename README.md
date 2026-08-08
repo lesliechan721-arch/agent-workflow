@@ -61,7 +61,7 @@ aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
-| `ask-me` | 先只读查明事实，再围绕高风险未知项逐轮澄清需求与取舍 | Codex / Claude Code |
+| `ask-me` | 实施前澄清重大阻塞项，并压力测试计划、方案和重大决策 | Codex / Claude Code |
 | `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
 | `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |

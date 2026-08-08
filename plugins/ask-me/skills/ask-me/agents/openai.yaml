@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ask Me"
-  short_description: "先只读查明事实，再围绕高风险未知项逐轮澄清需求与取舍"
-  default_prompt: "使用 $ask-me：先只读查明事实，再围绕高风险未知项逐轮澄清需求与取舍。"
-policy:
-  allow_implicit_invocation: true

@@ -98,10 +98,22 @@ describe('build smoke', () => {
         },
       },
       skillTriggers: {
-        'ask-me': {
+        'requirements-clarifier': {
           defaultTrigger: 'auto',
           allowDynamicTrigger: true,
         },
+        'decision-grill': {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+      extensions: {
+        instructions: [
+          expect.objectContaining({
+            name: 'quality-gate',
+            content: expect.stringContaining('使用 `requirements-clarifier`'),
+          }),
+        ],
       },
     });
     for (const pluginName of [
@@ -172,41 +184,55 @@ describe('build smoke', () => {
         }),
       }),
     ]));
-    const [askMeCodexSkill, askMeClaudeSkill, askMeOpenaiYaml] = await Promise.all([
-      fs.readFile(
-        path.join(outputRoot, 'plugins', 'ask-me', 'codex', 'skills', 'ask-me', 'SKILL.md'),
-        'utf8',
+    const askMeSkills = await Promise.all(
+      ['requirements-clarifier', 'decision-grill'].flatMap((skillName) =>
+        ['codex', 'claude'].map(async (platform) => ({
+          skillName,
+          platform,
+          skill: await fs.readFile(
+            path.join(
+              outputRoot,
+              'plugins',
+              'ask-me',
+              platform,
+              'skills',
+              skillName,
+              'SKILL.md',
+            ),
+            'utf8',
+          ),
+          openaiYaml: await fs.readFile(
+            path.join(
+              outputRoot,
+              'plugins',
+              'ask-me',
+              platform,
+              'skills',
+              skillName,
+              'agents',
+              'openai.yaml',
+            ),
+            'utf8',
+          ),
+        })),
       ),
-      fs.readFile(
-        path.join(outputRoot, 'plugins', 'ask-me', 'claude', 'skills', 'ask-me', 'SKILL.md'),
-        'utf8',
-      ),
-      fs.readFile(
-        path.join(
-          outputRoot,
-          'plugins',
-          'ask-me',
-          'codex',
-          'skills',
-          'ask-me',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
-    ]);
-    for (const skill of [askMeCodexSkill, askMeClaudeSkill]) {
-      expect(skill).toContain('不得创建、修改或删除文件');
-      expect(skill).toContain('有依赖关系时，一次只问最关键的一题');
-      expect(skill).toContain('彼此独立时，一轮最多问三题');
+    );
+    for (const { skillName, platform, skill, openaiYaml } of askMeSkills) {
+      expect(skill).toContain('互相独立时每轮最多三题');
       expect(skill).not.toMatch(/^disable-model-invocation:\s*true$/m);
+      if (platform === 'codex') {
+        expect(skill).toContain('使用 `request_user_input`');
+        expect(skill).not.toContain('AskUserQuestion');
+      } else {
+        expect(skill).toContain('使用 `AskUserQuestion`');
+        expect(skill).not.toContain('request_user_input');
+      }
+      expect(openaiYaml).toContain(`default_prompt: "使用 $${skillName}：`);
+      expect(openaiYaml).toContain('allow_implicit_invocation: true');
     }
-    expect(askMeCodexSkill).toContain('优先使用 `request_user_input`');
-    expect(askMeCodexSkill).not.toContain('AskUserQuestion');
-    expect(askMeClaudeSkill).toContain('优先使用 `AskUserQuestion`');
-    expect(askMeClaudeSkill).not.toContain('request_user_input');
-    expect(askMeOpenaiYaml).toContain('default_prompt: "使用 $ask-me：');
-    expect(askMeOpenaiYaml).toContain('allow_implicit_invocation: true');
+    await expect(
+      fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', 'codex', 'skills', 'ask-me')),
+    ).resolves.toBe(false);
     await Promise.all([
       path.join(
         outputRoot,

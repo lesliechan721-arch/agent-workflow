@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
+const pluginVersion = '0.2.0';
+const qualityGate = '开始非平凡实施前，先检查现有上下文。若仍有必须由用户决定、且会实质改变行为、接口或数据、兼容迁移、安全合规或验收的阻塞项，使用 `requirements-clarifier`；可查事实、可逆实现细节和已授权默认不阻塞。当前任务若是形成或压力测试计划、想法、方案或重大决策，使用 `decision-grill`。';
+const skillNames = ['requirements-clarifier', 'decision-grill'];
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -23,7 +26,7 @@ async function resolveContext() {
   const context = await readJson(process.env.AW_PLUGIN_CONTEXT);
   assert.equal(context.event, 'test');
   assert.equal(context.plugin.name, 'ask-me');
-  assert.equal(context.plugin.version, '0.1.0');
+  assert.equal(context.plugin.version, pluginVersion);
   assert.ok(['codex', 'claude'].includes(context.platform));
   return {
     sourceRoot: context.sourceRoot,
@@ -32,42 +35,127 @@ async function resolveContext() {
   };
 }
 
-function assertCoreContract(skill) {
+function yamlQuotedValue(yaml, key) {
+  const match = yaml.match(new RegExp(`^\\s*${key}:\\s*"([^"]*)"$`, 'm'));
+  assert.ok(match, `missing ${key}`);
+  return match[1];
+}
+
+function assertOpenAiMetadata(openaiYaml, skillName) {
+  const shortDescription = yamlQuotedValue(openaiYaml, 'short_description');
+  const defaultPrompt = yamlQuotedValue(openaiYaml, 'default_prompt');
+  const shortDescriptionLength = Array.from(shortDescription).length;
+
+  assert.equal(shortDescriptionLength >= 25, true);
+  assert.equal(shortDescriptionLength <= 64, true);
+  assert.match(defaultPrompt, new RegExp(`\\$${skillName}`));
+  assert.match(openaiYaml, /^policy:\n  allow_implicit_invocation: true$/m);
+}
+
+function assertSharedSkillContract(skill, skillName) {
   assert.equal(skill.includes('[TODO:'), false);
-  assert.match(skill, /隐式调用.*显著影响目标、范围、行为、接口、数据、兼容性、约束、验收或可行性/s);
-  assert.match(skill, /显式调用.*隐藏假设压力测试/s);
-  assert.match(skill, /不得创建、修改或删除文件/);
-  assert.match(skill, /不得制作原型/);
-  assert.match(skill, /不向用户询问能够自行查明的事实/);
-  assert.match(skill, /当前“决策前沿”/);
-  assert.match(skill, /有依赖关系时，一次只问最关键的一题/);
-  assert.match(skill, /彼此独立时，一轮最多问三题/);
-  assert.match(skill, /没有固定的总问题数/);
-  assert.match(
-    skill,
-    /优先使用 (?:\{\{questionTool\}\}|`request_user_input`|`AskUserQuestion`)/,
+  assert.match(skill, new RegExp(`^name: ${skillName}$`, 'm'));
+  assert.match(skill, /^description: .+何时使用|^description: .+时使用/m);
+  assert.match(skill, /先只读检查/);
+  assert.match(skill, /自行查明可发现|自行查明已经给出或能够发现/);
+  assert.match(skill, /互相独立时每轮最多三题/);
+  assert.match(skill, /适合单选时使用 \{\{questionTool\}\}/);
+  assert.match(skill, /待验证/);
+  assert.match(skill, /交还外层/);
+  assert.equal(skill.includes('request_user_input'), false);
+  assert.equal(skill.includes('AskUserQuestion'), false);
+  assert.doesNotMatch(skill, /^user-invocable:\s*false$/m);
+  assert.doesNotMatch(skill, /^disable-model-invocation:\s*true$/m);
+}
+
+function assertRequirementsClarifierContract(skill) {
+  assertSharedSkillContract(skill, 'requirements-clarifier');
+  assert.match(skill, /让具体任务可以安全继续，而不是重新设计它/);
+  assert.match(skill, /决策属于用户，而非内部、可逆的实现选择/);
+  assert.match(skill, /用户尚未决定或委托，也不存在安全默认值/);
+  assert.match(skill, /当前任务若是在形成或挑战计划、想法或方案，改用 `decision-grill`/);
+  assert.match(skill, /已确认 \/ 已委托 \/ 待验证 \/ 未解决/);
+}
+
+function assertDecisionGrillContract(skill) {
+  assertSharedSkillContract(skill, 'decision-grill');
+  assert.match(skill, /提高计划或决策的质量；先暴露重大分支，再收敛/);
+  assert.match(skill, /主要替代方案，包括维持现状或不做/);
+  assert.match(skill, /失败、降级、恢复、迁移与回滚/);
+  assert.match(skill, /不追求穷举/);
+  assert.match(skill, /决定 \/ 关键取舍与假设 \/ 待验证 \/ 未解决/);
+}
+
+function assertTriggerCorpus(document, skillName) {
+  const { cases } = document;
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, skillName);
+  assert.equal(cases.length, 20);
+  assert.equal(new Set(cases.map((entry) => entry.id)).size, 20);
+  assert.equal(cases.every((entry) => /^[a-z0-9][a-z0-9_]*$/.test(entry.id)), true);
+  assert.equal(cases.filter((entry) => entry.split === 'train').length, 10);
+  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 10);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
+  assert.equal(
+    cases.filter((entry) => entry.split === 'train' && entry.should_load_skill).length,
+    5,
   );
-  assert.match(skill, /两个或三个互斥且有效的单选选项/);
-  assert.match(skill, /仓库证据、明确成本或通行约束/);
-  assert.match(skill, /不静默改写用户意图/);
-  assert.match(skill, /用户表示不知道、要求停止或不愿继续时/);
-  assert.match(skill, /不得声称需求已经稳定/);
-  assert.match(skill, /不要求固定摘要、再次确认或建议下一步/);
-  assert.match(skill, /后续行为由外层请求和适用指令决定/);
+  assert.equal(
+    cases.filter((entry) => entry.split === 'validation' && entry.should_load_skill).length,
+    5,
+  );
+  assert.equal(cases.every((entry) => entry.use_project_rules === true), true);
+  assert.equal(
+    cases.every((entry) => typeof entry.rationale === 'string' && entry.rationale.length > 0),
+    true,
+  );
+}
+
+function assertBehaviorCorpus(document, skillName, expectedIds) {
+  assert.equal(document.skill_name, skillName);
+  assert.deepEqual(document.evals.map((entry) => entry.id), expectedIds);
+
+  for (const entry of document.evals) {
+    assert.match(entry.prompt, new RegExp(`\\$${skillName}`));
+    assert.equal(Array.isArray(entry.scripted_replies), true);
+    assert.equal(typeof entry.expected_output, 'string');
+    assert.equal(entry.expected_output.length > 0, true);
+    assert.deepEqual(entry.files, []);
+    assert.deepEqual(entry.review.platforms, ['codex', 'claude']);
+    assert.equal(entry.review.clean_session, true);
+    assert.equal(entry.review.workspace_unchanged, true);
+    assert.equal(entry.review.checks.length >= 3, true);
+
+    for (const reply of entry.scripted_replies) {
+      if (reply.expected_question_count !== undefined) {
+        assert.equal(Number.isInteger(reply.expected_question_count), true);
+        assert.equal(reply.expected_question_count >= 0, true);
+      }
+      assert.equal(Array.isArray(reply.answers_by_index), true);
+      assert.equal(reply.answers_by_index.every((answer) => typeof answer === 'string'), true);
+      assert.equal(typeof reply.unexpected_question_answer, 'string');
+      assert.equal(reply.unexpected_question_answer.length > 0, true);
+    }
+  }
 }
 
 const context = await resolveContext();
 
-test('manifest declares a dual-platform configurable automatic skill', async () => {
+test('manifest declares two automatic skills and the global quality gate', async () => {
   const manifest = await readJson(
     path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
   );
 
   assert.equal(manifest.name, 'ask-me');
-  assert.equal(manifest.version, '0.1.0');
+  assert.equal(manifest.version, pluginVersion);
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.skillTriggers, {
-    'ask-me': {
+    'requirements-clarifier': {
+      defaultTrigger: 'auto',
+      allowDynamicTrigger: true,
+    },
+    'decision-grill': {
       defaultTrigger: 'auto',
       allowDynamicTrigger: true,
     },
@@ -81,7 +169,17 @@ test('manifest declares a dual-platform configurable automatic skill', async () 
     },
   });
   assert.equal('products' in manifest.marketplace.policy, false);
-  assert.deepEqual(manifest.interface.capabilities, ['Skills']);
+  assert.equal(manifest.interface.displayName, 'Ask Me');
+  assert.deepEqual(manifest.interface.capabilities, ['Skills', 'Instructions']);
+  assert.deepEqual(manifest.extensions, {
+    instructions: [
+      {
+        name: 'quality-gate',
+        title: '需求与决策质量门禁',
+        content: qualityGate,
+      },
+    ],
+  });
   assert.deepEqual(manifest.buildConfig, {
     templates: {
       include: ['skills/**/*.md'],
@@ -94,185 +192,219 @@ test('manifest declares a dual-platform configurable automatic skill', async () 
     },
   });
   assert.deepEqual(manifest.scripts.tests.node, ['./scripts/contract.test.mjs']);
-  assert.equal('extensions' in manifest, false);
   assert.equal('dependencies' in manifest, false);
   assert.equal('mcpServers' in manifest, false);
   assert.equal('apps' in manifest, false);
   assert.equal('slashCommands' in manifest, false);
+  assert.equal('artifacts' in manifest, false);
 });
 
-test('source skill and Codex metadata preserve the clarification-only contract', async () => {
-  const [skill, openaiYaml] = await Promise.all([
-    readFile(path.join(context.sourceRoot, 'skills', 'ask-me', 'SKILL.md'), 'utf8'),
-    readFile(
-      path.join(context.sourceRoot, 'skills', 'ask-me', 'agents', 'openai.yaml'),
-      'utf8',
+test('source package contains only the two redesigned skills', async () => {
+  const skillDirectories = (await readdir(path.join(context.sourceRoot, 'skills'))).sort();
+  assert.deepEqual(skillDirectories, [...skillNames].sort());
+
+  const [requirementsSkill, requirementsOpenAi, decisionSkill, decisionOpenAi] =
+    await Promise.all([
+      readFile(
+        path.join(context.sourceRoot, 'skills', 'requirements-clarifier', 'SKILL.md'),
+        'utf8',
+      ),
+      readFile(
+        path.join(
+          context.sourceRoot,
+          'skills',
+          'requirements-clarifier',
+          'agents',
+          'openai.yaml',
+        ),
+        'utf8',
+      ),
+      readFile(
+        path.join(context.sourceRoot, 'skills', 'decision-grill', 'SKILL.md'),
+        'utf8',
+      ),
+      readFile(
+        path.join(
+          context.sourceRoot,
+          'skills',
+          'decision-grill',
+          'agents',
+          'openai.yaml',
+        ),
+        'utf8',
+      ),
+    ]);
+
+  assertRequirementsClarifierContract(requirementsSkill);
+  assertDecisionGrillContract(decisionSkill);
+  assertOpenAiMetadata(requirementsOpenAi, 'requirements-clarifier');
+  assertOpenAiMetadata(decisionOpenAi, 'decision-grill');
+});
+
+test('trigger corpora preserve balanced adjacent-skill coverage and load project rules', async () => {
+  const [requirements, decision] = await Promise.all([
+    readJson(
+      path.join(context.sourceRoot, 'evals', 'requirements-clarifier-trigger-cases.json'),
     ),
+    readJson(path.join(context.sourceRoot, 'evals', 'decision-grill-trigger-cases.json')),
   ]);
 
-  assertCoreContract(skill);
-  assert.match(skill, /^name: ask-me$/m);
-  assert.match(skill, /^description: .*不要自动使用。"$/m);
-  assert.match(skill, /优先使用 \{\{questionTool\}\}/);
-  assert.equal(skill.includes('request_user_input'), false);
-  assert.equal(skill.includes('AskUserQuestion'), false);
-  assert.doesNotMatch(skill, /^user-invocable:\s*false$/m);
-  assert.doesNotMatch(skill, /^disable-model-invocation:\s*true$/m);
-  assert.match(openaiYaml, /default_prompt: "使用 \$ask-me：/);
-  assert.match(openaiYaml, /allow_implicit_invocation: true/);
-});
+  assertTriggerCorpus(requirements, 'requirements-clarifier');
+  assertTriggerCorpus(decision, 'decision-grill');
 
-test('trigger corpus is balanced and split for author evaluation', async () => {
-  const document = await readJson(
-    path.join(context.sourceRoot, 'evals', 'trigger-cases.json'),
-  );
-  const { cases } = document;
-
-  assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'ask-me');
-  assert.equal(cases.length, 20);
-  assert.equal(new Set(cases.map((entry) => entry.id)).size, 20);
-  assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
-  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
   assert.equal(
-    cases.filter((entry) => entry.split === 'train' && entry.should_load_skill).length,
-    6,
+    requirements.cases.find((entry) => entry.id === 'n05_plan_scene').should_load_skill,
+    false,
   );
   assert.equal(
-    cases.filter((entry) => entry.split === 'validation' && entry.should_load_skill).length,
-    4,
-  );
-  assert.deepEqual(
-    new Set(cases.filter((entry) => entry.should_load_skill).flatMap((entry) => entry.tags)),
-    new Set(['ambiguous', 'conflict', 'infeasible', 'explicit']),
-  );
-  assert.deepEqual(
-    new Set(cases.filter((entry) => !entry.should_load_skill).flatMap((entry) => entry.tags)),
-    new Set(['complete-spec', 'fact-question', 'low-risk']),
-  );
-  assert.equal(
-    cases.filter((entry) => entry.tags.includes('explicit')).every(
-      (entry) => entry.query.includes('$ask-me') || entry.query.includes('/ask-me'),
-    ),
-    true,
+    decision.cases.find((entry) => entry.id === 'n01_implementation_blocker')
+      .should_load_skill,
+    false,
   );
 });
 
-test('trigger suite delegates execution to the central native driver', async () => {
+test('eval manifest delegates both skills to central trigger and conversation drivers', async () => {
   const manifest = await readJson(path.join(context.sourceRoot, 'evals', 'manifest.json'));
-  const trigger = manifest.suites.find((suite) => suite.id === 'trigger');
-  assert.deepEqual(trigger, {
-    id: 'trigger',
-    kind: 'trigger',
-    skill: 'ask-me',
-    cases: './evals/trigger-cases.json',
-    observeSpawnAgent: false,
-    isolation: 'standard',
-    strictNegativeSplits: ['validation'],
-    profiles: ['project-default'],
-    defaultRuns: 3,
-    releaseSplits: ['validation'],
-    requiredForRelease: true,
-    perRunTimeoutMs: 180000,
-  });
-});
 
-test('behavior corpus stays cross-platform while exposing structured Codex v1 replies', async () => {
-  const corpus = await readJson(path.join(context.sourceRoot, 'evals', 'evals.json'));
-
-  assert.equal(corpus.skill_name, 'ask-me');
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.plugin, 'ask-me');
+  assert.deepEqual(manifest.profiles, [
+    {
+      id: 'project-default',
+      scope: 'project',
+      config: {},
+      triggerPreference: 'default',
+      runModel: true,
+      requiredForRelease: true,
+    },
+    {
+      id: 'user-default',
+      scope: 'user',
+      config: {},
+      triggerPreference: 'default',
+      runModel: false,
+      requiredForRelease: true,
+    },
+  ]);
   assert.deepEqual(
-    corpus.evals.map((entry) => entry.id),
+    manifest.suites.map((suite) => [suite.id, suite.kind, suite.skill]),
     [
-      'inspect_then_adapt',
-      'challenge_infeasible_requirement',
-      'preserve_unknowns_on_stop',
-      'explicit_complete_spec_no_question',
+      ['requirements-clarifier-trigger', 'trigger', 'requirements-clarifier'],
+      ['decision-grill-trigger', 'trigger', 'decision-grill'],
+      ['requirements-clarifier-behavior', 'conversation', 'requirements-clarifier'],
+      ['decision-grill-behavior', 'conversation', 'decision-grill'],
     ],
   );
-  for (const entry of corpus.evals) {
-    assert.ok(entry.prompt.length > 0);
-    assert.ok(entry.expected_output.length > 0);
-    assert.deepEqual(entry.files, []);
-    assert.equal(Array.isArray(entry.scripted_replies), true);
-    for (const reply of entry.scripted_replies) {
-      assert.equal(Number.isInteger(reply.expected_question_count), true);
-      assert.equal(reply.expected_question_count >= 0, true);
-      assert.equal(Array.isArray(reply.answers_by_index), true);
-      assert.equal(reply.answers_by_index.every((answer) => typeof answer === 'string'), true);
-      assert.equal(typeof reply.unexpected_question_answer, 'string');
-      assert.ok(reply.unexpected_question_answer.length > 0);
+
+  for (const suite of manifest.suites) {
+    assert.deepEqual(suite.profiles, ['project-default']);
+    assert.equal(suite.requiredForRelease, true);
+    if (suite.kind === 'trigger') {
+      assert.equal(suite.defaultRuns, 3);
+      assert.deepEqual(suite.releaseSplits, ['validation']);
+      assert.deepEqual(suite.strictNegativeSplits, ['validation']);
+    } else {
+      assert.equal(suite.defaultRuns, 1);
+      assert.deepEqual(suite.releaseSplits, []);
     }
-    assert.deepEqual(entry.review.platforms, ['codex', 'claude']);
-    assert.equal(entry.review.clean_session, true);
-    assert.equal(entry.review.workspace_unchanged, true);
-    assert.ok(entry.review.checks.length >= 4);
   }
-
-  const inspectThenAdapt = corpus.evals.find((entry) => entry.id === 'inspect_then_adapt');
-  assert.equal(inspectThenAdapt.scripted_replies.length, 2);
-  assert.deepEqual(
-    inspectThenAdapt.scripted_replies.map((reply) => reply.expected_question_count),
-    [1, 1],
-  );
-  assert.match(inspectThenAdapt.expected_output, /第二轮得到答复后结束澄清/);
-
-  const explicitComplete = corpus.evals.find(
-    (entry) => entry.id === 'explicit_complete_spec_no_question',
-  );
-  assert.match(explicitComplete.prompt, /^\$ask-me /);
-  assert.deepEqual(explicitComplete.scripted_replies, []);
-  assert.match(explicitComplete.expected_output, /不调用提问工具/);
-
-  const readme = await readFile(
-    path.join(context.sourceRoot, 'evals', 'README.md'),
-    'utf8',
-  );
-  assert.match(readme, /不能替代这里的 Codex 行为评测/);
-  assert.match(readme, /pnpm plugin:eval ask-me --materialize-only/);
-  assert.match(readme, /全新的 Codex app-server 会话/);
-  assert.match(readme, /Claude 模型行为暂不在 v1 范围内/);
 });
 
-test('prepared bundle exposes automatic and manual entry points on both platforms', async () => {
+test('behavior corpora preserve all redesigned assertions in executable conversation shape', async () => {
+  const [requirements, decision] = await Promise.all([
+    readJson(path.join(context.sourceRoot, 'evals', 'requirements-clarifier-evals.json')),
+    readJson(path.join(context.sourceRoot, 'evals', 'decision-grill-evals.json')),
+  ]);
+
+  assertBehaviorCorpus(requirements, 'requirements-clarifier', [
+    'discover-before-ask',
+    'delegated-defaults',
+    'dependent-frontier',
+    'engineering-validation',
+    'conflict',
+    'explicit-no-gap',
+    'partial-answer',
+    'no-side-effects',
+    'handoff',
+  ]);
+  assertBehaviorCorpus(decision, 'decision-grill', [
+    'frame-without-redundancy',
+    'alternatives',
+    'challenge-assumption',
+    'decision-frontier',
+    'recommendation-calibration',
+    'avoid-exhaustion',
+    'user-stops',
+    'decision-brief',
+    'reuse-upstream-ledger',
+    'no-side-effects',
+  ]);
+
+  assert.equal(
+    requirements.evals.find((entry) => entry.id === 'partial-answer').scripted_replies.length,
+    2,
+  );
+  assert.equal(
+    decision.evals.find((entry) => entry.id === 'challenge-assumption')
+      .scripted_replies.length,
+    0,
+  );
+
+  const readme = await readFile(path.join(context.sourceRoot, 'evals', 'README.md'), 'utf8');
+  assert.match(readme, /use_project_rules: true/);
+  assert.match(readme, /requirements-clarifier-evals\.json/);
+  assert.match(readme, /decision-grill-evals\.json/);
+  assert.match(readme, /Claude.*不能把 Codex/s);
+});
+
+test('prepared bundle renders the platform question tool for both skills', async () => {
   if (!context.platform) {
     return;
   }
 
-  const skillRoot = path.join(
-    context.bundleRoot,
-    context.platform,
-    'skills',
-    'ask-me',
+  const platformManifest = await readJson(
+    path.join(context.bundleRoot, `.${context.platform}-plugin`, 'plugin.json'),
   );
-  const [platformManifest, skill, openaiYaml] = await Promise.all([
-    readJson(
-      path.join(
-        context.bundleRoot,
-        `.${context.platform}-plugin`,
-        'plugin.json',
-      ),
-    ),
-    readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'),
-    readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8'),
-  ]);
-
   assert.equal(platformManifest.name, 'ask-me');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
-  assertCoreContract(skill);
+
   const expectedTool = context.platform === 'codex'
     ? '`request_user_input`'
     : '`AskUserQuestion`';
   const otherTool = context.platform === 'codex'
     ? '`AskUserQuestion`'
     : '`request_user_input`';
-  assert.match(skill, new RegExp(`优先使用 ${expectedTool}`));
-  assert.equal(skill.includes(otherTool), false);
-  assert.equal(skill.includes('{{questionTool}}'), false);
-  assert.doesNotMatch(skill, /^user-invocable:\s*false$/m);
-  assert.doesNotMatch(skill, /^disable-model-invocation:\s*true$/m);
-  assert.match(openaiYaml, /default_prompt: "使用 \$ask-me：/);
-  assert.match(openaiYaml, /allow_implicit_invocation: true/);
+
+  for (const skillName of skillNames) {
+    const skillRoot = path.join(
+      context.bundleRoot,
+      context.platform,
+      'skills',
+      skillName,
+    );
+    const [skill, openaiYaml] = await Promise.all([
+      readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'),
+      readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8'),
+    ]);
+
+    if (skillName === 'requirements-clarifier') {
+      assertRequirementsClarifierContract(
+        skill.replace(expectedTool, '{{questionTool}}'),
+      );
+    } else {
+      assertDecisionGrillContract(skill.replace(expectedTool, '{{questionTool}}'));
+    }
+    assert.equal(skill.includes(expectedTool), true);
+    assert.equal(skill.includes(otherTool), false);
+    assert.equal(skill.includes('{{questionTool}}'), false);
+    assertOpenAiMetadata(openaiYaml, skillName);
+  }
+
+  await assert.rejects(
+    readFile(
+      path.join(context.bundleRoot, context.platform, 'skills', 'ask-me', 'SKILL.md'),
+      'utf8',
+    ),
+    { code: 'ENOENT' },
+  );
 });
