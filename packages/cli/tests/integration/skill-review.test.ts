@@ -843,7 +843,7 @@ describe('skill-review author tools', () => {
       'assets/scorecard-template.json': 'd74d149b70e2fc361aa23dd5b56f3fbd5cec81f3d0c64f8b2ae43d9e6338cc3b',
       'evals/behavior_cases.json': '860360e3ddeaa55d8ffac1497d4876a1f964fb0d30f29c793e35568f0bbb3993',
       'evals/scoring_cases.json': 'a35d91811b07d235a315a5a79ca18009aa99cd370f0299fdcd2f24038681a40f',
-      'evals/trigger-cases.json': '8ea01c9f6f876e355dc2fa29b67db9202e63c811f9665abb4e1e7ec711d6963e',
+      'evals/trigger-cases.json': 'aff2212cc2b6f73f9203d5193cc5be6e7a20a15c9180096feeca2fee35588b94',
       'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
       'references/delta-review.md': '664b18af9bb388a44f009d099e4790572e1103aafa6830efbd41365fffd9d54e',
       'references/review-dimensions.md': '9665063f4e22ef0a365bac3ff3d578275b3236db08851b6a244f442e346931d7',
@@ -878,7 +878,18 @@ describe('skill-review author tools', () => {
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
       .replace(
-        'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals、相关角色配置或当前 agent-workflows 项目的插件 Skill 时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
+        [
+          'description: >-',
+          '  当用户的主要目标是评估已有的静态或 agent-workflows 插件 Agent Skill、',
+          '  草稿或修订版的质量、风险或发布就绪性时使用；适用于快速、完整或发布',
+          '  审核、差量复核、质量比较、触发边界诊断和多维评分。即使只提供',
+          '  SKILL.md、一个 Skill 组件、执行 trace 或 eval 结果，也仅在用户需要',
+          '  finding、评分、风险、发布门禁、问题关闭情况或最小改进集时使用。若',
+          '  主要目标仅是从零创建、直接改写或修复 Skill、实现脚本或 eval、运行',
+          '  Skill 或脚本、做语法或解析检查、查询规范、解释流程，或普通代码/文档',
+          '  review，不要使用。',
+          '',
+        ].join('\n'),
         'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals 或相关角色配置时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
       )
       .replace(

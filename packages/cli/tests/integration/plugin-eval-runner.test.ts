@@ -271,7 +271,7 @@ describe('plugin eval runner', () => {
       'ask-me',
       '--no-inherit-codex-config',
       '--suite',
-      'behavior',
+      'requirements-clarifier-behavior',
       '--split',
       'validation',
       '--output-dir',
@@ -284,7 +284,9 @@ describe('plugin eval runner', () => {
     });
 
     expect(exitCode).toBe(1);
-    expect(stderr).toContain('Conversation suite "behavior" does not support --split.');
+    expect(stderr).toContain(
+      'Conversation suite "requirements-clarifier-behavior" does not support --split.',
+    );
   });
 
   it.runIf(process.platform !== 'win32')(
@@ -362,16 +364,16 @@ describe('plugin eval runner', () => {
         '[plugins."do-not-copy@local"]',
         'enabled = true',
       ].join('\n'), 'utf8');
-      const codexBin = await writeProviderCheckingFakeCodex(root, 'ask-me');
+      const codexBin = await writeProviderCheckingFakeCodex(root, 'requirements-clarifier');
       let stdout = '';
       let stderr = '';
 
       const exitCode = await runPluginEvals([
         'ask-me',
         '--suite',
-        'trigger',
+        'requirements-clarifier-trigger',
         '--case',
-        'explicit_hidden_assumptions',
+        'p06_explicit_complete',
         '--runs',
         '1',
         '--codex-bin',
@@ -407,7 +409,15 @@ describe('plugin eval runner', () => {
         await fs.readFile(path.join(outputRoot, 'ask-me', 'evaluation.json'), 'utf8'),
       ).not.toContain('fixture-secret');
       expect(
-        await fs.readFile(path.join(outputRoot, 'ask-me', 'reports', 'trigger-all-project-default.json'), 'utf8'),
+        await fs.readFile(
+          path.join(
+            outputRoot,
+            'ask-me',
+            'reports',
+            'requirements-clarifier-trigger-all-project-default.json',
+          ),
+          'utf8',
+        ),
       ).not.toContain('https://example.invalid/v1');
     },
   );
