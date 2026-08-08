@@ -442,6 +442,9 @@ export async function listCodexNativeEvidence(
   try {
     const cacheEntries = await fs.readdir(cacheRootPath, { withFileTypes: true });
     for (const entry of cacheEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
       pluginNames.add(entry.name);
     }
   } catch {

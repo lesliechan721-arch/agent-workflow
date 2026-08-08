@@ -1219,6 +1219,22 @@ describe('managed plugin discovery', () => {
     });
   });
 
+  it('ignores non-directory entries in the Codex marketplace cache root', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const cacheRoot = path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw');
+    await fs.outputFile(path.join(cacheRoot, '.DS_Store'), 'macOS metadata\n', 'utf8');
+
+    const discovered = await discoverManagedPluginNames({
+      cwd: repoRoot,
+      scopeFilter: 'user',
+      platformFilter: 'codex',
+      includeCurrentCatalog: false,
+      env,
+    });
+
+    expect(discovered).toEqual([]);
+  });
+
   it('keeps shared-ref-only, cache-only, and breadcrumb-only Codex user targets out of upgrade-ready candidates', async () => {
     const { repoRoot, env } = await makeWorkspace();
     await writeInstalledLedger({

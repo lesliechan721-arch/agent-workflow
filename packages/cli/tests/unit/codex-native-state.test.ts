@@ -124,6 +124,14 @@ describe('codex-native-state', () => {
     ]);
   });
 
+  it('ignores non-directory entries in the marketplace cache root', async () => {
+    const env = await makeEnv();
+    const cacheRoot = path.join(env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw');
+    await fs.outputFile(path.join(cacheRoot, '.DS_Store'), 'macOS metadata\n', 'utf8');
+
+    await expect(listCodexNativeEvidence(env)).resolves.toEqual([]);
+  });
+
   it('detects installed-manifest residue as native evidence', async () => {
     const env = await makeEnv();
     const installedManifestPath = getInstalledManifestPath(env, 'manifest-only');
