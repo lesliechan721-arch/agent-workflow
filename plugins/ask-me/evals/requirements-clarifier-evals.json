@@ -1,0 +1,215 @@
+{
+  "skill_name": "requirements-clarifier",
+  "evals": [
+    {
+      "id": "discover-before-ask",
+      "prompt": "$requirements-clarifier 请检查这个实施任务，不要修改文件：实现 API 分页；仓库文档已经规定 page_size 最大为 100，但没有规定默认排序。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "默认按 created_at 和 id 倒序。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "先读取相关文档，复用已经规定的 page_size 上限；只将会改变公开分页行为的默认排序放入用户决策前沿，收到答案后结束澄清。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "先读取相关文档",
+          "不询问已规定的 page_size 上限",
+          "只在默认排序会显著改变外部行为且必须由用户决定时提问"
+        ]
+      }
+    },
+    {
+      "id": "delegated-defaults",
+      "prompt": "$requirements-clarifier 请澄清这个实施任务，不要修改文件：实现批量导入；内部实现你自己选，公开错误语义必须让我决定。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "允许部分成功；逐行返回成功或失败状态，失败行不回滚成功行。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "不询问内部实现偏好，只澄清批量导入的公开错误语义；记录用户已经委托内部实现选择，得到回答后交还控制。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不询问内部实现偏好",
+          "只将公开错误语义放入用户决策前沿",
+          "记录内部实现的委托边界"
+        ]
+      }
+    },
+    {
+      "id": "dependent-frontier",
+      "prompt": "$requirements-clarifier 请澄清这个访问控制实施任务，不要修改文件：访客是否允许访问决定了后续权限模型和审计规则。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "访客不允许访问，因此不需要定义访客权限和访客审计规则。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "先只询问访客访问这个上游决定，不提前询问依赖它的权限和审计细节；收到回答后重新计算前沿，并因下游分支已被剪除而结束。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "先只询问访客访问决策",
+          "不提前询问依赖该答案的权限细节",
+          "回答后重新计算前沿"
+        ]
+      }
+    },
+    {
+      "id": "engineering-validation",
+      "prompt": "$requirements-clarifier 检查这个实施任务，不要修改文件，也不要向我询问技术可行性：实现后必须支持 10 万 QPS，但现有资料没有性能数据。",
+      "scripted_replies": [],
+      "expected_output": "把 10 万 QPS 的性能承诺标为需要压测或外部证据确认的待验证项，不让用户用偏好判断工程可行性，也不在 Skill 内运行压测或制作原型。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不让用户凭偏好确认技术可行性",
+          "将性能承诺记录为待验证",
+          "不在 skill 内运行压测或制作原型"
+        ]
+      }
+    },
+    {
+      "id": "conflict",
+      "prompt": "$requirements-clarifier 请澄清这个迁移任务，不要修改文件：要求零停机迁移，同时禁止双写、兼容层和灰度发布。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "零停机是硬目标；可以使用兼容层和灰度发布，但仍禁止双写。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "明确指出零停机目标与全部迁移机制禁令之间的具体冲突，提出最小取舍方向并让用户选择，不静默放宽任何约束。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "指出具体约束冲突",
+          "给出最小可行取舍方向",
+          "不静默放宽要求"
+        ]
+      }
+    },
+    {
+      "id": "explicit-no-gap",
+      "prompt": "$requirements-clarifier 权威规范已覆盖行为、接口、数据、迁移、错误和验收。请扫描是否仍有必须由我决定的实施阻塞项；没有就直接结束，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "执行一次实施阻塞扫描；没有重大缺口时不调用提问工具、不制造问题，说明未发现实施阻塞项并交还控制。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "执行一次扫描",
+          "没有重大缺口时不制造问题",
+          "输出未发现实施阻塞项并交还控制"
+        ]
+      }
+    },
+    {
+      "id": "partial-answer",
+      "prompt": "$requirements-clarifier 请澄清导出功能的三个独立决定，不要修改文件：文件格式、时间时区和敏感字段脱敏规则都尚未决定。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 3,
+          "answers_by_index": [
+            "使用 CSV。",
+            "所有时间使用 UTC。",
+            "脱敏规则暂不回答。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "邮箱保留域名并隐藏本地部分，手机号只保留最后四位。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "接受首轮已经回答的格式和时区，不要求重答；只保留未回答的脱敏规则并重新计算前沿，收到第二轮答案后结束。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "接受已回答部分",
+          "不要求重答整轮",
+          "仅保留未回答问题并重新计算前沿"
+        ]
+      }
+    },
+    {
+      "id": "no-side-effects",
+      "prompt": "$requirements-clarifier 检查数据库迁移需求，不要修改文件：迁移步骤已确定，但旧版本客户端的兼容窗口还没定。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "保留两个正式版本的兼容窗口。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
+        }
+      ],
+      "expected_output": "只通过读取和搜索检查迁移事实并澄清兼容窗口；不运行任何构建、测试、安装、生成、格式化、迁移或基准命令，不改变工作区。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "只使用合理的只读读取和搜索",
+          "不运行构建、测试、安装、生成、格式化、迁移或基准命令",
+          "不创建或修改文件"
+        ]
+      }
+    },
+    {
+      "id": "handoff",
+      "prompt": "$requirements-clarifier 请停止继续提问并交接当前状态，不要修改文件：数据保留期已确认是 90 天；内部队列实现已委托给你；10 万 QPS 需要压测；兼容窗口仍未解决。",
+      "scripted_replies": [],
+      "expected_output": "按需区分已确认、已委托、待验证和未解决事项，保留兼容窗口风险；不声称需求已经稳定，也不开始规划或实施。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "区分已确认、已委托、待验证和未解决风险",
+          "不声称需求稳定",
+          "不开始规划或实现"
+        ]
+      }
+    }
+  ]
+}

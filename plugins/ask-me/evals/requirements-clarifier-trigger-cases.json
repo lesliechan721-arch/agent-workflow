@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "skill": "requirements-clarifier",
+  "cases": [
+    {
+      "id": "p01_auth_semantics",
+      "query": "给后台加一个安全登录功能，直接开始做。",
+      "should_load_skill": true,
+      "rationale": "认证方式、会话和安全边界会显著影响实现，且需要用户决定。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p02_multitenancy",
+      "query": "把现有系统改成多租户，不能影响老客户。",
+      "should_load_skill": true,
+      "rationale": "隔离、迁移和兼容承诺存在重大实施阻塞。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p03_delete_api",
+      "query": "实现用户删除接口，接口格式已经定了，但删除后能否恢复还没想好。",
+      "should_load_skill": true,
+      "rationale": "删除语义和数据生命周期是重大用户决策。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p04_migration_window",
+      "query": "按已批准方案迁移数据库，下周上线；停机窗口和失败回滚由我决定。",
+      "should_load_skill": true,
+      "rationale": "存在明确保留给用户的重大实施决策。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p05_conflicting_implementation",
+      "query": "实现全文搜索，不能加索引或依赖，P99 必须低于 10ms。",
+      "should_load_skill": true,
+      "rationale": "约束可能冲突，需要用户作最小可行取舍。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p06_explicit_complete",
+      "query": "$requirements-clarifier 按 spec.md 实现，帮我先检查是否还有必须由我决定的阻塞项。",
+      "should_load_skill": true,
+      "rationale": "显式调用必须执行扫描，即使最终可能没有问题。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p07_public_errors",
+      "query": "实现批量导入；失败时是部分成功还是整批回滚必须由我决定。",
+      "should_load_skill": true,
+      "rationale": "公开失败语义会改变数据和用户行为。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p08_retention",
+      "query": "落地用户行为日志，数据字段已经确定，但保留期限和删除方式还没定。",
+      "should_load_skill": true,
+      "rationale": "数据生命周期和隐私边界是重大用户决策。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p09_payment_retry",
+      "query": "按现有接口实现支付自动重试，重试次数、终止状态和用户提示还没决定。",
+      "should_load_skill": true,
+      "rationale": "支付行为和幂等风险需要用户确认。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p10_rollout_owner",
+      "query": "实现功能开关发布；生产异常后自动回滚还是人工确认由业务负责人决定。",
+      "should_load_skill": true,
+      "rationale": "发布和恢复策略是重大实施决策。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n01_fact",
+      "query": "这个仓库当前使用什么数据库？",
+      "should_load_skill": false,
+      "rationale": "这是可发现事实。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n02_complete_spec",
+      "query": "严格按已批准的 spec.md 实现；接口、数据迁移、兼容行为和验收测试都以该文档为准。",
+      "should_load_skill": false,
+      "rationale": "没有可见的重大未决用户决策。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n03_delegated_defaults",
+      "query": "用合理默认完成这个内部工具，不要问普通偏好；只有凭据泄露或不可逆删除风险时再停。",
+      "should_load_skill": false,
+      "rationale": "用户已委托普通决策并定义升级边界。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n04_low_risk",
+      "query": "修正 README 里的两个拼写错误。",
+      "should_load_skill": false,
+      "rationale": "机械、局部、低风险。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n05_plan_scene",
+      "query": "帮我从零制定这个产品的团队协作方案，并挑战我的想法。",
+      "should_load_skill": false,
+      "rationale": "应由 decision-grill 处理。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n06_analysis_only",
+      "query": "解释当前登录流程并指出潜在问题，不要修改代码。",
+      "should_load_skill": false,
+      "rationale": "只读分析，不是实施门禁。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n07_decision_review",
+      "query": "比较三种定价策略并系统性挑战假设。",
+      "should_load_skill": false,
+      "rationale": "当前任务是重大决策压力测试，应使用 decision-grill。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n08_approved_adr",
+      "query": "按照 ADR-022 落地缓存迁移，严格保持公共行为；所有迁移步骤和回滚条件已批准。",
+      "should_load_skill": false,
+      "rationale": "权威决策和实施边界已明确。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n09_recommendation_only",
+      "query": "根据当前仓库比较两个内部日志库并给出推荐，不要实施。",
+      "should_load_skill": false,
+      "rationale": "这是分析和 agent 拥有的内部技术选择。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n10_bounded_bugfix",
+      "query": "修复 tests/parser_test.py 中确定可复现的失败，保持其余行为不变。",
+      "should_load_skill": false,
+      "rationale": "边界明确且不涉及产品语义。",
+      "split": "validation",
+      "use_project_rules": true
+    }
+  ]
+}

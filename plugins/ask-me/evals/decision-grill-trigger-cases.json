@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "skill": "decision-grill",
+  "cases": [
+    {
+      "id": "p01_product_idea",
+      "query": "我想做一个面向设计师的协作 SaaS，帮我把这个想法想清楚。",
+      "should_load_skill": true,
+      "rationale": "当前交付物是更可靠的产品决策。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p02_architecture_review",
+      "query": "审视这份微服务拆分方案，重点挑战隐含假设和失败路径。",
+      "should_load_skill": true,
+      "rationale": "需要系统性压力测试架构方案。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p03_build_buy",
+      "query": "我们应该自建搜索还是采购 SaaS？带我做完这个决定。",
+      "should_load_skill": true,
+      "rationale": "重大 build-vs-buy 决策。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p04_roadmap",
+      "query": "帮我制定未来两个季度的产品路线图，并拷问优先级依据。",
+      "should_load_skill": true,
+      "rationale": "计划和优先级本身是当前任务。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p05_migration_plan",
+      "query": "我们准备从单体迁到服务化，先把迁移方案和回滚策略想透。",
+      "should_load_skill": true,
+      "rationale": "需要形成并压力测试重大迁移方案。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "p06_existing_decision",
+      "query": "我已经决定用事件驱动架构，请检查这个决定依赖了哪些未经验证的假设。",
+      "should_load_skill": true,
+      "rationale": "需要挑战已作出的重大决定。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p07_workflow_composition",
+      "query": "在生成技术方案前，使用 decision-grill 和我梳理关键取舍。",
+      "should_load_skill": true,
+      "rationale": "工作流明确组合调用。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p08_pricing",
+      "query": "我们要从免费产品转成订阅制，帮我梳理定价方案、风险和反转条件。",
+      "should_load_skill": true,
+      "rationale": "重大商业计划和决策需要系统性审视。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p09_data_policy",
+      "query": "制定跨区域数据保留政策，先检查利益相关者、合规假设和失败场景。",
+      "should_load_skill": true,
+      "rationale": "高影响政策决策涉及多方取舍和假设。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p10_sunset_plan",
+      "query": "决定是否下线旧 API，并把迁移、退出和重新评估条件想透。",
+      "should_load_skill": true,
+      "rationale": "需要形成并压力测试重大退出决策。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n01_implementation_blocker",
+      "query": "按已有方案实现删除功能，但保留期必须由我决定。",
+      "should_load_skill": false,
+      "rationale": "应使用 requirements-clarifier。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n02_fact",
+      "query": "解释 ADR-014 为什么选择 PostgreSQL。",
+      "should_load_skill": false,
+      "rationale": "事实或已有决策解释。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n03_mechanical",
+      "query": "严格按批准规范添加这个字段并更新测试。",
+      "should_load_skill": false,
+      "rationale": "机械执行，没有计划压力测试需求。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n04_low_risk_choice",
+      "query": "这个内部 helper 叫 normalize 还是 canonicalize，你选一个。",
+      "should_load_skill": false,
+      "rationale": "低风险、已委托的内部选择。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n05_readonly_audit",
+      "query": "列出当前服务依赖的第三方 API。",
+      "should_load_skill": false,
+      "rationale": "可发现事实。",
+      "split": "train",
+      "use_project_rules": true
+    },
+    {
+      "id": "n06_small_clarification",
+      "query": "实现导出功能，唯一未决项是 CSV 还是 XLSX。",
+      "should_load_skill": false,
+      "rationale": "若格式是重大用户决策，应由 requirements-clarifier 最小澄清，而非系统性 grill。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n07_bounded_bugfix",
+      "query": "修复一个有确定复现和期望输出的解析器错误。",
+      "should_load_skill": false,
+      "rationale": "具体且边界明确的实施任务。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n08_current_state",
+      "query": "当前系统是否已经支持 IPv6？只给证据和结论。",
+      "should_load_skill": false,
+      "rationale": "事实核验而非决策访谈。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n09_format_document",
+      "query": "把这份已经批准的实施计划整理成 Markdown，不改变内容。",
+      "should_load_skill": false,
+      "rationale": "机械转换，不需要压力测试。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n10_apply_adr",
+      "query": "按 ADR-031 实现队列迁移；不要重新讨论已批准的架构决定。",
+      "should_load_skill": false,
+      "rationale": "用户要求执行既定决定。",
+      "split": "validation",
+      "use_project_rules": true
+    }
+  ]
+}

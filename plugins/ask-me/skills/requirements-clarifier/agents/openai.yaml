@@ -1,0 +1,6 @@
+interface:
+  display_name: "Requirements Clarifier"
+  short_description: "实施具体任务前，先查事实并澄清必须由用户决定的重大阻塞项"
+  default_prompt: "使用 $requirements-clarifier：检查当前任务是否仍有必须由我决定的重大实施阻塞项；先查事实，只问最小必要问题。"
+policy:
+  allow_implicit_invocation: true

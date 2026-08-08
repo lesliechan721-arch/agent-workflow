@@ -21,10 +21,10 @@
   ],
   "suites": [
     {
-      "id": "trigger",
+      "id": "requirements-clarifier-trigger",
       "kind": "trigger",
-      "skill": "ask-me",
-      "cases": "./evals/trigger-cases.json",
+      "skill": "requirements-clarifier",
+      "cases": "./evals/requirements-clarifier-trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "standard",
       "strictNegativeSplits": ["validation"],
@@ -35,10 +35,35 @@
       "perRunTimeoutMs": 180000
     },
     {
-      "id": "behavior",
+      "id": "decision-grill-trigger",
+      "kind": "trigger",
+      "skill": "decision-grill",
+      "cases": "./evals/decision-grill-trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "standard",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "requirements-clarifier-behavior",
       "kind": "conversation",
-      "skill": "ask-me",
-      "cases": "./evals/evals.json",
+      "skill": "requirements-clarifier",
+      "cases": "./evals/requirements-clarifier-evals.json",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "decision-grill-behavior",
+      "kind": "conversation",
+      "skill": "decision-grill",
+      "cases": "./evals/decision-grill-evals.json",
       "profiles": ["project-default"],
       "defaultRuns": 1,
       "releaseSplits": [],
