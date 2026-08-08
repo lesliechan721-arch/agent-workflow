@@ -7,9 +7,14 @@
   },
   "artifacts": {
     "official_validation": false,
+    "current_sources_checked": false,
+    "pointer_audit": false,
+    "information_hierarchy_map": false,
+    "completion_boundary_audit": false,
     "trigger_eval_results": false,
     "behavior_eval_results": false,
     "regression_eval_results": false,
+    "ablation_results": false,
     "runtime_traces": false,
     "scripts_present": false,
     "scripts_checked": false,
@@ -40,5 +45,16 @@
     {"id": "architecture-ownership", "status": "unknown", "severity": "P1", "reason": ""},
     {"id": "release-evidence", "status": "unknown", "severity": "P1", "reason": ""}
   ],
-  "findings": []
+  "findings": [],
+  "_finding_example": {
+    "id": "F-001",
+    "severity": "P2",
+    "evidence_types": ["structural"],
+    "dimension": "context_disclosure",
+    "location": "SKILL.md:10-20",
+    "problem": "",
+    "correct_owner": "Skill",
+    "minimal_change": "",
+    "validation": ""
+  }
 }

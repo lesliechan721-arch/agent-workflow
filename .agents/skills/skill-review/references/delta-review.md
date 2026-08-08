@@ -1,43 +1,46 @@
 # Delta Review
 
-修订版默认做差量评审，防止每轮 review 扩张新的理论问题。
+有上一版时读取。目标是验证改动，而不是重新启动无界初审。
 
-## 必做步骤
+## 范围
 
-1. 列出上一轮 P0/P1 和接受的设计决策。
-2. 逐项判断：closed、partially closed、open、regressed。
-3. 比较 `SKILL.md` 的行数、字符、控制词、生命周期词和协议词。
-4. 比较新增/删除的 references、scripts、assets、evals 和 role 指令。
-5. 检查新文字是否有新 observed/documented 证据和对应 eval。
-6. 重新评分受影响维度；未受影响维度沿用基线并说明。
+只检查：
 
-## 防漂移规则
+1. 上轮 P0/P1 是否关闭。
+2. 受修改影响的维度和直接回归。
+3. `SKILL.md`、pointer、branch、资源、脚本和 eval 的复杂度变化。
+4. 新出现的 observed、normative 或 structural 证据。
+5. 行为指标是否改善，以及新增内容是否值得其 context/cognitive load。
 
-没有新证据时：
+纯 heuristic 或 inferred 边界不升级为新的发布阻断项。
 
-- 不重新扫描并升级一批理论边界。
-- 不因 schema 新增字段自动扩大 Skill 目标。
-- 不把 advisory 直接改写进正文。
-- 不因总分提升而忽略正文、分支或重复协议持续增长。
+## Sediment Audit
 
-连续两轮出现“正文和条件增长，但 behavior eval 无改善”时，方向标记至少为 `at-risk`，并建议停止补丁、做架构性减法。
+对每个新增规则记录：
 
-## 复杂度预算
+- 它解决哪个真实失败或规范要求。
+- 它替换、合并或删除了什么旧内容。
+- 对应哪个 behavior/regression eval。
+- 净效果是 smaller、neutral 还是 larger。
 
-报告以下 delta：
+如果一条旧规则没有当前目标、证据或测试支持，只因“删除可能危险”而保留，标记为 sediment candidate，通过 ablation 决定是否删除。
 
-- `SKILL.md` 字符、行数、估算 token。
-- 条件/控制标记。
-- 生命周期和协议标记。
-- 重复段落或多个 role 的相同协议。
-- 资源总大小和不可达文件。
-- eval case 数量与通过率。
+## No-op 与 Ablation
 
-复杂度增加不是自动缺陷；它必须由行为收益证明。
+不要仅凭语言直觉认定某句 no-op。比较：
 
-## Delta 结论
+- 无该句或最小版本。
+- 当前版本。
+- 相关真实 eval 和 trace。
 
-- **improved**：旧问题关闭，行为证据改善，复杂度合理。
-- **neutral**：主要是清晰度或结构调整，无明显质量变化。
-- **regressed**：引入新失败、误触发或断裂。
-- **drifted**：修改逐渐偏离原目标，或以自然语言补运行时/程序逻辑。
+若删除后质量不降、方差不增，优先删除。若新增文本没有改善 assertion、触发率、token、时间或执行路径，不把它视为成功修复。
+
+## 停止规则
+
+连续两轮出现以下模式时，方向至少为 `at-risk`：
+
+- 正文、控制分支或资源数增长。
+- behavior/regression 指标没有改善。
+- 新问题主要来自纯推演。
+
+此时停止追加规则，提出架构减法或产品/runtime 改进。旧问题已关闭、无直接回归且没有新强证据时，明确通过并停止。

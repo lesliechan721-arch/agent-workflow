@@ -19,14 +19,16 @@
     },
     {
       "id": "full-review-from-evidence",
-      "prompt": "使用 $skill-review 对 fixtures/full-review.json 做 full review。静态诊断已经提供，只读分析并给出方向、门禁、优势、缺陷和最小改进集。",
-      "expected_output": "使用多维证据，避免重复扣分，并让缺失的 behavior evidence 降低置信度而不是伪造模型结论。",
+      "prompt": "使用 $skill-review 对 fixtures/full-review.json 做 full review。静态诊断和语义审计材料已经提供，只读分析并给出方向、门禁、优势、缺陷和最小改进集。",
+      "expected_output": "使用新版证据权威和多维评分，完成 pointer、信息层级和完成边界审计；缺失的 behavior evidence 只降低置信度。",
       "files": [],
       "scripted_replies": [],
       "review": {
         "workspace_unchanged": true,
         "checks": [
           "先给方向和门禁",
+          "完成 Invocation/Pointer Audit、Information Hierarchy Map 和 Completion Boundary Audit",
+          "把第三方写作观点标为 heuristic，且不单独升级为 P0/P1",
           "质量分与证据置信度分开",
           "同一根因只在一个主维度扣分",
           "改进集保持最小且可验证"
@@ -46,6 +48,22 @@
           "指出 timeout、pending、retry 与跨 actor 状态风险",
           "提出架构性减法",
           "没有证据时不扩张新的 P0/P1"
+        ]
+      }
+    },
+    {
+      "id": "v3-structural-audits",
+      "prompt": "使用 $skill-review 审核 fixtures/v3-structural-review.json。材料已经提供，只读判断每个场景的正确维度、证据权威和最小动作。",
+      "expected_output": "区分同义词与真实 branch、flat reference 与 scattering；no-op 先要求 ablation；客户端调用字段先核对支持情况。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "不因 description 同义词数量增加而提高 triggering 评价",
+          "允许聚焦的 flat peer reference，并把 scattering 归入资源组织",
+          "没有 ablation 时不武断删除疑似 no-op 指令",
+          "客户端支持未知时不把调用字段说成通用规范"
         ]
       }
     },

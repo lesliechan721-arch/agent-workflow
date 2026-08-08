@@ -6,18 +6,18 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const DIMENSIONS = {
-  specification: ['Specification & package integrity', 8],
+  specification: ['Specification & package integrity', 7],
   problem_value: ['Problem grounding & value', 8],
-  triggering: ['Triggering & description', 12],
-  scope_composition: ['Scope, boundaries & composition', 10],
-  instruction_design: ['Instruction design & calibration', 10],
-  context_disclosure: ['Context & progressive disclosure', 10],
+  triggering: ['Invocation, triggering & context pointers', 12],
+  scope_composition: ['Scope, boundaries & composition', 8],
+  instruction_design: ['Program, completion bounds & calibration', 12],
+  context_disclosure: ['Information hierarchy & progressive disclosure', 12],
   architecture: ['Architecture ownership', 10],
   scripts: ['Scripts & deterministic automation', 8],
-  resources: ['References/assets/resources', 6],
+  resources: ['Resource reachability & co-location', 5],
   evals: ['Evals & evidence-driven iteration', 10],
-  reliability: ['Reliability/safety/compatibility', 4],
-  maintainability: ['Maintainability/change discipline', 4],
+  reliability: ['Reliability, safety & compatibility', 4],
+  maintainability: ['Pruning, source of truth & change discipline', 4],
 };
 
 const REQUIRED_GATES = new Set([
@@ -34,7 +34,25 @@ const VALID_MODES = new Set(['quick', 'full', 'release', 'delta']);
 const VALID_DIRECTIONS = new Set(['aligned', 'at-risk', 'drifted']);
 const VALID_GATE_STATUS = new Set(['pass', 'fail', 'unknown', 'not_applicable']);
 const VALID_SEVERITY = new Set(['P0', 'P1', 'P2', 'Advisory']);
-const VALID_EVIDENCE = new Set(['observed', 'documented', 'inferred']);
+const VALID_EVIDENCE = new Set([
+  'observed',
+  'normative',
+  'structural',
+  'heuristic',
+  'inferred',
+]);
+const STRONG_EVIDENCE = new Set(['observed', 'normative', 'structural']);
+const VALID_OWNERS = new Set([
+  'Skill',
+  'Schema',
+  'Client',
+  'Runtime',
+  'Script',
+  'Role',
+  'Eval',
+  'Project',
+  'User',
+]);
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -60,6 +78,79 @@ function confidenceLabel(index, coverage) {
   return 'low';
 }
 
+function pythonTruthy(value) {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string' || Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
+function roundPythonFloat(value, digits) {
+  if (!Number.isFinite(value) || !Number.isInteger(digits) || digits < 0) {
+    throw new Error('roundPythonFloat requires a finite number and non-negative integer digits.');
+  }
+  if (value === 0) return value;
+
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value);
+  const bits = view.getBigUint64(0);
+  const negative = (bits >> 63n) === 1n;
+  const exponent = Number((bits >> 52n) & 0x7ffn);
+  const fraction = bits & ((1n << 52n) - 1n);
+  let numerator = exponent === 0 ? fraction : (1n << 52n) | fraction;
+  const binaryExponent = exponent === 0 ? -1074 : exponent - 1023 - 52;
+  let denominator = 1n;
+  if (binaryExponent >= 0) numerator <<= BigInt(binaryExponent);
+  else denominator <<= BigInt(-binaryExponent);
+
+  const scale = 10n ** BigInt(digits);
+  const scaledNumerator = numerator * scale;
+  let quotient = scaledNumerator / denominator;
+  const remainder = scaledNumerator % denominator;
+  if (
+    remainder * 2n > denominator ||
+    (remainder * 2n === denominator && quotient % 2n !== 0n)
+  ) {
+    quotient += 1n;
+  }
+  const rounded = Number(quotient) / Number(scale);
+  return negative ? -rounded : rounded;
+}
+
+function normalizedEvidenceTypes(finding, index, diagnostics) {
+  let raw = finding.evidence_types;
+  if ((raw === undefined || raw === null) && Object.hasOwn(finding, 'evidence_type')) {
+    raw = [finding.evidence_type];
+    diagnostics.push(diagnostic(
+      'warning',
+      'finding.legacy-evidence-type',
+      `Finding #${index} uses legacy evidence_type; use evidence_types array.`,
+    ));
+  }
+  if (!Array.isArray(raw) || raw.length === 0) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.evidence-types',
+      `Finding #${index} must contain a non-empty evidence_types array.`,
+    ));
+    return [];
+  }
+  const values = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || !VALID_EVIDENCE.has(value)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.evidence-type',
+        `Finding #${index} has invalid evidence type ${JSON.stringify(value)}; allowed: ${[...VALID_EVIDENCE].sort().join(', ')}.`,
+      ));
+      continue;
+    }
+    if (!values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
 function validateAndCalculate(data) {
   const diagnostics = [];
   const review = isRecord(data.review) ? data.review : {};
@@ -76,7 +167,7 @@ function validateAndCalculate(data) {
   }
 
   const artifacts = isRecord(data.artifacts) ? data.artifacts : {};
-  if (!isRecord(data.artifacts)) {
+  if (data.artifacts !== undefined && !isRecord(data.artifacts)) {
     diagnostics.push(diagnostic('error', 'artifacts.type', 'artifacts must be an object.'));
   }
 
@@ -106,10 +197,10 @@ function validateAndCalculate(data) {
     }
     seen.add(dimensionId);
     const [title, weight] = DIMENSIONS[dimensionId];
-    let score = item.score ?? null;
-    let confidence = item.confidence ?? 'unknown';
-    let evidence = item.evidence ?? [];
-    let summary = item.summary ?? '';
+    let score = Object.hasOwn(item, 'score') ? item.score : null;
+    let confidence = Object.hasOwn(item, 'confidence') ? item.confidence : 'unknown';
+    let evidence = Object.hasOwn(item, 'evidence') ? item.evidence : [];
+    let summary = Object.hasOwn(item, 'summary') ? item.summary : '';
 
     if (!Object.hasOwn(CONFIDENCE_VALUES, confidence)) {
       diagnostics.push(diagnostic('error', 'dimension.confidence', `Invalid confidence for ${dimensionId}: ${JSON.stringify(confidence)}.`));
@@ -162,22 +253,83 @@ function validateAndCalculate(data) {
 
   const coverage = assessedWeight;
   const totalScore = assessedWeight > 0 ? weightedPoints / assessedWeight * 100 : null;
-  const confidenceIndex = assessedWeight > 0 ? confidencePoints / assessedWeight : null;
+  const confidenceIndex = assessedWeight > 0
+    ? confidencePoints / assessedWeight
+    : null;
   const rowById = Object.fromEntries(scoredRows.map((row) => [row.id, row]));
-  if (rowById.triggering?.score > 3 && !artifacts.trigger_eval_results) {
-    diagnostics.push(diagnostic('warning', 'cap.triggering', 'Triggering score exceeds 3 without trigger eval results; explain the exception or lower the score.'));
+  const capWarning = (dimensionId, maximum, condition, code, message) => {
+    const score = rowById[dimensionId]?.score;
+    if (score !== null && score !== undefined && score > maximum && !condition) {
+      diagnostics.push(diagnostic('warning', code, message));
+    }
+  };
+  capWarning(
+    'triggering',
+    3,
+    pythonTruthy(artifacts.trigger_eval_results),
+    'cap.triggering-eval',
+    'Triggering score exceeds 3 without trigger eval results; explain or lower the score.',
+  );
+  capWarning(
+    'triggering',
+    4,
+    pythonTruthy(artifacts.pointer_audit),
+    'cap.triggering-pointer',
+    'Triggering score exceeds 4 without an invocation/pointer audit.',
+  );
+  capWarning(
+    'instruction_design',
+    4,
+    pythonTruthy(artifacts.completion_boundary_audit),
+    'cap.completion-boundary',
+    'Instruction-design score exceeds 4 without a completion-boundary audit.',
+  );
+  capWarning(
+    'context_disclosure',
+    4,
+    pythonTruthy(artifacts.information_hierarchy_map),
+    'cap.information-hierarchy',
+    'Context/disclosure score exceeds 4 without an information-hierarchy map.',
+  );
+  capWarning(
+    'evals',
+    2,
+    [
+      artifacts.trigger_eval_results,
+      artifacts.behavior_eval_results,
+      artifacts.regression_eval_results,
+      artifacts.ablation_results,
+      artifacts.runtime_traces,
+    ].some(pythonTruthy),
+    'cap.evals',
+    'Evals score exceeds 2 without eval results, ablation, or runtime traces.',
+  );
+  if (pythonTruthy(artifacts.scripts_present)) {
+    capWarning(
+      'scripts',
+      3,
+      pythonTruthy(artifacts.scripts_checked),
+      'cap.scripts',
+      'Scripts score exceeds 3 although scripts were not checked.',
+    );
   }
-  if (rowById.evals?.score > 2 && !(artifacts.trigger_eval_results || artifacts.behavior_eval_results || artifacts.runtime_traces)) {
-    diagnostics.push(diagnostic('warning', 'cap.evals', 'Evals score exceeds 2 without eval results or runtime traces.'));
+  if (pythonTruthy(artifacts.compatibility_claims)) {
+    capWarning(
+      'reliability',
+      3,
+      pythonTruthy(artifacts.compatibility_verified),
+      'cap.reliability',
+      'Reliability score exceeds 3 with unverified compatibility claims.',
+    );
   }
-  if (artifacts.scripts_present && rowById.scripts?.score > 3 && !artifacts.scripts_checked) {
-    diagnostics.push(diagnostic('warning', 'cap.scripts', 'Scripts score exceeds 3 although scripts were not checked.'));
-  }
-  if (artifacts.compatibility_claims && rowById.reliability?.score > 3 && !artifacts.compatibility_verified) {
-    diagnostics.push(diagnostic('warning', 'cap.reliability', 'Reliability score exceeds 3 with unverified compatibility claims.'));
-  }
-  if (mode === 'delta' && rowById.maintainability?.score > 3 && !artifacts.previous_version) {
-    diagnostics.push(diagnostic('warning', 'cap.delta', 'Maintainability score exceeds 3 in delta mode without a previous version.'));
+  if (mode === 'delta') {
+    capWarning(
+      'maintainability',
+      3,
+      pythonTruthy(artifacts.previous_version),
+      'cap.delta',
+      'Maintainability score exceeds 3 in delta mode without a previous version.',
+    );
   }
 
   const rawGates = Array.isArray(data.gates) ? data.gates : [];
@@ -194,7 +346,7 @@ function validateAndCalculate(data) {
     const gateId = gate.id;
     const status = gate.status;
     const severity = gate.severity;
-    let reason = gate.reason ?? '';
+    let reason = Object.hasOwn(gate, 'reason') ? gate.reason : '';
     if (typeof gateId !== 'string') {
       diagnostics.push(diagnostic('error', 'gate.id', 'Gate id must be a string.'));
       continue;
@@ -219,21 +371,66 @@ function validateAndCalculate(data) {
   if (missingGates.length > 0) diagnostics.push(diagnostic('error', 'gate.missing', `Missing required gates: ${missingGates.join(', ')}`));
 
   const rawFindings = Array.isArray(data.findings) ? data.findings : [];
-  if (!Array.isArray(data.findings)) diagnostics.push(diagnostic('error', 'findings.type', 'findings must be a list.'));
+  if (data.findings !== undefined && !Array.isArray(data.findings)) {
+    diagnostics.push(diagnostic('error', 'findings.type', 'findings must be a list.'));
+  }
   const findings = [];
-  for (let index = 0; index < rawFindings.length; index += 1) {
-    const finding = rawFindings[index];
+  const findingIds = new Set();
+  for (let offset = 0; offset < rawFindings.length; offset += 1) {
+    const index = offset + 1;
+    const finding = rawFindings[offset];
     if (!isRecord(finding)) {
-      diagnostics.push(diagnostic('error', 'finding.item', `Finding #${index + 1} must be an object.`));
+      diagnostics.push(diagnostic('error', 'finding.item', `Finding #${index} must be an object.`));
       continue;
     }
-    if (!VALID_SEVERITY.has(finding.severity)) diagnostics.push(diagnostic('error', 'finding.severity', `Finding #${index + 1} has invalid severity ${JSON.stringify(finding.severity)}.`));
-    if (!VALID_EVIDENCE.has(finding.evidence_type)) diagnostics.push(diagnostic('error', 'finding.evidence-type', `Finding #${index + 1} has invalid evidence_type ${JSON.stringify(finding.evidence_type)}.`));
-    if (!Object.hasOwn(DIMENSIONS, finding.dimension)) diagnostics.push(diagnostic('error', 'finding.dimension', `Finding #${index + 1} has invalid dimension ${JSON.stringify(finding.dimension)}.`));
-    if ((finding.severity === 'P0' || finding.severity === 'P1') && finding.evidence_type === 'inferred' && finding.direct_contradiction !== true) {
-      diagnostics.push(diagnostic('error', 'finding.inferred-severity', `Finding #${index + 1} is inferred but marked ${finding.severity}; lower severity or mark a direct contradiction with evidence.`));
+    let findingId = Object.hasOwn(finding, 'id') ? finding.id : `finding-${index}`;
+    const evidenceTypes = normalizedEvidenceTypes(finding, index, diagnostics);
+    if (typeof findingId !== 'string' || findingId.trim() === '') {
+      diagnostics.push(diagnostic('error', 'finding.id', `Finding #${index} must have a non-empty id.`));
+      findingId = `finding-${index}`;
     }
-    findings.push(finding);
+    if (findingIds.has(findingId)) {
+      diagnostics.push(diagnostic('error', 'finding.duplicate', `Duplicate finding id: ${findingId}.`));
+    }
+    findingIds.add(findingId);
+    if (!VALID_SEVERITY.has(finding.severity)) {
+      diagnostics.push(diagnostic('error', 'finding.severity', `Finding #${index} has invalid severity ${JSON.stringify(finding.severity)}.`));
+    }
+    if (!Object.hasOwn(DIMENSIONS, finding.dimension)) {
+      diagnostics.push(diagnostic('error', 'finding.dimension', `Finding #${index} has invalid dimension ${JSON.stringify(finding.dimension)}.`));
+    }
+    if (
+      (finding.severity === 'P0' || finding.severity === 'P1') &&
+      !evidenceTypes.some((value) => STRONG_EVIDENCE.has(value))
+    ) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.authority-severity',
+        `Finding #${index} is ${finding.severity} but has no observed, normative, or structural evidence.`,
+      ));
+    }
+    const owner = finding.correct_owner ?? '';
+    if (owner !== '' && !VALID_OWNERS.has(owner)) {
+      diagnostics.push(diagnostic(
+        'warning',
+        'finding.owner',
+        `Finding #${index} uses non-standard owner ${JSON.stringify(owner)}; expected one of ${[...VALID_OWNERS].sort().join(', ')}.`,
+      ));
+    }
+    if (finding.severity === 'P0' || finding.severity === 'P1') {
+      for (const field of ['location', 'problem', 'correct_owner', 'minimal_change', 'validation']) {
+        if (typeof finding[field] !== 'string' || finding[field].trim() === '') {
+          diagnostics.push(diagnostic(
+            'error',
+            'finding.required-field',
+            `Finding #${index} (${finding.severity}) requires non-empty field ${JSON.stringify(field)}.`,
+          ));
+        }
+      }
+    }
+    const normalized = { ...finding, id: findingId, evidence_types: evidenceTypes };
+    delete normalized.evidence_type;
+    findings.push(normalized);
   }
 
   const hasP0Gate = gates.some((gate) => gate.status === 'fail' && gate.severity === 'P0');
@@ -245,7 +442,11 @@ function validateAndCalculate(data) {
   if (hasP0Gate || hasP0Finding) release = 'fail';
   else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
   else if (mode === 'quick') release = 'provisional';
-  else if (mode === 'release' && (coverage < 100 || criticalUnknown)) release = 'provisional';
+  else if (
+    mode === 'release' &&
+    (coverage < 100 || criticalUnknown || !pythonTruthy(artifacts.current_sources_checked))
+  ) release = 'provisional';
+  else if (mode === 'delta' && !pythonTruthy(artifacts.previous_version)) release = 'provisional';
   else if (totalScore === null) release = 'provisional';
   else if (totalScore >= 85) release = 'pass';
   else if (totalScore >= 70) release = 'pass-after-fixes';
@@ -255,9 +456,13 @@ function validateAndCalculate(data) {
   return {
     review,
     score: {
-      weighted_score: totalScore === null ? null : Number(totalScore.toFixed(1)),
-      coverage_percent: Number(coverage.toFixed(1)),
-      confidence_index: confidenceIndex === null ? null : Number(confidenceIndex.toFixed(2)),
+      weighted_score: totalScore === null
+        ? null
+        : roundPythonFloat(totalScore, 1),
+      coverage_percent: coverage,
+      confidence_index: confidenceIndex === null
+        ? null
+        : roundPythonFloat(confidenceIndex, 2),
       confidence: confidenceLabel(confidenceIndex, coverage),
       quality_band: qualityBand(totalScore),
       release,

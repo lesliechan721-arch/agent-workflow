@@ -1,115 +1,141 @@
 # Skill Review Report
 
+Use only sections required by the selected mode. quick omits deep audits that cannot be supported; delta emphasizes change closure and stop decision; release includes every applicable gate and evidence section.
+
 ## Executive verdict
 
 - **Skill:**
-- **Review mode:** quick | full | release | delta
+- **Mode:** quick | full | release | delta
 - **Direction:** aligned | at-risk | drifted
 - **Release:** pass | pass-after-fixes | provisional | redesign | fail
-- **Weighted score:** /100
-- **Coverage:** %
-- **Confidence:** high | medium | low
-- **Quality band:** excellent | strong | adequate | weak | poor
+- **Weighted score:**
+- **Coverage:**
+- **Confidence:**
+- **One-line conclusion:**
 
 ## Review contract
 
-- **Target problems:**
-- **Observed failures:**
-- **Success criteria:**
-- **Environment and dependencies:**
-- **Out of scope:**
-- **Evidence available:**
+| Item | Source-derived statement | Status |
+| --- | --- | --- |
+| Target problem | | known / unknown |
+| Observed failures | | known / unknown |
+| Success criteria | | known / unknown |
+| Intended environment/client | | known / unknown |
+| Out of scope | | known / unknown |
+| Adjacent skills | | known / unknown |
+| Release requirement | | known / unknown |
 
 ## Release gates
 
-| Gate | Status | Severity | Evidence and reason |
-| --- | --- | --- | --- |
-| package-validity | | | |
-| critical-artifacts | | | |
-| goal-alignment | | | |
-| capability-validity | | | |
-| safety-permissions | | | |
-| architecture-ownership | | | |
-| release-evidence | | | |
+| Gate | Status | Severity | Evidence | Reason |
+| --- | --- | --- | --- | --- |
+| package-validity | | | | |
+| critical-artifacts | | | | |
+| goal-alignment | | | | |
+| capability-validity | | | | |
+| safety-permissions | | | | |
+| architecture-ownership | | | | |
+| release-evidence | | | | |
 
 ## Dimension scorecard
 
-| Dimension | Weight | Score /5 | Weighted | Confidence | Key evidence | Main conclusion |
-| --- | ---: | ---: | ---: | --- | --- | --- |
-| Specification & package integrity | 8 | | | | | |
-| Problem grounding & value | 8 | | | | | |
-| Triggering & description | 12 | | | | | |
-| Scope, boundaries & composition | 10 | | | | | |
-| Instruction design & calibration | 10 | | | | | |
-| Context & progressive disclosure | 10 | | | | | |
-| Architecture ownership | 10 | | | | | |
-| Scripts & deterministic automation | 8 | | | | | |
-| References/assets/resources | 6 | | | | | |
-| Evals & evidence-driven iteration | 10 | | | | | |
-| Reliability/safety/compatibility | 4 | | | | | |
-| Maintainability/change discipline | 4 | | | | | |
+| Dimension | Weight | Score | Confidence | Evidence | Summary |
+| --- | ---: | ---: | --- | --- | --- |
+| Specification & package integrity | 7 | | | | |
+| Problem grounding & value | 8 | | | | |
+| Invocation, triggering & pointers | 12 | | | | |
+| Scope, boundaries & composition | 8 | | | | |
+| Program, completion bounds & calibration | 12 | | | | |
+| Information hierarchy & disclosure | 12 | | | | |
+| Architecture ownership | 10 | | | | |
+| Scripts & deterministic automation | 8 | | | | |
+| Resource reachability & co-location | 5 | | | | |
+| Evals & evidence-driven iteration | 10 | | | | |
+| Reliability, safety & compatibility | 4 | | | | |
+| Pruning, source of truth & change discipline | 4 | | | | |
 
 ## Strengths
 
-List only strengths supported by evidence.
+List only strengths supported by package, normative or observed evidence.
 
 ## Required findings
 
-| Severity | Evidence type | Dimension | Location | Problem | Correct owner | Minimal change | Validation |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-
 Only P0/P1.
+
+| Severity | Evidence types | Dimension | Location | Problem | Correct owner | Minimal change | Validation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 
 ## Non-blocking findings
 
-| Severity | Evidence type | Dimension | Location | Observation | Recommendation |
+| Severity | Evidence types | Dimension | Location | Observation | Recommendation |
 | --- | --- | --- | --- | --- | --- |
 
-## Trigger and scope assessment
+## Invocation and Pointer Audit
 
-- **Should trigger:**
-- **Should not trigger / near-miss:**
-- **Adjacent skills and overlap:**
-- **Trigger eval coverage:**
+Use in full/release, and in quick when triggering is the stated focus.
 
-## Progressive disclosure map
+| Pointer | Target material | Trigger branches | Intent front-loaded? | Duplicate synonym branch? | Repeats body identity? | Eval evidence | Recommendation |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- |
 
-| Content | Current location | Needed every run? | Recommended location | Load trigger |
-| --- | --- | --- | --- | --- |
+## Information Hierarchy Map
 
-## Architecture and state-machine assessment
+Use in full/release or when progressive disclosure is disputed.
+
+| Content | Type | Applicable branch | Current location | Needed every run? | Reaching pointer / environment source | Completion boundary | Recommendation |
+| --- | --- | --- | --- | ---: | --- | --- | --- |
+
+Type is one of: `in-file-step`, `in-file-reference`, `disclosed-reference`, `environment-lookup`.
+
+## Completion Boundary Audit
+
+Use in full/release, or when steps are skipped, rushed or over-executed.
+
+| Step or rule set | Current criterion | Clear? | Checkable? | Demand sufficient? | Exhaustive? | Premature-completion risk | Recommendation |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+
+## Architecture and ownership
 
 - **Skill-owned policy:**
-- **Schema/runtime-owned behavior:**
+- **Schema/client-owned facts:**
+- **Runtime-owned state:**
 - **Script candidates:**
 - **Role-only constraints:**
-- **Eval-only concerns:**
+- **Eval/issue-only concerns:**
 - **Natural-language state-machine risk:** low | medium | high
 
 ## Scripts and resources
 
-- **Scripts present / correctly omitted:**
-- **Interface and dependency quality:**
-- **Safety and deterministic behavior:**
-- **References/assets quality:**
-- **Broken, stale or unreachable resources:**
+- **Scripts present or correctly omitted:**
+- **Interface/dependency/safety quality:**
+- **Deterministic logic still repeated by the model:**
+- **References/assets reachability:**
+- **Duplication:**
+- **Scattering / co-location:**
+- **Environment facts unnecessarily cached:**
+- **Stale or orphaned resources:**
 
-## Evals and validation
+## Evals and evidence
 
-- **Trigger eval:**
-- **Behavior eval:**
-- **Regression eval:**
-- **Ablation:**
-- **Missing evidence that limits confidence:**
+- **Trigger eval and rates:**
+- **Behavior/regression eval:**
+- **Runtime traces:**
+- **Baseline:** no skill | minimal skill | previous version | none
+- **Ablation / no-op evidence:**
+- **Token/time/variance cost:**
+- **Evidence missing for release:**
 
-## Complexity and delta
+## Delta and sediment
 
-- `SKILL.md`: lines / characters / estimated tokens
-- Resource sizes:
-- Repeated rules or protocols:
-- Delta from previous version:
-- Proposed deletions:
-- Net effect of required changes: smaller | neutral | larger
+Required in delta mode; optional elsewhere.
+
+- **Previous P0/P1 closure:**
+- **Affected dimensions:**
+- **Direct regressions:**
+- **SKILL.md / pointer / branch / resource delta:**
+- **Behavior metric delta:**
+- **Rules added and what they replaced:**
+- **Sediment candidates:**
+- **Net required change:** smaller | neutral | larger
 
 ## Minimal improvement roadmap
 
@@ -121,10 +147,14 @@ Only P0/P1.
 
 1.
 
-### Later — advisory or product/runtime work
+### Later — heuristic, eval or product/runtime work
 
 1.
 
+## Unknowns
+
+List missing artifacts or facts that reduced coverage. Do not convert them into findings.
+
 ## Stop decision
 
-Explain why review should stop now, or identify the exact new evidence required before another iteration.
+State why review should stop now, or name the exact new observed/normative/structural evidence required before another iteration.

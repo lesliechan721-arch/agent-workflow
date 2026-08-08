@@ -31,6 +31,22 @@ const PROTOCOL_MARKERS = [
   'status=progress', 'status=blocked', 'send_message', 'send_input', 'wait_agent',
   'followup_task', 'close_agent', 'interrupt_agent', 'spawn_agent',
 ];
+const POINTER_CONDITION_PATTERNS = [
+  /(?:^|[\s|：；;])(?:当|若|如果|仅在|只在)/u,
+  /计分前/u,
+  /(?:quick|full|release|delta)(?:\s*\/\s*(?:quick|full|release|delta))*\s*模式/iu,
+  /skill\s+(?:包含|含)/iu,
+  /有上一版/u,
+  /明确要求/u,
+  /当前仓库的\s+aw\s+插件/iu,
+  /\b(?:when|if|only when|before|after)\b/iu,
+  /\bbranch\b/iu,
+];
+const WEAK_POINTER_PATTERNS = [
+  /(?:详见|参见|查看)\s*(?:相关|上述|以下)?(?:参考资料|资料|文档)?[^\n]*references\//iu,
+  /\b(?:see|refer to|read|check)\b[^\n]*\breferences\//iu,
+];
+const POINTER_TARGET_PREFIXES = ['references/'];
 const TEXT_SUFFIXES = new Set([
   '.md', '.txt', '.py', '.sh', '.bash', '.zsh', '.js', '.mjs', '.cjs',
   '.ts', '.tsx', '.json', '.toml', '.yaml', '.yml', '.csv', '.tsv', '.rb',
@@ -48,7 +64,9 @@ const ABSOLUTE_PATH_PATTERNS = [
 ];
 const RESOURCE_PATTERN =
   /(?<![\w./-])((?:scripts|references|assets)\/[A-Za-z0-9_.()/-]+)/gu;
-const SKIP_DIRECTORIES = new Set(['.git', 'node_modules']);
+const EVAL_RESOURCE_PATTERN =
+  /(?<![\w./-])(evals\/[A-Za-z0-9_.()/-]+)/gu;
+const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__']);
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -226,6 +244,7 @@ async function walkFiles(root, relative = '') {
   const files = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.isDirectory() && SKIP_DIRECTORIES.has(entry.name)) continue;
+    if (entry.isFile() && entry.name.endsWith('.pyc')) continue;
     const next = path.join(relative, entry.name);
     if (entry.isDirectory()) files.push(...await walkFiles(root, next));
     else if (entry.isFile()) files.push(normalizeRelative(next));
@@ -314,10 +333,43 @@ function validateFrontmatter(frontmatter, skillRoot) {
   return issues;
 }
 
-function extractResourceRefs(text) {
-  return [...new Set([...text.matchAll(RESOURCE_PATTERN)].map((match) =>
+function extractResourceRefs(text, options = {}) {
+  const matches = [...text.matchAll(RESOURCE_PATTERN)];
+  if (options.includeEvals) matches.push(...text.matchAll(EVAL_RESOURCE_PATTERN));
+  return [...new Set(matches.map((match) =>
     match[1].replace(/[.,;:!?)>\]}'"]+$/gu, ''),
   ))].sort();
+}
+
+function pointerDiagnostics(body) {
+  const entries = [];
+  for (const [index, rawLine] of body.split('\n').entries()) {
+    const targets = extractResourceRefs(rawLine)
+      .filter((ref) => POINTER_TARGET_PREFIXES.some((prefix) => ref.startsWith(prefix)));
+    if (targets.length === 0) continue;
+    const conditional = POINTER_CONDITION_PATTERNS.some((pattern) => pattern.test(rawLine));
+    const structuredTableRow = /^\s*\|.*\|\s*$/u.test(rawLine);
+    const weak = !conditional && !structuredTableRow &&
+      WEAK_POINTER_PATTERNS.some((pattern) => pattern.test(rawLine));
+    entries.push({
+      line: index + 1,
+      targets,
+      conditional_signal: conditional,
+      weak_signal: weak,
+      text: rawLine.trim(),
+    });
+  }
+  return {
+    entries,
+    total: entries.length,
+    conditional_signals: entries.filter((entry) => entry.conditional_signal).length,
+    weak_signal_lines: entries
+      .filter((entry) => entry.weak_signal)
+      .map((entry) => entry.line),
+    note:
+      'Weak pointer hints require an explicit weak phrase without a branch signal. ' +
+      'Structured routing tables and always-needed workflow references are not flagged.',
+  };
 }
 
 async function buildReferenceGraph(skillRoot, files) {
@@ -327,7 +379,7 @@ async function buildReferenceGraph(skillRoot, files) {
   for (const relative of [...textFiles].sort()) {
     const text = await safeReadText(path.join(skillRoot, relative));
     if (text === null) continue;
-    const refs = extractResourceRefs(text);
+    const refs = extractResourceRefs(text, { includeEvals: relative === 'SKILL.md' });
     graph[relative] = refs;
     for (const ref of refs) {
       if (!(await pathExists(path.join(skillRoot, ref)))) {
@@ -402,7 +454,8 @@ async function evalDiagnostics(skillRoot, files) {
   let triggerTotal = 0;
   let triggerPositive = 0;
   let triggerNegative = 0;
-  let behaviorCases = 0;
+  let conversationCases = 0;
+  let portableBehaviorSpecs = 0;
   let scoringCases = 0;
   for (const entry of files.filter((file) =>
     file.path.startsWith('evals/') &&
@@ -411,8 +464,13 @@ async function evalDiagnostics(skillRoot, files) {
     try {
       const data = JSON.parse(await readFile(path.join(skillRoot, entry.path), 'utf8'));
       if (isRecord(data) && typeof data.skill_name === 'string' && Array.isArray(data.evals)) {
-        parsed.push({ path: entry.path, kind: 'agent-skill', cases: data.evals.length });
-        behaviorCases += data.evals.length;
+        parsed.push({
+          path: entry.path,
+          kind: 'agent-skill',
+          evidence_level: 'executable-conversation',
+          cases: data.evals.length,
+        });
+        conversationCases += data.evals.length;
         continue;
       }
       if (
@@ -450,12 +508,17 @@ async function evalDiagnostics(skillRoot, files) {
         triggerNegative += data.filter((item) => item.should_trigger === false).length;
       } else if (data.length > 0 && data.every((item) => isRecord(item) && 'assertions' in item)) {
         kind = 'behavior';
-        behaviorCases += data.length;
+        portableBehaviorSpecs += data.length;
       } else if (entry.path.includes('scoring')) {
         kind = 'scoring';
         scoringCases += data.length;
       }
-      parsed.push({ path: entry.path, kind, cases: data.length });
+      parsed.push({
+        path: entry.path,
+        kind,
+        ...(kind === 'behavior' ? { evidence_level: 'portable-spec' } : {}),
+        cases: data.length,
+      });
     } catch (error) {
       errors.push({ path: entry.path, error: error instanceof Error ? error.message : String(error) });
     }
@@ -464,7 +527,11 @@ async function evalDiagnostics(skillRoot, files) {
     files: parsed,
     parse_errors: errors,
     trigger: { total: triggerTotal, positive: triggerPositive, negative: triggerNegative },
-    behavior_cases: behaviorCases,
+    behavior_cases: conversationCases,
+    conversation_cases: conversationCases,
+    portable_behavior_specs: portableBehaviorSpecs,
+    behavior_evidence_note:
+      'Portable behavior specs are design and calibration inputs, not executable release evidence.',
     scoring_cases: scoringCases,
   };
 }
@@ -616,6 +683,7 @@ function deriveIssues({
   frontmatter,
   metrics,
   references,
+  pointers,
   scripts,
   evals,
   roles,
@@ -635,6 +703,15 @@ function deriveIssues({
   }
   if (references.deep_reference_paths.length > 0) issues.push(issue('warning', 'reference.deep-chain', `Resources are only reachable through nested references: ${references.deep_reference_paths.join(', ')}`));
   if (references.unreachable_runtime_resources.length > 0) issues.push(issue('info', 'resource.unreachable', `Runtime resources not reachable from SKILL.md: ${references.unreachable_runtime_resources.join(', ')}`));
+  if (pointers.weak_signal_lines.length > 0) {
+    issues.push(issue(
+      'info',
+      'pointer.weak-signal',
+      'Reference/asset pointers without an obvious condition marker appear on SKILL.md body lines: ' +
+        `${pointers.weak_signal_lines.join(', ')}. Review semantically; always-needed workflow references may be valid.`,
+      'SKILL.md',
+    ));
+  }
   for (const script of scripts.files) {
     if (!script.text_readable) continue;
     if (script.interactive_signals > 0) issues.push(issue('warning', 'script.interactive', 'Possible interactive prompt in agent-facing script.', script.path));
@@ -663,6 +740,7 @@ async function inspectStaticSkill(skillRoot, options = {}) {
   const { frontmatter, body } = splitSkill(content, skillFile);
   const files = await inventory(skillRoot);
   const references = await buildReferenceGraph(skillRoot, files);
+  const pointers = pointerDiagnostics(body);
   const scripts = await scriptDiagnostics(skillRoot, files);
   const evals = await evalDiagnostics(skillRoot, files);
   const relatedPaths = await expandRelated(options.related ?? [], skillRoot);
@@ -675,6 +753,7 @@ async function inspectStaticSkill(skillRoot, options = {}) {
     frontmatter,
     metrics,
     references,
+    pointers,
     scripts,
     evals,
     roles,
@@ -703,12 +782,15 @@ async function inspectStaticSkill(skillRoot, options = {}) {
       content_digest: await digestDirectoryTree(skillRoot),
     },
     references,
+    pointers,
     scripts,
     evals,
     related_toml: roles,
     previous_comparison: previous,
     issues,
-    note: 'Static and heuristic diagnostics require reviewer judgment; reviewed scripts were not executed.',
+    note:
+      'Static and heuristic diagnostics require reviewer judgment; reviewed scripts were not ' +
+      'executed and pointer quality was not semantically graded.',
   };
 }
 
@@ -1176,9 +1258,11 @@ function renderText(report) {
     `Control/lifecycle/protocol markers: ${metrics.control_markers}/${metrics.lifecycle_markers}/${metrics.protocol_markers}`,
     `Natural-language state-machine risk: ${metrics.state_machine_risk}`,
     `References: ${report.references.reachable.length - 1} reachable, ${report.references.missing.length} missing, ${report.references.unreachable_runtime_resources.length} unreachable`,
+    `Pointer hints: ${report.pointers.total} entries, ${report.pointers.weak_signal_lines.length} without an obvious condition marker`,
     `Scripts: ${report.scripts.count} (not executed)`,
     `Trigger eval cases: ${report.evals.trigger.total} (${report.evals.trigger.positive} positive / ${report.evals.trigger.negative} negative)`,
-    `Behavior eval cases: ${report.evals.behavior_cases}`,
+    `Behavior conversation cases: ${report.evals.conversation_cases}`,
+    `Portable behavior specs: ${report.evals.portable_behavior_specs} (not release evidence)`,
     `Evaluation: ${report.evaluation?.outcome ?? 'not supplied'}`,
   ];
   if (report.previous_comparison) {
@@ -1192,7 +1276,7 @@ function renderText(report) {
   lines.push('Issues:');
   if (report.issues.length === 0) lines.push('  none');
   else for (const entry of report.issues) lines.push(`  [${entry.level}] ${entry.code}${entry.path ? ` (${entry.path})` : ''}: ${entry.message}`);
-  lines.push('Note: scripts were not executed; heuristic warnings are not automatic defects.');
+  lines.push('Note: scripts were not executed; pointer and architecture hints are not automatic defects.');
   return lines.join('\n');
 }
 

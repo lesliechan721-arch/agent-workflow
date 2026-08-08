@@ -6,22 +6,37 @@
   },
   {
     "id": "invalid-frontmatter",
-    "scenario": "name含大写并且目录名不一致，但其它维度良好。",
+    "scenario": "name含大写且目录名不一致，但其它维度良好。",
     "expected": ["package-validity fail", "release fail", "总分不能覆盖门禁"]
   },
   {
     "id": "broad-description-no-eval",
-    "scenario": "description覆盖大量相邻任务，没有触发测试。",
-    "expected": ["triggering不高于3", "置信度low或medium", "建议near-miss eval"]
+    "scenario": "description覆盖大量相邻任务，没有触发测试或pointer审计。",
+    "expected": ["triggering通常不高于3", "置信度low或medium", "建议near-miss eval"]
   },
   {
     "id": "scripted-deterministic-logic",
     "scenario": "复杂配置校验由非交互脚本完成，提供help、JSON、测试和安全默认值。",
-    "expected": ["scripts高分", "instruction和architecture维度受益但不重复加分"]
+    "expected": ["scripts高分", "architecture受益但不重复加分"]
   },
   {
     "id": "prose-runtime-state-machine",
     "scenario": "跨agent timeout、retry、pending和close全部由自然语言维护。",
     "expected": ["architecture低分", "architecture-ownership gate fail或P1", "建议架构性减法"]
+  },
+  {
+    "id": "heuristic-only-complaint",
+    "scenario": "第三方文章偏好正向表述，但目标Skill没有相关失败trace。",
+    "expected": ["evidence type heuristic", "不高于P2", "不阻断发布"]
+  },
+  {
+    "id": "completion-boundary-missing",
+    "scenario": "多步骤Skill没有任何可检查完成条件，也没有行为测试。",
+    "expected": ["instruction_design降分", "completion boundary audit缺失限制高分", "建议可检查且覆盖充分的criterion"]
+  },
+  {
+    "id": "environment-source-of-truth",
+    "scenario": "Skill大量复制当前schema字段，而运行时始终提供完整schema。",
+    "expected": ["maintainability或context_disclosure降分", "建议使用environment lookup", "不要求为每个字段新增政策"]
   }
 ]

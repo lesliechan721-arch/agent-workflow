@@ -1,68 +1,61 @@
-# Scripts and Resources Review
+# Scripts and Resources
 
-## 何时应该使用脚本
+当被审 Skill 包含 scripts、references、assets，或模型在每次运行中重复实现确定性逻辑时读取。
 
-适合脚本：重复、确定、复杂且可测试的解析、生成、转换、校验、计算和一致性检查。
+## 是否应该脚本化
 
-不适合普通脚本：依赖产品内部 mailbox、真实 agent 状态、权限会话或事件顺序的运行时生命周期。不要用文件、Git 或 shell 侧信道模拟 runtime 状态。
+适合脚本：解析、转换、生成、计算、格式校验、静态一致性、批量重复操作和可机械验证的 assertion。
 
-没有脚本并非缺陷；如果模型不会重复重写确定逻辑，省略脚本更好。
+不适合普通脚本：真实 agent 状态、mailbox、取消、竞态、权限决策，或用文件/Git/shell 侧信道推断 runtime 生命周期。
 
-## 脚本检查清单
+删除复杂功能通常优于为非核心机制增加脚本。
 
-### 接口与发现
+## Agent-facing 脚本检查
 
-- `SKILL.md` 是否用相对路径列出脚本用途和调用时机。
-- 是否有 `--help`、简洁 usage 和样例。
-- 输入是否来自 flags、环境变量或 stdin，而不是 TTY prompt。
-- 参数错误是否说明收到值、期望值和修复方式。
+- 从 skill 根目录使用相对路径；`SKILL.md` 说明用途、输入、输出和调用 branch。
+- 自包含或明确并固定依赖；声明必要 runtime 和权限。
+- 非交互；支持 `--help`；错误可操作；退出码有意义。
+- stdout 为 JSON、CSV、TSV 或短而稳定的结构；diagnostics 写 stderr。
+- 输入校验、输出大小、超时、路径遍历、覆盖写和敏感信息有安全边界。
+- 重复运行尽量幂等；破坏性操作提供 dry-run 或 plan/validate/execute。
+- 有 fixture、测试或安全样例；release 模式只执行 reviewer 确认无副作用的检查。
 
-### 依赖与复现
+脚本不存在不自动扣分；当模型不会重复实现确定性逻辑时，保持纯文本更好。
 
-- 是否自包含或清楚声明依赖。
-- 外部包和 one-off 工具是否固定版本。
-- 运行时要求是否写入 `compatibility` 或清楚前提。
-- 是否避免无说明的全局安装和环境污染。
+## Information hierarchy 与资源
 
-### 输出与组合
+资源按用途分类：
 
-- stdout 是否优先 JSON/CSV/TSV 等结构化数据。
-- diagnostics、进度和 warning 是否写 stderr。
-- 输出是否有合理默认上限、摘要、分页或 `--output`。
-- 退出码是否有意义且在帮助中说明。
+- `references/`：按需读取的定义、规则、领域资料和长 reference。
+- `assets/`：模板、示例、图片、静态数据；不隐藏必须执行的指令。
+- `evals/`：测试提示、assertion、fixture 和结果结构。
+- environment lookup：schema、配置、源码、目录或 `--help`，通常不应被低价值复制进 reference。
 
-### 安全与稳定
+检查每个资源：
 
-- 是否幂等，或明确不可重复执行。
-- 是否拒绝模糊输入而不是猜测。
-- 有副作用时是否提供 safe default、dry-run 或显式确认 flag。
-- 是否避免硬编码绝对路径、凭据和用户环境假设。
-- 是否处理不存在文件、编码、空输入、权限和部分失败。
+- 是否由 `SKILL.md` 一层指针到达。
+- 指针是否说明读取条件，而非只命名路径。
+- 是否属于真实 branch，还是每次都必须加载。
+- 是否与其它文件重复或把一个概念 scattering 到多个位置。
+- 是否有权威 owner、来源、核验日期和更新策略。
 
-### 验证
+## Co-location
 
-- 是否有单元测试、fixture 或至少安全样例运行。
-- reviewer 不应自动执行未知或有副作用脚本；先静态检查，再在可控环境运行 `--help` 或 dry-run。
+同一概念的定义、规则、例外和评分锚点应位于一个权威位置。其它文件可以指向它，但不复制完整规则。
 
-## references 检查
+- duplication：同一意义在多处重复。
+- scattering：同一意义被拆散，读一处无法得到完整概念。
+- co-location：相关内容在同一标题下共同出现。
 
-- 每个 reference 是否只覆盖一个主题。
-- `SKILL.md` 是否说明精确读取触发，而非泛称“查看 references”。
-- 是否从 `SKILL.md` 一层可达，避免深层链式引用。
-- 内容是否每次都需要；若需要，应回到核心正文。
-- 是否存在过期版本、重复说明、断裂链接或不可达文件。
+平坦的同层 review 规则可以保留在一个 reference 中；不要为了“渐进式披露”机械拆成大量小文件。
 
-## assets 检查
+## Environment as source of truth
 
-assets 适合模板、配置骨架、静态数据、图像和输出样例。不要把模型必须遵循的核心指令藏在 asset 中。
+优先读取环境能够直接回答的事实。只有以下内容值得缓存：
 
-检查模板是否：
+- 为什么选择某个值或工具。
+- 环境文档没有表达的项目约定。
+- 反直觉且模型会稳定误判的 gotcha。
+- 离线 quick review 必需的最小摘要，并带核验日期。
 
-- 有清楚变量和填充规则。
-- 不包含真实凭据或敏感数据。
-- 与 Skill 输出合同一致。
-- 不因格式过长而诱导模型机械复制无关章节。
-
-## Evals 与其它资源
-
-`evals/` 虽非规范必需目录，但可用于组织 trigger、behavior、regression 和 scoring calibration。文件格式应结构化、可脚本验证，并明确预期断言。
+release 评审应重新核对 current-check 来源，不把旧缓存当成规范。

@@ -3,41 +3,41 @@
     "id": "full-multidimensional-review",
     "prompt": "审核一个包含 SKILL.md、references、scripts、assets 和 evals 的完整技能包。",
     "assertions": [
-      "使用全部12个评分维度",
+      "使用全部12个适用评分维度",
       "分数由scorecard脚本计算而非手算",
-      "单独报告发布门禁、覆盖率和置信度",
-      "提出缺陷与最小改进集"
+      "单独报告发布门禁、coverage和confidence",
+      "完成pointer、information hierarchy和completion boundary审计"
     ]
   },
   {
     "id": "missing-artifacts",
     "prompt": "只提供SKILL.md进行quick review。",
     "assertions": [
-      "缺失组件标记为未评估而非猜测",
-      "结论为临时或provisional",
+      "缺失组件标记为unknown而非猜测",
+      "结论为provisional",
       "不会把缺失scripts自动判为缺陷"
     ]
   },
   {
     "id": "optional-script-omission",
-    "prompt": "评审一个纯知识型skill，没有任何确定性重复逻辑，也没有scripts。",
+    "prompt": "评审一个纯知识型skill，没有确定性重复逻辑，也没有scripts。",
     "assertions": [
       "scripts维度可获得高分",
-      "不为了完整性要求新增脚本"
+      "不为了文件完整性要求新增脚本"
     ]
   },
   {
     "id": "trigger-without-eval",
     "prompt": "description静态看起来很好，但没有任何触发测试。",
     "assertions": [
-      "触发维度置信度不高",
+      "triggering置信度不高",
       "通常不把triggering评为4或5",
-      "建议realistic near-miss和多次运行"
+      "建议现实near-miss、多次运行和固定划分"
     ]
   },
   {
     "id": "hard-gate-overrides-score",
-    "prompt": "一个总体得分很高的skill引用了不存在的关键脚本。",
+    "prompt": "总体得分很高的skill引用了不存在的关键脚本。",
     "assertions": [
       "critical-artifacts门禁失败",
       "高总分不覆盖发布失败"
@@ -54,10 +54,19 @@
   },
   {
     "id": "no-double-penalty",
-    "prompt": "同一套父子生命周期协议同时导致正文变长、role重复和维护困难。",
+    "prompt": "同一套生命周期协议同时导致正文变长、role重复和维护困难。",
     "assertions": [
-      "选择architecture或maintainability作为主扣分维度",
+      "选择一个主扣分维度",
       "其它维度只说明影响而不重复处罚"
+    ]
+  },
+  {
+    "id": "heuristic-severity",
+    "prompt": "第三方写作指南认为否定句可能降低效果，但没有目标Skill的trace。",
+    "assertions": [
+      "finding标为heuristic",
+      "严重性不高于P2",
+      "不把第三方观点说成官方规范"
     ]
   },
   {
@@ -65,26 +74,26 @@
     "prompt": "reviewer推测未来可能出现一种罕见竞态，但没有trace或规范证据。",
     "assertions": [
       "finding标为inferred",
-      "严重性不高于P2，除非直接逻辑矛盾",
+      "严重性不高于P2",
       "优先放入eval或产品issue"
     ]
   },
   {
     "id": "delta-review-stop",
-    "prompt": "修订版关闭了旧P1，没有新trace，但reviewer还能想出很多理论边界。",
+    "prompt": "修订版关闭旧P1，没有新强证据，但还能想出很多理论边界。",
     "assertions": [
-      "只检查旧问题、回归和复杂度delta",
+      "只检查旧问题、受影响维度、直接回归和复杂度delta",
       "不扩张新的P0/P1",
       "满足停止条件时明确通过"
     ]
   },
   {
-    "id": "progressive-disclosure",
-    "prompt": "SKILL.md很短，但一个reference包含所有复杂状态机且每次都会被要求读取。",
+    "id": "fake-progressive-disclosure",
+    "prompt": "SKILL.md很短，但一个reference包含完整状态机且每次都会读取。",
     "assertions": [
       "不会仅因主文件短而给高分",
       "指出这不是真正的渐进式披露",
-      "评估实际加载触发与总控制复杂度"
+      "评估实际branch和总控制复杂度"
     ]
   },
   {
@@ -98,10 +107,74 @@
   },
   {
     "id": "scope-creep",
-    "prompt": "某工具新增了一个可选字段，reviewer想要求skill立即为其建立完整策略。",
+    "prompt": "某工具新增可选字段，reviewer想要求skill立即为其建立完整策略。",
     "assertions": [
       "先检查该字段是否属于原目标和真实失败",
       "没有证据时不扩大skill范围"
+    ]
+  },
+  {
+    "id": "weak-context-pointer",
+    "prompt": "SKILL.md只写“详见参考资料”，没有说明何时读取。",
+    "assertions": [
+      "识别只命名目标但没有触发branch的弱pointer",
+      "先建议强化pointer，不自动把全部内容内联"
+    ]
+  },
+  {
+    "id": "duplicate-trigger-synonyms",
+    "prompt": "description罗列review、审核、审查、检查，但这些都对应同一使用branch。",
+    "assertions": [
+      "把同义词识别为同一branch",
+      "不因关键词数量多而给description高分"
+    ]
+  },
+  {
+    "id": "flat-reference-is-valid",
+    "prompt": "一个review skill把同层评分规则集中在一份长但聚焦的reference中。",
+    "assertions": [
+      "允许平坦peer set",
+      "不为了渐进式披露机械拆文件"
+    ]
+  },
+  {
+    "id": "scattered-concept",
+    "prompt": "一个概念的定义、规则、例外和评分锚点散落在四个文件。",
+    "assertions": [
+      "区分scattering和duplication",
+      "要求建立权威co-location"
+    ]
+  },
+  {
+    "id": "vague-completion-bound",
+    "prompt": "工作流步骤写阅读并理解所有文件，然后继续，没有可检查的完成条件。",
+    "assertions": [
+      "识别不可检查且demand不足的完成标准",
+      "建议清晰、可检查、覆盖充分的criterion"
+    ]
+  },
+  {
+    "id": "environment-cache",
+    "prompt": "Skill复制了运行时schema中的参数、枚举和默认值，但没有稳定策略或gotcha。",
+    "assertions": [
+      "识别低价值环境事实缓存",
+      "保留选择理由、项目约定和非显然gotcha"
+    ]
+  },
+  {
+    "id": "no-op-instruction",
+    "prompt": "reviewer怀疑一条指令没有作用，但没有ablation。",
+    "assertions": [
+      "不武断判定no-op",
+      "建议通过基线和ablation验证后再删除"
+    ]
+  },
+  {
+    "id": "client-specific-invocation",
+    "prompt": "第三方skill使用disable-model-invocation，目标客户端是否支持未知。",
+    "assertions": [
+      "先确认目标客户端支持",
+      "不把客户端特性当作通用Agent Skills规范"
     ]
   }
 ]

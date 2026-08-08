@@ -132,10 +132,21 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(16);
-        expect(report.evals.scoring_cases).toBe(5);
+        expect(report.evals.behavior_cases).toBe(5);
+        expect(report.evals.conversation_cases).toBe(5);
+        expect(report.evals.portable_behavior_specs).toBe(21);
+        expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
+        expect(report.evals.scoring_cases).toBe(8);
         expect(report.scripts.count).toBe(3);
         expect(report.references.missing).toEqual([]);
+        expect(report.pointers).toMatchObject({
+          total: 7,
+          conditional_signals: 7,
+          weak_signal_lines: [],
+        });
+      } else {
+        expect(report.issues.map((issue: { code: string }) => issue.code))
+          .not.toContain('pointer.weak-signal');
       }
     }
   });
@@ -469,14 +480,17 @@ describe('skill-review author tools', () => {
     const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-skill-review-'));
     tempDirs.push(skillRoot);
     await fs.ensureDir(path.join(skillRoot, 'agents'));
+    await fs.ensureDir(path.join(skillRoot, 'evals'));
     await fs.ensureDir(path.join(skillRoot, 'references', 'fixture'));
+    await fs.writeJson(path.join(skillRoot, 'evals', 'present.json'), []);
     await fs.writeFile(path.join(skillRoot, 'SKILL.md'), [
       '---',
       'name: wrong-name',
       'description: Review an invalid static Skill fixture.',
       '---',
       '',
-      'Read references/missing.md before continuing.',
+      'See references/missing.md.',
+      'Use evals/present.json and evals/missing.json.',
     ].join('\n'), 'utf8');
     await fs.writeFile(
       path.join(skillRoot, 'references', 'fixture', 'SKILL.md'),
@@ -510,10 +524,15 @@ describe('skill-review author tools', () => {
 
     expect(report.target.kind).toBe('static-skill');
     expect(report.skill.frontmatter.name).toBe('wrong-name');
+    expect(report.references.reachable).toContain('evals/present.json');
+    expect(report.references.missing.map((entry: { target: string }) => entry.target)).toEqual(
+      expect.arrayContaining(['references/missing.md', 'evals/missing.json']),
+    );
     expect(report.issues.map((issue: { code: string }) => issue.code)).toEqual(
       expect.arrayContaining([
         'frontmatter.directory-name',
         'reference.missing',
+        'pointer.weak-signal',
         'codex.short-description',
       ]),
     );
@@ -555,7 +574,8 @@ describe('skill-review author tools', () => {
       '--format',
       'json',
     ], { cwd: root, env: process.env });
-    expect(JSON.parse(passed.stdout)).toMatchObject({
+    const passedReport = JSON.parse(passed.stdout);
+    expect(passedReport).toMatchObject({
       score: {
         weighted_score: 100,
         coverage_percent: 100,
@@ -563,6 +583,32 @@ describe('skill-review author tools', () => {
       },
       valid: true,
     });
+    expect(Object.fromEntries(
+      passedReport.dimensions.map((dimension: { id: string; weight: number }) =>
+        [dimension.id, dimension.weight]),
+    )).toMatchObject({
+      specification: 7,
+      scope_composition: 8,
+      instruction_design: 12,
+      context_disclosure: 12,
+      resources: 5,
+    });
+
+    template.artifacts.information_hierarchy_map = false;
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const missingHierarchy = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(missingHierarchy.stdout)).toMatchObject({
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.information-hierarchy' }),
+      ]),
+      valid: true,
+    });
+    template.artifacts.information_hierarchy_map = true;
 
     template.gates[0].status = 'fail';
     template.gates[0].reason = 'Invalid package.';
@@ -598,22 +644,211 @@ describe('skill-review author tools', () => {
       },
       valid: true,
     });
+
+    template.review.mode = 'release';
+    template.artifacts.current_sources_checked = [];
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const staleSources = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(staleSources.stdout)).toMatchObject({
+      score: { release: 'provisional' },
+      valid: true,
+    });
+
+    template.review.mode = 'delta';
+    template.artifacts.current_sources_checked = true;
+    template.artifacts.previous_version = {};
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const missingPrevious = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(missingPrevious.stdout)).toMatchObject({
+      score: { release: 'provisional' },
+      valid: true,
+    });
+
+    template.review.mode = 'full';
+    template.artifacts.previous_version = true;
+    template.findings = [{
+      id: 'F-heuristic',
+      severity: 'P1',
+      evidence_types: ['heuristic'],
+      dimension: 'triggering',
+      location: 'SKILL.md:1',
+      problem: 'A heuristic-only complaint.',
+      correct_owner: 'Skill',
+      minimal_change: 'No change without stronger evidence.',
+      validation: 'Run a behavior eval.',
+    }];
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const weakAuthority = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env }).then(
+      () => null,
+      (error: { stdout?: string }) => error,
+    );
+    expect(weakAuthority?.stdout).toBeTruthy();
+    expect(JSON.parse(weakAuthority!.stdout!)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.authority-severity' }),
+      ]),
+    });
+
+    template.findings = [{
+      id: 'F-legacy',
+      severity: 'P2',
+      evidence_types: null,
+      evidence_type: 'heuristic',
+      dimension: 'triggering',
+    }];
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const legacyEvidence = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(legacyEvidence.stdout)).toMatchObject({
+      findings: [{
+        id: 'F-legacy',
+        evidence_types: ['heuristic'],
+      }],
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.legacy-evidence-type' }),
+      ]),
+      valid: true,
+    });
+
+    const missingOptional = structuredClone(template);
+    missingOptional.review.mode = 'full';
+    missingOptional.findings = undefined;
+    missingOptional.artifacts = undefined;
+    await fs.writeJson(scorecardPath, missingOptional, { spaces: 2 });
+    const omittedFields = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(omittedFields.stdout)).toMatchObject({ valid: true });
+    expect(JSON.parse(omittedFields.stdout).diagnostics.map(
+      (entry: { code: string }) => entry.code,
+    )).not.toEqual(expect.arrayContaining(['artifacts.type', 'findings.type']));
+
+    const explicitNulls = structuredClone(template);
+    explicitNulls.review.mode = 'full';
+    explicitNulls.findings = [{
+      id: null,
+      severity: 'P2',
+      evidence_types: ['heuristic'],
+      dimension: 'triggering',
+    }];
+    explicitNulls.dimensions[0].confidence = null;
+    explicitNulls.dimensions[0].evidence = null;
+    explicitNulls.dimensions[0].summary = null;
+    explicitNulls.gates[0].reason = null;
+    await fs.writeJson(scorecardPath, explicitNulls, { spaces: 2 });
+    const invalidNulls = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env }).then(
+      () => null,
+      (error: { stdout?: string }) => error,
+    );
+    expect(invalidNulls?.stdout).toBeTruthy();
+    expect(JSON.parse(invalidNulls!.stdout!).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'dimension.confidence' }),
+      expect.objectContaining({ code: 'dimension.evidence' }),
+      expect.objectContaining({ code: 'dimension.summary' }),
+      expect.objectContaining({ code: 'gate.reason' }),
+      expect.objectContaining({ code: 'finding.id' }),
+    ]));
+
+    const halfEven = structuredClone(template);
+    halfEven.review.mode = 'full';
+    halfEven.findings = [];
+    halfEven.dimensions = halfEven.dimensions.map((dimension: Record<string, unknown>) => ({
+      ...dimension,
+      score: null,
+      confidence: 'unknown',
+      evidence: [],
+    }));
+    for (const [id, score] of [
+      ['specification', 0],
+      ['triggering', 0],
+      ['resources', 1.5],
+    ] as const) {
+      const dimension = halfEven.dimensions.find(
+        (entry: { id: string }) => entry.id === id,
+      );
+      dimension.score = score;
+      dimension.confidence = 'high';
+      dimension.evidence = ['rounding fixture'];
+    }
+    await fs.writeJson(scorecardPath, halfEven, { spaces: 2 });
+    const rounded = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(rounded.stdout)).toMatchObject({
+      score: {
+        weighted_score: 6.2,
+        coverage_percent: 24,
+      },
+      valid: true,
+    });
+
+    const confidenceBoundary = structuredClone(template);
+    confidenceBoundary.review.mode = 'full';
+    confidenceBoundary.findings = [];
+    for (const dimension of confidenceBoundary.dimensions) {
+      dimension.confidence = ['specification', 'problem_value', 'architecture']
+        .includes(dimension.id) ? 'medium' : 'high';
+    }
+    await fs.writeJson(scorecardPath, confidenceBoundary, { spaces: 2 });
+    const confidenceRounded = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env });
+    expect(JSON.parse(confidenceRounded.stdout)).toMatchObject({
+      score: {
+        confidence_index: 0.93,
+      },
+      valid: true,
+    });
   });
 
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'assets/report-template.md': '945dcf02599d5d029c8741a200d4e3086c0f180ef1ab4a1a5888a29034b2e900',
-      'assets/scorecard-template.json': 'f3d5a76e6433ff4cccf18ee1a6b2966962fd15ef747269e4abe8c78a01718394',
-      'evals/behavior_cases.json': '97e25eb610d7340241a5e547cd2e0db6043e80339a61746a0551e8ec1226f3ed',
-      'evals/scoring_cases.json': '051eea73afb9ae69997092e9f1b3f2a18a166e2178c45a02a12916a5b29647df',
-      'evals/trigger-cases.json': 'a3372fb3665299517d4777bad775452d415202553585011109d3158d07d0168c',
-      'references/architecture-boundaries.md': 'ce8bdd8039a4677fcd4b91562456c2d45f886ede8480745c784b63c46f799285',
-      'references/delta-review.md': '57615d644f21362a43f758d85fbb758147c78862a2da17542f1e885ed58c6361',
-      'references/evals-and-triggering.md': '9a764f102e4f687c8504f1c9af1a4ad7c65b69a04e3cc0322e86d7716af6b81e',
-      'references/official-agent-skills-basis.md': 'de97ada70c914ac12c7136cc9365cff131d963e12a08edac3a0003f59981738a',
-      'references/review-dimensions.md': '43c53ecfcf26de5523977108e0b726142da8da0105f89940f4089d7e3cce96a3',
-      'references/scripts-and-resources.md': '3a3ca84008513249efc072e8c0450fe7d995929cbf8d50a50ff78bead915d83e',
+      'CHANGELOG.md': 'e46024c71eb030a91be37f494044ef4d3622046c4ca46ecf97cc34efdca33177',
+      'assets/report-template.md': 'e3df054e886822baa603d92be723089e53468c1d9905160cb242886b47c5ecca',
+      'assets/scorecard-template.json': 'd74d149b70e2fc361aa23dd5b56f3fbd5cec81f3d0c64f8b2ae43d9e6338cc3b',
+      'evals/behavior_cases.json': '860360e3ddeaa55d8ffac1497d4876a1f964fb0d30f29c793e35568f0bbb3993',
+      'evals/scoring_cases.json': 'a35d91811b07d235a315a5a79ca18009aa99cd370f0299fdcd2f24038681a40f',
+      'evals/trigger-cases.json': '8ea01c9f6f876e355dc2fa29b67db9202e63c811f9665abb4e1e7ec711d6963e',
+      'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
+      'references/delta-review.md': '664b18af9bb388a44f009d099e4790572e1103aafa6830efbd41365fffd9d54e',
+      'references/review-dimensions.md': '9665063f4e22ef0a365bac3ff3d578275b3236db08851b6a244f442e346931d7',
+      'references/scripts-and-resources.md': '4cbdc68a638d26df6ac78d18cec5f27c8d0f27bf230c4ff514544fb02cce98db',
+      'references/source-map.md': '48567b80f7f10b4793926016d14a3288135039636d6842db00fd9845f9c2188f',
     };
     for (const [relative, expected] of Object.entries(exactHashes)) {
       expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
@@ -628,19 +863,27 @@ describe('skill-review author tools', () => {
 
     const readme = (await fs.readFile(path.join(skillRoot, 'README.md'), 'utf8'))
       .replace('node scripts/inspect_skill_target.mjs', 'python3 scripts/inspect_skill.py')
-      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py');
+      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
+      .replace(
+        'node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only\n',
+        '',
+      )
+      .replace(
+        '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
+        '\n',
+      );
     expect(contentDigest(readme)).toBe(
-      'ef56afa6f4eccf1ceef807bf794eab662394f816cacf17870fade9fd185c0ecf',
+      '46353b81f9ed65b9f436d356d554a88d6f9ec739d7d46f67da0e246c27cb015e',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
       .replace(
-        'compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.\n',
-        '',
+        'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals、相关角色配置或当前 agent-workflows 项目的插件 Skill 时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
+        'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals 或相关角色配置时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
       )
       .replace(
-        '角色配置、完整技能包或当前 agent-workflows 项目的插件 Skill 时使用',
-        '角色配置或完整技能包时使用',
+        'compatibility: Requires the agent-workflows repository, Node.js 20+, installed workspace dependencies, and current Agent Skills documentation access for release reviews.\n',
+        'compatibility: Bundled validators require Python 3.11+; release reviews should be able to access the current Agent Skills documentation.\n',
       )
       .replace(
         'node scripts/inspect_skill_target.mjs <skill-dir-or-SKILL.md-or-plugin>',
@@ -648,18 +891,31 @@ describe('skill-review author tools', () => {
       )
       .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
       .replace(
+        '   - 当前仓库静态 Skill 的 release 评审或用户明确要求真实 eval：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。\n',
+        '',
+      )
+      .replace(
         '   - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`\n',
         '',
       );
     expect(contentDigest(skill)).toBe(
-      'cb7bc251f6a2fe5f0ebbff802587d4783755338b80f73332c9289d0fbb7effc0',
+      '1cbae6df82e51919f1e8e8005c21e75be135abae645ed5047c527b9d712fb4de',
     );
 
     const scoringModel = (
       await fs.readFile(path.join(skillRoot, 'references', 'scoring-model.md'), 'utf8')
-    ).replace('validate_scorecard.mjs', 'validate_scorecard.py');
+    )
+      .replace('validate_scorecard.mjs', 'validate_scorecard.py')
+      .replace(
+        '- 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。\n',
+        '',
+      )
+      .replace(
+        '4. release 模式 coverage 不足、关键 gate 为 unknown 或未核对 current-check 来源 → `provisional`。',
+        '4. release 模式 coverage 不足或关键 gate 为 unknown → `provisional`。',
+      );
     expect(contentDigest(scoringModel)).toBe(
-      'c1dff4c6c8316197c6b2127ff29c7da1c73a54cece5eb58234871ff5aac0a0d7',
+      '724f35ee3eba304271aaa40d1593725bd79c093d6d3dcea5ded820ebc234bb68',
     );
   });
 });
