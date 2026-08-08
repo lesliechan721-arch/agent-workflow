@@ -1902,6 +1902,17 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
+    await fs.writeJson(evalManifestPath, {
+      ...conversationManifest,
+      suites: [{ ...conversationSuite, releaseSplits: ['validation'] }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'cannot declare releaseSplits because conversation cases do not support split filtering',
+      ),
+    });
+    await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
+
     await fs.writeJson(conversationCasesPath, {
       skill_name: 'eval-demo',
       evals: [],

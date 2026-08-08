@@ -9,6 +9,10 @@ import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../src/genera
 import type { PluginMeta } from '../src/types.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import {
+  commitMaterializedSkillTriggerPreference,
+  materializeSkillTriggerPreference,
+} from '../src/utils/skill-trigger-preferences.js';
+import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   type MaterializedPluginEvalArtifact,
   type MaterializedPluginEvalSubject,
@@ -127,18 +131,6 @@ function createIsolatedEnv(
   };
 }
 
-async function copyStaticCodexSkills(
-  bundleRoot: string,
-  destinationRoot: string,
-): Promise<void> {
-  const sourceRoot = path.join(bundleRoot, 'codex', 'skills');
-  if (!(await fs.pathExists(sourceRoot))) {
-    return;
-  }
-  await fs.ensureDir(destinationRoot);
-  await fs.copy(sourceRoot, destinationRoot, { overwrite: true, dereference: false });
-}
-
 async function collectArtifacts(
   root: string,
   subjectRoot: string,
@@ -175,22 +167,19 @@ async function copyUserMaterializedArtifacts(options: {
   scopeRoot: string;
   env: NodeJS.ProcessEnv;
   pluginName: string;
-  bundleRoot: string;
 }): Promise<string> {
   const materializedRoot = path.join(options.scopeRoot, 'materialized');
   const skillsRoot = path.join(materializedRoot, '.agents', 'skills');
-  await copyStaticCodexSkills(options.bundleRoot, skillsRoot);
-
-  const dynamicSkillsRoot = path.join(
+  const runtimeSkillsRoot = path.join(
     options.env.AW_HOME!,
     'plugins',
     options.pluginName,
     'codex',
     'skills',
   );
-  if (await fs.pathExists(dynamicSkillsRoot)) {
+  if (await fs.pathExists(runtimeSkillsRoot)) {
     await fs.ensureDir(skillsRoot);
-    await fs.copy(dynamicSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
+    await fs.copy(runtimeSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
   }
 
   const codexHome = options.env.AW_CODEX_HOME!;
@@ -202,6 +191,39 @@ async function copyUserMaterializedArtifacts(options: {
     });
   }
   return materializedRoot;
+}
+
+async function materializeStaticCodexSkills(options: {
+  prepared: PreparedEvalBundle;
+  profile: PluginEvalProfile;
+  projectRoot: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const materialization = await materializeSkillTriggerPreference({
+    pluginName: options.prepared.plugin.manifest.name,
+    platform: 'codex',
+    resolvedOptions: {
+      skillTriggerPreference: options.profile.triggerPreference,
+    },
+    embeddedRoot: options.prepared.bundleRoot,
+    policyPlugin: options.prepared.plugin,
+    sourcePluginRoot: options.prepared.bundleRoot,
+    target: options.profile.scope === 'project'
+      ? {
+          platform: 'codex',
+          scope: 'project',
+          kind: 'repoSkill',
+          root: path.join(options.projectRoot, '.agents', 'skills'),
+        }
+      : {
+          platform: 'codex',
+          scope: 'user',
+          kind: 'localMarketplaceRuntime',
+          root: options.env.AW_HOME!,
+        },
+    mode: 'strictExplicit',
+  });
+  await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle);
 }
 
 async function materializeProfile(options: {
@@ -232,12 +254,12 @@ async function materializeProfile(options: {
     env,
   });
 
-  if (options.profile.scope === 'project') {
-    await copyStaticCodexSkills(
-      options.prepared.bundleRoot,
-      path.join(projectRoot, '.agents', 'skills'),
-    );
-  }
+  await materializeStaticCodexSkills({
+    prepared: options.prepared,
+    profile: options.profile,
+    projectRoot,
+    env,
+  });
 
   const adapter = new CodexAdapter(projectRoot, env);
   await adapter.installExtensions(options.prepared.plugin, options.profile.scope, {
@@ -251,7 +273,6 @@ async function materializeProfile(options: {
         scopeRoot,
         env,
         pluginName: options.prepared.plugin.manifest.name,
-        bundleRoot: options.prepared.bundleRoot,
       });
   const artifacts = await collectArtifacts(subjectRoot, subjectRoot);
   if (!artifacts.some((artifact) => artifact.kind === 'skill')) {

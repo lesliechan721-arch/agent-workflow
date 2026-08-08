@@ -1413,6 +1413,9 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
         error(`${fieldName}.skill must reference a declared skillTriggers entry`);
       }
       if (suite.kind === 'conversation') {
+        if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
+          error(`${fieldName} cannot declare releaseSplits because conversation cases do not support split filtering`);
+        }
         validateConversationCaseCorpus(pluginDir, suite, fieldName);
       } else {
         if (typeof suite.observeSpawnAgent !== 'boolean') {

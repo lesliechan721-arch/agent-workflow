@@ -83,7 +83,7 @@ Suite 规则：
 - `fixtureModule` 只能指向 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized 目标 Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH。
 - `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
 - `perRunTimeoutMs` 是单次模型运行时限；`command` 还必须声明独立的 `suiteTimeoutMs` 作为整个领域 runner 的中央兜底，且不得小于 `perRunTimeoutMs`。中央只把前者透传为 `--timeout-ms`，只用后者终止整个子进程。
-- `conversation` 由中央 Codex app-server driver 执行，使用 `skill` 指定 baseline 要移除的受管 Skill，适合需要 `request_user_input` 多轮回复的用例；case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。
+- `conversation` 由中央 Codex app-server driver 执行，使用 `skill` 指定 baseline 要移除的受管 Skill，适合需要 `request_user_input` 多轮回复的用例；case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 

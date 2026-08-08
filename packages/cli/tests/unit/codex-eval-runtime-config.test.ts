@@ -2,14 +2,16 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cleanupActiveCodexEvalRuntimeCapsules,
+  createCodexEvalTemporaryRoot,
   createCodexEvalRuntimeCapsule,
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
   registerCodexEvalTemporaryRoot,
+  resetCodexEvalSignalShutdownForTests,
   resolveCodexEvalRuntimeConfig,
 } from '../../scripts/codex-eval-runtime-config.js';
 
@@ -409,5 +411,45 @@ describe('Codex eval runtime config', () => {
     await cleanupActiveCodexEvalRuntimeCapsules();
     await expect(fs.pathExists(runRoot)).resolves.toBe(false);
     unregister();
+  });
+
+  it('tracks an in-flight temporary-root allocation across signal cleanup', async () => {
+    const root = await tempRoot();
+    const runRoot = path.join(root, 'in-flight');
+    let resolveAllocation: ((value: string) => void) | undefined;
+    const allocation = new Promise<string>((resolve) => {
+      resolveAllocation = resolve;
+    });
+    const baselineHandlers = new Set(process.listeners('SIGTERM'));
+    const originalKill = process.kill.bind(process);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === process.pid) return true;
+      return originalKill(pid, signal);
+    });
+
+    try {
+      const temporaryRoot = createCodexEvalTemporaryRoot('unused-', {
+        allocate: () => allocation,
+      });
+      await vi.waitFor(() => {
+        expect(process.listeners('SIGTERM').some((handler) => !baselineHandlers.has(handler)))
+          .toBe(true);
+      });
+      const signalHandler = process.listeners('SIGTERM')
+        .find((handler) => !baselineHandlers.has(handler));
+      expect(signalHandler).toBeDefined();
+      signalHandler!();
+      await fs.ensureDir(runRoot);
+      resolveAllocation!(runRoot);
+
+      await expect(temporaryRoot).rejects.toThrow('signal shutdown is in progress');
+      await vi.waitFor(() => {
+        expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+      });
+      await expect(fs.pathExists(runRoot)).resolves.toBe(false);
+    } finally {
+      resetCodexEvalSignalShutdownForTests();
+      killSpy.mockRestore();
+    }
   });
 });

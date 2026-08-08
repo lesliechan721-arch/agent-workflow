@@ -176,7 +176,12 @@ function computeDynamicSkillTreeDigest(
     .sort(([left], [right]) => left.localeCompare(right));
 
   if (files.length === 0) {
-    return null;
+    return artifact.artifact.state === 'present'
+      ? createDynamicSkillTreeContentDigest({
+          skillKey: artifact.artifact.artifactKey ?? path.basename(rootPath),
+          files: {},
+        })
+      : null;
   }
 
   return createDynamicSkillTreeContentDigest({

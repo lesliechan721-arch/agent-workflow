@@ -58,15 +58,22 @@ function runEvidence(overrides: Partial<TriggerRunEvidence>): TriggerRunEvidence
   };
 }
 
-async function createFixture(options: { protectedEnv?: boolean } = {}): Promise<{
+async function createFixture(options: {
+  protectedEnv?: boolean;
+  detachedDescendant?: boolean;
+} = {}): Promise<{
   pluginRoot: string;
   subjectRoot: string;
   codexBin: string;
+  descendantPidPath: string;
+  descendantSurvivalPath: string;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-driver-test-'));
   tempDirs.push(root);
   const pluginRoot = path.join(root, 'plugin');
   const subjectRoot = path.join(root, 'subject');
+  const descendantPidPath = path.join(root, 'descendant-pid.txt');
+  const descendantSurvivalPath = path.join(root, 'descendant-survived.txt');
   await fs.ensureDir(path.join(pluginRoot, 'evals'));
   await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'eval-fixture'));
   await fs.ensureDir(path.join(subjectRoot, '.git'));
@@ -105,6 +112,14 @@ async function createFixture(options: { protectedEnv?: boolean } = {}): Promise<
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "if (process.argv[2] === '--version') { process.stdout.write('codex-fake 1.0\\n'); process.exit(0); }",
+    ...(options.detachedDescendant ? [
+      "const { spawn } = require('node:child_process');",
+      `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(
+        `process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(descendantSurvivalPath)}, "alive"), 2500); setInterval(() => {}, 1000);`,
+      )}], { detached: true, stdio: 'ignore' });`,
+      'descendant.unref();',
+      `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+    ] : []),
     "const cwdIndex = process.argv.indexOf('--cd');",
     'const cwd = process.argv[cwdIndex + 1];',
     "const sessionDir = path.join(process.env.CODEX_HOME, 'sessions');",
@@ -122,7 +137,13 @@ async function createFixture(options: { protectedEnv?: boolean } = {}): Promise<
     'void cwd;',
   ].join('\n'), 'utf8');
   await fs.chmod(codexBin, 0o755);
-  return { pluginRoot, subjectRoot, codexBin };
+  return {
+    pluginRoot,
+    subjectRoot,
+    codexBin,
+    descendantPidPath,
+    descendantSurvivalPath,
+  };
 }
 
 afterEach(async () => {
@@ -229,6 +250,49 @@ describe('Codex native trigger eval driver', () => {
       });
       expect(evidence.results[0].runs[0].spawn_calls).toHaveLength(1);
       expect(evidence.results[0].runs[0].fixture_unchanged).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'waits for early-stop process-tree cleanup before completing the trigger run',
+    async () => {
+      const fixture = await createFixture({ detachedDescendant: true });
+      let descendantPid: number | undefined;
+      const processExists = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+        }
+      };
+      try {
+        await expect(runCodexTriggerSuite({
+          suite: suite(),
+          split: 'validation',
+          subjectRoot: fixture.subjectRoot,
+          pluginRoot: fixture.pluginRoot,
+          profile: 'project-default',
+          runs: 1,
+          codexBin: fixture.codexBin,
+          sourceEnv: process.env,
+        })).resolves.toMatchObject({
+          outcome: 'passed',
+          complete: true,
+          mechanicalPassed: true,
+        });
+        descendantPid = Number(await fs.readFile(fixture.descendantPidPath, 'utf8'));
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        await expect(fs.pathExists(fixture.descendantSurvivalPath)).resolves.toBe(false);
+      } finally {
+        if (descendantPid && processExists(descendantPid)) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // Best-effort test cleanup.
+          }
+        }
+      }
     },
   );
 

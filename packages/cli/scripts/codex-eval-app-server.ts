@@ -1,18 +1,24 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 
 import fs from 'fs-extra';
 
 import {
+  assertProcessTreeInspectionAvailable,
+  releaseChildProcessHandles,
+  terminateChildProcessTree,
+} from './codex-eval-process-tree.js';
+import {
+  assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
   cleanCodexEvalRuntimeConfig,
   codexEvalRuntimeEvidence,
+  createCodexEvalTemporaryRoot,
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
-  registerCodexEvalTemporaryRoot,
+  registerCodexEvalSignalCleanup,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
@@ -27,6 +33,7 @@ interface AppServerProcess {
   exitCode: number | null;
   signalCode: NodeJS.Signals | null;
   kill(signal?: NodeJS.Signals | number): boolean;
+  unref(): void;
   once(event: 'error', listener: (error: Error) => void): this;
   once(
     event: 'close',
@@ -178,6 +185,10 @@ class EvalAppServerSession {
   private nextId = 1;
   private terminalError?: Error;
   private closing = false;
+  private readonly closed: Promise<void>;
+  private resolveClosed?: () => void;
+  private cleanupPromise?: Promise<void>;
+  private unregisterSignalCleanup = (): void => undefined;
 
   constructor(options: {
     codexBin: string;
@@ -186,6 +197,10 @@ class EvalAppServerSession {
     modelProvider: string;
     sensitiveEnvironmentNames: string[];
   }) {
+    assertCodexEvalCanStartWork();
+    this.closed = new Promise<void>((resolve) => {
+      this.resolveClosed = resolve;
+    });
     this.process = spawn(options.codexBin, [
       'app-server',
       '--listen',
@@ -203,6 +218,7 @@ class EvalAppServerSession {
       cwd: options.cwd,
       env: options.env,
       shell: false,
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as unknown as AppServerProcess;
     this.process.stdout.setEncoding?.('utf8');
@@ -215,10 +231,12 @@ class EvalAppServerSession {
     });
     this.process.once('error', (error) => this.fail(error));
     this.process.once('close', (code, signal) => {
+      this.resolveClosed?.();
       if (!this.closing) {
         this.fail(new Error(`codex app-server exited early (code=${code}, signal=${signal}).`));
       }
     });
+    this.unregisterSignalCleanup = registerCodexEvalSignalCleanup(() => this.cleanup());
   }
 
   onFrame(handler: AppServerFrameHandler): () => void {
@@ -273,19 +291,45 @@ class EvalAppServerSession {
   }
 
   async cleanup(): Promise<void> {
+    this.cleanupPromise ??= this.cleanupProcess();
+    return this.cleanupPromise;
+  }
+
+  private async cleanupProcess(): Promise<void> {
     this.closing = true;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error('app-server session closed.'));
     }
     this.pending.clear();
-    if (this.process.exitCode === null && this.process.signalCode === null) {
-      this.process.kill('SIGTERM');
+    try {
+      const diagnostics = await terminateChildProcessTree(
+        this.process as unknown as ChildProcess,
+      );
+      if (await this.waitForClose(1_000)) return;
+      releaseChildProcessHandles(this.process as unknown as ChildProcess);
+      throw new Error(
+        `Could not confirm Codex app-server process-tree termination. ${diagnostics.join(' ')}`.trim(),
+      );
+    } finally {
+      this.unregisterSignalCleanup();
     }
   }
 
   get stderr(): string {
     return this.stderrBuffer;
+  }
+
+  private async waitForClose(timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      this.closed.then(() => true as const),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return result;
   }
 
   private async write(frame: Record<string, unknown>): Promise<void> {
@@ -452,8 +496,9 @@ async function runConversationOnce(options: {
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
 }): Promise<AppServerRunEvidence> {
-  const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-ask-me-eval-'));
-  const unregisterRunRoot = registerCodexEvalTemporaryRoot(runRoot);
+  assertCodexEvalCanStartWork();
+  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-ask-me-eval-');
+  const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const diagnostics: string[] = [];
@@ -483,6 +528,8 @@ async function runConversationOnce(options: {
       materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
     ]);
     const before = await snapshotWorkspace(workspaceRoot);
+    await assertProcessTreeInspectionAvailable();
+    assertCodexEvalCanStartWork();
     session = new EvalAppServerSession({
       codexBin: options.codexBin,
       cwd: workspaceRoot,
@@ -641,11 +688,10 @@ async function runConversationOnce(options: {
     }
     removeHandler?.();
     removeFailureHandler?.();
-    await session?.cleanup().catch(() => undefined);
     try {
-      await fs.remove(runRoot);
+      await session?.cleanup();
     } finally {
-      unregisterRunRoot();
+      await temporaryRoot.cleanup();
     }
   }
 }
@@ -679,6 +725,7 @@ export async function runCodexConversationSuite(options: {
   for (const evalCase of cases) {
     const runs = [];
     for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
+      assertCodexEvalCanStartWork();
       const withSkill = await runConversationOnce({
         sourceProjectRoot: options.subjectRoot,
         evalCase,
@@ -690,6 +737,7 @@ export async function runCodexConversationSuite(options: {
         timeoutMs: options.timeoutMs,
         sourceEnv,
       });
+      assertCodexEvalCanStartWork();
       const withoutSkill = await runConversationOnce({
         sourceProjectRoot: options.subjectRoot,
         evalCase,

@@ -636,6 +636,11 @@ export async function readPluginEvalManifest(
     if (suite.releaseSplits.length > 0 && suite.kind === 'command' && !suite.supports.includes('split')) {
       throw new Error(`Suite "${suite.id}" declares releaseSplits but does not support split.`);
     }
+    if (suite.kind === 'conversation' && suite.releaseSplits.length > 0) {
+      throw new Error(
+        `Conversation suite "${suite.id}" cannot declare releaseSplits because conversation cases do not support split filtering.`,
+      );
+    }
     if (suite.kind === 'trigger') {
       await readPluginEvalTriggerCases(pluginRoot, suite);
     } else if (suite.kind === 'conversation') {

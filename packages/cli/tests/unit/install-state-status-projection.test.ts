@@ -982,6 +982,11 @@ describe('projectInstallState phase 1 four-state projection', () => {
     expect((await project()).diagnostics).toContainEqual(expect.objectContaining({
       code: 'dynamicContentDrift',
     }));
+    await fs.emptyDir(skillRoot);
+    await fs.ensureDir(path.join(skillRoot, 'empty-directory'));
+    expect((await project()).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dynamicContentDrift',
+    }));
   });
 
   it.each([

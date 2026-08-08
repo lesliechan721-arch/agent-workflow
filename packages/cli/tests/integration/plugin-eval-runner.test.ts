@@ -1,11 +1,20 @@
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { runPluginEvals } from '../../scripts/eval-plugin-skills.js';
+import {
+  runChild,
+  runPluginEvals,
+  terminatePosixProcessTree,
+  terminateWindowsProcessTree,
+} from '../../scripts/eval-plugin-skills.js';
+import { resetCodexEvalSignalShutdownForTests } from '../../scripts/codex-eval-runtime-config.js';
 import {
   registerCurrentTestReadonlyFixtureRoot,
   registerCurrentTestWritableStateRoot,
@@ -540,6 +549,158 @@ describe('plugin eval runner', () => {
       await expect(fs.pathExists(descendantMarker)).resolves.toBe(false);
     },
   );
+
+  it.runIf(process.platform !== 'win32')(
+    'terminates an active command suite and prevents the next suite before re-emitting SIGTERM',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-signal-'));
+      tempDirs.push(root);
+      const baselineHandlers = new Set(process.listeners('SIGTERM'));
+      const originalKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+        if (pid === process.pid) return true;
+        return originalKill(pid, signal);
+      });
+
+      try {
+        const childResult = runChild(
+          process.execPath,
+          ['-e', 'setInterval(() => {}, 1000);'],
+          {
+            cwd: root,
+            env: process.env,
+            stderr: () => undefined,
+            timeoutMs: 10_000,
+          },
+        );
+        await vi.waitFor(() => {
+          expect(process.listeners('SIGTERM').some((handler) => !baselineHandlers.has(handler)))
+            .toBe(true);
+        });
+        const signalHandler = process.listeners('SIGTERM')
+          .find((handler) => !baselineHandlers.has(handler));
+        expect(signalHandler).toBeDefined();
+        signalHandler!();
+
+        await expect(childResult).resolves.toMatchObject({
+          signal: 'SIGTERM',
+          timedOut: false,
+        });
+        await vi.waitFor(() => {
+          expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+        });
+        const secondSuiteMarker = path.join(root, 'second-suite-started');
+        await expect(runChild(
+          process.execPath,
+          [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(secondSuiteMarker)}, 'started');`,
+          ],
+          {
+            cwd: root,
+            env: process.env,
+            stderr: () => undefined,
+            timeoutMs: 10_000,
+          },
+        )).rejects.toThrow('signal shutdown is in progress');
+        await expect(fs.pathExists(secondSuiteMarker)).resolves.toBe(false);
+      } finally {
+        resetCodexEvalSignalShutdownForTests();
+        killSpy.mockRestore();
+      }
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'stops polling and reports when SIGKILL termination cannot be confirmed',
+    async () => {
+      const fakePid = 2_147_483_000;
+      const originalKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+        if (pid === fakePid || pid === -fakePid) return true;
+        return originalKill(pid, signal);
+      });
+      const startedAt = Date.now();
+
+      try {
+        await expect(terminatePosixProcessTree(fakePid)).resolves.toContainEqual(
+          expect.stringContaining('Could not confirm process-tree termination'),
+        );
+        expect(Date.now() - startedAt).toBeLessThan(4_000);
+      } finally {
+        killSpy.mockRestore();
+      }
+    },
+  );
+
+  function createUnclosedWindowsChild(exitCode: number | null = null): {
+    child: ChildProcess;
+    kill: ReturnType<typeof vi.fn>;
+    unref: ReturnType<typeof vi.fn>;
+    stdout: PassThrough;
+    stderr: PassThrough;
+  } {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const kill = vi.fn(() => true);
+    const unref = vi.fn();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      exitCode,
+      signalCode: null,
+      stdout,
+      stderr,
+      kill,
+      unref,
+    }) as unknown as ChildProcess;
+    return { child, kill, unref, stdout, stderr };
+  }
+
+  it('bounds Windows close confirmation after taskkill succeeds', async () => {
+    const fixture = createUnclosedWindowsChild(0);
+
+    await expect(terminateWindowsProcessTree(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill: async () => undefined,
+    })).resolves.toContainEqual(expect.stringContaining(
+      'Could not confirm Windows process-tree termination within 10ms after taskkill',
+    ));
+    expect(fixture.stdout.destroyed).toBe(true);
+    expect(fixture.stderr.destroyed).toBe(true);
+    expect(fixture.unref).toHaveBeenCalledOnce();
+  });
+
+  it('bounds Windows close confirmation after the SIGKILL fallback', async () => {
+    const fixture = createUnclosedWindowsChild();
+
+    await expect(terminateWindowsProcessTree(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill: async () => { throw new Error('taskkill unavailable'); },
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('taskkill failure: taskkill unavailable'),
+      expect.stringContaining('and SIGKILL fallback'),
+    ]));
+    expect(fixture.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(fixture.stdout.destroyed).toBe(true);
+    expect(fixture.stderr.destroyed).toBe(true);
+    expect(fixture.unref).toHaveBeenCalledOnce();
+  });
+
+  it('waits for close after taskkill fails even when the Windows child has exited', async () => {
+    const fixture = createUnclosedWindowsChild(1);
+
+    await expect(terminateWindowsProcessTree(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill: async () => { throw new Error('process already exited'); },
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('taskkill failure: process already exited'),
+      expect.stringContaining('after taskkill failure; process 4242 may still be running'),
+    ]));
+    expect(fixture.kill).not.toHaveBeenCalled();
+    expect(fixture.stdout.destroyed).toBe(true);
+    expect(fixture.stderr.destroyed).toBe(true);
+    expect(fixture.unref).toHaveBeenCalledOnce();
+  });
 
   it('marks every debug coverage selector as incomplete evidence', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-coverage-'));

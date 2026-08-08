@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCodexConversationSuite } from '../../scripts/codex-eval-app-server.js';
 import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
@@ -203,6 +203,95 @@ describe('Codex app-server eval driver', () => {
     expect(persisted).not.toContain('https://private.invalid/v1');
     expect(persisted).toContain('[redacted]');
   });
+
+  it('terminates an app-server descendant before accepting a completed conversation', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-unclosed-'));
+    const descendantPidsPath = path.join(subjectRoot, 'descendant-pids.txt');
+    tempDirs.push(subjectRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'ask-me'));
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'ask-me', 'SKILL.md'),
+      '# Ask Me\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const { spawn } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      "const readline = require('node:readline');",
+      "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 30000)'], {",
+      "  detached: true, stdio: ['ignore', process.stdout, process.stderr],",
+      '});',
+      'descendant.unref();',
+      `fs.appendFileSync(${JSON.stringify(descendantPidsPath)}, String(descendant.pid) + '\\n');`,
+      "const input = readline.createInterface({ input: process.stdin });",
+      "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+      "input.on('line', (line) => {",
+      '  const frame = JSON.parse(line);',
+      "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+      "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+      "  else if (frame.method === 'turn/start') {",
+      "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+      "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+      '  }',
+      '});',
+    ].join('\n'), 'utf8');
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [behaviorCase('unclosed')],
+    });
+
+    const processExists = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+    let descendantPids: number[] = [];
+    try {
+      await expect(runCodexConversationSuite({
+        suiteId: 'behavior',
+        skillName: 'ask-me',
+        casesPath,
+        subjectRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: process.execPath,
+        timeoutMs: 10_000,
+        sourceEnv: process.env,
+      })).resolves.toMatchObject({
+        complete: true,
+        mechanicalPassed: true,
+      });
+      descendantPids = (await fs.readFile(descendantPidsPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map(Number);
+      expect(descendantPids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(descendantPids.every((pid) => !processExists(pid))).toBe(true);
+      });
+    } finally {
+      if (descendantPids.length === 0 && await fs.pathExists(descendantPidsPath)) {
+        descendantPids = (await fs.readFile(descendantPidsPath, 'utf8'))
+          .trim()
+          .split('\n')
+          .map(Number)
+          .filter(Number.isInteger);
+      }
+      for (const pid of descendantPids) {
+        if (processExists(pid)) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // Best-effort test cleanup.
+          }
+        }
+      }
+    }
+  }, 10_000);
 
   it.each([
     {

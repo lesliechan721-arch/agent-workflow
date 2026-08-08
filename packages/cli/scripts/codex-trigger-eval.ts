@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
@@ -10,12 +9,19 @@ import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 
 import {
+  assertProcessTreeInspectionAvailable,
+  releaseChildProcessHandles,
+  terminateChildProcessTree,
+} from './codex-eval-process-tree.js';
+import {
+  assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
   cleanCodexEvalRuntimeConfig,
   codexEvalRuntimeEvidence,
+  createCodexEvalTemporaryRoot,
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
-  registerCodexEvalTemporaryRoot,
+  registerCodexEvalSignalCleanup,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
@@ -547,8 +553,9 @@ async function runTriggerOnce(options: {
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
 }): Promise<TriggerRunEvidence> {
-  const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-eval-'));
-  const unregisterRunRoot = registerCodexEvalTemporaryRoot(runRoot);
+  assertCodexEvalCanStartWork();
+  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-trigger-eval-');
+  const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const startedAt = Date.now();
@@ -557,6 +564,7 @@ async function runTriggerOnce(options: {
   let finalMessage: string | null = null;
   let usage: unknown = null;
   try {
+    await assertProcessTreeInspectionAvailable();
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
     const skillPath = path.join(
       workspaceRoot,
@@ -616,6 +624,7 @@ async function runTriggerOnce(options: {
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
     });
     const executable = resolveCodexExecutable(options.codexBin);
+    assertCodexEvalCanStartWork();
     const processResult = await new Promise<{
       termination: string;
       exitCode: number | null;
@@ -628,6 +637,7 @@ async function runTriggerOnce(options: {
         cwd: workspaceRoot,
         env,
         shell: false,
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stderr = '';
@@ -636,16 +646,52 @@ async function runTriggerOnce(options: {
       let settled = false;
       let rolloutPollPending = false;
       let spawnCalls: Array<Record<string, unknown>> = [];
-      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let unregisterSignalCleanup = (): void => undefined;
+      let terminationPromise: Promise<string[]> | undefined;
+      let recordedTerminationPromise: Promise<void> | undefined;
+      const terminateTree = (): Promise<string[]> => {
+        terminationPromise ??= terminateChildProcessTree(child);
+        return terminationPromise;
+      };
+      const terminateTreeAndRecord = (): Promise<void> => {
+        recordedTerminationPromise ??= terminateTree().then((terminationDiagnostics) => {
+          diagnostics.push(...terminationDiagnostics);
+        }, (error: unknown) => {
+          diagnostics.push(
+            `Trigger eval process-tree termination failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          throw error;
+        });
+        return recordedTerminationPromise;
+      };
       const stop = (reason: string): void => {
         if (stopReason || child.exitCode !== null || child.signalCode !== null) {
           return;
         }
         stopReason = reason;
-        child.kill('SIGTERM');
-        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
-        forceKillTimer.unref();
+        void terminateTreeAndRecord().catch(() => undefined);
       };
+      const childClosed = new Promise<void>((resolveClose) => {
+        child.once('close', () => resolveClose());
+      });
+      unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
+        stop('parent_signal_shutdown');
+        await terminateTreeAndRecord();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const closed = await Promise.race([
+          childClosed.then(() => true as const),
+          new Promise<false>((resolveTimeout) => {
+            timer = setTimeout(() => resolveTimeout(false), 3_000);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (!closed) {
+          releaseChildProcessHandles(child);
+          throw new Error('Could not confirm trigger eval process-tree termination within 3000ms.');
+        }
+      });
       const handleInterrupt = (signal: NodeJS.Signals): void => {
         interruptedSignal = signal;
         stop(`parent_${signal.toLowerCase()}`);
@@ -722,9 +768,9 @@ async function runTriggerOnce(options: {
         }
         settled = true;
         clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutTimer);
         removeInterruptHandlers();
+        unregisterSignalCleanup();
         lines.close();
         reject(new Error(`Failed to start ${executable}: ${error.message}`));
       });
@@ -734,10 +780,19 @@ async function runTriggerOnce(options: {
         }
         settled = true;
         clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutTimer);
         removeInterruptHandlers();
         lines.close();
+        if (terminationPromise) {
+          try {
+            await terminateTreeAndRecord();
+          } catch (error) {
+            unregisterSignalCleanup();
+            reject(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+        }
+        unregisterSignalCleanup();
         if (options.suite.observeSpawnAgent) {
           try {
             spawnCalls = await readTriggerSpawnCalls(codexHome);
@@ -827,11 +882,7 @@ async function runTriggerOnce(options: {
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
     };
   } finally {
-    try {
-      await fs.remove(runRoot);
-    } finally {
-      unregisterRunRoot();
-    }
+    await temporaryRoot.cleanup();
   }
 }
 
@@ -967,6 +1018,7 @@ export async function runCodexTriggerSuite(options: {
   for (const evalCase of cases) {
     const runs: TriggerRunEvidence[] = [];
     for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
+      assertCodexEvalCanStartWork();
       options.stderr?.(
         `[${evalCase.split}] ${evalCase.id} run ${runIndex + 1}/${options.runs}\n`,
       );

@@ -45,10 +45,19 @@ const SENSITIVE_PASSTHROUGH_ENV = new Set([
   'ALL_PROXY',
   'NO_PROXY',
 ]);
-const ACTIVE_RUNTIME_ROOTS = new Set<string>();
+interface CodexEvalRuntimeRootRegistration {
+  rootPromise: Promise<string>;
+  cleanupPromise?: Promise<string | null>;
+}
+
+const ACTIVE_RUNTIME_ROOTS = new Set<CodexEvalRuntimeRootRegistration>();
+const ACTIVE_SIGNAL_CLEANUPS = new Set<() => void | Promise<void>>();
 const CAPSULE_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+const RUNTIME_ROOT_REMOVE_ATTEMPTS = 4;
+const RUNTIME_ROOT_REMOVE_RETRY_MS = 50;
 const capsuleSignalHandlers = new Map<NodeJS.Signals, () => void>();
 let capsuleSignalCleanupInProgress = false;
+let codexEvalSignalShutdownRequested = false;
 
 export type CodexEvalCredentialSource =
   | 'embedded'
@@ -495,21 +504,174 @@ function removeCapsuleSignalHandlers(): void {
   capsuleSignalHandlers.clear();
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function unregisterRuntimeRoot(registration: CodexEvalRuntimeRootRegistration): void {
+  ACTIVE_RUNTIME_ROOTS.delete(registration);
+  if (
+    ACTIVE_RUNTIME_ROOTS.size === 0 &&
+    ACTIVE_SIGNAL_CLEANUPS.size === 0 &&
+    !capsuleSignalCleanupInProgress
+  ) {
+    removeCapsuleSignalHandlers();
+  }
+}
+
+function addRuntimeRoot(
+  rootPromise: Promise<string>,
+): CodexEvalRuntimeRootRegistration {
+  assertCodexEvalCanStartWork();
+  const registration = { rootPromise };
+  ACTIVE_RUNTIME_ROOTS.add(registration);
+  installCapsuleSignalHandlers();
+  return registration;
+}
+
+async function removeRuntimeRoot(
+  registration: CodexEvalRuntimeRootRegistration,
+): Promise<string | null> {
+  if (registration.cleanupPromise) return registration.cleanupPromise;
+  const cleanupPromise = (async (): Promise<string | null> => {
+    let root: string;
+    try {
+      root = await registration.rootPromise;
+    } catch (error) {
+      unregisterRuntimeRoot(registration);
+      return `Could not allocate a registered Codex eval temporary root: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= RUNTIME_ROOT_REMOVE_ATTEMPTS; attempt += 1) {
+      try {
+        await fs.remove(root);
+        unregisterRuntimeRoot(registration);
+        return null;
+      } catch (error) {
+        lastError = error;
+        if (attempt < RUNTIME_ROOT_REMOVE_ATTEMPTS) {
+          await delay(RUNTIME_ROOT_REMOVE_RETRY_MS);
+        }
+      }
+    }
+    return `Could not remove Codex eval temporary root after ${RUNTIME_ROOT_REMOVE_ATTEMPTS} attempts: ` +
+      `${root}: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
+  })();
+  registration.cleanupPromise = cleanupPromise;
+  const diagnostic = await cleanupPromise;
+  if (diagnostic) registration.cleanupPromise = undefined;
+  return diagnostic;
+}
+
+export function assertCodexEvalCanStartWork(): void {
+  if (codexEvalSignalShutdownRequested) {
+    throw new Error('Cannot start Codex eval work because signal shutdown is in progress.');
+  }
+}
+
+export function resetCodexEvalSignalShutdownForTests(): void {
+  if (
+    capsuleSignalCleanupInProgress ||
+    ACTIVE_RUNTIME_ROOTS.size > 0 ||
+    ACTIVE_SIGNAL_CLEANUPS.size > 0
+  ) {
+    throw new Error('Cannot reset Codex eval signal shutdown while resources are active.');
+  }
+  codexEvalSignalShutdownRequested = false;
+}
+
 export async function cleanupActiveCodexEvalRuntimeCapsules(): Promise<void> {
-  const roots = [...ACTIVE_RUNTIME_ROOTS];
-  ACTIVE_RUNTIME_ROOTS.clear();
-  await Promise.all(roots.map((root) => fs.remove(root)));
-  if (!capsuleSignalCleanupInProgress) removeCapsuleSignalHandlers();
+  const diagnostics = (await Promise.all(
+    [...ACTIVE_RUNTIME_ROOTS].map(removeRuntimeRoot),
+  )).filter((entry): entry is string => entry !== null);
+  if (diagnostics.length > 0) {
+    throw new Error(diagnostics.join('\n'));
+  }
+  if (
+    ACTIVE_SIGNAL_CLEANUPS.size === 0 &&
+    !capsuleSignalCleanupInProgress
+  ) {
+    removeCapsuleSignalHandlers();
+  }
+}
+
+async function cleanupActiveCodexEvalSignalResources(): Promise<string[]> {
+  const diagnostics: string[] = [];
+  while (ACTIVE_SIGNAL_CLEANUPS.size > 0) {
+    const cleanups = [...ACTIVE_SIGNAL_CLEANUPS];
+    ACTIVE_SIGNAL_CLEANUPS.clear();
+    const results = await Promise.allSettled(
+      cleanups.map((cleanup) => Promise.resolve().then(cleanup)),
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        diagnostics.push(
+          `Codex eval process cleanup failed: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`,
+        );
+      }
+    }
+  }
+  diagnostics.push(...(await Promise.all(
+    [...ACTIVE_RUNTIME_ROOTS].map(removeRuntimeRoot),
+  )).filter((entry): entry is string => entry !== null));
+  return diagnostics;
+}
+
+export function registerCodexEvalSignalCleanup(
+  cleanup: () => void | Promise<void>,
+): () => void {
+  assertCodexEvalCanStartWork();
+  ACTIVE_SIGNAL_CLEANUPS.add(cleanup);
+  installCapsuleSignalHandlers();
+  return () => {
+    ACTIVE_SIGNAL_CLEANUPS.delete(cleanup);
+    if (
+      ACTIVE_RUNTIME_ROOTS.size === 0 &&
+      ACTIVE_SIGNAL_CLEANUPS.size === 0 &&
+      !capsuleSignalCleanupInProgress
+    ) {
+      removeCapsuleSignalHandlers();
+    }
+  };
 }
 
 export function registerCodexEvalTemporaryRoot(root: string): () => void {
-  ACTIVE_RUNTIME_ROOTS.add(root);
-  installCapsuleSignalHandlers();
-  return () => {
-    ACTIVE_RUNTIME_ROOTS.delete(root);
-    if (ACTIVE_RUNTIME_ROOTS.size === 0 && !capsuleSignalCleanupInProgress) {
-      removeCapsuleSignalHandlers();
+  const registration = addRuntimeRoot(Promise.resolve(root));
+  return () => unregisterRuntimeRoot(registration);
+}
+
+export async function createCodexEvalTemporaryRoot(
+  prefix: string,
+  options: { allocate?: () => Promise<string> } = {},
+): Promise<{
+  root: string;
+  cleanup(): Promise<void>;
+}> {
+  assertCodexEvalCanStartWork();
+  const rootPromise = options.allocate?.() ?? fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const registration = addRuntimeRoot(rootPromise);
+  let root: string | undefined;
+  try {
+    root = await rootPromise;
+    assertCodexEvalCanStartWork();
+  } catch (error) {
+    if (root) {
+      await removeRuntimeRoot(registration);
+    } else {
+      unregisterRuntimeRoot(registration);
     }
+    throw error;
+  }
+  return {
+    root,
+    cleanup: async () => {
+      const diagnostic = await removeRuntimeRoot(registration);
+      if (diagnostic) throw new Error(diagnostic);
+    },
   };
 }
 
@@ -517,9 +679,14 @@ function installCapsuleSignalHandlers(): void {
   if (capsuleSignalHandlers.size > 0) return;
   for (const signal of CAPSULE_SIGNALS) {
     const handler = (): void => {
+      codexEvalSignalShutdownRequested = true;
       if (capsuleSignalCleanupInProgress) return;
       capsuleSignalCleanupInProgress = true;
-      void cleanupActiveCodexEvalRuntimeCapsules().finally(() => {
+      void cleanupActiveCodexEvalSignalResources().then((diagnostics) => {
+        if (diagnostics.length > 0) {
+          process.stderr.write(`${diagnostics.join('\n')}\n`);
+        }
+      }).finally(() => {
         removeCapsuleSignalHandlers();
         capsuleSignalCleanupInProgress = false;
         try {
@@ -530,7 +697,7 @@ function installCapsuleSignalHandlers(): void {
       });
     };
     capsuleSignalHandlers.set(signal, handler);
-    process.once(signal, handler);
+    process.on(signal, handler);
   }
 }
 
@@ -538,18 +705,14 @@ export async function createCodexEvalRuntimeCapsule(
   runtime: CodexEvalRuntimeConfig,
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<CodexEvalRuntimeCapsule> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-eval-runtime-'));
+  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-codex-eval-runtime-');
+  const root = temporaryRoot.root;
   const home = path.join(root, 'codex-home');
-  const unregister = registerCodexEvalTemporaryRoot(root);
   let cleaned = false;
   const cleanup = async (): Promise<void> => {
     if (cleaned) return;
     cleaned = true;
-    try {
-      await fs.remove(root);
-    } finally {
-      unregister();
-    }
+    await temporaryRoot.cleanup();
   };
   try {
     await materializeCodexEvalRuntimeHome(runtime, home);

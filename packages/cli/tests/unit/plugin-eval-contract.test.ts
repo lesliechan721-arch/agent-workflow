@@ -30,7 +30,7 @@ async function createStaticEvalPlugin(): Promise<string> {
     skillTriggers: {
       'eval-fixture': {
         defaultTrigger: 'manual',
-        allowDynamicTrigger: false,
+        allowDynamicTrigger: true,
       },
     },
     marketplace: {
@@ -82,18 +82,18 @@ async function createStaticEvalPlugin(): Promise<string> {
     plugin: 'eval-fixture',
     profiles: [
       {
-        id: 'project-default',
+        id: 'project-auto',
         scope: 'project',
         config: {},
-        triggerPreference: 'default',
+        triggerPreference: 'auto',
         runModel: true,
         requiredForRelease: true,
       },
       {
-        id: 'user-default',
+        id: 'user-auto',
         scope: 'user',
         config: {},
-        triggerPreference: 'default',
+        triggerPreference: 'auto',
         runModel: false,
         requiredForRelease: true,
       },
@@ -107,7 +107,7 @@ async function createStaticEvalPlugin(): Promise<string> {
         observeSpawnAgent: false,
         isolation: 'standard',
         strictNegativeSplits: ['validation'],
-        profiles: ['project-default'],
+        profiles: ['project-auto'],
         defaultRuns: 1,
         releaseSplits: ['validation'],
         requiredForRelease: true,
@@ -139,8 +139,8 @@ describe('plugin eval contract and materialization', () => {
 
     expect(subjects).toHaveLength(2);
     expect(subjects.map((subject) => [subject.profile, subject.evidenceLevel])).toEqual([
-      ['project-default', 'runtime-project'],
-      ['user-default', 'materialized-user'],
+      ['project-auto', 'runtime-project'],
+      ['user-auto', 'materialized-user'],
     ]);
     expect(subjects[0].bundleDigest).toBe(subjects[1].bundleDigest);
     for (const subject of subjects) {
@@ -150,8 +150,46 @@ describe('plugin eval contract and materialization', () => {
       await expect(
         fs.pathExists(path.join(outputRoot, subject.root, '.agents', 'skills', 'eval-fixture', 'SKILL.md')),
       ).resolves.toBe(true);
+      await expect(
+        fs.readFile(
+          path.join(outputRoot, subject.root, '.agents', 'skills', 'eval-fixture', 'agents', 'openai.yaml'),
+          'utf8',
+        ),
+      ).resolves.toContain('allow_implicit_invocation: true');
       expect(subject.artifacts.some((artifact) => artifact.path.includes('/evals/'))).toBe(false);
     }
+  });
+
+  it('rejects release splits for conversation suites without split filtering', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    await fs.writeJson(path.join(pluginRoot, 'evals', 'conversation-cases.json'), {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'conversation-fixture',
+        prompt: 'Inspect the fixture.',
+        scripted_replies: [],
+        expected_output: 'Return the result.',
+        review: { checks: ['Inspects the fixture.'], workspace_unchanged: true },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skill: 'eval-fixture',
+      cases: './evals/conversation-cases.json',
+      profiles: ['project-auto'],
+      defaultRuns: 1,
+      releaseSplits: ['validation'],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'cannot declare releaseSplits because conversation cases do not support split filtering',
+    );
   });
 
   it('rejects model execution for a user profile', async () => {
