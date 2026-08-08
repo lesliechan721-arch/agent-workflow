@@ -156,6 +156,25 @@ export function resolveCurrentCatalogCacheEntryDir(
   );
 }
 
+export function resolveCurrentCatalogCacheSelectorsDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveCurrentCatalogCacheRoot(env), 'selectors'),
+    'current catalog cache selectors',
+  );
+}
+
+export function resolveCurrentCatalogCacheSelectorIndexPath(
+  selectorHash: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return assertWritableCatalogCachePathForTests(
+    path.join(resolveCurrentCatalogCacheSelectorsDir(env), `${selectorHash}.json`),
+    'current catalog cache selector index',
+  );
+}
+
 export function resolveCurrentCatalogCacheStagingDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {

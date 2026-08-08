@@ -21,7 +21,10 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
-import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
+import {
+  CURRENT_CATALOG_MANIFEST_FILE,
+  CURRENT_CATALOG_MANIFEST_PACKAGE,
+} from '../constants.js';
 import { readInstallRecordFileAt } from '../install-state/facade.js';
 import type { InstallRecordArtifact } from '../install-state/types.js';
 import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
@@ -30,6 +33,8 @@ import {
   getCodexHome,
   resolveCurrentCatalogCacheEntriesDir,
   resolveCurrentCatalogCacheEntryDir,
+  resolveCurrentCatalogCacheSelectorIndexPath,
+  resolveCurrentCatalogCacheSelectorsDir,
   resolveCurrentCatalogCacheStagingDir,
   resolveAwHome,
   resolveCliPackageRoot,
@@ -341,11 +346,23 @@ export interface CurrentCatalogCacheIdentity {
   fullIntegrity: string;
 }
 
-export interface CurrentCatalogCacheEntryRecord extends CurrentCatalogCacheIdentity {
-  version: 1;
+interface CurrentCatalogCacheEntryRecordBase extends CurrentCatalogCacheIdentity {
   manifestDigest: string;
   createdAt: string;
 }
+
+export interface CurrentCatalogCacheEntryRecordV1 extends CurrentCatalogCacheEntryRecordBase {
+  version: 1;
+}
+
+export interface CurrentCatalogCacheEntryRecordV2 extends CurrentCatalogCacheEntryRecordBase {
+  version: 2;
+  publicationId: string;
+}
+
+export type CurrentCatalogCacheEntryRecord =
+  | CurrentCatalogCacheEntryRecordV1
+  | CurrentCatalogCacheEntryRecordV2;
 
 export interface CurrentCatalogCacheEntry {
   cacheKey: string;
@@ -353,7 +370,37 @@ export interface CurrentCatalogCacheEntry {
   rootDir: string;
   metadataPath: string;
   metadata: CurrentCatalogCacheEntryRecord;
+  validatedAt: string;
+  observation?: CurrentCatalogCacheObservation;
 }
+
+export interface CurrentCatalogCacheObservation {
+  sidecarManifestPackage: NonNullable<CatalogResolution['sidecarManifestPackage']>;
+  latestCatalog?: CatalogResolution['latestCatalog'];
+  latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
+  historySchemaVersion: number | null;
+  resolutionSource: NonNullable<NonNullable<CatalogResolution['fullCatalog']>['resolutionSource']>;
+}
+
+interface CurrentCatalogCacheSelectorIndexRecordV1 {
+  version: 1;
+  selectorKey: string;
+  cacheKey: string;
+  validatedAt: string;
+}
+
+interface CurrentCatalogCacheSelectorIndexRecordV2 {
+  version: 2;
+  selectorKey: string;
+  cacheKey: string;
+  publicationId: string;
+  validatedAt: string;
+  observation?: CurrentCatalogCacheObservation;
+}
+
+type CurrentCatalogCacheSelectorIndexRecord =
+  | CurrentCatalogCacheSelectorIndexRecordV1
+  | CurrentCatalogCacheSelectorIndexRecordV2;
 
 function createSha256Digest(value: Buffer | string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
@@ -393,6 +440,13 @@ export function buildCurrentCatalogCacheKey(
     .digest('hex');
 }
 
+function buildCurrentCatalogSelectorHash(selector: CatalogSelector): string {
+  return crypto
+    .createHash('sha256')
+    .update(serializeCatalogSelectorForCache(selector))
+    .digest('hex');
+}
+
 function getCurrentCatalogCacheMetadataPath(entryDir: string): string {
   return path.join(entryDir, 'entry.json');
 }
@@ -401,23 +455,520 @@ function getCurrentCatalogCacheRootDir(entryDir: string): string {
   return path.join(entryDir, 'catalog');
 }
 
+function isPublicationId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
+}
+
 function isCurrentCatalogCacheEntryRecord(value: unknown): value is CurrentCatalogCacheEntryRecord {
   if (!isRecord(value)) {
     return false;
   }
 
   return (
-    value.version === 1 &&
-    isRecord(value.selector) &&
-    typeof value.channel === 'string' &&
-    typeof value.catalogVersion === 'string' &&
-    typeof value.minAwVersion === 'string' &&
-    typeof value.schemaVersion === 'number' &&
-    (value.historySchemaVersion === null || typeof value.historySchemaVersion === 'number') &&
-    typeof value.sidecarIntegrity === 'string' &&
-    typeof value.fullIntegrity === 'string' &&
-    typeof value.manifestDigest === 'string' &&
-    typeof value.createdAt === 'string'
+    ((value.version === 1 &&
+      value.publicationId === undefined &&
+      value.observation === undefined) || (
+      value.version === 2 &&
+      isPublicationId(value.publicationId)
+    )) &&
+    isCatalogSelector(value.selector) &&
+    isCatalogChannel(value.channel) &&
+    isStrictSemVerString(value.catalogVersion) &&
+    isStrictSemVerString(value.minAwVersion) &&
+    typeof value.schemaVersion === 'number' && Number.isInteger(value.schemaVersion) &&
+    value.schemaVersion >= 1 &&
+    (value.historySchemaVersion === null || (
+      typeof value.historySchemaVersion === 'number' && Number.isInteger(value.historySchemaVersion)
+    )) &&
+    typeof value.sidecarIntegrity === 'string' && value.sidecarIntegrity.trim() !== '' &&
+    typeof value.fullIntegrity === 'string' && value.fullIntegrity.trim() !== '' &&
+    typeof value.manifestDigest === 'string' && /^sha256:[a-f0-9]{64}$/.test(value.manifestDigest) &&
+    typeof value.createdAt === 'string' &&
+    Number.isFinite(Date.parse(value.createdAt)) &&
+    Date.parse(value.createdAt) <= Date.now() + 1_000
+  );
+}
+
+function isCurrentCatalogCacheSelectorIndexRecord(
+  value: unknown,
+): value is CurrentCatalogCacheSelectorIndexRecord {
+  if (
+    !isRecord(value) ||
+    typeof value.selectorKey !== 'string' ||
+    typeof value.cacheKey !== 'string' ||
+    typeof value.validatedAt !== 'string' ||
+    !Number.isFinite(Date.parse(value.validatedAt))
+  ) {
+    return false;
+  }
+  if (value.version === 1) {
+    return value.publicationId === undefined && value.observation === undefined;
+  }
+  return value.version === 2 &&
+    isPublicationId(value.publicationId);
+}
+
+function isCatalogLatestEvidence(value: unknown): boolean {
+  return isRecord(value) &&
+    isCatalogChannel(value.channel) &&
+    isStrictSemVerString(value.catalogVersion) &&
+    isStrictSemVerString(value.minAwVersion) &&
+    typeof value.blocked === 'boolean';
+}
+
+function isCurrentCatalogCacheObservation(value: unknown): value is CurrentCatalogCacheObservation {
+  if (!isRecord(value) || !isRecord(value.sidecarManifestPackage)) {
+    return false;
+  }
+  const sidecar = value.sidecarManifestPackage;
+  return typeof sidecar.source === 'string' && sidecar.source.trim() !== '' &&
+    isStrictSemVerString(sidecar.version) &&
+    isCatalogChannel(sidecar.channel) &&
+    typeof sidecar.manifestDigest === 'string' &&
+    (sidecar.npmIntegrity === undefined || typeof sidecar.npmIntegrity === 'string') &&
+    (value.latestCatalog === undefined || isCatalogLatestEvidence(value.latestCatalog)) &&
+    (value.latestCatalogBlocked === undefined || (
+      isRecord(value.latestCatalogBlocked) &&
+      isCatalogChannel(value.latestCatalogBlocked.channel) &&
+      isStrictSemVerString(value.latestCatalogBlocked.catalogVersion) &&
+      isStrictSemVerString(value.latestCatalogBlocked.minAwVersion)
+    )) &&
+    (value.historySchemaVersion === null || Number.isInteger(value.historySchemaVersion)) &&
+    (value.resolutionSource === 'requestedCatalog' || value.resolutionSource === 'historyCompatibleCatalog');
+}
+
+function getRequestedCatalogChannelForCache(selector: CatalogSelector): CatalogChannel | null {
+  return selector.kind === 'exactVersion'
+    ? null
+    : selector.requestedChannel ?? selector.defaultChannel;
+}
+
+function sameCatalogLatestEvidence(
+  left: NonNullable<CurrentCatalogCacheObservation['latestCatalog']>,
+  right: NonNullable<CurrentCatalogCacheObservation['latestCatalogBlocked']>,
+): boolean {
+  return left.channel === right.channel &&
+    left.catalogVersion === right.catalogVersion &&
+    left.minAwVersion === right.minAwVersion;
+}
+
+function isCurrentCatalogCacheObservationForEntry(
+  value: unknown,
+  entry: CurrentCatalogCacheEntry,
+): value is CurrentCatalogCacheObservation {
+  if (!isCurrentCatalogCacheObservation(value)) {
+    return false;
+  }
+  const { metadata } = entry;
+  const sidecar = value.sidecarManifestPackage;
+  if (
+    sidecar.source !== CURRENT_CATALOG_MANIFEST_PACKAGE ||
+    sidecar.version !== metadata.catalogVersion ||
+    sidecar.channel !== metadata.channel ||
+    sidecar.manifestDigest !== metadata.manifestDigest ||
+    sidecar.npmIntegrity !== metadata.sidecarIntegrity ||
+    value.historySchemaVersion !== metadata.historySchemaVersion ||
+    compareStrictSemVer(metadata.minAwVersion, metadata.selector.cliVersion) > 0
+  ) {
+    return false;
+  }
+
+  const requestedChannel = getRequestedCatalogChannelForCache(metadata.selector);
+  if (
+    (metadata.selector.kind === 'exactVersion' &&
+      metadata.catalogVersion !== metadata.selector.requestedCatalogVersion) ||
+    (requestedChannel !== null && metadata.channel !== requestedChannel)
+  ) {
+    return false;
+  }
+
+  const latest = value.latestCatalog;
+  const blocked = value.latestCatalogBlocked;
+  if (value.resolutionSource === 'requestedCatalog') {
+    return latest !== undefined &&
+      latest.channel === metadata.channel &&
+      latest.catalogVersion === metadata.catalogVersion &&
+      latest.minAwVersion === metadata.minAwVersion &&
+      latest.blocked === false &&
+      blocked === undefined;
+  }
+
+  return metadata.selector.kind !== 'exactVersion' &&
+    latest !== undefined &&
+    latest.blocked === true &&
+    blocked !== undefined &&
+    sameCatalogLatestEvidence(latest, blocked) &&
+    latest.channel === metadata.channel &&
+    compareStrictSemVer(latest.catalogVersion, metadata.catalogVersion) > 0 &&
+    compareStrictSemVer(latest.minAwVersion, metadata.selector.cliVersion) > 0 &&
+    metadata.historySchemaVersion !== null;
+}
+
+async function readCurrentCatalogCacheEntryByKey(
+  cacheKey: string,
+  expectedSelectorKey: string,
+  env: NodeJS.ProcessEnv,
+): Promise<CurrentCatalogCacheEntry | null> {
+  if (!/^[a-f0-9]{64}$/.test(cacheKey)) {
+    return null;
+  }
+  const entryDir = resolveCurrentCatalogCacheEntryDir(cacheKey, env);
+  return readCurrentCatalogCacheEntryAt(cacheKey, expectedSelectorKey, entryDir);
+}
+
+async function readCurrentCatalogCacheEntryAt(
+  cacheKey: string,
+  expectedSelectorKey: string,
+  entryDir: string,
+): Promise<CurrentCatalogCacheEntry | null> {
+  const metadataPath = getCurrentCatalogCacheMetadataPath(entryDir);
+  const rootDir = getCurrentCatalogCacheRootDir(entryDir);
+  const metadata = await readJsonFileIfExistsSafe<unknown>(metadataPath);
+  if (
+    !isCurrentCatalogCacheEntryRecord(metadata) ||
+    serializeCatalogSelectorForCache(metadata.selector) !== expectedSelectorKey ||
+    buildCurrentCatalogCacheKey(metadata) !== cacheKey
+  ) {
+    return null;
+  }
+
+  const manifestPath = path.join(rootDir, CURRENT_CATALOG_MANIFEST_FILE);
+  const manifest = await fs.readFile(manifestPath).catch(() => null);
+  if (manifest === null || createSha256Digest(manifest) !== metadata.manifestDigest) {
+    return null;
+  }
+
+  return {
+    cacheKey,
+    selectorKey: expectedSelectorKey,
+    rootDir,
+    metadataPath,
+    metadata,
+    validatedAt: metadata.createdAt,
+  };
+}
+
+async function validateCurrentCatalogCacheEntryForReuse(
+  entry: CurrentCatalogCacheEntry,
+  validateExisting?: (rootDir: string) => Promise<boolean>,
+): Promise<boolean> {
+  return validateExisting === undefined || await validateExisting(entry.rootDir);
+}
+
+async function restoreQuarantinedCurrentCatalogCacheEntry(
+  quarantinedEntryDir: string,
+  finalEntryDir: string,
+): Promise<void> {
+  try {
+    await fs.rename(quarantinedEntryDir, finalEntryDir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') {
+      throw error;
+    }
+  }
+}
+
+function applyCurrentCatalogCacheSelectorIndex(
+  entry: CurrentCatalogCacheEntry,
+  index: unknown,
+): CurrentCatalogCacheEntry | null {
+  if (
+    !isCurrentCatalogCacheSelectorIndexRecord(index) ||
+    index.selectorKey !== entry.selectorKey ||
+    index.cacheKey !== entry.cacheKey ||
+    (entry.metadata.version === 2 && (
+      index.version !== 2 ||
+      index.publicationId !== entry.metadata.publicationId
+    )) ||
+    (entry.metadata.version === 1 && index.version !== 1)
+  ) {
+    return null;
+  }
+  const validatedAtMs = Date.parse(index.validatedAt);
+  if (
+    validatedAtMs < Date.parse(entry.metadata.createdAt) ||
+    validatedAtMs > Date.now() + 1_000
+  ) {
+    return entry;
+  }
+  return {
+    ...entry,
+    validatedAt: index.validatedAt,
+    ...(index.version === 2 && isCurrentCatalogCacheObservationForEntry(index.observation, entry)
+      ? { observation: index.observation }
+      : {}),
+  };
+}
+
+async function readCurrentCatalogCacheEntryFromSelectorIndex(
+  selectorKey: string,
+  index: unknown,
+  env: NodeJS.ProcessEnv,
+): Promise<CurrentCatalogCacheEntry | null> {
+  if (
+    !isCurrentCatalogCacheSelectorIndexRecord(index) ||
+    index.selectorKey !== selectorKey
+  ) {
+    return null;
+  }
+  const entry = await readCurrentCatalogCacheEntryByKey(index.cacheKey, selectorKey, env);
+  return entry === null ? null : applyCurrentCatalogCacheSelectorIndex(entry, index);
+}
+
+async function restoreDisplacedCurrentCatalogCacheSelectorIndex(
+  displacedIndexPath: string,
+  indexPath: string,
+  selectorKey: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const removeDisplacedIndex = async (): Promise<void> => {
+    await fs.remove(displacedIndexPath);
+  };
+  const keepValidPublishedIndex = async (): Promise<boolean> => {
+    const current = await readJsonFileIfExistsSafe<unknown>(indexPath);
+    return await readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, current, env) !== null;
+  };
+
+  try {
+    await fs.link(displacedIndexPath, indexPath);
+    await removeDisplacedIndex();
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return;
+    }
+    if (code === 'EEXIST') {
+      if (await keepValidPublishedIndex()) {
+        await removeDisplacedIndex();
+        return;
+      }
+      throw error;
+    }
+    if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') {
+      throw error;
+    }
+  }
+
+  try {
+    await fs.copyFile(displacedIndexPath, indexPath, fs.constants.COPYFILE_EXCL);
+    await removeDisplacedIndex();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST' && await keepValidPublishedIndex()) {
+      await removeDisplacedIndex();
+      return;
+    }
+    if (code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+function createCurrentCatalogCacheSelectorIndexRecord(
+  entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
+  validatedAt: string,
+): CurrentCatalogCacheSelectorIndexRecord {
+  return entry.metadata.version === 2
+    ? {
+        version: 2,
+        selectorKey: entry.selectorKey,
+        cacheKey: entry.cacheKey,
+        publicationId: entry.metadata.publicationId,
+        validatedAt,
+        ...(entry.observation ? { observation: entry.observation } : {}),
+      }
+    : {
+        version: 1,
+        selectorKey: entry.selectorKey,
+        cacheKey: entry.cacheKey,
+        validatedAt,
+      };
+}
+
+async function writeCurrentCatalogCacheSelectorIndexIfAbsent(
+  entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
+  validatedAt: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const selectorsDir = resolveCurrentCatalogCacheSelectorsDir(env);
+  const selectorHash = crypto.createHash('sha256').update(entry.selectorKey).digest('hex');
+  const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
+  await fs.ensureDir(selectorsDir);
+  const stagedIndexPath = path.join(
+    selectorsDir,
+    `.${selectorHash}-${crypto.randomUUID()}.tmp`,
+  );
+  try {
+    await writeJsonFile(
+      stagedIndexPath,
+      createCurrentCatalogCacheSelectorIndexRecord(entry, validatedAt),
+    );
+    try {
+      await fs.link(stagedIndexPath, indexPath);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        return false;
+      }
+      if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') {
+        throw error;
+      }
+    }
+    try {
+      await fs.copyFile(stagedIndexPath, indexPath, fs.constants.COPYFILE_EXCL);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return false;
+      }
+      throw error;
+    }
+  } finally {
+    await fs.remove(stagedIndexPath);
+  }
+}
+
+async function writeCurrentCatalogCacheSelectorIndex(
+  entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
+  validatedAt: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  const selectorsDir = resolveCurrentCatalogCacheSelectorsDir(env);
+  const selectorHash = crypto.createHash('sha256').update(entry.selectorKey).digest('hex');
+  const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
+  await fs.ensureDir(selectorsDir);
+  signal?.throwIfAborted();
+  const stagedIndexPath = path.join(
+    selectorsDir,
+    `.${selectorHash}-${crypto.randomUUID()}.tmp`,
+  );
+  const displacedIndexPath = `${stagedIndexPath}.old`;
+  let displacedIndex = false;
+  let indexPublished = false;
+  try {
+    const index = createCurrentCatalogCacheSelectorIndexRecord(entry, validatedAt);
+    await writeJsonFile(stagedIndexPath, index);
+    signal?.throwIfAborted();
+    try {
+      await fs.rename(stagedIndexPath, indexPath);
+      indexPublished = true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') {
+        throw error;
+      }
+      await fs.rename(indexPath, displacedIndexPath).catch((renameError: NodeJS.ErrnoException) => {
+        if (renameError.code !== 'ENOENT') {
+          throw renameError;
+        }
+      });
+      displacedIndex = await fs.pathExists(displacedIndexPath);
+      signal?.throwIfAborted();
+      await fs.rename(stagedIndexPath, indexPath);
+      indexPublished = true;
+    }
+  } catch (error) {
+    if (displacedIndex) {
+      await restoreDisplacedCurrentCatalogCacheSelectorIndex(
+        displacedIndexPath,
+        indexPath,
+        entry.selectorKey,
+        env,
+      );
+      displacedIndex = false;
+    }
+    throw error;
+  } finally {
+    await fs.remove(stagedIndexPath);
+    if (displacedIndex && indexPublished) {
+      await fs.remove(displacedIndexPath);
+    }
+  }
+}
+
+export async function markCurrentCatalogCacheEntryValidated(
+  entry: CurrentCatalogCacheEntry,
+  env: NodeJS.ProcessEnv = process.env,
+  validatedAt = new Date().toISOString(),
+  observation = entry.observation,
+  signal?: AbortSignal,
+): Promise<CurrentCatalogCacheEntry> {
+  signal?.throwIfAborted();
+  const { observation: _storedObservation, ...unobservedEntry } = entry;
+  const observedEntry = isCurrentCatalogCacheObservationForEntry(observation, entry)
+    ? { ...unobservedEntry, observation }
+    : unobservedEntry;
+  await writeCurrentCatalogCacheSelectorIndex(observedEntry, validatedAt, env, signal);
+  return entry.metadata.version === 2
+    ? { ...observedEntry, validatedAt }
+    : { ...unobservedEntry, validatedAt };
+}
+
+async function readConcurrentCurrentCatalogCacheSelectorIndex(
+  selectorKey: string,
+  indexPath: string,
+  env: NodeJS.ProcessEnv,
+): Promise<CurrentCatalogCacheEntry | null> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const index = await readJsonFileIfExistsSafe<unknown>(indexPath);
+    const entry = await readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, index, env);
+    if (entry) {
+      return entry;
+    }
+    if (attempt < 3) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return null;
+}
+
+export async function readCurrentCatalogCacheEntryBySelector(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CurrentCatalogCacheEntry | null> {
+  const selectorKey = serializeCatalogSelectorForCache(selector);
+  const selectorHash = buildCurrentCatalogSelectorHash(selector);
+  const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
+  const index = await readJsonFileIfExistsSafe<unknown>(indexPath);
+  const indexedEntry = await readCurrentCatalogCacheEntryFromSelectorIndex(
+    selectorKey,
+    index,
+    env,
+  );
+  if (indexedEntry) {
+    return indexedEntry;
+  }
+
+  const entriesDir = resolveCurrentCatalogCacheEntriesDir(env);
+  const entries = await fs.readdir(entriesDir).catch(() => [] as string[]);
+  let newest: CurrentCatalogCacheEntry | null = null;
+  for (const cacheKey of entries) {
+    const candidate = await readCurrentCatalogCacheEntryByKey(cacheKey, selectorKey, env);
+    if (
+      candidate?.metadata.version === 1 &&
+      (!newest || Date.parse(candidate.metadata.createdAt) > Date.parse(newest.metadata.createdAt))
+    ) {
+      newest = candidate;
+    }
+  }
+  if (!newest) {
+    return null;
+  }
+
+  if (await writeCurrentCatalogCacheSelectorIndexIfAbsent(newest, newest.validatedAt, env)) {
+    return newest;
+  }
+
+  return readConcurrentCurrentCatalogCacheSelectorIndex(
+    selectorKey,
+    indexPath,
+    env,
   );
 }
 
@@ -427,14 +978,12 @@ export async function readCurrentCatalogCacheEntry(
 ): Promise<CurrentCatalogCacheEntry | null> {
   const selectorKey = serializeCatalogSelectorForCache(identity.selector);
   const cacheKey = buildCurrentCatalogCacheKey(identity);
-  const entryDir = resolveCurrentCatalogCacheEntryDir(cacheKey, env);
-  const metadataPath = getCurrentCatalogCacheMetadataPath(entryDir);
-  const rootDir = getCurrentCatalogCacheRootDir(entryDir);
-
-  const metadata = await readJsonFileIfExistsSafe<unknown>(metadataPath);
-  if (!isCurrentCatalogCacheEntryRecord(metadata)) {
+  const entry = await readCurrentCatalogCacheEntryByKey(cacheKey, selectorKey, env);
+  if (!entry) {
     return null;
   }
+
+  const { metadata } = entry;
 
   if (
     serializeCatalogSelectorForCache(metadata.selector) !== selectorKey ||
@@ -449,32 +998,24 @@ export async function readCurrentCatalogCacheEntry(
     return null;
   }
 
-  const manifestPath = path.join(rootDir, CURRENT_CATALOG_MANIFEST_FILE);
-  if (!(await fs.pathExists(manifestPath))) {
-    return null;
-  }
-
-  const manifestDigest = createSha256Digest(await fs.readFile(manifestPath));
-  if (manifestDigest !== metadata.manifestDigest) {
-    return null;
-  }
-
-  return {
-    cacheKey,
-    selectorKey,
-    rootDir,
-    metadataPath,
-    metadata,
-  };
+  const selectorIndex = await readJsonFileIfExistsSafe<unknown>(
+    resolveCurrentCatalogCacheSelectorIndexPath(buildCurrentCatalogSelectorHash(identity.selector), env),
+  );
+  return applyCurrentCatalogCacheSelectorIndex(entry, selectorIndex) ??
+    (entry.metadata.version === 1 ? entry : null);
 }
 
 export async function writeCurrentCatalogCacheEntry(
   options: CurrentCatalogCacheIdentity & {
     sourceRoot: string;
     env?: NodeJS.ProcessEnv;
+    observation?: CurrentCatalogCacheObservation;
+    signal?: AbortSignal;
+    validateExisting?: (rootDir: string) => Promise<boolean>;
   },
 ): Promise<CurrentCatalogCacheEntry> {
   const env = options.env ?? process.env;
+  options.signal?.throwIfAborted();
   const selectorKey = serializeCatalogSelectorForCache(options.selector);
   const cacheKey = buildCurrentCatalogCacheKey(options);
   const entriesDir = resolveCurrentCatalogCacheEntriesDir(env);
@@ -484,16 +1025,20 @@ export async function writeCurrentCatalogCacheEntry(
   const finalEntryDir = resolveCurrentCatalogCacheEntryDir(cacheKey, env);
   const finalRootDir = getCurrentCatalogCacheRootDir(finalEntryDir);
   const metadataPath = getCurrentCatalogCacheMetadataPath(finalEntryDir);
+  let publishedByThisWriter = false;
 
   try {
     await fs.ensureDir(entriesDir);
+    options.signal?.throwIfAborted();
     const stagedRootDir = getCurrentCatalogCacheRootDir(stagingDir);
     await fs.copy(options.sourceRoot, stagedRootDir);
+    options.signal?.throwIfAborted();
 
     const manifestPath = path.join(stagedRootDir, CURRENT_CATALOG_MANIFEST_FILE);
     const manifestDigest = createSha256Digest(await fs.readFile(manifestPath));
-    const metadata: CurrentCatalogCacheEntryRecord = {
-      version: 1,
+    const metadata: CurrentCatalogCacheEntryRecordV2 = {
+      version: 2,
+      publicationId: crypto.randomUUID(),
       selector: options.selector,
       channel: options.channel,
       catalogVersion: options.catalogVersion,
@@ -506,20 +1051,75 @@ export async function writeCurrentCatalogCacheEntry(
       createdAt: new Date().toISOString(),
     };
     await writeJsonFile(getCurrentCatalogCacheMetadataPath(stagingDir), metadata);
+    options.signal?.throwIfAborted();
 
-    await fs.remove(finalEntryDir);
-    await fs.move(stagingDir, finalEntryDir, { overwrite: true });
+    for (let attempt = 0; attempt < 4 && !publishedByThisWriter; attempt += 1) {
+      try {
+        await fs.rename(stagingDir, finalEntryDir);
+        publishedByThisWriter = true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') {
+          throw error;
+        }
+        const existing = await readCurrentCatalogCacheEntryByKey(cacheKey, selectorKey, env);
+        if (existing && await validateCurrentCatalogCacheEntryForReuse(
+          existing,
+          options.validateExisting,
+        )) {
+          return markCurrentCatalogCacheEntryValidated(
+            existing,
+            env,
+            new Date().toISOString(),
+            options.observation,
+            options.signal,
+          );
+        }
+        const displaced = path.join(stagingParent, `corrupt-${cacheKey}-${crypto.randomUUID()}`);
+        await fs.rename(finalEntryDir, displaced).catch((renameError: NodeJS.ErrnoException) => {
+          if (renameError.code !== 'ENOENT') {
+            throw renameError;
+          }
+        });
+        const displacedEntry = await readCurrentCatalogCacheEntryAt(
+          cacheKey,
+          selectorKey,
+          displaced,
+        );
+        if (displacedEntry && await validateCurrentCatalogCacheEntryForReuse(
+          displacedEntry,
+          options.validateExisting,
+        )) {
+          await restoreQuarantinedCurrentCatalogCacheEntry(displaced, finalEntryDir);
+        } else {
+          await fs.remove(displaced);
+        }
+        options.signal?.throwIfAborted();
+      }
+    }
+    if (!publishedByThisWriter) {
+      throw new Error(`Unable to publish current catalog cache entry ${cacheKey}.`);
+    }
+    options.signal?.throwIfAborted();
 
-    return {
+    const entry = {
       cacheKey,
       selectorKey,
       rootDir: finalRootDir,
       metadataPath,
       metadata,
+      validatedAt: metadata.createdAt,
+      ...(options.observation ? { observation: options.observation } : {}),
     };
-  } catch (error) {
+    return markCurrentCatalogCacheEntryValidated(
+      entry,
+      env,
+      metadata.createdAt,
+      options.observation,
+      options.signal,
+    );
+  } finally {
     await fs.remove(stagingDir);
-    throw error;
   }
 }
 

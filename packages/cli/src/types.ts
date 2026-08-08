@@ -1475,7 +1475,8 @@ export interface CatalogRemoteFailureEvidence {
     | 'fullMetadata'
     | 'fullTarball'
     | 'fullManifest'
-    | 'artifactDigest';
+    | 'artifactDigest'
+    | 'deadline';
   packageName?: string;
   packageVersion?: CatalogVersion;
   integrity?: string;
@@ -1499,6 +1500,13 @@ export interface CatalogResolutionFailure {
     | 'explicitCatalogIncompatible';
 }
 
+export interface CatalogCacheStateEvidence {
+  state: 'fresh' | 'stale' | 'refreshFailed';
+  validatedAt: string;
+  ageMs: number;
+  ttlMs: number;
+}
+
 export interface CatalogResolution {
   rootDir: string;
   source: 'local' | 'embedded' | 'remote' | 'cache';
@@ -1513,6 +1521,7 @@ export interface CatalogResolution {
   historySchemaVersion?: number | null;
   cacheFallback?: CatalogCacheFallbackEvidence;
   remoteFailure?: CatalogRemoteFailureEvidence;
+  cacheState?: CatalogCacheStateEvidence;
   reason?: string;
   reasonCode?:
     | 'localCatalogMissing'

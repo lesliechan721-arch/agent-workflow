@@ -13,6 +13,8 @@ import {
   resolveCurrentCatalogCacheEntriesDir,
   resolveCurrentCatalogCacheEntryDir,
   resolveCurrentCatalogCacheRoot,
+  resolveCurrentCatalogCacheSelectorIndexPath,
+  resolveCurrentCatalogCacheSelectorsDir,
   resolveCurrentCatalogCacheStagingDir,
   resolveCodexPaths,
   resolveCodexProjectKey,
@@ -41,6 +43,8 @@ describe('project key paths', () => {
     expect(resolveCurrentCatalogCacheRoot(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache'));
     expect(resolveCurrentCatalogCacheEntriesDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries'));
     expect(resolveCurrentCatalogCacheEntryDir('cache-key', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries', 'cache-key'));
+    expect(resolveCurrentCatalogCacheSelectorsDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors'));
+    expect(resolveCurrentCatalogCacheSelectorIndexPath('selector-hash', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors', 'selector-hash.json'));
     expect(resolveCurrentCatalogCacheStagingDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'staging'));
     expect(resolveCliTempRoot(process.env)).toBe(path.join(isolation.layout.tmpDir, 'aw-cli'));
   });
