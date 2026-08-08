@@ -7,6 +7,12 @@
 - 不根据 validation 结果反向修改 description；先在 train 上迭代，最后只用 validation 检查泛化。
 - 显式 `$commit` 由 Codex 在模型运行前直接注入，不会产生隐式加载所需的 shell 读取事件，因此不放进隐式触发 corpus；常规插件测试改为验证 portable frontmatter 与真实 Codex bundle 元数据。
 
+## 行为设计用例
+
+`behavior-cases.json` 保存 8 条提交行为设计用例，覆盖非琐碎 body、琐碎提交、部分暂存、范围外已暂存内容、仓库 message 规范、提交后继续 push、进行中的 Git 操作和 hook 拒绝。
+
+这些用例由 `pnpm plugin:test git-commit` 校验结构和核心合同，但不在 `evals/manifest.json` 中声明为模型 suite。当前中央 conversation runner 使用只读 workspace，不能创建真实 commit；因此这些用例不是目标客户端行为通过证据。要形成此类证据，需要单独提供隔离且可写的 Git 行为 runner，并继续通过 `pnpm plugin:eval` 运行。
+
 ## 运行真实触发评测
 
 需要已登录且支持 `codex exec --json` 的 Codex：
@@ -40,7 +46,7 @@ pnpm plugin:test git-commit
 
 常规插件测试不会调用模型。它会验证：
 
-- eval corpus、Git fixture、环境隔离和语义状态 snapshot；
+- trigger/behavior corpus、Git fixture、环境隔离和语义状态 snapshot；
 - `pnpm plugin:test` 临时 bundle 中 Claude/Codex 的实际模板渲染结果；
 - 部分暂存提交只记录 index 内容并保留未暂存 hunks；
 - 普通 porcelain 状态不会明确标识已解决但尚未完成的 merge，而完整 `git status` 可以识别该状态。

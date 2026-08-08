@@ -23,7 +23,7 @@
     {
       "id": "english_commit",
       "split": "train",
-      "query": "Commit the current changes with an appropriate conventional commit message.",
+      "query": "Commit these changes with a useful summary of what changed.",
       "should_load_skill": true
     },
     {
@@ -35,7 +35,7 @@
     {
       "id": "scoped_fix_commit",
       "split": "train",
-      "query": "把配置加载修复创建成一个 Git commit，scope 使用 cli。",
+      "query": "把配置加载修复创建成一个 Git commit，scope 使用 cli，body 用几条说明主要变化。",
       "should_load_skill": true
     },
     {
@@ -77,7 +77,7 @@
     {
       "id": "terse_commit",
       "split": "validation",
-      "query": "这次修复可以收尾了，落一个 Git 提交。",
+      "query": "帮我 git commti 一下，正文别只写标题。",
       "should_load_skill": true
     },
     {

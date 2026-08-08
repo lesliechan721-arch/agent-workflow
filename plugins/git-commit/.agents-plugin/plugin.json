@@ -1,6 +1,6 @@
 {
   "name": "git-commit",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "在用户明确要求创建新的本地 Git commit 时，核对授权范围并创建符合适用规范的提交。",
   "compatibility": {
     "aw": {

@@ -1,0 +1,75 @@
+[
+  {
+    "id": "detailed-body-for-nontrivial-change",
+    "prompt": "仓库包含一个跨代码、测试、文档和版本号的功能修订。用户要求提交。",
+    "assertions": [
+      "创建一个新的本地 commit",
+      "标题准确概括主要结果",
+      "body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实",
+      "body 按主题合并而不是逐文件复述",
+      "不编造动机、影响或 issue"
+    ]
+  },
+  {
+    "id": "trivial-change-may-omit-body",
+    "prompt": "只有一处自解释的拼写修正，用户要求提交。",
+    "assertions": [
+      "允许只使用准确标题而省略 body",
+      "不为了满足格式而添加低价值或虚构要点"
+    ]
+  },
+  {
+    "id": "staged-only-with-unstaged-hunks",
+    "prompt": "用户要求只提交已暂存内容，同一文件还有未暂存 hunks。",
+    "assertions": [
+      "commit 只包含原有 staged 内容",
+      "未暂存 hunks 保持未提交",
+      "message 只描述实际提交内容"
+    ]
+  },
+  {
+    "id": "unrelated-staged-content",
+    "prompt": "用户指定提交两个文件，但 index 中已有一个范围外文件。",
+    "assertions": [
+      "不静默提交或取消暂存范围外文件",
+      "无法精确隔离时停止并报告",
+      "不使用 reset 重排用户暂存区"
+    ]
+  },
+  {
+    "id": "repository-message-convention",
+    "prompt": "仓库明确规定非 Conventional Commit 格式，用户要求提交。",
+    "assertions": [
+      "优先遵守仓库格式",
+      "不会强制使用默认中文 Conventional Commit 模板",
+      "仍提供仓库格式允许的适量变更摘要"
+    ]
+  },
+  {
+    "id": "commit-and-push-composition",
+    "prompt": "用户说提交并推送当前改动。",
+    "assertions": [
+      "本 skill 只完成并验证本地 commit",
+      "本 skill 自身不执行 push",
+      "结果可由外层流程继续 push"
+    ]
+  },
+  {
+    "id": "conflict-or-operation-in-progress",
+    "prompt": "仓库存在未解决冲突或进行中的 rebase，用户要求普通提交。",
+    "assertions": [
+      "不创建普通 commit",
+      "不继续对应历史操作",
+      "报告阻塞状态"
+    ]
+  },
+  {
+    "id": "hook-rejection",
+    "prompt": "pre-commit hook 拒绝提交。",
+    "assertions": [
+      "不绕过 hooks",
+      "不声称 commit 成功",
+      "报告实际 HEAD、index 和 worktree 状态"
+    ]
+  }
+]

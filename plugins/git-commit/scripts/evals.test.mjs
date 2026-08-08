@@ -63,7 +63,7 @@ async function resolveTestContext() {
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.equal(context.plugin.name, 'git-commit');
-  assert.equal(context.plugin.version, '0.1.6');
+  assert.equal(context.plugin.version, '0.1.7');
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,
@@ -72,11 +72,13 @@ async function resolveTestContext() {
   };
 }
 
-async function testEvalCorpus(sourceRoot) {
-  const document = JSON.parse(await readFile(
-    path.join(sourceRoot, 'evals', 'trigger-cases.json'),
-    'utf8',
-  ));
+async function testEvalCorpora(sourceRoot) {
+  const [triggerContent, behaviorContent] = await Promise.all([
+    readFile(path.join(sourceRoot, 'evals', 'trigger-cases.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'evals', 'behavior-cases.json'), 'utf8'),
+  ]);
+  const document = JSON.parse(triggerContent);
+  const behaviorCases = JSON.parse(behaviorContent);
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, 'commit');
@@ -88,6 +90,7 @@ async function testEvalCorpus(sourceRoot) {
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
+    ['english_commit', true],
     ['commit_and_push', true],
     ['draft_message_only', false],
     ['stage_only', false],
@@ -96,6 +99,7 @@ async function testEvalCorpus(sourceRoot) {
     ['non_git_commitment', false],
     ['merge_operation', false],
     ['scoped_fix_commit', true],
+    ['terse_commit', true],
   ]);
   for (const [id, shouldLoad] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);
@@ -103,6 +107,46 @@ async function testEvalCorpus(sourceRoot) {
     assert.equal(entry.should_load_skill, shouldLoad);
   }
   assert.equal(cases.some((entry) => entry.query.includes('$commit')), false);
+  assert.match(cases.find((entry) => entry.id === 'english_commit').query, /useful summary/);
+  assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').query, /body/);
+  assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
+
+  assert.equal(Array.isArray(behaviorCases), true);
+  assert.equal(behaviorCases.length, 8);
+  assert.equal(new Set(behaviorCases.map((entry) => entry.id)).size, behaviorCases.length);
+  for (const entry of behaviorCases) {
+    assert.equal(typeof entry.prompt, 'string');
+    assert.notEqual(entry.prompt.trim(), '');
+    assert.equal(Array.isArray(entry.assertions), true);
+    assert.ok(entry.assertions.length >= 2);
+    assert.equal(
+      entry.assertions.every(
+        (assertion) => typeof assertion === 'string' && assertion.trim() !== '',
+      ),
+      true,
+    );
+  }
+  const expectedBehaviorContracts = new Map([
+    [
+      'detailed-body-for-nontrivial-change',
+      'body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实',
+    ],
+    ['trivial-change-may-omit-body', '允许只使用准确标题而省略 body'],
+    ['staged-only-with-unstaged-hunks', 'message 只描述实际提交内容'],
+    ['unrelated-staged-content', '不使用 reset 重排用户暂存区'],
+    ['repository-message-convention', '优先遵守仓库格式'],
+    ['commit-and-push-composition', '结果可由外层流程继续 push'],
+    ['conflict-or-operation-in-progress', '不继续对应历史操作'],
+    ['hook-rejection', '不绕过 hooks'],
+  ]);
+  for (const [id, expectedAssertion] of expectedBehaviorContracts) {
+    const entry = behaviorCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required behavior case ${id}`);
+    assert.ok(
+      entry.assertions.includes(expectedAssertion),
+      `Missing required behavior assertion for ${id}`,
+    );
+  }
 }
 
 function assertRenderedSkill(skill) {
@@ -113,24 +157,31 @@ function assertRenderedSkill(skill) {
 }
 
 function assertCoreCommitContract(skill) {
-  assert.match(skill, /只有用户明确要求实际创建提交时，才可改变暂存区或创建 commit/);
-  assert.match(skill, /push 不属于本 skill 的职责/);
-  assert.match(skill, /后续 push 由外层任务依据同一用户请求中的明确授权处理/);
-  assert.match(skill, /commit 必须只包含用户授权范围/);
-  assert.match(skill, /无法精确隔离时停止并报告/);
-  assert.match(skill, /存在进行中的 Git 操作或未解决冲突时停止并报告/);
-  assert.match(skill, /本 skill 不继续对应操作/);
-  assert.match(skill, /需要暂存时只操作已确认候选并使用精确路径/);
-  assert.match(skill, /不使用 `git add \.`、`git add -A`/);
-  assert.match(skill, /<type>: <中文描述>/);
-  assert.match(skill, /不绕过 hooks，不执行 amend、reset/);
-  assert.match(skill, /不得主动改变范围外状态/);
-  assert.match(skill, /历史改写或范围外暂存重排/);
-  assert.match(skill, /提交前重新核对完整候选/);
-  assert.match(skill, /创建一次 commit/);
-  assert.match(skill, /失败后不自动重试或回滚/);
-  assert.match(skill, /核对新 `HEAD` 的内容和最终 message/);
-  assert.match(skill, /不保证自动恢复到操作前状态/);
+  assert.match(
+    skill,
+    /只提交用户授权改动，不主动改变范围外的 index、worktree 或既有历史/,
+  );
+  assert.match(skill, /本 skill 不执行 push/);
+  assert.match(
+    skill,
+    /范围无法精确隔离、存在未解决冲突或进行中的 Git 操作时停止并报告/,
+  );
+  assert.match(skill, /检查状态和相关 diff，确定提交范围与 message/);
+  assert.match(skill, /需要暂存时仅使用精确路径/);
+  assert.match(skill, /不使用 `git add \.` 或 `git add -A`/);
+  assert.match(skill, /核对完整 staged diff 后正常运行 hooks，创建一个新 commit/);
+  assert.match(skill, /验证新 commit，报告 hash、subject 和剩余改动/);
+  assert.match(skill, /失败时报告实际的 HEAD、index 和 worktree 状态/);
+  assert.match(skill, /优先遵守用户和仓库规范；否则使用中文 Conventional Commit/);
+  assert.match(skill, /<type>\(<scope>\): <中文标题>/);
+  assert.match(skill, /scope 没有明确模块时省略/);
+  assert.match(skill, /body 是供后续检索的变更摘要/);
+  assert.match(skill, /非琐碎提交通常写 2–4 条，最多 4 条/);
+  assert.match(skill, /可由 diff 或仓库上下文证实的关键事实/);
+  assert.match(skill, /合并同类改动，不逐文件复述/);
+  assert.match(skill, /不为凑数加入实现噪音/);
+  assert.match(skill, /原因或影响没有证据时不推测/);
+  assert.match(skill, /琐碎单点改动可省略 body/);
 }
 
 async function testSkillRenders(context) {
@@ -139,8 +190,9 @@ async function testSkillRenders(context) {
     'utf8',
   );
 
-  assert.match(source, /当用户明确要求实际创建一次新的本地 Git commit 时必须使用/);
+  assert.match(source, /当用户要求实际创建新的本地 Git commit 时使用/);
   assert.equal(source.includes('user-invocable:'), false);
+  assert.equal(source.includes('metadata:'), false);
 
   if (context.platform) {
     const [bundledSkill, bundledOpenai] = await Promise.all([
@@ -358,7 +410,7 @@ async function testCherryPickConflictDetection() {
 
 async function main() {
   const context = await resolveTestContext();
-  await testEvalCorpus(context.sourceRoot);
+  await testEvalCorpora(context.sourceRoot);
   await testSkillRenders(context);
   await testWorkspaceFixture();
   await testHostileGitConfigurationIsIgnored();
