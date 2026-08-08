@@ -453,6 +453,7 @@ export async function preflightCodexProjectWriteSafety(options: {
   scope: Scope;
   env?: NodeJS.ProcessEnv;
   operation: 'install' | 'upgrade' | 'refresh';
+  previousArtifactsByPlugin?: Record<string, GeneratedArtifact[]>;
 }): Promise<void> {
   await preflightCodexRoleWriteSafety(options);
 
@@ -464,6 +465,25 @@ export async function preflightCodexProjectWriteSafety(options: {
   const repoRoot = await resolveRepoRoot(options.cwd);
   const userConfigPath = resolveCodexPaths(options.cwd, 'user', env).configTomlPath;
   const trackingManifest = await readProjectTrackingManifest(options.cwd, env);
+  const recoveredTrackingRecords = Object.fromEntries(
+    Object.entries(options.previousArtifactsByPlugin ?? {}).map(([pluginName, artifacts]) => [
+      pluginName,
+      {
+        name: pluginName,
+        generatedAt: new Date().toISOString(),
+        artifacts,
+      } satisfies TrackingPluginRecord,
+    ]),
+  );
+  const effectiveTrackingManifest = Object.keys(recoveredTrackingRecords).length === 0
+    ? trackingManifest
+    : {
+        ...trackingManifest,
+        plugins: {
+          ...trackingManifest.plugins,
+          ...recoveredTrackingRecords,
+        },
+      };
 
   let userConfig: Awaited<ReturnType<typeof readCodexConfigFile>>;
   try {
@@ -488,7 +508,7 @@ export async function preflightCodexProjectWriteSafety(options: {
       );
     }
 
-    const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
+    const trackingRecord = getTrackingRecord(effectiveTrackingManifest, target.pluginName);
     const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(
       trackingRecord?.artifacts ?? [],
     );
@@ -517,7 +537,7 @@ export async function preflightCodexProjectWriteSafety(options: {
       repoRoot,
       pluginName: target.pluginName,
       desiredArtifacts,
-      trackingManifest,
+      trackingManifest: effectiveTrackingManifest,
       trackingRecord,
       projectConfigSnapshot,
     });

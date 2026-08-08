@@ -1040,7 +1040,7 @@ describe('CodexAdapter', () => {
         '        roleFile: {',
         '          name: "codex-explorer",',
         '          description: "Read-only code exploration role.",',
-        '          developer_instructions: `event=${context.event};scope=${context.scope};model=${context.config.values.explorerModel}`,',
+        "          developer_instructions: `event=${context.event};scope=${context.scope};model=${context.config.values.explorerModel};previous=${context.previousArtifacts.map((artifact) => artifact.id).join(',')}` ,",
         '          model: context.config.values.explorerModel,',
         '          model_reasoning_effort: context.config.values.modelReasoningEffort',
         '        }',
@@ -1064,7 +1064,7 @@ describe('CodexAdapter', () => {
     const adapter = new CodexAdapter(cwd, env);
     const paths = resolveCodexPaths(cwd, 'project', env);
 
-    const artifacts = await adapter.installExtensions(plugin, 'project', { event: 'upgrade' });
+    let artifacts = await adapter.installExtensions(plugin, 'project', { event: 'upgrade' });
     const roleFilePath = path.join(
       paths.configDir,
       'agents',
@@ -1093,6 +1093,31 @@ describe('CodexAdapter', () => {
         refreshKeys: ['explorerModel', 'modelReasoningEffort'],
       }),
     ]));
+    artifacts = await adapter.installExtensions(plugin, 'project', {
+      event: 'refresh',
+      dynamicOnly: true,
+      changedConfigKeys: ['modelReasoningEffort'],
+      previousArtifacts: artifacts,
+    });
+    await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
+      'previous=codex-explorer-role,lightweight-instruction',
+    );
+
+    const refreshedEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(refreshedEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
+    const acceptedRoleContent = await fs.readFile(roleFilePath, 'utf8');
+    await fs.appendFile(roleFilePath, '\n# user drift\n');
+    const driftStatus = await adapter.status(plugin, 'project', {
+      previousArtifacts: artifacts,
+    });
+    expect(driftStatus.plugins[0]?.managedArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        health: 'contentDrift',
+      }),
+    ]));
+    await fs.writeFile(roleFilePath, acceptedRoleContent, 'utf8');
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
     const trackedArtifacts = (await readTrackingManifest(paths.trackingDir))
       .plugins[plugin.manifest.name]?.artifacts ?? [];
@@ -1118,7 +1143,7 @@ describe('CodexAdapter', () => {
 
     const scopeConfig = await readCodexConfigFile(paths.configTomlPath);
     expect(scopeConfig.snapshot.developerInstructions.managedBlocks['dynamic-artifacts']?.value).toContain(
-      'instruction-event=upgrade',
+      'instruction-event=refresh',
     );
     expect(scopeConfig.snapshot.agents['codex-explorer']).toEqual({
       key: 'codex-explorer',
@@ -1126,7 +1151,7 @@ describe('CodexAdapter', () => {
       configFile: 'agents/aw-dynamic-artifacts-codex-explorer.toml',
     });
     await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
-      'developer_instructions = "event=upgrade;scope=project;model=gpt-5.4-mini"',
+      'developer_instructions = "event=refresh;scope=project;model=gpt-5.4-mini;previous=codex-explorer-role,lightweight-instruction"',
     );
     await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
       'model_reasoning_effort = "medium"',

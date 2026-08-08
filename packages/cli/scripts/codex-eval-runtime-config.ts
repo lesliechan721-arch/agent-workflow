@@ -711,8 +711,8 @@ export async function createCodexEvalRuntimeCapsule(
   let cleaned = false;
   const cleanup = async (): Promise<void> => {
     if (cleaned) return;
-    cleaned = true;
     await temporaryRoot.cleanup();
+    cleaned = true;
   };
   try {
     await materializeCodexEvalRuntimeHome(runtime, home);

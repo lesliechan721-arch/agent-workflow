@@ -382,6 +382,7 @@ function parseCommandReport(stdout: string, reportPath: string): Record<string, 
 }
 
 async function runCommandSuite(options: {
+  pluginName: string;
   suite: PluginEvalCommandSuite;
   split: PluginEvalSplit | null;
   profile: string;
@@ -403,6 +404,7 @@ async function runCommandSuite(options: {
   const rawReportPath = path.join(
     options.codexRuntimeHome,
     'command-reports',
+    options.pluginName,
     `${reportName}.json`,
   );
   await fs.ensureDir(path.dirname(reportPath));
@@ -744,6 +746,7 @@ async function runOnePlugin(options: {
             reports.push(report);
           } else {
             reports.push(await runCommandSuite({
+              pluginName: sourcePlugin.manifest.name,
               suite,
               split,
               profile,

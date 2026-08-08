@@ -2180,6 +2180,7 @@ describe('install command P6 install-state semantics', () => {
           id: 'dynamic-claude-skill',
           target: 'claude.skill',
           state: 'present',
+          refreshKeys: ['mode'],
           contentDigest,
         }];
       },
@@ -2233,6 +2234,7 @@ describe('install command P6 install-state semantics', () => {
             kind: 'skill',
             target: 'claude.skill',
             artifactKey: 'dynamic-claude',
+            refreshKeys: ['mode'],
           })],
         },
       },

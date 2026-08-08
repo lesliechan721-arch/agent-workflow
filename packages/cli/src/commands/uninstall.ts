@@ -960,14 +960,16 @@ export async function captureArtifactRollbackState(
   scope: CommandOptions['scope'],
   cwd: string,
   env: NodeJS.ProcessEnv,
+  trackedArtifactsOverride?: GeneratedArtifact[],
 ): Promise<ArtifactRollbackState> {
   if (platform === 'codex') {
     const paths = resolveCodexPaths(cwd, scope, env);
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
     const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
-    const trackedSkillArtifacts = (trackingRecord?.artifacts ?? []).filter((artifact) =>
+    const trackedArtifacts = trackedArtifactsOverride ?? trackingRecord?.artifacts ?? [];
+    const trackedSkillArtifacts = trackedArtifacts.filter((artifact) =>
       artifact.kind === 'skill' && artifact.target === 'codex.skill');
-    const trackedAgentArtifacts = (trackingRecord?.artifacts ?? []).filter((artifact) =>
+    const trackedAgentArtifacts = trackedArtifacts.filter((artifact) =>
       artifact.kind === 'agent');
     await assertCanonicalTrackedCodexArtifactMainPaths({
       cwd,
@@ -1024,18 +1026,18 @@ export async function captureArtifactRollbackState(
         artifact.scopes.includes(scope) &&
         (artifact.target === 'codex.developerInstructionsBlock' || artifact.target === 'codex.agentRole'));
     const rollbackPaths = uniqueArtifactPaths([
-      ...(trackingRecord?.artifacts
+      ...trackedArtifacts
         .filter((artifact) => artifact.kind === 'permission')
-        .map((artifact) => artifact.path) ?? []),
+        .map((artifact) => artifact.path),
       ...skillRollbackPaths,
       ...agentRollbackPaths,
-      ...((trackingRecord?.artifacts ?? []).some((artifact) =>
+      ...(trackedArtifacts.some((artifact) =>
         artifact.kind === 'instruction' || artifact.kind === 'mcpServer') ||
         trackedAgentArtifacts.length > 0 ||
         declaredConfigTargets
         ? [paths.configTomlPath]
         : []),
-      ...((trackingRecord?.artifacts ?? []).some((artifact) => artifact.kind === 'hook')
+      ...(trackedArtifacts.some((artifact) => artifact.kind === 'hook')
         ? [paths.hooksPath]
         : []),
     ]);
@@ -1062,9 +1064,10 @@ export async function captureArtifactRollbackState(
   const paths = resolveClaudePaths(cwd, scope, env);
   const trackingManifest = await readTrackingManifest(paths.trackingDir);
   const trackingRecord = getTrackingRecord(trackingManifest, target.pluginName);
+  const trackedArtifacts = trackedArtifactsOverride ?? trackingRecord?.artifacts ?? [];
   const settings = await readClaudeSettings(paths.settingsPath);
   const skillPaths = await resolveOwnedOrAbsentRollbackPaths({
-    trackedArtifacts: (trackingRecord?.artifacts ?? []).filter((artifact) =>
+    trackedArtifacts: trackedArtifacts.filter((artifact) =>
       artifact.kind === 'skill' && artifact.target === 'claude.skill'),
     declaredPaths: ((target.currentPlugin ?? target.plugin).manifest.artifacts?.targets ?? [])
       .filter((artifact) =>
@@ -1085,7 +1088,7 @@ export async function captureArtifactRollbackState(
 
   return {
     files: await Promise.all(
-      (trackingRecord?.artifacts ?? [])
+      trackedArtifacts
         .filter((artifact) => artifact.kind === 'instruction')
         .map((artifact) => captureTextFile(artifact.path)),
     ),

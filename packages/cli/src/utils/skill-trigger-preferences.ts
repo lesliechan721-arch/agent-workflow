@@ -192,6 +192,7 @@ export interface SkillTriggerPolicyResolution {
   pluginRoot: string;
   platform: PlatformName;
   applicability: SkillTriggerApplicability;
+  dynamicSkillNames: string[];
   policies: SkillTriggerPolicyEntry[];
 }
 
@@ -746,7 +747,14 @@ async function resolveSkillTriggerPoliciesFromPluginRoot(options: {
     manifestPath: options.manifestPath,
     pluginRoot: options.pluginRoot,
     platform: options.platform,
-    applicability: getSkillTriggerApplicabilityFromPolicies(policies),
+    applicability: mergeSkillTriggerApplicability([
+      getSkillTriggerApplicabilityFromPolicies(policies),
+      getDynamicSkillTriggerApplicability({
+        manifest: options.manifest,
+        platform: options.platform,
+      }),
+    ]),
+    dynamicSkillNames: [...dynamicSkillKeys].sort(),
     policies,
   };
 }
@@ -780,13 +788,7 @@ export async function resolveSkillTriggerApplicabilityForPlugin(
     manifest: plugin.manifest,
     platform,
   });
-  return mergeSkillTriggerApplicability([
-    resolution.applicability,
-    getDynamicSkillTriggerApplicability({
-      manifest: plugin.manifest,
-      platform,
-    }),
-  ]);
+  return resolution.applicability;
 }
 
 export async function resolveSkillTriggerConfigEntries(
@@ -1625,6 +1627,15 @@ export async function resolveSkillTriggerStatusReportFields(options: {
     if (manifestDriftWarning) {
       warnings.push(manifestDriftWarning);
     }
+  }
+
+  if (policyResolution.dynamicSkillNames.length > 0) {
+    return {
+      ...base,
+      skillTriggerRuntimeState: 'unknown',
+      skillTriggerDrift: 'unknown',
+      warnings,
+    };
   }
 
   if (

@@ -345,6 +345,31 @@ describe('Codex eval runtime config', () => {
     await expect(fs.pathExists(capsuleRoot)).resolves.toBe(false);
   });
 
+  it('retries capsule cleanup after a temporary root removal failure', async () => {
+    const root = await tempRoot();
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    });
+    const capsule = await createCodexEvalRuntimeCapsule(runtime, { CODEX_HOME: root });
+    const capsuleRoot = path.dirname(capsule.home);
+    const removeSpy = vi.spyOn(fs, 'remove');
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      removeSpy.mockRejectedValueOnce(new Error('temporary lock'));
+    }
+
+    try {
+      await expect(capsule.cleanup()).rejects.toThrow(
+        'Could not remove Codex eval temporary root after 4 attempts',
+      );
+      await expect(fs.pathExists(capsuleRoot)).resolves.toBe(true);
+      await expect(capsule.cleanup()).resolves.toBeUndefined();
+      await expect(fs.pathExists(capsuleRoot)).resolves.toBe(false);
+    } finally {
+      removeSpy.mockRestore();
+    }
+  });
+
   it('redacts provider endpoint, header, environment, and official auth values', async () => {
     const customRoot = await tempRoot();
     await fs.writeFile(path.join(customRoot, 'config.toml'), [

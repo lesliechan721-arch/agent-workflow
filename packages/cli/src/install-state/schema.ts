@@ -458,6 +458,7 @@ export function validateInstallRecordArtifact(
       'id',
       'target',
       'state',
+      'refreshKeys',
       'roleKey',
       'ownershipMarker',
       'configDigest',
@@ -476,6 +477,9 @@ export function validateInstallRecordArtifact(
   });
   if (!validated.ok) {
     return validated;
+  }
+  if (value.refreshKeys !== undefined && !isStringArray(value.refreshKeys)) {
+    return fail('invalidArtifact', `Invalid ${context}.refreshKeys: expected a string array.`);
   }
   return ok(value as unknown as InstallRecordArtifact);
 }

@@ -442,8 +442,14 @@ async function collectGeneratedArtifacts(
     return [];
   }
 
+  return collectGeneratedArtifactStatuses(trackingRecord.artifacts);
+}
+
+async function collectGeneratedArtifactStatuses(
+  artifacts: GeneratedArtifact[],
+): Promise<GeneratedArtifactStatus[]> {
   return Promise.all(
-    trackingRecord.artifacts.map(async (artifact) => {
+    artifacts.map(async (artifact) => {
       if (artifact.state === 'disabled') {
         return {
           ...artifact,
@@ -665,13 +671,28 @@ export class ClaudeAdapter implements PlatformAdapter {
       dynamicOnly?: boolean;
       skillTriggerPreference?: SkillTriggerPreference;
       skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
+      previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
 
     try {
-      const trackingManifest = await readTrackingManifest(paths.trackingDir);
+      const diskTrackingManifest = await readTrackingManifest(paths.trackingDir);
+      const diskTrackingRecord = getTrackingRecord(diskTrackingManifest, plugin.manifest.name);
+      const trackingManifest = _options?.previousArtifacts === undefined
+        ? diskTrackingManifest
+        : {
+            ...diskTrackingManifest,
+            plugins: {
+              ...diskTrackingManifest.plugins,
+              [plugin.manifest.name]: {
+                name: plugin.manifest.name,
+                generatedAt: diskTrackingRecord?.generatedAt ?? new Date().toISOString(),
+                artifacts: _options.previousArtifacts,
+              },
+            },
+          };
       const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
       const event = _options?.event ?? 'install';
       const dynamicOnly = _options?.dynamicOnly === true;
@@ -882,7 +903,11 @@ export class ClaudeAdapter implements PlatformAdapter {
     await this.installExtensions(plugin, scope, { event: 'upgrade' });
   }
 
-  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+  async status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: { previousArtifacts?: GeneratedArtifact[] },
+  ): Promise<StatusReport> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
     const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog] =
@@ -891,7 +916,9 @@ export class ClaudeAdapter implements PlatformAdapter {
         readKnownMarketplaceState(paths.knownMarketplacesPath),
         readClaudeInstalledPluginsState(paths.installedPluginsPath),
         readInstalledLedger(this.env),
-        collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir),
+        options?.previousArtifacts === undefined
+          ? collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir)
+          : collectGeneratedArtifactStatuses(options.previousArtifacts),
         resolveCurrentCatalog(this.env),
       ]);
 
@@ -943,7 +970,14 @@ export class ClaudeAdapter implements PlatformAdapter {
       projectKey,
     );
     const trackingManifest = await readTrackingManifest(paths.trackingDir);
-    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const diskTrackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const trackingRecord = options?.previousArtifacts === undefined
+      ? diskTrackingRecord
+      : {
+          name: plugin.manifest.name,
+          generatedAt: diskTrackingRecord?.generatedAt ?? new Date().toISOString(),
+          artifacts: options.previousArtifacts,
+        };
     const hasScopeManagedEvidence = Boolean(
       (scopeInitialized === 'yes') ||
       trackingRecord,

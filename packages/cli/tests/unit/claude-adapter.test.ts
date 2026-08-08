@@ -148,6 +148,11 @@ async function createDynamicClaudePlugin(
   await fs.outputFile(
     path.join(sourceRoot, 'scripts', 'render-artifacts.mjs'),
     [
+      'import { readFileSync } from "node:fs";',
+      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'if (context.event === "refresh" && !context.previousArtifacts.some((artifact) => artifact.id === "dynamic-claude-skill")) {',
+      '  throw new Error("missing previous dynamic Claude artifact");',
+      '}',
       'console.log(JSON.stringify({',
       '  version: 2,',
       '  artifacts: [{',
@@ -236,6 +241,36 @@ function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capa
 }
 
 describe('ClaudeAdapter', () => {
+  it('uses recovered artifacts for refresh renderer context, ownership, and drift status', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const initialArtifacts = await adapter.installExtensions(plugin, 'project');
+
+    const refreshedArtifacts = await adapter.installExtensions(plugin, 'project', {
+      event: 'refresh',
+      dynamicOnly: true,
+      changedConfigKeys: ['aw.skillTriggers.dynamic-claude.trigger'],
+      previousArtifacts: initialArtifacts,
+    });
+    expect(refreshedArtifacts).toEqual([
+      expect.objectContaining({
+        id: 'dynamic-claude-skill',
+        target: 'claude.skill',
+      }),
+    ]);
+
+    await setupLocalMarketplace(repoRoot, env);
+    const skillRoot = refreshedArtifacts[0]!.path;
+    await fs.appendFile(path.join(skillRoot, 'SKILL.md'), '\nUser drift.\n');
+    const status = await adapter.status(plugin, 'project', {
+      previousArtifacts: refreshedArtifacts,
+    });
+    expect(status.plugins[0]?.driftWarnings).toContain(
+      'Claude 动态 skill 文件树与 tracking contentDigest 不一致。',
+    );
+  });
+
   it('materializes project dynamic skills from ordered static sources and renderer overrides', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));

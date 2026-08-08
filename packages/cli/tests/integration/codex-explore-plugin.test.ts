@@ -25,7 +25,12 @@ import {
 } from '../../src/utils/paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
-import { getTrackingManifestPath, readTrackingManifest } from '../../src/utils/tracking.js';
+import {
+  getTrackingManifestPath,
+  readTrackingManifest,
+  removeTrackingRecordFromManifest,
+  writeTrackingManifest,
+} from '../../src/utils/tracking.js';
 import {
   setNativeCliRunnerOverrideForTests,
   type NativeCliInvocation,
@@ -4013,6 +4018,75 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
       scope: 'project',
     }), 'codex-explore-skill')).toMatchObject({
       state: 'present',
+    });
+  });
+
+  it('refreshes an installed Codex project skill after its tracking record is lost', async () => {
+    const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
+
+    await initCommand({ force: true });
+    await writePluginConfigStore({
+      pluginName: 'codex-explore',
+      scope: 'project',
+      cwd: repoRoot,
+      env: process.env,
+      values: {
+        minimumInitialWaitMinutes: 20,
+      },
+    });
+    await installCommand(
+      ['codex-explore'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'codex',
+      },
+      createCodexExploreRuntime(repoRoot, process.env),
+    );
+
+    const projectPaths = resolveCodexPaths(repoRoot, 'project', process.env);
+    const trackingBefore = await readTrackingManifest(projectPaths.trackingDir);
+    await writeTrackingManifest(
+      projectPaths.trackingDir,
+      removeTrackingRecordFromManifest(trackingBefore, 'codex-explore'),
+    );
+
+    const result = await runCliEntry(
+      ['config', 'set', 'codex-explore', 'minimumInitialWaitMinutes', '26', '-s', 'project', '--json'],
+      {
+        cwd: repoRoot,
+        env: process.env,
+      },
+    );
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: true,
+      artifactRefresh: {
+        attempted: true,
+        status: 'succeeded',
+        triggerKeys: ['minimumInitialWaitMinutes'],
+      },
+    });
+    await expect(fs.readFile(
+      path.join(repoRoot, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
+      'utf8',
+    )).resolves.toContain('至少 `26` 分钟累计等待预算');
+    await expect(readTrackingManifest(projectPaths.trackingDir)).resolves.toMatchObject({
+      plugins: {
+        'codex-explore': {
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'codex-explore-skill',
+              lastRefresh: expect.objectContaining({
+                status: 'succeeded',
+                triggerKeys: ['minimumInitialWaitMinutes'],
+              }),
+            }),
+          ]),
+        },
+      },
     });
   });
 

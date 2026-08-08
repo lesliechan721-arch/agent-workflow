@@ -589,6 +589,7 @@ function toInstallRecordArtifacts(
     ...(artifact.id === undefined ? {} : { id: artifact.id }),
     ...(artifact.target === undefined ? {} : { target: artifact.target }),
     ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.refreshKeys === undefined ? {} : { refreshKeys: [...artifact.refreshKeys] }),
     ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
     ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }

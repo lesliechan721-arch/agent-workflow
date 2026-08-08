@@ -81,6 +81,7 @@ export interface InstallRecordArtifact {
   id?: string;
   target?: ArtifactTarget;
   state?: ArtifactState;
+  refreshKeys?: string[];
   roleKey?: string;
   ownershipMarker?: string;
   configDigest?: string;

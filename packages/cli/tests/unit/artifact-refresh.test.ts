@@ -41,7 +41,10 @@ vi.mock('../../src/utils/local-marketplace.js', async (importOriginal) => {
   };
 });
 
-import { reapplyConfigRefresh } from '../../src/utils/artifact-refresh.js';
+import {
+  reapplyConfigRefresh,
+  refreshArtifactsAfterConfigWrite,
+} from '../../src/utils/artifact-refresh.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
 import type { GeneratedArtifact, PluginMeta, SkillTriggerPreference } from '../../src/types.js';
 import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
@@ -240,6 +243,7 @@ async function writeHistoricalInstallRecord(options: {
         ...(artifact.id === undefined ? {} : { id: artifact.id }),
         ...(artifact.target === undefined ? {} : { target: artifact.target }),
         ...(artifact.state === undefined ? {} : { state: artifact.state }),
+        ...(artifact.refreshKeys === undefined ? {} : { refreshKeys: [...artifact.refreshKeys] }),
         ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
           ? { ownershipMarker: artifact.artifactKey ?? artifact.path }
           : {}),
@@ -266,6 +270,131 @@ afterEach(async () => {
 });
 
 describe('artifact refresh reapply helper', () => {
+  it('rebuilds a config-write refresh unit from install-state when tracking is missing', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-missing-tracking-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin();
+    const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
+    const artifactPath = codexPaths.configTomlPath;
+    await fs.outputFile(artifactPath, 'before\n');
+    const installedArtifact = createTrackedDynamicArtifact({
+      artifactPath,
+      refreshKeys: ['mode'],
+    });
+    await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'project',
+      artifacts: [installedArtifact],
+    });
+    codexAdapterInstallExtensions.mockImplementation(async (_plugin, _scope, options: {
+      changedConfigKeys?: string[];
+      previousArtifacts?: GeneratedArtifact[];
+    }) => {
+      expect(options.changedConfigKeys).toEqual(['mode']);
+      expect(options.previousArtifacts).toEqual([
+        expect.objectContaining({
+          id: 'dynamic-instruction',
+          refreshKeys: ['mode'],
+        }),
+      ]);
+      return [createTrackedDynamicArtifact({
+        artifactPath,
+        refreshKeys: ['mode'],
+      })];
+    });
+
+    const receipt = await refreshArtifactsAfterConfigWrite({
+      plugin,
+      commandScope: 'project',
+      cwd: repoRoot,
+      env,
+      changedKeys: ['mode'],
+    });
+
+    expect(receipt.status, receipt.error).toBe('succeeded');
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'succeeded',
+      triggerKeys: ['mode'],
+    });
+    expect(codexAdapterInstallExtensions).toHaveBeenCalledTimes(1);
+    await expect(readTrackingManifest(codexPaths.trackingDir)).resolves.toMatchObject({
+      plugins: {
+        [plugin.manifest.name]: {
+          artifacts: [expect.objectContaining({
+            id: 'dynamic-instruction',
+            refreshKeys: ['mode'],
+          })],
+        },
+      },
+    });
+  });
+
+  it('rebuilds a reapply unit without tracking and records renderer failure diagnostics', async () => {
+    const root = await makeTempRoot('aw-artifact-reapply-missing-tracking-');
+    const repoRoot = path.join(root, 'repo');
+    const env = {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    } as NodeJS.ProcessEnv;
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    const plugin = createPlugin();
+    const artifactPath = resolveCodexPaths(repoRoot, 'project', env).configTomlPath;
+    await fs.outputFile(artifactPath, 'before\n');
+    const installedArtifact = createTrackedDynamicArtifact({
+      artifactPath,
+      refreshKeys: ['mode'],
+    });
+    await writeHistoricalInstallRecord({
+      root,
+      repoRoot,
+      env,
+      plugin,
+      scope: 'project',
+      artifacts: [installedArtifact],
+    });
+    codexAdapterInstallExtensions.mockRejectedValueOnce(new Error('renderer failed'));
+
+    const receipt = await reapplyConfigRefresh({
+      plugin,
+      commandScope: 'project',
+      cwd: repoRoot,
+      env,
+    });
+
+    expect(receipt).toMatchObject({
+      attempted: true,
+      status: 'failed',
+      triggerKeys: ['mode'],
+      error: 'renderer failed',
+    });
+    const location: PluginLocation = {
+      plugin: plugin.manifest.name,
+      platform: 'codex',
+      scope: 'project',
+      projectKey: await resolveCodexProjectKey(repoRoot),
+    };
+    await expect(fs.readJson(getDiagnosticCachePath(repoRoot, location, env))).resolves.toMatchObject({
+      artifacts: [expect.objectContaining({
+        id: 'dynamic-instruction',
+        refreshKeys: ['mode'],
+        lastRefresh: expect.objectContaining({
+          status: 'failed',
+          event: 'config',
+          error: 'renderer failed',
+        }),
+      })],
+    });
+  });
+
   it('prefers failed artifact triggerKeys and writes a succeeded refresh result back to tracking', async () => {
     const root = await makeTempRoot('aw-artifact-refresh-');
     const repoRoot = path.join(root, 'repo');
@@ -328,6 +457,7 @@ describe('artifact refresh reapply helper', () => {
       env,
     });
 
+    expect(receipt.status, receipt.error).toBe('succeeded');
     expect(receipt).toMatchObject({
       attempted: true,
       status: 'succeeded',
@@ -339,6 +469,12 @@ describe('artifact refresh reapply helper', () => {
         manifest: expect.objectContaining({ version: '0.0.9' }),
       }),
       'project',
+      {
+        previousArtifacts: [expect.objectContaining({
+          id: 'dynamic-instruction',
+          refreshKeys: ['mode', 'token'],
+        })],
+      },
     );
     expect(preflightCodexProjectWriteSafety).toHaveBeenCalledWith(expect.objectContaining({
       targets: [
@@ -1416,7 +1552,7 @@ describe('artifact refresh reapply helper', () => {
   it.each([
     { surface: 'tracking', error: 'injected tracking failure' },
     { surface: 'install-state', error: 'injected install-state failure' },
-  ])('restores runtime and accepted state when $surface persistence fails', async ({ surface, error }) => {
+  ])('restores runtime from install-state when tracking is missing and $surface persistence fails', async ({ surface, error }) => {
     const root = await makeTempRoot('aw-artifact-refresh-transaction-');
     const repoRoot = path.join(root, 'repo');
     const env = {
@@ -1469,17 +1605,15 @@ describe('artifact refresh reapply helper', () => {
       artifacts: [trackedArtifact],
       historicalVersion: '0.0.7',
     });
-    await writeTrackingManifest(claudePaths.trackingDir, {
-      version: 1,
-      plugins: {
-        [plugin.manifest.name]: {
-          name: plugin.manifest.name,
-          generatedAt: '2026-08-07T00:00:00.000Z',
-          artifacts: [trackedArtifact],
-        },
-      },
-    });
-    claudeAdapterInstallExtensions.mockImplementation(async () => {
+    claudeAdapterInstallExtensions.mockImplementation(async (_plugin, _scope, options: {
+      previousArtifacts?: GeneratedArtifact[];
+    }) => {
+      expect(options.previousArtifacts).toEqual([
+        expect.objectContaining({
+          id: 'transactional-claude-skill',
+          contentDigest: 'sha256:old-content',
+        }),
+      ]);
       await fs.outputFile(path.join(artifactPath, 'SKILL.md'), newSkill);
       return [{
         ...trackedArtifact,
@@ -1504,8 +1638,7 @@ describe('artifact refresh reapply helper', () => {
     expect(receipt.error).toContain(error);
     await expect(fs.readFile(path.join(artifactPath, 'SKILL.md'), 'utf8')).resolves.toBe(oldSkill);
     const trackingManifest = await readTrackingManifest(claudePaths.trackingDir);
-    expect(trackingManifest.plugins[plugin.manifest.name]?.artifacts[0]?.contentDigest)
-      .toBe('sha256:old-content');
+    expect(trackingManifest.plugins[plugin.manifest.name]).toBeUndefined();
     const location: PluginLocation = {
       plugin: plugin.manifest.name,
       platform: 'claude',

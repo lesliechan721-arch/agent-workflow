@@ -486,6 +486,65 @@ describe('plugin eval runner', () => {
     expect(persistedReport).toContain('[redacted]');
   });
 
+  it('isolates raw command reports for plugins with the same suite identity', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-command-isolation-'));
+    const outputRoot = path.join(root, 'output');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'first-command',
+      script: [
+        "import { mkdir, writeFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        "const outputIndex = process.argv.indexOf('--output');",
+        'const output = process.argv[outputIndex + 1];',
+        'await mkdir(path.dirname(output), { recursive: true });',
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: { plugin: 'first' } }));",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: [],
+    });
+    await writeCommandPlugin(root, {
+      name: 'second-command',
+      script: "process.stdout.write(JSON.stringify({ complete: true, passed: false, summary: { plugin: 'second' } }));\n",
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: [],
+    });
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      '--all',
+      '--no-inherit-codex-config',
+      '--output-dir',
+      outputRoot,
+    ], {
+      repoRoot: root,
+      env: process.env,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+    });
+
+    expect(exitCode, stderr).toBe(1);
+    const bundles = JSON.parse(stdout).bundles as Array<{
+      plugin: string;
+      suites: Array<{ outcome: string; summary: { plugin: string } }>;
+    }>;
+    expect(bundles.find((bundle) => bundle.plugin === 'first-command')?.suites[0]).toMatchObject({
+      outcome: 'passed',
+      summary: { plugin: 'first' },
+    });
+    expect(bundles.find((bundle) => bundle.plugin === 'second-command')?.suites[0]).toMatchObject({
+      outcome: 'failed',
+      summary: { plugin: 'second' },
+    });
+  });
+
   it.runIf(process.platform !== 'win32')(
     'reports an incomplete suite and kills descendants of a timed-out command',
     async () => {

@@ -2026,8 +2026,14 @@ async function collectGeneratedArtifacts(
     return [];
   }
 
+  return collectGeneratedArtifactStatuses(trackingRecord.artifacts);
+}
+
+async function collectGeneratedArtifactStatuses(
+  artifacts: GeneratedArtifact[],
+): Promise<GeneratedArtifactStatus[]> {
   return Promise.all(
-    trackingRecord.artifacts.map(async (artifact) => ({
+    artifacts.map(async (artifact) => ({
       path: artifact.path,
       exists: artifact.state === 'disabled' ? false : await fs.pathExists(artifact.path),
       kind: artifact.kind,
@@ -3881,6 +3887,7 @@ export class CodexAdapter implements PlatformAdapter {
       dynamicOnly?: boolean;
       skillTriggerPreference?: SkillTriggerPreference;
       skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
+      previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
@@ -3900,7 +3907,21 @@ export class CodexAdapter implements PlatformAdapter {
     };
 
     try {
-      const trackingManifest = await readTrackingManifest(paths.trackingDir);
+      const diskTrackingManifest = await readTrackingManifest(paths.trackingDir);
+      const diskTrackingRecord = getTrackingRecord(diskTrackingManifest, plugin.manifest.name);
+      const trackingManifest = options?.previousArtifacts === undefined
+        ? diskTrackingManifest
+        : {
+            ...diskTrackingManifest,
+            plugins: {
+              ...diskTrackingManifest.plugins,
+              [plugin.manifest.name]: {
+                name: plugin.manifest.name,
+                generatedAt: diskTrackingRecord?.generatedAt ?? new Date().toISOString(),
+                artifacts: options.previousArtifacts,
+              },
+            },
+          };
       const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
       const event = options?.event ?? 'install';
       const dynamicOnly = options?.dynamicOnly === true;
@@ -4454,13 +4475,19 @@ export class CodexAdapter implements PlatformAdapter {
     await this.installExtensions(plugin, scope, { event: 'upgrade' });
   }
 
-  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+  async status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: { previousArtifacts?: GeneratedArtifact[] },
+  ): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
     const [ledger, trackedGeneratedArtifacts, currentCatalog, projectKey, repoRoot, awHome] =
       await Promise.all([
         readInstalledLedger(this.env),
-        collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir),
+        options?.previousArtifacts === undefined
+          ? collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir)
+          : collectGeneratedArtifactStatuses(options.previousArtifacts),
         resolveCurrentCatalog(this.env),
         resolveCodexProjectKey(this.cwd),
         resolveRepoRoot(this.cwd),
@@ -4468,7 +4495,14 @@ export class CodexAdapter implements PlatformAdapter {
       ]);
     let generatedArtifacts = trackedGeneratedArtifacts;
     const trackingManifest = await readTrackingManifest(scopePaths.trackingDir);
-    const trackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const diskTrackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
+    const trackingRecord = options?.previousArtifacts === undefined
+      ? diskTrackingRecord
+      : {
+          name: plugin.manifest.name,
+          generatedAt: diskTrackingRecord?.generatedAt ?? new Date().toISOString(),
+          artifacts: options.previousArtifacts,
+        };
     const trackingIntegrityErrors = getTrackingArtifactIntegrityErrors(
       trackingRecord?.artifacts ?? [],
     );

@@ -1255,6 +1255,7 @@ export interface PlatformAdapter {
       dynamicOnly?: boolean;
       skillTriggerPreference?: SkillTriggerPreference;
       skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
+      previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(
@@ -1263,7 +1264,11 @@ export interface PlatformAdapter {
     generatedArtifacts?: GeneratedArtifact[],
   ): Promise<void>;
   upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
-  status(plugin: PluginMeta, scope: Scope): Promise<StatusReport>;
+  status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: { previousArtifacts?: GeneratedArtifact[] },
+  ): Promise<StatusReport>;
 }
 
 export interface LocalMarketplaceConfig {

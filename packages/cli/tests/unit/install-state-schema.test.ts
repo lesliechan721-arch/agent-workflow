@@ -217,6 +217,7 @@ describe('install-state schema', () => {
       path: '/tmp/role.toml',
       id: 'role-a',
       target: 'codex.agentRole',
+      refreshKeys: ['model'],
       roleKey: 'codex-explorer',
     }).ok).toBe(true);
     expect(validateInstallRecordArtifact({
@@ -257,6 +258,14 @@ describe('install-state schema', () => {
       state: 'present',
       contentDigest: 'sha256:content',
     }).ok).toBe(true);
+    expect(validateInstallRecordArtifact({
+      kind: 'instruction',
+      platform: 'codex',
+      path: '/tmp/instructions.md',
+      id: 'instruction-a',
+      target: 'codex.developerInstructionsBlock',
+      refreshKeys: 'model',
+    }).ok).toBe(false);
     expect(validateProjectArtifactIdentityArtifact({
       kind: 'instruction',
       platform: 'codex',

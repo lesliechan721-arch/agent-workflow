@@ -157,6 +157,156 @@ function uniqueSorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort();
 }
 
+function sameDynamicArtifactIdentity(
+  artifact: Pick<InstallRecordArtifact, 'id' | 'target' | 'artifactKey' | 'roleKey'>,
+  diagnostic: DynamicArtifactDiagnosticEntry,
+): boolean {
+  return artifact.id === diagnostic.id &&
+    artifact.target === diagnostic.target &&
+    (artifact.artifactKey === undefined || diagnostic.artifactKey === undefined ||
+      artifact.artifactKey === diagnostic.artifactKey) &&
+    (artifact.roleKey === undefined || diagnostic.roleKey === undefined ||
+      artifact.roleKey === diagnostic.roleKey);
+}
+
+function restoreInstallStateArtifact(options: {
+  artifact: InstallRecordArtifact;
+  diagnostic?: DynamicArtifactDiagnosticEntry;
+}): GeneratedArtifact {
+  const diagnosticLastRefresh = options.diagnostic?.lastRefresh;
+  const diagnosticRefreshReach = options.diagnostic?.refreshReach;
+
+  return {
+    path: options.artifact.path,
+    ...(options.artifact.paths?.length
+      ? { paths: [...options.artifact.paths] }
+      : {}),
+    kind: options.artifact.kind,
+    platform: options.artifact.platform,
+    ...(options.artifact.artifactKey === undefined
+      ? {}
+      : { artifactKey: options.artifact.artifactKey }),
+    ...(options.artifact.hookGroups === undefined
+      ? {}
+      : { hookGroups: structuredClone(options.artifact.hookGroups) }),
+    ...(options.artifact.id === undefined ? {} : { id: options.artifact.id }),
+    ...(options.artifact.target === undefined ? {} : { target: options.artifact.target }),
+    state: options.artifact.state ?? options.diagnostic?.state ?? 'present',
+    ...(options.diagnostic?.disabledReason === undefined
+      ? {}
+      : { disabledReason: options.diagnostic.disabledReason }),
+    ...(options.artifact.refreshKeys !== undefined
+      ? { refreshKeys: [...options.artifact.refreshKeys] }
+      : options.diagnostic?.refreshKeys !== undefined
+        ? { refreshKeys: [...options.diagnostic.refreshKeys] }
+        : {}),
+    ...(options.artifact.configDigest ?? options.diagnostic?.configDigest
+      ? { configDigest: options.artifact.configDigest ?? options.diagnostic?.configDigest }
+      : {}),
+    ...(options.artifact.contentDigest ?? options.diagnostic?.contentDigest
+      ? { contentDigest: options.artifact.contentDigest ?? options.diagnostic?.contentDigest }
+      : {}),
+    ...(options.artifact.roleKey === undefined ? {} : { roleKey: options.artifact.roleKey }),
+    ...(diagnosticLastRefresh
+      ? {
+          lastRefresh: {
+            status: diagnosticLastRefresh.status === 'success' ? 'succeeded' : 'failed',
+            updatedAt: diagnosticLastRefresh.at,
+            event: diagnosticLastRefresh.event === 'config'
+              ? 'refresh'
+              : diagnosticLastRefresh.event,
+            ...(diagnosticLastRefresh.error ? { error: diagnosticLastRefresh.error } : {}),
+          },
+        }
+      : {}),
+    ...(diagnosticRefreshReach
+      ? {
+          refreshReach: {
+            commandScope: diagnosticRefreshReach.commandScope === 'projectShared'
+              ? 'project'
+              : 'user',
+            ...(diagnosticRefreshReach.refreshedUserTarget === undefined
+              ? {}
+              : { refreshedUserTarget: diagnosticRefreshReach.refreshedUserTarget }),
+            ...(diagnosticRefreshReach.refreshedCurrentProjectTarget === undefined
+              ? {}
+              : { refreshedCurrentProjectTarget: diagnosticRefreshReach.refreshedCurrentProjectTarget }),
+          },
+        }
+      : {}),
+  };
+}
+
+async function createRefreshLocation(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+}): Promise<PluginLocation> {
+  if (options.scope === 'user') {
+    return {
+      plugin: options.pluginName,
+      platform: options.platform,
+      scope: 'user',
+    };
+  }
+
+  return {
+    plugin: options.pluginName,
+    platform: options.platform,
+    scope: 'project',
+    projectKey: options.platform === 'codex'
+      ? await resolveCodexProjectKey(options.cwd)
+      : await resolveClaudeProjectKey(options.cwd),
+  };
+}
+
+async function recoverRefreshTrackingRecord(options: {
+  plugin: PluginMeta;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  trackingRecord: TrackingPluginRecord | undefined;
+}): Promise<TrackingPluginRecord | undefined> {
+  const location = await createRefreshLocation({
+    pluginName: options.plugin.manifest.name,
+    platform: options.platform,
+    scope: options.scope,
+    cwd: options.cwd,
+  });
+  const recordRead = await readInstallRecordForLocation({
+    cwd: options.cwd,
+    location,
+    env: options.env,
+  });
+  if (recordRead.status !== 'ok') {
+    return options.trackingRecord;
+  }
+  const diagnosticRead = await readDynamicArtifactDiagnosticCacheForLocation({
+    cwd: options.cwd,
+    location,
+    currentRecord: recordRead.value,
+    env: options.env,
+  });
+  const diagnostics = diagnosticRead.status === 'ok' ? diagnosticRead.value.artifacts : [];
+  const recoveredArtifacts = recordRead.value.record.artifacts.map((artifact) =>
+    restoreInstallStateArtifact({
+      artifact,
+      diagnostic: diagnostics.find((entry) => sameDynamicArtifactIdentity(artifact, entry)),
+    }));
+  if (!recoveredArtifacts.some((artifact) =>
+    artifact.platform === options.platform && isTrackedDynamicArtifact(artifact))) {
+    return options.trackingRecord;
+  }
+
+  return {
+    name: options.plugin.manifest.name,
+    generatedAt: new Date().toISOString(),
+    artifacts: mergeGeneratedArtifacts(recoveredArtifacts, options.trackingRecord?.artifacts ?? []),
+  };
+}
+
 function assertArtifactRefreshStagingPathForTests(
   targetPath: string,
   source: string,
@@ -511,15 +661,29 @@ async function collectRefreshUnits(options: {
         ? resolveCodexPaths(options.cwd, scope, options.env).trackingDir
         : resolveClaudePaths(options.cwd, scope, options.env).trackingDir;
       const trackingManifest = await readTrackingManifest(trackingDir);
-      const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+      let trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+
+      let dynamicArtifacts = trackingRecord?.artifacts.filter(
+        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+      ) ?? [];
+      if (dynamicArtifacts.length === 0) {
+        trackingRecord = await recoverRefreshTrackingRecord({
+          plugin: options.plugin,
+          platform,
+          scope,
+          cwd: options.cwd,
+          env: options.env,
+          trackingRecord,
+        });
+        dynamicArtifacts = trackingRecord?.artifacts.filter(
+          (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+            artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+        ) ?? [];
+      }
       if (!trackingRecord) {
         continue;
       }
-
-      const dynamicArtifacts = trackingRecord.artifacts.filter(
-        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
-          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
-      );
       if (dynamicArtifacts.length === 0) {
         continue;
       }
@@ -572,15 +736,29 @@ async function collectRefreshUnitsForReapply(options: {
         ? resolveCodexPaths(options.cwd, scope, options.env).trackingDir
         : resolveClaudePaths(options.cwd, scope, options.env).trackingDir;
       const trackingManifest = await readTrackingManifest(trackingDir);
-      const trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+      let trackingRecord = getTrackingRecord(trackingManifest, options.plugin.manifest.name);
+
+      let dynamicArtifacts = trackingRecord?.artifacts.filter(
+        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+      ) ?? [];
+      if (dynamicArtifacts.length === 0) {
+        trackingRecord = await recoverRefreshTrackingRecord({
+          plugin: options.plugin,
+          platform,
+          scope,
+          cwd: options.cwd,
+          env: options.env,
+          trackingRecord,
+        });
+        dynamicArtifacts = trackingRecord?.artifacts.filter(
+          (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
+            artifact.platform === platform && isTrackedDynamicArtifact(artifact),
+        ) ?? [];
+      }
       if (!trackingRecord) {
         continue;
       }
-
-      const dynamicArtifacts = trackingRecord.artifacts.filter(
-        (artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
-          artifact.platform === platform && isTrackedDynamicArtifact(artifact),
-      );
       if (dynamicArtifacts.length === 0) {
         continue;
       }
@@ -635,11 +813,14 @@ async function preflightDynamicArtifactRefresh(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  previousArtifacts: GeneratedArtifact[];
 }): Promise<void> {
   const adapter = options.platform === 'codex'
     ? new CodexAdapter(options.cwd, undefined, options.env)
     : new ClaudeAdapter(options.cwd, undefined, options.env);
-  const status = await adapter.status(options.plugin, options.scope);
+  const status = await adapter.status(options.plugin, options.scope, {
+    previousArtifacts: options.previousArtifacts,
+  });
   if (options.platform === 'claude') {
     const drifted = status.plugins[0]?.generatedArtifacts.filter((artifact) =>
       artifact.target === 'claude.skill' &&
@@ -724,6 +905,9 @@ async function executeRefreshUnit(options: {
         scope: 'project',
         env: options.env,
         operation: 'refresh',
+        previousArtifactsByPlugin: {
+          [options.plugin.manifest.name]: options.unit.trackingRecord.artifacts,
+        },
       });
     }
 
@@ -733,6 +917,7 @@ async function executeRefreshUnit(options: {
       scope: options.unit.scope,
       cwd: options.cwd,
       env: options.env,
+      previousArtifacts: options.unit.trackingRecord.artifacts,
     });
 
     const adapter = platform === 'codex'
@@ -745,6 +930,7 @@ async function executeRefreshUnit(options: {
         options.unit.scope,
         options.cwd,
         options.env,
+        options.unit.trackingRecord.artifacts,
       );
     }
     if (refreshesCodexUserDynamicSkill) {
@@ -799,6 +985,7 @@ async function executeRefreshUnit(options: {
       dynamicOnly: true,
       skillTriggerPreference,
       skillTriggerPreferences,
+      previousArtifacts: options.unit.trackingRecord.artifacts,
     })).filter((artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
       artifact.platform === platform && isTrackedDynamicArtifact(artifact));
     if (refreshesCodexUserDynamicSkill) {
@@ -1131,6 +1318,7 @@ function toInstallRecordArtifacts(
     ...(artifact.id === undefined ? {} : { id: artifact.id }),
     ...(artifact.target === undefined ? {} : { target: artifact.target }),
     ...(artifact.state === undefined ? {} : { state: artifact.state }),
+    ...(artifact.refreshKeys === undefined ? {} : { refreshKeys: [...artifact.refreshKeys] }),
     ...(artifact.roleKey === undefined ? {} : { roleKey: artifact.roleKey }),
     ...(artifact.kind === 'skill' || artifact.kind === 'mcpServer'
       ? { ownershipMarker: artifact.artifactKey ?? artifact.path }

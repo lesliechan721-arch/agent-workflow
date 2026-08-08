@@ -414,7 +414,7 @@ describe('skill trigger preferences', () => {
       pluginName: 'git-commit',
       platform: 'codex',
     });
-    expect(policies.applicability).toBe('none');
+    expect(policies.applicability).toBe('overridable');
     expect(policies.policies).toEqual([]);
 
     const materialization = await materializeSkillTriggerPreference({
@@ -452,6 +452,60 @@ describe('skill trigger preferences', () => {
     });
     expect(rematerialization.materialization?.generatedArtifacts ?? []).toEqual([]);
     await expect(readFile(codexSkillPath(marketplaceRoot))).resolves.toBe(CODEX_SKILL_AUTO_TRUE);
+  });
+
+  it('projects dynamic-only SkillTrigger applicability in status', async () => {
+    const embeddedRoot = await makeTempDir('aw-skill-trigger-dynamic-status-');
+    await writeBundlePlugin({
+      rootDir: embeddedRoot,
+      pluginName: 'dynamic-only',
+      skillTriggers: {
+        explore: {
+          defaultTrigger: 'auto',
+          allowDynamicTrigger: true,
+        },
+      },
+      artifacts: {
+        targets: [{
+          id: 'explore-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'explore',
+        }],
+      },
+      skills: {},
+    });
+    const marketplaceRoot = await copyToMarketplace(embeddedRoot);
+
+    const status = await resolveSkillTriggerStatusReportFields({
+      pluginName: 'dynamic-only',
+      platform: 'codex',
+      scope: 'user',
+      ledger: createAvailableLedger(),
+      currentCatalog: {
+        rootDir: marketplaceRoot,
+        source: 'local',
+      } as never,
+      currentCatalogAvailable: true,
+      embeddedRoot,
+      skillTriggerPreferences: {
+        explore: 'manual',
+      },
+    });
+
+    expect(status).toMatchObject({
+      skillTriggerApplicability: 'overridable',
+      skillTriggerPreference: 'manual',
+      skillTriggerPreferences: {
+        explore: 'manual',
+      },
+      skillTriggerRuntimeState: 'unknown',
+      skillTriggerDrift: 'unknown',
+    });
   });
 
   it('fails closed instead of replaying a stale lifecycle snapshot when the embedded root is unavailable', async () => {
