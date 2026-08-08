@@ -1,6 +1,14 @@
 ---
 name: skill-review
-description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals、相关角色配置或当前 agent-workflows 项目的插件 Skill 时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。
+description: >-
+  当用户的主要目标是评估已有的静态或 agent-workflows 插件 Agent Skill、
+  草稿或修订版的质量、风险或发布就绪性时使用；适用于快速、完整或发布
+  审核、差量复核、质量比较、触发边界诊断和多维评分。即使只提供
+  SKILL.md、一个 Skill 组件、执行 trace 或 eval 结果，也仅在用户需要
+  finding、评分、风险、发布门禁、问题关闭情况或最小改进集时使用。若
+  主要目标仅是从零创建、直接改写或修复 Skill、实现脚本或 eval、运行
+  Skill 或脚本、做语法或解析检查、查询规范、解释流程，或普通代码/文档
+  review，不要使用。
 compatibility: Requires the agent-workflows repository, Node.js 20+, installed workspace dependencies, and current Agent Skills documentation access for release reviews.
 metadata:
   short-description: 多维度、证据化、可计算的 Agent Skill 评审
